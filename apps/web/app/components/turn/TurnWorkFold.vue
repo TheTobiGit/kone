@@ -70,6 +70,7 @@ watch(
 .fold {
   width: 100%;
   max-width: 42rem;
+  min-width: 0;
 }
 /* Height animation without JS measurement: the region is a one-track grid that
    slides from a collapsed 0fr to content-height 1fr; the inner clips the body
@@ -86,11 +87,14 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 /* Narration inside the fold reads as recessed work notes, not the answer. */
 .fold__narration {
+  min-width: 0;
+  max-width: 100%;
   font-size: 0.9em;
   color: var(--muted);
 }

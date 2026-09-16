@@ -28,6 +28,13 @@ const props = defineProps<{
   now: number;
 }>();
 
+/** The orb's box, and with it the line's rhythm: the label lane and the clock
+ *  take their height from the same number so text sits on the orb's optical
+ *  centre rather than on a shorter line box beside it. The canvas needs it as a
+ *  prop and the stylesheet as a length, so it is declared once here and handed
+ *  to both. */
+const ORB_PX = 22;
+
 const activity = computed(() => describeTurnActivity(props.block));
 
 const orbState = computed<TurnOrbState | null>(() => {
@@ -56,7 +63,13 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
 </script>
 
 <template>
-  <div v-if="activity && orbState" class="status" role="status" aria-live="polite">
+  <div
+    v-if="activity && orbState"
+    class="status"
+    role="status"
+    aria-live="polite"
+    :style="{ '--orb-size': `${ORB_PX}px` }"
+  >
     <!-- Fixed-size box: the orb crossfades between states in place, so a turn
          moving from thinking to a tool never nudges the line. -->
     <span class="status__orb">
@@ -69,7 +82,7 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
           :exit="{ opacity: 0, scale: 0.7 }"
           :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
         >
-          <TurnOrb :state="orbState" :size="22" :aria-label="activity.label" />
+          <TurnOrb :state="orbState" :size="ORB_PX" :aria-label="activity.label" />
         </motion.span>
       </AnimatePresence>
     </span>
@@ -108,8 +121,8 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
 .status__orb {
   position: relative;
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: var(--orb-size);
+  height: var(--orb-size);
 }
 .status__orb-layer {
   position: absolute;
@@ -120,24 +133,36 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
 }
 
 /* The label lane clips rather than grows: a status crossfading to a longer one
-   must not widen the line mid-sentence. */
+   must not widen the line mid-sentence. It is also a flex line as tall as the
+   orb, so the label shares the orb's optical centre instead of centring a
+   shorter normal line box against it. */
 .status__lane {
   position: relative;
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
+  min-height: var(--orb-size);
   overflow: hidden;
   white-space: nowrap;
 }
 .status__label {
   display: block;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 0.86rem;
+  line-height: var(--orb-size);
   color: color-mix(in oklab, var(--ink) 62%, transparent);
 }
 
 .status__time {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  line-height: var(--orb-size);
+  white-space: nowrap;
   font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
   color: color-mix(in oklab, var(--ink) 38%, transparent);
@@ -150,5 +175,12 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
 .clock-enter-from,
 .clock-leave-to {
   opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clock-enter-active,
+  .clock-leave-active {
+    transition: none;
+  }
 }
 </style>

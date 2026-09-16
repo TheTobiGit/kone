@@ -1,5 +1,6 @@
 import { AntigravityAcpAdapter, type AntigravityRpcFactory } from "./AntigravityAcpAdapter.js";
 import { AntigravityPrintAdapter } from "./AntigravityPrintAdapter.js";
+import { errorText } from "./errors.js";
 import type { AntigravityAcpResolvedBinary } from "../antigravityAcpBinary.js";
 import type {
   AdapterCapabilities,
@@ -191,7 +192,7 @@ export class AntigravityAdapter implements ProviderAdapter {
  *  own missing-binary error, or the OS reporting ENOENT on the spawn. Any
  *  other failure (auth, protocol) belongs to the caller, not the fallback. */
 function isMissingBinaryError(cause: unknown): boolean {
-  const message = cause instanceof Error ? cause.message : String(cause);
+  const message = errorText(cause);
   if (message.includes("ACP server not found")) return true;
   if (!(cause instanceof Object) || Array.isArray(cause)) return false;
   // SAFETY: cause is verified as a non-array Object record; code is read

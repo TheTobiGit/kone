@@ -12,7 +12,7 @@ import {
 import { JsonRpcClient } from "../jsonRpc.js";
 import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import { refuseCriticalCommand } from "./acpSafety.js";
-import { isResumeRefusalError } from "./errors.js";
+import { errorText, isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
@@ -828,7 +828,7 @@ export class DroidAdapter implements ProviderAdapter {
         } catch (error) {
           console.error(
             "[droid] kone MCP registration failed:",
-            error instanceof Error ? error.message : String(error),
+            errorText(error),
           );
         }
       }
@@ -1013,7 +1013,7 @@ export class DroidAdapter implements ProviderAdapter {
       )
       .then(
         (response) => this.completeTurn(session, turnId, readString(response, "stopReason")),
-        (error) => this.failTurn(session, turnId, error instanceof Error ? error.message : String(error)),
+        (error) => this.failTurn(session, turnId, errorText(error) || "The turn failed."),
       );
 
     return { threadId: input.threadId, turnId };
@@ -1190,7 +1190,7 @@ export class DroidAdapter implements ProviderAdapter {
       );
       await this.waitForConfigValue(session, configId, value);
     } catch (error) {
-      this.warn(session, `Droid rejected ${configId}="${value}"`, error instanceof Error ? error.message : String(error));
+      this.warn(session, `Droid rejected ${configId}="${value}"`, errorText(error));
     }
   }
 

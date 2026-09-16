@@ -15,7 +15,7 @@ import { JsonRpcClient } from "../jsonRpc.js";
 import type { JsonObject, JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import { refuseCriticalCommand } from "./acpSafety.js";
-import { isResumeRefusalError } from "./errors.js";
+import { errorText, isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
@@ -1665,7 +1665,7 @@ export class CursorAdapter implements ProviderAdapter {
     // A prompt rejected because the child died is already covered by the
     // `session.exited` event; report the turn as failed either way so the
     // renderer never keeps a turn spinning.
-    const message = cause instanceof Error ? cause.message : String(cause);
+    const message = errorText(cause) || "The turn failed.";
     const reason = session.interrupting ? "interrupted" : "failed";
     session.interrupting = false;
     this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason, message });
@@ -1677,7 +1677,7 @@ export class CursorAdapter implements ProviderAdapter {
    *  doesn't have). Surfaced as session state, never thrown — none of these are
    *  worth losing a session over. */
   private warn(session: CursorSession, summary: string, cause: unknown): void {
-    const detail = cause instanceof Error ? cause.message : String(cause);
+    const detail = errorText(cause);
     this.emit({
       ...this.base(session),
       source: "cursor.acp.lifecycle",

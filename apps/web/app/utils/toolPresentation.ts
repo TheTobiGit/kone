@@ -27,6 +27,7 @@ import {
 import type { RuntimeItem } from "~/types/desktop";
 import { activeHues, type ToolOrbFamily } from "~/utils/toolOrbDraw";
 import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
+import { canonicalToolName } from "~/utils/toolName";
 
 // Icons are Hugeicons SVG data objects (the `:icon` prop of <HugeiconsIcon>), not
 // Vue components — same shape as File01Icon et al.
@@ -103,21 +104,20 @@ const TOOL_TABLE: Record<string, ToolMetaInput> = {
 
 export function toolMeta(name: string | undefined): ToolMeta {
   const families = activeHues().families;
-  if (!name) return { icon: ToolsIcon, label: "Tool", hue: families.neutral!, family: "neutral" };
-  const key = name.trim().toLowerCase();
+  const key = (name ?? "").trim();
+  if (!key) return { icon: ToolsIcon, label: "Tool", hue: families.neutral!, family: "neutral" };
   if (TOOL_TABLE[key]) {
     const meta = TOOL_TABLE[key]!;
     return { ...meta, hue: families[meta.family]! };
   }
-  // MCP tools arrive as `mcp__server__tool` — read the last segment as the label
-  // and hue them as external/orchestration rather than a raw title-cased blob.
+  // A foreign MCP tool keeps its `mcp__server__tool` envelope — read the last
+  // segment as the label and hue it as external/orchestration rather than a
+  // raw title-cased blob.
   if (key.startsWith("mcp__")) {
     const tail = key.split("__").filter(Boolean).pop() ?? key;
-    const label = tail.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    return { icon: WorkflowSquare01Icon, label, hue: families.agent!, family: "agent" };
+    return { icon: WorkflowSquare01Icon, label: humanize(tail), hue: families.agent!, family: "agent" };
   }
-  const label = key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return { icon: ToolsIcon, label, hue: families.neutral!, family: "neutral" };
+  return { icon: ToolsIcon, label: humanize(key), hue: families.neutral!, family: "neutral" };
 }
 
 export function toolStatus(t: RuntimeItem): "running" | "done" | "error" {
@@ -126,30 +126,62 @@ export function toolStatus(t: RuntimeItem): "running" | "done" | "error" {
   return "done";
 }
 
-// The provider hands args as `read_file: src/foo.ts`; peel the name so we're left
-// with the target (path / command / query). Long tails keep their end — the full
-// value stays reachable in the row's title attribute.
-export function toolTargetRaw(t: RuntimeItem): string {
+/** Words, for comparing a tool's name against text that merely echoes it:
+ *  `manage_task` and "manage task" are the same thing said twice. */
+function words(s: string): string {
+  return s.toLowerCase().replace(/[_-]+/g, " ").trim();
+}
+
+/** Title-case a snake/kebab tool name for display: `spawn_batch` → "Spawn Batch". */
+function humanize(name: string): string {
+  return words(name).replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Providers stamp a tool_call's text with a head the phrasing already carries:
+ *  the tool's own name (`read_file: src/foo.ts`, or its qualified spelling from
+ *  before canonicalization), or — for kone's own tools — the server (`kone: …`).
+ *  Peel whichever one is there so the target never repeats the verb. A head with
+ *  whitespace in it is prose, not a stamp, so `git commit -m "fix: x"` survives. */
+function peelStamp(raw: string, name: string): string {
+  const colon = raw.indexOf(":");
+  if (colon <= 0) return raw;
+  const head = raw.slice(0, colon).trim();
+  if (!head || /\s/.test(head)) return raw;
+  const stampsTool = canonicalToolName(head) === name;
+  const stampsServer = head.toLowerCase() === "kone" && name.startsWith("kone_");
+  return stampsTool || stampsServer ? raw.slice(colon + 1).trim() : raw;
+}
+
+/** The tool_call's target (path / command / query), with the provider's stamp
+ *  peeled and a bare echo of the tool name resolved to nothing. Long tails keep
+ *  their end — see `toolTarget` — and the full value stays reachable through
+ *  `toolDetailFull`. */
+function toolTargetText(t: RuntimeItem): string {
   const name = (t.name ?? "").trim();
-  const raw = (t.text ?? "").trim();
-  const prefix = `${name}:`;
-  if (raw.startsWith(prefix)) return raw.slice(prefix.length).trim();
-  const lowerRaw = raw.toLowerCase();
-  const lowerName = name.toLowerCase();
-  if (
-    lowerRaw === lowerName ||
-    lowerRaw === lowerName.replace(/_/g, " ") ||
-    lowerRaw.replace(/_/g, " ") === lowerName.replace(/_/g, " ")
-  ) {
-    return "";
-  }
-  return raw;
+  const peeled = peelStamp((t.text ?? "").trim(), name);
+  return words(peeled) === words(name) ? "" : peeled;
+}
+
+/** A serialized argument object is an args dump, not a one-line target: it has
+ *  no readable head, so every row that carried one read as a wall of JSON. Rows
+ *  fall back to their targetless phrasing ("Running kone spawn batch"); the blob
+ *  itself stays reachable through `toolDetailFull`. */
+function isArgumentBlob(text: string): boolean {
+  if (text.length < 2) return false;
+  const head = text[0];
+  const tail = text[text.length - 1];
+  return (head === "{" && tail === "}") || (head === "[" && tail === "]");
+}
+
+export function toolTargetRaw(t: RuntimeItem): string {
+  const text = toolTargetText(t);
+  return isArgumentBlob(text) ? "" : text;
 }
 
 export function toolTarget(t: RuntimeItem, max = 64): string {
   const d = toolTargetRaw(t);
   if (d.length <= max) return d;
-  const name = (t.name ?? "").trim().toLowerCase();
+  const name = (t.name ?? "").trim();
   const isCommand =
     ["bash", "run_terminal_cmd", "execute_command", "run_command", "run", "command"].includes(name) ||
     looksLikeCommand(d);
@@ -162,8 +194,10 @@ export function toolTarget(t: RuntimeItem, max = 64): string {
   return d.slice(0, max - 1) + "…";
 }
 
+/** The untruncated, unsuppressed target — the row's `title` attribute, so an
+ *  args blob or a clipped path is still readable on hover. */
 export function toolDetailFull(t: RuntimeItem): string {
-  return toolTargetRaw(t);
+  return toolTargetText(t);
 }
 
 export function looksLikeFilePath(s: string): boolean {
@@ -226,7 +260,7 @@ export function toolPhrase(t: RuntimeItem): ToolPhrase {
   const fail = status === "error";
   const detail = toolTarget(t);
   const full = toolTargetRaw(t);
-  const name = (t.name ?? "").trim().toLowerCase();
+  const name = (t.name ?? "").trim();
 
   // grep-style "query · N matches"
   const matchSplit = full.match(/^(.+?)\s*·\s*(\d+)\s+matches?$/i);
@@ -394,7 +428,7 @@ export function toolPhrase(t: RuntimeItem): ToolPhrase {
       if (fail) return plain(`Couldn't deploy ${detail}`);
       return plain(`Deployed ${detail}`);
     default: {
-      const human = name.replace(/[_-]+/g, " ");
+      const human = words(name);
       if (name.includes("screenshot") || name.includes("capture")) {
         if (ing) return plain("Taking a screenshot");
         if (fail) return plain("Couldn't capture screenshot");

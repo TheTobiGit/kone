@@ -469,7 +469,6 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
               :now="agent.now.value"
               :thread-id="session?.threadId.value"
               mode="reply"
-              :session-error="session?.error.value"
               :load-failed="session?.transcriptLoadFailed.value"
               :loading="starting"
               :busy="busy"
@@ -479,7 +478,6 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
               @retry="onSend"
               @resend="onSend"
               @retry-load="session ? session.openStored(session.threadId.value) : undefined"
-              @retry-session="session?.start()"
               @load-older="session?.loadOlder()"
             />
           </div>

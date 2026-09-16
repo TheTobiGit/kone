@@ -64,7 +64,7 @@ import {
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
-import { isResumeRefusalError } from "./errors.js";
+import { errorText, isResumeRefusalError } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import {
@@ -340,7 +340,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     } catch (error) {
       // Keep the reason for the status row, and log it too so a spawn failure in
       // a packaged build is diagnosable from the console alone.
-      const reason = (error instanceof Error ? error.message : String(error)).trim();
+      const reason = errorText(error).trim();
       this.initFailure = reason.split("\n")[0] || undefined;
       console.error("[kone] Claude discovery probe failed:", error);
       return null;
@@ -966,7 +966,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           ...this.base(session, "claude.sdk.lifecycle"),
           type: "session.state.changed",
           state: "error",
-          message: error instanceof Error ? error.message : String(error),
+          message: errorText(error) || "The agent session ended unexpectedly.",
         });
       }
     } finally {
@@ -1517,7 +1517,13 @@ export class ClaudeAdapter implements ProviderAdapter {
       return;
     }
 
-    const errors = "errors" in message && Array.isArray(message.errors) ? message.errors : [];
+    // `errors` is declared `string[]`, but the CLI puts records on the wire —
+    // joining those raw renders "[object Object]" as the user's error text.
+    const errors = (
+      "errors" in message && Array.isArray(message.errors) ? message.errors : []
+    )
+      .map(errorText)
+      .filter((text) => text.length > 0);
     const reason = interrupting || isInterruptedResult(message, errors) ? "interrupted" : "failed";
     const detail = errors.join("; ") || readString(message, "result");
     const aborted: Extract<RuntimeEvent, { type: "turn.aborted" }> = {

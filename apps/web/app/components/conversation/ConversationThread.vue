@@ -63,9 +63,6 @@ const props = defineProps<{
   compactions?: CompactionRecord[];
   /** Ticking clock from useAgent, so "working · Xs" counts up live. */
   now: number;
-  /** A session-level error (start failure, crashed process) — shown as a
-   *  single banner above the thread when set. */
-  sessionError?: string | null;
   /** Strip column key — forwarded with scratchpad captures. */
   sourceKey?: string;
   /** The provider thread id, when this column is anchored to a stored
@@ -130,8 +127,6 @@ const emit = defineEmits<{
   resend: [text: string];
   /** A stored conversation failed to load its transcript — re-run the open. */
   "retry-load": [];
-  /** The session start failed — re-run the session start. */
-  "retry-session": [];
   /** Load the next older page of a windowed stored thread and prepend it. The
    *  host owns the fetch (session.loadOlder); the thread only asks. */
   "load-older": [];
@@ -480,28 +475,10 @@ function addToScratchpad(block: AssistantBlock) {
 // All of these reach the session through the host (ThreadStrip forwards them):
 // `retry` re-sends the user request that precedes a failed turn, `resend` ships
 // the edited text as a NEW user turn (the failed reply stays in the transcript —
-// rolling it back needs store support and is out of scope), and the two
-// retry-load paths re-run the open or the session start. The buttons here are
-// pure intent — this component never touches the send path itself.
+// rolling it back needs store support and is out of scope), and `retry-load`
+// re-runs the open of a stored conversation. The buttons here are pure intent —
+// this component never touches the send path itself.
 const dismissedTurnErrors = reactive<Record<string, boolean>>({});
-const sessionErrorDismissed = ref(false);
-const showSessionError = computed(() => Boolean(props.sessionError) && !sessionErrorDismissed.value);
-const copiedError = ref(false);
-async function copySessionError(): Promise<void> {
-  if (!props.sessionError || !import.meta.client) return;
-  try {
-    await navigator.clipboard.writeText(props.sessionError);
-    copiedError.value = true;
-    window.setTimeout(() => (copiedError.value = false), 1600);
-  } catch {
-    // Clipboard blocked — nothing to do.
-  }
-}
-function retrySession(): void {
-  sessionErrorDismissed.value = false;
-  cue("press");
-  emit("retry-session");
-}
 /** The user request this assistant turn answers — the nearest user block above
  *  it. Retry re-sends that, so a failed turn gets exactly its own prompt back. */
 function userRequestFor(block: AssistantBlock): string {
@@ -577,7 +554,6 @@ const failedLoad = computed(
     Boolean(props.threadId) &&
     !props.loading &&
     !props.busy &&
-    !props.sessionError &&
     !loadDismissed.value,
 );
 function retryLoad(): void {
@@ -885,29 +861,8 @@ watch(
       'thread--busy': hasRunningExchange,
     }"
   >
-    <!-- Session-start failure (or a crashed process): a soft red card with the
-         error, plus copy / retry / dismiss. Retry re-runs the session start;
-         dismiss hides the card until the next session error arrives. -->
-    <div v-if="showSessionError" class="thread__error" role="alert">
-      <p class="body body--error">{{ sessionError }}</p>
-      <div class="thread__error-actions">
-        <button type="button" class="error-act" aria-label="Copy error" @click="copySessionError()">
-          <HugeiconsIcon :icon="copiedError ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
-          <span>{{ copiedError ? "Copied" : "Copy" }}</span>
-        </button>
-        <button type="button" class="error-act" @click="retrySession()">
-          <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
-          <span>Retry</span>
-        </button>
-        <button type="button" class="error-act" @click="sessionErrorDismissed = true">
-          <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" />
-          <span>Dismiss</span>
-        </button>
-      </div>
-    </div>
-
     <!-- A stored conversation whose transcript never arrived — the session's
-         read came back empty-handed, nothing loading, no session error. Retry
+         read came back empty-handed and nothing is still loading. Retry
          re-runs the open; dismiss hides the card for this session. -->
     <div v-if="failedLoad" class="thread__error" role="alert">
       <p class="body body--error">
@@ -1460,9 +1415,18 @@ watch(
   gap: 34px;
   width: 100%;
   max-width: 720px;
-  /* A wide table's unbreakable spans set a huge min-content width, and a flex
-     item's automatic minimum would rather break the 720px cap and pin the
-     column left than stay a centered reader — so opt out of the floor. */
+  /* ── Flex containment, declared here for the whole column ─────────────────
+     A flex item's automatic minimum size is its CONTENT's min-content width,
+     not zero. One unbreakable thing deep in a reply — a wide table's spans, a
+     long code line — therefore pushes every ancestor wider than the 720px cap,
+     breaking the centered measure and pushing the overflow under the column's
+     overflow-x:hidden, where it is clipped rather than scrolled.
+     The floor has to be opted out of at EVERY flex link between here and that
+     content, because one link without it re-imposes the whole chain: .thread →
+     .exchange → .turn → .stack → .answer-wrap → .answer / .fold, each carrying
+     its own `min-width: 0` for this reason and no other. Add a flex child in
+     that path and it needs the same line — the scroller inside CodeBlock can
+     only do its job once its box has stopped growing. */
   min-width: 0;
   margin: 0 auto;
 }
@@ -1591,6 +1555,7 @@ watch(
   position: relative;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 34px;
   transition:
     opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
@@ -1621,6 +1586,7 @@ watch(
   position: relative;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 10px;
 }
 .turn--you {
@@ -1634,6 +1600,15 @@ watch(
   gap: 15px;
   align-items: flex-start;
   width: 100%;
+  min-width: 0;
+}
+/* Fills the stack rather than shrink-wrapping: as a flex-start item it would
+   otherwise size to its longest unbreakable line. One link in the containment
+   chain described on `.thread`. */
+.answer-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 /* A collapsed fold costs no gap: it is still a flex child at zero height, so
    hand one gap back discretely — no transition, collapsed-or-not is binary
@@ -1944,6 +1919,7 @@ watch(
 .answer {
   width: 100%;
   max-width: 42rem;
+  min-width: 0;
 }
 
 /* ── Turn footer (meta) — editorial dotted leader ──────────────────────────── */

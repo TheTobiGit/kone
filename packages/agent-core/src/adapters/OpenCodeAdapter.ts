@@ -18,6 +18,7 @@ import {
 } from "../commandSafety.js";
 import type { JsonValue } from "../lib-jsonValue.js";
 import { emitCompacted } from "./emitCompacted.js";
+import { errorText } from "./errors.js";
 import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputRespondResult } from "../types.js";
 import { normalizeUserInputQuestions } from "./userInputQuestions.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
@@ -121,14 +122,11 @@ function record(value: OpenCodeJsonValue | null | undefined): RecordLike | undef
 }
 function responseData(value: any): any { return value?.data ?? value; }
 function errorMessage(cause: unknown): string {
-  if (cause instanceof Error) return cause.message;
-  // Provider payloads (e.g. session.error) carry plain `{ message }` objects —
-  // String() would render "[object Object]".
-  // SAFETY: error payload may be a record carrying a message field.
-  const r = record(cause as RecordLike | undefined);
-  const msg = textField(r?.message);
-  if (msg) return msg;
-  return String(cause);
+  // Every shape the server sends — a thrown Error, a bare `{ message }`, and
+  // the `{ name, data: { message } }` records `session.error` carries — is
+  // unwrapped by the shared reader. A local `String(cause)` fallback used to
+  // render those nested payloads as "[object Object]".
+  return errorText(cause) || "OpenCode reported an error with no detail.";
 }
 function statusOf(cause: unknown): number | undefined {
   // SAFETY: error payload may be a record carrying status or statusCode.

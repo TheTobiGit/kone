@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   classifyProviderError,
+  errorText,
   isNonFatalCodexError,
   isRecoverableCodexResumeError,
   isResumeRefusalError,
@@ -66,5 +67,47 @@ describe("isResumeRefusalError", () => {
     expect(isResumeRefusalError(new Error("session/load timed out waiting for server"))).toBe(false);
     expect(isResumeRefusalError(new Error("session/resume failed: permission denied"))).toBe(false);
     expect(isResumeRefusalError(new Error("connection refused"))).toBe(false);
+  });
+});
+
+describe("errorText", () => {
+  test("unwraps the shapes providers actually put on the wire", () => {
+    expect(errorText("plain text  ")).toBe("plain text");
+    expect(errorText(new Error("boom"))).toBe("boom");
+    expect(errorText({ message: "rate limit exceeded" })).toBe("rate limit exceeded");
+    expect(errorText({ error: { message: "upstream refused" } })).toBe("upstream refused");
+    expect(errorText([{ message: "first" }, { message: "second" }])).toBe("first; second");
+  });
+
+  test("unwraps OpenCode's nested { name, data: { message } } payloads", () => {
+    expect(
+      errorText({ name: "ProviderAuthError", data: { providerID: "anthropic", message: "not signed in" } }),
+    ).toBe("not signed in");
+    expect(errorText({ name: "UnknownError", data: { message: "upstream 500" } })).toBe("upstream 500");
+    // MessageOutputLengthError carries an empty `data` — the name is all there is.
+    expect(errorText({ name: "MessageOutputLengthError", data: {} })).toBe("MessageOutputLengthError");
+  });
+
+  test("walks an Error's cause when the wrapper carries no message of its own", () => {
+    expect(errorText(new Error("", { cause: { message: "upstream refused" } }))).toBe(
+      "upstream refused",
+    );
+    expect(errorText(new Error("wrapper", { cause: { message: "inner" } }))).toBe("wrapper");
+  });
+
+  test("reports an unrecognized payload as a human line, never as JSON", () => {
+    expect(errorText({ code: 500, retryable: false })).toBe("Unknown error (code 500)");
+    expect(errorText({ retryable: false })).toBe("Unknown error from the provider");
+    const circular = { self: {} };
+    circular.self = circular;
+    const text = errorText(circular);
+    expect(text).toBe("Unknown error from the provider");
+    expect(text).not.toContain("[object Object]");
+  });
+
+  test("empty-ish values produce no message rather than a fake one", () => {
+    expect(errorText(null)).toBe("");
+    expect(errorText(undefined)).toBe("");
+    expect(errorText("")).toBe("");
   });
 });
