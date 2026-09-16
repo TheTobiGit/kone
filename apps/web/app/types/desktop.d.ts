@@ -1551,6 +1551,11 @@ export type RuntimeEvent =
   // the prompt.
   | (AgentBaseEvent & { type: "approval.resolved"; requestId: string; decision: ApprovalDecision });
 
+/** One frame on the `agent:event` channel: either a single event (quiet
+ *  traffic keeps the old shape) or a batch of events folded in arrival order
+ *  (a burst of per-delta updates). Mirrors packages/agent-core/src/eventSubscriptions.ts. */
+export type AgentEventFrame = RuntimeEvent | RuntimeEvent[];
+
 // ── persisted conversation history ───────────────────────────────────────────
 // What the main-process ConversationStore reads back off disk. Kept in the same
 // UserBlock | AssistantBlock timeline shape the renderer uses, so a reloaded
@@ -2646,7 +2651,10 @@ export type KoneAgentApi = {
    *  The spawn events aren't journaled, so a reloaded renderer has no record of
    *  them — this is how the Subagents dock repopulates after a reload. */
   spawnChildren: (threadId: string) => Promise<SpawnedThread[]>;
-  /** Subscribe to the runtime event stream; returns an unsubscribe fn. */
+  /** One frame on the `agent:event` channel: a single event, or a batch of
+   *  per-delta snapshots folded in arrival order. The bridge fans batches out
+   *  before invoking listeners, so `onEvent` callbacks always see one event
+   *  at a time and batching stays a transport detail. */
   onEvent: (cb: (event: RuntimeEvent) => void) => () => void;
 };
 
