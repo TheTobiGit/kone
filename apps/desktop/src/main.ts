@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { app, BrowserWindow, globalShortcut, nativeTheme, net, protocol, shell } from "electron";
 
-import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
+import { getAgentService, prepareQuitResumeForQuit, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
 import { resolveAttachmentProtocolPath } from "./attachmentProtocol.js";
@@ -362,11 +362,23 @@ if (gotSingleInstanceLock) {
     event.preventDefault();
     teardownStarted = true;
     cancelAllClones();
-    const teardown = Promise.allSettled([shutdownAgents(), shutdownTerminals()]);
-    const hardStop = new Promise<void>((resolve) =>
-      setTimeout(resolve, QUIT_TEARDOWN_TIMEOUT_MS),
-    );
-    void Promise.race([teardown, hardStop]).finally(() => app.quit());
+    void (async () => {
+      // Durable quit-resume first: snapshot genuinely in-flight turns to disk
+      // so the next launch can continue them, then interrupt those turns. The
+      // record must be durable before the process starts dying; a failed write
+      // falls back to a plain interrupt-and-quit inside. Bounded by the same
+      // hard stop as the teardown below.
+      try {
+        await prepareQuitResumeForQuit();
+      } catch (err) {
+        console.error("[main] quit-resume prepare failed:", err);
+      }
+      const teardown = Promise.allSettled([shutdownAgents(), shutdownTerminals()]);
+      const hardStop = new Promise<void>((resolve) =>
+        setTimeout(resolve, QUIT_TEARDOWN_TIMEOUT_MS),
+      );
+      await Promise.race([teardown, hardStop]);
+    })().finally(() => app.quit());
   });
 }
 
