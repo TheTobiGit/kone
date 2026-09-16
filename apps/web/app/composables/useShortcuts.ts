@@ -83,6 +83,16 @@ const ACTIONS: ShortcutAction[] = [
     personalize: true,
   },
   {
+    id: "search-conversations",
+    label: "Search conversations",
+    hint: "Search every conversation's prompts and replies, then jump to the match.",
+    description: "Find anything an agent ever said — or was asked — and land on it.",
+    group: "General",
+    default: "mod+f",
+    rebindable: true,
+    personalize: true,
+  },
+  {
     id: "toggle-settings",
     label: "Open settings drawer",
     hint: "Open or close the personalization drawer.",

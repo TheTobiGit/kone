@@ -5,6 +5,8 @@ import type { RecentProject } from "~/composables/useRecentProjects";
 import IntentMenu from "~/components/intent/IntentMenu.vue";
 import { resolveTop } from "~/utils/surfaceTop";
 import type { SurfaceId } from "~/utils/surfaceTop";
+import { requestSearchJump } from "~/composables/useSearchJump";
+import type { SearchJumpRequest } from "~/components/conversation/ConversationSearchModal.vue";
 
 const project = useProject();
 const { recents, forget, togglePin } = useRecentProjects();
@@ -73,6 +75,19 @@ function onOpenRecent(recent: RecentProject) {
 function onOpenSession(target: { path: string; name: string; threadId: string }) {
   cue("open");
   openProject({ path: target.path, name: target.name }, target.threadId);
+}
+
+// ── conversation search ─────────────────────────────────────────────────────
+// The palette over every page: one query across all conversations, then a jump
+// to the match. Navigation reuses the pending-thread path above — the studio
+// row takes the request reactively whether its project is already open or is
+// opening now — with the matched row parked in the jump state so the thread
+// view can reveal it once its transcript lands.
+const searchOpen = ref(false);
+
+function onSearchJump(req: SearchJumpRequest) {
+  if (req.blockId) requestSearchJump(req.threadId, req.blockId);
+  openProject({ path: req.projectPath, name: req.projectName }, req.threadId);
 }
 
 // Pin/unpin is the one launcher toggle worth a sound — a discrete state flip.
@@ -250,6 +265,16 @@ const { matchesShortcut } = useShortcuts();
 // fires. Portals stay summonable while settings is revealed, and the studio
 // key still means go-to-studio while the inbox is up (see toggleStudio).
 function onSurfaceHotkey(e: KeyboardEvent) {
+  if (matchesShortcut("search-conversations", e)) {
+    if (isLauncherModalOpen.value) return;
+    e.preventDefault();
+    cue("press");
+    searchOpen.value = !searchOpen.value;
+    return;
+  }
+  // While the palette stands open it owns the keys — no portal summons, no
+  // drawer toggles underneath it. Its own Escape is consumed by the card.
+  if (searchOpen.value) return;
   if (matchesShortcut("open-studio", e)) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
@@ -419,6 +444,15 @@ function onAttentionOpen(projectPath: string, threadId: string) {
     />
 
     <AssistantGlobalAssistantModal v-if="assistantOpen" :surface-top="surfaceTop" />
+
+    <!-- The conversation-search palette, over every page. Mounted only while
+         up, the way the assistant card is: the shell plays its own exit and a
+         card that is never unmounted has no entrance left to play. -->
+    <ConversationSearchModal
+      v-if="searchOpen"
+      @jump="onSearchJump"
+      @close="searchOpen = false"
+    />
 
     <!-- The intent menu: teleported so the stage slide never re-anchors its
          fixed position, above every portal while it is up. -->
