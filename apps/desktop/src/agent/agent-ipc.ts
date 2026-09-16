@@ -11,6 +11,13 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import {
+  claimQuitResumeRecordAtStartup,
+  prepareQuitResume,
+  resumeQuitInterruptedChats,
+  type QuitResumeAssistantTurn,
+  type QuitResumeThreadSnapshot,
+} from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
 import { removeWorktree } from "../modules/git/worktree.js";
 import {
@@ -155,6 +162,82 @@ export function registerAgentIpc(): void {
     parentTurnIdFor: (threadId) => dispatcher.spawnParentTurnId(threadId),
     scheduleDelay: (fn, ms) => setTimeout(fn, ms),
   });
+
+  // Quit-resume: a quit that landed while turns were in flight left a record
+  // behind (prepared from main's before-quit). Claimed synchronously here —
+  // before the window exists, so no client command can race the consume —
+  // then each surviving thread gets one continuation turn, dispatched
+  // serialized with a fresh precondition re-check before each. Best-effort:
+  // resuming never fails boot.
+  const readQuitResumeSnapshot = (threadId: string): QuitResumeThreadSnapshot => {
+    const meta = store.threadMeta(threadId);
+    if (!meta) return { threadId, missing: true, archived: false, busy: false, turns: [] };
+    const thread = store.loadThread(threadId);
+    const turns: QuitResumeAssistantTurn[] = [];
+    if (thread) {
+      for (const block of thread.blocks) {
+        if (block.role !== "assistant") continue;
+        turns.push({
+          turnId: block.turnId,
+          state: block.state,
+          at: block.at,
+          endedAt: block.endedAt ?? null,
+        });
+      }
+    }
+    return {
+      threadId,
+      missing: false,
+      archived: (meta.archivedAt ?? null) !== null,
+      busy: svc.isThreadBusy(threadId),
+      turns,
+    };
+  };
+  const dispatchQuitResumeTurn = async (threadId: string, prompt: string): Promise<void> => {
+    // A fresh process has no live sessions: adopt the thread's own session
+    // first, resuming its provider conversation when one is stored. When the
+    // provider honors the resume the continuation lands in full context; when
+    // it comes up blank the dispatcher replays the transcript digest in front
+    // of it instead of asking a blank agent to "continue".
+    const meta = store.threadMeta(threadId);
+    if (!meta) throw new Error(`Unknown thread ${threadId}`);
+    if (!svc.hasLiveSession(threadId)) {
+      const start: SessionStartInput = {
+        threadId,
+        provider: meta.provider,
+        cwd: meta.projectPath,
+      };
+      if (meta.model) start.model = meta.model;
+      if (meta.conversationId) start.resume = meta.conversationId;
+      if (meta.resumeSessionAt) start.resumeSessionAt = meta.resumeSessionAt;
+      if (meta.selection?.mode) start.mode = meta.selection.mode;
+      if (meta.selection?.effort) start.effort = meta.selection.effort;
+      await dispatcher.startThread(start);
+    }
+    // Silent: this prompt is the app's own voice, not something the user said
+    // — journaling it would put words in their mouth.
+    await dispatcher.sendThreadTurn(
+      { threadId, input: prompt },
+      { silent: true, generateTitle: false },
+    );
+  };
+  const quitResumeClaim = claimQuitResumeRecordAtStartup();
+  if (quitResumeClaim.kind === "record") {
+    void resumeQuitInterruptedChats({
+      claimed: quitResumeClaim,
+      readSnapshot: readQuitResumeSnapshot,
+      dispatchResumeTurn: dispatchQuitResumeTurn,
+    }).then((result) => {
+      if (result.resumed.length > 0) {
+        console.info(
+          `[agent] resumed ${result.resumed.length} chat(s) interrupted by the previous quit`,
+        );
+      }
+      if (result.skipped.length > 0) {
+        console.info("[agent] quit-resume skipped threads that moved on:", result.skipped);
+      }
+    });
+  }
 
   // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
   // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
@@ -882,9 +965,29 @@ export function registerAgentIpc(): void {
   });
 }
 
+/** Record in-flight turns for resume after quit, then interrupt them. Called
+ *  from main's before-quit ahead of the teardown: the record must be durable
+ *  before the process starts dying. A failed write falls back to a plain
+ *  interrupt-and-quit — the boot reconciliation still seals whatever is left.
+ *  Never rejects: a record failure must not stop the quit. */
+export async function prepareQuitResumeForQuit(): Promise<void> {
+  if (!service) return;
+  const svc = service;
+  try {
+    await prepareQuitResume({ quitter: svc });
+  } catch (err) {
+    console.error(
+      "[agent] quit-resume record failed — falling back to plain interrupt-and-quit:",
+      err,
+    );
+    await Promise.allSettled(
+      svc.inFlightTurns().map(({ threadId }) => svc.interruptTurn(threadId).catch(() => {})),
+    );
+  }
+}
+
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
-export async function shutdownAgents(): Promise<void> {
-  if (stopIrcDelivery) {
+export async function shutdownAgents(): Promise<void> {  if (stopIrcDelivery) {
     stopIrcDelivery();
     stopIrcDelivery = null;
   }

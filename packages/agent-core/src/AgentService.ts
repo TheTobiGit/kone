@@ -788,6 +788,19 @@ export class AgentService {
     return this.isBusy(threadId);
   }
 
+  /** Every thread with a turn live right now: the announced turn id, or null
+   *  while a send is still on its way to the adapter and no turn has been
+   *  announced yet. The quit-resume record snapshots this — those are the
+   *  threads a quit would otherwise strand mid-turn. */
+  inFlightTurns(): Array<{ threadId: string; turnId: string | null }> {
+    const flights: Array<{ threadId: string; turnId: string | null }> = [];
+    for (const [threadId, turnId] of this.activeTurns) flights.push({ threadId, turnId });
+    for (const threadId of this.dispatchingTurns) {
+      if (!this.activeTurns.has(threadId)) flights.push({ threadId, turnId: null });
+    }
+    return flights;
+  }
+
   /** Whether the Antigravity ACP server resolves on this machine — the spawn
    *  guard's mode-floor input (an ACP-served child may run below full-access;
    *  a print-served one may not). False for test doubles and non-facade
