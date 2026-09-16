@@ -7,7 +7,9 @@ import {
   type ModelCandidate,
   type ProviderAvailability,
 } from "./agentModel.js";
-import { DONE_CLEARED } from "./conversationStoreTypes.js";
+import { DONE_CLEARED, type TurnCheckpointRecord } from "./conversationStoreTypes.js";
+import { createCheckpoint, dropCheckpoint, restoreCheckpoint } from "@kone/git-core/checkpoint.js";
+import { threadWorkingDir } from "./threadWorkspace.js";
 import { isCompactionSupported } from "./types.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
@@ -138,6 +140,14 @@ const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
  *  call) is an ordinary turn, but it still must settle eventually — this long. */
 const FALLBACK_COMPACT_TIMEOUT_MS = 10 * 60_000;
 
+/** How many pre-turn checkpoint refs a thread keeps. Each ref pins one commit
+ *  object plus the blobs unique to that snapshot, so an unbounded per-thread
+ *  list grows the repo's ref scan and object store a little with every turn —
+ *  twenty turns back is far more undo depth than a revert picker can usefully
+ *  show, while costing a bounded handful of small commits. Older refs and
+ *  their rows are freed together once a newer capture lands past this cap. */
+const MAX_TURN_CHECKPOINTS_PER_THREAD = 20;
+
 /** What a command-turn compaction wait observed: the provider's announced
  *  boundary wins; otherwise the turn's own settlement decides — a completed
  *  turn compacted silently, an aborted one compacted nothing — and the
@@ -190,11 +200,33 @@ export type AgentServiceOptions = {
     ConversationStore,
     "setArchived" | "setDone" | "threadMeta" | "staleThreadIds"
   >;
+  /** The conversation store's turn-checkpoint slice the pre-turn snapshot
+   *  path needs, injected by tests. Defaults to the app-wide store when
+   *  absent. */
+  checkpointStore?: Pick<
+    ConversationStore,
+    | "threadProjectPath"
+    | "threadWorkspace"
+    | "recordTurnCheckpoint"
+    | "getTurnCheckpoint"
+    | "listTurnCheckpoints"
+    | "pruneTurnCheckpoints"
+  >;
   /** Adapters to register instead of the five real ones, handed the service's
    *  emit closure exactly like the real construction path. Injected by tests
    *  so no CLI is ever spawned. */
   adapters?: (emit: EmitEvent) => ProviderAdapter[];
 };
+
+/** Outcome of reverting a thread's working tree to a turn's pre-turn
+ *  snapshot. `missing` means the turn has no recorded checkpoint, `no-workdir`
+ *  means the thread's directory cannot be resolved (unknown thread or a
+ *  worktree that was never materialized), `busy` means a turn is live on the
+ *  thread and restoring under it would corrupt the running turn, and `failed`
+ *  means the git restore itself refused. */
+export type RevertTurnCheckpointResult =
+  | { ok: true }
+  | { ok: false; reason: "missing" | "no-workdir" | "busy" | "failed" };
 
 // The cross-provider facade that lives in the Electron main process. It owns
 // the adapter registry, routes thread-scoped calls to the adapter that owns the
@@ -263,6 +295,11 @@ export class AgentService {
    *  for `turn.queued` positions when the store read fails. Drift from the
    *  store (crash recovery) self-corrects on the next successful read. */
   private readonly queuedByThread = new Map<string, number>();
+  /** Per-thread tail of the checkpoint-revert chain. Restoring a snapshot
+   *  rewrites the working tree, so two reverts for one thread must run one
+   *  after the other — never interleaved — and the chain entry itself never
+   *  rejects, or every later revert would inherit the failure. */
+  private readonly revertChains = new Map<string, Promise<void>>();
   /** threadId -> SessionStartInput, remembered so a fallback provider switch can start a session. */
   private readonly sessionInputs = new Map<string, SessionStartInput>();
   /** threadId -> configured fallback chain for the thread. */
@@ -374,6 +411,26 @@ export class AgentService {
     // real store to touch and must degrade to a no-op rather than open one.
     if (this.options.store) return null;
     return getConversationStore();
+  }
+
+  /** The conversation store's checkpoint slice (pre-turn snapshots) — the
+   *  injected test double when present, else the app-wide singleton. Null
+   *  when the slice hasn't landed: every checkpoint path degrades to doing
+   *  nothing instead of crashing the turn it was meant to protect. */
+  private get checkpointStore(): AgentServiceOptions["checkpointStore"] | null {
+    if (this.options.checkpointStore) return this.options.checkpointStore;
+    // getConversationStore lazily opens the real store; when the queue slice
+    // was injected for tests but no checkpoint store was, checkpoint paths
+    // have no real store to touch and must degrade rather than open one.
+    if (this.options.store) return null;
+    const store: unknown = getConversationStore();
+    // SAFETY: the recordTurnCheckpoint probe below confirms this really is
+    // the store's landed checkpoint slice before it is ever handed out.
+    const candidate = store as AgentServiceOptions["checkpointStore"];
+    if (!candidate || !(candidate.recordTurnCheckpoint instanceof Function)) {
+      return null;
+    }
+    return candidate;
   }
 
   /** Wire the MCP gateway in (boot): session lifecycle starts minting and
@@ -846,7 +903,13 @@ export class AgentService {
     const adapter = this.adapterForThread(threadId);
     this.dispatchingTurns.add(threadId);
     try {
-      return await adapter.sendTurn(input);
+      const result = await adapter.sendTurn(input);
+      // The turn id is only known once the adapter accepts the turn, so the
+      // pre-turn snapshot lands here — immediately after acceptance, before
+      // the agent's first file mutation can arrive over the provider
+      // round-trip. Never throws: capture degrades to no checkpoint.
+      await this.captureTurnCheckpoint(threadId, result.turnId);
+      return result;
     } catch (error) {
       const fallbacks = input.fallbacks ?? this.threadFallbacks.get(threadId);
       if (isQuotaOrRateLimitError(error) && fallbacks && fallbacks.length > 0) {
@@ -896,7 +959,9 @@ export class AgentService {
           }
 
           try {
-            return await targetAdapter.sendTurn(nextInput);
+            const fallbackResult = await targetAdapter.sendTurn(nextInput);
+            await this.captureTurnCheckpoint(threadId, fallbackResult.turnId);
+            return fallbackResult;
           } catch (nextErr) {
             if (isQuotaOrRateLimitError(nextErr)) {
               chain = [...resolution.remaining];
@@ -909,6 +974,124 @@ export class AgentService {
       throw error;
     } finally {
       this.dispatchingTurns.delete(threadId);
+    }
+  }
+
+  /** Where a turn's checkpoint runs: the thread's worktree when it owns one,
+   *  else the project checkout. Null when the thread is unknown, still
+   *  waiting on a worktree that was never materialized, or otherwise has no
+   *  directory to snapshot — callers skip capture rather than fall back to a
+   *  directory the turn never ran in. */
+  private checkpointDir(threadId: string): string | null {
+    const store = this.checkpointStore;
+    if (!store) return null;
+    try {
+      const projectPath = store.threadProjectPath(threadId);
+      if (!projectPath) return null;
+      const workspace = store.threadWorkspace(threadId);
+      if (!workspace) return null;
+      return threadWorkingDir({ projectPath, ...workspace });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Snapshot the tree for a turn that was just accepted and record
+   *  (thread, turn) → ref. Runs on the send path right after the adapter
+   *  accepts the turn, while the returned turn id is fresh and before the
+   *  agent's first file mutation can arrive.
+   *
+   *  Never throws and never fails the turn: a non-repo thread, an unreadable
+   *  store, or any git error degrades to "no checkpoint for this turn",
+   *  logged. A turn that already has a checkpoint keeps it — a second capture
+   *  would snapshot a tree the agent already touched, not the pre-turn state.
+   *  Evicted refs (past the per-thread cap) lose their git ref and their row
+   *  together. */
+  private async captureTurnCheckpoint(threadId: string, turnId: string): Promise<void> {
+    const store = this.checkpointStore;
+    if (!store) return;
+    try {
+      if (store.getTurnCheckpoint(threadId, turnId)) return;
+      const dir = this.checkpointDir(threadId);
+      if (!dir) return;
+      const checkpoint = await createCheckpoint(dir, { threadId, turnId });
+      const recorded = store.recordTurnCheckpoint({
+        threadId,
+        turnId,
+        checkpointId: checkpoint.id,
+        ref: `refs/kone/checkpoints/${checkpoint.id}`,
+        createdAt: checkpoint.createdAt,
+      });
+      if (!recorded) {
+        // A concurrent capture won the row for this turn — its snapshot is
+        // the earlier one, so drop this duplicate ref rather than leak it.
+        await dropCheckpoint(dir, checkpoint.id).catch(() => {});
+        return;
+      }
+      const evicted = store.pruneTurnCheckpoints(threadId, MAX_TURN_CHECKPOINTS_PER_THREAD);
+      for (const row of evicted) {
+        await dropCheckpoint(dir, row.checkpointId).catch(() => {});
+      }
+    } catch (err) {
+      console.warn(
+        `[agent] turn checkpoint capture failed for ${threadId}/${turnId} — continuing without one:`,
+        err,
+      );
+    }
+  }
+
+  /** Every pre-turn checkpoint recorded for a thread, oldest first. */
+  listTurnCheckpoints(threadId: string): TurnCheckpointRecord[] {
+    try {
+      return this.checkpointStore?.listTurnCheckpoints(threadId) ?? [];
+    } catch (err) {
+      console.warn(`[agent] listTurnCheckpoints failed for ${threadId}:`, err);
+      return [];
+    }
+  }
+
+  /** Restore a thread's working tree to a turn's pre-turn snapshot. Reverts
+   *  serialize per thread through a chain: two restores rewriting the same
+   *  tree must run one after the other, never interleaved.
+   *
+   *  The restore is a full-tree restore — files the turn added are removed,
+   *  files it deleted come back — because a revert that leaves the turn's
+   *  new files behind is only half undone. Never throws: every failure mode
+   *  answers as a reason. */
+  revertToTurnCheckpoint(threadId: string, turnId: string): Promise<RevertTurnCheckpointResult> {
+    const tail = this.revertChains.get(threadId) ?? Promise.resolve();
+    const run = tail.then(() => this.runRevert(threadId, turnId));
+    // The chain entry itself never rejects, or every later revert queued
+    // behind a failed one would inherit its rejection without running.
+    this.revertChains.set(
+      threadId,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+
+  private async runRevert(threadId: string, turnId: string): Promise<RevertTurnCheckpointResult> {
+    try {
+      if (this.isBusy(threadId)) return { ok: false, reason: "busy" };
+      const store = this.checkpointStore;
+      if (!store) return { ok: false, reason: "missing" };
+      const row = store.getTurnCheckpoint(threadId, turnId);
+      if (!row) return { ok: false, reason: "missing" };
+      const dir = this.checkpointDir(threadId);
+      if (!dir) return { ok: false, reason: "no-workdir" };
+      try {
+        await restoreCheckpoint(dir, row.checkpointId, { hard: true });
+        return { ok: true };
+      } catch (err) {
+        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+        return { ok: false, reason: "failed" };
+      }
+    } catch (err) {
+      console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+      return { ok: false, reason: "failed" };
     }
   }
 
