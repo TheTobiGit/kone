@@ -4,12 +4,16 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiBrain01Icon,
   Copy01Icon,
+  Download01Icon,
   GitBranchIcon,
   LinkSquare02Icon,
   PencilEdit01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
+import { useThreadExport } from "~/composables/useThreadExport";
+import type { ThreadExportFormat } from "~/types/desktop";
+import { THREAD_EXPORT_FORMAT_LABELS, THREAD_EXPORT_FORMATS } from "~/utils/threadExport";
 import { describeModelId, EFFORT_META, type BrandKey, type EffortTier } from "~/utils/modelCatalog";
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
 import { formatContextTokens as fmt } from "~/utils/formatContextTokens";
@@ -202,6 +206,52 @@ async function copyId(): Promise<void> {
   } catch {
     /* clipboard blocked — silently no-op */
   }
+}
+
+// ── export ────────────────────────────────────────────────────────────────────
+// A transcript of this thread, saved through the main process's native save
+// dialog — the renderer never touches the filesystem. Markdown carries a
+// bounded excerpt of long tool output, JSON carries every byte. While a turn
+// runs the button parks: the backend would refuse the export anyway, so the
+// title says to wait rather than letting the click fail.
+const exporter = useThreadExport();
+const exportFormat = ref<ThreadExportFormat>("markdown");
+const exportFormats = THREAD_EXPORT_FORMATS;
+
+function pickExportFormat(next: ThreadExportFormat): void {
+  if (next === exportFormat.value) return;
+  exportFormat.value = next;
+  cue("toggle");
+}
+
+const exportBusy = computed(
+  () => exporter.phase.value === "dialog" || exporter.phase.value === "exporting",
+);
+const exportDisabled = computed(() => working.value || exportBusy.value);
+const exportButtonTitle = computed(() =>
+  working.value
+    ? "Wait for the current turn to finish before exporting."
+    : "Save this thread as a file",
+);
+const exportButtonLabel = computed(() => {
+  const phase = exporter.phase.value;
+  if (phase === "dialog") return "Choose a location…";
+  if (phase === "exporting") return "Saving…";
+  return "Export thread";
+});
+const exportTone = computed(() => {
+  const phase = exporter.phase.value;
+  if (phase === "saved") return "ok";
+  if (phase === "failed") return "error";
+  return "muted";
+});
+
+async function onExport(): Promise<void> {
+  if (exportDisabled.value) return;
+  cue("press");
+  await exporter.runExport(threadId.value, s.title.value, exportFormat.value);
+  if (exporter.phase.value === "saved") cue("success");
+  else if (exporter.phase.value === "failed") cue("error");
 }
 
 // ── token breakdown ─────────────────────────────────────────────────────────
@@ -425,6 +475,45 @@ onBeforeUnmount(() => {
               <span v-else class="tip__muted">Not started</span>
             </dd>
           </div>
+
+          <p class="tip__section">Export</p>
+          <div class="tip__row">
+            <dt>Format</dt>
+            <dd class="tip__formats" role="radiogroup" aria-label="Export format">
+              <button
+                v-for="f in exportFormats"
+                :key="f"
+                type="button"
+                role="radio"
+                class="tip__format"
+                :class="{ 'tip__format--on': f === exportFormat }"
+                :aria-checked="f === exportFormat"
+                @click="pickExportFormat(f)"
+              >
+                {{ THREAD_EXPORT_FORMAT_LABELS[f] }}
+              </button>
+            </dd>
+          </div>
+          <div class="tip__export-line">
+            <button
+              type="button"
+              class="tip__export"
+              :disabled="exportDisabled"
+              :title="exportButtonTitle"
+              @click="onExport()"
+            >
+              <HugeiconsIcon :icon="Download01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
+              {{ exportButtonLabel }}
+            </button>
+          </div>
+          <p
+            v-if="exporter.message.value"
+            class="tip__export-status"
+            :data-tone="exportTone"
+            role="status"
+          >
+            {{ exporter.message.value }}
+          </p>
         </dl>
       </div>
     </div>
@@ -776,5 +865,80 @@ onBeforeUnmount(() => {
 .tip__copy:hover {
   background: var(--hover);
   color: var(--ink);
+}
+/* Export — the format reads as two quiet words (the set one in ink), the
+   action as a bordered button, and the answer as one status line under it.
+   Success borrows the accent, failure the danger wash; the quiet answers
+   (cancelled, nothing to export yet) sit in muted. */
+.tip__formats {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  overflow: visible;
+}
+.tip__format {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.tip__format:hover,
+.tip__format--on {
+  color: var(--ink);
+}
+.tip__format:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.tip__export-line {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 0 2px;
+}
+.tip__export {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+.tip__export:hover:not(:disabled) {
+  background: var(--hover);
+}
+.tip__export:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.tip__export:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.tip__export-status {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.tip__export-status[data-tone="ok"] {
+  color: color-mix(in srgb, var(--accent) 75%, var(--ink));
+}
+.tip__export-status[data-tone="error"] {
+  color: var(--danger, #d9544f);
 }
 </style>
