@@ -14,7 +14,6 @@ export { AgentService } from "./AgentService.js";
 export type { ProviderSurfaceSnapshot } from "./providerCache.js";
 export * from "./compaction/index.js";
 export * from "./commandSafety.js";
-export * from "./conversationDAG.js";
 export * from "./inventory/index.js";
 export { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 export {
