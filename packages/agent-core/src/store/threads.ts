@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, InteractionMode, ProviderKind, StoredThreadMeta } from "../types.js";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
+import { indexBlockRow } from "./search.js";
 
 export class ThreadRepo {
   constructor(private readonly dbh: ConversationDb) {}
@@ -66,6 +67,7 @@ export class ThreadRepo {
     if (!db) return 0;
     try {
       const at = input.at ?? Date.now();
+      const blockId = input.blockId ?? randomUUID();
       // Durable: the prompt is the one row in a conversation that cannot be
       // reconstructed from anywhere else — the provider's own transcript may hold
       // the reply, but if kone loses the ask, the thread reads as an answer to
@@ -75,12 +77,21 @@ export class ThreadRepo {
           `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json)
            VALUES (?, ?, 'user', ?, ?, ?)`,
         ).run(
-          input.blockId ?? randomUUID(),
+          blockId,
           input.threadId,
           input.text,
           at,
           input.attachments?.length ? JSON.stringify(input.attachments) : null,
         );
+        // A user block is written once, never streamed, so it indexes at write
+        // time — no delta-amplification concern like the item path has.
+        indexBlockRow(db, {
+          threadId: input.threadId,
+          blockId,
+          turnId: null,
+          at,
+          text: input.text,
+        });
       });
       this.touch(db, input.threadId, at);
       // SAFETY: COUNT(*) always arrives under the alias asked for.

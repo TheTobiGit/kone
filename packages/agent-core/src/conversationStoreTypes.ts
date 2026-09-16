@@ -563,6 +563,39 @@ export function assembleBlocks(
   });
 }
 
+// ── full-text conversation search ───────────────────────────────────────────
+// One hit of `searchConversations`: which thread matched, what kind of entry
+// it was, where the renderer jumps to show it, and the excerpt + score that
+// ordered it. `entryKind` is 'block' for a user prompt and 'item' for a turn
+// item (assistant text, reasoning, plan, tool call).
+
+/** Which transcript row a search hit points at. */
+export type ConversationSearchEntryKind = "block" | "item";
+
+/** Options for `searchConversations`. Omit `threadId` to search every thread;
+ *  set it to scope the query to one. `limit` bounds the hits (default 20,
+ *  capped at 100). */
+export type ConversationSearchOptions = {
+  threadId?: string;
+  limit?: number;
+};
+
+/** One ranked search hit. `blockId` is the block itself for prompt hits and
+ *  the assistant block carrying the turn for item hits (null when the turn
+ *  has no block yet); `itemId` is set only on item hits. `snippet` is an
+ *  FTS5 excerpt of the matched text with `<mark>` around each matched span;
+ *  `rank` is the FTS5 bm25 score, best (most negative) first. */
+export type ConversationSearchHit = {
+  threadId: string;
+  entryKind: ConversationSearchEntryKind;
+  blockId: string | null;
+  turnId: string | null;
+  itemId: string | null;
+  at: number;
+  snippet: string;
+  rank: number;
+};
+
 // ── windowed thread reads (user-anchored keyset cursor) ───────────────────────
 // kone's block model: blocks are the turn analog. The walk is ordered by `seq`
 // (arrival order — the only order that keeps a reply behind its own prompt),

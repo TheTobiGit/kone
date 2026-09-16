@@ -1,6 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { withTransaction } from "../conversationMigrations.js";
+import { removeThreadRows } from "./search.js";
 
 /** Callback into the event ingest repo to drop cached ids for deleted threads. */
 export type ThreadLifecycleDeps = {
@@ -240,6 +241,10 @@ export class ThreadLifecycleRepo {
         // subagents, gateway_ops, turn_usage, queued_turns) cascade automatically from threads.
         db.prepare(`DELETE FROM thread_agents WHERE thread_id IN (${placeholders})`).run(...ids);
         db.prepare(`DELETE FROM threads       WHERE thread_id IN (${placeholders})`).run(...ids);
+        // The full-text index is not a child table and cascades nothing — its
+        // rows for the subtree are dropped here, in the same transaction, so
+        // a deleted thread never answers searches.
+        removeThreadRows(db, ids);
       });
       this.deps?.forgetConversationIds?.(ids);
       return { ok: true };

@@ -1372,6 +1372,10 @@ export type RuntimeEvent =
   // The renderer applies the new themeId, mode, or preview overrides in real-time.
   | (AgentBaseEvent & {
       type: "app.theme_mutation";
+      /** The turn the tool call ran in, which is what lets a transcript place
+       *  the change against the call that made it rather than guessing from
+       *  arrival order. Null when the write ran turn-less. */
+      turnId?: string | null;
       themeId?: string;
       mode?: "system" | "dark" | "light";
       preview?: boolean;
@@ -1849,6 +1853,29 @@ export type CompactionRecord = {
   afterTokens: number | null;
 };
 
+/** One ranked full-text conversation search hit. `blockId` is the block
+ *  itself for prompt hits and the assistant block carrying the turn for item
+ *  hits (null when the turn has no block yet); `itemId` is set only on item
+ *  hits. `snippet` excerpts the matched text with `<mark>` around each
+ *  matched span; `rank` orders best-first. */
+export type ConversationSearchHit = {
+  threadId: string;
+  entryKind: "block" | "item";
+  blockId: string | null;
+  turnId: string | null;
+  itemId: string | null;
+  at: number;
+  snippet: string;
+  rank: number;
+};
+
+/** Options for the conversation search bridge. Omit `threadId` to search
+ *  every thread; `limit` bounds the hits (default 20, capped at 100). */
+export type ConversationSearchOptions = {
+  threadId?: string;
+  limit?: number;
+};
+
 export type KoneAgentHistoryApi = {
   /** The project's most recently active thread, metadata only (no transcript) —
    *  or null. Resolve the transcript separately via `threadPage`/`thread`. */
@@ -1893,6 +1920,10 @@ export type KoneAgentHistoryApi = {
   /** Lifetime, fully-local usage stats aggregated across every project, for the
    *  standalone profile board. */
   profileStats: () => Promise<ProfileStats>;
+  /** Full-text search over stored conversation text (user prompts + turn
+   *  items), ranked with a snippet per hit. Global, or scoped to one thread
+   *  via options.threadId. Empty input answers empty. */
+  search: (query: string, options?: ConversationSearchOptions) => Promise<ConversationSearchHit[]>;
 };
 
 /** Lifetime, fully-local usage stats for the profile board — every figure is
