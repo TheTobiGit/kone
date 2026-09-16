@@ -1876,6 +1876,25 @@ export type ConversationSearchOptions = {
   limit?: number;
 };
 
+/** The transcript formats a thread export can be written in. Mirrors
+ *  `@kone/protocol/thread-export`. */
+export type ThreadExportFormat = "markdown" | "json";
+
+/** The file outcome of `agent:export-thread`. Mirrors
+ *  `@kone/agent-core/threadExport.ts` — `reason` is either a shared blocked
+ *  code (`thread-not-found` / `thread-running` / `no-completed-turns`) or a
+ *  write/input failure, and `message` is always finished prose worth showing. */
+export type ThreadExportOutcome =
+  | { ok: true; path: string; bytes: number; format: ThreadExportFormat }
+  | { ok: false; reason: string; message: string };
+
+/** The native save-dialog answer for a thread export. Mirrors
+ *  `@kone/protocol/thread-export` — deliberately a different shape from the
+ *  file outcome, so "picked nothing" never reads as "wrote nothing". */
+export type ThreadExportDialogResult =
+  | { canceled: true }
+  | { canceled: false; filePath: string };
+
 export type KoneAgentHistoryApi = {
   /** The project's most recently active thread, metadata only (no transcript) —
    *  or null. Resolve the transcript separately via `threadPage`/`thread`. */
@@ -2544,6 +2563,21 @@ export type KoneAgentApi = {
    *  Does not touch recency ordering; the title.updated event follows on the
    *  runtime stream. */
   renameThread: (threadId: string, title: string) => Promise<boolean>;
+  /** Native save dialog for a thread export — the main process owns the
+   *  dialog, the renderer only suggests a file name. A dismissal resolves
+   *  `{ canceled: true }`, distinct from the file outcome below. */
+  pickExportPath: (
+    suggestedName: string,
+    format: ThreadExportFormat,
+  ) => Promise<ThreadExportDialogResult>;
+  /** Write the thread's Markdown/JSON transcript to a caller-supplied
+   *  absolute path (usually one just picked above). Errors resolve as data,
+   *  never a rejection, so the caller renders them instead of catching. */
+  exportThread: (
+    threadId: string,
+    format: ThreadExportFormat,
+    filePath: string,
+  ) => Promise<ThreadExportOutcome>;
   /** Start a thread; resolves once the session is ready. */
   startSession: (input: SessionStartInput) => Promise<Session>;
   /** Back out of a worktree still being built. Does not interrupt git — what the
