@@ -55,6 +55,7 @@ import type {
   UserInputAnswers,
   UserInputRespondResult,
 } from "@kone/agent-core/index.js";
+import type { AgentEventFrame } from "@kone/agent-core/eventSubscriptions.js";
 import type {
   TerminalAckInput,
   TerminalCloseInput,
@@ -600,8 +601,17 @@ const api = {
       ipcRenderer.invoke("agent:rename-thread", threadId, title),
     // The ONE runtime event stream. Subscribing registers this renderer in the
     // main process; the returned fn unsubscribes and detaches the listener.
+    // Frames arrive singly or batched (see AgentEventFrame): a batch is fanned
+    // out here, so every consumer below keeps its single-event shape and the
+    // batching stays a transport detail.
     onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {
-      const listener = (_event: IpcRendererEvent, ev: RuntimeEvent) => cb(ev);
+      const listener = (_event: IpcRendererEvent, frame: AgentEventFrame) => {
+        if (Array.isArray(frame)) {
+          for (const event of frame) cb(event);
+        } else {
+          cb(frame);
+        }
+      };
       ipcRenderer.on("agent:event", listener);
       void ipcRenderer.invoke("agent:subscribe");
       return () => {
