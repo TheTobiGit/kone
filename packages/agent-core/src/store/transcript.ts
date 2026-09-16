@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import type { StoredThread } from "../types.js";
-import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSpan } from "../conversationStoreTypes.js";
+import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 
 export class TranscriptRepo {
@@ -222,6 +222,37 @@ export class TranscriptRepo {
     } catch (err) {
       console.error("[conversation-store] loadThreadPage failed:", err);
       return null;
+    }
+  }
+
+  /** Every per-turn token audit row on a thread, oldest first. Rows are few
+   *  (one per turn that reported usage), so this is always the full list,
+   *  never a page — the thread export's per-turn usage section reads here. */
+  listTurnUsage(threadId: string): TurnUsageRecord[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection names exactly the turn_usage columns this
+      // schema creates, aliased to the record's camelCase fields.
+      const rows = db
+        .prepare(
+          `SELECT turn_id AS turnId,
+                  input_tokens AS inputTokens,
+                  output_tokens AS outputTokens,
+                  total_tokens AS totalTokens,
+                  cache_read_tokens AS cacheReadTokens,
+                  cache_creation_tokens AS cacheCreationTokens,
+                  reasoning_tokens AS reasoningTokens,
+                  at
+             FROM turn_usage
+            WHERE thread_id = ?
+            ORDER BY at ASC, turn_id ASC`,
+        )
+        .all(threadId) as TurnUsageRecord[];
+      return rows;
+    } catch (err) {
+      console.error("[conversation-store] listTurnUsage failed:", err);
+      return [];
     }
   }
 
