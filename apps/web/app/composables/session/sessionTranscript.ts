@@ -67,6 +67,7 @@ export type SessionTranscriptDeps = {
   takeOrphanApprovals: (threadId: string) => RuntimeEvent[];
   seedQueuedTurns: (api: KoneAgentApi) => void;
   seedCompactions: () => void;
+  seedCheckpoints: () => void;
   seedSpawnedChildren: () => void;
 };
 
@@ -104,6 +105,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
     takeOrphanApprovals,
     seedQueuedTurns,
     seedCompactions,
+    seedCheckpoints,
     seedSpawnedChildren,
   } = deps;
 
@@ -332,6 +334,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
         adoptStoredThread(meta);
         seedSpawnedChildren();
         seedCompactions();
+        seedCheckpoints();
         // The queue rows survive crashes — rebuild the strip from the bridge.
         seedQueuedTurns(api);
         // A question replayed before this adopt was stashed orphan-side — fold

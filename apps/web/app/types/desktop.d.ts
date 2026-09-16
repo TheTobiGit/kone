@@ -1809,6 +1809,42 @@ export type CompactionRecord = {
   afterTokens: number | null;
 };
 
+/** One turn's pre-turn repository snapshot — the checkpoint ref holding the
+ *  tree as it was before the turn ran. Structural mirror of the agent-core
+ *  TurnCheckpointRecord; the timeline reads it to offer a per-turn restore. */
+export type TurnCheckpointRecord = {
+  threadId: string;
+  turnId: string;
+  checkpointId: string;
+  ref: string;
+  createdAt: number;
+};
+
+/** What restoring a turn's snapshot would change, without changing anything.
+ *  `wouldWrite` names checkpoint files whose worktree content differs (the
+ *  uncommitted work a restore would overwrite); `wouldDelete` names worktree
+ *  files the snapshot does not contain (a hard restore removes them). */
+export type PreviewTurnCheckpointResult =
+  | { ok: true; wouldWrite: string[]; wouldDelete: string[] }
+  | {
+      ok: false;
+      reason: "missing" | "no-workdir" | "checkpoint-gone" | "failed";
+      detail?: string;
+    };
+
+/** Outcome of reverting a thread's working tree to a turn's pre-turn
+ *  snapshot. `dirty` means the restore would overwrite uncommitted work and
+ *  was refused — `wouldWrite`/`wouldDelete` name exactly what would change,
+ *  so the confirmation step can show it before re-issuing with `force`. */
+export type RevertTurnCheckpointResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "missing" | "no-workdir" | "busy" | "checkpoint-gone" | "failed";
+      detail?: string;
+    }
+  | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] };
+
 export type KoneAgentHistoryApi = {
   /** The project's most recently active thread, metadata only (no transcript) —
    *  or null. Resolve the transcript separately via `threadPage`/`thread`. */
@@ -2532,6 +2568,24 @@ export type KoneAgentApi = {
    *  enqueues it as a steer (claiming first) — or sends normally when there
    *  is no live turn to steer. */
   steerTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
+  /** Every pre-turn repository snapshot recorded for a thread, oldest first —
+   *  what the timeline reads to offer a per-turn restore. */
+  turnCheckpoints: (threadId: string) => Promise<TurnCheckpointRecord[]>;
+  /** What restoring a turn's snapshot would change, without changing anything.
+   *  Never throws: a preview that cannot run answers with its reason. */
+  previewTurnCheckpoint: (
+    threadId: string,
+    turnId: string,
+  ) => Promise<PreviewTurnCheckpointResult>;
+  /** Restore a thread's working tree to a turn's pre-turn snapshot. Refuses
+   *  with `dirty` plus the exact file lists when the tree differs, unless
+   *  `force` confirms them — pass true only after the user has seen the
+   *  preview. Never throws: every failure mode answers as a reason. */
+  revertTurnCheckpoint: (
+    threadId: string,
+    turnId: string,
+    force?: boolean,
+  ) => Promise<RevertTurnCheckpointResult>;
   /** The child threads this thread has spawned, projected fresh from the store.
    *  The spawn events aren't journaled, so a reloaded renderer has no record of
    *  them — this is how the Subagents dock repopulates after a reload. */

@@ -8,7 +8,13 @@ import {
   type ProviderAvailability,
 } from "./agentModel.js";
 import { DONE_CLEARED, type TurnCheckpointRecord } from "./conversationStoreTypes.js";
-import { createCheckpoint, dropCheckpoint, restoreCheckpoint } from "@kone/git-core/checkpoint.js";
+import {
+  checkpointExists,
+  createCheckpoint,
+  dropCheckpoint,
+  previewCheckpointRestore,
+  restoreCheckpoint,
+} from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
 import { isCompactionSupported } from "./types.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -215,15 +221,39 @@ export type AgentServiceOptions = {
   adapters?: (emit: EmitEvent) => ProviderAdapter[];
 };
 
+/** What restoring a turn's snapshot would change, without changing anything.
+ *  `wouldWrite` names checkpoint files whose worktree content differs (the
+ *  uncommitted work a restore would overwrite); `wouldDelete` names worktree
+ *  files the snapshot does not contain (a hard restore removes them). */
+export type PreviewTurnCheckpointResult =
+  | { ok: true; wouldWrite: string[]; wouldDelete: string[] }
+  | {
+      ok: false;
+      reason: "missing" | "no-workdir" | "checkpoint-gone" | "failed";
+      detail?: string;
+    };
+
 /** Outcome of reverting a thread's working tree to a turn's pre-turn
  *  snapshot. `missing` means the turn has no recorded checkpoint, `no-workdir`
- *  means the thread's directory cannot be resolved (unknown thread or a
- *  worktree that was never materialized), `busy` means a turn is live on the
- *  thread and restoring under it would corrupt the running turn, and `failed`
- *  means the git restore itself refused. */
+ *  means the thread's directory cannot be resolved or is gone from disk
+ *  (unknown thread, a worktree that was never materialized, or one that moved
+ *  — `detail` names the directory that was expected), `busy` means a turn is
+ *  live on the thread and restoring under it would corrupt the running turn,
+ *  `checkpoint-gone` means the row survived but the git object behind its ref
+ *  did not (garbage-collected, or the repo was re-cloned — `detail` names the
+ *  ref), `dirty` means the restore would overwrite uncommitted work and the
+ *  caller did not pass `force` (`wouldWrite`/`wouldDelete` name exactly what
+ *  would change, so the confirmation step can show it), and `failed` means the
+ *  git restore itself refused or left the tree only partly reconciled
+ *  (`detail` carries git's own message — nothing fails silently). */
 export type RevertTurnCheckpointResult =
   | { ok: true }
-  | { ok: false; reason: "missing" | "no-workdir" | "busy" | "failed" };
+  | {
+      ok: false;
+      reason: "missing" | "no-workdir" | "busy" | "checkpoint-gone" | "failed";
+      detail?: string;
+    }
+  | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] };
 
 // The cross-provider facade that lives in the Electron main process. It owns
 // the adapter registry, routes thread-scoped calls to the adapter that owns the
@@ -1034,17 +1064,73 @@ export class AgentService {
     }
   }
 
+  /** What restoring a turn's pre-turn snapshot would change, without
+   *  changing anything. Read-only — safe to call while a turn is live, and
+   *  never throws: every failure mode answers as a reason. */
+  async previewTurnCheckpoint(
+    threadId: string,
+    turnId: string,
+  ): Promise<PreviewTurnCheckpointResult> {
+    try {
+      const store = this.checkpointStore;
+      if (!store) return { ok: false, reason: "missing" };
+      const row = store.getTurnCheckpoint(threadId, turnId);
+      if (!row) return { ok: false, reason: "missing" };
+      const dir = this.checkpointDir(threadId);
+      if (!dir) return { ok: false, reason: "no-workdir" };
+      if (!existsSync(dir)) return { ok: false, reason: "no-workdir", detail: dir };
+      if (!(await checkpointExists(dir, row.checkpointId))) {
+        return { ok: false, reason: "checkpoint-gone", detail: row.ref };
+      }
+      try {
+        const preview = await previewCheckpointRestore(dir, row.checkpointId);
+        return { ok: true, wouldWrite: preview.wouldWrite, wouldDelete: preview.wouldDelete };
+      } catch (err) {
+        console.warn(`[agent] preview checkpoint failed for ${threadId}/${turnId}:`, err);
+        return {
+          ok: false,
+          reason: "failed",
+          detail: err instanceof Error ? err.message : String(err),
+        };
+      }
+    } catch (err) {
+      console.warn(`[agent] preview checkpoint failed for ${threadId}/${turnId}:`, err);
+      return {
+        ok: false,
+        reason: "failed",
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   /** Restore a thread's working tree to a turn's pre-turn snapshot. Reverts
    *  serialize per thread through a chain: two restores rewriting the same
    *  tree must run one after the other, never interleaved.
    *
+   *  Files only — the conversation is never truncated. Blocks are an
+   *  append-only ledger journaled through applyEvent, and later rows point at
+   *  earlier turns by id: queued-turn promotions anchor to their user block,
+   *  compaction boundaries and spawn parent links name their turn, and usage
+   *  accounting sums the same rows. Deleting everything after the restored
+   *  turn would orphan those references and destroy the record of what was
+   *  just undone; keeping the transcript means the undone turn stays readable
+   *  above the files it no longer owns. The checkpoint row is kept too, so a
+   *  restore stays repeatable (a second run previews empty and no-ops).
+   *
    *  The restore is a full-tree restore — files the turn added are removed,
    *  files it deleted come back — because a revert that leaves the turn's
-   *  new files behind is only half undone. Never throws: every failure mode
-   *  answers as a reason. */
-  revertToTurnCheckpoint(threadId: string, turnId: string): Promise<RevertTurnCheckpointResult> {
+   *  new files behind is only half undone. Without `force` it refuses rather
+   *  than guesses: any uncommitted difference answers as `dirty` with the
+   *  exact file lists, and the caller re-issues with `force` once the user
+   *  has confirmed them. Never throws: every failure mode answers as a
+   *  reason. */
+  revertToTurnCheckpoint(
+    threadId: string,
+    turnId: string,
+    force?: boolean,
+  ): Promise<RevertTurnCheckpointResult> {
     const tail = this.revertChains.get(threadId) ?? Promise.resolve();
-    const run = tail.then(() => this.runRevert(threadId, turnId));
+    const run = tail.then(() => this.runRevert(threadId, turnId, force === true));
     // The chain entry itself never rejects, or every later revert queued
     // behind a failed one would inherit its rejection without running.
     this.revertChains.set(
@@ -1057,7 +1143,11 @@ export class AgentService {
     return run;
   }
 
-  private async runRevert(threadId: string, turnId: string): Promise<RevertTurnCheckpointResult> {
+  private async runRevert(
+    threadId: string,
+    turnId: string,
+    force: boolean,
+  ): Promise<RevertTurnCheckpointResult> {
     try {
       if (this.isBusy(threadId)) return { ok: false, reason: "busy" };
       const store = this.checkpointStore;
@@ -1066,16 +1156,83 @@ export class AgentService {
       if (!row) return { ok: false, reason: "missing" };
       const dir = this.checkpointDir(threadId);
       if (!dir) return { ok: false, reason: "no-workdir" };
+      // The store names a directory; the disk decides whether it is still
+      // there. A worktree removed or moved out from under the thread must
+      // read as no-workdir (with the expected path attached), never as a
+      // restore into whatever happens to sit at a stale path.
+      if (!existsSync(dir)) return { ok: false, reason: "no-workdir", detail: dir };
+      // The row outlives its object when the ref is pruned or the repo was
+      // re-cloned around it. Restoring from a dangling ref could only fail
+      // inside git — say so up front, naming the dead ref.
+      if (!(await checkpointExists(dir, row.checkpointId))) {
+        return { ok: false, reason: "checkpoint-gone", detail: row.ref };
+      }
+      let preview: { wouldWrite: string[]; wouldDelete: string[] };
       try {
-        await restoreCheckpoint(dir, row.checkpointId, { hard: true });
-        return { ok: true };
+        preview = await previewCheckpointRestore(dir, row.checkpointId);
       } catch (err) {
         console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return { ok: false, reason: "failed" };
+        return {
+          ok: false,
+          reason: "failed",
+          detail: err instanceof Error ? err.message : String(err),
+        };
       }
+      // Conservative by default: the caller shows wouldWrite/wouldDelete and
+      // re-issues with force. The one exception is the empty diff — restoring
+      // a tree that already matches is a no-op, and refusing a no-op would
+      // strand the confirmation step on nothing.
+      if (!force && (preview.wouldWrite.length > 0 || preview.wouldDelete.length > 0)) {
+        return {
+          ok: false,
+          reason: "dirty",
+          wouldWrite: preview.wouldWrite,
+          wouldDelete: preview.wouldDelete,
+        };
+      }
+      try {
+        await restoreCheckpoint(dir, row.checkpointId, { hard: true });
+      } catch (err) {
+        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+        return {
+          ok: false,
+          reason: "failed",
+          detail: err instanceof Error ? err.message : String(err),
+        };
+      }
+      // A restore that dies partway leaves a half-written tree — deletes done,
+      // rewrites missing. Re-previewing must come back empty; anything left is
+      // reported as a failure with the still-dirty files named, never silence.
+      try {
+        const after = await previewCheckpointRestore(dir, row.checkpointId);
+        if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
+          const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
+          console.warn(
+            `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
+            leftovers,
+          );
+          return {
+            ok: false,
+            reason: "failed",
+            detail: `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
+          };
+        }
+      } catch (err) {
+        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+        return {
+          ok: false,
+          reason: "failed",
+          detail: err instanceof Error ? err.message : String(err),
+        };
+      }
+      return { ok: true };
     } catch (err) {
       console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-      return { ok: false, reason: "failed" };
+      return {
+        ok: false,
+        reason: "failed",
+        detail: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 

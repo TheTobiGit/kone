@@ -14,7 +14,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
-import type { ChatAttachment, CompactionRecord, RuntimeItem } from "~/types/desktop";
+import type { ChatAttachment, CompactionRecord, RuntimeItem, TurnCheckpointRecord } from "~/types/desktop";
 import { groupCompactionMarkers } from "~/utils/compactionMarkers";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -25,6 +25,7 @@ import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
+import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
@@ -61,6 +62,11 @@ const props = defineProps<{
    *  markers where the context was compacted. Absent on surfaces that don't
    *  read them (history readers predate the markers table). */
   compactions?: CompactionRecord[];
+  /** Pre-turn repository snapshots for the thread. A settled assistant turn
+   *  whose turn id names a row here offers a file restore in its footer.
+   *  Absent on surfaces without the checkpoint surface (read-only history,
+   *  the house assistant) — no rows, no control, never a guess. */
+  checkpoints?: TurnCheckpointRecord[];
   /** Ticking clock from useAgent, so "working · Xs" counts up live. */
   now: number;
   /** Strip column key — forwarded with scratchpad captures. */
@@ -469,6 +475,15 @@ function addToScratchpad(block: AssistantBlock) {
   if (!text.trim()) return;
   emit("to-scratchpad", text);
   cue("press");
+}
+
+// Whether a settled assistant turn offers a file restore: the session seeded
+// a pre-turn snapshot for its turn id. The control itself previews and
+// confirms — this is only the mount gate, keyed by turn id (not block id:
+// re-sent retries share nothing, while one turn's blocks share its snapshot).
+function hasCheckpoint(block: AssistantBlock): boolean {
+  if (!props.threadId) return false;
+  return (props.checkpoints ?? []).some((c) => c.turnId === block.turnId);
 }
 
 // ── retry / edit-and-resend / load-failure ────────────────────────────────────
@@ -1305,6 +1320,12 @@ watch(
               <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
               <span>Scratchpad</span>
             </button>
+            <TurnCheckpointRestore
+              v-if="hasCheckpoint(block) && props.threadId"
+              :thread-id="props.threadId"
+              :turn-id="block.turnId"
+              :disabled="busy"
+            />
           </div>
         </div>
       </template>
