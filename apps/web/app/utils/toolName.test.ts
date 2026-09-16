@@ -49,4 +49,18 @@ describe("canonicalToolName", () => {
   test("folds a doubly-stamped head", () => {
     expect(canonicalToolName("kone_kone_spawn_batch")).toBe("kone_spawn_batch");
   });
+
+  // Providers that join server and tool with one underscore leave the app tools
+  // — the only family whose names do not already start with the server's —
+  // spelled `kone_app_*`. The `app_` head is what makes that unambiguous.
+  test("unwraps the server from a singly-stamped app tool", () => {
+    expect(canonicalToolName("kone_app_set_theme")).toBe("app_set_theme");
+    expect(canonicalToolName("mcp__kone__app_set_theme")).toBe("app_set_theme");
+    expect(canonicalToolName("app_set_theme")).toBe("app_set_theme");
+  });
+
+  test("leaves a tool that really is named for the server alone", () => {
+    expect(canonicalToolName("kone_spawn_worker")).toBe("kone_spawn_worker");
+    expect(canonicalToolName("kone_scratchpad_write")).toBe("kone_scratchpad_write");
+  });
 });

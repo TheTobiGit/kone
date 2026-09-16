@@ -23,6 +23,8 @@ import FileChip from "~/components/git-space/FileChip.vue";
 import SiteChip from "~/components/site/SiteChip.vue";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
 import ActivityStepDetail from "~/components/conversation/ActivityStepDetail.vue";
+import ActivityThemeReceipt from "~/components/conversation/ActivityThemeReceipt.vue";
+import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import AiBrain01 from "~/components/icons/animated/AiBrain01.vue";
 import CommandLine from "~/components/icons/animated/CommandLine.vue";
@@ -38,6 +40,7 @@ import SourceCode from "~/components/icons/animated/SourceCode.vue";
 import Tools from "~/components/icons/animated/Tools.vue";
 import WorkflowSquare01 from "~/components/icons/animated/WorkflowSquare01.vue";
 import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
+import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
 import { thinkingOrbHue } from "~/utils/toolOrbDraw";
@@ -124,11 +127,36 @@ watch(iconApi, () => {
   if (rowVisible.value) playIcon();
 });
 
+// ── appearance rows ─────────────────────────────────────────────────────────
+// A theme tool's whole effect lands on the window, so the row shows the palette
+// it left behind, read back out of the call's own stored summary. That is the
+// reading that survives a reload; the announcement beside the turn's reply
+// (components/turn/ThemeChangeLine.vue) is the same change drawn as the theme.
+
+const {
+  toTheme,
+  fromTheme,
+  toColors,
+  fromColors,
+  has: namedTheme,
+} = useThemeSummaryReading(tool);
+
+/** A failed call changed nothing, so it has no palette to wear however well its
+ *  summary reads. One guard, here, rather than one per place that draws. */
+const hasThemeBody = computed(() => namedTheme.value && status.value === "done");
+
+/** The palette the row wears inline: where the window ended up. */
+const rowColors = computed(() => (hasThemeBody.value ? toColors.value : null));
+
 // A thinking row discloses only when the model actually surfaced reasoning; a
-// tool row discloses only when it carries a result body. Otherwise inert.
+// tool row discloses only when it carries a result body — or a change of its own
+// to show, which is a body no provider sends.
 const hasThinkingBody = computed(() => isThinking.value && !!props.thinkingText?.trim());
-const hasToolBody = computed(() => !!tool.value?.detail);
-const clickable = computed(() => hasThinkingBody.value || hasToolBody.value);
+// An appearance call's own body replaces its result text rather than joining it:
+// the detail IS the summary the palette was read from, so showing both would
+// print the sentence under the picture of itself.
+const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value);
+const clickable = computed(() => hasThinkingBody.value || hasToolBody.value || hasThemeBody.value);
 
 const hue = computed(() => (isThinking.value ? thinkingOrbHue() : meta.value?.hue));
 
@@ -217,6 +245,13 @@ function toggle(): void {
         </template>
       </span>
 
+      <ThemeSwatch
+        v-if="rowColors"
+        class="astep__swatch"
+        :colors="rowColors"
+        :label="toTheme?.label"
+      />
+
       <span v-if="status === 'error'" class="astep__err">failed</span>
       <HugeiconsIcon
         v-if="clickable"
@@ -234,6 +269,13 @@ function toggle(): void {
           <div v-if="hasThinkingBody" class="astep__think-wrap">
             <MarkdownMessage :source="thinkingText!" :historical="true" />
           </div>
+          <ActivityThemeReceipt
+            v-else-if="hasThemeBody && toColors"
+            :to-label="toTheme?.label ?? ''"
+            :to-colors="toColors"
+            :from-label="fromTheme?.label"
+            :from-colors="fromColors"
+          />
           <ActivityStepDetail
             v-else-if="hasToolBody"
             :detail="tool!.detail!"
@@ -318,6 +360,13 @@ function toggle(): void {
 }
 .astep--error .astep__label {
   color: var(--diff-del);
+}
+/* The row's own palette, pushed to the end of the line so a run of rows lines
+   its swatches up against the chevron rather than against ragged label ends. */
+.astep__swatch {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
 }
 .astep__err {
   flex: none;

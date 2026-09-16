@@ -1,7 +1,12 @@
 import { useTheme } from "./useTheme";
 import { buildTheme, type ThemeSpec } from "~/theme/build";
 import { resolveTheme } from "~/theme/library";
-import type { ThemeDefinition, ThemeScheme } from "~/theme/roles";
+import { colorsFor, type ThemeDefinition, type ThemeScheme } from "~/theme/roles";
+import {
+  recordThemeReceipt,
+  settleThreadPreviews,
+  type ThemeFacet,
+} from "~/utils/themeReceipts";
 import {
   addAgentToProject,
   createAgent,
@@ -86,12 +91,32 @@ function readFace(value: { body: string; ink: string } | undefined): FacePaint |
   return { body, ink };
 }
 
+/** The window as it stands — one side of a receipt. Read through the same
+ *  accessors the app paints from, so a facet can never describe a palette the
+ *  screen isn't wearing. */
+function themeFacet(): ThemeFacet {
+  const { theme, mode, scheme } = useTheme();
+  return {
+    themeId: theme.value.id,
+    label: theme.value.label,
+    mode: mode.value,
+    scheme: scheme.value,
+    colors: colorsFor(theme.value, scheme.value),
+  };
+}
+
 /** Apply one theme mutation: a custom theme to register, a preview to show or
- *  discard, or a saved theme/mode change. */
+ *  discard, or a saved theme/mode change.
+ *
+ *  Each branch leaves a receipt (utils/themeReceipts) once it has applied: the
+ *  change lands on the window, where the transcript row reporting it cannot see
+ *  it, so the before/after pair is recorded here — the one place that holds both
+ *  — for the row to show and to offer back. */
 function applyThemeMutation(
   event: Extract<RuntimeEvent, { type: "app.theme_mutation" }>,
 ): void {
   const { setTheme, setMode, previewTheme, cancelPreview, saveCustomTheme, theme } = useTheme();
+  const before = themeFacet();
 
   // 1. Custom theme creation and registration
   if (event.customTheme) {
@@ -133,12 +158,30 @@ function applyThemeMutation(
     }
 
     saveCustomTheme(spec);
+    recordThemeReceipt({
+      threadId: event.threadId,
+      turnId: event.turnId ?? null,
+      kind: "create",
+      before,
+      after: themeFacet(),
+    });
     return;
   }
 
   // 2. Discarding an active preview
   if (event.preview === false) {
     cancelPreview();
+    // A cancel restores the saved theme wholesale, so no earlier preview in this
+    // thread is on screen any more either — none of them has anything left to
+    // keep or discard.
+    settleThreadPreviews(event.threadId);
+    recordThemeReceipt({
+      threadId: event.threadId,
+      turnId: event.turnId ?? null,
+      kind: "cancel",
+      before,
+      after: themeFacet(),
+    });
     return;
   }
 
@@ -170,10 +213,18 @@ function applyThemeMutation(
       const previewScheme = (event.mode === "light" || event.mode === "dark" ? event.mode : null) as ThemeScheme | null;
       previewTheme(baseTheme, previewScheme);
     }
+    recordThemeReceipt({
+      threadId: event.threadId,
+      turnId: event.turnId ?? null,
+      kind: "preview",
+      before,
+      after: themeFacet(),
+    });
     return;
   }
 
   // 4. Standard persistent theme & mode mutation
+  let applied = false;
   if (event.themeId) {
     // resolveTheme falls back to kone for an id the library doesn't hold, so
     // storing the requested id unchecked would persist a preference that
@@ -183,6 +234,7 @@ function applyThemeMutation(
     const resolved = resolveTheme(event.themeId);
     if (resolved.id === event.themeId) {
       setTheme(event.themeId);
+      applied = true;
     } else {
       console.warn(
         `[kone] Ignoring theme mutation for unknown theme "${event.themeId}".`,
@@ -191,6 +243,18 @@ function applyThemeMutation(
   }
   if (event.mode) {
     setMode(event.mode);
+    applied = true;
+  }
+  // A mutation that named only a theme this build doesn't hold changed nothing,
+  // and a receipt for it would offer to undo a change that never happened.
+  if (applied) {
+    recordThemeReceipt({
+      threadId: event.threadId,
+      turnId: event.turnId ?? null,
+      kind: "set",
+      before,
+      after: themeFacet(),
+    });
   }
 }
 

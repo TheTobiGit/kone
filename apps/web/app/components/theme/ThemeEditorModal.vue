@@ -20,6 +20,7 @@ import {
   SparklesIcon,
   PaintBoardIcon,
 } from "@hugeicons/core-free-icons";
+import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import { useSound } from "~/composables/useSound";
 import { useTheme } from "~/composables/useTheme";
 import { useModalExit } from "~/composables/useModalExit";
@@ -536,14 +537,7 @@ function handleExport() {
                     <span class="tem__hero-desc" :style="{ color: currentColors.muted }">
                       {{ blurb || "Custom theme" }}
                     </span>
-                    <!-- 5-Color Harmonic Swatch Dots -->
-                    <div class="tem__swatch-dots" aria-hidden="true">
-                      <span class="tem__swatch-dot" :style="{ backgroundColor: currentColors.ground, boxShadow: `inset 0 0 0 1px ${currentColors.lineSoft}` }" title="Ground" />
-                      <span class="tem__swatch-dot" :style="{ backgroundColor: currentColors.accent }" title="Accent" />
-                      <span class="tem__swatch-dot" :style="{ backgroundColor: currentColors.accentSecondary }" title="Secondary" />
-                      <span class="tem__swatch-dot" :style="{ backgroundColor: currentColors.raised, boxShadow: `inset 0 0 0 1px ${currentColors.lineSoft}` }" title="Surface" />
-                      <span class="tem__swatch-dot" :style="{ backgroundColor: currentColors.ink }" title="Ink" />
-                    </div>
+                    <ThemeSwatch :colors="currentColors" />
                   </div>
                 </div>
               </div>
@@ -1151,19 +1145,6 @@ function handleExport() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tem__swatch-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.tem__swatch-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
 }
 
 .tem__hero-scheme-toggle {

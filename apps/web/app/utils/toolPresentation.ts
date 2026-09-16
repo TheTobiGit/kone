@@ -14,6 +14,7 @@ import {
   File01Icon,
   FileEditIcon,
   ListViewIcon,
+  PaintBoardIcon,
   Delete02Icon,
   Search01Icon,
   SourceCodeIcon,
@@ -99,12 +100,23 @@ const TOOL_TABLE: Record<string, ToolMetaInput> = {
   manage_subagents: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
   generate_image: { icon: Rocket01Icon, label: "Generate image", family: "run" },
   ask_question: { icon: WorkflowSquare01Icon, label: "Question", family: "agent" },
+  // app steering — kone's own appearance tools, which act on the window rather
+  // than on the project
+  app_get_theme_state: { icon: PaintBoardIcon, label: "Appearance", family: "agent" },
+  app_list_available_themes: { icon: PaintBoardIcon, label: "Themes", family: "agent" },
+  app_set_theme: { icon: PaintBoardIcon, label: "Theme", family: "agent" },
+  app_preview_theme_override: { icon: PaintBoardIcon, label: "Theme preview", family: "agent" },
+  app_create_custom_theme: { icon: PaintBoardIcon, label: "New theme", family: "agent" },
   send_message: { icon: WorkflowSquare01Icon, label: "Message", family: "agent" },
 };
 
 export function toolMeta(name: string | undefined): ToolMeta {
   const families = activeHues().families;
-  const key = (name ?? "").trim();
+  // Canonicalized here rather than by the caller: providers spell kone's tools
+  // three different ways, and a table that answers to only one of them is a
+  // table every new call site has to remember to wrap. Ingress canonicalizes
+  // too, so this is belt for the braces — and idempotent either way.
+  const key = canonicalToolName(name);
   if (!key) return { icon: ToolsIcon, label: "Tool", hue: families.neutral!, family: "neutral" };
   if (TOOL_TABLE[key]) {
     const meta = TOOL_TABLE[key]!;
@@ -147,7 +159,7 @@ function peelStamp(raw: string, name: string): string {
   if (colon <= 0) return raw;
   const head = raw.slice(0, colon).trim();
   if (!head || /\s/.test(head)) return raw;
-  const stampsTool = canonicalToolName(head) === name;
+  const stampsTool = canonicalToolName(head) === canonicalToolName(name);
   const stampsServer = head.toLowerCase() === "kone" && name.startsWith("kone_");
   return stampsTool || stampsServer ? raw.slice(colon + 1).trim() : raw;
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { initAppSteering } from "./useAppSteering";
 import { useTheme } from "./useTheme";
 import { findTheme, isCustom, removeCustomTheme, themes } from "~/theme/library";
+import { resetThemeReceiptsForTests, themeReceiptsForTurn } from "~/utils/themeReceipts";
 import type { RuntimeEvent } from "~/types/desktop";
 
 type ThemeMutation = Extract<RuntimeEvent, { type: "app.theme_mutation" }>;
@@ -41,6 +42,7 @@ function mutation(fields: Partial<ThemeMutation>): ThemeMutation {
   return {
     type: "app.theme_mutation",
     threadId: "thread-1",
+    turnId: "turn-1",
     provider: "claudeAgent",
     at: Date.now(),
     source: "kone.store",
@@ -55,6 +57,7 @@ describe("useAppSteering", () => {
   beforeEach(() => {
     bridge = installBridge();
     stop = initAppSteering();
+    resetThemeReceiptsForTests();
   });
 
   afterEach(() => {
@@ -110,6 +113,44 @@ describe("useAppSteering", () => {
     expect(created).not.toBeNull();
     expect(created?.label).toBe("Brand Indigo");
     expect(useTheme().themeId.value).toBe("brand-indigo");
+  });
+
+  // The receipts are what the transcript row showing the call reads back: the
+  // change lands on the window, where the row cannot see it.
+  it("records what a theme change replaced", () => {
+    const { setTheme } = useTheme();
+    setTheme("moss");
+
+    bridge.emit(mutation({ themeId: "nocturne" }));
+
+    const receipt = themeReceiptsForTurn("thread-1", "turn-1")[0];
+    expect(receipt?.before.themeId).toBe("moss");
+    expect(receipt?.after.themeId).toBe("nocturne");
+    expect(receipt?.after.colors.accent).toBeTruthy();
+  });
+
+  it("records nothing for a theme the library does not hold", () => {
+    bridge.emit(mutation({ themeId: "dracula" }));
+
+    expect(themeReceiptsForTurn("thread-1", "turn-1")).toEqual([]);
+  });
+
+  it("records a preview as the live one, distinct from a saved change", () => {
+    bridge.emit(mutation({ preview: true, themeId: "tide", mode: "dark" }));
+
+    const receipt = themeReceiptsForTurn("thread-1", "turn-1")[0];
+    expect(receipt?.kind).toBe("preview");
+    expect(receipt?.previewLive).toBe(true);
+    expect(receipt?.after.themeId).toBe("tide");
+  });
+
+  it("settles the preview it took down, and records the cancel too", () => {
+    bridge.emit(mutation({ preview: true, themeId: "tide" }));
+    bridge.emit(mutation({ preview: false }));
+
+    const [preview, cancel] = themeReceiptsForTurn("thread-1", "turn-1");
+    expect(preview?.previewLive).toBe(false);
+    expect(cancel?.kind).toBe("cancel");
   });
 
   it("cancels a preview without disturbing the saved theme", () => {

@@ -17,13 +17,13 @@ import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import AppearanceMiniature from "~/components/settings/AppearanceMiniature.vue";
 import ThemeBrowseModal from "~/components/theme/ThemeBrowseModal.vue";
 import ThemeEditorModal from "~/components/theme/ThemeEditorModal.vue";
+import ThemeBeads from "~/components/theme/ThemeBeads.vue";
+import { beadsOf, type Bead } from "~/theme/beads";
 import {
   colorsFor,
-  schemesOf,
   type AppearanceMode,
   type ThemeColors,
   type ThemeDefinition,
-  type ThemeScheme,
 } from "~/theme/roles";
 import { themeGroups } from "~/theme/library";
 
@@ -135,13 +135,6 @@ function onModeKeydown(e: KeyboardEvent, i: number) {
 }
 
 // ── Theme cards ──────────────────────────────────────────────────────────────
-interface Bead {
-  key: ThemeScheme;
-  ground: string;
-  ink: string;
-  wash: string;
-}
-
 interface ThemeRow {
   id: string;
   label: string;
@@ -151,16 +144,6 @@ interface ThemeRow {
   imported: boolean;
   custom: boolean;
   theme: ThemeDefinition;
-}
-
-function beadWash(theme: ThemeDefinition, s: ThemeScheme): string {
-  const c = colorsFor(theme, s);
-  const accentAt = s === "dark" ? "30% 76%" : "70% 24%";
-  const secondAt = s === "dark" ? "80% 20%" : "20% 80%";
-  return [
-    `radial-gradient(circle at ${accentAt} in oklab, ${c.accent} 0%, color-mix(in oklab, ${c.accent} 62%, transparent) 30%, transparent 62%)`,
-    `radial-gradient(circle at ${secondAt} in oklab, color-mix(in oklab, ${c.accentSecondary} 42%, transparent) 0%, transparent 58%)`,
-  ].join(", ");
 }
 
 const groups = computed(() => {
@@ -176,10 +159,7 @@ const groups = computed(() => {
       imported: isImported(t.id),
       custom: isCustom(t.id),
       theme: t,
-      beads: schemesOf(t).map((s) => {
-        const c = colorsFor(t, s);
-        return { key: s, ground: c.ground, ink: c.ink, wash: beadWash(t, s) };
-      }),
+      beads: beadsOf(t),
       index: index++,
     })),
   }));
@@ -419,21 +399,7 @@ const browseOpen = ref(false);
               @click="chooseTheme(row.id)"
               @keydown="onThemeKeydown($event, row.index)"
             >
-              <span class="ap__beads" aria-hidden="true">
-                <span
-                  v-for="(bead, bi) in row.beads"
-                  :key="bead.key"
-                  class="ap__bead"
-                  :style="{
-                    backgroundColor: bead.ground,
-                    marginLeft: bi > 0 ? '-14px' : undefined,
-                    zIndex: row.beads.length - bi,
-                    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${bead.ink} 12%, transparent)`,
-                  }"
-                >
-                  <span class="ap__bead-wash" :style="{ backgroundImage: bead.wash }" />
-                </span>
-              </span>
+              <ThemeBeads class="ap__beads" :beads="row.beads" :size="40" />
 
               <span class="ap__meta">
                 <span class="ap__name">{{ row.label }}</span>
@@ -773,32 +739,15 @@ const browseOpen = ref(false);
   align-items: center;
 }
 
-.ap__bead {
-  position: relative;
-  display: block;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  overflow: hidden;
-  transition: transform 320ms var(--ap-ease);
-}
-
-/* The wash overspills and blurs, so the accent reads as light in the ground
-   rather than a disc printed on it. */
-.ap__bead-wash {
-  position: absolute;
-  inset: -12%;
-  border-radius: 50%;
-  filter: blur(3px);
-}
-
-.ap__card:hover .ap__bead:first-child,
-.ap__card--on .ap__bead:first-child {
+/* The pair spreads a little under the pointer and while selected — the card's
+   own gesture, reaching into the mark it owns. */
+.ap__card:hover :deep(.tbead:first-child),
+.ap__card--on :deep(.tbead:first-child) {
   transform: translateX(-2px);
 }
 
-.ap__card:hover .ap__bead:last-child:not(:first-child),
-.ap__card--on .ap__bead:last-child:not(:first-child) {
+.ap__card:hover :deep(.tbead:last-child:not(:first-child)),
+.ap__card--on :deep(.tbead:last-child:not(:first-child)) {
   transform: translateX(2px);
 }
 
@@ -915,7 +864,6 @@ const browseOpen = ref(false);
     animation: none;
   }
   .ap__frame,
-  .ap__bead,
   .ap__card,
   .ap__check,
   .ap__notice,
