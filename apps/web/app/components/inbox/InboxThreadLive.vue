@@ -416,7 +416,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :thread-id="row.threadId"
         :agent-seed="row.threadId"
         mode="reply"
-        :session-error="session?.error.value"
         :load-failed="session?.transcriptLoadFailed.value"
         :loading="starting"
         :busy="busy"
@@ -427,7 +426,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @retry="onSend"
         @resend="onSend"
         @retry-load="session?.openStored(row.threadId)"
-        @retry-session="session?.start()"
         @load-older="session?.loadOlder()"
       />
     </div>

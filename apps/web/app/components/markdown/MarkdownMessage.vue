@@ -15,6 +15,7 @@ import CodeBlock from "~/components/markdown/CodeBlock.vue";
 import MarkdownLink from "~/components/markdown/MarkdownLink.vue";
 import MarkdownImage from "~/components/markdown/MarkdownImage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
+import { expandHtmlTables, validatedSpans, type MdNode } from "~/utils/safeHtmlTable";
 
 // The agent's settled reply, rendered as a real component tree rather than a
 // v-html string. We parse the Markdown to markdown-it's token stream, fold it
@@ -80,15 +81,9 @@ onBeforeUnmount(() => {
 
 // ── token stream → node tree ────────────────────────────────────────────────
 // markdown-it hands a flat list with nesting encoded as open/close pairs. Fold
-// it into a tree; inline tokens carry their own child list, so recurse in.
-interface MdNode {
-  type: string;
-  tag: string;
-  attrs: Record<string, string>;
-  children: MdNode[];
-  content: string;
-  info: string;
-}
+// it into a tree; inline tokens carry their own child list, so recurse in. The
+// node shape itself lives in safeHtmlTable — that module builds nodes too, and
+// a table lifted out of raw text has to be the same thing to the renderer.
 function mkNode(tok: Token): MdNode {
   const attrs: Record<string, string> = {};
   for (const [k, v] of tok.attrs ?? []) attrs[k] = v;
@@ -123,7 +118,9 @@ function treeify(list: Token[]): MdNode[] {
   return root.children;
 }
 
-const nodes = computed<MdNode[]>(() => (tokens.value ? treeify(tokens.value) : []));
+const nodes = computed<MdNode[]>(() =>
+  tokens.value ? expandHtmlTables(treeify(tokens.value)) : [],
+);
 
 // ── heuristics ────────────────────────────────────────────────────────────────
 // Inline code that names a file → render as a file chip. Needs an extension on
@@ -183,6 +180,9 @@ function textOf(node: MdNode): string {
 function styleOf(node: MdNode): Record<string, string> | undefined {
   return node.attrs.style ? { textAlign: /right/.test(node.attrs.style) ? "right" : /center/.test(node.attrs.style) ? "center" : "left" } : undefined;
 }
+// Only colspan/rowspan survive the table parse, and cells read them back
+// through the very validator that wrote them (`validatedSpans`) — anything else
+// never becomes a node attr, so there is nothing else to pass on.
 
 /** Split a text run into words wrapped in individually-keyed spans (so each
  *  one mounts as its own DOM node and can carry the spring-scale-in reveal),
@@ -255,9 +255,9 @@ function renderNode(node: MdNode, key: number, path: string): VNode | string {
     case "table":
       return h("div", { key, class: "md-table" }, [h("table", null, renderChildren(node, path))]);
     case "th":
-      return h("th", { key, style: styleOf(node) }, renderChildren(node, path));
+      return h("th", { key, style: styleOf(node), ...validatedSpans(node.attrs) }, renderChildren(node, path));
     case "td":
-      return h("td", { key, style: styleOf(node) }, renderChildren(node, path));
+      return h("td", { key, style: styleOf(node), ...validatedSpans(node.attrs) }, renderChildren(node, path));
     case "hr":
       return h("hr", { key });
     case "strong":
@@ -268,7 +268,9 @@ function renderNode(node: MdNode, key: number, path: string): VNode | string {
       return h("s", { key }, renderChildren(node, path));
     case "html_block":
     case "html_inline":
-      return node.content; // html:false — arrives already escaped as text
+      // Raw tables are lifted into real table nodes upstream; whatever HTML
+      // reaches here has no table in it and stays inert text.
+      return node.content;
     default:
       return node.tag
         ? h(node.tag, { key }, renderChildren(node, path))
@@ -446,7 +448,10 @@ const Rendered = defineComponent({
 .md :deep(.md-task--done .md-task__body) { color: var(--muted); text-decoration: line-through; }
 
 /* ── inline code ────────────────────────────────────────────────────────────── */
-.md :deep(code) {
+/* Inline code only: a fenced block's `pre > code` keeps its own reset (no chip
+   padding, no tint, full mono size). Without the guard this rule pierces the
+   fence and fights that reset depending on bundle order. */
+.md :deep(:not(pre) > code) {
   font-family: var(--font-mono);
   font-size: 0.855em;
   padding: 0.1em 0.38em;

@@ -66,7 +66,7 @@ export function isQuotaOrRateLimitError(cause: unknown): boolean {
     }
   }
 
-  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
+  const message = errorText(cause).toLowerCase();
   return [
     "429",
     "rate limit",
@@ -95,7 +95,7 @@ export function isQuotaOrRateLimitError(cause: unknown): boolean {
  *  session-closed classifiers, where the process is dead and a fresh start is
  *  genuinely the only option). */
 export function isRecoverableCodexResumeError(cause: unknown): boolean {
-  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
+  const message = errorText(cause).toLowerCase();
   if (!message.includes("thread/resume")) return false;
   return [
     "not found",
@@ -119,7 +119,7 @@ export function isRecoverableCodexResumeError(cause: unknown): boolean {
  *  `session/load`) and Claude (`query` resume). Codex uses the method-scoped
  *  isRecoverableCodexResumeError above. */
 export function isResumeRefusalError(cause: unknown): boolean {
-  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
+  const message = errorText(cause).toLowerCase();
   return [
     "not found",
     "does not exist",
@@ -148,4 +148,110 @@ const NON_FATAL_CODEX_ERROR_SNIPPETS = [
 export function isNonFatalCodexError(message: string): boolean {
   const lower = message.trim().toLowerCase();
   return NON_FATAL_CODEX_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
+}
+
+/** The text-bearing fields a provider failure payload is observed to use.
+ *  `data` is where OpenCode nests it (`{ name, data: { message } }`); `name`
+ *  is the last resort for the variants that carry no message at all. */
+type ErrorPayload = {
+  message?: unknown;
+  code?: unknown;
+  error?: unknown;
+  data?: unknown;
+  detail?: unknown;
+  description?: unknown;
+  reason?: unknown;
+  name?: unknown;
+};
+
+/** Searched in order, and the order is deliberate: `message` is the layer
+ *  nearest the user — the wrapper that chose to say something — so it wins over
+ *  the `error` it wrapped. A payload that carries only the inner failure has no
+ *  `message`, so nothing is hidden by preferring it. */
+const ERROR_TEXT_FIELDS = [
+  "message",
+  "error",
+  "data",
+  "detail",
+  "description",
+  "reason",
+] as const;
+
+/** Render an arbitrary failure value as text a human can read.
+ *
+ *  Anything that crosses a provider boundary is `unknown` in practice even when
+ *  its declared type says `string`: SDKs throw plain objects, and wire payloads
+ *  nest their text (OpenCode's `{ name, data: { message } }`) where the schema
+ *  promises a bare string. A raw `String(cause)` on those renders the literal
+ *  "[object Object]", which reaches the user as their whole error message.
+ *
+ *  Returns "" when there is genuinely nothing to say, so callers decide what an
+ *  empty failure should read as. */
+export function errorText(cause: unknown): string {
+  return readErrorText(cause) ?? "";
+}
+
+/** The reader behind `errorText`. `undefined` means "found no text here" — kept
+ *  distinct from a real message so a textless nested payload falls through to
+ *  the parent's remaining fields instead of short-circuiting them. */
+function readErrorText(cause: unknown): string | undefined {
+  if (cause === null || cause === undefined) return undefined;
+  if (cause instanceof Error) {
+    // A message of its own is the nearest thing to the user, so it wins. A
+    // wrapper thrown without one (`new Error("", { cause: payload })`, or a
+    // subclass that carries its detail on `cause`) would otherwise report
+    // nothing at all — walk the chain rather than lose it.
+    return cause.message || readErrorText(cause.cause);
+  }
+  if (Array.isArray(cause)) {
+    const parts = cause.flatMap((entry) => {
+      const text = readErrorText(entry);
+      return text === undefined ? [] : [text];
+    });
+    return parts.length > 0 ? parts.join("; ") : undefined;
+  }
+  // Primitives (the declared-`string` case included) stringify faithfully.
+  if (!(cause instanceof Object)) return String(cause).trim() || undefined;
+
+  // SAFETY: cause is verified as a non-array Object; each field is re-validated
+  // by the recursive call below.
+  const payload = cause as ErrorPayload;
+  for (const field of ERROR_TEXT_FIELDS) {
+    const nested = payload[field];
+    // Guard against a self-referential `{ error: itself }` payload.
+    if (nested === cause) continue;
+    const text = readErrorText(nested);
+    if (text !== undefined) return text;
+  }
+
+  // A typed-but-textless failure (OpenCode's MessageOutputLengthError carries
+  // an empty `data`): its name is the only honest thing left to report.
+  const name = payload.name;
+  if (name !== undefined && !(name instanceof Object)) {
+    const named = String(name).trim();
+    if (named) return named;
+  }
+
+  // Nothing recognizable. The payload is machine detail, and a user's whole
+  // error message must not be a JSON dump — so say the one thing that is both
+  // true and useful (its code, when it has one) and put the body where whoever
+  // is debugging can read it. "[object Object]" is what this all exists to
+  // avoid; a serialized blob is only marginally kinder.
+  if (Object.keys(cause).length === 0) return undefined;
+  logUnrecognized(payload);
+  const code = payload.code;
+  if (code !== undefined && !(code instanceof Object)) {
+    const coded = String(code).trim();
+    if (coded) return `Unknown error (code ${coded})`;
+  }
+  return "Unknown error from the provider";
+}
+
+function logUnrecognized(payload: ErrorPayload): void {
+  try {
+    console.debug("[kone] unrecognized provider error payload:", JSON.stringify(payload));
+  } catch {
+    // Circular or non-serializable — the object itself still prints.
+    console.debug("[kone] unrecognized provider error payload:", payload);
+  }
 }

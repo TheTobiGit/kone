@@ -280,7 +280,6 @@ const {
   onRetryTurn,
   onResendTurn,
   onRetryLoad,
-  onRetrySession,
   onLoadOlder,
   anchoredThreadId,
   onRename,
@@ -589,7 +588,6 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                     :blocks="c.session.timelineBlocks.value"
                     :compactions="c.session.compactions.value"
                     :now="now"
-                    :session-error="c.session.error.value"
                     :source-key="c.id"
                     :thread-id="anchoredThreadId(c)"
                     :load-failed="c.session.transcriptLoadFailed.value"
@@ -603,7 +601,6 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                     @retry="(text) => onRetryTurn(c, text)"
                     @resend="(text) => onResendTurn(c, text)"
                     @retry-load="() => onRetryLoad(c)"
-                    @retry-session="() => onRetrySession(c)"
                     @load-older="() => onLoadOlder(c)"
                   />
                 </template>

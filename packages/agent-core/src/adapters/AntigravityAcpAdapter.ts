@@ -20,7 +20,7 @@ import { JsonRpcClient } from "../jsonRpc.js";
 import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import { refuseCriticalCommand } from "./acpSafety.js";
-import { isResumeRefusalError } from "./errors.js";
+import { errorText, isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
@@ -1203,7 +1203,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       const url = session.lastAuthUrl ? ` ${session.lastAuthUrl}` : "";
       return `${ANTIGRAVITY_ACP_SIGN_IN_REQUIRED_MESSAGE}${url}`;
     }
-    return cause instanceof Error ? cause.message : String(cause);
+    return errorText(cause) || "The turn failed.";
   }
 
   // ── shared helpers ───────────────────────────────────────────────────────

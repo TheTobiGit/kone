@@ -11,6 +11,7 @@ import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 import { activeHues, type ToolOrbFamily, type TurnOrbState } from "~/utils/toolOrbDraw";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
+import { toolTargetRaw } from "~/utils/toolPresentation";
 
 export type TurnActivity = {
   /** Which orb/glyph the pill shows at its left. `done` is a settled turn held
@@ -27,16 +28,6 @@ export type TurnActivity = {
   /** Colours a settled (`done`) turn's glyph + label. */
   tone?: "ok" | "error" | "muted";
 };
-
-/** Peel the `name:` prefix the providers stamp on a tool_call's text, leaving
- *  just the target (path / query / command). */
-function targetOf(item: RuntimeItem): string {
-  const name = (item.name ?? "").trim();
-  const raw = (item.text ?? "").trim();
-  const prefix = `${name}:`;
-  if (raw.startsWith(prefix)) return raw.slice(prefix.length).trim();
-  return raw === name ? "" : raw;
-}
 
 /** Compact truncation — keep a path's basename, clip anything else at the end. */
 function shorten(s: string, max = 30): string {
@@ -61,8 +52,8 @@ function tool(family: ToolOrbFamily, label: string): TurnActivity {
 /** The present-tense status for a running tool_call, matching the thread's
  *  running-branch phrasing (Reading/Editing/Searching for/Running…). */
 function toolActivity(item: RuntimeItem): TurnActivity {
-  const name = (item.name ?? "").trim().toLowerCase();
-  const raw = targetOf(item);
+  const name = (item.name ?? "").trim();
+  const raw = toolTargetRaw(item);
   const t = shorten(raw);
   // grep summaries arrive as "query · N matches"; the query is what's live.
   const query = shorten(raw.split("·")[0]?.trim() || raw);

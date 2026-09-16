@@ -37,6 +37,7 @@ import type {
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 import {
+  errorText,
   isNonFatalCodexError,
   isRecoverableCodexResumeError,
 } from "./errors.js";
@@ -518,7 +519,7 @@ export function mapCodexItemStatus(status: string | undefined, hasError: boolean
  *  start would abandon the original thread and the user would never know why
  */
 export function formatCodexThreadResumeError(cause: unknown, threadId: string): Error {
-  const message = cause instanceof Error ? cause.message : String(cause);
+  const message = errorText(cause);
   if (!message.toLowerCase().includes("already has an active writer")) {
     return cause instanceof Error ? cause : new Error(message);
   }

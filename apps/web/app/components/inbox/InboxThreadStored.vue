@@ -21,7 +21,7 @@ import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useDockClearance } from "~/composables/useDockClearance";
 import { useStudioIntake } from "~/composables/useStudioIntake";
-import { markHistorical } from "~/composables/agentPrefetch";
+import { adoptStoredBlocks } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
@@ -91,8 +91,8 @@ onMounted(async () => {
       return;
     }
     // SAFETY: stored blocks deserialize to ThreadBlocks — the two types differ
-    // only by the `historical` hint markHistorical is adding here.
-    blocks.value = markHistorical(page.blocks as ThreadBlock[]);
+    // only by the `historical` hint adoptStoredBlocks stamps on here.
+    blocks.value = adoptStoredBlocks(page.blocks as ThreadBlock[]);
     cursor.value = page.nextCursor;
     now.value = Date.now();
     // Markers ride a separate read — few rows ever, so no paging — and a miss
@@ -127,7 +127,7 @@ async function loadOlder(): Promise<void> {
     // reasoning about when that can happen.
     const known = new Set(blocks.value.map((b) => b.id));
     // SAFETY: as above — page blocks are ThreadBlocks minus the render hint.
-    const older = markHistorical((page.blocks as ThreadBlock[]).filter((b) => !known.has(b.id)));
+    const older = adoptStoredBlocks((page.blocks as ThreadBlock[]).filter((b) => !known.has(b.id)));
     if (older.length > 0) blocks.value = [...older, ...blocks.value];
     cursor.value = page.nextCursor;
   } catch (e) {

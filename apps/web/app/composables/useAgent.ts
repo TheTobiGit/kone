@@ -39,7 +39,7 @@ import {
 
 import {
   takePrefetched,
-  markHistorical,
+  adoptStoredBlocks,
   uid,
   fileToBase64,
   latestAssistant,
@@ -646,7 +646,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const meta: StoredThreadMeta = page ? page.meta : stored!;
     const sourceBlocks: StoredBlock[] = page ? page.blocks : stored!.blocks;
     // SAFETY: both sources deserialize to ThreadBlocks by IPC contract.
-    blocks.value = markHistorical(sourceBlocks as ThreadBlock[]);
+    blocks.value = adoptStoredBlocks(sourceBlocks as ThreadBlock[]);
     olderCursor.value = page ? page.nextCursor : null;
     title.value = meta.title?.trim() || "";
     adoptStoredThread(meta); // also restores the persisted context-meter snapshot

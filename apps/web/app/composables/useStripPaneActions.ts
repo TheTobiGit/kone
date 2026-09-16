@@ -104,12 +104,6 @@ export function useStripPaneActions(deps: {
     if (!s || !id) return;
     void s.openStored(id);
   }
-  function onRetrySession(c: Pane): void {
-    if (c.kind !== "thread") return;
-    const s = c.session;
-    if (!s) return;
-    void s.start();
-  }
   /** Windowed stored threads page their older history on demand — forward the
    *  thread's request to the session's loadOlder (the store read + prepend). */
   function onLoadOlder(c: Pane): void {
@@ -160,7 +154,6 @@ export function useStripPaneActions(deps: {
     onRetryTurn,
     onResendTurn,
     onRetryLoad,
-    onRetrySession,
     onLoadOlder,
     anchoredThreadId,
     onRename,

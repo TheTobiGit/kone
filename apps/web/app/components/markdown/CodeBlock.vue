@@ -118,6 +118,9 @@ async function copy() {
 <style scoped>
 .cb {
   margin: 0 0 4px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 13px;
   background: var(--code-bg, var(--hover));
   overflow: hidden;
@@ -163,16 +166,30 @@ async function copy() {
 
 .cb__scroll {
   overflow-x: auto;
-  padding: 0 14px 13px;
+  overflow-y: hidden;
+  padding: 0 0 13px;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 .cb__pre {
+  /* Gutters live on the content, not the scroller: a scroll container's own
+     trailing padding sits outside the scrollable overflow and is clipped at
+     max scroll, while the content's padding travels with the lines — so both
+     ends keep their 14px and a line never starts under the slab's edge.
+     Sizing to the longest line (floored at full width) makes the scroll width
+     exactly the content, so the scroll origin stays at the line starts and
+     every column of every line is reachable. */
+  width: max-content;
+  min-width: 100%;
   margin: 0;
+  padding: 0 14px;
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 20px;
 }
 .cb__pre code {
   display: block;
+  min-width: 0;
   padding: 0;
   background: none;
   font: inherit;
@@ -180,6 +197,7 @@ async function copy() {
 }
 .cb__line {
   display: block;
+  min-width: 0;
   min-height: 20px;
 }
 </style>

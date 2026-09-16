@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RuntimeItem } from "../types/desktop";
-import {
-  toolMeta,
-  toolPhrase,
-  toolTargetRaw,
-} from "./toolPresentation";
+import { toolDetailFull, toolMeta, toolPhrase, toolTargetRaw } from "./toolPresentation";
+import { canonicalToolName } from "./toolName";
 
 describe("toolPresentation", () => {
   describe("toolTargetRaw", () => {
@@ -57,6 +54,68 @@ describe("toolPresentation", () => {
         text: "bun test",
       };
       expect(toolTargetRaw(item)).toBe("bun test");
+    });
+
+    test("peels a stamp left over from the name's qualified spelling", () => {
+      const item: RuntimeItem = {
+        itemId: "item-1",
+        kind: "tool_call",
+        status: "in-progress",
+        name: "kone_spawn_batch",
+        text: 'mcp__kone__kone_spawn_batch: {"path": "src/foo.ts"}',
+      };
+      expect(toolDetailFull(item)).toBe('{"path": "src/foo.ts"}');
+    });
+
+    test("suppresses an args blob from the row, keeping it in the full detail", () => {
+      const item: RuntimeItem = {
+        itemId: "item-1",
+        kind: "tool_call",
+        status: "in-progress",
+        name: "kone_spawn_batch",
+        text: 'kone_spawn_batch: {"items": []}',
+      };
+      expect(toolTargetRaw(item)).toBe("");
+      expect(toolDetailFull(item)).toBe('{"items": []}');
+    });
+
+    test("peels a kone server stamp from the detail", () => {
+      const item: RuntimeItem = {
+        itemId: "item-1",
+        kind: "tool_call",
+        status: "in-progress",
+        name: "kone_spawn_batch",
+        text: "kone: dispatching 3 workers",
+      };
+      expect(toolTargetRaw(item)).toBe("dispatching 3 workers");
+    });
+
+    test("treats a humanized duplicate of the name as no target", () => {
+      const item: RuntimeItem = {
+        itemId: "item-1",
+        kind: "tool_call",
+        status: "in-progress",
+        name: "kone_spawn_batch",
+        text: "kone spawn batch",
+      };
+      expect(toolTargetRaw(item)).toBe("");
+    });
+  });
+
+  describe("canonicalToolName", () => {
+    test("unwraps kone server qualification to the bare tool", () => {
+      expect(canonicalToolName("kone_spawn_batch")).toBe("kone_spawn_batch");
+      expect(canonicalToolName("kone__kone_spawn_batch")).toBe("kone_spawn_batch");
+      expect(canonicalToolName("mcp__kone__kone_spawn_batch")).toBe("kone_spawn_batch");
+      expect(canonicalToolName("kone_kone_spawn_batch")).toBe("kone_spawn_batch");
+      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("kone_spawn_batch");
+    });
+
+    test("leaves plain and foreign-MCP names alone", () => {
+      expect(canonicalToolName("read_file")).toBe("read_file");
+      expect(canonicalToolName("mcp__github__fetch_pr")).toBe("mcp__github__fetch_pr");
+      expect(canonicalToolName(undefined)).toBe("");
+      expect(canonicalToolName("   ")).toBe("");
     });
   });
 
@@ -184,6 +243,33 @@ describe("toolPresentation", () => {
         before: "Ran subagent — Codebase Researcher",
       });
     });
+
+    test("phrases kone_spawn_batch once, never kone kone", () => {
+      const texts = ["", 'kone_spawn_batch: {"items": []}', 'mcp__kone__kone_spawn_batch: []'];
+      for (const text of texts) {
+        const item: RuntimeItem = {
+          itemId: "item-1",
+          kind: "tool_call",
+          status: "in-progress",
+          name: canonicalToolName("mcp__kone__kone_spawn_batch"),
+          text,
+        };
+        expect(toolPhrase(item)).toEqual({ before: "Running kone spawn batch" });
+      }
+    });
+
+    test("phrases a kone:-stamped spawn batch detail without repeating kone", () => {
+      const item: RuntimeItem = {
+        itemId: "item-1",
+        kind: "tool_call",
+        status: "in-progress",
+        name: "kone_spawn_batch",
+        text: "kone: dispatching 3 workers",
+      };
+      expect(toolPhrase(item)).toEqual({
+        before: "Running kone spawn batch on dispatching 3 workers",
+      });
+    });
   });
 
   describe("toolMeta", () => {
@@ -196,6 +282,14 @@ describe("toolPresentation", () => {
       expect(toolMeta("schedule").label).toBe("Schedule");
       expect(toolMeta("invoke_subagent").label).toBe("Subagent");
       expect(toolMeta("generate_image").label).toBe("Generate image");
+    });
+
+    test("labels a canonical kone tool once, and keeps foreign MCP labels", () => {
+      expect(toolMeta(canonicalToolName("kone__kone_spawn_batch")).label).toBe("Kone Spawn Batch");
+      expect(toolMeta(canonicalToolName("mcp__kone__kone_spawn_batch")).label).toBe(
+        "Kone Spawn Batch",
+      );
+      expect(toolMeta("mcp__github__fetch_pr").label).toBe("Fetch Pr");
     });
   });
 });

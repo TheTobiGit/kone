@@ -13,6 +13,7 @@ import type {
   TokenUsage,
 } from "~/types/desktop";
 import { originSubagentOfApproval } from "../agentPrefetch";
+import { canonicalizeItem } from "~/utils/toolName";
 import type {
   AssistantBlock,
   PendingApproval,
@@ -327,13 +328,17 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         const run = event.subagentToolUseId
           ? findRun(block, event.subagentToolUseId)
           : undefined;
+        // One spelling per tool from here on: providers qualify a tool_call's
+        // name by its server, and every vocabulary downstream (icon, phrasing,
+        // status pill) reads `name` as given rather than unwrapping its own.
+        const item = canonicalizeItem(event.item);
         if (run) {
-          const idx = run.items.findIndex((i) => i.itemId === event.item.itemId);
-          if (idx === -1) run.items.push(event.item);
-          else run.items[idx] = event.item;
+          const idx = run.items.findIndex((i) => i.itemId === item.itemId);
+          if (idx === -1) run.items.push(item);
+          else run.items[idx] = item;
           run.items = [...run.items];
         } else if (!event.subagentToolUseId) {
-          upsertItem(block, event.item);
+          upsertItem(block, item);
         }
         blocks.value = [...blocks.value];
         break;

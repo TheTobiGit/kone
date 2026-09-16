@@ -1,6 +1,7 @@
 import { computed, shallowRef } from "vue";
 import type { ApprovalDecision, StoredThread } from "~/types/desktop";
 import type { AssistantBlock, PendingApproval, RoutedPendingApproval, ThreadBlock } from "./agentTypes";
+import { canonicalizeItem } from "~/utils/toolName";
 
 // ── transcript prefetch ───────────────────────────────────────────────────────
 // A thread's transcript read is the one unavoidable round-trip left on the open
@@ -47,8 +48,17 @@ export function takePrefetched(id: string): Promise<StoredThread | null> | null 
   return Date.now() - hit.at < PREFETCH_TTL_MS ? hit.load : null;
 }
 
-export function markHistorical(blocks: ThreadBlock[]): ThreadBlock[] {
-  return blocks.map((b) => ({ ...b, historical: true }));
+/** Adopt stored blocks into a live timeline. Two jobs, both of them the
+ *  boundary's: mark them `historical` (they mount settled, skipping the
+ *  per-word reveal), and canonicalize every tool_call's name so the render
+ *  path reads one spelling per tool — the same contract the live reducer
+ *  applies to streamed items. */
+export function adoptStoredBlocks(blocks: ThreadBlock[]): ThreadBlock[] {
+  return blocks.map((b) =>
+    b.role === "assistant"
+      ? { ...b, historical: true, items: b.items.map(canonicalizeItem) }
+      : { ...b, historical: true },
+  );
 }
 
 export function uid(): string {

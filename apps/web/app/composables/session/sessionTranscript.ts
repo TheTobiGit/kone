@@ -12,7 +12,7 @@ import type {
 import { EFFORT_META } from "~/utils/modelCatalog";
 import { bootMode, MODES } from "~/utils/modelPicker";
 import { peelIpcError } from "~/utils/ipcError";
-import { markHistorical } from "../agentPrefetch";
+import { adoptStoredBlocks } from "../agentPrefetch";
 import { rememberSideChatSource } from "../sideChats";
 import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "../agentTypes";
 import { queuedBlockIdsOf } from "./sessionQueue";
@@ -280,8 +280,8 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
         return;
       }
       const known = new Set(blocks.value.map((b) => b.id));
-      const older = markHistorical(
-        // SAFETY: page blocks deserialize to ThreadBlocks; markHistorical re-checks shape.
+      const older = adoptStoredBlocks(
+        // SAFETY: page blocks deserialize to ThreadBlocks; adoptStoredBlocks re-checks shape.
         (page.blocks as ThreadBlock[]).filter((b) => !known.has(b.id)),
       );
       if (older.length > 0) blocks.value = [...older, ...blocks.value];
@@ -326,7 +326,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
       }
       if (resolvedBlocks && resolvedBlocks.length > 0) {
         threadId.value = meta.threadId;
-        blocks.value = markHistorical(resolvedBlocks);
+        blocks.value = adoptStoredBlocks(resolvedBlocks);
         olderCursor.value = nextCursor;
         title.value = meta.title?.trim() || title.value;
         adoptStoredThread(meta);
