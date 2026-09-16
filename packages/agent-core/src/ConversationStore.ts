@@ -16,7 +16,7 @@ import { EventIngestRepo } from "./store/events.js";
 import type { ChatAttachment, CompactionRecord, ForkContext, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnSpan } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnSpan, type TurnUsageRecord } from "./conversationStoreTypes.js";
 import { type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -232,6 +232,11 @@ export class ConversationStore {
   /** @see EventIngestRepo */
   listCompactions(threadId: string): CompactionRecord[] {
     return this.events.listCompactions(threadId);
+  }
+
+  /** @see TranscriptRepo */
+  listTurnUsage(threadId: string): TurnUsageRecord[] {
+    return this.transcript.listTurnUsage(threadId);
   }
 
   /** @see ThreadLifecycleRepo */

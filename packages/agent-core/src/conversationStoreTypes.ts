@@ -633,6 +633,22 @@ export function decodeThreadPageCursor(encoded: string): ThreadPageCursor | null
   };
 }
 
+/** One turn's per-turn token audit row: the latest known input/output/total
+ *  split for a single turn, plus the cache/reasoning counts providers report
+ *  alongside. Counts the provider never reported read as null (unknown); the
+ *  split counts default to 0 at write time so SUM() over them needs no
+ *  COALESCE. Ordered oldest first by the read below. */
+export type TurnUsageRecord = {
+  turnId: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  at: number;
+};
+
 /** A day-streak tally: how many consecutive days lead up to the most recent
  *  active day, and the longest such run anywhere in the set. */
 export type Streak = {
