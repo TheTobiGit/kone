@@ -296,6 +296,36 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   return queued;
 }
 
+// ── pre-turn repository snapshots (v6) ───────────────────────────────────────
+
+/** One turn's pre-turn snapshot: the checkpoint ref holding the tree as it
+ *  was before the turn ran, so the turn can be reverted. */
+export type TurnCheckpointRecord = {
+  threadId: string;
+  turnId: string;
+  checkpointId: string;
+  ref: string;
+  createdAt: number;
+};
+
+export type TurnCheckpointDbRow = {
+  thread_id: string;
+  turn_id: string;
+  checkpoint_id: string;
+  ref: string;
+  created_at: number;
+};
+
+export function rowToTurnCheckpoint(row: TurnCheckpointDbRow): TurnCheckpointRecord {
+  return {
+    threadId: row.thread_id,
+    turnId: row.turn_id,
+    checkpointId: row.checkpoint_id,
+    ref: row.ref,
+    createdAt: row.created_at,
+  };
+}
+
 export type ItemRow = {
   item_id: string;
   turn_id: string;
