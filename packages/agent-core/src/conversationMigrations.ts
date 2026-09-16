@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -464,12 +464,53 @@ function migration0005RequestedBranch(db: DatabaseSync): void {
   addColumn(db, "threads", "requested_branch", "TEXT");
 }
 
+/** Append-only deltas for streaming item text. Rewriting the whole `items`
+ *  row per text delta costs O(n^2) bytes for an n-byte message (`item.updated`
+ *  fires once per delta, carrying the full accumulated snapshot each time), so
+ *  the hot path now appends only the new suffix here — one small row per delta
+ *  — and read sites concatenate the chunks in sequence order. `text_json`
+ *  holds each delta JSON-encoded rather than raw: the encoding survives bytes
+ *  the TEXT column cannot round-trip (an embedded NUL truncates the read, and
+ *  an unpaired UTF-16 surrogate has no UTF-8 form), and every value this
+ *  writer produces is valid JSON by construction. `char_len` records the
+ *  delta's JS-string length alongside it so a restarted process can recover
+ *  its append offset from an aggregate instead of re-reading the accumulated
+ *  text. `items.text_json` is the same encoding fallback for the settled base
+ *  text (NULL in the common case, where the raw `text` column round-trips).
+ *  Chunk rows are transient: `item.completed` folds them into `items.text`
+ *  and deletes them, so a settled item is exactly one row. Idempotent — the
+ *  table, index, and column are all created only when absent. */
+function migration0006ItemTextChunks(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS item_text_chunks (
+      thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id   TEXT NOT NULL,
+      item_id   TEXT NOT NULL,
+      seq       INTEGER NOT NULL CHECK (seq >= 0),
+      text_json TEXT NOT NULL CHECK (json_valid(text_json)),
+      char_len  INTEGER NOT NULL CHECK (char_len >= 0),
+      PRIMARY KEY (thread_id, turn_id, item_id, seq)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_item_text_chunks_item
+      ON item_text_chunks (thread_id, turn_id, item_id, seq);
+  `);
+  // Guarded: upgrade fixtures that predate a table (see the v1 queued-turns
+  // test) run every later rung without that table present, and there is no
+  // column to add to a table that does not exist. Real databases always carry
+  // `items` from the baseline, so this skips only synthetic ones.
+  if (hasTable(db, "items")) {
+    addColumn(db, "items", "text_json", "TEXT");
+  }
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
   { id: 3, name: "Compactions", run: migration0003Compactions },
   { id: 4, name: "ThreadWorkspace", run: migration0004ThreadWorkspace },
   { id: 5, name: "RequestedBranch", run: migration0005RequestedBranch },
+  { id: 6, name: "ItemTextChunks", run: migration0006ItemTextChunks },
 ];
 
 export interface MigrationOptions {
