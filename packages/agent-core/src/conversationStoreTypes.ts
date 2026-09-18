@@ -12,6 +12,7 @@ import type {
   SubagentRun,
 } from "./types.js";
 import { threadEnvMode } from "./threadWorkspace.js";
+import type { ThreadWorkspace } from "./threadWorkspace.js";
 
 /** The value `done_at` carries when you explicitly un-marked a thread, as
  *  opposed to never having marked it (NULL). Epoch zero is not a time any
@@ -326,6 +327,25 @@ export function rowToTurnCheckpoint(row: TurnCheckpointDbRow): TurnCheckpointRec
     createdAt: row.created_at,
   };
 }
+
+/** The store surface the turn-checkpoint paths drive: thread placement reads
+ *  plus the checkpoint row methods. The service is typed against this narrow
+ *  contract so tests can inject an in-memory fake without opening a database,
+ *  while production passes the full store. */
+export type CheckpointStore = {
+  threadProjectPath(threadId: string): string | null;
+  threadWorkspace(threadId: string): ThreadWorkspace | null;
+  recordTurnCheckpoint(input: {
+    threadId: string;
+    turnId: string;
+    checkpointId: string;
+    ref: string;
+    createdAt?: number;
+  }): boolean;
+  getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null;
+  listTurnCheckpoints(threadId: string): TurnCheckpointRecord[];
+  pruneTurnCheckpoints(threadId: string, keep: number): TurnCheckpointRecord[];
+};
 
 export type ItemRow = {
   item_id: string;

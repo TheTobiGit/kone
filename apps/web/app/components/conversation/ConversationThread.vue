@@ -28,7 +28,7 @@ import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
-import { takeSearchJumpFor } from "~/composables/useSearchJump";
+import { useSearchLanding } from "~/composables/useSearchLanding";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
 import type { TranscriptMode } from "~/utils/transcriptMode";
@@ -749,67 +749,6 @@ function requestOlder(): void {
   emit("load-older");
 }
 
-// ── arriving from conversation search ───────────────────────────────────────
-// A search hit opens its thread and names one old row to land on. The target
-// waits in the jump state (see useSearchJump) keyed by thread id — claimed
-// here when this column shows that thread, never anywhere else.
-//
-// Landing must expand the window, not fight it: the open window above mounts
-// only a suffix, so the target row is very likely unmounted. Expanding mounts
-// everything already in hand; when the row still isn't there and the store
-// holds an older page, the same load-older affordance above pages it in — a
-// few pages at most, then the thread opens at its newest rather than spinning
-// forever on a row that is gone.
-const searchFlash = ref<string | null>(null);
-const pendingJumpBlock = ref<string | null>(null);
-let jumpPageAttempts = 0;
-const JUMP_MAX_PAGES = 12;
-
-function revealSearchBlock(): void {
-  const blockId = pendingJumpBlock.value;
-  if (!blockId || !import.meta.client) return;
-  // SAFETY: querySelector takes a selector string; the id is escaped so a
-  // hostile block id can only ever match nothing, never break out of it.
-  const el = root.value?.querySelector(`[data-turn-id="${CSS.escape(blockId)}"]`);
-  if (el) {
-    pendingJumpBlock.value = null;
-    initialScrollDoneFor.value = threadKey();
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    searchFlash.value = blockId;
-    window.setTimeout(() => {
-      if (searchFlash.value === blockId) searchFlash.value = null;
-    }, 2600);
-    return;
-  }
-  if (props.hasOlder && !props.loadingOlder && jumpPageAttempts < JUMP_MAX_PAGES) {
-    jumpPageAttempts += 1;
-    emit("load-older");
-    return;
-  }
-  if (!props.hasOlder || jumpPageAttempts >= JUMP_MAX_PAGES) pendingJumpBlock.value = null;
-}
-
-function claimSearchJump(): void {
-  const tid = props.threadId;
-  if (!tid || !import.meta.client) return;
-  const jump = takeSearchJumpFor(tid);
-  if (!jump) return;
-  jumpPageAttempts = 0;
-  pendingJumpBlock.value = jump.blockId;
-  // The target is old by definition — mount everything in hand before looking.
-  showAllExchanges.value = true;
-  void nextTick(() => revealSearchBlock());
-}
-
-watch(
-  () => props.threadId,
-  () => {
-    searchFlash.value = null;
-    pendingJumpBlock.value = null;
-    claimSearchJump();
-  },
-);
-
 // ── top-anchored turn staging & streaming follow ──────────────────────────────
 // When the user submits a new request in a thread with history, we stage that
 // new exchange right at the top of the viewport (where the first request of a
@@ -866,14 +805,58 @@ function threadKey(): string {
   return props.sourceKey ?? props.threadId ?? "__blank__";
 }
 
+// ── arriving from conversation search ───────────────────────────────────────
+// A search hit opens its thread and names one old row to land on. The state
+// machine for getting there lives in useSearchLanding; this column only wires
+// it up — element lookup, older-page requests, the window expand — and binds
+// the flash class. Scroll ownership is single: doInitialScroll reads
+// landing.scrollTarget, so a pending landing suppresses the scroll-to-newest
+// without a second flag to arbitrate.
+const landing = useSearchLanding({
+  threadKey: () => threadKey(),
+  isEmpty: () => props.blocks.length === 0,
+  initialDoneFor: () => initialScrollDoneFor.value,
+  findElement: (blockId: string) =>
+    // SAFETY: querySelector takes a selector string; the id is escaped so a
+    // hostile block id can only ever match nothing, never break out of it.
+    root.value?.querySelector(`[data-turn-id="${CSS.escape(blockId)}"]`) ?? null,
+  requestOlderPage: () => emit("load-older"),
+  expandWindow: () => {
+    // The target is old by definition — mount everything in hand before looking.
+    showAllExchanges.value = true;
+  },
+});
+const { searchFlash } = landing;
+
+/** Look for the landing row once; a found row also retires the initial
+ *  scroll for this key, so the newest-turn scroll below never yanks it away. */
+function revealSearchBlock(): void {
+  const outcome = landing.reveal({
+    hasOlder: props.hasOlder ?? false,
+    loadingOlder: props.loadingOlder ?? false,
+  });
+  if (outcome === "revealed") initialScrollDoneFor.value = threadKey();
+}
+
+function claimSearchJump(): void {
+  if (!import.meta.client) return;
+  if (landing.claim(props.threadId)) void nextTick(() => revealSearchBlock());
+}
+
+watch(
+  () => props.threadId,
+  () => {
+    landing.reset();
+    claimSearchJump();
+  },
+);
+
 function doInitialScroll(): void {
   if (!import.meta.client) return;
-  // A search arrival lands on its row, not on the newest turn — the reveal
-  // above owns the scroll until its target is found or given up on.
-  if (pendingJumpBlock.value) return;
+  // A search arrival lands on its row, not on the newest turn — scrollTarget
+  // names the one owner, so the initial scroll runs only when it is owed it.
+  if (landing.scrollTarget.value?.kind !== "initial") return;
   const key = threadKey();
-  if (initialScrollDoneFor.value === key) return;
-  if (props.blocks.length === 0) return;
   initialScrollDoneFor.value = key;
   void nextTick(() => {
     void nextTick(() => {
@@ -914,7 +897,7 @@ watch(
   () => props.blocks.length,
   () => {
     // A paged-in older page may have carried the search target — look again.
-    if (pendingJumpBlock.value) void nextTick(() => revealSearchBlock());
+    if (landing.scrollTarget.value?.kind === "jump") void nextTick(() => revealSearchBlock());
     doInitialScroll();
   },
 );
@@ -1357,8 +1340,6 @@ watch(
             <TurnThemeReceipts
               class="turn-themes"
               :items="block.items"
-              :thread-id="threadId"
-              :turn-id="block.turnId"
             />
           </template>
 

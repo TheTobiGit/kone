@@ -129,7 +129,7 @@ watch(iconApi, () => {
 
 // ── appearance rows ─────────────────────────────────────────────────────────
 // A theme tool's whole effect lands on the window, so the row shows the palette
-// it left behind, read back out of the call's own stored summary. That is the
+// it left behind, read back out of the call's own stored record. That is the
 // reading that survives a reload; the announcement beside the turn's reply
 // (components/turn/ThemeChangeLine.vue) is the same change drawn as the theme.
 
@@ -153,8 +153,8 @@ const rowColors = computed(() => (hasThemeBody.value ? toColors.value : null));
 // to show, which is a body no provider sends.
 const hasThinkingBody = computed(() => isThinking.value && !!props.thinkingText?.trim());
 // An appearance call's own body replaces its result text rather than joining it:
-// the detail IS the summary the palette was read from, so showing both would
-// print the sentence under the picture of itself.
+// the detail IS the record the palette was read from, so showing both would
+// print the data under the picture of itself.
 const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value);
 const clickable = computed(() => hasThinkingBody.value || hasToolBody.value || hasThemeBody.value);
 

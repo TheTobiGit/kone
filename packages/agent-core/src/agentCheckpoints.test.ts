@@ -13,7 +13,7 @@ import type {
   SendTurnInput,
   TurnStartResult,
 } from "./types.js";
-import type { TurnCheckpointRecord } from "./conversationStoreTypes.js";
+import type { TurnCheckpointRecord, CheckpointStore } from "./conversationStoreTypes.js";
 import type { ThreadWorkspace } from "./threadWorkspace.js";
 
 // Turn checkpoints at the service layer: capture on the sendTurn path (real
@@ -54,7 +54,7 @@ class CheckpointFakeAdapter {
 
 /** In-memory stand-in for the store's turn-checkpoint slice, mirroring the
  *  real repo contract: first record wins, prune keeps the newest rows. */
-class FakeCheckpointStore {
+class FakeCheckpointStore implements CheckpointStore {
   rows = new Map<string, TurnCheckpointRecord>();
   constructor(
     private readonly projectPath: string,
@@ -120,7 +120,7 @@ class FakeCheckpointStore {
 type AgentServiceType = import("./AgentService.js").AgentService;
 let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 
-function buildService(checkpointStore: FakeCheckpointStore): AgentServiceType {
+function buildService(checkpointStore: CheckpointStore): AgentServiceType {
   const queueStub = {
     enqueueQueuedTurn: async () => true,
     claimNextQueuedTurn: async () => null,
@@ -131,12 +131,7 @@ function buildService(checkpointStore: FakeCheckpointStore): AgentServiceType {
     // the drain the session start triggers.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     store: queueStub as unknown as QueuedTurnStore,
-    // SAFETY: FakeCheckpointStore implements the checkpoint slice the service
-    // reads (paths, workspace, and the record/get/list/prune methods).
-    // eslint-disable-next-line anti-slop/no-chained-type-assertions
-    checkpointStore: checkpointStore as unknown as NonNullable<
-      import("./AgentService.js").AgentServiceOptions["checkpointStore"]
-    >,
+    checkpointStore,
     // SAFETY: the checkpoint fake adapter covers startSession/sendTurn, the
     // only adapter surface these tests reach.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions

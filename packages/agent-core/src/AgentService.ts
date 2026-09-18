@@ -7,7 +7,7 @@ import {
   type ModelCandidate,
   type ProviderAvailability,
 } from "./agentModel.js";
-import { DONE_CLEARED, type TurnCheckpointRecord } from "./conversationStoreTypes.js";
+import { DONE_CLEARED, type CheckpointStore, type TurnCheckpointRecord } from "./conversationStoreTypes.js";
 import {
   checkpointExists,
   createCheckpoint,
@@ -208,16 +208,9 @@ export type AgentServiceOptions = {
   >;
   /** The conversation store's turn-checkpoint slice the pre-turn snapshot
    *  path needs, injected by tests. Defaults to the app-wide store when
-   *  absent. */
-  checkpointStore?: Pick<
-    ConversationStore,
-    | "threadProjectPath"
-    | "threadWorkspace"
-    | "recordTurnCheckpoint"
-    | "getTurnCheckpoint"
-    | "listTurnCheckpoints"
-    | "pruneTurnCheckpoints"
-  >;
+   *  absent; pass null to disable checkpoints. Which queue slice was injected
+   *  never affects this — the two slices are independent options. */
+  checkpointStore?: CheckpointStore | null;
   /** Adapters to register instead of the five real ones, handed the service's
    *  emit closure exactly like the real construction path. Injected by tests
    *  so no CLI is ever spawned. */
@@ -257,6 +250,16 @@ export type RevertTurnCheckpointResult =
       detail?: string;
     }
   | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] };
+
+/** The failure both checkpoint answers share. Factored so every catch in the
+ *  preview/revert paths formats a thrown value or a leftover-files report the
+ *  same way, instead of each repeating the coercion. */
+type FailedCheckpoint = { ok: false; reason: "failed"; detail?: string };
+
+function failedCheckpoint(cause: unknown): FailedCheckpoint {
+  if (cause instanceof Error) return { ok: false, reason: "failed", detail: cause.message };
+  return { ok: false, reason: "failed", detail: String(cause) };
+}
 
 // The cross-provider facade that lives in the Electron main process. It owns
 // the adapter registry, routes thread-scoped calls to the adapter that owns the
@@ -444,23 +447,13 @@ export class AgentService {
   }
 
   /** The conversation store's checkpoint slice (pre-turn snapshots) — the
-   *  injected test double when present, else the app-wide singleton. Null
-   *  when the slice hasn't landed: every checkpoint path degrades to doing
-   *  nothing instead of crashing the turn it was meant to protect. */
-  private get checkpointStore(): AgentServiceOptions["checkpointStore"] | null {
-    if (this.options.checkpointStore) return this.options.checkpointStore;
-    // getConversationStore lazily opens the real store; when the queue slice
-    // was injected for tests but no checkpoint store was, checkpoint paths
-    // have no real store to touch and must degrade rather than open one.
-    if (this.options.store) return null;
-    const store: unknown = getConversationStore();
-    // SAFETY: the recordTurnCheckpoint probe below confirms this really is
-    // the store's landed checkpoint slice before it is ever handed out.
-    const candidate = store as AgentServiceOptions["checkpointStore"];
-    if (!candidate || !(candidate.recordTurnCheckpoint instanceof Function)) {
-      return null;
-    }
-    return candidate;
+   *  injected test double when present, explicitly null when checkpoints are
+   *  disabled, else the app-wide singleton. Every checkpoint path degrades to
+   *  doing nothing on null instead of crashing the turn it was meant to
+   *  protect. */
+  private get checkpointStore(): CheckpointStore | null {
+    if (this.options.checkpointStore !== undefined) return this.options.checkpointStore;
+    return getConversationStore();
   }
 
   /** Wire the MCP gateway in (boot): session lifecycle starts minting and
@@ -1103,19 +1096,11 @@ export class AgentService {
         return { ok: true, wouldWrite: preview.wouldWrite, wouldDelete: preview.wouldDelete };
       } catch (err) {
         console.warn(`[agent] preview checkpoint failed for ${threadId}/${turnId}:`, err);
-        return {
-          ok: false,
-          reason: "failed",
-          detail: err instanceof Error ? err.message : String(err),
-        };
+        return failedCheckpoint(err);
       }
     } catch (err) {
       console.warn(`[agent] preview checkpoint failed for ${threadId}/${turnId}:`, err);
-      return {
-        ok: false,
-        reason: "failed",
-        detail: err instanceof Error ? err.message : String(err),
-      };
+      return failedCheckpoint(err);
     }
   }
 
@@ -1188,11 +1173,7 @@ export class AgentService {
         preview = await previewCheckpointRestore(dir, row.checkpointId);
       } catch (err) {
         console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return {
-          ok: false,
-          reason: "failed",
-          detail: err instanceof Error ? err.message : String(err),
-        };
+        return failedCheckpoint(err);
       }
       // Conservative by default: the caller shows wouldWrite/wouldDelete and
       // re-issues with force. The one exception is the empty diff — restoring
@@ -1210,11 +1191,7 @@ export class AgentService {
         await restoreCheckpoint(dir, row.checkpointId, { hard: true });
       } catch (err) {
         console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return {
-          ok: false,
-          reason: "failed",
-          detail: err instanceof Error ? err.message : String(err),
-        };
+        return failedCheckpoint(err);
       }
       // A restore that dies partway leaves a half-written tree — deletes done,
       // rewrites missing. Re-previewing must come back empty; anything left is
@@ -1227,28 +1204,18 @@ export class AgentService {
             `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
             leftovers,
           );
-          return {
-            ok: false,
-            reason: "failed",
-            detail: `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
-          };
+          return failedCheckpoint(
+            `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
+          );
         }
       } catch (err) {
         console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return {
-          ok: false,
-          reason: "failed",
-          detail: err instanceof Error ? err.message : String(err),
-        };
+        return failedCheckpoint(err);
       }
       return { ok: true };
     } catch (err) {
       console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-      return {
-        ok: false,
-        reason: "failed",
-        detail: err instanceof Error ? err.message : String(err),
-      };
+      return failedCheckpoint(err);
     }
   }
 

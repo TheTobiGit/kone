@@ -2,11 +2,9 @@
 import { computed, toRef } from "vue";
 import ThemeBeads from "~/components/theme/ThemeBeads.vue";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
-import { beadFor, beadsOf, type Bead } from "~/theme/beads";
-import { findTheme } from "~/theme/library";
+import { beadsOf, type Bead } from "~/theme/beads";
 import type { ThemeDefinition } from "~/theme/roles";
 import type { RuntimeItem } from "~/types/desktop";
-import type { ThemeFacet, ThemeReceipt } from "~/utils/themeReceipts";
 
 // An appearance change, announced next to the reply that announced it.
 //
@@ -19,54 +17,34 @@ import type { ThemeFacet, ThemeReceipt } from "~/utils/themeReceipts";
 // either way. It only tells: the appearance pane is where a theme is chosen, and
 // a second place to change one from would be a second place to keep right.
 //
-// Two sources, in order of fidelity. The receipt is what this window recorded as
-// it applied the change, and is the only thing that knows a preview's own
-// colours. Its absence is ordinary — a reloaded transcript has none — so the
-// call's stored summary is read instead, which names both themes but not a
-// palette that was never saved.
+// Both ends come from the call's own stored record, which names theme ids but
+// no palette that was never saved — except a preview's custom overrides, which
+// the reading lays over the library table so the preview keeps its own bead.
 
 const props = defineProps<{
   item: RuntimeItem;
-  /** The change this call made, when this window was the one that made it. */
-  receipt?: ThemeReceipt | null;
 }>();
 
 const summary = useThemeSummaryReading(toRef(props, "item"));
 
 /** A theme's own beads when the library still holds it — both faces of an
- *  adaptive theme, exactly as the appearance pane draws them. A preview built
- *  from custom colours is in no library, so it wears the single face it was
- *  actually painted in. */
-function beadsForFacet(facet: ThemeFacet): Bead[] {
-  const known = findTheme(facet.themeId);
-  return known ? beadsOf(known) : [beadFor(facet.colors, facet.scheme)];
-}
-
+ *  adaptive theme, exactly as the appearance pane draws them. */
 function beadsForTheme(theme: ThemeDefinition | null): Bead[] {
   return theme ? beadsOf(theme) : [];
 }
 
-const toLabel = computed(() => props.receipt?.after.label ?? summary.toTheme.value?.label ?? "");
-const fromLabel = computed(
-  () => props.receipt?.before.label ?? summary.fromTheme.value?.label ?? "",
-);
+const toLabel = computed(() => summary.toTheme.value?.label ?? "");
+const fromLabel = computed(() => summary.fromTheme.value?.label ?? "");
 
-const toBeads = computed(() =>
-  props.receipt ? beadsForFacet(props.receipt.after) : beadsForTheme(summary.toTheme.value),
-);
+const toBeads = computed(() => beadsForTheme(summary.toTheme.value));
 
-/** The side a change came from, drawn only when it is a different theme — a
- *  bare mode change would otherwise point the same mark at itself. */
-const fromBeads = computed(() => {
-  const r = props.receipt;
-  if (r) return r.before.themeId === r.after.themeId ? [] : beadsForFacet(r.before);
-  return beadsForTheme(summary.fromTheme.value);
-});
+/** The side a change came from, drawn only when it names a theme of its own. */
+const fromBeads = computed(() => beadsForTheme(summary.fromTheme.value));
 
-/** A live preview is not the saved appearance, and a line that said nothing
- *  about that would present a change the next reload will undo as if it were
+/** A preview is not the saved appearance, and a line that said nothing about
+ *  that would present a change the next reload will undo as if it were
  *  settled. */
-const isPreview = computed(() => props.receipt?.kind === "preview" && props.receipt.previewLive);
+const isPreview = computed(() => summary.change.value?.preview === true);
 </script>
 
 <template>
