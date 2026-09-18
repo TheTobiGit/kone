@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { parseThemeChange } from "@kone/protocol/theme-summary";
 import type { RuntimeEvent } from "../../types.js";
 import { createRegistry } from "../registry.js";
 import type { GatewayToolContext } from "../registry.js";
@@ -322,10 +323,12 @@ describe("appTheme tools", () => {
       }
     });
 
-    // The summary is what is stored against the call and read back later — by an
-    // agent resuming the thread, and by the thread's own transcript. A change
-    // that names only where it landed cannot be read back as a change at all.
-    it("app_set_theme names the theme it replaced in its summary", async () => {
+    // The result text is what is stored against the call and read back later —
+    // by an agent resuming the thread, and by the thread's own transcript. It
+    // carries both ends of the change as data, with the sentence as its human
+    // half; a change that names only where it landed cannot be read back as a
+    // change at all.
+    it("app_set_theme records both ends of the change as data", async () => {
       const registry = createRegistry(
         rosterTools({
           readAppearance: () => ({
@@ -339,11 +342,14 @@ describe("appTheme tools", () => {
       );
 
       const res = await registry.call(makeCtx(), "app_set_theme", { themeId: "nocturne" });
-      expect(res.content[0]?.text).toContain('Applied theme "Nocturne" (nocturne)');
-      expect(res.content[0]?.text).toContain('replacing "Moss" (moss)');
+      const change = parseThemeChange(res.content[0]?.text);
+      expect(change?.to).toBe("nocturne");
+      expect(change?.from).toBe("moss");
+      expect(change?.summary).toContain('Applied theme "Nocturne" (nocturne)');
+      expect(change?.summary).toContain('replacing "Moss" (moss)');
     });
 
-    it("app_set_theme names no replacement when the theme is already the one on screen", async () => {
+    it("app_set_theme records no replacement when the theme is already the one on screen", async () => {
       const registry = createRegistry(
         rosterTools({
           readAppearance: () => ({
@@ -357,7 +363,43 @@ describe("appTheme tools", () => {
       );
 
       const res = await registry.call(makeCtx(), "app_set_theme", { themeId: "nocturne" });
-      expect(res.content[0]?.text).not.toContain("replacing");
+      const change = parseThemeChange(res.content[0]?.text);
+      expect(change?.to).toBe("nocturne");
+      expect(change?.from).toBeNull();
+      expect(change?.summary).not.toContain("replacing");
+    });
+
+    it("app_create_custom_theme records the created theme and what it replaced", async () => {
+      const registry = createRegistry(
+        rosterTools({
+          readAppearance: () => ({
+            themeId: "moss",
+            themeLabel: "Moss",
+            mode: "dark",
+            scheme: "dark",
+            locked: false,
+          }),
+        }),
+      );
+
+      const res = await registry.call(makeCtx(), "app_create_custom_theme", {
+        id: "brand-cobalt",
+        label: "Brand Cobalt",
+        appearance: "dark",
+        accent: "#6366f1",
+        ground: "#0f172a",
+      });
+      const change = parseThemeChange(res.content[0]?.text);
+      expect(change?.to).toBe("brand-cobalt");
+      expect(change?.from).toBe("moss");
+    });
+
+    it("app_set_theme leaves a bare mode change as a plain sentence", async () => {
+      const registry = createRegistry(createAppThemeTools({ emit: () => undefined }));
+
+      const res = await registry.call(makeCtx(), "app_set_theme", { mode: "light" });
+      expect(res.content[0]?.text).toContain("Applied appearance mode in light mode");
+      expect(parseThemeChange(res.content[0]?.text)).toBeNull();
     });
 
     // A theme the agent made itself has to be re-applicable by name afterwards.
@@ -431,6 +473,36 @@ describe("appTheme tools", () => {
       if (emitted[1]?.type === "app.theme_mutation") {
         expect(emitted[1].preview).toBe(false);
       }
+    });
+
+    it("app_preview_theme_override records the previewed theme as data", async () => {
+      const registry = createRegistry(
+        rosterTools({
+          readAppearance: () => ({
+            themeId: "moss",
+            themeLabel: "Moss",
+            mode: "dark",
+            scheme: "dark",
+            locked: false,
+          }),
+        }),
+      );
+
+      const res = await registry.call(makeCtx(), "app_preview_theme_override", {
+        themeId: "grove",
+        colors: { accent: "#38bdf8" },
+      });
+      const change = parseThemeChange(res.content[0]?.text);
+      expect(change?.to).toBe("grove");
+      expect(change?.from).toBe("moss");
+      expect(change?.preview).toBe(true);
+      expect(change?.colors).toEqual({ accent: "#38bdf8" });
+
+      const cancelRes = await registry.call(makeCtx(), "app_preview_theme_override", {
+        cancel: true,
+      });
+      expect(parseThemeChange(cancelRes.content[0]?.text)).toBeNull();
+      expect(cancelRes.content[0]?.text).toContain("Cancelled live theme preview");
     });
 
     it("app_create_custom_theme validates and creates custom theme", async () => {

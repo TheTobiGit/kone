@@ -21,6 +21,8 @@ import {
   formatCustomThemeCreated,
   formatModeApplied,
   formatThemeApplied,
+  formatThemeChange,
+  type ThemeChangeData,
 } from "@kone/protocol/theme-summary";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { squash } from "../helpers.js";
@@ -438,12 +440,13 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
       emit(mutationEvent);
     }
 
-    // What it replaced belongs in the sentence, not only in structuredContent:
-    // the summary is the part that is stored against the call and read back
-    // later, by the agent resuming this thread and by the thread's own UI. A
-    // change that cannot say what it displaced can only ever be reported as
-    // where things ended up. Both halves of that sentence live in
-    // @kone/protocol/theme-summary, which is also what reads it back.
+    // What it replaced belongs in the result as data, not only in
+    // structuredContent: the result text is what is stored against the call
+    // and read back later, by the agent resuming this thread and by the
+    // thread's own UI. A change that cannot say what it displaced can only
+    // ever be reported as where things ended up. The sentence stays as the
+    // record's human half; both halves are built in
+    // @kone/protocol/theme-summary, which is also what reads the record back.
     const replaced =
       targetTheme && previous.known && previous.themeId && previous.themeId !== targetTheme.id
         ? { id: previous.themeId, label: previous.themeLabel ?? previous.themeId }
@@ -456,12 +459,19 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
           replaced,
         })
       : formatModeApplied(appliedMode ?? "system", resolvedScheme);
+    // A bare mode change names no theme, so it stays a plain sentence — a
+    // record always names where it landed. The record rides the result text
+    // rather than structuredContent because only the text survives the CLI
+    // round-trip back into the item's stored detail.
+    const text = targetTheme
+      ? formatThemeChange({ to: targetTheme.id, from: replaced?.id ?? null, summary })
+      : summary;
 
     return {
       content: [
         {
           type: "text",
-          text: summary,
+          text,
         },
       ],
       structuredContent: {
@@ -520,8 +530,28 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
       ? "Cancelled live theme preview; restored saved theme."
       : `Live preview applied (theme: ${base?.id ?? "current"}, mode: ${params.mode ?? "current"}, custom tokens: ${Object.keys(params.colors ?? {}).length}).`;
 
+    // A cancel restores the saved theme, which this side cannot name — the
+    // appearance on record here is still the preview — so it stays a plain
+    // sentence, as does a preview with nothing nameable on screen. Otherwise
+    // the preview is recorded the same way a saved change is, with its
+    // custom tokens when it painted with any.
+    let text = message;
+    if (!params.cancel) {
+      const previous = currentState();
+      const to = base?.id ?? previous.themeId;
+      if (to) {
+        const from =
+          previous.known && previous.themeId && previous.themeId !== to ? previous.themeId : null;
+        const change: ThemeChangeData = { to, from, summary: message, preview: true };
+        if (params.colors && Object.keys(params.colors).length > 0) {
+          change.colors = params.colors;
+        }
+        text = formatThemeChange(change);
+      }
+    }
+
     return {
-      content: [{ type: "text", text: message }],
+      content: [{ type: "text", text }],
       structuredContent: {
         ok: true,
         previewActive: !params.cancel,
@@ -570,9 +600,10 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
       params.accent,
       replaced,
     );
+    const text = formatThemeChange({ to: params.id, from: replaced?.id ?? null, summary });
 
     return {
-      content: [{ type: "text", text: summary }],
+      content: [{ type: "text", text }],
       structuredContent: {
         ok: true,
         summary,

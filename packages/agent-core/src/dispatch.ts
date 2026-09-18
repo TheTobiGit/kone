@@ -5,6 +5,13 @@ import { threadWorkingDir, threadWorkspaceState } from "./threadWorkspace.js";
 import type { ThreadWorkspace } from "./threadWorkspace.js";
 import { workingDirFor } from "./assistantWorkspace.js";
 import type { ConversationStore } from "./ConversationStore.js";
+import {
+  claimQuitResumeRecordAtStartup,
+  resumeQuitInterruptedChats,
+  type QuitResumeAssistantTurn,
+  type QuitResumeSkipped,
+  type QuitResumeThreadSnapshot,
+} from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
 import {
   buildPromptThreadTitleFallback,
@@ -140,6 +147,25 @@ export interface ThreadDispatcher {
    *  Nothing is journaled: the settled `thread.state.changed` "compacted"
    *  boundary is the record, not a user message. */
   compactThread(threadId: string): Promise<CompactThreadResult>;
+  /** Adopt the thread's stored session when none is live, so a turn can run on
+   *  it. Reads the provider, model, picker selection and — when `resume` is
+   *  true — the stored provider conversation ids from the thread row and starts
+   *  the session from them; a fork passes false so the new thread starts fresh
+   *  instead of continuing the source's provider conversation. No-op when a
+   *  session is already live. */
+  ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void>;
+  /** Fresh snapshot of one thread for the quit-resume filter: liveness from the
+   *  service, settled-state facts per assistant turn from the store. */
+  readQuitResumeSnapshot(threadId: string): QuitResumeThreadSnapshot;
+  /** One silent continuation turn for a thread interrupted by a quit: adopts its
+   *  session with resume first, then dispatches without journaling — the prompt
+   *  is the app's own voice, not something the user said. */
+  dispatchQuitResumeTurn(threadId: string, prompt: string): Promise<void>;
+  /** Claim the quit-resume record (if any) and dispatch one continuation per
+   *  surviving thread, serialized with a fresh re-check before each. Best-effort:
+   *  resuming never fails boot — every failure is contained per thread and
+   *  reported as skipped. */
+  resumeQuitInterruptedChatsAtBoot(): Promise<{ resumed: string[]; skipped: QuitResumeSkipped[] }>;
   /** Back out of a worktree that is still being built. Does not interrupt git —
    *  the creation is awaited and what it made is then removed. */
   cancelThreadWorkspace(threadId: string): void;
@@ -348,17 +374,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   async forkThreadTurn(input: ForkThreadAtBlockInput): Promise<ForkThreadAtBlockResult> {
     const created = this.service.forkThreadForEdit(input);
     if (created.status === "exists") return created;
-    const meta = this.store.threadMeta(created.threadId);
-    if (!meta) throw new Error(`Fork thread ${created.threadId} not found after creation`);
-    const start: SessionStartInput = {
-      threadId: created.threadId,
-      provider: meta.provider,
-      cwd: meta.projectPath,
-    };
-    if (meta.model) start.model = meta.model;
-    if (meta.selection?.mode) start.mode = meta.selection.mode;
-    if (meta.selection?.effort) start.effort = meta.selection.effort;
-    await this.startThread(start);
+    await this.ensureThreadSession(created.threadId, { resume: false });
     await this.sendThreadTurn({ threadId: created.threadId, input: input.editedText }, { silent: true });
     return created;
   }
@@ -383,20 +399,94 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // the service's single-flight claim, so two concurrent compactions can't
     // each start a session and orphan the first.
     return this.service.compactThread(threadId, async () => {
-      if (!this.service.hasLiveSession(threadId)) {
-        const start: SessionStartInput = {
-          threadId,
-          provider: meta.provider,
-          cwd: meta.projectPath,
-        };
-        if (meta.model) start.model = meta.model;
-        if (meta.conversationId) start.resume = meta.conversationId;
-        if (meta.resumeSessionAt) start.resumeSessionAt = meta.resumeSessionAt;
-        if (meta.selection?.mode) start.mode = meta.selection.mode;
-        if (meta.selection?.effort) start.effort = meta.selection.effort;
-        await this.startThread(start);
-      }
+      await this.ensureThreadSession(threadId, { resume: true });
     });
+  }
+
+  async ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void> {
+    if (this.service.hasLiveSession(threadId)) return;
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) throw new Error(`Unknown thread ${threadId}`);
+    // A fresh process has no live sessions: adopt the thread's own session
+    // first, resuming its provider conversation when asked. When the provider
+    // honors the resume the continuation lands in full context; when it comes
+    // up blank the dispatcher replays the transcript digest in front of it
+    // instead of asking a blank agent to "continue".
+    const start: SessionStartInput = {
+      threadId,
+      provider: meta.provider,
+      cwd: meta.projectPath,
+    };
+    if (meta.model) start.model = meta.model;
+    if (options.resume) {
+      if (meta.conversationId) start.resume = meta.conversationId;
+      if (meta.resumeSessionAt) start.resumeSessionAt = meta.resumeSessionAt;
+    }
+    if (meta.selection?.mode) start.mode = meta.selection.mode;
+    if (meta.selection?.effort) start.effort = meta.selection.effort;
+    await this.startThread(start);
+  }
+
+  readQuitResumeSnapshot(threadId: string): QuitResumeThreadSnapshot {
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) return { threadId, missing: true, archived: false, busy: false, turns: [] };
+    const thread = this.store.loadThread(threadId);
+    const turns: QuitResumeAssistantTurn[] = [];
+    if (thread) {
+      for (const block of thread.blocks) {
+        if (block.role !== "assistant") continue;
+        turns.push({
+          turnId: block.turnId,
+          state: block.state,
+          at: block.at,
+          endedAt: block.endedAt ?? null,
+        });
+      }
+    }
+    return {
+      threadId,
+      missing: false,
+      archived: (meta.archivedAt ?? null) !== null,
+      busy: this.service.isThreadBusy(threadId),
+      turns,
+    };
+  }
+
+  async dispatchQuitResumeTurn(threadId: string, prompt: string): Promise<void> {
+    await this.ensureThreadSession(threadId, { resume: true });
+    // Silent: this prompt is the app's own voice, not something the user said
+    // — journaling it would put words in their mouth.
+    await this.sendThreadTurn(
+      { threadId, input: prompt },
+      { silent: true, generateTitle: false },
+    );
+  }
+
+  async resumeQuitInterruptedChatsAtBoot(): Promise<{
+    resumed: string[];
+    skipped: QuitResumeSkipped[];
+  }> {
+    const claimed = claimQuitResumeRecordAtStartup();
+    if (claimed.kind !== "record") return { resumed: [], skipped: [] };
+    try {
+      const result = await resumeQuitInterruptedChats({
+        claimed,
+        readSnapshot: (id) => this.readQuitResumeSnapshot(id),
+        dispatchResumeTurn: (id, prompt) => this.dispatchQuitResumeTurn(id, prompt),
+      });
+      if (result.resumed.length > 0) {
+        console.info(
+          `[agent] resumed ${result.resumed.length} chat(s) interrupted by the previous quit`,
+        );
+      }
+      if (result.skipped.length > 0) {
+        console.info("[agent] quit-resume skipped threads that moved on:", result.skipped);
+      }
+      return result;
+    } catch (err) {
+      console.warn("[agent] quit-resume failed — continuing boot without it:", err);
+      return { resumed: [], skipped: [] };
+    }
   }
 
   /** The shared body of sendThreadTurn and steerThreadTurn. A steer is the same

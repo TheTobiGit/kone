@@ -4,6 +4,7 @@ import type {
   ConversationSearchHit,
   ConversationSearchOptions,
 } from "../conversationStoreTypes.js";
+import { decodeStoredText } from "./itemTextChunks.js";
 
 /** Full-text search over stored conversation text, plus the writers that keep
  *  its index in step with the transcript.
@@ -153,6 +154,7 @@ type ItemIndexRow = {
   item_id: string;
   turn_id: string;
   text: string | null;
+  text_json: string | null;
   name: string | null;
   detail: string | null;
   at: number;
@@ -161,7 +163,9 @@ type ItemIndexRow = {
 /** Re-sync every item of one turn from the items table: the backfill half of
  *  the completion hook. Removes the turn's item rows first, then re-inserts
  *  from the current row contents in bounded batches, so settling a turn
- *  indexes even the items that never emitted their own completion. */
+ *  indexes even the items that never emitted their own completion. Item text
+ *  is decoded through the encoded fallback first, so an item whose raw text
+ *  cannot round-trip still indexes the true text it settled with. */
 export function indexTurnRows(db: DatabaseSync, threadId: string, turnId: string): void {
   if (!ftsReady(db)) return;
   try {
@@ -175,7 +179,7 @@ export function indexTurnRows(db: DatabaseSync, threadId: string, turnId: string
       // SAFETY: the projection names exactly the item columns read below.
       const rows = db
         .prepare(
-          `SELECT item_id, turn_id, text, name, detail, at FROM items
+          `SELECT item_id, turn_id, text, text_json, name, detail, at FROM items
             WHERE thread_id = ? AND turn_id = ?
             ORDER BY seq ASC
             LIMIT ? OFFSET ?`,
@@ -188,7 +192,7 @@ export function indexTurnRows(db: DatabaseSync, threadId: string, turnId: string
          VALUES (?, 'item', ?, ?, ?, ?, ?)`,
       );
       for (const row of rows) {
-        const text = combineItemText(row.text, row.name, row.detail);
+        const text = combineItemText(decodeStoredText(row.text, row.text_json), row.name, row.detail);
         if (text.trim().length === 0) continue;
         insert.run(threadId, blockId, row.turn_id, row.item_id, row.at, text);
       }
@@ -232,6 +236,9 @@ export function indexThreadRows(db: DatabaseSync, threadId: string): void {
          VALUES (?, 'block', ?, ?, NULL, ?, ?)`,
       );
       for (const block of blocks) {
+        // Blocks carry only the raw text column — there is no encoded
+        // fallback beside it — so the block text indexes exactly as stored
+        // while only item rows decode through the fallback above.
         if (!block.text || block.text.trim().length === 0) continue;
         insertBlock.run(threadId, block.block_id, block.turn_id, block.at, block.text);
       }

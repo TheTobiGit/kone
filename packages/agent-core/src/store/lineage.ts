@@ -4,7 +4,7 @@ import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, ForkContext, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadLineage } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, type ThreadRow } from "../conversationStoreTypes.js";
-import { indexBlockRow, indexItemRow } from "./search.js";
+import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
   buildEditForkTitle,
@@ -39,6 +39,268 @@ export type ForkThreadAtBlockResult =
       copiedBlocks: number;
     }
   | { ok: false; reason: ForkThreadAtBlockError };
+
+/** One settled prefix block read ahead of an edit fork: the columns the copy
+ *  re-inserts. A `running` mark arrives already folded to `interrupted` —
+ *  with no live turn behind the fork that flag would wedge the new thread's
+ *  composer, and the turn provably did not finish here. */
+type ForkPrefixBlock = {
+  role: "user" | "assistant";
+  turn_id: string | null;
+  text: string | null;
+  state: string | null;
+  error: string | null;
+  at: number;
+  ended_at: number | null;
+  attachments_json: string | null;
+  source: string;
+};
+
+/** The fork point's own columns: its arrival order (which bounds the copied
+ *  prefix), its attachments (which the edited replacement inherits, so a
+ *  text edit never drops the images/files the turn was asked about) and its
+ *  timestamp (which bounds the copied compaction markers). */
+type ForkPoint = {
+  seq: number;
+  at: number;
+  attachmentsJson: string | null;
+};
+
+type ForkPointRead =
+  | { ok: true; point: ForkPoint }
+  | { ok: false; reason: "unknown-block" | "not-user-block" | "queued-turn" };
+
+/** The copied prefix plus the distinct turn ids those blocks belong to — the
+ *  key the satellite copy ranges over. */
+type ForkPrefixRead = {
+  prefix: ForkPrefixBlock[];
+  turnIds: string[];
+};
+
+/** The source thread row, or null when there is no such thread. */
+function readForkSource(db: DatabaseSync, sourceThreadId: string): ThreadRow | undefined {
+  // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
+  // schema creates.
+  return db.prepare(`SELECT * FROM threads WHERE thread_id = ?`).get(sourceThreadId) as
+    | ThreadRow
+    | undefined;
+}
+
+/** The fork point's columns plus the live-intent guards: the block must
+ *  exist, must be a user message (only user messages are editable), and must
+ *  not still sit in the dispatch queue — forking answered history out of an
+ *  unanswered prompt would lie about what the model saw. */
+function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string): ForkPointRead {
+  // SAFETY: the projection names only the fork point's own columns.
+  const forkPoint = db
+    .prepare(
+      `SELECT seq, role, attachments_json, at FROM blocks
+        WHERE thread_id = ? AND block_id = ?`,
+    )
+    .get(sourceThreadId, blockId) as
+    | { seq: number; role: string; attachments_json: string | null; at: number }
+    | undefined;
+  if (!forkPoint) return { ok: false, reason: "unknown-block" };
+  if (forkPoint.role !== "user") return { ok: false, reason: "not-user-block" };
+  const queued = db
+    .prepare(
+      `SELECT 1 FROM queued_turns
+        WHERE thread_id = ? AND user_block_id = ? AND state IN ('queued', 'promoting')`,
+    )
+    .get(sourceThreadId, blockId);
+  if (queued) return { ok: false, reason: "queued-turn" };
+  return {
+    ok: true,
+    point: { seq: forkPoint.seq, at: forkPoint.at, attachmentsJson: forkPoint.attachments_json },
+  };
+}
+
+/** The prefix: every settled block strictly before the fork point, in
+ *  arrival order, plus the distinct turn ids those blocks belong to — the
+ *  key the satellite copy ranges over. Prompts still waiting behind the
+ *  running turn are excluded by the same active-queue predicate live reads
+ *  use. */
+function readForkPrefix(
+  db: DatabaseSync,
+  sourceThreadId: string,
+  forkSeq: number,
+): ForkPrefixRead {
+  // SAFETY: the projection names only blocks columns the copy inserts.
+  const prefix = db
+    .prepare(
+      `SELECT role, turn_id, text,
+              CASE WHEN state = 'running' THEN 'interrupted' ELSE state END AS state,
+              error, at, ended_at, attachments_json, source
+         FROM blocks
+        WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
+        ORDER BY seq`,
+    )
+    .all(sourceThreadId, forkSeq) as ForkPrefixBlock[];
+  const turnIds = [...new Set(prefix.map((b) => b.turn_id).filter((t): t is string => Boolean(t)))];
+  return { prefix, turnIds };
+}
+
+/** The fork's title: a lineage-wide version suffix over the source's title,
+ *  or a word-cap of the edited text when the source is untitled. */
+function deriveForkTitle(familyTitles: string[], sourceTitle: string | null, editedText: string): string {
+  const trimmed = sourceTitle?.trim() || null;
+  if (trimmed) return buildEditForkTitle(trimmed, familyTitles);
+  return editedText.split("\n")[0]!.trim().slice(0, 48) || "Edited message";
+}
+
+/** The fork's thread row: the source's placement and model columns carried
+ *  over, a fresh clock, and the source pointer plus fork context naming the
+ *  replaced block. Never a parent edge or a provider session — the fork is a
+ *  new root thread starting a fresh conversation. */
+function insertForkThreadRow(
+  db: DatabaseSync,
+  input: {
+    threadId: string;
+    source: ThreadRow;
+    provider: ProviderKind;
+    title: string;
+    now: number;
+    requestId: string | undefined;
+    forkContextJson: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO threads (
+       thread_id, project_path, provider, model, created_at, last_activity_at,
+       last_visited_at, title, branch, added, removed, compacts_auto,
+       source_thread_id, parent_thread_id, relationship_to_parent,
+       fork_context_json, request_id, model_selection_json,
+       env_mode, worktree_path, requested_branch)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.threadId,
+    input.source.project_path,
+    input.provider,
+    input.source.model,
+    input.now,
+    input.now,
+    input.now,
+    input.title,
+    input.source.branch,
+    input.source.added,
+    input.source.removed,
+    input.source.compacts_auto,
+    input.source.thread_id,
+    input.forkContextJson,
+    input.requestId ?? null,
+    input.source.model_selection_json,
+    input.source.env_mode,
+    input.source.worktree_path,
+    input.source.requested_branch ?? null,
+  );
+}
+
+/** The prefix blocks, verbatim except for re-minted block ids (`block_id`
+ *  is globally unique, so the source's ids cannot be reused). Same turn ids
+ *  (so blocks, items, subagent runs and per-turn usage stay linked), same
+ *  timestamps, same attachment metadata, same settlement states. */
+function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPrefixBlock[]): void {
+  const insertBlock = db.prepare(
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const block of prefix) {
+    insertBlock.run(
+      randomUUID(),
+      threadId,
+      block.role,
+      block.turn_id,
+      block.text,
+      block.state,
+      block.error,
+      block.at,
+      block.ended_at,
+      block.attachments_json,
+      block.source,
+    );
+  }
+}
+
+/** The edited replacement: this thread's own message (native, not an
+ *  import), carrying the original's attachments. Attachment bytes stay
+ *  shared with the source (the registry row keeps living under the source's
+ *  id); deleting the source orphans these chips the same way it orphans a
+ *  side chat's. */
+function insertForkEditedBlock(
+  db: DatabaseSync,
+  input: {
+    threadId: string;
+    editedBlockId: string;
+    editedText: string;
+    now: number;
+    attachmentsJson: string | null;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, source)
+     VALUES (?, ?, 'user', NULL, ?, NULL, NULL, ?, NULL, ?, 'native')`,
+  ).run(
+    input.editedBlockId,
+    input.threadId,
+    input.editedText,
+    input.now,
+    input.attachmentsJson,
+  );
+}
+
+/** The copied turns' satellite rows: full item rows (tool calls with their
+ *  detail bodies, not just narrative text — including the encoded text
+ *  fallback, so items whose raw text cannot round-trip still decode), the
+ *  subagent runs, the per-turn usage audit rows, and the pending streaming
+ *  chunks still waiting on an unsettled item (so a forked interrupted item
+ *  keeps its suffix). One `INSERT INTO ... SELECT` per table with the thread
+ *  id overridden at copy time: no row interface to drift out of step with
+ *  the schema, and new sequence numbers assigned in arrival order so the
+ *  (turn_id, seq) read the timeline uses comes back identical. */
+function copyForkSatellites(
+  db: DatabaseSync,
+  sourceThreadId: string,
+  threadId: string,
+  turnIds: string[],
+): void {
+  if (turnIds.length === 0) return;
+  const placeholders = turnIds.map(() => "?").join(",");
+  db.prepare(
+    `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, text_json, name, detail, tasks_json, subagent_tool_use_id, at)
+     SELECT item_id, ?, turn_id, kind, status, text, text_json, name, detail, tasks_json, subagent_tool_use_id, at
+       FROM items
+      WHERE thread_id = ? AND turn_id IN (${placeholders})
+      ORDER BY seq`,
+  ).run(threadId, sourceThreadId, ...turnIds);
+  db.prepare(
+    `INSERT INTO subagents (tool_use_id, thread_id, turn_id, task_id, parent_item_id, agent_type,
+                            description, prompt, model, effort, background, status, summary,
+                            last_tool_name, tokens, tool_uses, started_at, ended_at)
+     SELECT tool_use_id, ?, turn_id, task_id, parent_item_id, agent_type,
+            description, prompt, model, effort, background, status, summary,
+            last_tool_name, tokens, tool_uses, started_at, ended_at
+       FROM subagents
+      WHERE thread_id = ? AND turn_id IN (${placeholders})
+      ORDER BY seq`,
+  ).run(threadId, sourceThreadId, ...turnIds);
+  db.prepare(
+    `INSERT INTO turn_usage (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
+                             cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+                             provider, model, at)
+     SELECT ?, turn_id, input_tokens, output_tokens, total_tokens,
+            cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+            provider, model, at
+       FROM turn_usage
+      WHERE thread_id = ? AND turn_id IN (${placeholders})`,
+  ).run(threadId, sourceThreadId, ...turnIds);
+  db.prepare(
+    `INSERT INTO item_text_chunks (thread_id, turn_id, item_id, seq, text_json, char_len)
+     SELECT ?, turn_id, item_id, seq, text_json, char_len
+       FROM item_text_chunks
+      WHERE thread_id = ? AND turn_id IN (${placeholders})
+      ORDER BY turn_id, item_id, seq`,
+  ).run(threadId, sourceThreadId, ...turnIds);
+}
 
 export class LineageRepo {
   constructor(private readonly dbh: ConversationDb) {}
@@ -222,7 +484,8 @@ export class LineageRepo {
    *
    *  The copy also ranges over the turn's satellite tables for the copied
    *  turns: full item rows (tool calls with their detail bodies, not just
-   *  narrative text), subagent runs, per-turn usage, and compaction markers
+   *  narrative text), subagent runs, per-turn usage, pending streaming chunks
+   *  for items that never settled, and compaction markers
    *  at or before the edit point. Live intent is never copied: queued-turn
    *  rows and gateway-op reservations belong to the source's future, not the
    *  fork's history, and prompts still waiting behind the running turn are
@@ -251,81 +514,18 @@ export class LineageRepo {
     const editedText = input.editedText.trim();
     if (!editedText) return { ok: false, reason: "empty-edit" };
     try {
-      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
-      // schema creates.
-      const source = db
-        .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
-        .get(input.sourceThreadId) as ThreadRow | undefined;
+      const source = readForkSource(db, input.sourceThreadId);
       if (!source) return { ok: false, reason: "unknown-thread" };
       const existing = db
         .prepare(`SELECT 1 FROM threads WHERE thread_id = ?`)
         .get(input.threadId);
       if (existing) return { ok: false, reason: "thread-exists" };
-      // SAFETY: the projection names only the fork point's own columns.
-      const forkPoint = db
-        .prepare(
-          `SELECT seq, role, text, attachments_json, at FROM blocks
-            WHERE thread_id = ? AND block_id = ?`,
-        )
-        .get(input.sourceThreadId, input.blockId) as
-        | {
-            seq: number;
-            role: string;
-            text: string | null;
-            attachments_json: string | null;
-            at: number;
-          }
-        | undefined;
-      if (!forkPoint) return { ok: false, reason: "unknown-block" };
-      if (forkPoint.role !== "user") return { ok: false, reason: "not-user-block" };
-      // A message that hasn't run yet must not become answered history: refuse
-      // while its queue row is still active instead of forking a lie about
-      // what the model saw.
-      const queued = db
-        .prepare(
-          `SELECT 1 FROM queued_turns
-            WHERE thread_id = ? AND user_block_id = ? AND state IN ('queued', 'promoting')`,
-        )
-        .get(input.sourceThreadId, input.blockId);
-      if (queued) return { ok: false, reason: "queued-turn" };
-
-      // The prefix: every settled block strictly before the fork point, in
-      // arrival order. A `running` mark is never copied as running — with no
-      // live turn behind the fork that flag would wedge the new thread's
-      // composer; the turn provably did not finish here, so it reads as
-      // interrupted. (Unreachable while the service's busy guard holds; this
-      // is the crash-orphan case the boot seal would otherwise have owned.)
-      // SAFETY: the projection names only blocks columns the copy inserts.
-      const prefix = db
-        .prepare(
-          `SELECT role, turn_id, text,
-                  CASE WHEN state = 'running' THEN 'interrupted' ELSE state END AS state,
-                  error, at, ended_at, attachments_json, source
-             FROM blocks
-            WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
-            ORDER BY seq`,
-        )
-        .all(input.sourceThreadId, forkPoint.seq) as Array<{
-        role: "user" | "assistant";
-        turn_id: string | null;
-        text: string | null;
-        state: string | null;
-        error: string | null;
-        at: number;
-        ended_at: number | null;
-        attachments_json: string | null;
-        source: string;
-      }>;
-      const turnIds = [...new Set(prefix.map((b) => b.turn_id).filter((t): t is string => Boolean(t)))];
+      const pointRead = readForkPoint(db, input.sourceThreadId, input.blockId);
+      if (!pointRead.ok) return pointRead;
+      const { prefix, turnIds } = readForkPrefix(db, input.sourceThreadId, pointRead.point.seq);
 
       const family = this.editForkFamily(db, input.sourceThreadId);
-      const sourceTitle = source.title?.trim() || null;
-      const title = sourceTitle
-        ? buildEditForkTitle(
-            sourceTitle,
-            family.titles,
-          )
-        : editedText.split("\n")[0]!.trim().slice(0, 48) || "Edited message";
+      const title = deriveForkTitle(family.titles, source.title, editedText);
 
       const now = input.editedAt ?? Date.now();
       const editedBlockId = input.editedBlockId ?? randomUUID();
@@ -342,219 +542,24 @@ export class LineageRepo {
 
       this.dbh.durably(db, () => {
         withTransaction(db, () => {
-          db.prepare(
-            `INSERT INTO threads (
-               thread_id, project_path, provider, model, created_at, last_activity_at,
-               last_visited_at, title, branch, added, removed, compacts_auto,
-               source_thread_id, parent_thread_id, relationship_to_parent,
-               fork_context_json, request_id, model_selection_json,
-               env_mode, worktree_path, requested_branch)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
-          ).run(
-            input.threadId,
-            source.project_path,
+          insertForkThreadRow(db, {
+            threadId: input.threadId,
+            source,
             provider,
-            source.model,
-            now,
-            now,
-            now,
             title,
-            source.branch,
-            source.added,
-            source.removed,
-            source.compacts_auto,
-            input.sourceThreadId,
-            JSON.stringify(forkContext),
-            input.requestId ?? null,
-            source.model_selection_json,
-            source.env_mode,
-            source.worktree_path,
-            source.requested_branch ?? null,
-          );
-          const insertBlock = db.prepare(
-            `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          );
-          for (const block of prefix) {
-            insertBlock.run(
-              randomUUID(),
-              input.threadId,
-              block.role,
-              block.turn_id,
-              block.text,
-              block.state,
-              block.error,
-              block.at,
-              block.ended_at,
-              block.attachments_json,
-              block.source,
-            );
-          }
-          // The edited replacement: this thread's own message (native, not an
-          // import), carrying the original's attachments — a text edit must
-          // not silently drop the images/files the turn was asked about.
-          // Attachment bytes stay shared with the source (the registry row
-          // keeps living under the source's id); deleting the source orphans
-          // these chips the same way it orphans a side chat's.
-          insertBlock.run(
-            editedBlockId,
-            input.threadId,
-            "user",
-            null,
-            editedText,
-            null,
-            null,
             now,
-            null,
-            forkPoint.attachments_json,
-            "native",
-          );
-          if (turnIds.length > 0) {
-            const placeholders = turnIds.map(() => "?").join(",");
-            // Full item rows in arrival order — tool calls keep their detail
-            // bodies, tasks and subagent links, not just narrative text. New
-            // `seq`s are assigned in the same order, so the (turn_id, seq)
-            // read the timeline uses comes back identical.
-            // SAFETY: the projection names only items columns the copy inserts.
-            const items = db
-              .prepare(
-                `SELECT item_id, turn_id, kind, status, text, name, detail,
-                        tasks_json, subagent_tool_use_id, at
-                   FROM items
-                  WHERE thread_id = ? AND turn_id IN (${placeholders})
-                  ORDER BY seq`,
-              )
-              .all(input.sourceThreadId, ...turnIds) as Array<{
-              item_id: string;
-              turn_id: string;
-              kind: string;
-              status: string;
-              text: string;
-              name: string | null;
-              detail: string | null;
-              tasks_json: string | null;
-              subagent_tool_use_id: string | null;
-              at: number;
-            }>;
-            const insertItem = db.prepare(
-              `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail, tasks_json, subagent_tool_use_id, at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            );
-            for (const item of items) {
-              insertItem.run(
-                item.item_id,
-                input.threadId,
-                item.turn_id,
-                item.kind,
-                item.status,
-                item.text,
-                item.name,
-                item.detail,
-                item.tasks_json,
-                item.subagent_tool_use_id,
-                item.at,
-              );
-            }
-            // SAFETY: the projection names only subagents columns the copy inserts.
-            const runs = db
-              .prepare(
-                `SELECT tool_use_id, turn_id, task_id, parent_item_id, agent_type,
-                        description, prompt, model, effort, background, status,
-                        summary, last_tool_name, tokens, tool_uses, started_at, ended_at
-                   FROM subagents
-                  WHERE thread_id = ? AND turn_id IN (${placeholders})
-                  ORDER BY seq`,
-              )
-              .all(input.sourceThreadId, ...turnIds) as Array<{
-              tool_use_id: string;
-              turn_id: string;
-              task_id: string;
-              parent_item_id: string;
-              agent_type: string;
-              model: string;
-              description: string | null;
-              prompt: string | null;
-              effort: string | null;
-              background: number | null;
-              status: string;
-              summary: string | null;
-              last_tool_name: string | null;
-              tokens: number | null;
-              tool_uses: number | null;
-              started_at: number;
-              ended_at: number | null;
-            }>;
-            const insertRun = db.prepare(
-              `INSERT INTO subagents (tool_use_id, thread_id, turn_id, task_id, parent_item_id, agent_type,
-                                      description, prompt, model, effort, background, status, summary,
-                                      last_tool_name, tokens, tool_uses, started_at, ended_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            );
-            for (const run of runs) {
-              insertRun.run(
-                run.tool_use_id,
-                input.threadId,
-                run.turn_id,
-                run.task_id,
-                run.parent_item_id,
-                run.agent_type,
-                run.description,
-                run.prompt,
-                run.model,
-                run.effort,
-                run.background,
-                run.status,
-                run.summary,
-                run.last_tool_name,
-                run.tokens,
-                run.tool_uses,
-                run.started_at,
-                run.ended_at,
-              );
-            }
-            // SAFETY: the projection names only turn_usage columns the copy inserts.
-            const usage = db
-              .prepare(
-                `SELECT turn_id, input_tokens, output_tokens, total_tokens,
-                        cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-                        provider, model, at
-                   FROM turn_usage
-                  WHERE thread_id = ? AND turn_id IN (${placeholders})`,
-              )
-              .all(input.sourceThreadId, ...turnIds) as Array<{
-              turn_id: string;
-              input_tokens: number | null;
-              output_tokens: number | null;
-              total_tokens: number | null;
-              cache_read_tokens: number | null;
-              cache_creation_tokens: number | null;
-              reasoning_tokens: number | null;
-              provider: string | null;
-              model: string | null;
-              at: number;
-            }>;
-            const insertUsage = db.prepare(
-              `INSERT INTO turn_usage (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
-                                       cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-                                       provider, model, at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            );
-            for (const row of usage) {
-              insertUsage.run(
-                input.threadId,
-                row.turn_id,
-                row.input_tokens,
-                row.output_tokens,
-                row.total_tokens,
-                row.cache_read_tokens,
-                row.cache_creation_tokens,
-                row.reasoning_tokens,
-                row.provider,
-                row.model,
-                row.at,
-              );
-            }
-          }
+            requestId: input.requestId,
+            forkContextJson: JSON.stringify(forkContext),
+          });
+          copyForkPrefixBlocks(db, input.threadId, prefix);
+          insertForkEditedBlock(db, {
+            threadId: input.threadId,
+            editedBlockId,
+            editedText,
+            now,
+            attachmentsJson: pointRead.point.attachmentsJson,
+          });
+          copyForkSatellites(db, input.sourceThreadId, input.threadId, turnIds);
           // Markers at or before the edit point are this thread's history too;
           // anything newer never happened here.
           db.prepare(
@@ -562,7 +567,11 @@ export class LineageRepo {
              SELECT ?, at, before_tokens, after_tokens FROM compactions
               WHERE thread_id = ? AND at <= ?
               ORDER BY at`,
-          ).run(input.threadId, input.sourceThreadId, forkPoint.at);
+          ).run(input.threadId, input.sourceThreadId, pointRead.point.at);
+          // The copy bypasses the per-turn settle hooks that normally feed
+          // the index, so re-sync the whole fork before the transaction
+          // commits — otherwise the forked history is invisible to search.
+          indexThreadRows(db, input.threadId);
         });
       });
       return {
@@ -665,7 +674,8 @@ export class LineageRepo {
     }
   }
 
-  /** Flip a side chat's one-shot bootstrap flag to "completed" — called when   *  its first turn settles, so the imported-transcript injection never runs
+  /** Flip a side chat's one-shot bootstrap flag to "completed" — called when
+   *  its first turn settles, so the imported-transcript injection never runs
    *  twice. No-op for non-forks and already-completed forks. */
   completeSidechatBootstrap(db: DatabaseSync, threadId: string): void {
     try {
