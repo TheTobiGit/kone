@@ -7,6 +7,7 @@ import { GROVE_THEME } from "./grove";
 import { OCEAN_THEME } from "./ocean";
 import { EMBER_THEME } from "./ember";
 import { IRIS_THEME } from "./iris";
+import { LEMON_THEME } from "./lemon";
 import { NOCTURNE_THEME } from "./nocturne";
 import { FORGE_THEME } from "./forge";
 import { MOSS_THEME } from "./moss";
@@ -32,6 +33,7 @@ export const BUILT_IN_THEMES: readonly ThemeDefinition[] = [
   OCEAN_THEME,
   EMBER_THEME,
   IRIS_THEME,
+  LEMON_THEME,
   NOCTURNE_THEME,
   FORGE_THEME,
   MOSS_THEME,
