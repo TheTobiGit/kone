@@ -4,9 +4,10 @@ This directory is a vendored copy. Everything here is upstream's except the
 changes recorded below, which exist so the rules say something true about *this*
 codebase. Re-vendoring means replaying these; nothing else has been touched.
 
-All of it is confined to `no-known-value-widening` and the one helper it owns.
-The other fourteen rules are untouched — verified by diffing the full per-rule
-finding table before and after, which moved only this rule's number.
+All of it is confined to `no-known-value-widening` and the classifier it leans
+on. The other seventeen generic rules and the five Effect rules are untouched —
+verified by diffing the full per-rule finding table before and after, which
+moved only this rule's number.
 
 ## `no-known-value-widening`: judge an annotation by every flow into it
 
@@ -35,7 +36,8 @@ judge the annotation by, and the rule reported code that was already correct.
 ## `no-known-value-widening`: dictionaries with an open key are out of scope
 
 The fourth change is a policy narrowing, not a bug fix, and is the one to revisit
-first if these rules are ever retuned.
+first if these rules are ever retuned. **Upstream now actively disagrees with it**
+— see below.
 
 A table annotated `Record<string, V>` and indexed with an arbitrary runtime string
 cannot take the rule's own advice. Dropping the annotation for `satisfies` infers
@@ -44,27 +46,67 @@ compiling with TS7053 — measured, not assumed: 75 of 90 attempted conversions
 failed that way. The evidence the rule wants to preserve is also unreachable,
 since the consumer's key is not known at the call site, and `noUncheckedIndexedAccess`
 is on, so the lookup already yields `V | undefined` — the safety the evidence
-would have bought.
+would have bought. A key that closes over a union of literals (`Record<Cue, V>`)
+is a different matter and is still reported — those convert cleanly and 45 of
+them did.
 
-So `classifyWideningTarget` still classifies these, and the rule now filters them
-via the new `hasOpenDictionaryKey` in `shared/dictionary-types.ts`. A key that
-closes over a union of literals (`Record<Cue, V>`) is a different matter and is
-still reported — those convert cleanly and 45 of them did.
+### How it is expressed now
 
-`hasOpenDictionaryKey` is additive and used only here. It reuses upstream's own
-`isBroadMappedKey`, which already drew this exact distinction for mapped types;
-the direct `Record` path just never consulted it.
+It used to be a local `hasOpenDictionaryKey` in `shared/dictionary-types.ts`,
+called from the rule to filter targets the classifier had already returned.
+That helper is gone. Upstream has since grown its own key test — `isBroadMappedKey`,
+reached through `hasBroadRecordKey` — and wired it into `classifyWideningTarget`
+directly, so the predicate no longer needs a local implementation.
+
+What upstream wired it up to do, however, is the **opposite** of this policy:
+upstream reports `Record<string, V>` and spares `Record<Cue, V>`. The local change
+is now three polarity flips against that, in `classifyWideningTarget` and its
+alias-walking twin `classifyAliasBroadTarget`:
+
+- `Record<…>` with a broad key → not a target (upstream: a target).
+- an index-signature type literal → not a target (upstream: a target).
+- a mapped type → a target only when its constraint is a closed union
+  (upstream: always a target).
+
+Measured on this repo at the time of the merge: upstream's polarity produces 69
+findings, all of the unconvertible shape above; this one produces 0. The prose
+reasoning lives next to `classifyWideningTarget`.
+
+This is the change most likely to conflict again on the next update, and the
+cheapest to reverse — flip the three branches back and delete the note.
 
 ## What is deliberately still reported
 
-Four findings survive, all one shape: a table whose entries are not uniform, so
-`satisfies` infers a union of per-entry literal types and uniform access breaks.
+`MERGEABILITY`, `STATE_CHIP`, `VOICES` and `PRESETS` were once left reported and
+are recorded here because the reasoning still applies to tables of that shape: a
+table whose entries are not uniform, so `satisfies` infers a union of per-entry
+literal types and uniform access breaks — TS7053 on the keys a partial table
+lacks, TS2339 on members that ragged entries omit. Each was attempted and
+reverted against the compiler. They were left reported rather than suppressed,
+because a reader may well want to know these tables are partial or ragged.
 
-- `MERGEABILITY`, `STATE_CHIP` — partial tables indexed by the full union
-  (TS7053 on the absent keys).
-- `VOICES`, `PRESETS` — entries that omit an optional member, so reading it fails
-  with TS2339 on the members that lack it.
+Those four have since been resolved in the source; the rule reports nothing in
+this repo today.
 
-These were each attempted and reverted against the compiler. They are left
-reported rather than suppressed, because a reader may well want to know these
-tables are partial or ragged.
+## Two new rules are vendored but registered `"off"`
+
+`require-readable-spacing` and `no-array-filter-map` arrived with the 2026-09-18
+update. Both are switched off in `.oxlintrc.json` rather than left out, so the
+next update diffs cleanly against a config that lists every rule the plugin
+ships.
+
+Neither is a disagreement with the rule. Both report on code that predates them,
+and enabling them as `error` turns `lint` red on files no current branch touches:
+
+| Rule | Findings | Files |
+| --- | --- | --- |
+| `require-readable-spacing` | 18,996 | 890 |
+| `no-array-filter-map` | 10 | 8 |
+
+The spacing rule fixes whitespace only, so `--fix` can clear it in one pass; the
+reason to wait is that the pass rewrites most of the repo and would land on top
+of unreviewed work. `no-array-filter-map` is small enough to clear by hand, but
+each site needs its callback ordering and filtering semantics preserved, which
+is a code change per site rather than a mechanical one.
+
+Turn each on in its own commit, together with the changes that make it pass.
