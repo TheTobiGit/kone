@@ -24,6 +24,7 @@ import {
   selectAgent,
   selectedAgent,
   settleThreadAgent,
+  threadSettled,
   updateAgent,
 } from "./agents";
 import {
@@ -55,6 +56,10 @@ function threadId(): string {
 function rowFor(id: string) {
   return agentRows.value.find((row) => row.agentId === id)!;
 }
+
+/** Every creation in these tests names a bot: one is required, so a draft
+ *  without it is refused rather than stored bot-less. */
+const TEST_BOT = { form: "pebble", color: "teal", expression: "curious" } as const;
 
 beforeEach(() => {
   agentRows.value = [];
@@ -95,7 +100,7 @@ describe("the roster", () => {
   // that happen to have rows, so making one agent would hide every built-in
   // nobody has touched yet.
   test("a made agent doesn't hide a built-in with no row of its own", async () => {
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     expect(agentRoster().map((agent) => agent.id)).toEqual([
       KONE.id,
       ORCHESTRATOR.id,
@@ -107,7 +112,7 @@ describe("the roster", () => {
   // built-ins on the first paint and stays there once hydrate writes the
   // presets' own rows at their indexes.
   test("a made agent stays last when hydrate lands after it", async () => {
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     const before = agentRoster().map((agent) => agent.id);
     expect(before).toEqual([KONE.id, ORCHESTRATOR.id, made!.id]);
     await hydrateRoster();
@@ -215,6 +220,43 @@ describe("who worked a thread", () => {
   });
 });
 
+// The predicate the router leans on: only an undecided thread is routed, so a
+// wrong answer here either re-routes a thread whose session is already running
+// under somebody else's name, or never routes a new one at all.
+describe("threadSettled", () => {
+  test("an unclaimed thread has not settled", () => {
+    expect(threadSettled(threadId())).toBe(false);
+    expect(threadSettled(null)).toBe(false);
+    expect(threadSettled(undefined)).toBe(false);
+    expect(threadSettled("")).toBe(false);
+  });
+
+  test("a thread settled on an agent has settled", () => {
+    const id = threadId();
+    settleThreadAgent(id, KONE.id);
+    expect(threadSettled(id)).toBe(true);
+  });
+
+  test("a thread settled on a guest has settled too — it is a decision", () => {
+    const id = threadId();
+    settleThreadAgent(id, null);
+    expect(threadSettled(id)).toBe(true);
+    // And the reason it matters: `agentForThread` cannot tell this apart from
+    // a thread nobody ever claimed, which is exactly the confusion that would
+    // route a guest thread's second turn.
+    expect(agentForThread(id)).toBeUndefined();
+  });
+
+  test("agrees with settleThreadAgent about which writes are refused", () => {
+    const id = threadId();
+    expect(threadSettled(id)).toBe(false);
+    settleThreadAgent(id, KONE.id);
+    expect(threadSettled(id)).toBe(true);
+    settleThreadAgent(id, ORCHESTRATOR.id);
+    expect(agentForThread(id)?.id).toBe(KONE.id);
+  });
+});
+
 describe("what the provider session is told", () => {
   test("kone's thread carries its name and instructions", () => {
     const id = threadId();
@@ -243,7 +285,7 @@ describe("what the provider session is told", () => {
   });
 
   test("an agent with no instructions carries just its name", async () => {
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     const id = threadId();
     settleThreadAgent(id, made!.id);
     const persona = agentPersonaForThread(id);
@@ -397,7 +439,7 @@ describe("renaming an agent", () => {
   // A user-made agent has no preset behind it, so an empty name is not a
   // rename — it would leave them with nothing to be called.
   test("a user-made agent cannot be left nameless", async () => {
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     await renameAgent(made!.id, "");
     expect(agentById(made!.id)?.name).toBe("Ada");
   });
@@ -408,6 +450,7 @@ describe("an agent you made yourself", () => {
     await hydrateRoster();
     const made = await createAgent({
       name: "Ada",
+      bot: TEST_BOT,
       role: "Reviewer",
       instructions: "Exacting.",
     });
@@ -422,12 +465,21 @@ describe("an agent you made yourself", () => {
   });
 
   test("a name is the one thing it can't do without", async () => {
-    expect(await createAgent({ name: "   " })).toBeUndefined();
+    expect(await createAgent({ name: "   ", bot: TEST_BOT })).toBeUndefined();
     expect(agentRoster().some((agent) => agent.name === "")).toBe(false);
   });
 
+  // Without its creature there is nothing to show while it works, so a
+  // bot-less draft is refused rather than stored.
+  test("a bot is the other thing it can't do without", async () => {
+    // SAFETY: deliberately omitting the required bot — the test asserts the
+    // create is refused.
+    expect(await createAgent({ name: "Ada" } as never)).toBeUndefined();
+    expect(agentRoster().some((agent) => agent.name === "Ada")).toBe(false);
+  });
+
   test("it can be handed a thread like anybody else", async () => {
-    const made = await createAgent({ name: "Ada", instructions: "Be brief." });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT, instructions: "Be brief." });
     const id = threadId();
     settleThreadAgent(id, made!.id);
     expect(agentPersonaForThread(id)).toEqual({ name: "Ada", instructions: "Be brief." });
@@ -544,6 +596,7 @@ describe("an agent's capabilities", () => {
   test("a new agent keeps the capabilities it was made with", async () => {
     const made = await createAgent({
       name: "Ada",
+      bot: TEST_BOT,
       model: { provider: "codex", model: "gpt-5", label: "GPT-5" },
       modelFallbacks: [{ provider: "claudeAgent", model: "opus", label: "Opus" }],
       skills: [{ path: "/s/a.md", name: "A", origin: "project" }],
@@ -556,7 +609,7 @@ describe("an agent's capabilities", () => {
   });
 
   test("a new agent silent about its capabilities runs anywhere", async () => {
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     expect(made?.capabilities.model).toBeNull();
     expect(made?.capabilities.modelFallbacks).toEqual([]);
     expect(made?.capabilities.skills).toEqual([]);
@@ -617,12 +670,40 @@ describe("how an agent looks", () => {
     expect(kone.bot).toEqual(KONE.bot!);
   });
 
-  // Neither field falls back to a default: an agent with no picture is
-  // identified by its drawn face, and one with no bot has none.
-  test("a new agent has neither unless it was given one", async () => {
-    const made = await createAgent({ name: "Ada" });
+  // No picture falls back to the drawn face: an agent with no picture is
+  // identified by the face it has always had. The bot has no such fallback on
+  // a made agent — without the creature there is nothing to show while it
+  // works, so creating one without a bot is refused.
+  test("a new agent has no picture unless it was given one", async () => {
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     expect(made?.avatar).toBeNull();
-    expect(made?.bot).toBeNull();
+    expect(made?.bot).toEqual(TEST_BOT);
+  });
+
+  // A made agent has no preset to inherit a face from, so the roster paints
+  // one from the agent's id — never the grey that reads as unfinished next to
+  // the built-ins.
+  test("a made agent is painted its own face", async () => {
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
+    expect(made?.hue).toMatch(/^#[0-9a-f]{6}$/);
+    expect(made?.ink).toMatch(/^#[0-9a-f]{6}$/);
+    expect(made?.svg).toContain(made?.hue);
+  });
+
+  // The colour is part of who the agent is, not what they are called: a
+  // rename keeps the face.
+  test("the painted face survives a rename", async () => {
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
+    const before = made?.hue;
+    await renameAgent(made!.id, "Maya");
+    expect(agentById(made!.id)?.hue).toBe(before);
+  });
+
+  test("an explicitly painted face wins over the id's", async () => {
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
+    await updateAgent(made!.id, { face: { body: "#ffffff", ink: "#000000" } });
+    expect(agentById(made!.id)?.hue).toBe("#ffffff");
+    expect(agentById(made!.id)?.ink).toBe("#000000");
   });
 
   test("a new agent keeps the appearance it was made with", async () => {
@@ -661,6 +742,7 @@ describe("how an agent looks", () => {
     for (const source of ["generated", "upload", "dicebear", "shipped"] as const) {
       const made = await createAgent({
         name: `Ada ${source}`,
+        bot: TEST_BOT,
         avatar: { source, src: "data:image/jpeg;base64,AAAA" },
       });
       expect(made?.avatar?.source).toBe(source);
@@ -674,6 +756,7 @@ describe("how an agent looks", () => {
     // source this build doesn't ship with "generated".
     const made = await createAgent({
       name: "Ada",
+      bot: TEST_BOT,
       avatar: { source: "daguerreotype", src: "data:image/jpeg;base64,AAAA" } as never,
     });
     expect(made?.avatar).toEqual({ source: "generated", src: "data:image/jpeg;base64,AAAA" });
@@ -681,7 +764,7 @@ describe("how an agent looks", () => {
 
   // An empty picture is no picture, not a picture that paints nothing.
   test("a picture with no bytes is dropped", async () => {
-    const made = await createAgent({ name: "Ada", avatar: { source: "upload", src: "  " } });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT, avatar: { source: "upload", src: "  " } });
     expect(made?.avatar).toBeNull();
   });
 
@@ -755,7 +838,7 @@ describe("the store's answer arriving", () => {
 
   test("a store that couldn't open is not mistaken for an empty roster", async () => {
     await hydrateRoster();
-    const made = await createAgent({ name: "Ama" });
+    const made = await createAgent({ name: "Ama", bot: TEST_BOT });
     threadBindings.value = { "thread-a": KONE.id };
 
     // No agents at all, not even the presets it was asked to ensure — nothing
@@ -776,7 +859,7 @@ describe("project teams", () => {
   });
 
   test("an agent added is on the team, and members hold their add order", async () => {
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     expect(await addAgentToProject(PROJECT, made!.id)).toBe(true);
     await addAgentToProject(PROJECT, KONE.id);
     expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([made!.id, KONE.id]);
@@ -791,7 +874,7 @@ describe("project teams", () => {
 
   test("membership is per project — an agent can be on many, off others", async () => {
     const other = "/tmp/other";
-    const made = await createAgent({ name: "Ada" });
+    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     await addAgentToProject(PROJECT, KONE.id);
     await addAgentToProject(PROJECT, made!.id);
     await addAgentToProject(other, KONE.id);
@@ -801,7 +884,7 @@ describe("project teams", () => {
   });
 
   test("an agent who leaves the roster drops out of a team and can't be re-added", async () => {
-    const made = await createAgent({ name: "Temp" });
+    const made = await createAgent({ name: "Temp", bot: TEST_BOT });
     expect(made).toBeDefined();
     const id = made!.id;
     expect(await addAgentToProject(PROJECT, id)).toBe(true);

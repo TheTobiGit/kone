@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, spawnSync } from "node:child_process";
-import { cpSync, existsSync } from "node:fs";
+import { cpSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,38 @@ const webDir = path.join(rootDir, "apps/web");
 const devServerUrl = "http://localhost:3001";
 
 const children: ChildProcess[] = [];
+
+/**
+ * Fold the repository's `.env` into this process's environment.
+ *
+ * Two things make this the launcher's job rather than something the runtime
+ * picks up for free. The task runner hands each task a filtered environment,
+ * so a variable exported in the shell does not survive the trip; and the
+ * automatic `.env` pickup reads the working directory, which is this package,
+ * not the repository the file sits in. Reading the file here sidesteps both —
+ * everything spawned below inherits what this sets.
+ *
+ * An already-set variable wins: a value put on the command line for one run is
+ * the more specific instruction, and a file on disk must not quietly override
+ * it. The parser is deliberately minimal — `KEY=value`, `#` comments, optional
+ * surrounding quotes — because this file's job is to start the app, not to
+ * implement a configuration format.
+ */
+function loadRootEnv(): void {
+  const file = path.join(rootDir, ".env");
+  if (!existsSync(file)) return;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+  }
+}
+
+loadRootEnv();
 
 function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env) {
   const child = spawn(command, args, {

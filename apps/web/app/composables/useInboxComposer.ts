@@ -35,6 +35,7 @@ import {
   setAssistantLastUsedModel,
   setLastUsedModel,
 } from "~/utils/modelPicker";
+import { JEV_ROUTER_ID, routingReceipt } from "~/utils/agentRouting";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "~/composables/useGlobalAssistant";
 import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
 import type { ModelPick } from "~/composables/useModelCommit";
@@ -63,10 +64,16 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   const {
     team: agents,
     selected: pickedAgent,
+    routing,
+    lastRouted,
+    routePending,
+    resolveAgentId,
     selectAgent,
     settleThreadAgent,
     isOnTeam,
     loadProjectTeam,
+    agentById,
+    threadSettled,
   } = useAgentRoster(() => toValue(o.projectPath));
 
   // An agent selected somewhere else may not be on this project's team, and a
@@ -85,7 +92,49 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     if (!teamReady.value) return picked;
     return isOnTeam(picked.id) ? picked : undefined;
   });
-  const agentId = computed(() => pickedForProject.value?.id ?? null);
+  /** What the composer's agent slot is holding. The router's sentinel is a
+   *  real answer here and is never resolved to an agent — nobody is working the
+   *  turn until the request has been read. */
+  const agentId = computed(() =>
+    routing.value ? JEV_ROUTER_ID : (pickedForProject.value?.id ?? null),
+  );
+
+  /** The receipt for the last routed send, or null when there is nothing to
+   *  report. Derived rather than stored: it is a rendering of the decision,
+   *  and the decision is the thing worth keeping. */
+  const routingNote = computed<string | null>(() => {
+    // In flight first: the send is held behind a network round trip, and the
+    // slot that will report the decision is the honest place to say it is
+    // still being made. Without this the tray shows the previous send's
+    // receipt while the current one waits, which reads as already answered.
+    if (routePending.value) return "Choosing who takes this…";
+
+    const result = lastRouted.value;
+    if (!result) return null;
+    const name = result.agentId ? agentById(result.agentId)?.name : undefined;
+    return routingReceipt(result, name);
+  });
+
+  /**
+   * Who to settle this thread on, read from the request itself when the router
+   * is what the picker is holding. The settle is write-once, so this is awaited
+   * before the turn goes out rather than after it — see the send sites, which
+   * order it that way deliberately.
+   *
+   * A thread that has already been decided is never routed again. Not merely
+   * to save the call: the binding would refuse the answer anyway, so a later
+   * turn would spend a request to produce a receipt announcing a decision that
+   * did not happen — and the session it claimed to be describing was spawned
+   * with the first turn's persona and cannot become somebody else.
+   */
+  function agentIdFor(
+    request: string,
+    threadId: string | null | undefined,
+  ): Promise<string | null> {
+    const picked = pickedForProject.value?.id ?? null;
+    if (!routing.value || threadSettled(threadId)) return Promise.resolve(picked);
+    return resolveAgentId(request);
+  }
 
   // A pinned model is a hard pin: only its provider is offered, and only that
   // one model within it, so the composer can only answer where the agent may.
@@ -265,22 +314,48 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   }
 
   // ── the branch ───────────────────────────────────────────────────────────
-  // Which branch the work would land on. Read once rather than watched: the
-  // inbox holds no project open, so there is no status watcher on this
-  // repository and standing one up for a label would be a lot of machinery for
-  // a word. Re-read after a checkout, which is the only change this surface can
-  // cause and the only one it has to notice.
+  // Which branch the work would land on. The read follows the path: no status
+  // watcher stands on the repository, because these surfaces hold no project
+  // open and watching one for a single word would be a lot of machinery. So the
+  // label is re-read when the project changes underneath, and after a checkout,
+  // which is the only change these surfaces can cause themselves.
 
   const git = useGit();
   const branch = ref<string | null>(null);
 
   async function refreshBranch(): Promise<void> {
+    // No project means no branch. Asking git about an empty path is not a
+    // narrower question — the process answers for whatever directory it happens
+    // to be sitting in, which is a real branch of a repository the user never
+    // chose, printed in a slot that claims to describe their work.
+    const path = toValue(o.projectPath);
+    if (!path) {
+      branch.value = null;
+      return;
+    }
     try {
-      branch.value = (await git.status(toValue(o.projectPath)))?.branch ?? null;
+      const status = await git.status(path);
+
+      // The project can change while git is answering, and two reads in flight
+      // settle in whatever order the calls happen to return. The path this one
+      // asked about is its own generation token: if it is no longer the project
+      // on screen, a later read owns the label and this answer is dropped
+      // rather than printed against work it does not describe.
+      if (toValue(o.projectPath) !== path) return;
+      branch.value = status?.branch ?? null;
     } catch {
-      /* not a repository, or git is unavailable — the slot simply stays empty */
+      // Not a repository, or git is unavailable. The slot empties rather than
+      // keeping the previous project's branch, which would be a real branch
+      // name sitting under the wrong project.
+      if (toValue(o.projectPath) === path) branch.value = null;
     }
   }
+
+  // A surface that starts with no project and acquires one — the bench, filing
+  // a job — changes the answer after mount, so this follows the path rather than
+  // reading once beside it. Immediate, so a surface that knew its project all
+  // along still reads on mount exactly as before.
+  watch(() => toValue(o.projectPath), () => void refreshBranch(), { immediate: true });
 
   // When the selected agent changes before a session is claimed, update the draft:
   // a pinned agent immediately sets its required provider and model. Switching
@@ -393,7 +468,6 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   // this pane's lifetime, so asking once on mount is the whole story.
   onMounted(async () => {
     void loadProjectTeam(toValue(o.projectPath)).finally(() => (teamReady.value = true));
-    void refreshBranch();
     // Neither rejects — each swallows its own failure and resolves to a
     // fallback — so awaiting them together cannot strand a rejection.
     await Promise.all([providers.prepare(), providerSettings.load()]);
@@ -429,6 +503,10 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     onApply,
     agents,
     agentId,
+    agentIdFor,
+    routing,
+    lastRouted,
+    routingNote,
     onAgentPick: (id: string | null) => selectAgent(id),
     settleThreadAgent,
     modelOptions,

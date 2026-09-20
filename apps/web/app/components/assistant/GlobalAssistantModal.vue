@@ -16,7 +16,7 @@
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
-import { onClickOutside } from "@vueuse/core";
+import { onClickOutside, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   PencilEdit02Icon,
@@ -44,11 +44,15 @@ import { useSound } from "~/composables/useSound";
 import { dedupeMentionProjects } from "~/utils/composerMentions";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { formatDayDivider } from "~/utils/threadDates";
+import { useShortcuts } from "~/composables/useShortcuts";
 import type { SurfaceId } from "~/utils/surfaceTop";
+import { ownsKey } from "~/utils/surfaceKeys";
 
 // Which viewport surface owns Escape, resolved once in the page. The card
 // answers only when named, so one press never dismisses two layers.
 const props = defineProps<{ surfaceTop: SurfaceId }>();
+
+const { matchesShortcut } = useShortcuts();
 
 const {
   close,
@@ -204,8 +208,9 @@ function onNewChatFromHistory(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  // A launcher modal standing over the card owns every key.
-  if (props.surfaceTop !== "assistant") return;
+  // A launcher modal standing over the card owns every key, and so does
+  // anything inside the card that has already handled this one.
+  if (!ownsKey(props.surfaceTop, "assistant", event)) return;
   if (event.key === "Escape") {
     // The model picker is a modal of its own on top of this one; the first
     // Escape belongs to whichever surface is highest.
@@ -222,7 +227,9 @@ function onKeydown(event: KeyboardEvent): void {
     requestClose();
     return;
   }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+  // Through the registry rather than a hard-coded key, so rebinding ⌘N in
+  // settings reaches this surface along with the other three that claim it.
+  if (matchesShortcut("new-thread", event)) {
     event.preventDefault();
     onNewChat();
   }
@@ -230,13 +237,15 @@ function onKeydown(event: KeyboardEvent): void {
 
 let opener: HTMLElement | null = null;
 
+// Bound the same way every other surface binds its keys, so the card is torn
+// down with the scope rather than by a hand-written pair that has to agree.
+useEventListener(window, "keydown", onKeydown);
+
 onMounted(() => {
   // SAFETY: activeElement is the element focused just before open; null is allowed by the type.
   opener = document.activeElement as HTMLElement | null;
-  window.addEventListener("keydown", onKeydown);
 });
 onBeforeUnmount(() => {
-  window.removeEventListener("keydown", onKeydown);
   opener?.focus();
 });
 

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import type { ChatAttachment, ForkContext, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadLineage } from "../types.js";
+import type { ChatAttachment, ForkContext, HandoffLink, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadEnvMode, ThreadLineage } from "../types.js";
+import { isHandoffForkContext } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, type ThreadRow } from "../conversationStoreTypes.js";
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
@@ -348,6 +349,48 @@ export class LineageRepo {
     }
   }
 
+  /** Every handoff forked from a source thread, oldest first — the timeline's
+   *  "Handed to" markers. Side chats and edit forks share the
+   *  `source_thread_id` pointer, so the stored fork context discriminates. */
+  handoffsFromSource(sourceThreadId: string): HandoffLink[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection names only the marker columns below.
+      const rows = db
+        .prepare(
+          `SELECT thread_id, provider, model, title, created_at, fork_context_json
+             FROM threads WHERE source_thread_id = ? ORDER BY created_at ASC`,
+        )
+        .all(sourceThreadId) as Array<{
+        thread_id: string;
+        provider: string;
+        model: string | null;
+        title: string | null;
+        created_at: number;
+        fork_context_json: string | null;
+      }>;
+      const links: HandoffLink[] = [];
+      for (const row of rows) {
+        if (!isHandoffForkContext(parseJsonObject<ForkContext>(row.fork_context_json))) continue;
+        // SAFETY: threads.provider only ever stores ProviderKind strings —
+        // every writer takes its provider typed as ProviderKind.
+        const link: HandoffLink = {
+          threadId: row.thread_id,
+          provider: row.provider as ProviderKind,
+          handedAt: row.created_at,
+        };
+        if (row.model) link.model = row.model;
+        if (row.title) link.title = row.title;
+        links.push(link);
+      }
+      return links;
+    } catch (err) {
+      console.error("[conversation-store] handoffsFromSource failed:", err);
+      return [];
+    }
+  }
+
   /** Persist a side-chat fork: the thread row (with its fork pointer, stored
    *  handoff context, lineage block and idempotency key) and the imported
    *  blocks, in one transaction. Imported blocks keep their original `at`
@@ -365,6 +408,13 @@ export class LineageRepo {
     forkContext: ForkContext;
     lineage: ThreadLineage;
     requestId?: string;
+    /** Where the fork runs. A handoff continues the same task, so it inherits
+     *  the source's placement (branch, worktree); a side chat omits these and
+     *  the row falls back to the project checkout. */
+    branch?: string | null;
+    envMode?: ThreadEnvMode | null;
+    worktreePath?: string | null;
+    requestedBranch?: string | null;
     /** Imported blocks in arrival order. Assistant rows carry their narrative
      *  as text — the source's tool items are not imported — and get a
      *  synthetic turn id so loadThread re-attaches that narrative as one
@@ -384,8 +434,9 @@ export class LineageRepo {
       const insertThread = db.prepare(
         `INSERT INTO threads (
            thread_id, project_path, provider, model, created_at, last_activity_at,
-           title, source_thread_id, fork_context_json, relationship_to_parent, request_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           title, source_thread_id, fork_context_json, relationship_to_parent, request_id,
+           branch, env_mode, worktree_path, requested_branch)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const insertBlock = db.prepare(
         `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, at, ended_at, attachments_json, source)
@@ -413,6 +464,10 @@ export class LineageRepo {
             JSON.stringify(input.forkContext),
             input.lineage.relationshipToParent ?? null,
             input.requestId ?? null,
+            input.branch ?? null,
+            input.envMode ?? null,
+            input.worktreePath ?? null,
+            input.requestedBranch ?? null,
           );
           for (const block of input.importedBlocks) {
             const turnId = block.role === "assistant" ? `fork-import:${block.id}` : null;

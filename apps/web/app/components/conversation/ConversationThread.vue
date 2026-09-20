@@ -14,7 +14,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
-import type { ChatAttachment, CompactionRecord, RuntimeItem, TurnCheckpointRecord } from "~/types/desktop";
+import type { ChatAttachment, CompactionRecord, ForkContext, RuntimeItem, TurnCheckpointRecord } from "~/types/desktop";
 import { groupCompactionMarkers } from "~/utils/compactionMarkers";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -26,6 +26,9 @@ import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
+import HandoffMark from "~/components/conversation/HandoffMark.vue";
+import { useHandoffMarks } from "~/composables/useHandoffMarks";
+import { groupHandoffMarks } from "~/utils/handoffMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { useSearchLanding } from "~/composables/useSearchLanding";
@@ -69,6 +72,15 @@ const props = defineProps<{
    *  Absent on surfaces without the checkpoint surface (read-only history,
    *  the house assistant) — no rows, no control, never a guess. */
   checkpoints?: TurnCheckpointRecord[];
+  /** This thread's fork context, when it is a fork — a handoff names its
+   *  source for the "Handed from" marker. Absent on surfaces that don't read
+   *  it; the timeline then only shows "Handed to" links. */
+  forkContext?: ForkContext | null;
+  /** Render handoff markers inline with the exchanges, with both ends
+   *  clickable into the linked thread. Off unless the host routes
+   *  `open-thread` somewhere (the studio does; inbox readers and the house
+   *  assistant don't) — an unrouted jump would be a button that goes nowhere. */
+  linkHandoffs?: boolean;
   /** Ticking clock from useAgent, so "working · Xs" counts up live. */
   now: number;
   /** Strip column key — forwarded with scratchpad captures. */
@@ -92,8 +104,7 @@ const props = defineProps<{
   /** A stored thread adopted windowed (keyset pagination): the store holds an
    *  older page beyond the window in hand. Absent for a full load / fresh
    *  thread. */
-  hasOlder?: boolean;
-  /** A load-older request is in flight. */
+  hasOlder?: boolean;  /** A load-older request is in flight. */
   loadingOlder?: boolean;
   /** The last load-older attempt failed — the affordance shows a retry. */
   olderError?: string | null;
@@ -143,6 +154,9 @@ const emit = defineEmits<{
   /** Load the next older page of a windowed stored thread and prepend it. The
    *  host owns the fetch (session.loadOlder); the thread only asks. */
   "load-older": [];
+  /** Jump to a thread linked from the handoff footer. The host owns
+   *  panes/sessions and opens (or focuses) it. */
+  "open-thread": [threadId: string];
 }>();
 
 const { cue } = useSound();
@@ -669,6 +683,27 @@ function markersFor(key: string): CompactionRecord[] {
   return groupedMarkers.value.byExchange.get(key) ?? [];
 }
 
+/** Handoff markers grouped onto the exchange they precede — same oldest-first
+ *  march as the compaction markers above, over the full exchange list so a
+ *  marker above the collapsed window reappears with its exchange on reveal.
+ *  A handoff is its own turn row in the flow: later exchanges keep arriving
+ *  below it. */
+const handoffMarks = useHandoffMarks({
+  threadId: () => props.threadId,
+  forkContext: () => props.forkContext ?? null,
+  enabled: () => props.linkHandoffs ?? false,
+});
+const groupedHandoffMarks = computed(() =>
+  groupHandoffMarks(
+    handoffMarks.marks.value,
+    allExchanges.value.map((ex) => ({ key: ex.key, firstAt: ex.blocks[0]?.at })),
+  ),
+);
+const trailingHandoffMarks = computed(() => groupedHandoffMarks.value.trailing);
+function handoffMarksFor(key: string) {
+  return groupedHandoffMarks.value.byExchange.get(key) ?? [];
+}
+
 /** Show a centered date divider on the first visible exchange, and whenever
  *  consecutive exchanges cross midnight into a new calendar day. */
 function shouldShowDayDivider(index: number): boolean {
@@ -1019,6 +1054,15 @@ watch(
         :key="`compact-${ex.key}-${mi}`"
         :marker="m"
         :format-time="clock"
+      />
+
+      <!-- Handoff markers settled since the previous exchange: the handoff is
+           its own row in the flow, and later turns arrive below it. -->
+      <HandoffMark
+        v-for="m in handoffMarksFor(ex.key)"
+        :key="`handoff-${ex.key}-${m.key}`"
+        :mark="m"
+        @open-thread="(id) => emit('open-thread', id)"
       />
 
       <div
@@ -1412,6 +1456,13 @@ watch(
       :key="`compact-trailing-${mi}`"
       :marker="m"
       :format-time="clock"
+    />
+    <!-- Handoff markers newer than every exchange trail the thread. -->
+    <HandoffMark
+      v-for="m in trailingHandoffMarks"
+      :key="`handoff-trailing-${m.key}`"
+      :mark="m"
+      @open-thread="(id) => emit('open-thread', id)"
     />
   </div>
     <!-- Image Lightbox Modal -->

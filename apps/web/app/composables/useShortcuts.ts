@@ -73,6 +73,16 @@ const ACTIONS: ShortcutAction[] = [
     personalize: true,
   },
   {
+    id: "open-bench",
+    label: "Open the bench",
+    hint: "Bring the bench over whatever you are looking at; press again to send it away.",
+    description: "Work you have described and queued, run one job at a time.",
+    group: "Bench",
+    default: "mod+j",
+    rebindable: true,
+    personalize: true,
+  },
+  {
     id: "open-assistant",
     label: "Summon the assistant",
     hint: "Bring the global assistant over whatever you are looking at; press again to send it away.",

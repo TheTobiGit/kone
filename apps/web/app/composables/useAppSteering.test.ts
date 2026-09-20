@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { initAppSteering } from "./useAppSteering";
 import { useTheme } from "./useTheme";
 import { findTheme, isCustom, removeCustomTheme, themes } from "~/theme/library";
+import { agentById, agentRoster, projectTeam } from "~/utils/agents";
+import { agentRows, projectTeams } from "~/utils/agentStore";
 import type { RuntimeEvent } from "~/types/desktop";
 
 type ThemeMutation = Extract<RuntimeEvent, { type: "app.theme_mutation" }>;
@@ -29,7 +31,7 @@ function installBridge() {
   // BridgeHost provides; nothing else in this file touches window.
   (globalThis as { window?: BridgeHost }).window = host;
   return {
-    emit: (event: ThemeMutation) => listener?.(event),
+    emit: (event: RuntimeEvent) => listener?.(event),
     teardown: () => {
       listener = null;
     },
@@ -124,5 +126,113 @@ describe("useAppSteering", () => {
     bridge.emit(mutation({ preview: false }));
 
     expect(themeId.value).toBe("moss");
+  });
+});
+
+type AgentMutation = Extract<RuntimeEvent, { type: "app.agent_mutation" }>;
+
+function agentMutation(fields: Partial<AgentMutation>): AgentMutation {
+  // SAFETY: the composable branches only on the fields spread in here.
+  return {
+    type: "app.agent_mutation",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    provider: "claudeAgent",
+    at: Date.now(),
+    source: "kone.store",
+    ...fields,
+  } as AgentMutation;
+}
+
+/** The mutation is applied on a fire-and-forget promise, so a test hands the
+ *  event over and then waits out the store writes. */
+function flushSteering(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+describe("useAppSteering agent roster", () => {
+  let bridge: ReturnType<typeof installBridge>;
+  let stop: () => void;
+
+  beforeEach(() => {
+    agentRows.value = [];
+    projectTeams.value = {};
+    bridge = installBridge();
+    stop = initAppSteering();
+  });
+
+  afterEach(() => {
+    stop();
+    bridge.teardown();
+  });
+
+  it("creates an agent with its bot, picture and teams", async () => {
+    bridge.emit(
+      agentMutation({
+        op: "create",
+        agentId: "agent-steered",
+        fields: {
+          name: "Steered",
+          bot: { form: "droplet", color: "teal", expression: "curious" },
+          avatar: { source: "dicebear", src: "data:image/svg+xml;base64,AAAA" },
+        },
+        projectPaths: ["/tmp/alpha", "/tmp/beta"],
+      }),
+    );
+    await flushSteering();
+
+    const made = agentById("agent-steered");
+    expect(made?.name).toBe("Steered");
+    expect(made?.bot).toEqual({ form: "droplet", color: "teal", expression: "curious" });
+    expect(made?.avatar).toEqual({ source: "dicebear", src: "data:image/svg+xml;base64,AAAA" });
+    expect(projectTeam("/tmp/alpha").map((agent) => agent.id)).toEqual(["agent-steered"]);
+    expect(projectTeam("/tmp/beta").map((agent) => agent.id)).toEqual(["agent-steered"]);
+  });
+
+  // Without its creature there is nothing to show while it works, so a
+  // bot-less create is refused rather than stored bot-less.
+  it("refuses a create without a bot", async () => {
+    bridge.emit(
+      agentMutation({ op: "create", agentId: "agent-botless", fields: { name: "Botless" } }),
+    );
+    await flushSteering();
+
+    expect(agentById("agent-botless")).toBeUndefined();
+    expect(agentRoster().some((agent) => agent.name === "Botless")).toBe(false);
+  });
+
+  it("updates a bot and moves the agent between teams", async () => {
+    bridge.emit(
+      agentMutation({
+        op: "create",
+        agentId: "agent-mover",
+        fields: {
+          name: "Mover",
+          bot: { form: "circle", color: "ink", expression: "neutral" },
+        },
+        projectPaths: ["/tmp/alpha"],
+      }),
+    );
+    await flushSteering();
+    expect(projectTeam("/tmp/alpha").map((agent) => agent.id)).toEqual(["agent-mover"]);
+
+    bridge.emit(
+      agentMutation({
+        op: "update",
+        agentId: "agent-mover",
+        fields: { bot: { form: "hexagon", color: "teal", expression: "curious" } },
+        addToTeams: ["/tmp/beta"],
+        removeFromTeams: ["/tmp/alpha"],
+      }),
+    );
+    await flushSteering();
+
+    expect(agentById("agent-mover")?.bot).toEqual({
+      form: "hexagon",
+      color: "teal",
+      expression: "curious",
+    });
+    expect(projectTeam("/tmp/alpha")).toEqual([]);
+    expect(projectTeam("/tmp/beta").map((agent) => agent.id)).toEqual(["agent-mover"]);
   });
 });

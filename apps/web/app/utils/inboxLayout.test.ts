@@ -16,7 +16,7 @@ import {
 
 // Room enough that neither floor is in play.
 const ROOMY = 1400;
-// The same room, as the observer reports it — content box plus the rail and gaps.
+// The same room, as the observer reports it — content box plus the gap between panes.
 const ROOMY_CONTENT = CHROME_WIDTH + ROOMY;
 // Tight enough that the reading pane's floor is the ceiling: the list keeps 320.
 const NARROW_CONTENT = CHROME_WIDTH + MIN_READ_WIDTH + 320;
@@ -53,7 +53,7 @@ describe("clampListWidth", () => {
 });
 
 describe("availablePaneWidth", () => {
-  test("subtracts the rail and the gaps from what is observed", () => {
+  test("subtracts the gap between the panes from what is observed", () => {
     expect(availablePaneWidth(ROOMY_CONTENT)).toBe(ROOMY);
   });
 

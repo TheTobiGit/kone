@@ -450,9 +450,10 @@ export class ThreadRepo {
     const db = this.dbh.handle();
     if (!db) return false;
     try {
+      // Nullish, not undefined-only: node:sqlite answers a miss with
+      // undefined while bun:sqlite answers null — a miss is a miss either way.
       return (
-        db.prepare(`SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1`).get(threadId) !==
-        undefined
+        db.prepare(`SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1`).get(threadId) != null
       );
     } catch (err) {
       console.error("[conversation-store] threadExists failed:", err);

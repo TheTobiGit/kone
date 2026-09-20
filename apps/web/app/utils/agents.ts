@@ -54,6 +54,7 @@ import {
   selectedAgentId,
   threadBindings,
 } from "~/utils/agentStore";
+import { isRouterId } from "~/utils/agentRouting";
 import { readBot, type AgentBot } from "~/utils/bot";
 import { resolveRootThreadId } from "~/composables/sideChats";
 import { sampleFace } from "~/utils/sphereFace";
@@ -307,14 +308,40 @@ const PRESET_IDS: readonly string[] = PRESETS.map((preset) => preset.id);
 // module state.
 
 /**
- * The paint a user-made agent wears until somebody picks a hue for it.
+ * The paints a made agent wears when nobody picked one.
  *
- * Deliberately none of the three accent voices: the house agent wears the first,
- * and an agent made in a hurry should not arrive claiming one of the others.
- * Soft ink with the ground punched through it reads as a face with no colour
- * chosen yet, which is exactly what it is.
+ * A made agent has no preset to inherit a face from, and leaving the marble
+ * grey reads as unfinished next to the built-ins' painted faces — so the
+ * roster paints one from the agent's id. Twelve opaque mid-tones, each holding
+ * its silhouette on both schemes while carrying near-black ink eyes. Seeded by
+ * id rather than name so a rename keeps the face: the colour is part of who
+ * the agent is, not what they are called.
  */
-const UNPAINTED_FACE: FacePaint = { body: "var(--ink-soft)", ink: "var(--ground)" };
+const PAINTED_BODIES = [
+  "#b8654a",
+  "#c08a5b",
+  "#9c6b58",
+  "#a86f6f",
+  "#8a6a86",
+  "#6b7391",
+  "#5f7a76",
+  "#5c7f6a",
+  "#7f8b6b",
+  "#94794f",
+  "#6e7d8a",
+  "#7a6a5d",
+] as const;
+const PAINTED_INK = "#1b1b1f";
+
+/** FNV-1a over a short id string — cheap, stable, and well spread. */
+function paintFor(id: string): FacePaint {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return { body: PAINTED_BODIES[(h >>> 0) % PAINTED_BODIES.length]!, ink: PAINTED_INK };
+}
 
 // ── the face ────────────────────────────────────────────────────────────────
 /**
@@ -472,9 +499,13 @@ function resolveRow(row: AgentRecord): Agent | undefined {
   if (!name) return undefined;
 
   const instructions = row.instructions ?? preset?.instructions;
+  // A made agent has no preset to lean on, so its fallback is the paint its id
+  // owns rather than grey. Both halves fall back together, since a stored body
+  // with a fallback ink is how a face goes unreadable.
+  const painted = paintFor(row.agentId);
   const paint: FacePaint = {
-    body: row.faceBody || preset?.face.body || UNPAINTED_FACE.body,
-    ink: row.faceInk || preset?.face.ink || UNPAINTED_FACE.ink,
+    body: row.faceBody || preset?.face.body || painted.body,
+    ink: row.faceInk || preset?.face.ink || painted.ink,
   };
 
   // Each capability is its own overlay: null on the row hands it back to the
@@ -567,9 +598,22 @@ export function selectedAgent(): Agent | undefined {
   return agentById(selectedAgentId.value);
 }
 
-/** Point the next turn at an agent, or at a guest with null. */
+/**
+ * Point the next turn at an agent, at a guest with null, or at the router.
+ *
+ * The router is not an agent and never resolves to one — see
+ * `~/utils/agentRouting`. It is accepted here because the picker is one radio
+ * group and the selection is where a radio group's answer lives; everything
+ * downstream that asks "who is working" still gets nobody, which is correct
+ * until the request has been read.
+ */
 export function selectAgent(id: string | null): void {
-  if (id === null || isPickable(id)) selectAgentId(id);
+  if (id === null || isRouterId(id) || isPickable(id)) selectAgentId(id);
+}
+
+/** Whether the next turn is Jev's to route rather than anybody's to answer. */
+export function routerSelected(): boolean {
+  return isRouterId(selectedAgentId.value);
 }
 
 /**
@@ -607,6 +651,23 @@ export function settleThreadAgent(threadId: string | null | undefined, id: strin
   if (!threadId || threadId in threadBindings.value) return;
   if (id !== null && !isPickable(id)) return;
   bindThread(threadId, id);
+}
+
+/**
+ * Whether a thread has already been handed to somebody.
+ *
+ * True for a thread settled on a guest as much as one settled on an agent:
+ * both are decisions, and the question here is whether the decision has been
+ * made, not what it was.
+ *
+ * Deliberately the same condition `settleThreadAgent` refuses on, and read
+ * directly rather than through `agentForThread` — that one resolves a side
+ * chat to its source and answers undefined for a guest, so it would report two
+ * different things as "unclaimed" and let a settled thread be decided twice.
+ */
+export function threadSettled(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return threadId in threadBindings.value;
 }
 
 /**
@@ -727,14 +788,18 @@ export function agentPersonaForThread(threadId: string | null | undefined): Agen
 // loose colour strings. They resolve to the agent as it now reads, so a caller
 // can put the result straight on screen.
 
-/** What you fill in to make an agent: a name, and whatever else you have.
- *  Everything but the name is optional — an agent can be a name and a face. */
+/** What you fill in to make an agent: a name, a bot, and whatever else you
+ *  have. Everything but those two is optional — an agent can be a name, a bot
+ *  and a face. */
 export interface AgentDraft {
   /** The id to store the agent under. The caller's to mint when it has to name
    *  the agent before the row exists — an agent tool reporting what it just
    *  created, say. Left out, the store mints one. */
   id?: string;
   name: string;
+  /** The creature the agent works through. Required: without it there is
+   *  nothing to show while the agent works. */
+  bot: AgentBot;
   role?: string;
   instructions?: string;
   face?: FacePaint;
@@ -742,7 +807,6 @@ export interface AgentDraft {
   model?: AgentModelRef;
   modelFallbacks?: AgentModelRef[];
   avatar?: AgentAvatar;
-  bot?: AgentBot;
 }
 
 /** An edit to an existing agent. A field left out is left alone; an explicit
@@ -796,10 +860,12 @@ export function renameAgent(id: string, name: string): Promise<Agent | undefined
 }
 
 /** Add an agent. Returns the agent as stored, or undefined if it was refused —
- *  which only happens for a draft with nothing to be called. */
+ *  a draft with nothing to be called. The bot is required by the type, and the
+ *  store refuses a bot-less row, so neither path can store an agent with none. */
 export async function createAgent(draft: AgentDraft): Promise<Agent | undefined> {
   const input: AgentCreateInput = {
     name: draft.name,
+    bot: draft.bot,
     role: draft.role ?? null,
     instructions: draft.instructions ?? null,
     faceBody: draft.face?.body ?? null,
@@ -808,7 +874,6 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
     model: draft.model ?? null,
     modelFallbacks: draft.model ? (draft.modelFallbacks ?? []) : null,
     avatar: draft.avatar ?? null,
-    bot: draft.bot ?? null,
   };
   // Set only when the caller minted one: an explicit undefined would read as a
   // field the store has to answer, and the store's answer is to mint its own.

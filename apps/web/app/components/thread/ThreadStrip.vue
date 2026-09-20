@@ -23,7 +23,7 @@ import { computed, ref } from "vue";
 import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Folder01Icon, GitBranchIcon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Exchange01Icon, Folder01Icon, GitBranchIcon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane } from "~/types/studio";
@@ -37,7 +37,7 @@ import {
   LADDER_PX,
   padEndFor,
 } from "~/utils/stripScroll";
-import { brandOf, buildCompactBySession, columnLabel, hasScratchpadPane, readCompactProps } from "~/utils/stripColumnLabels";
+import { brandOf, buildCompactBySession, columnLabel, handoffSourceBrand, hasScratchpadPane, isHandoff, readCompactProps } from "~/utils/stripColumnLabels";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import { type ThreadSession } from "~/composables/useAgent";
@@ -106,10 +106,17 @@ const emit = defineEmits<{
   /** Fork a side chat off this thread's column (the per-host-thread "add panel"
    *  creator). Carries the source pane id; ProjectView opens the child beside it. */
   "side-chat": [paneId: string];
+  /** Hand this thread's column to another provider/model (the per-thread
+   *  handoff creator). Carries the source pane id; the row asks for the
+   *  target and opens the handoff beside the source. */
+  handoff: [paneId: string];
   /** Fork this thread's column at an earlier user block (edit-and-resend of
    *  that message). Carries the source pane id, the edited block id and the
    *  edited text; the row forks via IPC and opens the child beside the source. */
   "edit-fork": [paneId: string, blockId: string, text: string];
+  /** Jump to a thread linked from a column's handoff footer. Carries the
+   *  linked thread id; the row opens (or focuses) it. */
+  "open-thread": [threadId: string];
   /** Insert a blank thread to the right of seam `seamIndex`. */
   "insert-column": [seamIndex: number, kind: "thread" | "terminal" | "scratchpad"];
   /** Write terminal input data. Keyed by the terminal *session* key, not the pane
@@ -462,9 +469,66 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                    the a11y tree, so tabbing steps card → card and the outer role="button"
                    no longer wraps focusable descendants (which would be invalid ARIA). -->
               <header class="col__head" :inert="overview">
+                <!-- Fork actions live left, column management right. The split
+                     is by what the button acts on: the left group acts on the
+                     thread itself (panel off it, hand it elsewhere, put it
+                     away — or restart the terminal session) while the right
+                     group acts on the column frame (width, zoom, close). Both
+                     groups reveal on hover so the header stays a title. -->
+                <div class="col__fork">
+                  <button
+                    v-if="
+                      c.kind === 'thread' &&
+                      c.session &&
+                      !isBlankThread(c) &&
+                      !c.session.isSideChat.value
+                    "
+                    type="button"
+                    class="col__tool"
+                    aria-label="Open a side chat"
+                    title="Open a side chat"
+                    @click.stop="emit('side-chat', c.id)"
+                  >
+                    <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="13" :stroke-width="2" aria-hidden="true" />
+                  </button>
+                  <button
+                    v-if="
+                      c.kind === 'thread' &&
+                      c.session &&
+                      !isBlankThread(c) &&
+                      !c.session.isSideChat.value
+                    "
+                    type="button"
+                    class="col__tool"
+                    aria-label="Hand off to another provider"
+                    title="Hand off to another provider"
+                    @click.stop="emit('handoff', c.id)"
+                  >
+                    <HugeiconsIcon :icon="Exchange01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
+                  </button>
+                  <button
+                    v-if="c.kind === 'thread' && c.session && !isBlankThread(c)"
+                    type="button"
+                    class="col__tool"
+                    aria-label="Archive conversation"
+                    title="Archive conversation"
+                    @click.stop="onArchive(c)"
+                  >
+                    <HugeiconsIcon :icon="Archive02Icon" :size="13" :stroke-width="2" aria-hidden="true" />
+                  </button>
+                </div>
                 <div class="col__title-wrap">
                   <template v-if="c.kind === 'thread' && c.session">
-                    <ProviderLogo :brand="brandOf(c)" :size="15" />
+                    <!-- A handoff wears where it came from: old mark → live
+                         mark as one tight unit, then the title. The source
+                         reads dimmer — history, not the engine running this
+                         column. -->
+                    <span v-if="isHandoff(c)" class="col__handoff">
+                      <ProviderLogo :brand="handoffSourceBrand(c)" :size="15" class="col__handoff-from" />
+                      <span class="col__handoff-arrow" aria-hidden="true">→</span>
+                      <ProviderLogo :brand="brandOf(c)" :size="15" />
+                    </span>
+                    <ProviderLogo v-else :brand="brandOf(c)" :size="15" />
                     <span
                       v-if="c.session.isSideChat.value"
                       class="col__sidechat"
@@ -544,31 +608,6 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                     />
                   </button>
                   <button
-                    v-if="
-                      c.kind === 'thread' &&
-                      c.session &&
-                      !isBlankThread(c) &&
-                      !c.session.isSideChat.value
-                    "
-                    type="button"
-                    class="col__tool"
-                    aria-label="Open a side chat"
-                    title="Open a side chat"
-                    @click.stop="emit('side-chat', c.id)"
-                  >
-                    <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="13" :stroke-width="2" aria-hidden="true" />
-                  </button>
-                  <button
-                    v-if="c.kind === 'thread' && c.session && !isBlankThread(c)"
-                    type="button"
-                    class="col__tool"
-                    aria-label="Archive conversation"
-                    title="Archive conversation"
-                    @click.stop="onArchive(c)"
-                  >
-                    <HugeiconsIcon :icon="Archive02Icon" :size="13" :stroke-width="2" aria-hidden="true" />
-                  </button>
-                  <button
                     v-if="canClose()"
                     type="button"
                     class="col__tool"
@@ -602,12 +641,15 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                     :has-older="c.session.hasOlder.value"
                     :loading-older="c.session.loadingOlder.value"
                     :older-error="c.session.olderError.value"
+                    :fork-context="c.session.forkContext?.value ?? null"
+                    :link-handoffs="true"
                     @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
                     @retry="(text) => onRetryTurn(c, text)"
                     @resend="(text) => onResendTurn(c, text)"
                     @edit-fork="(blockId, text) => emit('edit-fork', c.id, blockId, text)"
                     @retry-load="() => onRetryLoad(c)"
                     @load-older="() => onLoadOlder(c)"
+                    @open-thread="(id) => emit('open-thread', id)"
                   />
                 </template>
                 <template v-else-if="c.kind === 'terminal' && c.session">
@@ -1253,20 +1295,20 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
 
 .col__head {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   min-width: 0;
   padding: 0 0.4rem 0.85rem;
 }
 .col__title-wrap {
-  grid-column: 1 / -1;
+  grid-column: 2;
   grid-row: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-width: 0;
-  max-width: calc(100% - 3.25rem);
+  max-width: 100%;
   justify-self: center;
 }
 .col__title-wrap :deep(.plogo) {
@@ -1318,6 +1360,27 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
   align-items: center;
   color: color-mix(in srgb, var(--accent) 72%, var(--ink-soft));
 }
+/* Handoff provenance in the header: the source mark, a quiet arrow and the
+   live mark as one tight, vertically-centred unit ahead of the title. */
+.col__handoff {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+.col__handoff-from {
+  flex: none;
+  opacity: 0.55;
+}
+.col__handoff-arrow {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  line-height: 1;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.8;
+}
 .col.is-sidechat .col__title {
   color: color-mix(in srgb, var(--accent) 58%, var(--muted));
   font-style: italic;
@@ -1350,7 +1413,7 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
 }
 
 .col__tools {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   z-index: 1;
   display: flex;
@@ -1362,6 +1425,23 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
 }
 .col:hover .col__tools,
 .col__tools:focus-within {
+  opacity: 1;
+}
+/* The thread-action group mirrors the tools: same buttons, same hover reveal,
+   other end of the header (see the template note for what goes where). */
+.col__fork {
+  grid-column: 1;
+  grid-row: 1;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-self: start;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.col:hover .col__fork,
+.col__fork:focus-within {
   opacity: 1;
 }
 .col__tool {

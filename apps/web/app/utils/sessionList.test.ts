@@ -100,6 +100,18 @@ describe("summarizeSession — flatten a stored thread into a list row", () => {
     ).toBe(false);
   });
 
+  test("a handoff wears no side-chat badge", () => {
+    expect(
+      summarizeSession(
+        meta({
+          sourceThreadId: "thread-parent",
+          forkContext: { ...forkContext(), forkKind: "handoff", sourceProvider: "codex" },
+        }),
+        false,
+      ).sideChat,
+    ).toBe(false);
+  });
+
   test("carries projectPath/projectName only when a project tag is passed", () => {
     const tagged = summarizeSession(meta(), false, { projectPath: "/other", projectName: "Other" });
     expect(tagged.projectPath).toBe("/other");

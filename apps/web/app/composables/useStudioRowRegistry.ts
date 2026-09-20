@@ -12,6 +12,24 @@
 // registry: the plane outlives any one page, and two components asking for the
 // same project must get the same row.
 
+/** The thread column a row is focused on, described for the surfaces outside
+ *  the row: enough to label a menu row and to decide which actions can run.
+ *  A blank thread is not one — there is nothing in it to compact, fork or
+ *  archive. */
+export interface StudioRowThread {
+  paneId: string;
+  threadId: string;
+  title: string;
+  /** Manual compaction can run on it right now. */
+  compactable: boolean;
+  /** A side chat is already a fork, so it neither forks again nor hands off. */
+  forkable: boolean;
+}
+
+/** The thread actions a row can run from outside itself. Each one has a control
+ *  in the column header or the composer; this is the same call, named. */
+export type StudioRowThreadOp = "compact" | "archive" | "side-chat" | "handoff";
+
 /** What a mounted row offers the rest of the app. Declared here rather than
  *  inferred from the component so importing this does not drag in the row (and
  *  so the row cannot quietly narrow the contract). */
@@ -45,6 +63,13 @@ export interface StudioRowApi {
   flush: () => void;
   /** Stop a turn in flight cleanly before something tears the row down anyway. */
   interruptIfRunning: () => void;
+  /** The focused thread column, or null when the focused pane is a terminal, a
+   *  scratchpad, or a thread with nothing said in it yet. */
+  focusedThread: () => StudioRowThread | null;
+  /** Run one of the column's thread actions. The pane is named rather than
+   *  re-read from focus: a caller that decided what to offer about one column
+   *  must land on that column, even if focus moved in between. */
+  runThreadAction: (op: StudioRowThreadOp, paneId: string) => void;
 }
 
 /** The other direction: a project page's own conversation list, so a row can
@@ -62,6 +87,17 @@ export interface ProjectHistoryList {
   archive: (threadId: string) => Promise<boolean>;
   remove: (threadId: string) => void;
 }
+
+/** The row the plane's camera is standing on. The plane publishes it and the
+ *  surfaces outside the plane read it: a gesture over the studio is about one
+ *  row, and nothing outside the plane can work out which. Module scope for the
+ *  same reason the rows map is — the reader holds no ref to the plane. */
+export interface FocusedStudioRow {
+  projectPath: string;
+  name: string;
+}
+
+let focused: FocusedStudioRow | null = null;
 
 const rows = new Map<string, StudioRowApi>();
 const historyLists = new Map<string, ProjectHistoryList>();
@@ -105,6 +141,19 @@ export function useStudioRowRegistry() {
      *  caller has to handle null: a page can outlive, or precede, its row. */
     rowFor(projectPath: string): StudioRowApi | null {
       return rows.get(projectPath) ?? null;
+    },
+
+    /** The plane says which row it is standing on; null while it holds none. */
+    publishFocusedRow(row: FocusedStudioRow | null): void {
+      focused = row;
+    },
+
+    /** The row the plane is standing on, or null when the plane holds none.
+     *  Note this is the *camera's* row, which can be one the plane conjured for
+     *  a project with no work on it yet — so it may name a project `rowFor`
+     *  has no entry for. */
+    focusedRow(): FocusedStudioRow | null {
+      return focused;
     },
 
     /** Every row the plane currently has mounted. For work that is thread-shaped

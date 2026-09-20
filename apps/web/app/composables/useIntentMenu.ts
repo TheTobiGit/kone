@@ -40,7 +40,10 @@ export type IntentIcon =
   | "reveal"
   | "forget"
   | "settings"
-  | "archive";
+  | "archive"
+  | "compact"
+  | "side-chat"
+  | "handoff";
 
 export type IntentAction =
   | { kind: "goto"; view: "studio" | "inbox" | "launcher" | "overview" | "git" }
@@ -54,7 +57,16 @@ export type IntentAction =
   | { kind: "review-changes" }
   | { kind: "start"; key: "create" | "open" | "clone" }
   | { kind: "open-settings" }
-  | { kind: "back-to-page" };
+  | { kind: "back-to-page" }
+  /** Leave the plane for the focused row's own project page. */
+  | { kind: "open-row-page"; path: string; name: string }
+  /** One of the focused thread column's own actions, on the row that holds it. */
+  | {
+      kind: "thread";
+      op: "compact" | "archive" | "side-chat" | "handoff";
+      projectPath: string;
+      paneId: string;
+    };
 
 /** @deprecated Kept for backwards compat — dispatch on `IntentItem.action` instead. */
 export interface IntentPayload {
@@ -78,7 +90,7 @@ export interface IntentItem {
 }
 
 export interface IntentSection {
-  key: "goto" | "target" | "now" | "recents" | "sessions" | "entry";
+  key: "goto" | "target" | "thread" | "now" | "recents" | "sessions" | "entry";
   items: IntentItem[];
 }
 
@@ -98,6 +110,24 @@ export interface IntentGitNow {
   repo: boolean;
   dirtyFiles: number;
   branch: string | null;
+}
+
+/** The row the studio's camera is standing on. Named separately from the open
+ *  project: the plane can be parked on a row whose project has no page open. */
+export interface IntentStudioRow {
+  projectPath: string;
+  name: string;
+}
+
+/** The thread column that row is focused on, and which of its actions can run.
+ *  Absent when the focused pane is a terminal, a scratchpad, or a thread with
+ *  nothing said in it yet. */
+export interface IntentStudioThread {
+  paneId: string;
+  title: string;
+  compactable: boolean;
+  /** A side chat is already a fork: it neither forks again nor hands off. */
+  forkable: boolean;
 }
 
 export interface IntentTargetProject {
@@ -140,6 +170,10 @@ export interface IntentContext {
    *  is the project context. Null (or absent) means empty space: no project
    *  in mind at all. */
   targetProject?: IntentTargetProject | null;
+  /** The row the studio plane is parked on, when the plane is the view. */
+  studioRow?: IntentStudioRow | null;
+  /** That row's focused thread column, when it has one. */
+  studioThread?: IntentStudioThread | null;
   /** The launcher session row under the pointer, if any. Beats a tile target:
    *  rows never sit inside tiles, but the pointer can only mean one thing. */
   targetSession?: IntentTargetSession | null;
@@ -194,12 +228,26 @@ export function resolveIntentTitle(
 function gotoItems(ctx: IntentContext): IntentItem[] {
   let items: IntentItem[];
   switch (ctx.view) {
-    case "studio":
+    case "studio": {
       items = [
         { id: "back-to-page", label: "Back to page", icon: "back", action: { kind: "back-to-page" } },
-        { id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } },
       ];
+      // The row's own project page. Only when it isn't already the page
+      // underneath — there "Back to page" is the same journey, and a menu that
+      // offers one destination twice makes the reader check which is which.
+      const row = ctx.studioRow;
+      if (row && row.projectPath !== ctx.currentPath) {
+        items.push({
+          id: `open-row-page:${row.projectPath}`,
+          label: `Go to ${row.name}`,
+          icon: "project",
+          payload: { path: row.projectPath, name: row.name },
+          action: { kind: "open-row-page", path: row.projectPath, name: row.name },
+        });
+      }
+      items.push({ id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } });
       break;
+    }
     case "inbox": {
       items = [{ id: "back-to-page", label: "Back to page", icon: "back", action: { kind: "back-to-page" } }];
       if (ctx.studioHasRows) items.push({ id: "goto-studio", label: "Go to Studio", icon: "studio", action: { kind: "goto", view: "studio" } });
@@ -328,6 +376,52 @@ function targetItems(ctx: IntentContext): IntentItem[] {
   ];
 }
 
+// ── thread: the focused column's own actions ────────────────────────────────
+// Studio only, and only for a column with a conversation in it. These are the
+// same calls as the controls on the column header and in the composer, so the
+// menu can only offer what the buttons would run: compaction appears when the
+// provider and the turn state allow it, and the fork pair stays off a side
+// chat, which is already one.
+function threadItems(ctx: IntentContext): IntentItem[] {
+  if (ctx.view !== "studio") return [];
+  const row = ctx.studioRow;
+  const thread = ctx.studioThread;
+  if (!row || !thread) return [];
+  const at = { projectPath: row.projectPath, paneId: thread.paneId } as const;
+  const items: IntentItem[] = [];
+  if (thread.forkable) {
+    items.push(
+      {
+        id: `thread-side-chat:${thread.paneId}`,
+        label: "Open a side chat",
+        icon: "side-chat",
+        action: { kind: "thread", op: "side-chat", ...at },
+      },
+      {
+        id: `thread-handoff:${thread.paneId}`,
+        label: "Hand off to another provider",
+        icon: "handoff",
+        action: { kind: "thread", op: "handoff", ...at },
+      },
+    );
+  }
+  if (thread.compactable) {
+    items.push({
+      id: `thread-compact:${thread.paneId}`,
+      label: "Compact the conversation",
+      icon: "compact",
+      action: { kind: "thread", op: "compact", ...at },
+    });
+  }
+  items.push({
+    id: `thread-archive:${thread.paneId}`,
+    label: "Archive conversation",
+    icon: "archive",
+    action: { kind: "thread", op: "archive", ...at },
+  });
+  return items;
+}
+
 // ── now: what is live and actionable ────────────────────────────────────────
 // Only rows the menu host can actually run belong here. Dirty git state earns
 // a review shortcut on project views; portals are covered by the go-to card's
@@ -354,6 +448,10 @@ function nowItems(ctx: IntentContext): IntentItem[] {
 // focuses the menu on its subject, so this card stays out.
 function recentsItems(ctx: IntentContext): IntentItem[] {
   if (resolveTarget(ctx)) return [];
+  // Not on the plane. There a project is a row you travel to, not a page you
+  // jump to, so a list of project pages would take you off the plane by the
+  // one door that isn't the row you are standing on.
+  if (ctx.view === "studio") return [];
   const others = ctx.recents.filter((p) => p.path !== ctx.currentPath).slice(0, MAX_RECENTS);
   return others.map((p) => ({
     id: `open-project:${p.path}`,
@@ -409,6 +507,8 @@ export function buildIntentMenu(ctx: IntentContext): IntentSection[] {
   if (goto.length > 0) sections.push({ key: "goto", items: goto });
   const target = targetItems(ctx);
   if (target.length > 0) sections.push({ key: "target", items: target });
+  const thread = threadItems(ctx);
+  if (thread.length > 0) sections.push({ key: "thread", items: thread });
   const now = nowItems(ctx);
   if (now.length > 0) sections.push({ key: "now", items: now });
   const recents = recentsItems(ctx);

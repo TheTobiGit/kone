@@ -11,13 +11,10 @@
  *  and the drawing cannot drift apart. */
 export const GUTTER_WIDTH = 12;
 
-/** The view rail, standing on the ground to the left of both panes. Fixed: it
- *  holds icons, so it never has an opinion about how much room it wants. */
-export const RAIL_WIDTH = 34;
-
-/** What the columns cost before either pane gets a pixel: the rail, plus the
- *  two gaps around it and between the panes. */
-export const CHROME_WIDTH = RAIL_WIDTH + GUTTER_WIDTH * 2;
+/** What the columns cost before either pane gets a pixel: the one gap between
+ *  the two panes. The view switcher lives inside the list pane's own header,
+ *  so there is no rail standing outside the panes taking room. */
+export const CHROME_WIDTH = GUTTER_WIDTH;
 
 /** The portal's own padding, around the panes. Shared with the stylesheet
  *  through the `--inbox-pad` custom property, so the gutter's absolute offset
@@ -65,7 +62,7 @@ export function clampListWidth(want: number, available: number): number {
  * The space the two panes share, from the observed content width.
  *
  * The observer reports the content box, so the portal's padding is already
- * out of it — only the rail and the gaps still have to come off. Before the
+ * out of it — only the gap between the panes still has to come off. Before the
  * first measurement there is nothing to subtract from, so this stays wide
  * enough that a stored width is honoured as-is; the observer corrects it on
  * the same frame the element appears.

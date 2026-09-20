@@ -19,12 +19,13 @@
 // from the last row back to the first would lose you your place in a way a hard
 // end never does.
 
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { recordsStanding, resolveLandingProject, resolveRowFocus } from "~/utils/rowFocus";
 import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
 import type { Project } from "~/composables/useProject";
 import type { PortalState } from "~/composables/usePortals";
 import type { SurfaceId } from "~/utils/surfaceTop";
+import { ownsKey } from "~/utils/surfaceKeys";
 
 const props = defineProps<{
   /** Where the plane sits in the portal stack. `hidden` is away, `active` is
@@ -104,11 +105,23 @@ const landingProject = computed<Project | null>(() =>
   resolveLandingProject(props.activeProject ?? null, byRecency.value),
 );
 
-// The persisted rows, plus — when the landing project has none — one transient
-// row for it. Without that, summoning the plane with no work anywhere would land
-// on nothing at all, when the whole reason to summon it is to start working. It
-// is never persisted empty (a row with no panes is dropped on save), so it
-// appears and disappears on its own as the first pane opens and the last one
+// The persisted rows, plus at most two transient ones.
+//
+// The first is for the row the camera is standing in when its last pane closes.
+// A row stops being persisted the moment it holds no work, so without this the
+// row under the camera would vanish mid-gesture and every project below it would
+// slide up one — and since the camera moves in whole rows with a transition, you
+// would watch it travel into somebody else's work for the crime of tidying up
+// your own. Keeping the row on screen, at the index it already held, means
+// closing the last pane leaves you exactly where you were, looking at your own
+// empty row.
+//
+// The second is for the landing project when it has no row at all. Without that,
+// summoning the plane with no work anywhere would land on nothing, when the whole
+// reason to summon it is to start working.
+//
+// Neither is ever persisted (a row with no panes is dropped on save), so both
+// appear and disappear on their own as the first pane opens and the last one
 // closes.
 const renderRows = computed<RenderRow[]>(() => {
   const rows: RenderRow[] = plane.rows.value.map((r) => ({
@@ -116,6 +129,13 @@ const renderRows = computed<RenderRow[]>(() => {
     name: r.name,
     transient: false,
   }));
+  const held = standing.value;
+  if (held && !rows.some((r) => r.projectPath === held)) {
+    // Back into the slot it held, not onto the end: appending would move the
+    // row out from under the camera, which is the thing being prevented.
+    const at = Math.min(standingIndex.value, rows.length);
+    rows.splice(at, 0, { projectPath: held, name: standingName.value, transient: true });
+  }
   const landing = landingProject.value;
   if (landing && !rows.some((r) => r.projectPath === landing.path)) {
     rows.push({ projectPath: landing.path, name: landing.name, transient: true });
@@ -136,14 +156,17 @@ const empty = computed(() => renderRows.value.length === 0);
 // a row it can neither move nor remember.
 const transientFocus = ref<string | null>(null);
 
-// The row the camera was last deliberately landed on. A persisted row that loses
-// its last pane stops being persisted, so the axis drops it and falls back to
+// The row the camera was last deliberately landed on, and where it sat and what
+// it was called while it was still persisted. A persisted row that loses its
+// last pane stops being persisted, so the axis drops it and falls back to
 // whichever project slid into its index — which would send you into someone
-// else's work for the crime of tidying up your own. The project you were in
-// still has a row on screen at that moment (the transient one `renderRows` adds
-// for the open project), so this is what lets the camera find it: standing still
-// is the answer, not a handoff.
+// else's work for the crime of tidying up your own. `renderRows` puts that row
+// back, in place, as a transient one; these three are what it needs to do it,
+// and what lets the camera find it afterwards. Standing still is the answer,
+// not a handoff.
 const standing = ref<string | null>(null);
+const standingName = ref("");
+const standingIndex = ref(0);
 
 // The rule itself lives in utils/rowFocus, where it can be exercised without
 // driving the whole app — see the note there on why.
@@ -162,8 +185,25 @@ const focusedPath = computed<string | null>(() =>
 // the moment a row goes transient this stops updating, so it still names the row
 // the camera was in when its last pane closed.
 watch(focusedPath, (path) => {
-  if (recordsStanding(renderRows.value, path)) standing.value = path;
+  if (!recordsStanding(renderRows.value, path)) return;
+  const at = renderRows.value.findIndex((r) => r.projectPath === path);
+  standing.value = path;
+  standingIndex.value = at < 0 ? 0 : at;
+  standingName.value = renderRows.value[at]?.name ?? "";
 });
+
+// Publish the camera's row, so surfaces that open over the plane (the intent
+// menu) know which project a gesture here is about. The row the camera stands
+// on is the only one those surfaces can mean — every other row is off-screen.
+watch(
+  () => renderRows.value.find((r) => r.projectPath === focusedPath.value) ?? null,
+  (row) =>
+    rowRegistry.publishFocusedRow(
+      row ? { projectPath: row.projectPath, name: row.name } : null,
+    ),
+  { immediate: true },
+);
+onBeforeUnmount(() => rowRegistry.publishFocusedRow(null));
 
 const cameraIndex = computed(() => {
   const at = renderRows.value.findIndex((r) => r.projectPath === focusedPath.value);
@@ -333,152 +373,22 @@ const focusedProject = computed<Project>(() => {
 });
 const g = useProjectGit(focusedProject);
 
-// ── travel & 2D overview navigation ──────────────────────────────────────────
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!isActive.value || e.defaultPrevented) return;
-
-  if (matchesShortcut("toggle-overview", e)) {
-    e.preventDefault();
-    toggleStudioOverview();
-    return;
-  }
-
-  if (studioOverview.value) {
-    if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
-      // A modal over the plane owns these first — leaving the overview
-      // underneath an open dialog would answer a key meant for the dialog.
-      if (props.surfaceTop !== "studio") return;
-      e.preventDefault();
-      exitStudioOverview();
-      return;
-    }
-    if (e.key === "ArrowUp" || matchesShortcut("focus-row-up", e)) {
-      e.preventDefault();
-      if (stepOverviewRow(-1)) cue("select");
-      else cue("error");
-      return;
-    }
-    if (e.key === "ArrowDown" || matchesShortcut("focus-row-down", e)) {
-      e.preventDefault();
-      if (stepOverviewRow(1)) cue("select");
-      else cue("error");
-      return;
-    }
-    if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      if (focusedPath.value) {
-        rowRegistry.rowFor(focusedPath.value)?.shiftPaneFocus?.(-1);
-      }
-      return;
-    }
-    if (e.key === "ArrowRight") {
-      e.preventDefault();
-      if (focusedPath.value) {
-        rowRegistry.rowFor(focusedPath.value)?.shiftPaneFocus?.(1);
-      }
-      return;
-    }
-    return;
-  }
-
-  if (matchesShortcut("focus-row-up", e)) {
-    e.preventDefault();
-    if (stepRow(-1)) cue("select");
-    else cue("error"); // the top of the plane; say so rather than swallow it
-    return;
-  }
-  if (matchesShortcut("focus-row-down", e)) {
-    e.preventDefault();
-    if (stepRow(1)) cue("select");
-    else cue("error");
-    return;
-  }
-
-  // Carrying a column to another row is the one gesture this plane refuses, and
-  // it is caught literally rather than registered as a shortcut: a shortcut list
-  // must not advertise something that never happens, but the horizontal
-  // move-thread pair trains exactly this reach one axis over, so it earns a
-  // stated refusal instead of silence.
-  const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.altKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-    e.preventDefault();
-    refuse();
-    return;
-  }
-});
 
 // ── keyboard shortcuts for panes ──────────────────────────────────────────────
-function resolveTargetProjectPath(): string | null {
-  if (isActive.value) {
-    // In studio: currently showing project row
-    return focusedPath.value;
-  }
-  if (props.activeProject?.path) {
-    // In project detail/overview: the project's studio row
-    return props.activeProject.path;
-  }
-  // Anywhere else (e.g. launcher/home): last project row opened in the studio
-  return plane.focusedPath.value ?? landingProject.value?.path ?? null;
+/** Which project row a new column belongs to, given the surface the key came
+ *  from. Takes the surface rather than re-deriving it: the caller has already
+ *  established which of the two it is, and reading a visibility flag back here
+ *  to re-answer the same question is how the two drift apart.
+ *
+ *  Only the two surfaces the plane owns can answer. On the stage that means a
+ *  project page — the plane with one row pulled to the front. The launcher is
+ *  also the stage and has no project open, and there the honest answer is none:
+ *  falling back to the last row touched would put a thread in a project the
+ *  user did not choose, from a surface that never asked for the key. */
+function resolveTargetProjectPath(surface: SurfaceId): string | null {
+  if (surface === "studio") return focusedPath.value;
+  return props.activeProject?.path ?? null;
 }
-
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (isCovered.value || e.defaultPrevented) return;
-
-  if (matchesShortcut("new-thread", e)) {
-    const targetPath = resolveTargetProjectPath();
-    if (!targetPath) return;
-    e.preventDefault();
-    if (targetPath !== focusedPath.value) {
-      focusRow(targetPath);
-    }
-    rowRegistry.rowFor(targetPath)?.newThread();
-    return;
-  }
-
-  if (matchesShortcut("new-terminal", e)) {
-    const targetPath = resolveTargetProjectPath();
-    if (!targetPath) return;
-    e.preventDefault();
-    if (targetPath !== focusedPath.value) {
-      focusRow(targetPath);
-    }
-    rowRegistry.rowFor(targetPath)?.openTerminal();
-    return;
-  }
-
-  if (matchesShortcut("new-scratchpad", e)) {
-    const targetPath = resolveTargetProjectPath();
-    if (!targetPath) return;
-    e.preventDefault();
-    if (targetPath !== focusedPath.value) {
-      focusRow(targetPath);
-    }
-    rowRegistry.rowFor(targetPath)?.openScratchpad();
-    return;
-  }
-
-  if (matchesShortcut("send-selection-to-scratchpad", e)) {
-    const sel = window.getSelection();
-    const text = sel?.toString().trim() ?? "";
-    if (!text || text.length <= 2) return;
-    const targetPath = resolveTargetProjectPath();
-    if (!targetPath) return;
-    e.preventDefault();
-    rowRegistry.rowFor(targetPath)?.captureText?.(text);
-    return;
-  }
-
-  if (matchesShortcut("play-demo", e)) {
-    const targetPath = resolveTargetProjectPath();
-    if (!targetPath) return;
-    e.preventDefault();
-    if (targetPath !== focusedPath.value) {
-      focusRow(targetPath);
-    }
-    rowRegistry.rowFor(targetPath)?.playDemo?.();
-    return;
-  }
-});
 
 const refusal = ref(false);
 let refusalTimer: ReturnType<typeof setTimeout> | null = null;
@@ -489,18 +399,155 @@ function refuse(): void {
   refusalTimer = setTimeout(() => (refusal.value = false), 2600);
 }
 
-// Escape closes one layer at a time. Anything inside a row owns it first and
-// marks the event handled, so reaching here means the plane itself is the
-// frontmost thing — while covered, or while a modal or the assistant stands
-// over it, the layer above owns Escape and one press must not dismiss both.
+// Every window-level key the plane answers, in one listener with one ownership
+// test per family. Three listeners raced here before, each with its own idea of
+// what "the plane is in front" meant, and the loosest of them answered ⌘N from
+// surfaces the studio does not own.
+//
+// The two families differ in scope, which is why they stay separate blocks
+// rather than collapsing further:
+//
+//   Travel, overview and Escape need the plane to be the portal in front. A
+//   modal over the plane owns these, and one Escape closes one layer.
+//
+//   A new column — thread, terminal, scratchpad — also answers on the bare
+//   stage. A project page is the plane with one row pulled to the front, so a
+//   new column there belongs to that project and no other surface is asking for
+//   the key.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!isActive.value || e.key !== "Escape" || e.defaultPrevented) return;
-  if (props.surfaceTop !== "studio") return;
-  if (studioOverview.value) {
-    exitStudioOverview();
-    return;
+  if (ownsKey(props.surfaceTop, "studio", e)) {
+    if (matchesShortcut("toggle-overview", e)) {
+      e.preventDefault();
+      toggleStudioOverview();
+      return;
+    }
+
+    if (studioOverview.value) {
+      if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        exitStudioOverview();
+        return;
+      }
+      if (e.key === "ArrowUp" || matchesShortcut("focus-row-up", e)) {
+        e.preventDefault();
+        if (stepOverviewRow(-1)) cue("select");
+        else cue("error");
+        return;
+      }
+      if (e.key === "ArrowDown" || matchesShortcut("focus-row-down", e)) {
+        e.preventDefault();
+        if (stepOverviewRow(1)) cue("select");
+        else cue("error");
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (focusedPath.value) {
+          rowRegistry.rowFor(focusedPath.value)?.shiftPaneFocus?.(-1);
+        }
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (focusedPath.value) {
+          rowRegistry.rowFor(focusedPath.value)?.shiftPaneFocus?.(1);
+        }
+        return;
+      }
+      return;
+    }
+
+    if (matchesShortcut("focus-row-up", e)) {
+      e.preventDefault();
+      if (stepRow(-1)) cue("select");
+      else cue("error"); // the top of the plane; say so rather than swallow it
+      return;
+    }
+    if (matchesShortcut("focus-row-down", e)) {
+      e.preventDefault();
+      if (stepRow(1)) cue("select");
+      else cue("error");
+      return;
+    }
+
+    // Carrying a column to another row is the one gesture this plane refuses, and
+    // it is caught literally rather than registered as a shortcut: a shortcut list
+    // must not advertise something that never happens, but the horizontal
+    // move-thread pair trains exactly this reach one axis over, so it earns a
+    // stated refusal instead of silence.
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.altKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      refuse();
+      return;
+    }
+
+    // Escape closes one layer at a time. Anything inside a row owns it first
+    // and marks the event handled, so reaching here means the plane itself is
+    // the frontmost thing. The overview is not tested again — the travel block
+    // above already answers Escape while it is open.
+    if (e.key === "Escape") {
+      close();
+      return;
+    }
   }
-  close();
+
+  if (ownsKey(props.surfaceTop, ["studio", "stage"], e)) {
+    if (matchesShortcut("new-thread", e)) {
+      const targetPath = resolveTargetProjectPath(props.surfaceTop);
+      if (!targetPath) return;
+      e.preventDefault();
+      if (targetPath !== focusedPath.value) {
+        focusRow(targetPath);
+      }
+      rowRegistry.rowFor(targetPath)?.newThread();
+      return;
+    }
+
+    if (matchesShortcut("new-terminal", e)) {
+      const targetPath = resolveTargetProjectPath(props.surfaceTop);
+      if (!targetPath) return;
+      e.preventDefault();
+      if (targetPath !== focusedPath.value) {
+        focusRow(targetPath);
+      }
+      rowRegistry.rowFor(targetPath)?.openTerminal();
+      return;
+    }
+
+    if (matchesShortcut("new-scratchpad", e)) {
+      const targetPath = resolveTargetProjectPath(props.surfaceTop);
+      if (!targetPath) return;
+      e.preventDefault();
+      if (targetPath !== focusedPath.value) {
+        focusRow(targetPath);
+      }
+      rowRegistry.rowFor(targetPath)?.openScratchpad();
+      return;
+    }
+
+    if (matchesShortcut("send-selection-to-scratchpad", e)) {
+      const sel = window.getSelection();
+      const text = sel?.toString().trim() ?? "";
+      if (!text || text.length <= 2) return;
+      const targetPath = resolveTargetProjectPath(props.surfaceTop);
+      if (!targetPath) return;
+      e.preventDefault();
+      rowRegistry.rowFor(targetPath)?.captureText?.(text);
+      return;
+    }
+
+    if (matchesShortcut("play-demo", e)) {
+      const targetPath = resolveTargetProjectPath(props.surfaceTop);
+      if (!targetPath) return;
+      e.preventDefault();
+      if (targetPath !== focusedPath.value) {
+        focusRow(targetPath);
+      }
+      rowRegistry.rowFor(targetPath)?.playDemo?.();
+      return;
+    }
+  }
 });
 
 function close(): void {

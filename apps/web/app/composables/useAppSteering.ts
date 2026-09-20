@@ -6,12 +6,15 @@ import {
   addAgentToProject,
   createAgent,
   deleteAgent,
+  removeAgentFromProject,
   selectAgent,
   updateAgent,
+  type AgentAvatar,
   type AgentDraft,
   type AgentEdit,
   type FacePaint,
 } from "~/utils/agents";
+import type { AgentBot } from "~/utils/bot";
 import { hydratePresets } from "~/utils/presetStore";
 import { useStripPrefs } from "./useStripPrefs";
 import { usePaneWidthPrefs } from "./usePaneWidthPrefs";
@@ -84,6 +87,35 @@ function readFace(value: { body: string; ink: string } | undefined): FacePaint |
   const ink = value.ink.trim();
   if (!body || !ink) return null;
   return { body, ink };
+}
+
+/** A picture off the wire, or null if there is nothing to draw. The bytes ride
+ *  by value, so only a non-empty `src` counts — an empty one would paint a
+ *  blank where a face used to be. */
+function readAvatar(value: { source: string; src: string } | undefined): AgentAvatar | null {
+  if (!value) return null;
+  const src = value.src.trim();
+  if (!src) return null;
+  const source = value.source.trim();
+  if (source !== "generated" && source !== "upload" && source !== "dicebear" && source !== "shipped") {
+    return null;
+  }
+  return { source, src };
+}
+
+/** A bot off the wire, or null if any of the three ids is missing. All three
+ *  move together: a bot is one body in one colour wearing one expression. */
+function readBot(
+  value: { form: string; color: string; expression: string } | undefined,
+): AgentBot | null {
+  if (!value) return null;
+  const form = value.form.trim();
+  const color = value.color.trim();
+  const expression = value.expression.trim();
+  if (!form || !color || !expression) return null;
+  // SAFETY: the catalogue resolves each id and answers an unknown one with its
+  // default, so passing the wire strings straight through never draws nothing.
+  return { form: form as AgentBot["form"], color: color as AgentBot["color"], expression: expression as AgentBot["expression"] };
 }
 
 /** Apply one theme mutation: a custom theme to register, a preview to show or
@@ -221,7 +253,11 @@ async function applyAgentMutation(
     const name = event.fields?.name?.trim();
     // A nameless agent has nothing to be called, so there is nothing to make.
     if (!name) return;
-    const draft: AgentDraft = { name };
+    // No bot is no agent: without the creature there is nothing to show while
+    // it works, so a bot-less create is refused rather than stored bot-less.
+    const bot = readBot(event.fields?.bot);
+    if (!bot) return;
+    const draft: AgentDraft = { name, bot };
     // The gateway minted the id so it could report the agent it made; honouring
     // it is what makes that report true.
     if (event.agentId) draft.id = event.agentId;
@@ -231,6 +267,8 @@ async function applyAgentMutation(
     if (instructions) draft.instructions = instructions;
     const face = readFace(event.fields?.face);
     if (face) draft.face = face;
+    const avatar = readAvatar(event.fields?.avatar);
+    if (avatar) draft.avatar = avatar;
     const model = readModelRef(event.fields?.model);
     if (model) {
       draft.model = model;
@@ -239,11 +277,21 @@ async function applyAgentMutation(
     }
 
     const created = await createAgent(draft);
-    if (created && event.projectPath) await addAgentToProject(event.projectPath, created.id);
+    if (!created) return;
+    // Every project team the new agent joins: the explicit list plus the legacy
+    // single path older gateways still send. Deduped — joining twice is one join.
+    const paths = new Set<string>();
+    for (const path of event.projectPaths ?? []) {
+      const trimmed = path.trim();
+      if (trimmed) paths.add(trimmed);
+    }
+    if (event.projectPath?.trim()) paths.add(event.projectPath.trim());
+    await Promise.all([...paths].map((path) => addAgentToProject(path, created.id)));
     return;
   }
 
-  if (!event.agentId) return;
+  const agentId = event.agentId;
+  if (!agentId) return;
   const edit: AgentEdit = {};
   const name = event.fields?.name?.trim();
   if (name) edit.name = name;
@@ -251,6 +299,10 @@ async function applyAgentMutation(
   if (event.fields?.instructions !== undefined) edit.instructions = event.fields.instructions;
   const face = readFace(event.fields?.face);
   if (face) edit.face = face;
+  const avatar = readAvatar(event.fields?.avatar);
+  if (avatar) edit.avatar = avatar;
+  const bot = readBot(event.fields?.bot);
+  if (bot) edit.bot = bot;
   const model = readModelRef(event.fields?.model);
   if (model) edit.model = model;
   if (event.fields?.modelFallbacks !== undefined) {
@@ -261,7 +313,13 @@ async function applyAgentMutation(
   // Here, at the end, it becomes the null the edit means.
   for (const field of event.clear ?? []) edit[field] = null;
 
-  await updateAgent(event.agentId, edit);
+  await updateAgent(agentId, edit);
+  const joins = (event.addToTeams ?? []).map((path) => path.trim()).filter(Boolean);
+  const leaves = (event.removeFromTeams ?? []).map((path) => path.trim()).filter(Boolean);
+  await Promise.all([
+    ...joins.map((path) => addAgentToProject(path, agentId)),
+    ...leaves.map((path) => removeAgentFromProject(path, agentId)),
+  ]);
 }
 
 /** Apply one thread strip mutation. A setting the event doesn't name is left

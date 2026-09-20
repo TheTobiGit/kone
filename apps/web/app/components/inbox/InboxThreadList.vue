@@ -16,7 +16,7 @@
 
 import { computed, nextTick, onActivated, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Archive02Icon, CheckmarkCircle02Icon, InboxIcon } from "@hugeicons/core-free-icons";
 import InboxThreadRow from "~/components/inbox/InboxThreadRow.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { byRecency, nextVisitStamp, type VisitStamp } from "~/utils/sessionList";
@@ -39,11 +39,20 @@ const props = defineProps<{
   reading: boolean;
 }>();
 
-const HEADINGS = {
-  inbox: "Inbox",
-  done: "Done",
-  archived: "Archived",
-} satisfies Record<InboxViewId, string>;
+// The view switcher lives here, in the list container, rather than in a rail
+// outside it: it decides which list there is, and the list names what you are
+// looking at. One tab is open at a time — the open one reads as icon plus
+// label, the other two as icons only, and opening one expands it the same way.
+/** What HugeiconsIcon takes for its `icon` prop. The icon packages declare the
+ *  shape but export only the icons themselves, so the name is reached through
+ *  one of them rather than stated as `unknown` for every consumer to cast. */
+type IconGlyph = typeof InboxIcon;
+
+const VIEWS = [
+  { id: "inbox", label: "Inbox", icon: InboxIcon },
+  { id: "done", label: "Done", icon: CheckmarkCircle02Icon },
+  { id: "archived", label: "Archived", icon: Archive02Icon },
+] as const satisfies ReadonlyArray<{ id: InboxViewId; label: string; icon: IconGlyph }>;
 
 /** Which thread the reading pane is showing — the row itself, not its id. The
  *  reading pane needs the project the thread lives in before it can be
@@ -58,6 +67,9 @@ const emit = defineEmits<{
   /** Start a conversation. The portal owns what that means — the list has no
    *  project to start one in, and neither does the inbox until it asks. */
   "new-thread": [];
+  /** One of the switcher's tabs was opened. The portal owns which view is on
+   *  screen, so this only asks — the view prop coming back swaps the list. */
+  "update:view": [view: InboxViewId];
 }>();
 
 // Read once at setup rather than watched: the pane mounts one of these per view
@@ -208,10 +220,28 @@ defineExpose({ reload: (silent = false) => source.reload(silent) });
 
 <template>
   <div class="tl">
-    <!-- Names the list under it, because the rail's mark alone says which tab is
-         lit without saying what you are now looking at. -->
+    <!-- The view switcher: which list is on screen. The open tab reads as icon
+         plus label, the other two as icons only — opening one expands it.
+         `aria-pressed` rather than `aria-selected`: these are toggle buttons in
+         a nav, not tabs owning tabpanels, and claiming a tablist would promise
+         arrow-key navigation and a panel relationship that do not exist here. -->
     <header class="tl__head">
-      <h2 class="tl__heading">{{ HEADINGS[view] }}</h2>
+      <nav class="tl__switch" aria-label="Inbox views">
+        <button
+          v-for="v in VIEWS"
+          :key="v.id"
+          type="button"
+          class="tl__tab"
+          :class="{ 'tl__tab--on': view === v.id }"
+          :aria-label="v.label"
+          :aria-pressed="view === v.id"
+          :title="v.label"
+          @click="emit('update:view', v.id)"
+        >
+          <HugeiconsIcon :icon="v.icon" :size="16" :stroke-width="1.9" aria-hidden="true" />
+          <span v-if="view === v.id" class="tl__tab-label">{{ v.label }}</span>
+        </button>
+      </nav>
       <button
         type="button"
         class="tl__new"
@@ -258,8 +288,8 @@ defineExpose({ reload: (silent = false) => source.reload(silent) });
   min-height: 0;
 }
 
-/* Pinned above the scroll so the heading and the button stay put while the rows
-   move under them. */
+/* Pinned above the scroll so the switcher and the button stay put while the
+   rows move under them. */
 .tl__head {
   flex: none;
   display: flex;
@@ -269,16 +299,52 @@ defineExpose({ reload: (silent = false) => source.reload(silent) });
   padding: 14px 14px 10px;
 }
 
-.tl__heading {
+.tl__switch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tl__tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0 7px;
+  border-radius: 10px;
+  color: var(--faint);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    padding 0.18s ease;
+}
+.tl__tab:hover {
+  color: var(--muted);
+  background: var(--hover);
+}
+.tl__tab--on,
+.tl__tab--on:hover {
+  padding: 0 12px 0 9px;
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.tl__tab-label {
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  color: var(--ink-soft);
+  white-space: nowrap;
 }
 
 .tl__new {
   display: grid;
+  flex: none;
   place-items: center;
   width: 28px;
   height: 28px;
@@ -322,5 +388,12 @@ defineExpose({ reload: (silent = false) => source.reload(silent) });
   padding: 18px 12px;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl__tab,
+  .tl__new {
+    transition-duration: 0.01s;
+  }
 }
 </style>

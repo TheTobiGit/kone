@@ -547,6 +547,9 @@ function ensureLocalRow(presetId: string, sortOrder: number): AgentRecord {
 function insertLocalRow(input: AgentCreateInput, base: number): AgentRecord | null {
   const name = clamp(input.name, NAME_MAX);
   if (!name) return null;
+  // No bot is no agent: without the creature there is nothing to show while it
+  // works, so a bot-less create is refused rather than stored bot-less.
+  if (clampBot(input.bot) === null) return null;
   const now = Date.now();
   const row: AgentRecord = {
     agentId: input.agentId ?? mintAgentId(),
@@ -605,6 +608,7 @@ function forkLocalRow(input: AgentDuplicateInput): AgentRecord | null {
   const inherited = input.inherited ?? {};
   const name = clamp(input.name ?? source.name ?? inherited.name, NAME_MAX);
   if (!name) return null;
+  if (clampBot(source.bot ?? inherited.bot) === null) return null;
   const now = Date.now();
   const copy: AgentRecord = {
     agentId: input.newAgentId ?? mintAgentId(),
