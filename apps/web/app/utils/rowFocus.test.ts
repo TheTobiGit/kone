@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  planeDestinations,
   recordsStanding,
+  renderPlaneRows,
   resolveLandingProject,
   resolveRowFocus,
   type FocusRow,
+  type RenderRow,
 } from "./rowFocus";
 
 const A = "/Developer/kone";
@@ -165,5 +168,138 @@ describe("which project the studio lands in", () => {
 
   test("an open project that is not in recents yet is still where we land", () => {
     expect(resolveLandingProject(kone, [])).toEqual(kone);
+  });
+});
+
+// The transient rows the plane conjures. The case that keeps going wrong is a
+// row conjured for one project wearing another project's name, which is what
+// happens the moment the pin stops carrying its own label.
+describe("renderPlaneRows", () => {
+  const persisted = [
+    { projectPath: A, name: "kone" },
+    { projectPath: B, name: "synara" },
+  ];
+
+  test("passes the persisted rows through untouched when nothing is pinned", () => {
+    expect(renderPlaneRows(persisted, null, null)).toEqual([
+      { projectPath: A, name: "kone", transient: false },
+      { projectPath: B, name: "synara", transient: false },
+    ]);
+  });
+
+  test("puts an emptied row back in the slot it held, under its own name", () => {
+    // C's last pane closed, so the axis dropped it — it sat between A and B.
+    expect(
+      renderPlaneRows(persisted, { path: C, name: "t3code", index: 1 }, null),
+    ).toEqual([
+      { projectPath: A, name: "kone", transient: false },
+      { projectPath: C, name: "t3code", transient: true },
+      { projectPath: B, name: "synara", transient: false },
+    ]);
+  });
+
+  test("a project travelled to that never had a row lands at the foot", () => {
+    const rows = renderPlaneRows(
+      persisted,
+      { path: C, name: "t3code", index: persisted.length },
+      null,
+    );
+    expect(rows[rows.length - 1]).toEqual({
+      projectPath: C,
+      name: "t3code",
+      transient: true,
+    });
+    // And it does not take another project's name or another project's slot
+    // with it — the whole reason the pin carries its own label.
+    expect(rows.filter((r) => r.name === "t3code")).toHaveLength(1);
+    expect(rows.map((r) => r.projectPath)).toEqual([A, B, C]);
+  });
+
+  test("an index past the end clamps to the foot rather than dropping the row", () => {
+    const rows = renderPlaneRows(persisted, { path: C, name: "t3code", index: 99 }, null);
+    expect(rows.map((r) => r.projectPath)).toEqual([A, B, C]);
+  });
+
+  test("the pin stops applying the moment the project persists a row again", () => {
+    // The conjured row opened its first pane, so the axis owns it now. One row
+    // for it, not two, and not a transient one.
+    const rows = renderPlaneRows(
+      [...persisted, { projectPath: C, name: "t3code" }],
+      { path: C, name: "t3code", index: 2 },
+      null,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => !r.transient)).toBe(true);
+  });
+
+  test("the landing project gets a row when it has none, and none when it has one", () => {
+    expect(
+      renderPlaneRows(persisted, null, { path: C, name: "t3code" }),
+    ).toHaveLength(3);
+    expect(renderPlaneRows(persisted, null, { path: A, name: "kone" })).toHaveLength(2);
+  });
+
+  test("standing on the landing project conjures one row, not two", () => {
+    const rows = renderPlaneRows(
+      persisted,
+      { path: C, name: "t3code", index: 2 },
+      { path: C, name: "t3code" },
+    );
+    expect(rows.filter((r) => r.projectPath === C)).toHaveLength(1);
+  });
+});
+
+// The list behind the strip's project drop-down. It has to agree with the rule
+// above about where travel lands, because it is what offers the travel.
+describe("planeDestinations", () => {
+  const rows: RenderRow[] = [
+    { projectPath: A, name: "kone", transient: false },
+    { projectPath: B, name: "synara", transient: false },
+  ];
+  const persisted = [
+    { projectPath: A, paneCount: 3 },
+    { projectPath: B, paneCount: 1 },
+  ];
+
+  test("lists the rows in camera order, with the work waiting in each", () => {
+    expect(planeDestinations(rows, persisted, [])).toEqual([
+      { projectPath: A, name: "kone", columns: 3 },
+      { projectPath: B, name: "synara", columns: 1 },
+    ]);
+  });
+
+  test("a project with no row yet joins the foot, where travel would land it", () => {
+    const list = planeDestinations(rows, persisted, [
+      { path: B, name: "synara" },
+      { path: C, name: "t3code" },
+    ]);
+    expect(list.map((d) => d.projectPath)).toEqual([A, B, C]);
+    expect(list[2]).toEqual({ projectPath: C, name: "t3code", columns: 0 });
+  });
+
+  // A transient row is on screen precisely because nothing is open in it, so
+  // the count it shows is the count it has: none.
+  test("a transient row is listed, and counts no columns", () => {
+    const list = planeDestinations(
+      [...rows, { projectPath: C, name: "t3code", transient: true }],
+      persisted,
+      [{ path: C, name: "t3code" }],
+    );
+    expect(list.filter((d) => d.projectPath === C)).toEqual([
+      { projectPath: C, name: "t3code", columns: 0 },
+    ]);
+  });
+
+  test("a row the axis kept a count for but stopped rendering is not listed", () => {
+    const list = planeDestinations(
+      [{ projectPath: A, name: "kone", transient: false }],
+      persisted,
+      [],
+    );
+    expect(list.map((d) => d.projectPath)).toEqual([A]);
+  });
+
+  test("nothing anywhere is an empty list rather than a throw", () => {
+    expect(planeDestinations([], [], [])).toEqual([]);
   });
 });

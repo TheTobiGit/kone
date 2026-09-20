@@ -17,6 +17,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import CreateAgentModal from "~/components/agent/CreateAgentModal.vue";
+import RosterFace from "~/components/agent/RosterFace.vue";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import DetailTable from "~/components/ui/DetailTable.vue";
 import DetailTabs from "~/components/ui/DetailTabs.vue";
@@ -363,23 +364,22 @@ watch(
            way it does everywhere else. No panel behind it — the spacing sets the
            head apart from the sections. -->
       <header class="det__hero">
-        <span class="det__portrait" :class="{ 'det__portrait--photo': agent.avatar }">
-          <img
-            v-if="agent.avatar"
-            class="det__photo"
-            :src="agent.avatar.src"
-            alt=""
-            draggable="false"
-          />
-          <span v-else class="det__face" v-html="agent.svg" />
-          <span
-            v-if="agent.bot"
-            class="det__botmark"
-            :style="{ background: botGround(agent.bot) }"
-            aria-hidden="true"
-            v-html="botMark(agent.bot)"
-          />
-        </span>
+        <RosterFace
+          :agent="agent"
+          :size="88"
+          :face-size="68"
+          ground="color-mix(in srgb, var(--ink) 6%, transparent)"
+        >
+          <template #mark>
+            <span
+              v-if="agent.bot"
+              class="det__botmark"
+              :style="{ background: botGround(agent.bot) }"
+              aria-hidden="true"
+              v-html="botMark(agent.bot)"
+            />
+          </template>
+        </RosterFace>
 
         <span class="det__id">
           <span class="det__nameline">
@@ -554,39 +554,6 @@ watch(
   padding-block: 2px;
 }
 
-.det__portrait {
-  position: relative;
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 88px;
-  height: 88px;
-  border-radius: 50%;
-  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
-}
-/* A picture is the portrait, so the disc it would sit on goes away rather than
-   showing as a rim around it. */
-.det__portrait--photo {
-  background-color: transparent;
-}
-.det__photo {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
-  user-select: none;
-}
-.det__face {
-  display: block;
-  width: 68px;
-  height: 68px;
-}
-.det__face :deep(svg) {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
 /* Small, and on the ground its own colour needs — at this size a body that
    sinks into the surface leaves nothing to see. */
 .det__botmark {

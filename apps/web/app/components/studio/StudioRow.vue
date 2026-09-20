@@ -13,6 +13,7 @@ import type {
   UserInputAnswers,
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
+import type { StudioDestination } from "~/types/studio";
 import type { GitRemote } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId, EFFORT_META } from "~/utils/modelCatalog";
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
@@ -89,6 +90,10 @@ const props = defineProps<{
   origin: GitRemote | null;
   /** Studio-wide 2D overview mode. */
   overview?: boolean;
+  /** Every project the camera can travel to, in plane order — the strip's
+   *  project drop-down lists them. Handed down whole; the strip drops this
+   *  row's own project from the list. */
+  destinations?: StudioDestination[];
 }>();
 
 const emit = defineEmits<{
@@ -104,6 +109,9 @@ const emit = defineEmits<{
   selectPane: [paneId: string];
   /** Request studio overview toggle. */
   toggleOverview: [];
+  /** Travel to another project's row — picked by name from the strip's project
+   *  drop-down. The plane owns the camera, so the row only relays it. */
+  switchRow: [projectPath: string];
 }>();
 
 const { cue } = useSound();
@@ -752,17 +760,15 @@ async function adoptThreadPane(threadId: string): Promise<void> {
 // name and face rolled from its own id.
 const {
   team: agents,
-  selected: pickedAgent,
+  pickedForProject,
   routing,
   lastRouted,
   routePending,
-  resolveAgentId,
+  settleAgentFor,
   agentById,
   pendingThreadAgent,
   selectAgent,
   settleThreadAgent,
-  threadSettled,
-  isOnTeam,
 } = useAgentRoster(() => props.project.path);
 
 // When an outside surface (such as the agent detail page in settings) requests
@@ -785,25 +791,6 @@ watch(
   },
   { immediate: true },
 );
-
-// The composer answers as somebody on this project's team — that is what a team
-// is for. The selection is app-wide, so it can be carrying an agent who is a
-// teammate on another project and a stranger here; here that reads as a guest,
-// rather than quietly working a project it was never added to. On-team members
-// pass straight through, so nothing changes for the project they belong to.
-const pickedForProject = computed(() =>
-  pickedAgent.value && isOnTeam(pickedAgent.value.id) ? pickedAgent.value : undefined,
-);
-
-/** Who to settle a thread on for this request: the router's answer when the
- *  picker is holding Jev and the thread is still undecided, and the plain pick
- *  otherwise. Only a thread's first turn is routed — see `agentIdFor` in
- *  `useInboxComposer`, which answers the same question for the inbox. */
-function ownerFor(request: string, threadId: string | null | undefined): Promise<string | null> {
-  const picked = pickedForProject.value?.id ?? null;
-  if (!routing.value || threadSettled(threadId)) return Promise.resolve(picked);
-  return resolveAgentId(request);
-}
 
 const focusedIsSideChat = computed(() => {
   const currentId = focusedThread.value?.threadId.value;
@@ -1424,7 +1411,7 @@ async function onSend(text: string, files?: File[]) {
     // With the router selected, who works the thread is read out of the
     // request rather than off the picker — awaited before the send below, since
     // the session reads the persona off this binding as it spawns.
-    settleThreadAgent(currentId, await ownerFor(text, currentId));
+    await settleAgentFor(text, currentId);
   }
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
@@ -1658,6 +1645,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         :branch="branch ?? undefined"
         :origin="origin"
         :overview="overview"
+        :destinations="destinations"
         @choose="onChoosePane"
         @focus="focusPane"
         @shift="shiftPaneFocus"
@@ -1677,6 +1665,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @width="setPaneWidth"
         @zen="setPaneZen"
         @toggle-overview="emit('toggleOverview')"
+        @switch-row="(path) => emit('switchRow', path)"
         @select-column="(id) => emit('selectPane', id)"
       >
         <!-- Focused thread's ask, inside its own column: the scrim dims only

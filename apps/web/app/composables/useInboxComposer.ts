@@ -63,35 +63,15 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   // work a repository is a fact about the repository.
   const {
     team: agents,
-    selected: pickedAgent,
+    pickedForProject,
     routing,
     lastRouted,
     routePending,
-    resolveAgentId,
+    settleAgentFor,
     selectAgent,
-    settleThreadAgent,
-    isOnTeam,
-    loadProjectTeam,
     agentById,
-    threadSettled,
   } = useAgentRoster(() => toValue(o.projectPath));
 
-  // An agent selected somewhere else may not be on this project's team, and a
-  // guest is the honest answer when it is not — better than quietly working a
-  // project it was never added to.
-  //
-  // But only once there is an answer to give. Nothing in the app has read this
-  // project's team on the inbox's behalf, so until that read lands "not on the
-  // team" and "not asked yet" look identical, and demoting the selection to a
-  // guest on the second one would announce a decision the user never made and
-  // then quietly take it back a moment later.
-  const teamReady = ref(false);
-  const pickedForProject = computed(() => {
-    const picked = pickedAgent.value;
-    if (!picked) return undefined;
-    if (!teamReady.value) return picked;
-    return isOnTeam(picked.id) ? picked : undefined;
-  });
   /** What the composer's agent slot is holding. The router's sentinel is a
    *  real answer here and is never resolved to an agent — nobody is working the
    *  turn until the request has been read. */
@@ -114,27 +94,6 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     const name = result.agentId ? agentById(result.agentId)?.name : undefined;
     return routingReceipt(result, name);
   });
-
-  /**
-   * Who to settle this thread on, read from the request itself when the router
-   * is what the picker is holding. The settle is write-once, so this is awaited
-   * before the turn goes out rather than after it — see the send sites, which
-   * order it that way deliberately.
-   *
-   * A thread that has already been decided is never routed again. Not merely
-   * to save the call: the binding would refuse the answer anyway, so a later
-   * turn would spend a request to produce a receipt announcing a decision that
-   * did not happen — and the session it claimed to be describing was spawned
-   * with the first turn's persona and cannot become somebody else.
-   */
-  function agentIdFor(
-    request: string,
-    threadId: string | null | undefined,
-  ): Promise<string | null> {
-    const picked = pickedForProject.value?.id ?? null;
-    if (!routing.value || threadSettled(threadId)) return Promise.resolve(picked);
-    return resolveAgentId(request);
-  }
 
   // A pinned model is a hard pin: only its provider is offered, and only that
   // one model within it, so the composer can only answer where the agent may.
@@ -460,14 +419,12 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     if (import.meta.client) localStorage.setItem(modeKey(toValue(o.projectPath)), next);
   }
 
-  // Both of these are lazy, per-surface loads: nothing in the app has read this
-  // project's team or probed the machine's CLIs on the inbox's behalf, and an
-  // unasked-for list is indistinguishable from an empty one — the agent menu
-  // would offer only a guest and the model slot would flatten to a label, both
-  // of which look like a decision rather than a gap. Which project is fixed for
-  // this pane's lifetime, so asking once on mount is the whole story.
+  // A lazy, per-surface load: nothing in the app has probed the machine's CLIs
+  // on the inbox's behalf, and an unasked-for list is indistinguishable from an
+  // empty one — the model slot would flatten to a label, which looks like a
+  // decision rather than a gap. (The project's team is read by the roster,
+  // which follows the path this composable hands it.)
   onMounted(async () => {
-    void loadProjectTeam(toValue(o.projectPath)).finally(() => (teamReady.value = true));
     // Neither rejects — each swallows its own failure and resolves to a
     // fallback — so awaiting them together cannot strand a rejection.
     await Promise.all([providers.prepare(), providerSettings.load()]);
@@ -503,12 +460,11 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     onApply,
     agents,
     agentId,
-    agentIdFor,
+    settleAgentFor,
     routing,
     lastRouted,
     routingNote,
     onAgentPick: (id: string | null) => selectAgent(id),
-    settleThreadAgent,
     modelOptions,
     modelSwitchable,
     // Read off the session rather than the registry's active-thread projection:

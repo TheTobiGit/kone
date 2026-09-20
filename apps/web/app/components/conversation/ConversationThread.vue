@@ -27,6 +27,8 @@ import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
 import HandoffMark from "~/components/conversation/HandoffMark.vue";
+import JevMark from "~/components/conversation/JevMark.vue";
+import { jevRouteFor } from "~/utils/jevRoutes";
 import { useHandoffMarks } from "~/composables/useHandoffMarks";
 import { groupHandoffMarks } from "~/utils/handoffMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
@@ -704,6 +706,21 @@ function handoffMarksFor(key: string) {
   return groupedHandoffMarks.value.byExchange.get(key) ?? [];
 }
 
+/**
+ * The router's decision for this thread, when Jev staffed it — the record
+ * behind the "Jev (…) → …" marker. Null for threads that were never routed,
+ * which show no marker. The face and name resolve live in the marker itself, so
+ * a rename renames history.
+ *
+ * Withheld while older pages are unread. The mark belongs at the head of the
+ * conversation, and the first exchange on screen is only the conversation's
+ * first once the whole history is here — drawn any earlier it would sit above
+ * whichever page happens to be loaded and claim to precede a request that has
+ * a hundred others in front of it. The "Load older" control holds that spot
+ * until then, which is the honest answer: the beginning has not been reached.
+ */
+const jevMark = computed(() => (props.hasOlder ? null : jevRouteFor(props.threadId) ?? null));
+
 /** Show a centered date divider on the first visible exchange, and whenever
  *  consecutive exchanges cross midnight into a new calendar day. */
 function shouldShowDayDivider(index: number): boolean {
@@ -1047,6 +1064,10 @@ watch(
       <div v-if="shouldShowDayDivider(index)" class="thread-date">
         <span class="thread-date__text">{{ dayDividerLabel(ex) }}</span>
       </div>
+
+      <!-- Jev's routing decision, under the day divider at the head of the
+           conversation — the thread-level receipt for who staffed it. -->
+      <JevMark v-if="index === 0 && jevMark" :route="jevMark" />
 
       <!-- Centered compaction markers settled since the previous exchange -->
       <CompactionMarker

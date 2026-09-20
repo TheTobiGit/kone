@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -788,6 +788,29 @@ function migration0010JobAttachmentsAndOrder(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * Why a thread's agent is the one it has, when the router chose them.
+ *
+ * On the binding row rather than in a table of its own: the binding says who
+ * works a thread and this says on what grounds, which is one fact about one
+ * settlement. Written in the same insert, deleted by the same delete, and it
+ * cannot name a thread the bindings have forgotten. `settled_at` already says
+ * when, so there is no timestamp here to disagree with it.
+ *
+ * Both nullable, and NULL is the answer for every thread settled by hand as
+ * well as every thread settled before this column existed — both of which
+ * correctly read as "nobody routed this", which is exactly what the marker
+ * shows for them.
+ *
+ * `route_outcome` is stored as the renderer's own tag, verbatim: the store
+ * keeps it durable without having an opinion on the vocabulary, and the
+ * renderer decodes it on the way back in.
+ */
+function migration0011ThreadAgentRoute(db: DatabaseSync): void {
+  addColumn(db, "thread_agents", "route_outcome", "TEXT");
+  addColumn(db, "thread_agents", "route_confidence", "REAL");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -799,6 +822,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 8, name: "ItemTextChunks", run: migration0008ItemTextChunks },
   { id: 9, name: "Jobs", run: migration0009Jobs },
   { id: 10, name: "JobAttachmentsAndOrder", run: migration0010JobAttachmentsAndOrder },
+  { id: 11, name: "ThreadAgentRoute", run: migration0011ThreadAgentRoute },
 ];
 
 export interface MigrationOptions {

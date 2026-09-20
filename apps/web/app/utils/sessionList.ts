@@ -1,4 +1,4 @@
-import type { StoredThreadMeta } from "~/types/desktop";
+import type { RuntimeEvent, StoredThreadMeta } from "~/types/desktop";
 import { SESSION_BRAND, type SessionSummary } from "~/types/session";
 import { rememberSideChatSource } from "~/composables/sideChats";
 
@@ -8,6 +8,51 @@ import { rememberSideChatSource } from "~/composables/sideChats";
 // metadata (one project vs. a fan-out over recent projects), so the flattening,
 // the recency sort, the pin key and the one-time localStorage→DB pin lift live
 // here rather than in two near-identical copies.
+
+/**
+ * The events that mean a stored thread row has changed, and therefore the only
+ * ones worth a re-read of it.
+ *
+ * The rule, so this stays a list with a reason rather than a list to append to
+ * on a hunch: **an event belongs here exactly when the store writes a thread
+ * row on it.** Three of them move `last_activity_at` — a turn starting, and a
+ * turn settling either way — and a thread first appears in a list on its own
+ * first `turn.started`, since these lists only show threads with a user turn.
+ * The rest each write one column a reader renders.
+ *
+ * Deliberately a short allowlist and not "everything except the noisy ones".
+ * The streaming events (`item.updated` above all) fire once per text delta and
+ * are documented in the store as *not* touching the row, precisely so a message
+ * isn't rewritten thousands of times as it arrives. Refreshing on an unknown
+ * event would put that churn straight back — a running turn would refetch a
+ * project's whole history every debounce interval and change nothing each time.
+ * A missed event costs a stale row until the next real one; a missed exclusion
+ * costs a refetch loop, so the closed list is the safer of the two mistakes.
+ *
+ * One list, read by every surface that watches these rows, so the conversation
+ * block and the studio strip's unread marks cannot settle at different moments
+ * after the same turn and a future event type teaches both at once.
+ */
+export const ROW_CHANGING_EVENTS = new Set<RuntimeEvent["type"]>([
+  // Moves last_activity_at, and brings a thread into a list on its first one.
+  "turn.started",
+  "turn.completed",
+  // Settles a turn the same way a completion does — an interrupted or failed
+  // turn is still the last thing that happened in the thread.
+  "turn.aborted",
+  "thread.token-usage.updated",
+  "thread.title.updated",
+  // Archive/restore changed which set a list reads from — the live list and
+  // the archive are disjoint queries, so a stamp anywhere moves the row across.
+  // Reconcile by refetch rather than by patching rows: the stamp may have
+  // landed on a subtree, and the reading surface may not even be the one that
+  // asked for it. Done moves rows the same way, between the inbox and done
+  // views — including marks the retention sweep made while nobody was sending
+  // anything.
+  "thread.archived",
+  "thread.unarchived",
+  "thread.done.updated",
+]);
 
 /** localStorage pin key — browser-dev fallback and the one-time migration
  *  source for installs that pinned before pins moved into the DB (v18). */

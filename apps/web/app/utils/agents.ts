@@ -36,6 +36,7 @@ import type {
   AgentPatch,
   AgentRecord,
   AgentSkillRef,
+  ThreadAgentRoute,
 } from "~/types/desktop";
 import {
   addTeamMember,
@@ -646,11 +647,25 @@ export function agentForThread(threadId: string | null | undefined): Agent | und
  *
  * `null` settles it on a guest, which is a decision like any other — it closes
  * the thread to being claimed by an agent picked afterwards.
+ *
+ * `route` is why, when the router answered rather than a person. It is passed
+ * here rather than written separately so that who and why land in one write:
+ * this call can be refused, and a second write would not be, leaving a receipt
+ * for a decision that never took effect.
+ *
+ * Returns whether this call is the one that settled the thread — false for a
+ * thread already decided, and false for a pick this app would not let anybody
+ * make. A caller with a routing round trip behind it needs the difference: the
+ * answer it is holding describes a decision only if the decision landed.
  */
-export function settleThreadAgent(threadId: string | null | undefined, id: string | null): void {
-  if (!threadId || threadId in threadBindings.value) return;
-  if (id !== null && !isPickable(id)) return;
-  bindThread(threadId, id);
+export function settleThreadAgent(
+  threadId: string | null | undefined,
+  id: string | null,
+  route?: ThreadAgentRoute | null,
+): boolean {
+  if (!threadId || threadId in threadBindings.value) return false;
+  if (id !== null && !isPickable(id)) return false;
+  return bindThread(threadId, id, route);
 }
 
 /**
@@ -686,6 +701,25 @@ export function carryThreadAgent(
 ): void {
   if (!fromThreadId || !toThreadId) return;
   carryThread(fromThreadId, toThreadId);
+}
+
+/**
+ * Hand a thread reborn under a new id everything the old id carried: who works
+ * it, and the router's decision that put them there.
+ *
+ * Deliberately not what a side chat gets. A side chat inherits its source's
+ * agent because the question of who works it was answered by the thread it came
+ * from — but it is new work that was never routed, and a marker claiming Jev
+ * read *this* request would be a receipt for something that never happened. So
+ * the binding travels on its own there, and both halves travel only here, where
+ * the thread on either side of the id is the same conversation.
+ */
+export function carryThreadIdentity(
+  fromThreadId: string | null | undefined,
+  toThreadId: string | null | undefined,
+): void {
+  if (!fromThreadId || !toThreadId) return;
+  carryThread(fromThreadId, toThreadId, true);
 }
 
 // ── project teams ───────────────────────────────────────────────────────────

@@ -20,6 +20,8 @@
 // else's work for the crime of tidying up your own is not something any gesture
 // asked for. So a pin to your own row wins over the axis's fallback.
 
+import type { StudioDestination } from "~/types/studio";
+
 /** A row as the plane renders it — the axis's persisted rows plus, at most, the
  *  transient one for the open project. */
 export interface FocusRow {
@@ -27,6 +29,119 @@ export interface FocusRow {
   /** True for a row with no work behind it — the open project before it has
    *  any, or the row the camera is standing in after its last pane closed. */
   transient: boolean;
+}
+
+/** A project the app knows about, newest-first in the list handed below. */
+export interface KnownProject {
+  path: string;
+  name: string;
+}
+
+/** A row as the plane renders it — a focus row plus the name it reads. */
+export interface RenderRow extends FocusRow {
+  name: string;
+}
+
+/**
+ * The row the camera was last deliberately landed on, with everything needed to
+ * put it back on screen once nothing persists it: which project, what it is
+ * called, and which slot it belongs in.
+ *
+ * The name travels with the pin rather than being looked up when it is wanted,
+ * because by then the row it would be read off may be gone — or, worse, may be
+ * a different project's row that has since slid into the same index.
+ */
+export interface StandingRow {
+  path: string;
+  name: string;
+  /** Where the row sits among the persisted ones. For a project that never had
+   *  a row, the foot of the plane — which is where a new one would be born. */
+  index: number;
+}
+
+/**
+ * The rows the plane shows: the persisted ones, plus at most two transient.
+ *
+ * The first is the row the camera is standing in without work behind it. That
+ * is one state reached two ways — a row whose last pane just closed, and a
+ * project travelled to by name that has never held work at all — and both are
+ * answered by the same pin, which is why `standing` carries an index rather
+ * than the caller keeping a second ref for the second case. A row that emptied
+ * under the camera records the slot it already held; a project that never had a
+ * row records the foot of the plane. The splice below is the same either way.
+ *
+ * Without it, a row that stops being persisted vanishes mid-gesture and every
+ * project below it slides up one — and since the camera moves in whole rows
+ * with a transition, you would watch it travel into somebody else's work for
+ * the crime of tidying up your own.
+ *
+ * The second is for the landing project when it has no row at all. Without it,
+ * summoning the plane with no work anywhere would land on nothing, when the
+ * whole reason to summon it is to start working.
+ *
+ * Neither is ever persisted (a row with no panes is dropped on save), so both
+ * appear and disappear on their own as the first pane opens and the last one
+ * closes.
+ */
+export function renderPlaneRows(
+  persisted: readonly { projectPath: string; name: string }[],
+  standing: StandingRow | null,
+  landing: KnownProject | null,
+): RenderRow[] {
+  const rows: RenderRow[] = persisted.map((r) => ({
+    projectPath: r.projectPath,
+    name: r.name,
+    transient: false,
+  }));
+  if (standing && !rows.some((r) => r.projectPath === standing.path)) {
+    // Back into the slot it held, not onto the end: appending would move the
+    // row out from under the camera, which is the thing being prevented.
+    const at = Math.min(standing.index, rows.length);
+    rows.splice(at, 0, { projectPath: standing.path, name: standing.name, transient: true });
+  }
+  if (landing && !rows.some((r) => r.projectPath === landing.path)) {
+    rows.push({ projectPath: landing.path, name: landing.name, transient: true });
+  }
+  return rows;
+}
+
+/**
+ * Every project the camera can travel to, in the order the axis visits them.
+ *
+ * The rows as they stand first — persisted and transient alike, so the list
+ * reads top to bottom exactly as stepping down the axis would — and then the
+ * projects the app knows that have no row yet, newest first. Those join the
+ * foot of the plane the moment one is picked, which is where `focusRow` pins a
+ * project that has never held work, so the order a chooser shows is the order
+ * travel actually produces.
+ *
+ * `columns` is how much work is waiting there, and it is counted off the
+ * persisted rows rather than off the rendered ones: a transient row exists
+ * precisely because nothing is open in it, so the answer for one is zero, and
+ * so is the answer for a project with no row. The plane builds this once and
+ * hands the same list to every row.
+ */
+export function planeDestinations(
+  rows: readonly RenderRow[],
+  persisted: readonly { projectPath: string; paneCount: number }[],
+  known: readonly KnownProject[],
+): StudioDestination[] {
+  const paneCounts = new Map(persisted.map((row) => [row.projectPath, row.paneCount]));
+  const listed = new Set<string>();
+  const list: StudioDestination[] = rows.map((row) => {
+    listed.add(row.projectPath);
+    return {
+      projectPath: row.projectPath,
+      name: row.name,
+      columns: paneCounts.get(row.projectPath) ?? 0,
+    };
+  });
+  for (const project of known) {
+    if (listed.has(project.path)) continue;
+    listed.add(project.path);
+    list.push({ projectPath: project.path, name: project.name, columns: 0 });
+  }
+  return list;
 }
 
 export interface RowFocusInput {
@@ -71,12 +186,6 @@ export function recordsStanding(rows: readonly FocusRow[], path: string | null):
   if (!path) return false;
   const row = rows.find((r) => r.projectPath === path);
   return !!row && !row.transient;
-}
-
-/** A project the app knows about, newest-first in the list handed below. */
-export interface KnownProject {
-  path: string;
-  name: string;
 }
 
 /** Which project the studio should land in when it holds no work for one yet.

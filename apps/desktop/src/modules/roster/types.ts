@@ -13,6 +13,7 @@ import type {
   AgentPatch,
   AgentRecord,
   ThreadAgentBinding,
+  ThreadAgentRoute,
 } from "@kone/agent-core/ConversationStore.js";
 
 /**
@@ -47,16 +48,26 @@ export type RosterSnapshot = {
 };
 
 /** Settle who works a thread. Write-once: an already-settled thread keeps what
- *  it settled on, and the reply says what that is. `agentId` null is a guest. */
+ *  it settled on, and the reply says what that is. `agentId` null is a guest.
+ *
+ *  `route` is why, when a router chose rather than a person — settled in the
+ *  same write as who, so the two can never disagree. Omitted for a hand-picked
+ *  agent, which is most settlements. */
 export type RosterBindInput = {
   threadId: string;
   agentId: string | null;
+  route?: ThreadAgentRoute | null;
 };
 
 /** Carry a binding onto a thread reborn under a new id. */
 export type RosterCarryInput = {
   fromThreadId: string;
   toThreadId: string;
+  /** Whether the reason travels too. True only when the new id is the same
+   *  conversation continuing — a thread reborn by a provider or model switch.
+   *  A thread forked off this one is new work nobody routed, and a reason
+   *  copied onto it would name a request the router never read. */
+  withRoute?: boolean;
 };
 
 /** Point the next turn at an agent, or at a guest with null. */

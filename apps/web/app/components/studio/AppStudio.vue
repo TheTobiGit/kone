@@ -20,11 +20,20 @@
 // end never does.
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { recordsStanding, resolveLandingProject, resolveRowFocus } from "~/utils/rowFocus";
+import {
+  planeDestinations,
+  recordsStanding,
+  renderPlaneRows,
+  resolveLandingProject,
+  resolveRowFocus,
+  type RenderRow,
+  type StandingRow,
+} from "~/utils/rowFocus";
 import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
 import type { Project } from "~/composables/useProject";
 import type { PortalState } from "~/composables/usePortals";
 import type { SurfaceId } from "~/utils/surfaceTop";
+import type { StudioDestination } from "~/types/studio";
 import { ownsKey } from "~/utils/surfaceKeys";
 
 const props = defineProps<{
@@ -85,14 +94,6 @@ let cameraAnim: Animation | null = null;
 const store = useStudioPersistence(() => props.activeProject?.path ?? "");
 onMounted(() => void store.loadPlane());
 
-/** A row as the plane renders it. `transient` marks the one that exists only
- *  because a project is open with no work on it yet. */
-interface RenderRow {
-  projectPath: string;
-  name: string;
-  transient: boolean;
-}
-
 // Which project the studio should land in when it holds no work for one yet.
 // The project whose page is open, if there is one — that is where you already
 // are. Otherwise the one you touched last, because summoning the studio from the
@@ -105,43 +106,12 @@ const landingProject = computed<Project | null>(() =>
   resolveLandingProject(props.activeProject ?? null, byRecency.value),
 );
 
-// The persisted rows, plus at most two transient ones.
-//
-// The first is for the row the camera is standing in when its last pane closes.
-// A row stops being persisted the moment it holds no work, so without this the
-// row under the camera would vanish mid-gesture and every project below it would
-// slide up one — and since the camera moves in whole rows with a transition, you
-// would watch it travel into somebody else's work for the crime of tidying up
-// your own. Keeping the row on screen, at the index it already held, means
-// closing the last pane leaves you exactly where you were, looking at your own
-// empty row.
-//
-// The second is for the landing project when it has no row at all. Without that,
-// summoning the plane with no work anywhere would land on nothing, when the whole
-// reason to summon it is to start working.
-//
-// Neither is ever persisted (a row with no panes is dropped on save), so both
-// appear and disappear on their own as the first pane opens and the last one
-// closes.
-const renderRows = computed<RenderRow[]>(() => {
-  const rows: RenderRow[] = plane.rows.value.map((r) => ({
-    projectPath: r.projectPath,
-    name: r.name,
-    transient: false,
-  }));
-  const held = standing.value;
-  if (held && !rows.some((r) => r.projectPath === held)) {
-    // Back into the slot it held, not onto the end: appending would move the
-    // row out from under the camera, which is the thing being prevented.
-    const at = Math.min(standingIndex.value, rows.length);
-    rows.splice(at, 0, { projectPath: held, name: standingName.value, transient: true });
-  }
-  const landing = landingProject.value;
-  if (landing && !rows.some((r) => r.projectPath === landing.path)) {
-    rows.push({ projectPath: landing.path, name: landing.name, transient: true });
-  }
-  return rows;
-});
+// The rows on screen: the persisted ones plus, at most, the two transient ones
+// the rule in utils/rowFocus describes — where it can be exercised without
+// driving the whole app.
+const renderRows = computed<RenderRow[]>(() =>
+  renderPlaneRows(plane.rows.value, standing.value, landingProject.value),
+);
 
 /** Nothing to show and nothing to start: summoning is a no-op rather than a
  *  With no project in the app at all there is nowhere for a row to be and
@@ -156,17 +126,14 @@ const empty = computed(() => renderRows.value.length === 0);
 // a row it can neither move nor remember.
 const transientFocus = ref<string | null>(null);
 
-// The row the camera was last deliberately landed on, and where it sat and what
-// it was called while it was still persisted. A persisted row that loses its
-// last pane stops being persisted, so the axis drops it and falls back to
-// whichever project slid into its index — which would send you into someone
-// else's work for the crime of tidying up your own. `renderRows` puts that row
-// back, in place, as a transient one; these three are what it needs to do it,
-// and what lets the camera find it afterwards. Standing still is the answer,
-// not a handoff.
-const standing = ref<string | null>(null);
-const standingName = ref("");
-const standingIndex = ref(0);
+// The row the camera was last deliberately landed on. A persisted row that
+// loses its last pane stops being persisted, so the axis drops it and falls
+// back to whichever project slid into its index — which would send you into
+// someone else's work for the crime of tidying up your own. A project travelled
+// to by name that has never held work has no row to drop in the first place.
+// Both leave the camera somewhere the axis cannot name, and both are answered
+// the same way: stand still, in the row `renderPlaneRows` conjures from this.
+const standing = ref<StandingRow | null>(null);
 
 // The rule itself lives in utils/rowFocus, where it can be exercised without
 // driving the whole app — see the note there on why.
@@ -174,7 +141,7 @@ const focusedPath = computed<string | null>(() =>
   resolveRowFocus({
     rows: renderRows.value,
     transientFocus: transientFocus.value,
-    standing: standing.value,
+    standing: standing.value?.path ?? null,
     axisPath: plane.focusedPath.value,
   }),
 );
@@ -185,11 +152,13 @@ const focusedPath = computed<string | null>(() =>
 // the moment a row goes transient this stops updating, so it still names the row
 // the camera was in when its last pane closed.
 watch(focusedPath, (path) => {
-  if (!recordsStanding(renderRows.value, path)) return;
+  if (!recordsStanding(renderRows.value, path) || !path) return;
   const at = renderRows.value.findIndex((r) => r.projectPath === path);
-  standing.value = path;
-  standingIndex.value = at < 0 ? 0 : at;
-  standingName.value = renderRows.value[at]?.name ?? "";
+  standing.value = {
+    path,
+    name: renderRows.value[at]?.name ?? "",
+    index: at < 0 ? 0 : at,
+  };
 });
 
 // Publish the camera's row, so surfaces that open over the plane (the intent
@@ -287,15 +256,49 @@ function onSelectRowPane(projectPath: string, paneId: string): void {
 }
 
 function focusRow(projectPath: string): boolean {
-  const row = renderRows.value.find((r) => r.projectPath === projectPath);
-  if (!row) return false;
-  standing.value = projectPath;
-  if (row.transient) {
+  const rows = renderRows.value;
+  const at = rows.findIndex((r) => r.projectPath === projectPath);
+  const row = rows[at];
+  // One pin, two ways to need it — the same two `renderPlaneRows` conjures a
+  // transient row from. A row on screen is pinned in the slot it already holds.
+  // A project with no row has never had anything opened in it, and travel still
+  // has to land somewhere: landing in an empty row is how work in a project
+  // starts, so the pin conjures one at the foot of the plane and moving on
+  // takes it away again, since the pin is what was holding it. A path the app
+  // has never heard of is a caller's mistake, not an empty row.
+  let pin: StandingRow | null = null;
+  if (row) {
+    pin = { path: projectPath, name: row.name, index: at };
+  } else {
+    const known = byRecency.value.find((p) => p.path === projectPath);
+    if (known) pin = { path: known.path, name: known.name, index: rows.length };
+  }
+  if (!pin) return false;
+  standing.value = pin;
+  // A transient row is not on the axis, so there is nothing there to focus and
+  // the camera is held here instead.
+  if (!row || row.transient) {
     transientFocus.value = projectPath;
     return true;
   }
   transientFocus.value = null;
   return plane.focusRow(projectPath);
+}
+
+// Everywhere the camera can travel, for the strip's project drop-down. The
+// shaping lives in utils/rowFocus beside the row rule it has to agree with —
+// the order this lists is the order travelling down the axis would visit, and
+// the foot of the plane is where `focusRow` lands a project with no row.
+const destinations = computed<StudioDestination[]>(() =>
+  planeDestinations(renderRows.value, plane.rows.value, byRecency.value),
+);
+
+/** A project was picked by name from a row's drop-down. Same landing as a step
+ *  down the axis, so it sounds the same — and says so when the camera can't go. */
+function onSwitchRow(projectPath: string): void {
+  if (projectPath === focusedPath.value) return;
+  if (focusRow(projectPath)) cue("select");
+  else cue("error");
 }
 
 function stepRow(delta: number): boolean {
@@ -633,7 +636,9 @@ defineExpose({
           :branch="row.projectPath === focusedPath ? g.branch.value : null"
           :origin="row.projectPath === focusedPath ? g.origin.value : null"
           :overview="studioOverview"
+          :destinations="destinations"
           @summon="onSummon(row.projectPath)"
+          @switch-row="onSwitchRow"
           @open-branch="onOpenBranch"
           @open-file="onOpenFile"
           @toggle-overview="toggleStudioOverview"

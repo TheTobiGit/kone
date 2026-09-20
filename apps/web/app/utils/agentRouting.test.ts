@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   isRouterId,
   JEV_ROUTER_ID,
+  routeForBinding,
   routerCandidates,
   routingReceipt,
 } from "~/utils/agentRouting";
@@ -90,5 +91,30 @@ describe("JEV_ROUTER_ID", () => {
   test("is a reserved word, so a uuid-minted agent can never collide with it", () => {
     expect(JEV_ROUTER_ID).toBe("jev");
     expect(JEV_ROUTER_ID).not.toContain("-");
+  });
+});
+
+describe("routeForBinding", () => {
+  // What the store keeps is the decision, not the whole reply: the alternatives
+  // it weighed are working-out, and a marker that never shows them would only
+  // be storing them to be believed later.
+  test("narrows a router reply to what settles on the binding", () => {
+    expect(
+      routeForBinding(result({ agentId: "kone", outcome: "routed", confidence: 0.82 })),
+    ).toEqual({ outcome: "routed", confidence: 0.82 });
+  });
+
+  // A router that could not be reached, or that declined to choose, settled
+  // nothing — the send's receipt says so and the thread keeps no record, so one
+  // network blip cannot become a permanent line in a conversation's history.
+  test.each(["no-match", "unsure", "unavailable", "failed"] as const)(
+    "a %s reply settles nothing on the binding",
+    (outcome) => {
+      expect(routeForBinding(result({ outcome }))).toBeNull();
+    },
+  );
+
+  test("a decision that named nobody is not a decision", () => {
+    expect(routeForBinding(result({ outcome: "routed", confidence: 0.9 }))).toBeNull();
   });
 });

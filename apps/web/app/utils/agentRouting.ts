@@ -25,7 +25,12 @@
  * module — because the credential it needs must not reach a renderer.
  */
 import type { Agent } from "~/utils/agents";
-import type { JevCandidate, JevRouteInput, JevRouteResult } from "~/types/desktop";
+import type {
+  JevCandidate,
+  JevRouteInput,
+  JevRouteResult,
+  ThreadAgentRoute,
+} from "~/types/desktop";
 
 /**
  * The selection value that means "let Jev decide".
@@ -140,4 +145,25 @@ export function routingReceipt(result: JevRouteResult, agentName?: string): stri
     case "failed":
       return "Jev could not be reached — running as Default";
   }
+}
+
+/**
+ * What of a router's reply settles onto the thread's binding, or null when
+ * nothing does.
+ *
+ * Only a real decision is durable. The other four outcomes say the router never
+ * answered or declined to, which leaves the thread on the default partner —
+ * true of the send, and nothing at all about who works the thread. Recording
+ * them would make one network blip a permanent line in a conversation's
+ * history, and carry it onto every thread reborn from it; the composer's
+ * receipt is where a send that went nowhere is reported, and a receipt is the
+ * right lifetime for it.
+ *
+ * What survives is the decision, not the whole reply: the alternatives it
+ * weighed are working-out, and storing them would only be storing them to be
+ * believed later.
+ */
+export function routeForBinding(result: JevRouteResult): ThreadAgentRoute | null {
+  if (result.outcome !== "routed" || result.agentId === null) return null;
+  return { outcome: result.outcome, confidence: result.confidence };
 }
