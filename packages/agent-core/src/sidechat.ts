@@ -12,7 +12,12 @@ import type {
   StoredThread,
   ThreadLineage,
 } from "./types.js";
-import { isEditForkContext } from "./types.js";
+import { isEditForkContext, isHandoffForkContext } from "./types.js";
+import {
+  HANDOFF_BOUNDARY_INSTRUCTION,
+  HANDOFF_INTRO,
+  HANDOFF_MESSAGE_TOO_LONG,
+} from "./handoff.js";
 
 // Side chat creation + context handoff (docs/side-chat-design.md). A side chat
 // is a user-initiated child conversation forked from a parent thread: it
@@ -270,7 +275,9 @@ export function assembleSidechatPreamble(
  * An edit fork replays its copied prefix the same way a side chat replays
  * its import, but framed as continuation: the prefix is settled history the
  * turn builds on, and the boundary names the edited message as the thing to
- * answer. Side chats keep the reference-only framing.
+ * answer. A handoff replays the full handed transcript framed the same way —
+ * the new provider continues the same task as its new owner. Side chats keep
+ * the reference-only framing.
  *
  * Throws when the imported context plus the new message would exceed the
  * send-turn cap — the turn is rejected up front rather than silently
@@ -286,13 +293,25 @@ export function sidechatBootstrapForTurn(threadId: string, input: string): strin
   const thread = store.loadThread(threadId);
   if (!thread) return null;
   const isEdit = isEditForkContext(ctx);
-  const instruction = isEdit ? EDIT_FORK_BOUNDARY_INSTRUCTION : SIDECHAT_BOUNDARY_INSTRUCTION;
-  const tooLong = isEdit ? EDIT_FORK_MESSAGE_TOO_LONG : SIDECHAT_MESSAGE_TOO_LONG;
+  const isHandoff = isHandoffForkContext(ctx);
+  const instruction = isEdit
+    ? EDIT_FORK_BOUNDARY_INSTRUCTION
+    : isHandoff
+      ? HANDOFF_BOUNDARY_INSTRUCTION
+      : SIDECHAT_BOUNDARY_INSTRUCTION;
+  const tooLong = isEdit
+    ? EDIT_FORK_MESSAGE_TOO_LONG
+    : isHandoff
+      ? HANDOFF_MESSAGE_TOO_LONG
+      : SIDECHAT_MESSAGE_TOO_LONG;
   const boundary = boundaryBlock(input, instruction);
   const available = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
   if (available <= 0) {
     throw new Error(tooLong);
   }
+  // A handoff's import is the whole handed transcript (every imported row is
+  // already `fork-import`), so the default fork-import-only replay covers it.
+  // An edit fork replays everything before its edited message instead.
   const context = isEdit
     ? buildSidechatForkContext(
         thread,
@@ -300,7 +319,7 @@ export function sidechatBootstrapForTurn(threadId: string, input: string): strin
         EDIT_FORK_INTRO,
         (_block, index, blocks) => index < blocks.length - 1,
       )
-    : buildSidechatForkContext(thread, available);
+    : buildSidechatForkContext(thread, available, isHandoff ? HANDOFF_INTRO : INTRO);
   if (!context) return null;
   // Double-check the assembled prompt fits the cap: the context block itself
   // is budgeted, but the wrapper adds a little on top.

@@ -406,6 +406,16 @@ onBeforeUnmount(() => {
             <dt>Kind</dt>
             <dd>Side chat</dd>
           </div>
+          <div v-if="s.forkContext?.value?.forkKind === 'handoff'" class="tip__row">
+            <dt>Handed off</dt>
+            <dd>
+              {{
+                s.forkContext.value.sourceProvider
+                  ? `From ${PROVIDER_LABEL[s.forkContext.value.sourceProvider]}`
+                  : "From another provider"
+              }}
+            </dd>
+          </div>
 
           <template v-if="inGitProject">
             <p class="tip__section">Project</p>

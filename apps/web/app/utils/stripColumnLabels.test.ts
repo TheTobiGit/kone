@@ -2,14 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { ref } from "vue";
 
 import type { ThreadSession } from "~/composables/useAgent";
-import type { ProviderKind, ProviderStatus } from "~/types/desktop";
+import type { ForkContext, ProviderKind, ProviderStatus } from "~/types/desktop";
 import type { Pane } from "~/types/studio";
 import {
   brandOf,
   buildCompactBySession,
   columnLabel,
+  handoffSourceBrand,
   hasPaneKind,
   hasScratchpadPane,
+  isHandoff,
   readCompactProps,
 } from "./stripColumnLabels";
 
@@ -22,13 +24,20 @@ import {
 
 function threadSession(
   key: string,
-  fields: { provider?: ProviderKind; title?: string; sideChat?: boolean; userTurn?: boolean } = {},
+  fields: {
+    provider?: ProviderKind;
+    title?: string;
+    sideChat?: boolean;
+    userTurn?: boolean;
+    forkContext?: ForkContext | null;
+  } = {},
 ) {
   const fake = {
     key,
     provider: ref<ProviderKind>(fields.provider ?? "codex"),
     title: ref<string>(fields.title ?? ""),
     isSideChat: ref<boolean>(fields.sideChat ?? false),
+    forkContext: ref<ForkContext | null>(fields.forkContext ?? null),
     blocks: ref<Array<{ role: string }>>(fields.userTurn ? [{ role: "user" }] : []),
     busy: ref<boolean>(false),
     queuedTurns: ref<Array<unknown>>([]),
@@ -100,6 +109,38 @@ describe("brandOf", () => {
     // only through a provider id the catalog has never seen.
     const session = threadSession("k1", { provider: "nope" as ProviderKind });
     expect(brandOf(threadPane("a", session))).toBe("generic");
+  });
+});
+
+describe("isHandoff / handoffSourceBrand", () => {
+  function handoffSession(sourceProvider?: ProviderKind) {
+    const forkContext: ForkContext = {
+      sourceThreadId: "t-src",
+      forkPointBlockId: null,
+      importedAt: 1000,
+      bootstrapStatus: "completed",
+      forkKind: "handoff",
+    };
+    if (sourceProvider) forkContext.sourceProvider = sourceProvider;
+    return threadSession("k1", { provider: "claudeAgent", forkContext });
+  }
+
+  test("a handoff names its source brand", () => {
+    const pane = threadPane("a", handoffSession("codex"));
+    expect(isHandoff(pane)).toBe(true);
+    expect(handoffSourceBrand(pane)).toBe("gpt");
+  });
+
+  test("an ordinary thread is no handoff", () => {
+    const pane = threadPane("a", threadSession("k1", { provider: "codex" }));
+    expect(isHandoff(pane)).toBe(false);
+    expect(handoffSourceBrand(pane)).toBe("generic");
+  });
+
+  test("a handoff with no recorded source still reads, markless", () => {
+    const pane = threadPane("a", handoffSession());
+    expect(isHandoff(pane)).toBe(true);
+    expect(handoffSourceBrand(pane)).toBe("generic");
   });
 });
 

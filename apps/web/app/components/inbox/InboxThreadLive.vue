@@ -20,6 +20,7 @@ import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import ThreadBranchDrift from "~/components/inbox/ThreadBranchDrift.vue";
+import ThreadWorkspacePrep from "~/components/inbox/ThreadWorkspacePrep.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
@@ -342,10 +343,14 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   const s = session.value;
   if (!s) return;
   // Settle who is on the thread before the turn goes out: the binding is
-  // write-once, so the first send is the only moment it can be decided.
+  // write-once, so the first send is the only moment it can be decided — and
+  // the session reads the persona off it as it spawns, so a decision made
+  // after the send would arrive too late to reach the provider.
   await composer.syncTarget();
   const threadId = s.threadId.value;
-  if (threadId) composer.settleThreadAgent(threadId, composer.agentId.value);
+  // Only the thread's first turn asks: every later one finds it already
+  // decided and leaves both the binding and the router alone.
+  if (threadId) composer.settleThreadAgent(threadId, await composer.agentIdFor(text, threadId));
   await s.send(text, await upload(files));
 }
 
@@ -488,6 +493,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :queued="queued"
         :agents="composer.agents.value"
         :agent-id="composer.agentId.value"
+        :routing-note="composer.routingNote.value"
         :agent-switchable="false"
         :models="composer.modelOptions.value"
         :model-switchable="composer.modelSwitchable.value"

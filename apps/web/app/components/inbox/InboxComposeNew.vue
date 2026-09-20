@@ -221,6 +221,17 @@ async function onSend(text: string, files?: File[]): Promise<void> {
       if (workspace.value.branch) request.branch = workspace.value.branch;
       s.stageWorkspace(request);
     }
+    // Who is on the thread, settled on the turn that made it — and settled
+    // *before* it, because the session reads the persona off this binding as it
+    // spawns. The record is write-once, so only this turn's answer can land; a
+    // second message can't hand the thread to whoever is selected by then.
+    //
+    // Awaited here rather than after the handover below: with the router
+    // selected this is a network call, and the send is in flight from the next
+    // line on — an answer arriving after it would reach a session that had
+    // already asked who it was.
+    const id = s.threadId.value;
+    if (id) composer.settleThreadAgent(id, await composer.agentIdFor(text, id));
     // Not awaited: see the handover note above.
     const sent = s.send(text, uploaded);
     // The send gate can still refuse on a status that went stale under the
@@ -241,12 +252,8 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // beat into it. It follows the session, so it survives this pane handing
     // over.
     if (!existing && workspace.value.mode === "worktree") s.beginWorkspaceSteps();
-    const id = s.threadId.value;
     const claimed = key.value;
     if (!id || !claimed) return;
-    // Who is on the thread, settled on the turn that made it. Write-once, and
-    // this is the only turn where the choice was still open.
-    composer.settleThreadAgent(id, composer.agentId.value);
     // Warm the avatar cache for the new thread id so the header and transcript
     // that mount on the handover already have the SVG in hand — without this the
     // first paint of those panes would generate the avatar on mount, which is
@@ -353,6 +360,7 @@ defineExpose({ focus });
         :queued="queued"
         :agents="composer.agents.value"
         :agent-id="composer.agentId.value"
+        :routing-note="composer.routingNote.value"
         :agent-switchable="!sending"
         :models="composer.modelOptions.value"
         :model-switchable="composer.modelSwitchable.value"

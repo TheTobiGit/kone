@@ -402,6 +402,60 @@ export type CreateSideChatResult = {
   status: "created" | "exists";
 };
 
+/** Hand a thread to another provider/model. Unlike a side chat (one per
+ *  source, reference-only, never re-handed), a handoff is an ownership
+ *  transfer: the new thread continues the same task on the target
+ *  provider/model from the imported transcript, and it may itself be handed
+ *  off again once it has run a native turn. Many handoffs may leave one
+ *  source — each is its own continuation. */
+export type CreateHandoffInput = {
+  /** Caller-chosen idempotency key. The same requestId replayed with the same
+   *  threadId resolves as "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new handoff thread. */
+  threadId: string;
+  /** The thread being handed off. */
+  sourceThreadId: string;
+  /** The provider/model the handoff continues on. Provider is required — a
+   *  handoff that names no target is just a duplicate. Model falls back to
+   *  the source's when staying on the same provider, else the target
+   *  provider's default. */
+  target: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  };
+  /** Overrides the default (the source thread's title — a handoff continues
+   *  the same task, so it keeps its name). */
+  title?: string;
+};
+
+export type CreateHandoffResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** The provider the handoff continues on. */
+  provider: ProviderKind;
+  /** The model the handoff continues on, when one resolved. */
+  model?: string;
+  /** `"created"` = the handoff was written; `"exists"` = a thread with this
+   *  id was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
+/** One thread handed off from a source thread — the timeline's "Handed to"
+ *  marker. Metadata only; the transcript stays on disk until opened. */
+export type HandoffLink = {
+  threadId: string;
+  provider: ProviderKind;
+  model?: string;
+  title?: string;
+  /** Epoch millis when the handoff was created. */
+  handedAt: number;
+};
+
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
 
 // ── tool approvals ───────────────────────────────────────────────────────────
@@ -750,7 +804,7 @@ export type ThreadLineage = {
 
 /** Stored handoff context — the fork point and what was imported. */
 export type ForkContext = {
-  /** The thread this side chat was forked from. */
+  /** The thread this fork was created from. */
   sourceThreadId: string;
   /** Id of the last native block in the source at import time. Provenance
    *  only — the import is never truncated, so this does not mark a cut. */
@@ -758,7 +812,7 @@ export type ForkContext = {
   /** Epoch millis when the fork was created. */
   importedAt: number;
   /** One-shot bootstrap flag: `"pending"` until the thread's first turn
-   *  completes, then `"completed"`. Gates the `<sidechat_context>` injection
+   *  completes, then `"completed"`. Gates the context injection
    *  (see sidechat.ts) so the imported transcript is handed to the model
    *  exactly once. */
   bootstrapStatus: "pending" | "completed";
@@ -767,19 +821,40 @@ export type ForkContext = {
    *  from an edited earlier message: its copied prefix is real history shown
    *  in the timeline (never hidden like side-chat reference context), and its
    *  first turn continues the conversation rather than starting a bounded
-   *  side investigation. */
+   *  side investigation. A `"handoff"` fork hands the whole conversation to
+   *  another provider/model: same continuation framing as an edit fork, but
+   *  the import covers the full transcript and the bootstrap names the
+   *  source provider as the previous owner. */
   forkKind?: ForkKind;
+  /** The source thread's provider at import time. Durable provenance — the
+   *  source row may be deleted or re-pathed later, but the handoff still
+   *  names where it came from. Only written for `"handoff"` forks. */
+  sourceProvider?: ProviderKind;
+  /** The source thread's model at import time, alongside `sourceProvider` —
+   *  what the timeline's "Handed from" marker names. Only written for
+   *  `"handoff"` forks. */
+  sourceModel?: string;
 };
 
-/** The two user-initiated fork kinds. `"side_chat"` borrows the transcript as
+/** The user-initiated fork kinds. `"side_chat"` borrows the transcript as
  *  reference-only context for a bounded side investigation; `"edit"` rewinds
- *  to an earlier user message and continues from an edited replacement. */
-export type ForkKind = "side_chat" | "edit";
+ *  to an earlier user message and continues from an edited replacement;
+ *  `"handoff"` hands the whole conversation to another provider/model, which
+ *  continues the same task from the imported transcript. */
+export type ForkKind = "side_chat" | "edit" | "handoff";
 
 /** Whether a stored fork context marks an edit-and-resend retry rather than a
  *  side chat. Absent `forkKind` is always a side chat. */
 export function isEditForkContext(context: ForkContext | null | undefined): boolean {
   return context?.forkKind === "edit";
+}
+
+/** Whether a stored fork context marks a provider/model handoff. A handoff
+ *  is a continuation like an edit fork (its import is real history, shown in
+ *  the timeline and replayed as the conversation to continue), not
+ *  reference-only context like a side chat. */
+export function isHandoffForkContext(context: ForkContext | null | undefined): boolean {
+  return context?.forkKind === "handoff";
 }
 
 /** Fork a thread at one of its user blocks (edit-and-resend of an earlier
@@ -1231,6 +1306,17 @@ export type RuntimeEventSource =
  *  fixed order and still recognize one that arrives out of turn. */
 export type ThreadWorkspaceStep = "create" | "link" | "start";
 
+/** Where a job sits on the bench. Declared here rather than beside the job row
+ *  because the runtime event carries it and conversationStoreTypes already
+ *  imports this module — the other direction would close a cycle. */
+export type JobStatus =
+  | "draft"
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
 export type BaseEvent = {
   threadId: string;
   provider: ProviderKind;
@@ -1319,6 +1405,13 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
+  // A thread handoff was persisted (agent:create-handoff). `threadId` is the
+  // new thread's id; `sourceThreadId` is the thread it was handed off from.
+  | (BaseEvent & {
+      type: "thread.handoff-created";
+      sourceThreadId: string;
+      requestId: string;
+    })
   // An agent spawned a child thread (kone_spawn_worker), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
@@ -1383,6 +1476,8 @@ export type RuntimeEvent =
         role?: string;
         instructions?: string;
         face?: { body: string; ink: string };
+        avatar?: { source: string; src: string };
+        bot?: { form: string; color: string; expression: string };
         model?: { provider: string; model: string; label?: string };
         /** Ordered fallbacks behind `model`. Ignored when no primary is set. */
         modelFallbacks?: { provider: string; model: string; label?: string }[];
@@ -1390,9 +1485,16 @@ export type RuntimeEvent =
       /** Fields to hand back: to the shipped preset on a built-in, unset on a
        *  user-made agent. Named rather than sent as null, because a null across
        *  IPC cannot be told from a client that filled in the blanks. */
-      clear?: ("role" | "instructions" | "face" | "model")[];
-      /** On a `create`, the project whose team the new agent also joins. */
+      clear?: ("role" | "instructions" | "face" | "avatar" | "model")[];
+      /** On a `create`, the project whose team the new agent also joins. Kept
+       *  for older renderers; new writes use `projectPaths`. */
       projectPath?: string;
+      /** On a `create`, every project team the new agent joins. */
+      projectPaths?: string[];
+      /** On an `update`, project teams the agent joins or leaves. The agent
+       *  itself is untouched — it stays in the roster and on every other team. */
+      addToTeams?: string[];
+      removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
   // standing definitions `kone_spawn_worker_preset` cuts a spawn from. Unlike the
@@ -1426,6 +1528,21 @@ export type RuntimeEvent =
       lineHeightBody?: number;
       measure?: number;
       smoothing?: boolean;
+    })
+  // A project's bench changed: a job was filed, claimed, settled, or swept.
+  // Carries only what changed and where, never the row — the bench re-reads
+  // the project's list, so the store stays the single copy of the queue and a
+  // stale payload can never disagree with the order the runner will take.
+  //
+  // `threadId` on the BaseEvent is the job's thread when one exists and the
+  // empty string when the change belongs to no thread (a filed draft, a
+  // reorder). Consumers key off projectPath.
+  | (BaseEvent & {
+      type: "bench.job-changed";
+      projectPath: string;
+      jobId?: string;
+      /** What the job moved to, when the change was a status move. */
+      status?: JobStatus;
     })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new

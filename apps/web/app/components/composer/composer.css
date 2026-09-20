@@ -1,0 +1,821 @@
+/* The composer card's chrome, shared by every surface that writes a prompt.
+ *
+ * Two composers grew from one: the thread composer and the bench's job
+ * composer. Of 741 style lines they differed in 67, which meant every focus
+ * ring, chip radius and tray tweak was two edits, and the second one was going
+ * to get missed. This file is the 674 they agree on.
+ *
+ * Consumed as `<style scoped src="../composer/composer.css">`, so each host
+ * still gets its own scoping — the selectors here are deliberately plain
+ * (`.dock`, `.bar`, `.chip`) and would collide as global rules.
+ *
+ * A host states its own differences in its own `<style scoped>` block, placed
+ * after this one so it wins: the field's top padding (a surface with a title
+ * above the body starts tighter), the send seed's resting opacity, and any
+ * tray item only that surface has.
+ */
+
+.dock {
+  /* Accent rings (drag, armed) ride the same metal, not a hue. */
+  --chrome-ring: 138 141 149;
+  pointer-events: auto;
+
+  /* A column now: the card, with the context tray tucked in behind its floor. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  /* Fill the width the fixed bar gives us, capped so the reading measure stays
+     comfortable on wide screens and leaving a small gutter on narrow ones. The
+     resting orb (55px) still centres within this track. */
+  width: min(100% - 32px, 680px);
+  animation: dock-rise 440ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: var(--proj-enter-composer, 0ms);
+}
+
+/* The picker is anchored to the field rather than the viewport so it follows
+   the composer's morph on both the overview and board surfaces. */
+.mention-picker {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 12px);
+  pointer-events: auto;
+}
+.mention-picker > :deep(*) {
+  width: 100%;
+}
+
+@keyframes dock-rise {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Dragging files over the dock: a soft chrome ring on the surface invites the
+   drop. No border/heavy shadow — a low, calm glow in kone's idiom. */
+.dock--drag .surface {
+  box-shadow: rgb(var(--chrome-ring) / 0.30) 0 0 0 3px;
+}
+
+/* A brighter chrome ring in dark, so the drag/armed glows keep their
+   weight off the near-black ground. Everything else follows the theme. */
+html.dark .dock {
+  --chrome-ring: 168 171 179;
+}
+
+/* ── The morphing surface ─────────────────────────────────────────────────── */
+/* At rest it's a 52px orb. Open, it becomes the gradient rim around a white
+   field. Width, corner radius, rim padding and height all ease together, so the
+   orb visibly expands and collapses. */
+.surface {
+  position: relative;
+  /* Above the tray, which is tucked in behind its bottom edge. */
+  z-index: 1;
+  overflow: hidden;
+  /* Own compositing layer — keeps the rounded-corner clip of the gradient rim
+     crisp instead of aliased. */
+  transform: translateZ(0);
+  isolation: isolate;
+  width: 55px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  pointer-events: auto;
+}
+/* At rest and settled, the surface carries no gradient and unclips the resting bead. */
+.surface:not(.is-open):not(.is-closing) {
+  overflow: visible;
+  background-image: none;
+}
+.surface.is-closing {
+  width: 100%;
+  padding: 0;
+  border-radius: 26px;
+  border-color: var(--line);
+  background-image: none;
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: none;
+  transition: opacity 0.18s ease;
+}
+.surface.is-open {
+  /* One open shape. It fills the dock's responsive track (full width up to the
+     680px cap) and only grows downward as the text runs on — nothing about the
+     frame moves while you type. */
+  width: 100%;
+  padding: 0;
+  border-radius: 26px;
+  border-color: var(--line);
+  background-image: none;
+  opacity: 1;
+  /* Soft and low — just enough to lift the card off the page and read the tray
+     as sitting under it. Never a heavy drop. */
+  box-shadow:
+    rgb(0 0 0 / 0.07) 0 10px 26px -12px,
+    rgb(0 0 0 / 0.05) 0 2px 6px -3px;
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+  /* Open + everyday sizing: width tracks the text and height follows. This is
+     the typing curve — short and snappy with no overshoot, so per-keystroke
+     nudges keep up with the cursor instead of wobbling behind it. */
+  transition:
+    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.13s ease,
+    width 0.12s cubic-bezier(0.4, 0, 0.2, 1),
+    height 0.14s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.2s ease,
+    opacity 0.15s ease;
+}
+/* Big/structural moves (paste, drop, first/last wrap, pill↔card) overshoot and
+   settle back — a little spring so a large size change feels physical. */
+.surface.is-open.is-springy {
+  transition:
+    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.13s ease,
+    width 0.34s cubic-bezier(0.34, 1.56, 0.64, 1),
+    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.2s ease,
+    opacity 0.15s ease;
+}
+/* Only through the wake expand: corners square off to the input's radius first,
+   then the body stretches out — so it never passes through an ellipse. Placed
+   after .is-springy so it wins during opening (both classes are on then). */
+.surface.is-open.is-opening {
+  transition:
+    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.13s ease,
+    width 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
+    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
+    border-color 0.2s ease;
+}
+/* White field body. Transparent at rest so the orb reads as a solid marble.
+   Its corners track the surface's on the same curve so the gradient rim keeps an
+   even thickness all the way through the morph. */
+.panel {
+  position: relative;
+  /* Over the bead, so the opening card closes across the face. */
+  z-index: 1;
+  height: 100%;
+  border-radius: inherit;
+  background: transparent;
+}
+.surface.is-open .panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--field);
+  /* Opaque from the first frame of the wake, so the card is a solid thing
+     growing over the face rather than a haze the face shows through; the slower
+     base curve then lets the face come back gently on the way in. */
+  transition: background-color 0.06s ease, border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 26px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+.surface.is-closing .panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--field);
+  border-radius: 26px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* ── Resting bead ─────────────────────────────────────────────────────────── */
+/* Pinned to the bead's own footprint at the bottom of the surface — the edge
+   that doesn't move as the card grows — so the face holds still while the card
+   opens out of it. It sits under the field, not over it: the card covering the
+   face is the whole effect. */
+.orbfx {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  z-index: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+.surface.is-open .orbfx {
+  opacity: 0;
+  transition: opacity 0.06s ease;
+}
+
+/* ── Dormant face ─────────────────────────────────────────────────────────── */
+/* Retired: the particle globe is the resting mark now, so the sleeping eyes/z
+   would only poke out past the orb. Kept in the DOM but hidden. */
+.face {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+  animation: breathe 5.5s ease-in-out infinite;
+}
+.surface.is-open .face { opacity: 0; transition: opacity 0.16s ease; }
+.face__eyes { width: 55px; height: 55px; }
+.face__z {
+  position: absolute;
+  font-style: italic;
+  font-weight: 600;
+  color: #b0b2b8;
+}
+.face__z--near { right: 8px; top: 6px; font-size: 12px; }
+.face__z--far { right: 1px; top: -2px; font-size: 9px; color: #c6c8ce; }
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+
+/* ── Field ────────────────────────────────────────────────────────────────── */
+/* Fades in a beat after the expand begins so text never appears mid-squeeze. */
+.field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  height: 100%;
+  /* The text sits high in the card with air under it — the bar below owns the
+     floor, so the field never pads down into it. */
+  padding: 16px 14px 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+.surface.is-open .field {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.2s ease 0.08s;
+}
+.surface.is-closing .field {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  opacity: 1;
+  pointer-events: none;
+}
+.surface:not(.is-open):not(.is-closing) .field {
+  flex: none;
+  opacity: 0;
+  pointer-events: none;
+}
+/* Closed, the panel is an invisible sheet lying over the face — its editor would
+   otherwise hand the bead a text cursor. Nothing in it is reachable until the
+   card is open anyway, so it stops taking the pointer entirely. */
+.surface:not(.is-open) .panel { pointer-events: none; }
+/* The contenteditable field. It flows text nodes + atomic chip spans, wrapping
+   at the card's fixed width and growing its own height — no textarea, no
+   overlay, and no per-keystroke width chase. */
+/* The input's box: positioned so its text (and caret) paint above the
+   placeholder overlay below. */
+.field__ed {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  /* Open at two rows of room so the field never starts as a single cramped
+     line — text starts at the top and grows down from there. */
+  min-height: 50px;
+  display: flex;
+  align-items: flex-start;
+}
+.field__input {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
+  min-height: 50px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 22px;
+  letter-spacing: normal;
+  /* The card's width is fixed, so text simply wraps and the card grows down. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  cursor: text;
+}
+.field__input:focus { outline: 0; }
+/* Placeholder overlay — shown only while the field is empty. It's a sibling
+   overlay (not ::before) so it never pushes the caret: an empty field's caret
+   stays at the true left edge under the label, and clearing the draft returns
+   the cursor to the start instead of leaving it after the text. */
+.field__placeholder {
+  position: absolute;
+  left: 0;
+  /* Sit on the first line so it lines up with the top-anchored caret. */
+  top: 0;
+  color: var(--placeholder);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── The bar ──────────────────────────────────────────────────────────────── */
+/* One rail across the card's floor holding every control. Borderless, in kone's
+   idiom — the marks and labels carry the state, nothing draws a container. It
+   rises in from below as the card opens, just behind the field. */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 0 8px 9px 8px;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+}
+.bar.is-shown {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    opacity 0.22s ease 0.12s,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.12s;
+}
+.surface.is-closing .bar {
+  opacity: 1;
+  transform: none;
+  pointer-events: none;
+}
+.bar__group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+/* The right group must be free to shrink — a long model name gives way before
+   the send seed ever gets pushed off the card's edge. */
+.bar__group--end { gap: 4px; flex: 0 1 auto; }
+
+/* Every control on the bar wears the same clothes: a bare 30px-tall slot whose
+   ink lifts on hover. Only the send seed breaks it. */
+.barbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
+}
+.barbtn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.barbtn:active { transform: scale(0.95); }
+/* A slot that only reports — same clothes, none of the affordance. */
+.barbtn--fixed { cursor: default; }
+.barbtn--fixed:hover { opacity: 0.78; background: transparent; }
+.barbtn--fixed:active { transform: none; }
+
+/* ── Context tray ─────────────────────────────────────────────────────────── */
+/* Who takes the turn and where it lands — agent, project, branch, thread —
+   tucked in behind the card so only its bottom strip shows. It's ground, not
+   chrome: a quieter surface, smaller type, and no hairline anywhere. */
+.tray {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Narrower than the card, so it reads as something the card is standing on
+     rather than a second bar bolted to its bottom. */
+  width: calc(100% - 26px);
+  /* No z-index of its own, on purpose. A flex item honours z-index even while
+     it is statically positioned, so any value here makes the tray a stacking
+     context — and the roster opening out of it would then be pinned under the
+     card no matter how high its own layer went. The card is already lifted above
+     the tray by its own z-index, which is all the tuck needs. */
+  overflow: hidden;
+  height: 0;
+  margin-top: 0;
+  padding: 0 14px;
+  border-radius: 0 0 18px 18px;
+  background: var(--sunken);
+  opacity: 0;
+  transform: none;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+.tray.is-shown {
+  /* Taller than it shows: the card's rounded floor covers the top 14px, so the
+     tray reads as one slab the composer is resting on. */
+  height: 40px;
+  margin-top: -14px;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    height 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
+    margin-top 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
+    opacity 0.24s ease 0.14s;
+}
+.tray.is-closing {
+  height: 40px;
+  margin-top: -14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+.tray__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* Sit on the strip that shows, not on the covered half. */
+  margin-top: 12px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--faint);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.tray__label {
+  color: var(--ink);
+  opacity: 0.62;
+  max-width: 148px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tray__label--strong { opacity: 0.86; }
+/* Reads at the same weight as the branch beside it — one statement about where
+   the work goes, not two facts of different importance. */
+.tray__workspace {
+  color: var(--ink);
+  opacity: 0.62;
+  max-width: 148px;
+}
+.tray__item--action {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.tray__item--action:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.tray__item--action:hover .tray__label { opacity: 0.9; }
+.tray__item--end {
+  margin-left: auto;
+  min-width: 0;
+}
+.tray__item--end .tray__label {
+  max-width: 220px;
+}
+
+/* Big enough to read as a face rather than a dot, and level with the glyphs
+   beside it: a marble has no stroke and no counters, so at their nominal size
+   it reads optically smaller than they do. A bot fills the same tile; its
+   outline's smoothing is allowed to bulge a hair past the box. */
+.tray__avatar {
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+  user-select: none;
+}
+.tray__face {
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+.tray__face :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Send seed ────────────────────────────────────────────────────────────── */
+.seed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  margin-left: 4px;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  background: var(--accent);
+  transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+.seed--armed {
+  box-shadow: rgb(var(--chrome-ring) / 0.16) 0 0 0 4px;
+}
+.seed:hover { transform: scale(1.06); }
+.seed:active { transform: scale(0.94); }
+.seed__arrow { width: 15px; height: 15px; }
+
+/* ── Chips ────────────────────────────────────────────────────────────────── */
+/* Attachment chips ride above the text, on the field's own left margin so the
+   card reads as one column: chips, then prose, then the bar. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 14px 0;
+}
+/* With chips up top the field's own lead-in would double the gap. */
+.surface.is-card .field { padding-top: 10px; }
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 5px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--chip);
+  color: var(--faint);
+}
+.chip--image { padding-left: 4px; }
+/* Extension badge for non-image files — a soft neutral tile, no loud colour
+   (kone stays calm and borderless). */
+.chip__badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--line);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 8.5px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+/* Image preview thumbnail. */
+.chip__thumb {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+}
+.chip__name {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The remove target — a padded button around the ✕ so it's easy to hit and
+   only it drops the attachment. Ink lifts and a soft tile appears on hover. */
+.chip__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.chip__remove:hover { background: var(--line); color: var(--ink); }
+.chip__remove:active { transform: scale(0.9); }
+.chip__x { width: 12px; height: 12px; flex-shrink: 0; }
+.chips__notice {
+  align-self: center;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* ── Model ────────────────────────────────────────────────────────────────── */
+/* Which model will answer — the vendor mark plus the family name, opening the
+   full picker. It's the one control allowed to give up width on a narrow card. */
+.model { flex: 0 1 auto; min-width: 0; gap: 7px; }
+.model__name {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Permission mode (autonomy ladder) ────────────────────────────────────── */
+/* The hued icon carries the rung and a neutral label names it. Cycles on click,
+   with a tactile pop. */
+.mode { color: var(--mode-hue, var(--muted)); opacity: 0.92; }
+.mode__icon { width: 15px; height: 15px; }
+.mode__label {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.mode--bump .mode__icon { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+
+/* ── Attach control ───────────────────────────────────────────────────────── */
+/* The card's one bare glyph: a plus, opening the file picker. */
+.attach { width: 30px; padding: 0; }
+/* The real <input type=file> is off-screen; the attach button drives it. */
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Effort control (brain-stack) ─────────────────────────────────────────── */
+/* The stack shows how hard it will think; the label names the rung, so the
+   cycle is readable at a glance rather than something you have to count. */
+.effort { gap: 6px; opacity: 0.9; }
+.effort__label {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+/* Each cycle step gives the stack a quick tactile pop. */
+.effort--bump .stack { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+
+/* ── Fast mode toggle ─────────────────────────────────────────────────────── */
+.fast { width: 28px; padding: 0; color: var(--ink); opacity: 0.66; }
+.fast--on {
+  color: var(--boost);
+  opacity: 1;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--boost) 50%, transparent));
+}
+
+/* ── Context-window cycle ─────────────────────────────────────────────────── */
+.ctxwin {
+  min-width: 32px;
+  color: var(--ink);
+  font: 500 11px/1 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+  opacity: 0.66;
+}
+@keyframes effort-pop {
+  0% { transform: scale(0.82); }
+  60% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+/* The brains overlap into a tight cluster; a soft halo blooms at the top tier. */
+.stack { display: inline-flex; align-items: center; }
+.stack > :deep(svg) { margin-left: -6px; }
+.stack > :deep(svg:first-child) { margin-left: 0; }
+.stack--glow > :deep(svg) { filter: drop-shadow(0 0 3px currentColor); }
+
+/* ── Popovers (agent roster · model picker · reasoning dial) ──────────────── */
+.pop { position: relative; display: flex; }
+.menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--raised);
+  box-shadow:
+    rgb(0 0 0 / 0.10) 0 8px 28px -6px,
+    rgb(0 0 0 / 0.06) 0 2px 8px -2px,
+    var(--line) 0 0 0 1px;
+}
+.fade-enter-active { transition: opacity 0.24s ease 0.08s; }
+.fade-leave-active { transition: opacity 0.14s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .surface, .panel, .face, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
+  .dock { animation: none; }
+  .face { animation: none; }
+  .bar, .tray { transition-duration: 0.01s; transition-delay: 0s; }
+  .fade-enter-active, .fade-leave-active { transition-duration: 0.01s; }
+  .menu-enter-active, .menu-leave-active { transition-duration: 0.01s; }
+}
+
+/* ── Name (a job's) ───────────────────────────────────────────────────────── */
+/* Heavier than the body and on the same left margin, so the card reads as one
+   written thing with a heading rather than as two stacked inputs. It carries no
+   box of its own for the same reason. */
+.title {
+  padding: 13px 14px 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.title.is-shown {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.2s ease 0.08s;
+}
+.title__input {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 15.5px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  color: var(--ink);
+}
+.title__input::placeholder {
+  font-weight: 500;
+  color: var(--faint);
+}
+.title__input:focus {
+  outline: none;
+}
+
+/* The name owns the card's top edge on a job, so the body starts tight under
+   it rather than at the full top padding a turn's field takes. */
+.dock--job .field {
+  padding: 2px 14px 4px;
+}
+
+/* The one slot a job cannot be queued without. Accented rather than warned:
+   nothing is wrong yet, there is just a decision still to make. */
+.tray__item--wanted .tray__label {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* ── Park (a job's) ───────────────────────────────────────────────────────── */
+/* The quiet commit. It reads as a control on the rail, not as a second seed. */
+.park {
+  gap: 0.3rem;
+  margin-right: 0.15rem;
+}
+.park__label {
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+}
+
+/* Dim until the job could actually be picked up — written, and aimed
+   somewhere. It stays clickable: pressing it is how you find out what is
+   missing, which is better than a control that ignores the press. */
+.seed--dim {
+  opacity: 0.4;
+  transition: box-shadow 0.3s ease, transform 0.2s ease, opacity 0.2s ease;
+}
+.seed--dim.seed--armed {
+  opacity: 1;
+}

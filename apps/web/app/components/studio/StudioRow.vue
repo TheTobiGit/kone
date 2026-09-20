@@ -46,10 +46,17 @@ import {
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
+import { createHandoff } from "~/composables/useThreadHandoff";
 import { agentForThread } from "~/utils/agents";
+import { JEV_ROUTER_ID, routingReceipt } from "~/utils/agentRouting";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { usePendingThread } from "~/composables/useProject";
-import { useStudioRowRegistry, type StudioRowApi } from "~/composables/useStudioRowRegistry";
+import {
+  useStudioRowRegistry,
+  type StudioRowApi,
+  type StudioRowThread,
+  type StudioRowThreadOp,
+} from "~/composables/useStudioRowRegistry";
 
 // One project's row of the studio: its panes side by side, the composer docked
 // under the focused one, and every corner dock, modal and pill that belongs to a
@@ -466,9 +473,82 @@ function openEditFork(paneId: string, blockId: string, text: string): void {
     if (id) void composerRef.value?.wake();
   })();
 }
+// Thread handoff: the column's "hand off" creator. Opens the model picker in
+// handoff mode for the source thread; the pick confirms the target and the
+// handoff opens as a column beside the source. The source column is never
+// touched — it keeps running where it is. Refused while the source is busy
+// (handing off would copy a moving transcript).
+const handoffPaneId = ref<string | null>(null);
+function openHandoffPicker(paneId: string): void {
+  const pane = panes.value.find((p) => p.id === paneId);
+  if (pane?.kind !== "thread" || !pane.session) return;
+  if (pane.session.busy.value) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before handing off.",
+    );
+    return;
+  }
+  modelPickerOpen.value = false;
+  handoffPaneId.value = paneId;
+}
+const handoffSource = computed(() => {
+  const pane = panes.value.find((p) => p.id === handoffPaneId.value);
+  if (!pane || pane.kind !== "thread" || !pane.session) return null;
+  return {
+    paneId: pane.id,
+    threadId: pane.session.threadId.value,
+    title: pane.session.title.value,
+    provider: pane.session.provider.value,
+    model: pane.session.model.value,
+    reasoning: pane.session.reasoning.value,
+  };
+});
+function closePicker(): void {
+  modelPickerOpen.value = false;
+  handoffPaneId.value = null;
+}
+function onPickerSelect(picked: ModelPick): void {
+  // One picker, two commits: a handoff pick moves the source thread's
+  // conversation onto the target (effort rides along — the settings bar
+  // stages it and nothing applied live), while the ordinary path retunes
+  // the row's own session.
+  if (handoffSource.value) {
+    void confirmHandoff(picked);
+    return;
+  }
+  onModelSelect(picked);
+}
+async function confirmHandoff(picked: ModelPick): Promise<void> {
+  const source = handoffSource.value;
+  handoffPaneId.value = null;
+  if (!source) return;
+  try {
+    const { threadId } = await createHandoff({
+      sourceThreadId: source.threadId,
+      target: { provider: picked.provider, model: picked.modelId, effort: picked.tier },
+    });
+    const id = await studio.open("thread", { threadId, near: source.paneId });
+    if (id) void composerRef.value?.wake();
+  } catch (err) {
+    // Creation is best-effort: an ineligible source or an idempotency
+    // conflict surfaces here — the column simply doesn't open, and the row
+    // says why instead of swallowing it.
+    console.warn("[handoff] could not hand off thread:", err);
+    flashArchiveNotice(
+      err instanceof Error ? err.message : "Could not hand off this thread.",
+    );
+  }
+}
 function insertPane(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   // Seam `i` sits after pane `i`; a pick inserts to its right.
   void studio.open(kind, { at: seamIndex + 1 });
+}
+// A handoff footer asked for its linked thread — open it (a hosted thread
+// focuses, never duplicates) so the two ends of a handoff read as one
+// conversation with two doors.
+function openLinkedThread(threadId: string): void {
+  if (!threadId.trim()) return;
+  void studio.open("thread", { threadId });
 }
 
 // mod+shift+t / mod+shift+n open a terminal / the scratchpad beside the focused
@@ -673,9 +753,15 @@ async function adoptThreadPane(threadId: string): Promise<void> {
 const {
   team: agents,
   selected: pickedAgent,
+  routing,
+  lastRouted,
+  routePending,
+  resolveAgentId,
+  agentById,
   pendingThreadAgent,
   selectAgent,
   settleThreadAgent,
+  threadSettled,
   isOnTeam,
 } = useAgentRoster(() => props.project.path);
 
@@ -709,6 +795,16 @@ const pickedForProject = computed(() =>
   pickedAgent.value && isOnTeam(pickedAgent.value.id) ? pickedAgent.value : undefined,
 );
 
+/** Who to settle a thread on for this request: the router's answer when the
+ *  picker is holding Jev and the thread is still undecided, and the plain pick
+ *  otherwise. Only a thread's first turn is routed — see `agentIdFor` in
+ *  `useInboxComposer`, which answers the same question for the inbox. */
+function ownerFor(request: string, threadId: string | null | undefined): Promise<string | null> {
+  const picked = pickedForProject.value?.id ?? null;
+  if (!routing.value || threadSettled(threadId)) return Promise.resolve(picked);
+  return resolveAgentId(request);
+}
+
 const focusedIsSideChat = computed(() => {
   const currentId = focusedThread.value?.threadId.value;
   return Boolean(focusedThread.value?.isSideChat?.value || (currentId && getSideChatSource(currentId)));
@@ -716,11 +812,33 @@ const focusedIsSideChat = computed(() => {
 
 const composerAgentId = computed(() => {
   const currentId = focusedThread.value?.threadId.value;
-  if (!currentId) return pickedForProject.value?.id ?? null;
-  if (focusedIsSideChat.value) {
-    return agentForThread(currentId)?.id ?? null;
-  }
+  // A side chat inherits its source's owner, so the router never gets a say
+  // there — the question of who works it was answered by the thread it came
+  // from.
+  if (currentId && focusedIsSideChat.value) return agentForThread(currentId)?.id ?? null;
+  if (routing.value) return JEV_ROUTER_ID;
   return pickedForProject.value?.id ?? null;
+});
+
+// One composer serves whichever thread has focus here, so a receipt left
+// standing would follow the focus onto a thread it was never about. It
+// describes one send on one thread; moving off that thread ends it.
+watch(
+  () => focusedThread.value?.threadId.value,
+  () => {
+    lastRouted.value = null;
+  },
+);
+
+/** The receipt for the last routed send — see the composer's `routingNote`. */
+const routingNote = computed<string | null>(() => {
+  // In flight first — see the same rule in useInboxComposer.
+  if (routePending.value) return "Choosing who takes this…";
+
+  const result = lastRouted.value;
+  if (!result) return null;
+  const name = result.agentId ? agentById(result.agentId)?.name : undefined;
+  return routingReceipt(result, name);
 });
 
 function onAgentPick(id: string | null) {
@@ -1303,7 +1421,10 @@ async function onSend(text: string, files?: File[]) {
     const sourceAgent = sourceId ? agentForThread(sourceId) : undefined;
     settleThreadAgent(currentId, sourceAgent?.id ?? null);
   } else {
-    settleThreadAgent(currentId, pickedForProject.value?.id ?? null);
+    // With the router selected, who works the thread is read out of the
+    // request rather than off the picker — awaited before the send below, since
+    // the session reads the persona off this binding as it spawns.
+    settleThreadAgent(currentId, await ownerFor(text, currentId));
   }
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
@@ -1419,6 +1540,52 @@ function captureText(text: string): void {
   void studio.dispatch({ type: "capture-text", text, from: sourceKey });
 }
 
+// ── the focused column's thread actions, for callers outside the row ────────
+// The column header and the composer already carry these controls; a surface
+// that can't reach a column (the intent menu opens over the plane, not inside
+// it) asks the row instead. Both halves read the same guards as the controls,
+// so an action offered here can never do something the button wouldn't.
+function focusedThreadIntent(): StudioRowThread | null {
+  const pane = focusedPane.value;
+  if (pane?.kind !== "thread" || !pane.session) return null;
+  const session = pane.session;
+  // Nothing has been said yet: there is no conversation to compact, fork or
+  // archive, only an empty column to close.
+  if (session.blocks.value.length === 0) return null;
+  return {
+    paneId: pane.id,
+    threadId: session.threadId.value,
+    title: session.title.value,
+    compactable:
+      compactPropsForSession(session, providers.statuses.value).compactState === "available",
+    forkable: !session.isSideChat.value,
+  };
+}
+
+function runThreadAction(op: StudioRowThreadOp, paneId: string): void {
+  const pane = panes.value.find((p) => p.id === paneId);
+  if (pane?.kind !== "thread" || !pane.session) return;
+  switch (op) {
+    case "compact": {
+      const props = compactPropsForSession(pane.session, providers.statuses.value);
+      if (props.compactState !== "available") return;
+      props.onCompact?.();
+      return;
+    }
+    case "archive":
+      // Busy threads are refused inside archivePane, with the notice that
+      // explains why the column stayed.
+      void archivePane(pane.session.threadId.value, pane.id);
+      return;
+    case "side-chat":
+      openSideChat(pane.id);
+      return;
+    case "handoff":
+      openHandoffPicker(pane.id);
+      return;
+  }
+}
+
 const rowApi: StudioRowApi = {
   openSession,
   revealThread,
@@ -1436,6 +1603,8 @@ const rowApi: StudioRowApi = {
   focusPane,
   shiftPaneFocus,
   flush: flushStudio,
+  focusedThread: focusedThreadIntent,
+  runThreadAction,
   /** Stop a turn in flight, cleanly, before something tears the row down anyway
    *  (a project switch remounts it). A no-op when nothing is running. */
   interruptIfRunning: () => {
@@ -1496,7 +1665,9 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @close="closePane"
         @archive="archivePane"
         @side-chat="openSideChat"
+        @handoff="openHandoffPicker"
         @edit-fork="openEditFork"
+        @open-thread="openLinkedThread"
         @insert-column="insertPane"
         @terminal-write="terminal.write"
         @terminal-resize="terminal.resize"
@@ -1583,6 +1754,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         </Transition>
         <AgentComposer
           ref="composerRef"
+          class="pointer-events-auto"
           :project-path="project.path"
           :project-name="project.name"
           :branch="branch ?? undefined"
@@ -1594,6 +1766,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :picking="modelPickerOpen"
           :agents="agents"
           :agent-id="composerAgentId"
+          :routing-note="routingNote"
           :agent-switchable="threadIsBlank && !focusedIsSideChat"
           :models="modelOptions"
           :model-switchable="modelSwitchable"
@@ -1654,18 +1827,21 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       </div>
     </Transition>
 
-    <!-- The full providers → models → effort picker, in the folder-picker shell. -->
+    <!-- The full providers → models → effort picker, in the folder-picker shell.
+         In handoff mode it picks where the source thread continues instead of
+         retuning this row's session (see onPickerSelect). -->
     <ModelPickerModal
-      v-if="modelPickerOpen && !isOverview"
+      v-if="(modelPickerOpen || handoffSource) && !isOverview"
       :providers="pickerProviders"
-      :active-provider="agent.provider.value"
-      :model-id="model"
-      :reasoning="reasoning"
-      :fast-mode="fastActive"
-      :context-window="contextWindow"
-      @select="onModelSelect"
+      :active-provider="handoffSource ? handoffSource.provider : agent.provider.value"
+      :model-id="handoffSource ? handoffSource.model : model"
+      :reasoning="handoffSource ? handoffSource.reasoning : reasoning"
+      :fast-mode="handoffSource ? undefined : fastActive"
+      :context-window="handoffSource ? undefined : contextWindow"
+      :handoff="handoffSource ? { title: handoffSource.title } : null"
+      @select="onPickerSelect"
       @apply="applyModelEffort"
-      @cancel="modelPickerOpen = false"
+      @cancel="closePicker"
     />
 </template>
 
@@ -1679,6 +1855,10 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
    side by side. Stays under a file detail (50), which covers the studio whole. */
 .composer-dock {
   z-index: 40;
+}
+
+.composer-dock > * {
+  pointer-events: auto;
 }
 
 .composer-dock--open {

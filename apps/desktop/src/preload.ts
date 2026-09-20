@@ -4,6 +4,7 @@ import type {
   AgentRecord,
   ConversationSearchHit,
   ConversationSearchOptions,
+  JobRow,
   QueuedTurnRow,
   ScratchpadRecord,
   StoredStudioLayout,
@@ -38,10 +39,13 @@ import type {
   ChatAttachment,
   CompactThreadResult,
   CompactionRecord,
+  CreateHandoffInput,
+  CreateHandoffResult,
   CreateSideChatInput,
   CreateSideChatResult,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
+  HandoffLink,
   InteractionMode,
   ModelDescriptor,
   PreviewTurnCheckpointResult,
@@ -84,6 +88,16 @@ import type {
   ScratchpadSaveInput,
   ScratchpadSaveResult,
 } from "./modules/scratchpad/index.js";
+import type {
+  BenchCreateInput,
+  BenchJobDetail,
+  BenchJobIdInput,
+  BenchListInput,
+  BenchQueueInput,
+  BenchReorderInput,
+  BenchUpdateInput,
+} from "./modules/bench/index.js";
+import type { JevRouteInput, JevRouteResult, JevStatus } from "./modules/jev/index.js";
 import type {
   RosterBindInput,
   RosterCarryInput,
@@ -449,6 +463,10 @@ const api = {
     // renderer mints the thread id; a replayed id resolves "exists".
     createSideChat: (input: CreateSideChatInput): Promise<CreateSideChatResult> =>
       ipcRenderer.invoke("agent:create-side-chat", input),
+    // Hand a thread to another provider/model. The renderer mints the thread
+    // id; a replayed id resolves "exists".
+    createHandoff: (input: CreateHandoffInput): Promise<CreateHandoffResult> =>
+      ipcRenderer.invoke("agent:create-handoff", input),
     // Edit-and-resend of an earlier user message: fork the thread at that
     // block (the source is never mutated) and dispatch the fork's first turn
     // from the edited text. The renderer mints the fork's ids; a replayed
@@ -514,6 +532,10 @@ const api = {
         ipcRenderer.invoke("agent:history-thread", threadId),
       compactions: (threadId: string): Promise<CompactionRecord[]> =>
         ipcRenderer.invoke("agent:history-compactions", threadId),
+      // Handoff links leaving a source thread, oldest first — the
+      // timeline's "Handed to" markers.
+      handoffsFromSource: (sourceThreadId: string): Promise<HandoffLink[]> =>
+        ipcRenderer.invoke("agent:history-handoffs", sourceThreadId),
       // Windowed thread read (user-anchored keyset pages): first page when no
       // cursor is given; pass `nextCursor` back verbatim for the next strictly
       // older page. Null when the thread is missing. The renderer treats the
@@ -708,6 +730,28 @@ const api = {
       ipcRenderer.invoke("scratchpad:save", input),
     delete: (input: ScratchpadDeleteInput): Promise<void> =>
       ipcRenderer.invoke("scratchpad:delete", input),
+  },
+  bench: {
+    list: (input: BenchListInput): Promise<JobRow[]> => ipcRenderer.invoke("bench:list", input),
+    detail: (input: BenchJobIdInput): Promise<BenchJobDetail | null> =>
+      ipcRenderer.invoke("bench:detail", input),
+    create: (input: BenchCreateInput): Promise<JobRow | null> =>
+      ipcRenderer.invoke("bench:create", input),
+    update: (input: BenchUpdateInput): Promise<JobRow | null> =>
+      ipcRenderer.invoke("bench:update", input),
+    setQueued: (input: BenchQueueInput): Promise<JobRow | null> =>
+      ipcRenderer.invoke("bench:set-queued", input),
+    requeue: (input: BenchJobIdInput): Promise<JobRow | null> =>
+      ipcRenderer.invoke("bench:requeue", input),
+    reorder: (input: BenchReorderInput): Promise<boolean> =>
+      ipcRenderer.invoke("bench:reorder", input),
+    delete: (input: BenchJobIdInput): Promise<boolean> =>
+      ipcRenderer.invoke("bench:delete", input),
+  },
+  jev: {
+    status: (): Promise<JevStatus> => ipcRenderer.invoke("jev:status"),
+    route: (input: JevRouteInput): Promise<JevRouteResult> =>
+      ipcRenderer.invoke("jev:route", input),
   },
   studio: {
     load: (): Promise<StoredStudioLayout | null> => ipcRenderer.invoke("studio:load"),

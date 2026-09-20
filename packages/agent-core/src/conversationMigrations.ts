@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -649,6 +649,145 @@ function migration0008ItemTextChunks(db: DatabaseSync): void {
   }
 }
 
+
+/** Jobs: work the user has described but not necessarily started, and the
+ *  attempts made at it.
+ *
+ *  A job is NOT a thread. A thread is one *attempt* at a job, which is why
+ *  the two tables exist rather than a status column on `threads`. The split is
+ *  what makes the three things the bench is for possible at all: a draft is
+ *  a job with no runs, a retry is a second run against the same job, and a
+ *  job that was started, interrupted and picked up again keeps one identity
+ *  across both threads. A status column on `threads` could express none of
+ *  them — a draft would have to spawn a dead process to exist.
+ *
+ *  `jobs` holds what the composer captured: where it runs (project, provider,
+ *  model, effort, interaction mode, worktree choice) and what to say first.
+ *  Those are the fields a session start takes, deliberately — starting a job
+ *  is handing this row to the dispatcher, so anything the dispatcher needs is
+ *  stored and nothing else is. `workspace_json` and `fallbacks_json` ride as
+ *  JSON because they are already structured values elsewhere and splitting
+ *  them into columns would need a migration every time their shape grows.
+ *
+ *  `sort_key` mirrors the queued-turn drain: rows the user reordered sort
+ *  first in that order, rows never reordered (NULL) fall back to oldest-first,
+ *  with rowid breaking same-millisecond ties. New arrivals after a reorder
+ *  carry NULL and queue behind the explicit sequence.
+ *
+ *  `job_runs.claimed_by` / `lease_expires_at` are what make a crash
+ *  recoverable. A runner claims a row before it dispatches, so a process that
+ *  dies mid-start leaves a claimed run with an expiring lease rather than a
+ *  job that looks queued and silently runs twice on the next launch. The
+ *  recovery index is what the sweep reads.
+ *
+ *  `mode` is captured at file time, not read at dispatch time: a job started
+ *  while nobody is watching has to have had its approval posture decided by
+ *  the person who filed it, or it parks on a gate with no one there to answer.
+ *  Idempotent — every object is created only when absent. */
+function migration0009Jobs(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      job_id        TEXT PRIMARY KEY,
+      project_path   TEXT NOT NULL,
+      title          TEXT NOT NULL,
+      body           TEXT NOT NULL,
+      status         TEXT NOT NULL CHECK (status IN ('draft', 'queued', 'running', 'done', 'failed', 'cancelled')),
+      sort_key       REAL,
+      provider       TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'claudeAgent', 'opencode', 'cursor', 'antigravity', 'droid')),
+      model          TEXT,
+      effort         TEXT,
+      mode           TEXT,
+      workspace_json TEXT CHECK (workspace_json IS NULL OR json_valid(workspace_json)),
+      fallbacks_json TEXT CHECK (fallbacks_json IS NULL OR json_valid(fallbacks_json)),
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL,
+      started_at     INTEGER,
+      ended_at       INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_jobs_project
+      ON jobs (project_path, status, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_jobs_drain
+      ON jobs (project_path, sort_key, created_at)
+      WHERE status = 'queued';
+
+    CREATE TABLE IF NOT EXISTS job_runs (
+      run_id           TEXT PRIMARY KEY,
+      job_id          TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+      attempt          INTEGER NOT NULL CHECK (attempt >= 1),
+      thread_id        TEXT REFERENCES threads(thread_id) ON DELETE SET NULL,
+      status           TEXT NOT NULL CHECK (status IN ('claimed', 'running', 'done', 'failed', 'cancelled')),
+      claimed_by       TEXT,
+      claimed_at       INTEGER,
+      lease_expires_at INTEGER,
+      started_at       INTEGER,
+      ended_at         INTEGER,
+      error            TEXT,
+      created_at       INTEGER NOT NULL,
+      UNIQUE (job_id, attempt)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_job_runs_task
+      ON job_runs (job_id, attempt DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_job_runs_recovery
+      ON job_runs (status, lease_expires_at);
+
+    CREATE INDEX IF NOT EXISTS idx_job_runs_thread
+      ON job_runs (thread_id);
+  `);
+}
+
+/**
+ * Jobs, second pass (v10).
+ *
+ * Three corrections, all additive because every rung of this ladder is: SQLite
+ * cannot alter a column's constraints, and rebuilding `jobs` would mean
+ * dropping a table `job_runs` points at with ON DELETE CASCADE while
+ * `PRAGMA foreign_keys` is on — a rebuild here would cost the runs to fix the
+ * parent.
+ *
+ * 1. `attachments_json` — files filed with a job. They were uploaded and then
+ *    dropped, because the row had nowhere to keep them.
+ *
+ * 2. `sort_key` — "unordered" was encoded as NULL, which SQLite sorts first
+ *    while the drain wants it last, so the order needed a CASE no index could
+ *    match and every drain sorted the project's queued rows. The sentinel sorts
+ *    last on its own. The column stays nullable for want of a rebuild, but this
+ *    empties it of NULLs and nothing writes one again: `createJob` writes the
+ *    sentinel and the other two writers write a real position.
+ *
+ * 3. One run per thread, as a partial unique index rather than a table
+ *    constraint — the same guarantee, and addable. `getJobRunByThread` asserted
+ *    this in a comment and then ordered by attempt to pick a winner among rows
+ *    it claimed could not exist.
+ *
+ * Idempotent, like its neighbours.
+ */
+function migration0010JobAttachmentsAndOrder(db: DatabaseSync): void {
+  addColumn(
+    db,
+    "jobs",
+    "attachments_json",
+    "TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json))",
+  );
+
+  // Must match JOB_SORT_UNSET in conversationStoreTypes.
+  db.exec(`UPDATE jobs SET sort_key = 1e18 WHERE sort_key IS NULL`);
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_runs_thread_unique
+      ON job_runs (thread_id)
+      WHERE thread_id IS NOT NULL;
+
+    DROP INDEX IF EXISTS idx_job_runs_task;
+
+    CREATE INDEX IF NOT EXISTS idx_job_runs_attempt
+      ON job_runs (job_id, attempt DESC);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -658,6 +797,8 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 6, name: "ConversationFts", run: migration0006ConversationFts },
   { id: 7, name: "TurnCheckpoints", run: migration0007TurnCheckpoints },
   { id: 8, name: "ItemTextChunks", run: migration0008ItemTextChunks },
+  { id: 9, name: "Jobs", run: migration0009Jobs },
+  { id: 10, name: "JobAttachmentsAndOrder", run: migration0010JobAttachmentsAndOrder },
 ];
 
 export interface MigrationOptions {

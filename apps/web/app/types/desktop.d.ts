@@ -1036,6 +1036,57 @@ export type CreateSideChatResult = {
   status: "created" | "exists";
 };
 
+// ── thread handoff (mirror packages/agent-core/src/types.ts) ───────────────
+// Handing a thread to another provider/model continues the same task under
+// new ownership: the renderer mints threadId + requestId, the desktop side
+// imports the full transcript, and the handoff streams as
+// `thread.handoff-created`. Many handoffs may leave one source; a handoff
+// may itself be handed off again once it has run a native turn.
+
+export type CreateHandoffInput = {
+  /** Caller-chosen idempotency key. Same requestId replayed with the same
+   *  threadId resolves "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new handoff thread. */
+  threadId: string;
+  /** The thread being handed off. */
+  sourceThreadId: string;
+  /** The provider/model the handoff continues on. Provider is required. */
+  target: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  };
+  /** Overrides the default (the source thread's title). */
+  title?: string;
+};
+
+export type CreateHandoffResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** The provider the handoff continues on. */
+  provider: ProviderKind;
+  /** The model the handoff continues on, when one resolved. */
+  model?: string;
+  /** `"created"` = the handoff was written; `"exists"` = a thread with this
+   *  id was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
+/** One thread handed off from a source thread — the timeline's "Handed to"
+ *  marker. Metadata only. Mirrors packages/agent-core/src/types.ts. */
+export type HandoffLink = {
+  threadId: string;
+  provider: ProviderKind;
+  model?: string;
+  title?: string;
+  /** Epoch millis when the handoff was created. */
+  handedAt: number;
+};
+
 // ── edit-and-resend fork (mirror packages/agent-core/src/types.ts) ─────────
 // Editing an earlier user message forks the thread at that block instead of
 // mutating it: the prefix is copied verbatim, the edited text is journaled
@@ -1344,6 +1395,13 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
+  // A thread handoff was persisted (agent:create-handoff). `threadId` is the
+  // new thread's id; `sourceThreadId` is the thread it was handed off from.
+  | (AgentBaseEvent & {
+      type: "thread.handoff-created";
+      sourceThreadId: string;
+      requestId: string;
+    })
   // An agent spawned a child thread (kone_spawn_worker), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
@@ -1407,6 +1465,8 @@ export type RuntimeEvent =
         role?: string;
         instructions?: string;
         face?: { body: string; ink: string };
+        avatar?: { source: string; src: string };
+        bot?: { form: string; color: string; expression: string };
         model?: { provider: string; model: string; label?: string };
         /** Ordered fallbacks behind `model`. Ignored when no primary is set. */
         modelFallbacks?: { provider: string; model: string; label?: string }[];
@@ -1414,9 +1474,16 @@ export type RuntimeEvent =
       /** Fields to hand back: to the shipped preset on a built-in, unset on a
        *  user-made agent. Named rather than sent as null, because a null across
        *  IPC cannot be told from a client that filled in the blanks. */
-      clear?: ("role" | "instructions" | "face" | "model")[];
-      /** On a `create`, the project whose team the new agent also joins. */
+      clear?: ("role" | "instructions" | "face" | "avatar" | "model")[];
+      /** On a `create`, the project whose team the new agent also joins. Kept
+       *  for older renderers; new writes use `projectPaths`. */
       projectPath?: string;
+      /** On a `create`, every project team the new agent joins. */
+      projectPaths?: string[];
+      /** On an `update`, project teams the agent joins or leaves. The agent
+       *  itself is untouched — it stays in the roster and on every other team. */
+      addToTeams?: string[];
+      removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
   // standing definitions `kone_spawn_worker_preset` cuts a spawn from. Unlike the
@@ -1450,6 +1517,18 @@ export type RuntimeEvent =
       lineHeightBody?: number;
       measure?: number;
       smoothing?: boolean;
+    })
+  // A project's bench moved: a job was filed, claimed, settled, or swept.
+  // Carries only what changed and where, never the row — the bench re-reads
+  // the project's list, so the store stays the single copy of the queue and a
+  // stale payload can never disagree with the order the runner will take.
+  // `threadId` is the job's thread when one exists and the empty string when
+  // the change belongs to no thread; consumers key off projectPath.
+  | (AgentBaseEvent & {
+      type: "bench.job-changed";
+      projectPath: string;
+      jobId?: string;
+      status?: JobStatus;
     })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
@@ -1691,7 +1770,7 @@ export type ThreadLineage = {
 
 /** Stored handoff context — the fork point and what was imported. */
 export type ForkContext = {
-  /** The thread this side chat was forked from. */
+  /** The thread this fork was created from. */
   sourceThreadId: string;
   /** Id of the last native block in the source at import time. Provenance
    *  only — the import is never truncated. */
@@ -1699,17 +1778,26 @@ export type ForkContext = {
   /** Epoch millis when the fork was created. */
   importedAt: number;
   /** One-shot bootstrap flag: `"pending"` until the thread's first turn
-   *  completes. Gates the `<sidechat_context>` injection. */
+   *  completes. Gates the context injection. */
   bootstrapStatus: "pending" | "completed";
   /** What kind of fork this is. Absent reads as `"side_chat"`. An `"edit"`
    *  fork is a retry from an edited earlier message: its copied prefix is
    *  real history shown in the timeline, and its first turn continues the
-   *  conversation. Mirrors packages/agent-core/src/types.ts. */
+   *  conversation. A `"handoff"` fork hands the whole conversation to another
+   *  provider/model with the same continuation framing. Mirrors
+   *  packages/agent-core/src/types.ts. */
   forkKind?: ForkKind;
+  /** The source thread's provider at import time. Only written for
+   *  `"handoff"` forks. Mirrors packages/agent-core/src/types.ts. */
+  sourceProvider?: ProviderKind;
+  /** The source thread's model at import time, alongside `sourceProvider` —
+   *  what the timeline's "Handed from" marker names. Only written for
+   *  `"handoff"` forks. Mirrors packages/agent-core/src/types.ts. */
+  sourceModel?: string;
 };
 
-/** The two user-initiated fork kinds. Mirrors packages/agent-core/src/types.ts. */
-export type ForkKind = "side_chat" | "edit";
+/** The user-initiated fork kinds. Mirrors packages/agent-core/src/types.ts. */
+export type ForkKind = "side_chat" | "edit" | "handoff";
 
 /** Where a stored block came from: a live conversation row (`"native"`) or a
  *  fork import (`"fork-import"`). Imported rows carry their original `at` and
@@ -1963,6 +2051,9 @@ export type KoneAgentHistoryApi = {
   /** Every settled compaction boundary on a thread, oldest first — what the
    *  timeline renders its "when/where compacted" markers from. */
   compactions: (threadId: string) => Promise<CompactionRecord[]>;
+  /** Every handoff forked from a source thread, oldest first — what the
+   *  timeline renders its "Handed to" markers from. */
+  handoffsFromSource: (sourceThreadId: string) => Promise<HandoffLink[]>;
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;
@@ -2642,6 +2733,11 @@ export type KoneAgentApi = {
    *  `thread.sidechat-created`; its first send carries the imported-transcript
    *  bootstrap. */
   createSideChat: (input: CreateSideChatInput) => Promise<CreateSideChatResult>;
+  /** Hand a thread to another provider/model. The renderer mints the thread
+   *  id; a replayed id resolves "exists". The handoff streams as
+   *  `thread.handoff-created`; its first send carries the handed-transcript
+   *  bootstrap. */
+  createHandoff: (input: CreateHandoffInput) => Promise<CreateHandoffResult>;
   /** Fork a thread at one of its user blocks (edit-and-resend of an earlier
    *  message). The renderer mints the fork's ids; a replayed creation
    *  resolves "exists". The fork's first turn is dispatched before this
@@ -2864,6 +2960,159 @@ export type KoneScratchpadApi = {
   delete: (input: ScratchpadDeleteInput) => Promise<void>;
 };
 
+// ── the bench ───────────────────────────────────────────────────────────────
+
+/** Where a job sits on the bench. `draft` is work described and parked;
+ *  `queued` is the only state the runner takes from. */
+export type JobStatus = "draft" | "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** One attempt's own state, which is not the job's: a failed run can sit under
+ *  a job the user re-queued, and the bench shows both without either lying. */
+export type JobRunStatus = "claimed" | "running" | "done" | "failed" | "cancelled";
+
+/** Where a job runs, as the composer captured it — the session-start fields
+ *  and nothing else. */
+export type JobTarget = {
+  provider: ProviderKind;
+  model?: string;
+  effort?: string;
+  mode?: InteractionMode;
+  workspace?: { mode: "local" | "worktree"; branch?: string; base?: string };
+  fallbacks?: Array<{ provider: ProviderKind; model?: string }>;
+};
+
+export type JobRow = {
+  jobId: string;
+  projectPath: string;
+  title: string;
+  body: string;
+  status: JobStatus;
+  target: JobTarget;
+  createdAt: number;
+  updatedAt: number;
+  sortKey?: number;
+  startedAt?: number;
+  endedAt?: number;
+  /** The branch the job's latest attempt actually ran on, read back from the
+   *  thread that attempt opened. Observed, not chosen — `target.workspace` is
+   *  the request, and a job in the project's own checkout requests nothing — so
+   *  this is the only field that says where the work landed. Absent until a run
+   *  has started, because until then the checkout can still move. */
+  branch?: string;
+};
+
+export type JobRunRow = {
+  runId: string;
+  jobId: string;
+  attempt: number;
+  status: JobRunStatus;
+  createdAt: number;
+  threadId?: string;
+  claimedBy?: string;
+  claimedAt?: number;
+  leaseExpiresAt?: number;
+  startedAt?: number;
+  endedAt?: number;
+  error?: string;
+};
+
+/** Fields an edit may change. Absent leaves alone; null clears. Status is not
+ *  here — moving between states goes through the named calls so the
+ *  timestamps stay consistent. */
+export type JobPatch = {
+  title?: string;
+  body?: string;
+  target?: JobTarget;
+  sortKey?: number | null;
+};
+
+/** No project means every project's jobs — the bench is one list across all
+ *  of them, and a single project's queue is the narrower read. */
+export type BenchListInput = { projectPath?: string };
+export type BenchJobIdInput = { jobId: string };
+export type BenchCreateInput = {
+  jobId: string;
+  projectPath: string;
+  title: string;
+  body: string;
+  status: "draft" | "queued";
+  target: JobTarget;
+  attachments?: ChatAttachment[];
+};
+export type BenchUpdateInput = { jobId: string; patch: JobPatch };
+export type BenchQueueInput = { jobId: string; queued: boolean };
+export type BenchReorderInput = { projectPath: string; jobIds: string[] };
+
+/** One job plus its attempts — what the detail panel reads. */
+export type BenchJobDetail = { job: JobRow; runs: JobRunRow[] };
+
+export type KoneBenchApi = {
+  list: (input: BenchListInput) => Promise<JobRow[]>;
+  detail: (input: BenchJobIdInput) => Promise<BenchJobDetail | null>;
+  create: (input: BenchCreateInput) => Promise<JobRow | null>;
+  update: (input: BenchUpdateInput) => Promise<JobRow | null>;
+  setQueued: (input: BenchQueueInput) => Promise<JobRow | null>;
+  requeue: (input: BenchJobIdInput) => Promise<JobRow | null>;
+  reorder: (input: BenchReorderInput) => Promise<boolean>;
+  delete: (input: BenchJobIdInput) => Promise<boolean>;
+};
+
+// ── jev, the router ─────────────────────────────────────────────────────────
+// Picking who answers is its own decision, made before a session exists, so it
+// has a bridge of its own rather than riding on the roster's. Nothing here
+// carries a persona: the whole result is an agent id and how firmly it was
+// arrived at.
+
+/** One agent the router may hand a request to. `brief` is what the decision is
+ *  made on; the name and role come along because a short label often says more
+ *  about what an agent is for than its standing orders do. */
+export type JevCandidate = {
+  agentId: string;
+  name: string;
+  role: string;
+  brief: string;
+};
+
+/** `request` is the message as typed. Not a summary — the wording is the
+ *  signal, and anything that rewrote it first would be making the decision
+ *  this call exists to make. */
+export type JevRouteInput = {
+  request: string;
+  candidates: JevCandidate[];
+  project?: string;
+};
+
+/** Why the router landed where it did. Everything but `routed` resolves to the
+ *  default partner, and the reasons stay distinct because the surface says
+ *  different things about each — collapsing them would hide a missing API key
+ *  behind "nothing matched".
+ *
+ *  - `no-match` — the request is in nobody on the team's area.
+ *  - `unsure` — somebody won, but barely ahead of nobody at all.
+ *  - `unavailable` — routing isn't configured, so it was never attempted.
+ *  - `failed` — it was attempted and did not come back. */
+export type JevRouteOutcome = "routed" | "no-match" | "unsure" | "unavailable" | "failed";
+
+/** Where a request is going, and how firmly. `agentId` null is the default
+ *  partner — a real answer, not an absence. */
+export type JevRouteResult = {
+  agentId: string | null;
+  confidence: number;
+  outcome: JevRouteOutcome;
+  probabilities: Record<string, number>;
+  detail?: string;
+};
+
+export type JevStatus = {
+  configured: boolean;
+  model: string;
+};
+
+export type KoneJevApi = {
+  status: () => Promise<JevStatus>;
+  route: (input: JevRouteInput) => Promise<JevRouteResult>;
+};
+
 export type StudioSaveInput = {
   layout: StudioLayout;
 };
@@ -2967,12 +3216,12 @@ export type AgentRecord = {
 export type AgentCreateInput = {
   agentId?: string;
   name: string;
+  bot: AgentBotRef;
   role?: string | null;
   instructions?: string | null;
   faceBody?: string | null;
   faceInk?: string | null;
   avatar?: AgentAvatarRef | null;
-  bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
   modelFallbacks?: AgentModelRef[] | null;
@@ -3229,6 +3478,10 @@ export type KoneAgentRosterEntry = {
   role: string;
   instructions: string;
   face: { body: string; ink: string };
+  /** The picture the agent answers with, or null for its drawn face. */
+  avatar: { source: string; src: string } | null;
+  /** The creature the agent works through, or null when it has none. */
+  bot: { form: string; color: string; expression: string } | null;
   model: { provider: string; model: string; label?: string } | null;
   /** Ordered fallbacks behind `model`. Empty when the agent inherits or has no second choice. */
   modelFallbacks: { provider: string; model: string; label?: string }[];
@@ -3313,6 +3566,8 @@ export type KoneDesktopApi = {
   agent: KoneAgentApi;
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
+  bench: KoneBenchApi;
+  jev: KoneJevApi;
   studio: KoneStudioApi;
   roster: KoneRosterApi;
   presets: KonePresetsApi;

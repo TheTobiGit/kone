@@ -12,6 +12,7 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
 import { removeWorktree } from "../modules/git/worktree.js";
@@ -62,6 +63,7 @@ import {
 } from "@kone/agent-core/quota/index.js";
 import { localSpendForProvider } from "@kone/agent-core/quota/localSpend.js";
 import { createSidechatThread } from "@kone/agent-core/sidechat.js";
+import { createHandoffThread } from "@kone/agent-core/handoff.js";
 import { exportThread } from "@kone/agent-core/threadExport.js";
 import {
   parseThreadExportFormat,
@@ -73,6 +75,7 @@ import type { UsageRange } from "@kone/agent-core/usage/report.js";
 import { buildAgentUsageReport } from "@kone/agent-core/usage/buildUsageReport.js";
 import type {
   ApprovalDecision,
+  CreateHandoffInput,
   CreateSideChatInput,
   ForkThreadAtBlockInput,
   ProviderConfig,
@@ -108,9 +111,23 @@ let service: AgentService | null = null;
 /** The gateway instance (lazily created with the service). */
 let gateway: GatewayHandle | null = null;
 
+/** The bench runner, built alongside the dispatcher it drives. Null until
+ *  registerAgentIpc runs, so the event tap below tolerates its absence rather
+ *  than assuming a boot order. */
+let jobRunner: JobRunner | null = null;
+
 /** Teardown for the IRC delivery subscription — dropped at quit so no armed
  *  delivery timer holds the process open. */
 let stopIrcDelivery: (() => void) | null = null;
+
+/** The bench runner, once registerAgentIpc has built it. Resolved lazily by
+ *  the bench IPC handlers rather than handed to them at registration: the two
+ *  modules are registered independently and neither should have to know which
+ *  went first. Null means the agent layer is not up, and a queued job simply
+ *  waits for the next drain. */
+export function getJobRunner(): JobRunner | null {
+  return jobRunner;
+}
 
 /** The single AgentService instance (lazily created). */
 export function getAgentService(): AgentService {
@@ -168,6 +185,26 @@ export function registerAgentIpc(): void {
   // dispatcher — before the window exists, so no client command can race the
   // consume. Best-effort: resuming never fails boot.
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
+
+  // The bench runner: queued jobs become threads through the same dispatcher
+  // every other thread goes through, so a job behaves exactly like a thread
+  // someone started by hand — it is only the deciding that is automatic.
+  jobRunner = new JobRunner({
+    store,
+    dispatcher: {
+      startThread: (input) => dispatcher.startThread(input),
+      sendThreadTurn: (input, options) => dispatcher.sendThreadTurn(input, options),
+      stopThread: async (threadId) => {
+        await svc.stopSession(threadId);
+      },
+    },
+    emit: (event) => broadcast(event),
+  });
+
+  // After quit-resume, deliberately: a thread that was mid-turn when the app
+  // died is work already in flight, and it should get its process back before
+  // the queue starts handing out new ones. Best-effort, like the resume above.
+  void jobRunner.recoverAtBoot();
 
   // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
   // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
@@ -432,7 +469,11 @@ export function registerAgentIpc(): void {
       event.type !== "app.agent_mutation" &&
       event.type !== "app.subagent_presets_changed" &&
       event.type !== "app.strip_mutation" &&
-      event.type !== "app.typography_mutation";
+      event.type !== "app.typography_mutation" &&
+      // The bench's own announcements are about the job tables, which the
+      // store already wrote — journaling one would record a queue movement in
+      // some thread's transcript, and a filed draft belongs to no thread at all.
+      event.type !== "bench.job-changed";
     broadcast(event, journal);
     // When a turn settles, snapshot the repo state it left behind (branch +
     // working-tree diffstat) onto the thread, so the Project Home "recent
@@ -440,6 +481,21 @@ export function registerAgentIpc(): void {
     // — a git failure never disturbs the live stream.
     if (event.type === "turn.completed") {
       dispatcher.onTurnCompleted(event.threadId);
+    }
+    // A settled turn is also how a job ends. The runner ignores threads that
+    // carry no job — which is most of them — and advances that project's queue
+    // when one does. An interrupt is a cancel rather than a failure: somebody
+    // stopped it on purpose, and a queue that retries what you stopped is
+    // worse than one that does not.
+    if (event.type === "turn.completed") {
+      void jobRunner?.onThreadSettled(event.threadId, { status: "done" });
+    } else if (event.type === "turn.aborted") {
+      void jobRunner?.onThreadSettled(
+        event.threadId,
+        event.reason === "interrupted"
+          ? { status: "cancelled" }
+          : { status: "failed", error: event.message ?? "The turn failed." },
+      );
     }
   });
 
@@ -540,6 +596,28 @@ export function registerAgentIpc(): void {
     if (result.status === "created") {
       broadcast({
         type: "thread.sidechat-created",
+        threadId: result.threadId,
+        provider: result.provider,
+        at: Date.now(),
+        source: "kone.store",
+        sourceThreadId: result.sourceThreadId,
+        requestId: result.requestId,
+      });
+    }
+    return result;
+  });
+
+  // Thread handoff (agent:create-handoff). The renderer mints the thread id +
+  // request id; a replay of the same id resolves "exists" instead of handing
+  // off twice. The result streams to every renderer as
+  // `thread.handoff-created`; the new thread's session/turns then flow
+  // through the normal start-session → send-turn path (the first send
+  // carries the handed-transcript bootstrap).
+  ipcMain.handle("agent:create-handoff", (_event, input: CreateHandoffInput) => {
+    const result = createHandoffThread(input);
+    if (result.status === "created") {
+      broadcast({
+        type: "thread.handoff-created",
         threadId: result.threadId,
         provider: result.provider,
         at: Date.now(),
@@ -664,6 +742,12 @@ export function registerAgentIpc(): void {
   // so this is always the full list, never a page.
   ipcMain.handle("agent:history-compactions", (_event, threadId: string) =>
     store.listCompactions(threadId),
+  );
+  // Handoff links leaving a source thread, oldest first — the timeline's
+  // "Handed to" markers. Few rows ever (one per handoff), so this is always
+  // the full list, never a page.
+  ipcMain.handle("agent:history-handoffs", (_event, sourceThreadId: string) =>
+    store.handoffsFromSource(sourceThreadId),
   );
   // Windowed thread read (user-anchored keyset pages): first page when no
   // cursor is given, then the next strictly older page per cursor. The

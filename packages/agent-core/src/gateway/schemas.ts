@@ -1034,6 +1034,89 @@ const AGENT_FACE_PAINT_JSON_SCHEMA = {
   required: ["body", "ink"],
 } satisfies GatewayRecord;
 
+/** The creature an agent works through: a body shape in a colour wearing an
+ *  expression. Every agent is created with one — it is what the composer shows
+ *  while the agent works — so ids are validated as non-empty and the renderer
+ *  resolves any unknown one through its catalogue defaults. */
+export const AgentBotSchema = z.object({
+  form: z
+    .string()
+    .min(1)
+    .max(64)
+    .describe(
+      "Body shape: circle, pebble, squircle, capsule, triangle, hexagon, cloud or droplet.",
+    ),
+  color: z
+    .string()
+    .min(1)
+    .max(64)
+    .describe("Colour: ink, cream, brown, red, orange, amber, green, teal, blue, violet, pink or grey."),
+  expression: z
+    .string()
+    .min(1)
+    .max(64)
+    .describe(
+      "Resting expression: neutral, attentive, surprised, excited, happy, gleeful, angry, sad, afraid, wary, confused, curious, proud, shy, bored or sleepy.",
+    ),
+});
+
+const AGENT_BOT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    form: {
+      type: "string",
+      description: "Body shape: circle, pebble, squircle, capsule, triangle, hexagon, cloud or droplet.",
+    },
+    color: {
+      type: "string",
+      description: "Colour: ink, cream, brown, red, orange, amber, green, teal, blue, violet, pink or grey.",
+    },
+    expression: {
+      type: "string",
+      description:
+        "Resting expression: neutral, attentive, surprised, excited, happy, gleeful, angry, sad, afraid, wary, confused, curious, proud, shy, bored or sleepy.",
+    },
+  },
+  required: ["form", "color", "expression"],
+} satisfies GatewayRecord;
+
+/** A picture of the agent — who is speaking in a transcript or roster row. The
+ *  bytes ride by value so the face never repaints: a data URL (as the editor
+ *  stores) or a shipped asset path. */
+export const AgentAvatarSchema = z.object({
+  source: z
+    .enum(["generated", "upload", "dicebear", "shipped"])
+    .describe("Where the picture came from: a generated face, an upload, or a drawn portrait."),
+  src: z.string().min(1).max(512 * 1024).describe("What draws it: a data URL or a shipped asset path."),
+});
+
+const AGENT_AVATAR_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    source: {
+      type: "string",
+      enum: ["generated", "upload", "dicebear", "shipped"],
+      description: "Where the picture came from: a generated face, an upload, or a drawn portrait.",
+    },
+    src: { type: "string", description: "What draws it: a data URL or a shipped asset path." },
+  },
+  required: ["source", "src"],
+} satisfies GatewayRecord;
+
+/** Project paths whose team an agent joins. Bounded short: a roster of a
+ *  handful of projects never needs more, and a runaway list must not land in
+ *  a team table. */
+const AgentProjectPathsSchema = z
+  .array(z.string().min(1).max(1024))
+  .max(32)
+  .describe("Project paths whose team the agent joins.");
+
+const AGENT_PROJECT_PATHS_JSON_SCHEMA = {
+  type: "array",
+  items: { type: "string" },
+  description: "Project paths whose team the agent joins.",
+} satisfies GatewayRecord;
+
 export const ListAppAgentsInputSchema = z.object({
   query: z
     .string()
@@ -1052,25 +1135,34 @@ export const LIST_APP_AGENTS_JSON_SCHEMA = {
 } satisfies GatewayRecord;
 
 export const CreateAppAgentInputSchema = z.object({
-  name: z.string().min(1).max(64).describe("What the agent is called. The one required field."),
+  name: z.string().min(1).max(64).describe("What the agent is called."),
   role: z
     .string()
     .max(120)
     .optional()
-    .describe("One line under the name saying what the agent is for. Shown in the roster only."),
+    .describe("Title only, one line under the name (for example Senior Frontend). No explainer. Shown in the roster only."),
   instructions: z
     .string()
     .max(4000)
     .optional()
     .describe("The agent's standing orders, in its own words — this is what reaches the model when a thread is handed to it."),
   face: AgentFacePaintSchema.optional().describe(
-    "The colours the agent's face is drawn in. Omitted, kone paints one from the name.",
+    "The colours the agent's face is drawn in. Omitted, kone paints one — every agent gets its own colour.",
+  ),
+  avatar: AgentAvatarSchema.optional().describe(
+    "The picture it answers with: a generated face or a drawn portrait, carried by value. Omitted, the agent is identified by its drawn face.",
+  ),
+  bot: AgentBotSchema.describe(
+    "The creature it works through. Required: an agent without one has nothing to show while it works.",
   ),
   model: AgentModelRefSchema.optional().describe(
     "The model this agent runs on first. Omitted, the agent inherits — each turn (or a spawned child) rides the caller.",
   ),
   modelFallbacks: AgentModelFallbacksSchema.optional().describe(
     "Ordered fallbacks behind `model`. Ignored when no primary is set.",
+  ),
+  teams: AgentProjectPathsSchema.optional().describe(
+    "Project paths whose team the new agent joins, so it can work within those projects.",
   ),
   addToActiveProject: z
     .boolean()
@@ -1081,10 +1173,10 @@ export const CreateAppAgentInputSchema = z.object({
 export const CREATE_APP_AGENT_JSON_SCHEMA = {
   type: "object",
   properties: {
-    name: { type: "string", description: "What the agent is called. The one required field." },
+    name: { type: "string", description: "What the agent is called." },
     role: {
       type: "string",
-      description: "One line under the name saying what the agent is for. Shown in the roster only.",
+      description: "Title only, one line under the name (for example Senior Frontend). No explainer. Shown in the roster only.",
     },
     instructions: {
       type: "string",
@@ -1093,7 +1185,16 @@ export const CREATE_APP_AGENT_JSON_SCHEMA = {
     },
     face: {
       ...AGENT_FACE_PAINT_JSON_SCHEMA,
-      description: "The colours the agent's face is drawn in. Omitted, kone paints one from the name.",
+      description: "The colours the agent's face is drawn in. Omitted, kone paints one — every agent gets its own colour.",
+    },
+    avatar: {
+      ...AGENT_AVATAR_JSON_SCHEMA,
+      description:
+        "The picture it answers with: a generated face or a drawn portrait, carried by value. Omitted, the agent is identified by its drawn face.",
+    },
+    bot: {
+      ...AGENT_BOT_JSON_SCHEMA,
+      description: "The creature it works through. Required: an agent without one has nothing to show while it works.",
     },
     model: {
       ...AGENT_MODEL_REF_JSON_SCHEMA,
@@ -1101,19 +1202,24 @@ export const CREATE_APP_AGENT_JSON_SCHEMA = {
         "The model this agent runs on first. Omitted, the agent inherits — each turn (or a spawned child) rides the caller.",
     },
     modelFallbacks: AGENT_MODEL_FALLBACKS_JSON_SCHEMA,
+    teams: {
+      ...AGENT_PROJECT_PATHS_JSON_SCHEMA,
+      description: "Project paths whose team the new agent joins, so it can work within those projects.",
+    },
     addToActiveProject: {
       type: "boolean",
       description:
         "Also put the new agent on the calling thread's project team, so it can work within that project.",
     },
   },
-  required: ["name"],
+  required: ["name", "bot"],
 } satisfies GatewayRecord;
 
 /** The fields an update may hand back. `name` is absent on purpose: an agent
  *  with no name has nothing to be called, and on a user-made agent there is no
- *  preset underneath to hand it back to. */
-const APP_AGENT_CLEARABLE = ["role", "instructions", "face", "model"] as const;
+ *  preset underneath to hand it back to. `bot` is absent too: clearing it would
+ *  leave a user-made agent with nothing to show while it works. */
+const APP_AGENT_CLEARABLE = ["role", "instructions", "face", "avatar", "model"] as const;
 
 export const UpdateAppAgentInputSchema = z
   .object({
@@ -1122,16 +1228,24 @@ export const UpdateAppAgentInputSchema = z
       .min(1)
       .describe("The agent's id or name, as app_list_agents reports it."),
     name: z.string().min(1).max(64).optional().describe("Rename the agent."),
-    role: z.string().max(120).optional().describe("Replace the line under the name."),
+    role: z.string().max(120).optional().describe("Replace the title line under the name. Title only, no explainer."),
     instructions: z
       .string()
       .max(4000)
       .optional()
       .describe("Replace the agent's standing orders."),
     face: AgentFacePaintSchema.optional().describe("Repaint the agent's face."),
+    avatar: AgentAvatarSchema.optional().describe("Replace the picture it answers with."),
+    bot: AgentBotSchema.optional().describe("Replace the creature it works through."),
     model: AgentModelRefSchema.optional().describe("Pin the agent to this model."),
     modelFallbacks: AgentModelFallbacksSchema.optional().describe(
       "Replace the ordered fallbacks behind the agent's primary model.",
+    ),
+    addToTeams: AgentProjectPathsSchema.optional().describe(
+      "Put the agent on these project teams, so it can work within those projects.",
+    ),
+    removeFromTeams: AgentProjectPathsSchema.optional().describe(
+      "Take the agent off these project teams. The agent itself stays in the roster.",
     ),
     clear: z
       .array(z.enum(APP_AGENT_CLEARABLE))
@@ -1144,8 +1258,12 @@ export const UpdateAppAgentInputSchema = z
       data.role !== undefined ||
       data.instructions !== undefined ||
       data.face !== undefined ||
+      data.avatar !== undefined ||
+      data.bot !== undefined ||
       data.model !== undefined ||
       data.modelFallbacks !== undefined ||
+      (data.addToTeams?.length ?? 0) > 0 ||
+      (data.removeFromTeams?.length ?? 0) > 0 ||
       (data.clear?.length ?? 0) > 0,
     { message: "Name at least one field to change, or one to clear." },
   );
@@ -1155,11 +1273,21 @@ export const UPDATE_APP_AGENT_JSON_SCHEMA = {
   properties: {
     agent: { type: "string", description: "The agent's id or name, as app_list_agents reports it." },
     name: { type: "string", description: "Rename the agent." },
-    role: { type: "string", description: "Replace the line under the name." },
+    role: { type: "string", description: "Replace the title line under the name. Title only, no explainer." },
     instructions: { type: "string", description: "Replace the agent's standing orders." },
     face: { ...AGENT_FACE_PAINT_JSON_SCHEMA, description: "Repaint the agent's face." },
+    avatar: { ...AGENT_AVATAR_JSON_SCHEMA, description: "Replace the picture it answers with." },
+    bot: { ...AGENT_BOT_JSON_SCHEMA, description: "Replace the creature it works through." },
     model: { ...AGENT_MODEL_REF_JSON_SCHEMA, description: "Pin the agent to this model." },
     modelFallbacks: AGENT_MODEL_FALLBACKS_JSON_SCHEMA,
+    addToTeams: {
+      ...AGENT_PROJECT_PATHS_JSON_SCHEMA,
+      description: "Put the agent on these project teams, so it can work within those projects.",
+    },
+    removeFromTeams: {
+      ...AGENT_PROJECT_PATHS_JSON_SCHEMA,
+      description: "Take the agent off these project teams. The agent itself stays in the roster.",
+    },
     clear: {
       type: "array",
       items: { type: "string", enum: [...APP_AGENT_CLEARABLE] },

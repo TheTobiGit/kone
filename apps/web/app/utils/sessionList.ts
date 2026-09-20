@@ -187,7 +187,11 @@ export function summarizeSession(
   project?: SessionProjectTag,
 ): SessionSummary {
   const sourceThreadId = meta.sourceThreadId ?? meta.forkContext?.sourceThreadId;
-  if (sourceThreadId) {
+  const isContinuation =
+    meta.forkContext?.forkKind === "edit" || meta.forkContext?.forkKind === "handoff";
+  // The hint map is the side-chat affordance's synchronous read — only real
+  // side chats file there, never continuations.
+  if (sourceThreadId && !isContinuation) {
     rememberSideChatSource(meta.threadId, sourceThreadId);
   }
   return {
@@ -210,12 +214,13 @@ export function summarizeSession(
     projectPath: project?.projectPath,
     projectName: project?.projectName,
     // A side chat is a fork — discriminator checks sourceThreadId, forkContext, or relationship.
-    // An edit fork is not a side chat: it continues the conversation rather
-    // than borrowing it as reference, so it wears no side-chat badge (its
-    // versioned title marks the branch).
+    // An edit fork or a handoff is not a side chat: both continue the
+    // conversation rather than borrowing it as reference, so neither wears
+    // the side-chat badge (an edit's versioned title marks its branch; a
+    // handoff's info panel names its source).
     sideChat: Boolean(
       meta.relationshipToParent === "side_chat" ||
-        ((meta.forkContext || meta.sourceThreadId) && meta.forkContext?.forkKind !== "edit"),
+        ((meta.forkContext || meta.sourceThreadId) && !isContinuation),
     ),
     done: isThreadDone(meta),
     unread: isThreadUnread(meta),

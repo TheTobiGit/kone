@@ -49,6 +49,10 @@ beforeAll(async () => {
  *  exist — so any two ids exercise the ordering the same way. */
 const PRESETS = ["kone", "gideon"];
 
+/** Every creation in these tests names a bot: one is required, so a bot-less
+ *  create is refused rather than stored. */
+const BOT = { form: "circle", color: "ink", expression: "neutral" };
+
 function seeded(): ConversationStoreType {
   const store = freshStore();
   store.ensurePresetAgents(PRESETS);
@@ -170,6 +174,7 @@ describe("a user-made agent", () => {
     const made = store.createAgent({
       agentId: "made-1",
       name: "Ama",
+      bot: BOT,
       role: "Reviewer",
       instructions: "Blunt.",
       faceBody: "var(--accent-3)",
@@ -184,8 +189,8 @@ describe("a user-made agent", () => {
 
   test("lands at the end of the roster", () => {
     const store = seeded();
-    store.createAgent({ agentId: "made-1", name: "Ama" });
-    store.createAgent({ agentId: "made-2", name: "Kofi" });
+    store.createAgent({ agentId: "made-1", name: "Ama", bot: BOT });
+    store.createAgent({ agentId: "made-2", name: "Kofi", bot: BOT });
     expect(store.listAgents().map((agent) => agent.agentId)).toEqual([
       ...PRESETS,
       "made-1",
@@ -195,7 +200,7 @@ describe("a user-made agent", () => {
 
   test("gets an id of its own when the caller doesn't mint one", () => {
     const store = seeded();
-    const made = store.createAgent({ name: "Ama" });
+    const made = store.createAgent({ name: "Ama", bot: BOT });
     expect(made?.agentId).toBeTruthy();
     expect(store.getAgent(made!.agentId)?.name).toBe("Ama");
   });
@@ -204,14 +209,22 @@ describe("a user-made agent", () => {
   // an agent with no way to refer to it.
   test("cannot be created nameless", () => {
     const store = seeded();
-    expect(store.createAgent({ name: "" })).toBeNull();
-    expect(store.createAgent({ name: "   " })).toBeNull();
+    expect(store.createAgent({ name: "", bot: BOT })).toBeNull();
+    expect(store.createAgent({ name: "   ", bot: BOT })).toBeNull();
+    expect(store.listAgents().map((agent) => agent.agentId)).toEqual(PRESETS);
+  });
+
+  // Without its creature there is nothing to show while it works, so a
+  // bot-less create is refused rather than stored.
+  test("cannot be created botless", () => {
+    const store = seeded();
+    expect(store.createAgent({ name: "Ama" })).toBeNull();
     expect(store.listAgents().map((agent) => agent.agentId)).toEqual(PRESETS);
   });
 
   test("cannot have its name cleared to nothing", () => {
     const store = seeded();
-    store.createAgent({ agentId: "made-1", name: "Ama" });
+    store.createAgent({ agentId: "made-1", name: "Ama", bot: BOT });
     expect(store.updateAgent("made-1", { name: null })).toBeNull();
     expect(store.getAgent("made-1")?.name).toBe("Ama");
   });
@@ -220,7 +233,7 @@ describe("a user-made agent", () => {
 describe("leaving the roster", () => {
   test("a deleted agent drops out of the roster but keeps its row", () => {
     const store = seeded();
-    store.createAgent({ agentId: "made-1", name: "Ama", instructions: "Blunt." });
+    store.createAgent({ agentId: "made-1", name: "Ama", bot: BOT, instructions: "Blunt." });
     expect(store.deleteAgent("made-1")).toBe(true);
     expect(store.listAgents().map((agent) => agent.agentId)).toEqual(PRESETS);
 
@@ -265,6 +278,7 @@ describe("forking an agent", () => {
     store.createAgent({
       agentId: "made-1",
       name: "Ama",
+      bot: BOT,
       role: "Reviewer",
       instructions: "Blunt.",
       faceBody: "var(--accent-3)",
@@ -285,7 +299,7 @@ describe("forking an agent", () => {
     const copy = store.duplicateAgent({
       agentId: "kone",
       newAgentId: "copy-1",
-      inherited: { name: "kone", role: "Agent assistant", instructions: "Calm." },
+      inherited: { name: "kone", role: "Agent assistant", instructions: "Calm.", bot: BOT },
     })!;
     expect(copy.presetId).toBeNull();
     // The row's own value wins over what the preset would have said.
@@ -296,14 +310,14 @@ describe("forking an agent", () => {
 
   test("the copy is named by the caller when they want it renamed on the spot", () => {
     const store = seeded();
-    store.createAgent({ agentId: "made-1", name: "Ama" });
+    store.createAgent({ agentId: "made-1", name: "Ama", bot: BOT });
     expect(store.duplicateAgent({ agentId: "made-1", name: "Ama copy" })?.name).toBe("Ama copy");
   });
 
   test("the copy sits straight after the agent it came from", () => {
     const store = seeded();
-    store.createAgent({ agentId: "made-1", name: "Ama" });
-    store.duplicateAgent({ agentId: "kone", newAgentId: "copy-1", inherited: { name: "kone" } });
+    store.createAgent({ agentId: "made-1", name: "Ama", bot: BOT });
+    store.duplicateAgent({ agentId: "kone", newAgentId: "copy-1", inherited: { name: "kone", bot: BOT } });
     expect(store.listAgents().map((agent) => agent.agentId)).toEqual([
       "kone",
       "copy-1",
@@ -339,6 +353,7 @@ describe("an agent's capabilities", () => {
     const store = seeded();
     const made = store.createAgent({
       name: "Ama",
+      bot: BOT,
       model: { provider: "claudeAgent", model: "opus" },
       modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
     })!;
@@ -350,6 +365,7 @@ describe("an agent's capabilities", () => {
   test("a new agent keeps the capabilities it was made with", () => {
     const made = seeded().createAgent({
       name: "Ama",
+      bot: BOT,
       skills: [{ path: "/s/review.md", name: "Review", origin: "project" }],
       model: { provider: "claudeAgent", model: "sonnet", label: "Sonnet" },
     })!;
@@ -358,7 +374,7 @@ describe("an agent's capabilities", () => {
   });
 
   test("a new agent left silent about its capabilities inherits them", () => {
-    const made = seeded().createAgent({ name: "Ama" })!;
+    const made = seeded().createAgent({ name: "Ama", bot: BOT })!;
     expect(made.skills).toBeNull();
     expect(made.model).toBeNull();
   });
@@ -391,6 +407,7 @@ describe("an agent's capabilities", () => {
   test("a malformed capability entry is dropped, not stored", () => {
     const made = seeded().createAgent({
       name: "Ama",
+      bot: BOT,
       skills: [
         { path: "", name: "Nameless", origin: "" },
         { path: "/s/ok.md", name: "Ok", origin: "project" },
@@ -404,6 +421,7 @@ describe("an agent's capabilities", () => {
   test("a model ref without a label comes back without one", () => {
     const made = seeded().createAgent({
       name: "Ama",
+      bot: BOT,
       model: { provider: "codex", model: "gpt-5" },
     })!;
     expect(made.model).toEqual({ provider: "codex", model: "gpt-5" });
@@ -420,6 +438,7 @@ describe("an agent's capabilities", () => {
       newAgentId: "copy-1",
       inherited: {
         name: "kone",
+        bot: BOT,
         model: { provider: "claudeAgent", model: "sonnet" },
       },
     })!;

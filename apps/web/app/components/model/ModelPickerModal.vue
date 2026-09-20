@@ -48,6 +48,13 @@ const props = defineProps<{
    *  The same anchoring the theme browser and the agent creator use, for a
    *  picker opened from a settings pane. */
   paneAnchored?: boolean;
+  /** Hand a thread off instead of switching its model: the picker chooses the
+   *  target the thread continues on. `title` is the source thread's name, shown
+   *  so the pick reads as "where does this conversation go next". Live-apply
+   *  is off in this mode (there is no running session to tune — the source
+   *  keeps running untouched), and picking the source's own provider/model
+   *  refuses with a hint instead of confirming. */
+  handoff?: { title: string } | null;
 }>();
 
 type ModelPick = {
@@ -339,6 +346,14 @@ function matchContextWindow(m: MModel): string | undefined {
 }
 
 function seedPending() {
+  // Handoff mode stages nothing: the bottom bar starts empty ("pick a
+  // model"), and only lands on the source provider's tab so the current spot
+  // is one click away for comparison.
+  if (props.handoff) {
+    provider.value =
+      realProviders.value.find((p) => p.id === props.activeProvider) ?? realProviders.value[0] ?? null;
+    return;
+  }
   // Walk the REAL providers so the active model resolves to its true home, not
   // its (duplicated) Favorites row. Check the active provider first so the seed
   // lands on the engine the session is actually running.
@@ -385,7 +400,15 @@ function modelReady(m: MModel): boolean {
 // A model click applies it. Effort precedence: a tweak in its open settings bar
 // wins; else the effort already applied to this model (so re-picking the active
 // model keeps its setting); else the family default. Only ready models can be
-// selected.
+// selected. In handoff mode the click only stages the target (the bottom bar
+// reads source → staged and confirms) — except nothing is staged until the
+// user picks; the open seeds the source provider's tab but no target.
+const handoffHint = ref("");
+function isSameAsHandoffSource(providerId: ProviderKind, modelId: string, tier: EffortTier): boolean {
+  return (
+    providerId === props.activeProvider && modelId === props.modelId && tier === props.reasoning
+  );
+}
 function selectModel(m: MModel) {
   if (!modelReady(m)) return;
   const isPendingModel = pending.value?.model.key === m.key;
@@ -393,9 +416,60 @@ function selectModel(m: MModel) {
   const fastMode = isPendingModel ? pending.value!.fastMode : matchFastMode(m);
   const contextWindow = isPendingModel ? pending.value!.contextWindow : matchContextWindow(m);
   if (!provider.value || !e) return;
+  if (props.handoff) {
+    // Stage, don't confirm: the bottom bar shows what this pick moves where,
+    // and its button commits. Staging the source's own spot explains why the
+    // button stays off rather than silently doing nothing.
+    focus(m, e, fastMode, contextWindow);
+    handoffHint.value = isSameAsHandoffSource(m.providerId, e.modelId, e.tier)
+      ? "Already here — pick another provider or model to hand off to."
+      : "";
+    return;
+  }
   recordRecent(m.key);
   close(() => emit("select", { provider: m.providerId, modelId: e.modelId, tier: e.tier, fastMode, contextWindow }));
 }
+// The bottom bar's commit: the staged target, confirmed. Enabled only for a
+// staged, ready target that differs from the source.
+const canConfirmHandoff = computed(
+  () =>
+    pending.value !== null &&
+    modelReady(pending.value.model) &&
+    !isSameAsHandoffSource(
+      pending.value.model.providerId,
+      pending.value.effort.modelId,
+      pending.value.effort.tier,
+    ),
+);
+function confirmHandoff() {
+  const p = pending.value;
+  if (!props.handoff || !p || !canConfirmHandoff.value) return;
+  recordRecent(p.model.key);
+  close(() =>
+    emit("select", {
+      provider: p.model.providerId,
+      modelId: p.effort.modelId,
+      tier: p.effort.tier,
+      fastMode: p.fastMode,
+      contextWindow: p.contextWindow,
+    }),
+  );
+}
+// The bottom bar's "from" side: the source provider's mark and model name.
+const handoffSourceBrand = computed(
+  () => realProviders.value.find((p) => p.id === props.activeProvider)?.brand ?? "generic",
+);
+const handoffSourceLabel = computed(() => {
+  const id = props.modelId;
+  if (!id) return "default model";
+  for (const p of realProviders.value) {
+    if (p.id !== props.activeProvider) continue;
+    for (const m of p.models) {
+      if (m.efforts.some((e) => e.modelId === id)) return m.label;
+    }
+  }
+  return id;
+});
 
 // Whether this model row is the one active in the session — it must both run on
 // the active provider and carry the active model id (row granularity is
@@ -490,8 +564,11 @@ function toggleSettings(m: MModel) {
 // when the tuned model is on the ACTIVE provider — a cross-provider tweak has no
 // live session to apply to, so it stays staged in `pending` until the user
 // selects (which switches engines). This gate keeps `apply` a pure in-session
-// nudge, never a silent provider switch.
+// nudge, never a silent provider switch. In handoff mode nothing applies live
+// at all: the source session keeps running untouched, and every tweak stages
+// into the handoff target the next click confirms.
 function applyLive(fastMode: boolean, contextWindow = pending.value?.contextWindow) {
+  if (props.handoff) return;
   const p = pending.value;
   if (!p || !modelReady(p.model)) return;
   if (p.model.providerId !== props.activeProvider) return;
@@ -655,9 +732,12 @@ onMounted(() => {
   // model (so it stays marked current and its settings read true) and landed on
   // its provider tab — that's the fallback. Prefer a shortcut shelf when it has
   // content: Favorites leads, then Recent, and only with neither do we rest on
-  // the current model's provider list.
-  if (favorites.value.models.length) provider.value = favorites.value;
-  else if (recent.value.models.length) provider.value = recent.value;
+  // the current model's provider list. Handoff mode skips the shelves: the
+  // source tab is the comparison point, and the bottom bar is the shortlist.
+  if (!props.handoff) {
+    if (favorites.value.models.length) provider.value = favorites.value;
+    else if (recent.value.models.length) provider.value = recent.value;
+  }
   // Favourites hydrate from localStorage (see `favoritedKeys`); don't re-seed
   // here — doing so used to wipe the user's stars on every open.
   window.addEventListener("resize", onWindowResize);
@@ -705,7 +785,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
         :transition="cardSpring"
         role="dialog"
         aria-modal="true"
-        aria-label="Choose a model"
+        :aria-label="props.handoff ? 'Hand off thread to another provider' : 'Choose a model'"
       >
       <div
         ref="contentEl"
@@ -870,9 +950,18 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
           </div>
         </div>
 
-        <!-- Shell Bottom: Full-bleed control strip, revealed when clicking Settings on a model -->
-        <div v-if="activeSettingsModelKey && pending" class="mp-shell-bottom">
+        <!-- Shell Bottom: Full-bleed control strip, revealed when clicking Settings on a model.
+             In handoff mode it stacks two rows: the staged model's config on
+             top (only while its settings are open), then the transfer readout
+             plus the commit. -->
+        <div
+          v-if="(activeSettingsModelKey && pending) || props.handoff"
+          class="mp-shell-bottom"
+          :class="{ 'mp-shell-bottom--handoff': props.handoff }"
+        >
+          <div v-if="activeSettingsModelKey" class="mp-handoff-config">
           <!-- Reasoning Effort Chooser: Clickable brain-stack + effort level text -->
+          <template v-if="pending">
           <div v-if="pending.model.efforts.length > 1" class="mp-footer-group">
             <button
               type="button"
@@ -930,6 +1019,36 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
               <span class="mp-ctx-toggle-text">{{ pendingWindowLabel }}</span>
             </button>
           </div>
+          </template>
+          </div>
+          <!-- Handoff transfer: source → staged target plus the commit. A row
+               click only stages the target, so this button is what actually
+               moves the thread. -->
+          <div v-if="props.handoff" class="mp-handoff-row">
+            <div class="mp-handoff-route">
+              <div class="mp-handoff-leg">
+                <ProviderLogo :brand="handoffSourceBrand" :size="15" />
+                <span class="mp-handoff-model">{{ handoffSourceLabel }}</span>
+              </div>
+              <span class="mp-handoff-arrow" aria-hidden="true">→</span>
+              <div v-if="pending" class="mp-handoff-leg">
+                <ProviderLogo :brand="pending.model.brand" :size="15" />
+                <span class="mp-handoff-model">{{ pending.model.label }}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="mp-handoff-confirm"
+              :disabled="!canConfirmHandoff"
+              @click="confirmHandoff"
+            >
+              <span>Hand off</span>
+              <span class="mp-handoff-arrow" aria-hidden="true">→</span>
+            </button>
+          </div>
+          <p v-if="props.handoff && handoffHint" class="mp-handoff-hint" role="status">
+            {{ handoffHint }}
+          </p>
         </div>
         </div>
       </motion.div>
@@ -1198,6 +1317,96 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   line-height: 1.5;
   color: var(--muted);
   opacity: 0.7;
+}
+
+/* Handoff mode: the shell-bottom strip stacks two rows — the staged model's
+   config on top (only while its settings are open), then the transfer readout
+   plus the commit. The pick stages on row click; the button is what moves the
+   thread. */
+.mp-shell-bottom--handoff {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+}
+/* Invisible in the ordinary strip (the groups lay out as before); its own
+   right-aligned row once the strip stacks. */
+.mp-handoff-config {
+  display: contents;
+}
+.mp-shell-bottom--handoff .mp-handoff-config {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.mp-handoff-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.mp-handoff-route {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mp-handoff-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.mp-handoff-model {
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-handoff-arrow {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.mp-handoff-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.mp-handoff-confirm {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  color: var(--ink);
+  cursor: pointer;
+  transition: opacity 0.18s ease;
+}
+.mp-handoff-confirm:hover:not(:disabled) {
+  opacity: 0.7;
+}
+.mp-handoff-confirm:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+/* The submit arrow eases in from the accent as a small forward cue. */
+.mp-handoff-confirm .mp-handoff-arrow {
+  flex: none;
+  color: var(--accent);
+  font-weight: 500;
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mp-handoff-confirm:not(:disabled):hover .mp-handoff-arrow {
+  transform: translateX(3px);
 }
 
 .mp-actions {

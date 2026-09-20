@@ -1,9 +1,9 @@
 import {
   AiChipIcon,
-  BotIcon,
   FoldVerticalIcon,
   GitBranchIcon,
   PlusSignIcon,
+  UserCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import {
   filterSlashCommandItems,
@@ -37,7 +37,7 @@ export type SlashCommandDef = {
 export const SLASH_COMMANDS: Record<string, SlashCommandDef> = {
   agent: {
     description: "Hand the turn to someone else",
-    icon: BotIcon,
+    icon: UserCircle02Icon,
     gatedBy: "agent",
     keepDraft: true,
   },

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { FlashIcon, Tick02Icon } from "@hugeicons/core-free-icons";
-import { botMark } from "~/utils/bot";
+import { Directions01Icon, FlashIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { DEFAULT_PARTNER_LABEL, type Agent } from "~/utils/agents";
+import { JEV_DISCLOSURE, JEV_HOST, JEV_LABEL, JEV_ROUTER_ID, isRouterId } from "~/utils/agentRouting";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
 
@@ -13,10 +13,12 @@ const props = withDefaults(
     agents: Agent[];
     activeAgentId?: string | null;
     title?: string;
+    anchorEl?: HTMLElement | null;
   }>(),
   {
     activeAgentId: null,
     title: "Partner",
+    anchorEl: null,
   },
 );
 
@@ -28,6 +30,10 @@ const emit = defineEmits<{
 const { cue } = useSound();
 
 const isDefaultSelected = computed(() => !props.activeAgentId);
+/** The router is a third answer beside "this agent" and "nobody" — see
+ *  `~/utils/agentRouting`. It travels on the same selection as the rest so the
+ *  menu stays one radio group. */
+const isRouterSelected = computed(() => isRouterId(props.activeAgentId));
 
 function choose(id: string | null) {
   cue("select");
@@ -38,11 +44,53 @@ function choose(id: string | null) {
 const { shown, closing, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
+const maxCardH = ref<number | null>(null);
+const cardPos = ref<{ left?: string; bottom?: string }>({});
+const CARD_WIDTH = 320;
+const MARGIN = 16;
+
 let ro: ResizeObserver | null = null;
+let anchorRO: ResizeObserver | null = null;
+
+function syncPosition() {
+  const anchor = props.anchorEl;
+  if (!anchor) {
+    cardPos.value = {};
+    maxCardH.value = null;
+    return;
+  }
+  const anchorRect = anchor.getBoundingClientRect();
+  const dockEl = anchor.closest(".dock") ?? anchor;
+  const dockRect = dockEl.getBoundingClientRect();
+
+  const vw = "window" in globalThis ? window.innerWidth : 1280;
+  const vh = "window" in globalThis ? window.innerHeight : 800;
+
+  // Align with anchor button's left edge
+  let left = anchorRect.left;
+  if (left + CARD_WIDTH > vw - MARGIN) {
+    left = vw - CARD_WIDTH - MARGIN;
+  }
+  if (left < MARGIN) {
+    left = MARGIN;
+  }
+
+  // Sit 10px above the composer dock so it hovers right above the card
+  const bottom = Math.max(MARGIN, vh - dockRect.top + 10);
+  maxCardH.value = Math.max(180, dockRect.top - 24);
+
+  cardPos.value = {
+    left: `${Math.round(left)}px`,
+    bottom: `${Math.round(bottom)}px`,
+  };
+}
 
 function syncHeight() {
   const el = contentEl.value;
-  if (el) cardHeight.value = el.offsetHeight;
+  if (el) {
+    const naturalH = el.offsetHeight;
+    cardHeight.value = maxCardH.value !== null ? Math.min(naturalH, maxCardH.value) : naturalH;
+  }
 }
 
 function onCancel() {
@@ -52,9 +100,42 @@ function onCancel() {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     e.preventDefault();
+    e.stopPropagation();
     onCancel();
   }
 }
+
+function onWindowResize() {
+  syncPosition();
+  syncHeight();
+}
+
+function onWindowScroll(e: Event) {
+  const target = e.target;
+  // SAFETY: Node type check ensures contains() is valid; contentEl contains means internal scroll.
+  if (target instanceof Node && contentEl.value?.contains(target)) return;
+  syncPosition();
+}
+
+watch(
+  () => props.anchorEl,
+  (newAnchor, oldAnchor) => {
+    if (oldAnchor && anchorRO) anchorRO.unobserve(oldAnchor);
+    if (newAnchor) {
+      if (!anchorRO) {
+        anchorRO = new ResizeObserver(() => {
+          syncPosition();
+          syncHeight();
+        });
+      }
+      anchorRO.observe(newAnchor);
+      const dockEl = newAnchor.closest(".dock");
+      if (dockEl && dockEl !== newAnchor) anchorRO.observe(dockEl);
+    }
+    syncPosition();
+    syncHeight();
+  },
+);
 
 let opener: HTMLElement | null = null;
 
@@ -62,9 +143,23 @@ onMounted(async () => {
   // SAFETY: activeElement is the element focused just before open; null is allowed by the type.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("keydown", onKeydown);
-  window.addEventListener("resize", syncHeight);
+  window.addEventListener("resize", onWindowResize);
+  window.addEventListener("scroll", onWindowScroll, true);
+
+  syncPosition();
+  const anchor = props.anchorEl;
+  if (anchor) {
+    anchorRO = new ResizeObserver(() => {
+      syncPosition();
+      syncHeight();
+    });
+    anchorRO.observe(anchor);
+    const dockEl = anchor.closest(".dock");
+    if (dockEl && dockEl !== anchor) anchorRO.observe(dockEl);
+  }
 
   await nextTick();
+  syncPosition();
   syncHeight();
   ro = new ResizeObserver(syncHeight);
   if (contentEl.value) ro.observe(contentEl.value);
@@ -75,8 +170,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
-  window.removeEventListener("resize", syncHeight);
+  window.removeEventListener("resize", onWindowResize);
+  window.removeEventListener("scroll", onWindowScroll, true);
   ro?.disconnect();
+  anchorRO?.disconnect();
   opener?.focus();
 });
 
@@ -89,59 +186,94 @@ const cardSpring = {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-center pb-24 p-4 overflow-hidden">
-    <!-- Scrim with plain dimming, no background blur -->
-    <motion.div
-      class="modal-scrim absolute inset-0"
-      :initial="{ opacity: 0 }"
-      :animate="{ opacity: shown ? 1 : 0 }"
-      :transition="{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }"
-      @click="onCancel"
-    />
-
-    <motion.div
-      class="modal-card relative z-20 w-80 overflow-hidden"
-      :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="title"
+  <Teleport to="body">
+    <div
+      class="pointer-events-none fixed inset-0 z-50 overflow-hidden"
+      :class="[!cardPos.left ? 'flex items-end justify-center pb-24 p-4' : '']"
     >
-      <div ref="contentEl" class="agent-browser flex shrink-0 flex-col px-3 pb-3">
-        <!-- Minimal header band -->
-        <div class="picker-header -mx-3 mb-2 flex items-center justify-between gap-4">
-          <span class="picker-title">{{ title }}</span>
-          <button
-            type="button"
-            class="picker-action shrink-0 text-muted"
-            @click="onCancel"
-          >
-            Cancel
-          </button>
-        </div>
+      <!-- Scrim with plain dimming, no background blur -->
+      <motion.div
+        class="modal-scrim pointer-events-auto absolute inset-0"
+        :initial="{ opacity: 0 }"
+        :animate="{ opacity: shown ? 1 : 0 }"
+        :transition="{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }"
+        @click="onCancel"
+      />
 
-        <div class="picker-scroll relative flex max-h-[50vh] w-full flex-col gap-1 overflow-y-auto overflow-x-hidden py-0.5">
-          <!-- Solo Mode: Default -->
-          <button
-            type="button"
-            role="menuitemradio"
-            :aria-checked="isDefaultSelected"
-            class="picker-row"
-            :class="{ 'is-current': isDefaultSelected }"
-            @click="choose(null)"
-          >
+      <motion.div
+        class="modal-card pointer-events-auto relative z-20 w-80 overflow-hidden"
+        :style="{
+          height: cardHeight === null ? 'auto' : `${cardHeight}px`,
+          maxHeight: maxCardH === null ? undefined : `${maxCardH}px`,
+          ...(cardPos.left ? { position: 'absolute', left: cardPos.left, bottom: cardPos.bottom } : {}),
+        }"
+        :initial="{ opacity: 0, y: 12, scale: 0.96 }"
+        :animate="{
+          opacity: shown ? 1 : 0,
+          y: shown ? 0 : 12,
+          scale: shown ? 1 : 0.96,
+        }"
+        :transition="cardSpring"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="title"
+      >
+        <div ref="contentEl" class="agent-browser flex shrink-0 flex-col px-3 pb-3">
+          <!-- Minimal header band -->
+          <div class="picker-header -mx-3 mb-2 flex items-center justify-between gap-4">
+            <span class="picker-title">{{ title }}</span>
+            <button
+              type="button"
+              class="picker-action shrink-0 text-muted"
+              @click="onCancel"
+            >
+              Cancel
+            </button>
+          </div>
+
+          <div class="picker-scroll relative flex max-h-[50vh] w-full flex-col gap-1 overflow-y-auto overflow-x-hidden py-0.5">
+            <!-- Solo Mode: Default -->
+            <button
+              type="button"
+              role="menuitemradio"
+              :aria-checked="isDefaultSelected"
+              class="picker-row"
+              :class="{ 'is-current': isDefaultSelected }"
+              @click="choose(null)"
+            >
             <span class="partner-avatar partner-avatar--flash">
               <HugeiconsIcon :icon="FlashIcon" :size="15" :stroke-width="1.8" />
             </span>
             <span class="picker-label">{{ DEFAULT_PARTNER_LABEL }}</span>
             <span class="partner-role">Solo</span>
             <span v-if="isDefaultSelected" class="partner-check">
+              <HugeiconsIcon :icon="Tick02Icon" :size="14" :stroke-width="2.2" />
+            </span>
+          </button>
+
+          <!-- Jev: not a teammate, and above them rather than among them. It
+               answers a different question — who should take this — and it is
+               offered in every project, so the team list below it is the set it
+               chooses from rather than a list it belongs to. -->
+          <button
+            type="button"
+            role="menuitemradio"
+            :aria-checked="isRouterSelected"
+            class="picker-row"
+            :class="{ 'is-current': isRouterSelected }"
+            :title="JEV_DISCLOSURE"
+            :aria-label="`${JEV_LABEL}. ${JEV_DISCLOSURE}`"
+            @click="choose(JEV_ROUTER_ID)"
+          >
+            <span class="partner-avatar partner-avatar--router">
+              <HugeiconsIcon :icon="Directions01Icon" :size="15" :stroke-width="1.8" />
+            </span>
+            <span class="picker-label">{{ JEV_LABEL }}</span>
+            <!-- The host, not "Routes": this is the one row in the list that
+                 sends anything to a service the user has not signed in to, and
+                 naming it is the difference between a choice and a surprise. -->
+            <span class="partner-role">via {{ JEV_HOST }}</span>
+            <span v-if="isRouterSelected" class="partner-check">
               <HugeiconsIcon :icon="Tick02Icon" :size="14" :stroke-width="2.2" />
             </span>
           </button>
@@ -160,9 +292,22 @@ const cardSpring = {
             >
               <span
                 class="partner-avatar"
+                :class="{ 'partner-avatar--photo': Boolean(a.avatar?.src) }"
                 aria-hidden="true"
-                v-html="a.bot ? botMark(a.bot) : a.svg"
-              />
+              >
+                <img
+                  v-if="a.avatar?.src"
+                  class="partner-avatar__photo"
+                  :src="a.avatar.src"
+                  alt=""
+                  draggable="false"
+                />
+                <span
+                  v-else
+                  class="partner-avatar__face"
+                  v-html="a.svg"
+                />
+              </span>
               <span class="picker-label" :title="a.name">{{ a.name }}</span>
               <span v-if="a.role" class="partner-role" :title="a.role">{{ a.role }}</span>
               <span v-if="a.id === activeAgentId" class="partner-check">
@@ -174,6 +319,7 @@ const cardSpring = {
       </div>
     </motion.div>
   </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -279,15 +425,37 @@ const cardSpring = {
   width: 20px;
   height: 20px;
   flex-shrink: 0;
-  border-radius: 6px;
+  border-radius: 50%;
+  overflow: hidden;
 }
-.partner-avatar :deep(svg) {
+.partner-avatar__photo {
   width: 100%;
   height: 100%;
-  overflow: visible;
+  border-radius: 50%;
+  object-fit: cover;
+  user-select: none;
+}
+.partner-avatar__face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.partner-avatar__face :deep(svg) {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 .partner-avatar--flash {
   color: var(--accent);
+}
+
+/* The second accent, not the first: the router sits directly under the default
+   row, and two rows wearing the same hue would read as one group of two rather
+   than as two different kinds of answer. */
+.partner-avatar--router {
+  color: var(--accent-2);
 }
 
 /* Prioritize name over role for truncation */

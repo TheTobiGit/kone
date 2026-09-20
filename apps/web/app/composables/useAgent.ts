@@ -259,6 +259,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     seedSpawnedChildren,
   });
   const blocks = transcript.blocks;
+  const forkContext = transcript.forkContext;
   const olderCursor = transcript.olderCursor;
   const loadingOlder = transcript.loadingOlder;
   const olderError = transcript.olderError;
@@ -1060,6 +1061,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // conversation, never a side chat, and nothing was read to fail.
     sideChat.value = false;
     sideChatSource.value = null;
+    forkContext.value = null;
     transcriptLoadFailed.value = false;
     // …and it has spawned nothing yet — the old thread's children belong to
     // the old thread, not this brand-new one.
@@ -1080,6 +1082,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // side-chat state
     isSideChat,
     sideChatSource,
+    forkContext,
     timelineBlocks,
     // state
     blocks,

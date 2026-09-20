@@ -110,7 +110,11 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
   } = deps;
 
   const blocks = ref<ThreadBlock[]>([]);
-  /** Keyset pagination state for a stored thread adopted windowed (see
+  /** The stored thread's fork context, when it is a fork (side chat, edit
+   *  retry, or provider handoff). Drives provenance reads (the handoff's
+   *  "from" label); the side-chat look and timeline hiding stay keyed on
+   *  `sideChat`, which is false for continuations. */
+  const forkContext = ref<ForkContext | null>(null);  /** Keyset pagination state for a stored thread adopted windowed (see
    *  history.threadPage): the opaque cursor for the next strictly older page,
    *  null when the whole thread is in hand. `hasOlder` is what the load-older
    *  affordance reads; the cursor itself never leaves the session. */
@@ -233,16 +237,21 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
     }
     stageResume(stored.conversationId, provider.value, stored.resumeSessionAt);
     // A side chat hides its fork-imported transcript (reference-only context)
-    // and wears the temporary look; an edit fork is a continuation — its
-    // copied prefix is real history shown in the timeline — so only a
-    // non-edit fork context marks the session. Assigned authoritatively (not
-    // just set-true): the stored context is the durable answer and overrules
-    // the renderer hint map, which may have filed this id as a side chat
-    // before the transcript arrived.
+    // and wears the temporary look; an edit fork or a handoff is a
+    // continuation — its copied history is real history shown in the timeline
+    // — so only a non-continuation fork context marks the session. Assigned
+    // authoritatively (not just set-true): the stored context is the durable
+    // answer and overrules the renderer hint map, which may have filed this
+    // id as a side chat before the transcript arrived.
     if (stored.forkContext) {
-      sideChat.value = stored.forkContext.forkKind !== "edit";
+      forkContext.value = stored.forkContext;
+      sideChat.value =
+        stored.forkContext.forkKind !== "edit" && stored.forkContext.forkKind !== "handoff";
       sideChatSource.value = stored.forkContext.sourceThreadId;
-      rememberSideChatSource(stored.threadId, stored.forkContext.sourceThreadId);
+      // The hint map is the side-chat affordance's synchronous read (claimStoredId
+      // marks the session before the transcript arrives) — continuations file
+      // nothing there, so a handoff never briefly wears the side-chat look.
+      if (sideChat.value) rememberSideChatSource(stored.threadId, stored.forkContext.sourceThreadId);
     }
     // Restore the last context-window snapshot so a reopened thread shows its
     // meter filled straight away (sweeping in), instead of an empty ring until
@@ -358,6 +367,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
 
   return {
     blocks,
+    forkContext,
     olderCursor,
     loadingOlder,
     olderError,

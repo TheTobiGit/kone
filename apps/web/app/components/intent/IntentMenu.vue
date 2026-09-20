@@ -9,7 +9,10 @@ import {
   ArrowTurnBackwardIcon,
   Cancel01Icon,
   Clock01Icon,
+  BubbleChatTemporaryIcon,
   Download01Icon,
+  Exchange01Icon,
+  FoldVerticalIcon,
   Folder01Icon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -63,6 +66,9 @@ const icons = {
   forget: Cancel01Icon,
   settings: Settings02Icon,
   archive: Archive02Icon,
+  compact: FoldVerticalIcon,
+  "side-chat": BubbleChatTemporaryIcon,
+  handoff: Exchange01Icon,
 } satisfies Record<IntentIcon, typeof InboxIcon>;
 
 const shellEl = ref<HTMLElement | null>(null);

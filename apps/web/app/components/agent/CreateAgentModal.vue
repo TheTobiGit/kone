@@ -38,8 +38,9 @@ import type { AgentModelRef } from "~/types/desktop";
 // belong together; and a picture and a bot don't belong together either — a
 // picture says who is speaking, a bot is the creature the agent works through,
 // and one pane holding both meant scrolling past thirty-six swatches to reach
-// a face. Both stay optional: an agent given neither is drawn by the face it
-// has always had.
+// a face. The picture stays optional — an agent given none is drawn by the face
+// it has always had — but the bot does not: without the creature there is
+// nothing to show while the agent works.
 //
 // The same card edits an existing agent. Create greets on identity because a
 // draft has nothing else to show; edit greets with every row closed so the
@@ -92,7 +93,7 @@ const SECTIONS: { id: Section; label: string }[] = [
 const HINTS = {
   identity: "What it is called, and what it is for.",
   picture: "The face it answers with.",
-  bot: "The creature it works through.",
+  bot: "The creature it works through. Required — pick one.",
   instructions: "Habits it carries into every thread.",
   capabilities: "The model it thinks with.",
   teams: "The projects it joins.",
@@ -113,9 +114,10 @@ const PICTURE_LABELS = {
 const name = ref("");
 const role = ref("");
 const instructions = ref("");
-// How it looks. Null is the resting answer for both, not a placeholder waiting
-// to be filled: an agent with no picture wears its drawn face, and an agent with
-// no bot has none rather than the default one.
+// How it looks. Null is the resting answer for the picture, not a placeholder
+// waiting to be filled: an agent with no picture wears its drawn face. The bot
+// starts empty so the maker picks one — an agent with no bot has none rather
+// than the default one, and creating one without a bot is refused.
 const avatar = ref<AgentAvatar | null>(null);
 const bot = ref<AgentBot | null>(null);
 const model = ref<AgentModelRef | null>(null);
@@ -145,7 +147,9 @@ function toggleTeam(path: string) {
   cue(joining ? "select" : "collapse");
 }
 
-const canSubmit = computed(() => name.value.trim().length > 0 && !isSubmitting.value);
+const canSubmit = computed(
+  () => name.value.trim().length > 0 && bot.value !== null && !isSubmitting.value,
+);
 
 function seedFrom(agent: Agent) {
   name.value = agent.name;
@@ -171,7 +175,7 @@ const summaries = computed<Record<Section, string>>(() => {
   return {
     identity: named ? (stated ? `${named} · ${stated}` : named) : "Not named yet",
     picture: avatar.value ? PICTURE_LABELS[avatar.value.source] : "Drawn face",
-    bot: bot.value ? botSummary(bot.value) : "None",
+    bot: bot.value ? botSummary(bot.value) : "Required — pick one",
     instructions: words ? `${words} ${words === 1 ? "word" : "words"}` : "None",
     capabilities: formatModelChain(model.value, modelFallbacks.value) ?? "Inherits the caller",
     teams: joined ? `${joined} ${joined === 1 ? "team" : "teams"}` : "None",
@@ -185,20 +189,26 @@ const actionLabel = computed(() => {
 
 async function handleCreate() {
   const trimmed = name.value.trim();
+  const pickedBot = bot.value;
   if (!trimmed || isSubmitting.value) return;
+  if (!pickedBot) {
+    errorMsg.value = "Pick a bot — an agent needs its creature to work through.";
+    cue("error");
+    return;
+  }
 
   isSubmitting.value = true;
   errorMsg.value = null;
   try {
     const created = await createAgent({
       name: trimmed,
+      bot: pickedBot,
       role: role.value.trim() || undefined,
       instructions: instructions.value.trim() || undefined,
       // Appearance is only sent when the maker picked some — left off, the agent
       // inherits whatever its preset looks like, which for a made agent is the
       // drawn face.
       avatar: avatar.value ?? undefined,
-      bot: bot.value ?? undefined,
       // Only send a model the maker actually pinned — an untouched picker is
       // "no preference", which the draft says by leaving the field off.
       model: model.value ?? undefined,
@@ -230,6 +240,11 @@ async function handleSave() {
   const current = props.agent;
   const trimmed = name.value.trim();
   if (!current || !trimmed || isSubmitting.value) return;
+  if (!bot.value) {
+    errorMsg.value = "Pick a bot — an agent needs its creature to work through.";
+    cue("error");
+    return;
+  }
 
   isSubmitting.value = true;
   errorMsg.value = null;

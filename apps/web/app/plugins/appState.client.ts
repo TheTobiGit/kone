@@ -36,6 +36,10 @@ function rosterEntry(agent: Agent, activeId: string | null): KoneAgentRosterEntr
     role: agent.role,
     instructions: agent.instructions ?? "",
     face: { body: agent.hue, ink: agent.ink },
+    avatar: agent.avatar ? { source: agent.avatar.source, src: agent.avatar.src } : null,
+    bot: agent.bot
+      ? { form: agent.bot.form, color: agent.bot.color, expression: agent.bot.expression }
+      : null,
     model: model
       ? model.label !== undefined
         ? { provider: model.provider, model: model.model, label: model.label }

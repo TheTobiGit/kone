@@ -93,12 +93,15 @@ export class RosterRepo {
   /** Add a user-made agent to the end of the roster. The caller mints the id so
    *  it can draw the new agent before the write lands. Fields are clamped, not
    *  rejected: the editor is expected to hold the real limits, and this is the
-   *  floor that keeps a runaway paste out of the database. */
+   *  floor that keeps a runaway paste out of the database. A bot is the one
+   *  exception — an agent without its creature has nothing to show while it
+   *  works, so a bot-less create is refused rather than stored. */
   createAgent(input: AgentCreateInput): AgentRecord | null {
     const db = this.dbh.handle();
     if (!db) return null;
     const name = clampAgentField(input.name, AGENT_NAME_MAX);
     if (!name) return null;
+    if (serializeAgentBot(input.bot) === null) return null;
     try {
       const now = Date.now();
       const agentId = input.agentId ?? randomUUID();
@@ -253,6 +256,7 @@ export class RosterRepo {
     const inherited = input.inherited ?? {};
     const name = clampAgentField(input.name ?? source.name ?? inherited.name, AGENT_NAME_MAX);
     if (!name) return null;
+    if (serializeAgentBot(source.bot ?? inherited.bot) === null) return null;
     try {
       const now = Date.now();
       const agentId = input.newAgentId ?? randomUUID();

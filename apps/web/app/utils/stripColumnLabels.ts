@@ -20,6 +20,25 @@ export function brandOf(c: Pane): BrandKey {
   return SESSION_BRAND[c.session.provider.value] ?? "generic";
 }
 
+/** Whether this column continues a conversation handed off from another
+ *  provider. The header then reads old → new instead of a single mark, so a
+ *  handoff never passes for a thread born where it runs. */
+export function isHandoff(c: Pane): boolean {
+  if (c.kind !== "thread" || !c.session) return false;
+  // Optional-chained: test doubles cast partial sessions, and only the live
+  // session carries forkContext.
+  return c.session.forkContext?.value?.forkKind === "handoff";
+}
+
+/** The handed-off-from brand for a handoff column. "generic" when the context
+ *  names no source (a row written before provenance existed) — the arrow
+ *  still reads, just without a vendor mark. */
+export function handoffSourceBrand(c: Pane): BrandKey {
+  const source =
+    c.kind === "thread" ? c.session?.forkContext?.value?.sourceProvider : undefined;
+  return (source ? SESSION_BRAND[source] : undefined) ?? "generic";
+}
+
 /** The meter's Compact control per live session, memoized by session key — one
  *  shared rule decides, the session runs the call. Built as a map (the inbox
  *  live pane's pattern, fanned out) so a re-render reuses the props object

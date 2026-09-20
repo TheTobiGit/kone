@@ -12,12 +12,16 @@
 //   the menu (it blocks summon hotkeys, so when both somehow stand open it
 //   answers first), and the menu outranks the assistant (one press dismisses
 //   the menu, not the card beneath it).
-//   Tier 3 — inbox, studio. Full-viewport portals inside the stage; the inbox
-//   paints over the plane. They sit above the drawer on purpose: the tap area
-//   that closes the drawer renders underneath both, so working in a portal
-//   never dismisses settings revealed behind it.
-//   Tier 2 — settings. The lateral panel pinned to the left edge; the stage
-//   slides aside to reveal it rather than the panel floating over the stage.
+//   Tier 3 — settings. The lateral panel pinned to the left edge; the stage
+//   slides aside to reveal it rather than the panel floating over it. It
+//   outranks every portal because the drawer is modal: the stage is inert while
+//   it is open and its veil covers the portals, so a portal underneath can be
+//   seen but not used, and the surface that answers has to be the one the user
+//   can actually reach. The portals sat above it once, back when the veil
+//   rendered underneath them and work carried on while settings was revealed.
+//   Tier 2 — bench, inbox, studio. Full-viewport portals inside the stage, in
+//   the painting order usePortals keeps (PORTAL_STACK): the studio is the work
+//   surface and the other two paint over it.
 //   Tier 1 — stage. The base page, on top only when nothing else is up.
 
 /** Every layer that can own the viewport, frontmost first. */
@@ -25,9 +29,10 @@ export type SurfaceId =
   | "launcher-modal"
   | "intent-menu"
   | "assistant"
+  | "settings"
+  | "bench"
   | "inbox"
   | "studio"
-  | "settings"
   | "stage";
 
 /** Which layers stand open. Coarse on purpose: inner steps (the studio
@@ -37,6 +42,7 @@ export interface SurfaceSnapshot {
   launcherModal: boolean;
   intentMenu: boolean;
   assistant: boolean;
+  bench: boolean;
   inbox: boolean;
   studio: boolean;
   settings: boolean;
@@ -49,8 +55,9 @@ export function resolveTop(snapshot: SurfaceSnapshot): SurfaceId {
   if (snapshot.launcherModal) return "launcher-modal";
   if (snapshot.intentMenu) return "intent-menu";
   if (snapshot.assistant) return "assistant";
+  if (snapshot.settings) return "settings";
+  if (snapshot.bench) return "bench";
   if (snapshot.inbox) return "inbox";
   if (snapshot.studio) return "studio";
-  if (snapshot.settings) return "settings";
   return "stage";
 }

@@ -1,25 +1,60 @@
 import { computed, getCurrentInstance, onBeforeUnmount, readonly, ref } from "vue";
 import type { ComputedRef, Ref } from "vue";
-import { usePreferredReducedMotion } from "@vueuse/core";
 import { useSound } from "./useSound";
 import type { Cue } from "./useSound";
 
 // usePortals — the handoff orchestrator for the app's full-viewport portals.
 //
-// The studio plane and the inbox each cover the whole viewport, and the inbox
-// paints over the plane — so moving between them is a handoff, never two
-// independent toggles. Both directions keep the page covered for the whole
-// switch: going up, the inbox fades in over the still-opaque plane and the
-// plane only leaves once the inbox is opaque; going down, the plane appears
-// instantly underneath (it drops its fade while covered) and the inbox fades
-// out over it on the next frame, so visible progress starts in one frame
-// rather than one fade.
+// Each portal covers the whole viewport, so moving between them is a handoff,
+// never independent toggles. Portals stack: summoning keeps everything below
+// the arrival open underneath it, so leaving the frontmost portal always
+// reveals wherever the user came from rather than the page. Going up the
+// stack, the arrival simply fades in over what is already opaque below it;
+// going down, the arrival appears instantly underneath (it drops its fade
+// while covered) and the portals above it fade out over it on the next frame,
+// so visible progress starts in one frame rather than one fade.
+//
+// Which portals stay and which leave comes from PORTAL_STACK, not from naming
+// the pair. That is the whole reason the order is data: a third portal is an
+// entry in the list, and the handoff it gets is decided by where it sits
+// rather than by another branch in here.
+//
+// Going down closes the cover, so the stack alone forgets where the user came
+// from — a trail of visited portals remembers instead, and dismissing the
+// frontmost portal with nothing underneath reopens the last one rather than
+// dropping to the page.
 //
 // One pending switch at most: every new intent abandons the previous one, so a
-// timer from a switch the user already moved past can never carry through to
-// the page — dismissing mid-handoff lands on the still-open portal instead.
+// frame from a switch the user already moved past can never carry through —
+// dismissing mid-handoff lands on the still-open portal instead.
 
-export type PortalId = "studio" | "inbox";
+export type PortalId = "studio" | "inbox" | "bench";
+
+/** Painting order, bottom first. The studio is the work surface, so everything
+ *  else paints over it; the inbox and the bench are both ways of looking at
+ *  work the studio is doing, and which of the two sits on top is arbitrary —
+ *  only that it is fixed matters, because it is what makes every switch
+ *  between them a definite direction. */
+export const PORTAL_STACK: readonly PortalId[] = ["studio", "inbox", "bench"];
+
+/** Where a portal sits in the painting order.
+ *
+ *  A lookup built once from PORTAL_STACK rather than an `indexOf` per call. The
+ *  difference that matters is not the scan: `indexOf` answers -1 for an id it
+ *  does not hold, and -1 is a *valid depth* to every comparison here — it sorts
+ *  below the studio and passes the "above" filter silently. A missing id is a
+ *  portal that was added to the union and left out of the painting order, and
+ *  that has to be loud at the boundary instead of quietly ordering the stack
+ *  wrong. */
+const PORTAL_DEPTH = new Map<PortalId, number>(PORTAL_STACK.map((p, i) => [p, i]));
+
+function depth(portal: PortalId): number {
+  const at = PORTAL_DEPTH.get(portal);
+
+  if (at === undefined) throw new Error(`portal "${portal}" is not in PORTAL_STACK`);
+
+  return at;
+}
 
 /** Where a portal sits in the stack. `hidden` is away, `active` is the
  *  frontmost layer, `covered` is open underneath another portal. Both
@@ -27,40 +62,30 @@ export type PortalId = "studio" | "inbox";
 export type PortalState = "active" | "covered" | "hidden";
 
 // The fade itself, and the only place its length is stated: it drives the CSS
-// fades through --portal-fade-ms (see fadeStyle), so the timer and the fade
-// cannot drift. The stylesheet names the same length as a fallback for layers
-// rendered outside the page wrapper.
+// fades through --portal-fade-ms (see fadeStyle). The stylesheet names the
+// same length as a fallback for layers rendered outside the page wrapper.
 export const PORTAL_FADE_MS = 220;
 
-// The upward handoff waits a frame past the fade so the plane only leaves once
-// the inbox is fully opaque. Waiting a shade long only leaves an invisible
-// layer briefly, while firing early would flash the page.
-const PORTAL_HANDOFF_SLACK_MS = 10;
-export const PORTAL_HANDOFF_MS = PORTAL_FADE_MS + PORTAL_HANDOFF_SLACK_MS;
-
-// The clock the handoff runs on. Production waits out the real fade and the
-// real next frame; tests hand in a manual one and drive time by hand.
+// The clock the handoff runs on. Production waits out the real next frame;
+// tests hand in a manual one and drive it by hand.
 export interface PortalClock {
-  /** Run `run` after `ms`; the returned function cancels it. */
-  after: (run: () => void, ms: number) => () => void;
   /** Run `run` on the next frame; the returned function cancels it. */
   frame: (run: () => void) => () => void;
 }
 
 const browserClock: PortalClock = {
-  after(run: () => void, ms: number): () => void {
-    const id = setTimeout(run, ms);
-    return () => clearTimeout(id);
-  },
   frame(run: () => void): () => void {
     // Outside the client there is no frame to wait for, so the cover step
     // falls back to a zero wait — the ordering is preserved, only the paint
     // wait collapses.
     if (import.meta.client && window.requestAnimationFrame instanceof Function) {
       const id = window.requestAnimationFrame(() => run());
+
       return () => window.cancelAnimationFrame(id);
     }
+
     const id = setTimeout(run, 0);
+
     return () => clearTimeout(id);
   },
 };
@@ -68,10 +93,8 @@ const browserClock: PortalClock = {
 export interface UsePortalsOptions {
   /** Sound for a summon. Defaults to the app's cue layer; tests hand in a spy. */
   cue?: (name: Cue) => void;
-  /** Handoff clock. Defaults to real timers; tests hand in a manual one. */
+  /** Handoff clock. Defaults to real frames; tests hand in a manual one. */
   clock?: PortalClock;
-  /** Reduced-motion flag. Defaults to the OS preference; tests hand in a ref. */
-  reducedMotion?: Ref<boolean>;
 }
 
 /** A parked thread in some project asking to be read in the inbox. Plain data,
@@ -85,26 +108,30 @@ export interface ThreadJumpTarget {
 export interface UsePortals {
   studioOpen: Readonly<Ref<boolean>>;
   inboxOpen: Readonly<Ref<boolean>>;
+  benchOpen: Readonly<Ref<boolean>>;
   /** The frontmost open portal, if any. The inbox paints over the plane. */
   activePortal: ComputedRef<PortalId | null>;
   /** The --portal-fade-ms binding for the page wrapper, read from the same
-   *  constant as the handoff timer. */
+   *  constant as the CSS fallback. */
   fadeStyle: ComputedRef<{ "--portal-fade-ms": string }>;
   summon: (portal: PortalId) => void;
-  /** Dismiss one portal (default: the frontmost). Abandons the pending switch
-   *  first, so a mid-handoff dismissal lands on the still-open portal. */
+  /** Dismiss one portal (default: the frontmost), revealing whatever portal
+   *  stands open underneath it — or, with nothing underneath, reopening where
+   *  the user came from. Abandons the pending switch first, so a mid-handoff
+   *  dismissal lands on the still-open portal. */
   dismiss: (portal?: PortalId) => void;
   toggleStudio: () => void;
   toggleInbox: () => void;
+  toggleBench: () => void;
   /** Whether the portal is open but painted under another one. */
   isCovered: (portal: PortalId) => boolean;
-  /** The surface contract both portals render from. */
+  /** The surface contract every portal renders from. */
   portalState: (portal: PortalId) => PortalState;
   /** A cross-portal jump waiting to be read. Set by jumpToThread, cleared once
    *  the inbox has taken it — the inbox watches this, never a component ref. */
   pendingThreadJump: Ref<ThreadJumpTarget | null>;
   /** Summon the inbox onto a parked thread: records the jump for the inbox to
-   *  route, then runs the ordinary inbox summon so the handoff timers apply. */
+   *  route, then runs the ordinary inbox summon so the handoff applies. */
   jumpToThread: (target: ThreadJumpTarget) => void;
   /** Drop a jump without routing it. The inbox calls for this once it takes one. */
   clearThreadJump: () => void;
@@ -118,48 +145,67 @@ function defaultCue(name: Cue): void {
 }
 
 export function usePortals(options: UsePortalsOptions = {}): UsePortals {
-  const studioOpen = ref(false);
-  const inboxOpen = ref(false);
+  // One ref per portal rather than a reactive record: the public surface hands
+  // three of them out individually, and a record would have to be unwrapped at
+  // every one of those boundaries.
+  const openRefs = {
+    studio: ref(false),
+    inbox: ref(false),
+    bench: ref(false),
+  } satisfies Record<PortalId, Ref<boolean>>;
+
   const pendingThreadJump = ref<ThreadJumpTarget | null>(null);
 
   const cue = options.cue ?? defaultCue;
   const clock = options.clock ?? browserClock;
-  const overrideMotion = options.reducedMotion;
-  // The media query is only subscribed when no override is handed in, so tests
-  // (and any caller pinning the flag) never touch matchMedia. The branch is
-  // fixed for the life of this setup call, so hook order cannot shift.
-  const mediaMotion = overrideMotion ? null : usePreferredReducedMotion();
-  function reducedMotionOn(): boolean {
-    if (overrideMotion) return overrideMotion.value;
-    return mediaMotion !== null && mediaMotion.value === "reduce";
-  }
 
   let cancelPending: (() => void) | null = null;
+
+  // Where dismissing the frontmost portal goes when nothing stands open
+  // underneath it. Going down the stack closes the cover to reveal a portal
+  // that was shut, so the stack alone cannot say where the user came from —
+  // the trail does. The back entry reopens; entries still open underneath are
+  // revealed instead and simply consumed. Plain data, never read by the
+  // template: it only steers summon and dismiss.
+  let trail: PortalId[] = [];
+
+  function forget(portal: PortalId): void {
+    trail = trail.filter((p) => p !== portal);
+  }
+
   function abandon(): void {
     if (cancelPending) {
       cancelPending();
       cancelPending = null;
     }
   }
+
   function dispose(): void {
     abandon();
   }
+
   if (getCurrentInstance()) onBeforeUnmount(dispose);
 
+  /** The frontmost open portal: the last one in painting order that is up. */
   const activePortal = computed<PortalId | null>(() => {
-    if (inboxOpen.value) return "inbox";
-    if (studioOpen.value) return "studio";
+    for (let i = PORTAL_STACK.length - 1; i >= 0; i--) {
+      const portal = PORTAL_STACK[i];
+
+      if (portal && openRefs[portal].value) return portal;
+    }
+
     return null;
   });
 
   const fadeStyle = computed(() => ({ "--portal-fade-ms": `${PORTAL_FADE_MS}ms` }));
 
   function isOpen(portal: PortalId): boolean {
-    return portal === "studio" ? studioOpen.value : inboxOpen.value;
+    return openRefs[portal].value;
   }
 
   function portalState(portal: PortalId): PortalState {
     if (!isOpen(portal)) return "hidden";
+
     return activePortal.value === portal ? "active" : "covered";
   }
 
@@ -168,62 +214,116 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
   }
 
   function summon(portal: PortalId): void {
-    if (portal === "studio") {
-      if (studioOpen.value && !inboxOpen.value) return;
+    // Already frontmost: nothing to hand off, and re-cueing a portal the user
+    // is looking at would sound like something happened. Abandon first so an
+    // explicit re-summon settles a pending downward close instead of letting
+    // it carry through and take the portal away.
+    if (activePortal.value === portal) {
       abandon();
-      cue("expand");
-      if (inboxOpen.value) {
-        // Instant underneath, fading inbox over it on the next frame: the plane
-        // paints opaque while still covered, so the inbox fade composites over
-        // work rather than over the page — and over a paint, not a timer.
-        studioOpen.value = true;
-        cancelPending = clock.frame(() => {
-          cancelPending = null;
-          inboxOpen.value = false;
-        });
-      } else {
-        studioOpen.value = true;
-      }
+
       return;
     }
-    if (inboxOpen.value && !studioOpen.value) return;
+
     abandon();
     cue("expand");
-    if (studioOpen.value) {
-      // The inbox fades in over the still-opaque plane; sending the plane away
-      // once the inbox is opaque hides it underneath, out of sight. Without
-      // motion there is no fade to wait out, so the plane leaves at once.
-      inboxOpen.value = true;
-      const wait = reducedMotionOn() ? 0 : PORTAL_HANDOFF_MS;
-      cancelPending = clock.after(() => {
-        cancelPending = null;
-        studioOpen.value = false;
-      }, wait);
+    const wasOpen = openRefs[portal].value;
+
+    if (!wasOpen) {
+      // A fresh arrival: the frontmost portal is where the user came from, so
+      // it becomes the way back. A stale trail entry for the arrival itself is
+      // dropped first, or dismissing later would reopen somewhere already
+      // left behind.
+      forget(portal);
+      const from = activePortal.value;
+
+      if (from && trail[trail.length - 1] !== from) trail.push(from);
     } else {
-      inboxOpen.value = true;
+      // Already open underneath: travelling back within the stack, so the
+      // trail is cut back to the arrival and the covers being left are
+      // discarded with it rather than reopening later.
+      const at = trail.lastIndexOf(portal);
+
+      if (at >= 0) trail = trail.slice(0, at);
     }
+
+    openRefs[portal].value = true;
+
+    // Everything below stays open underneath; everything above has to leave
+    // for the arrival to be seen. Going up there is never anything above, so
+    // the arrival just fades in over what is already there.
+    const above = PORTAL_STACK.filter((p) => depth(p) > depth(portal) && openRefs[p].value);
+
+    if (above.length === 0) return;
+
+    const closeAbove = (): void => {
+      cancelPending = null;
+
+      for (const other of above) openRefs[other].value = false;
+    };
+
+    if (wasOpen) {
+      // Already painted underneath, so the cover can fade out over it at once.
+      closeAbove();
+
+      return;
+    }
+
+    // Just opened underneath: it paints opaque while still covered (its fade
+    // is cut while covered), and the cover fades out over it on the next
+    // frame, so the fade composites over work rather than over the page.
+    cancelPending = clock.frame(closeAbove);
   }
 
   function dismiss(portal?: PortalId): void {
     const target = portal ?? activePortal.value;
+
     if (!target) return;
+
+    const wasActive = activePortal.value === target;
     abandon();
-    if (target === "studio") studioOpen.value = false;
-    else inboxOpen.value = false;
+    openRefs[target].value = false;
+    forget(target);
+
+    if (!wasActive) return;
+
+    // Leaving the frontmost portal reveals whatever stands open underneath;
+    // with nothing underneath, the trail reopens where the user came from
+    // instead of dropping to the page.
+    const under = activePortal.value;
+
+    if (under !== null) {
+      if (trail[trail.length - 1] === under) trail.pop();
+
+      return;
+    }
+
+    const back = trail.pop();
+
+    if (back !== undefined) {
+      cue("expand");
+      openRefs[back].value = true;
+    }
+  }
+
+  /** A portal's own key. Pressing it while that portal is frontmost puts it
+   *  away; pressing it from anywhere else goes there. Mid-handoff the portal
+   *  being left is still painted, so this lands back on it rather than letting
+   *  the pending switch carry through to the page. */
+  function toggle(portal: PortalId): void {
+    if (openRefs[portal].value && activePortal.value === portal) dismiss(portal);
+    else summon(portal);
   }
 
   function toggleStudio(): void {
-    // While the inbox is up it is the frontmost thing, so the studio key means
-    // "go to the studio" rather than toggling a plane nobody can see.
-    if (studioOpen.value && !inboxOpen.value) dismiss("studio");
-    else summon("studio");
+    toggle("studio");
   }
 
   function toggleInbox(): void {
-    // Dismissing mid-handoff (both flags up) lands back on the still-open plane
-    // rather than letting the handoff carry through to the page.
-    if (inboxOpen.value) dismiss("inbox");
-    else summon("inbox");
+    toggle("inbox");
+  }
+
+  function toggleBench(): void {
+    toggle("bench");
   }
 
   function jumpToThread(target: ThreadJumpTarget): void {
@@ -243,14 +343,16 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
   }
 
   return {
-    studioOpen: readonly(studioOpen),
-    inboxOpen: readonly(inboxOpen),
+    studioOpen: readonly(openRefs.studio),
+    inboxOpen: readonly(openRefs.inbox),
+    benchOpen: readonly(openRefs.bench),
     activePortal,
     fadeStyle,
     summon,
     dismiss,
     toggleStudio,
     toggleInbox,
+    toggleBench,
     isCovered,
     portalState,
     pendingThreadJump,

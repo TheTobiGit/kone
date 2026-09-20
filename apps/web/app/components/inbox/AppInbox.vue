@@ -7,15 +7,15 @@
 // no regard for which project it came from.
 //
 // It is a portal, not a panel: it takes the whole viewport and it never shares
-// the screen with the work surface. Summoning it sends the studio away, and
-// leaving it puts you back on the page you were on. That exclusivity is the
-// whole discipline — an inbox that can be docked beside the work is a sidebar,
-// and a sidebar is something you learn to stop seeing.
+// the screen with the work surface. Summoning it covers the studio, which stays
+// open underneath, and leaving it puts you back wherever you came from. That
+// exclusivity is the whole discipline — an inbox that can be docked beside the
+// work is a sidebar, and a sidebar is something you learn to stop seeing.
 //
-// The shell is a view rail standing on the ground, then two panes raised off
-// it — the list of threads, and the one you are reading — with a draggable
-// gutter between them. The window itself is the outer shelf, so there is no
-// frame around the panes to repeat an edge that is already there.
+// The shell is two panes raised off the ground — the list of threads, and
+// the one you are reading — with a draggable gutter between them. The window
+// itself is the outer shelf, so there is no frame around the panes to repeat
+// an edge that is already there.
 
 import { computed, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
 import { useElementSize, useEventListener, useStorage } from "@vueuse/core";
@@ -27,7 +27,6 @@ import {
   INBOX_PADDING,
   MAX_LIST_WIDTH,
   MIN_LIST_WIDTH,
-  RAIL_WIDTH,
   resolveListWidth,
 } from "~/utils/inboxLayout";
 import {
@@ -42,6 +41,7 @@ import { useShortcuts } from "~/composables/useShortcuts";
 import { setInlineThread } from "~/composables/useAgent";
 import type { PortalState, ThreadJumpTarget } from "~/composables/usePortals";
 import type { SurfaceId } from "~/utils/surfaceTop";
+import { ownsKey } from "~/utils/surfaceKeys";
 import { resolveThreadSummary, summarizeSession } from "~/utils/sessionList";
 import type { RuntimeEvent } from "~/types/desktop";
 import type { InboxViewId } from "~/types/inbox";
@@ -63,6 +63,7 @@ const props = defineProps<{
 // The frontmost layer answers keys and holds focus; anything else stays quiet
 // underneath while keeping its paint, the same terms the plane renders from.
 const isActive = computed(() => props.state === "active");
+
 const isCovered = computed(() => props.state === "covered");
 
 const emit = defineEmits<{
@@ -71,13 +72,15 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+
 const { matchesShortcut } = useShortcuts();
+
 // Where a thread started here goes on the plane. See useStudioIntake.
 const intake = useStudioIntake();
 
-// Which list is on screen. Owned here rather than by the rail so the panes and
-// the rail read the same value, and so a view is one thing the portal knows
-// about itself rather than state buried in a control.
+// Which list is on screen. Owned here rather than by the switcher so each
+// kept-alive list reads the same value, and so a view is one thing the portal
+// knows about itself rather than state buried in a control.
 const view = ref<InboxViewId>("inbox");
 
 // What the reading pane is showing, as one value. The pieces behind it — a
@@ -88,6 +91,7 @@ const view = ref<InboxViewId>("inbox");
 // assign directly. The module holds the resolver the template switches on and
 // the multi-field transitions where more than one field moves together.
 const paneState = reactive(createInboxReadingPaneState());
+
 const pane = computed(() => resolveInboxReadingPane(paneState));
 
 // No thread is on screen: the composer is up, or nothing has been picked, or
@@ -114,6 +118,7 @@ watch(
   async (active) => {
     if (!active) return;
     paneState.visited = true;
+
     // The list behind the portal may predate the retention sweep — run the
     // sweep first, then re-read the shown view once, so quiet threads settle
     // while someone is looking instead of mid-thread later. Sequenced, not
@@ -126,6 +131,7 @@ watch(
     } catch {
       // Retention is a convenience — a failed sweep still leaves the reload.
     }
+
     listRef.value?.reload(true);
   },
   { immediate: true },
@@ -138,11 +144,13 @@ watch(
 const detachArchived = import.meta.client
   ? window.koneDesktop?.agent?.onEvent?.((event: RuntimeEvent) => {
       if (event.type !== "thread.archived") return;
+
       if (paneState.selected?.threadId !== event.threadId) return;
       paneState.selected = null;
       paneState.handedKey = null;
     })
   : undefined;
+
 onScopeDispose(() => detachArchived?.());
 
 const listRef = ref<{ reload: (silent?: boolean) => void } | null>(null);
@@ -209,9 +217,11 @@ function onPickThread(row: SessionSummary | null): void {
  *  emits this while showing a thread, but the guard keeps the union honest. */
 function onOpenForkThread(threadId: string): void {
   const reading = pane.value;
+
   if (reading.kind !== "reader") return;
   void onOpenProjectThread(reading.row.projectPath ?? "", threadId, reading.row.projectName ?? undefined);
 }
+
 /** A parked thread the bots row names, possibly in another project. Resolved
  *  out of that project's stored threads and selected the ordinary way — the
  *  pane remounts onto it and its ask answers inline there. An unfinished thread
@@ -223,6 +233,7 @@ async function onOpenProjectThread(
   projectName?: string,
 ): Promise<void> {
   const summary = await resolveThreadSummary(projectPath, threadId, projectName);
+
   if (!summary) return;
   cue("select");
   openThread(paneState, summary);
@@ -268,6 +279,7 @@ watch(
 // instead of being permanently written down small.
 
 const root = ref<HTMLElement | null>(null);
+
 const stored = useStorage("kone.inbox.list-width", DEFAULT_LIST_WIDTH);
 
 // Observed rather than read on demand, so the clamp tracks a window being
@@ -293,6 +305,7 @@ function onGutterDown(e: PointerEvent): void {
   const onMove = (move: PointerEvent) => {
     stored.value = dragListWidth(startWidth, startX, move.clientX, contentWidth.value);
   };
+
   const onUp = () => {
     dragging.value = false;
     handle.releasePointerCapture(e.pointerId);
@@ -311,6 +324,7 @@ function onGutterDown(e: PointerEvent): void {
  *  gutter's — this only forwards the event and writes down the answer. */
 function onGutterKey(e: KeyboardEvent): void {
   const next = gutterKeyWidth(listWidth.value, e.key, e.shiftKey, contentWidth.value);
+
   if (next === null) return;
   stored.value = next;
   e.preventDefault();
@@ -332,16 +346,19 @@ function onGutterReset(): void {
 // ⌘N starts a new conversation in the inbox portal rather than delegating to
 // the studio plane behind it.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!isActive.value || e.defaultPrevented) return;
+  if (!ownsKey(props.surfaceTop, "inbox", e)) return;
+
   if (matchesShortcut("new-thread", e)) {
     e.preventDefault();
     startNewThread();
+
     return;
   }
+
   if (e.key === "Escape") {
-    if (props.surfaceTop !== "inbox") return;
     e.preventDefault();
     close();
+
     return;
   }
 });
@@ -368,23 +385,21 @@ function close(): void {
     :style="{
       '--inbox-list-w': `${listWidth}px`,
       '--inbox-gutter-w': `${GUTTER_WIDTH}px`,
-      '--inbox-rail-w': `${RAIL_WIDTH}px`,
       '--inbox-pad': `${INBOX_PADDING}px`,
     }"
     :inert="!isActive"
   >
-    <InboxRail v-model="view" />
-
     <section class="inbox__pane inbox__pane--list" aria-label="Threads">
       <!-- One list per view, mounted on first visit and kept alive after, so
            the archive costs nothing until it is asked for and nothing again
-           once it has been. -->
+           once it has been. The switcher lives in each list's own header, and
+           writes back here through v-model:view. -->
       <KeepAlive>
         <InboxThreadList
           ref="listRef"
           :key="view"
           v-model:selected="paneState.selected"
-          :view="view"
+          v-model:view="view"
           :reading="reading"
           @new-thread="startNewThread"
           @update:selected="(row) => onPickThread(row)"
@@ -446,7 +461,7 @@ function close(): void {
   /* The list is sized by what a row needs to read rather than by a share of the
      window; the reading pane takes whatever is left. `minmax(0, 1fr)` so a long
      unbroken line in there cannot push the grid wider than the portal. */
-  grid-template-columns: var(--inbox-rail-w) var(--inbox-list-w) minmax(0, 1fr);
+  grid-template-columns: var(--inbox-list-w) minmax(0, 1fr);
   gap: var(--inbox-gutter-w);
   padding: var(--inbox-pad);
 }
@@ -467,12 +482,9 @@ function close(): void {
   position: absolute;
   top: var(--inbox-pad);
   bottom: var(--inbox-pad);
-  /* The portal's own padding, then the rail and its gap, then the list — so the
-     handle is pinned to the split it moves, with no second copy of the width to
-     keep in step. */
-  left: calc(
-    var(--inbox-pad) + var(--inbox-rail-w) + var(--inbox-gutter-w) + var(--inbox-list-w)
-  );
+  /* The portal's own padding, then the list — so the handle is pinned to the
+     split it moves, with no second copy of the width to keep in step. */
+  left: calc(var(--inbox-pad) + var(--inbox-list-w));
   width: var(--inbox-gutter-w);
   display: grid;
   place-items: center;

@@ -802,11 +802,11 @@ export class AgentService {
     // the desync fully live — every turn re-supplied the foreign id.
     const provider = this.routing.get(input.threadId);
     if (provider) assertProviderEnabled(readProviderSettings(), provider);
-    // A side chat's FIRST turn carries the one-shot `<sidechat_context>`
-    // bootstrap (sidechat.ts): the imported transcript as reference-only
-    // context, the boundary instruction, and the user's message wrapped in
-    // `<latest_user_message>`. Null for every other turn/thread. Overlong
-    // turns (imported context + message > send cap) reject here, up front.
+    // A fork's FIRST turn carries the one-shot context bootstrap
+    // (sidechat.ts): the imported transcript, the boundary instruction, and
+    // the user's message wrapped in `<latest_user_message>`. Null for every
+    // other turn/thread. Overlong turns (imported context + message > send
+    // cap) reject here, up front.
     const sidechatInput = sidechatBootstrapForTurn(input.threadId, input.input);
     // dispatchMode is the service's own routing hint — strip it before
     // anything reaches an adapter (adapters don't know the queue exists).

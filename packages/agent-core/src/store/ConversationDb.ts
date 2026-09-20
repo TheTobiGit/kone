@@ -86,6 +86,13 @@ export class ConversationDb {
       // claim and promote/release) belongs to no live process — release it
       // back to 'queued' so the next drain retries instead of skipping it.
       this.releaseOrphanedClaims(db);
+      // Fifth pass: a bench job stranded mid-start (a crash between the claim
+      // and the thread coming up) belongs to no live process either. Unlike
+      // the runner's lease sweep this ignores the lease entirely — at the
+      // first open of a fresh process there IS no live runner, so every claim
+      // is orphaned by definition and waiting out a lease would only delay
+      // the queue.
+      this.releaseOrphanedJobClaims(db);
       // Fourth pass: populate token totals for stored Antigravity threads whose
       // tokens were not backfilled at turn run time.
       this.backfillAntigravityTokens(db);
@@ -272,6 +279,40 @@ export class ConversationDb {
    *  between claim and promote/release leaves the row promotable-by-no-one;
    *  returning it to 'queued' (attempt_count preserved, exactly like
    *  releaseQueuedTurn) lets the next drain claim it again. */
+  /** Return every claimed job run to the queue, whatever its lease says. A
+   *  claim only covers the window between taking the row and the thread
+   *  starting, so a claim that survived a process exit means the thread never
+   *  came up and the job was never actually attempted — it goes back to
+   *  'queued', and the spent attempt stays in the run history so the gap is
+   *  visible. Runs that reached 'running' are left alone: those have a thread,
+   *  and sealOrphanedTurns above is what settles their turns. */
+  private releaseOrphanedJobClaims(db: DatabaseSync): void {
+    try {
+      const now = Date.now();
+      db.exec("BEGIN");
+      try {
+        db.prepare(
+          `UPDATE jobs
+              SET status = 'queued', started_at = NULL, updated_at = ?
+            WHERE status = 'running'
+              AND job_id IN (SELECT job_id FROM job_runs WHERE status = 'claimed')`,
+        ).run(now);
+        db.prepare(
+          `UPDATE job_runs
+              SET status = 'failed', error = 'interrupted before the thread started',
+                  ended_at = ?, lease_expires_at = NULL
+            WHERE status = 'claimed'`,
+        ).run(now);
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    } catch (err) {
+      console.error("[conversation-store] could not release orphaned job claims:", err);
+    }
+  }
+
   private releaseOrphanedClaims(db: DatabaseSync): void {
     try {
       const now = Date.now();

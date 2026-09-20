@@ -18,6 +18,8 @@ import { registerAvatarsIpc } from "./modules/avatars/index.js";
 import { registerPresetsIpc } from "./modules/presets/index.js";
 import { registerAppStateIpc } from "./modules/appState/index.js";
 import { registerScratchpadIpc } from "./modules/scratchpad/index.js";
+import { registerBenchIpc } from "./modules/bench/index.js";
+import { registerJevIpc } from "./modules/jev/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./modules/terminal/index.js";
 import {
   bindWindowChromeEvents,
@@ -147,6 +149,12 @@ function registerIpc() {
 
   // Per-project scratchpad documents (markdown notes).
   registerScratchpadIpc();
+
+  // The bench: queued jobs and the attempts made at them.
+  registerBenchIpc();
+
+  // Jev: the router that picks which agent answers a request.
+  registerJevIpc();
 
   // The studio plane: one row of panes per project (order, kinds, widths, focus).
   registerStudioIpc();

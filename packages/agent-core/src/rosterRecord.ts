@@ -88,10 +88,12 @@ export type AgentRecord = {
 };
 
 /** The fields a user-made agent is created with. The id is the caller's to mint
- *  so it can draw the agent before the write lands. */
+ *  so it can draw the agent before the write lands. The bot is required — an
+ *  agent without its creature has nothing to show while it works. */
 export type AgentCreateInput = {
   agentId?: string;
   name: string;
+  bot: AgentBotRef;
   role?: string | null;
   instructions?: string | null;
   faceBody?: string | null;
@@ -100,7 +102,6 @@ export type AgentCreateInput = {
   model?: AgentModelRef | null;
   modelFallbacks?: AgentModelRef[] | null;
   avatar?: AgentAvatarRef | null;
-  bot?: AgentBotRef | null;
 };
 
 /** An edit. A key left out is left alone; an explicit null clears the field —

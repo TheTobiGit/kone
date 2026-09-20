@@ -279,7 +279,9 @@ export class TranscriptRepo {
             LIMIT 1`,
         )
         .get(threadId);
-      return row !== undefined;
+      // Nullish, not undefined-only: node:sqlite answers a miss with
+      // undefined while bun:sqlite answers null.
+      return row != null;
     } catch (err) {
       console.error("[conversation-store] hasNativeAssistantTurn failed:", err);
       return false;

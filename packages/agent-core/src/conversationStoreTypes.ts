@@ -1,9 +1,11 @@
+import { z } from "zod";
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
 import { decodeChunkArray, decodeStoredText } from "./store/itemTextChunks.js";
 import type {
   BlockSource,
   ChatAttachment,
   InteractionMode,
+  JobStatus,
   ProviderKind,
   RelationshipToParent,
   RuntimeItem,
@@ -12,7 +14,7 @@ import type {
   SubagentRun,
 } from "./types.js";
 import { threadEnvMode } from "./threadWorkspace.js";
-import type { ThreadWorkspace } from "./threadWorkspace.js";
+import type { ThreadEnvMode, ThreadWorkspace } from "./threadWorkspace.js";
 
 /** The value `done_at` carries when you explicitly un-marked a thread, as
  *  opposed to never having marked it (NULL). Epoch zero is not a time any
@@ -785,4 +787,285 @@ export function computeStreaks(datesAsc: string[]): Streak {
     }
   }
   return { current, longest };
+}
+
+// ── jobs ────────────────────────────────────────────────────────────────────
+
+/** Where a job sits in the user's list. `draft` never runs on its own — it is
+ *  work described and parked. `queued` is the only state the runner claims
+ *  from. The three settled states are terminal for the job, though a settled
+ *  job can be re-queued, which opens a new run rather than reviving the old
+ *  one. Defined in ./types.js, where the runtime event that carries it lives. */
+export type { ChatAttachment, JobStatus } from "./types.js";
+
+/** One attempt's own state. Distinct from the job's: a failed run can sit
+ *  under a job the user then re-queued, and the list has to be able to show
+ *  "attempt 2 running" over "attempt 1 failed" without either row lying.
+ *  `claimed` is the window between a runner taking the row and the thread
+ *  actually starting — the state a crash strands, and what the lease sweep
+ *  looks for. */
+export type JobRunStatus = "claimed" | "running" | "done" | "failed" | "cancelled";
+
+/** Where a job runs, as the composer captured it. These are the session-start
+ *  fields and nothing else: starting a job is handing them to the dispatcher,
+ *  so a field that the dispatcher would not read has no reason to be stored. */
+export type JobTarget = {
+  provider: ProviderKind;
+  /** Provider model id; the provider's own default when absent. */
+  model?: string;
+  /** Reasoning-effort tier, in the provider's own vocabulary. */
+  effort?: string;
+  /** Approval posture, fixed when the job was filed rather than read at
+   *  dispatch. A job can start with nobody watching, so the person who filed
+   *  it is the only one who can answer for how much it may do unattended. */
+  mode?: InteractionMode;
+  /** Worktree choice. Absent runs in the project's own checkout. */
+  workspace?: { mode: ThreadEnvMode; branch?: string; base?: string };
+  /** Providers/models to retry in order when a run hits a rate limit. */
+  fallbacks?: Array<{ provider: ProviderKind; model?: string }>;
+};
+
+/** A job as callers read it. */
+export type JobRow = {
+  jobId: string;
+  projectPath: string;
+  title: string;
+  body: string;
+  status: JobStatus;
+  target: JobTarget;
+  /** Files filed with the job. They ride to the opening turn rather than being
+   *  re-picked at dispatch: the bytes are already on disk when the job is
+   *  filed, and a job that runs unattended has nobody to ask for them again. */
+  attachments?: ChatAttachment[];
+  createdAt: number;
+  updatedAt: number;
+  /** Explicit queue position from a reorder. Absent rows drain oldest-first
+   *  behind every row that has one. */
+  sortKey?: number;
+  startedAt?: number;
+  endedAt?: number;
+  /** The branch the job's latest attempt actually ran on, read back from the
+   *  thread that attempt opened.
+   *
+   *  Observed, not chosen. `target.workspace` is the request — which checkout
+   *  the job asked for — and a job running in the project's own checkout asks
+   *  for nothing, so that field is empty for most jobs and never says where the
+   *  work landed. This does, and only once a run has started: a queued job has
+   *  no answer yet, because the checkout can still move before it is taken.
+   *
+   *  Populated by the list reads, which join the attempt and its thread. */
+  branch?: string;
+};
+
+/** One attempt at a job, and the thread that carried it. `threadId` is absent
+ *  only in the claimed window before the thread exists, or after the thread was
+ *  deleted out from under a settled run. */
+export type JobRunRow = {
+  runId: string;
+  jobId: string;
+  attempt: number;
+  status: JobRunStatus;
+  createdAt: number;
+  threadId?: string;
+  claimedBy?: string;
+  claimedAt?: number;
+  leaseExpiresAt?: number;
+  startedAt?: number;
+  endedAt?: number;
+  error?: string;
+};
+
+/** What the composer supplies. `status` is the one thing the two create paths
+ *  differ on — filing a draft versus queueing it — so it is required rather
+ *  than defaulted, to keep a caller from queueing work by forgetting a field. */
+export type JobCreateInput = {
+  jobId: string;
+  projectPath: string;
+  title: string;
+  body: string;
+  status: Extract<JobStatus, "draft" | "queued">;
+  target: JobTarget;
+  attachments?: ChatAttachment[];
+  at?: number;
+};
+
+/** Fields an edit may change. Absent means "leave alone"; `null` clears.
+ *  `status` is deliberately not here — moving a job between states goes
+ *  through the named transitions so the timestamps stay consistent. */
+export type JobPatch = {
+  title?: string;
+  body?: string;
+  target?: JobTarget;
+  sortKey?: number | null;
+};
+
+/** Where a job sits when nobody has reordered it: behind every row that has a
+ *  real position. Written as a large number rather than NULL so the drain order
+ *  is plain column order — NULL sorted first in SQLite and had to be pushed
+ *  last by a CASE, which no index can match, so every drain and every list
+ *  sorted the project's rows to find a queue of a dozen. Hidden from JobRow by
+ *  `rowToJob`, so "unordered" stays absent in the domain and is only a number
+ *  in the column. Must match the DEFAULT in migration 0009. */
+export const JOB_SORT_UNSET = 1e18;
+
+export type JobDbRow = {
+  job_id: string;
+  project_path: string;
+  title: string;
+  body: string;
+  status: JobStatus;
+  /** JOB_SORT_UNSET for a row nobody reordered.
+   *
+   *  Nullable because migration 0010 could not make the column NOT NULL without
+   *  rebuilding a table `job_runs` cascades from, not because a null is
+   *  expected: 0010 emptied the column of them and every writer since puts a
+   *  number there. Read defensively anyway — the type says what the schema
+   *  allows, not what the writers promise. */
+  sort_key: number | null;
+  provider: ProviderKind;
+  model: string | null;
+  effort: string | null;
+  mode: string | null;
+  workspace_json: string | null;
+  fallbacks_json: string | null;
+  attachments_json: string | null;
+  created_at: number;
+  updated_at: number;
+  started_at: number | null;
+  ended_at: number | null;
+  /** Joined in by the list reads only — see `JobRow.branch`. Absent on the
+   *  projections that read the jobs table alone. */
+  ran_on_branch?: string | null;
+};
+
+export type JobRunDbRow = {
+  run_id: string;
+  job_id: string;
+  attempt: number;
+  thread_id: string | null;
+  status: JobRunStatus;
+  claimed_by: string | null;
+  claimed_at: number | null;
+  lease_expires_at: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+  error: string | null;
+  created_at: number;
+};
+
+/** Every ProviderKind as a value, so a decoded chain can reject a provider id
+ *  the runtime has no adapter for. Declared as a record `satisfies
+ *  Record<ProviderKind, null>` rather than a bare list because that makes the
+ *  union and this set one edit: a provider added to the union without a key
+ *  here fails to compile. */
+const PROVIDER_KINDS = {
+  codex: null,
+  claudeAgent: null,
+  opencode: null,
+  cursor: null,
+  droid: null,
+  antigravity: null,
+} satisfies Record<ProviderKind, null>;
+
+// SAFETY: the keys of a record declared `satisfies Record<ProviderKind, null>`
+// are exactly the ProviderKind members, and the literal above is non-empty, so
+// the tuple form z.enum requires holds by construction.
+const ProviderKindSchema = z.enum(Object.keys(PROVIDER_KINDS) as [ProviderKind, ...ProviderKind[]]);
+
+const InteractionModeSchema = z.enum(["ask", "accept-edits", "full-access"]);
+
+/** A stored worktree choice. A record naming no mode is not a choice and fails
+ *  to parse, which reads as absent — the same outcome as never having chosen,
+ *  and the same run in the project's own checkout. */
+const JobWorkspaceSchema = z.object({
+  mode: z.enum(["local", "worktree"]),
+  branch: z.string().trim().min(1).optional(),
+  base: z.string().trim().min(1).optional(),
+});
+
+/** A stored failover chain. A rung naming no known provider is not something
+ *  the runtime could act on, so the whole chain fails rather than silently
+ *  running one rung shorter than the user configured. */
+const JobFallbacksSchema = z
+  .array(
+    z.object({
+      provider: ProviderKindSchema,
+      model: z.string().trim().min(1).optional(),
+    }),
+  )
+  .min(1);
+
+/** Decode a stored JSON column against its schema, or undefined when the
+ *  column is absent or will not parse. A column that will not parse is treated
+ *  as absent rather than thrown on: the job's own row is still worth showing,
+ *  and every field these columns carry has a working default. */
+function decodeJobJson<T>(json: string | null, schema: z.ZodType<T>): T | undefined {
+  if (!json) return undefined;
+  let parsed: unknown;
+  try {
+    // SAFETY: JSON.parse yields whatever the column held; the schema below is
+    // the only gate before the value is trusted.
+    parsed = JSON.parse(json) as unknown;
+  } catch {
+    return undefined;
+  }
+  const result = schema.safeParse(parsed);
+  return result.success ? result.data : undefined;
+}
+
+export function rowToJob(row: JobDbRow): JobRow {
+  const target: JobTarget = { provider: row.provider };
+  if (row.model) target.model = row.model;
+  if (row.effort) target.effort = row.effort;
+
+  // An unreadable mode decodes as absent, which runs at the provider's own
+  // default rather than at a posture nobody chose.
+  const mode = InteractionModeSchema.safeParse(row.mode);
+  if (mode.success) target.mode = mode.data;
+
+  const workspace = decodeJobJson(row.workspace_json, JobWorkspaceSchema);
+  if (workspace) target.workspace = workspace;
+
+  const fallbacks = decodeJobJson(row.fallbacks_json, JobFallbacksSchema);
+  if (fallbacks) target.fallbacks = fallbacks;
+
+  const attachments = parseAttachments(row.attachments_json);
+
+  const job: JobRow = {
+    jobId: row.job_id,
+    projectPath: row.project_path,
+    title: row.title,
+    body: row.body,
+    status: row.status,
+    target,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+  if (attachments?.length) job.attachments = attachments;
+  if (row.ran_on_branch) job.branch = row.ran_on_branch;
+  // The sentinel is a column detail, not a position the user chose, so it
+  // stays out of the domain row. A null reads the same way: a row nobody
+  // ordered, whatever spelling it was left in.
+  if (row.sort_key !== null && row.sort_key !== JOB_SORT_UNSET) job.sortKey = row.sort_key;
+  if (row.started_at !== null) job.startedAt = row.started_at;
+  if (row.ended_at !== null) job.endedAt = row.ended_at;
+  return job;
+}
+
+export function rowToJobRun(row: JobRunDbRow): JobRunRow {
+  const run: JobRunRow = {
+    runId: row.run_id,
+    jobId: row.job_id,
+    attempt: row.attempt,
+    status: row.status,
+    createdAt: row.created_at,
+  };
+  if (row.thread_id) run.threadId = row.thread_id;
+  if (row.claimed_by) run.claimedBy = row.claimed_by;
+  if (row.claimed_at !== null) run.claimedAt = row.claimed_at;
+  if (row.lease_expires_at !== null) run.leaseExpiresAt = row.lease_expires_at;
+  if (row.started_at !== null) run.startedAt = row.started_at;
+  if (row.ended_at !== null) run.endedAt = row.ended_at;
+  if (row.error) run.error = row.error;
+  return run;
 }

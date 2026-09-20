@@ -50,6 +50,74 @@ describe("buildIntentMenu", () => {
     expect(list).not.toContain("goto-git");
   });
 
+  test("the studio names its row's page, unless that page is the one underneath", () => {
+    const studioRow = { projectPath: "/p/1", name: "one" };
+    expect(ids("studio", { studioRow })).toEqual([
+      "back-to-page",
+      "open-row-page:/p/1",
+      "goto-inbox",
+      "open-settings",
+    ]);
+    expect(ids("studio", { studioRow, currentPath: "/p/1" })).not.toContain(
+      "open-row-page:/p/1",
+    );
+  });
+
+  test("the plane offers no other project's page", () => {
+    const recents = [
+      { path: "/p/1", name: "one" },
+      { path: "/p/2", name: "two" },
+    ];
+    expect(buildIntentMenu(ctx({ view: "studio", recents })).find((s) => s.key === "recents"))
+      .toBeUndefined();
+    expect(
+      buildIntentMenu(ctx({ view: "project-overview", recents })).find((s) => s.key === "recents"),
+    ).toBeDefined();
+  });
+
+  test("the focused column's actions ride the plane's menu", () => {
+    const studioRow = { projectPath: "/p/1", name: "one" };
+    const thread = { paneId: "pane-1", title: "Fix it", compactable: true, forkable: true };
+    const all = buildIntentMenu(ctx({ view: "studio", studioRow, studioThread: thread }));
+    expect(all.find((s) => s.key === "thread")?.items.map((i) => i.id)).toEqual([
+      "thread-side-chat:pane-1",
+      "thread-handoff:pane-1",
+      "thread-compact:pane-1",
+      "thread-archive:pane-1",
+    ]);
+    expect(all.find((s) => s.key === "thread")?.items[0]?.action).toEqual({
+      kind: "thread",
+      op: "side-chat",
+      projectPath: "/p/1",
+      paneId: "pane-1",
+    });
+  });
+
+  test("a column that can't compact or fork keeps only its archive", () => {
+    const sections = buildIntentMenu(
+      ctx({
+        view: "studio",
+        studioRow: { projectPath: "/p/1", name: "one" },
+        studioThread: {
+          paneId: "pane-1",
+          title: "Side note",
+          compactable: false,
+          forkable: false,
+        },
+      }),
+    );
+    expect(sections.find((s) => s.key === "thread")?.items.map((i) => i.id)).toEqual([
+      "thread-archive:pane-1",
+    ]);
+  });
+
+  test("no focused thread column means no thread card", () => {
+    const sections = buildIntentMenu(
+      ctx({ view: "studio", studioRow: { projectPath: "/p/1", name: "one" } }),
+    );
+    expect(sections.find((s) => s.key === "thread")).toBeUndefined();
+  });
+
   test("studio and inbox lead with back-to-page plus the sibling portal", () => {
     expect(ids("studio").slice(0, 2)).toEqual(["back-to-page", "goto-inbox"]);
     expect(ids("inbox", { studioHasRows: true }).slice(0, 2)).toEqual([

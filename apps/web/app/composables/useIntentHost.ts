@@ -28,6 +28,7 @@ import type { RecentProject } from "./useRecentProjects";
 import { useReveal } from "./useReveal";
 import { useSound } from "./useSound";
 import { useStudioPlane } from "./useStudioPlane";
+import { useStudioRowRegistry } from "./useStudioRowRegistry";
 import type { SessionSummary } from "~/types/session";
 import type { Project } from "./useProject";
 import type { PortalId } from "./usePortals";
@@ -143,6 +144,7 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
   const { surface: intentSurface, git: intentGit, goSurface: goIntentSurface } =
     useIntentContext();
   const studioPlane = useStudioPlane();
+  const rowRegistry = useStudioRowRegistry();
   const { recents, forget, togglePin } = useRecentProjects();
   const {
     pinned: intentPinned,
@@ -211,6 +213,14 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
         ? (el?.closest("[data-intent-path]")?.getAttribute("data-intent-path") ?? null)
         : null;
     const targetProject = intentTargetProjectFor(targetPath, recents.value);
+    // On the plane the subject is the row the camera stands on and the column
+    // it is focused on — the pointer can't name another, since every other row
+    // is off-screen. The row answers for its own column, so the menu never has
+    // to work out what a thread can do.
+    const studioRow = current === "studio" ? rowRegistry.focusedRow() : null;
+    const studioThread = studioRow
+      ? (rowRegistry.rowFor(studioRow.projectPath)?.focusedThread() ?? null)
+      : null;
     // SAFETY: the aggregate always tags its rows (live rows are filtered by
     // grid membership and tagged with that path plus the grid name; mocks
     // carry both fields), so the downcast to the required-fields shape holds.
@@ -227,6 +237,15 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
         projectName: s.projectName,
       })),
       studioHasRows: studioPlane.rows.value.length > 0,
+      studioRow,
+      studioThread: studioThread
+        ? {
+            paneId: studioThread.paneId,
+            title: studioThread.title,
+            compactable: studioThread.compactable,
+            forkable: studioThread.forkable,
+          }
+        : null,
       targetProject,
       targetSession,
       settingsOpen: settingsOpen.value,
@@ -324,6 +343,21 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
         cue("collapse");
         options.dismiss();
         return;
+      case "open-row-page":
+        // Step off the plane on the way: the page would otherwise open behind
+        // an opaque layer.
+        cue("open");
+        options.dismiss();
+        options.openProject({ path: action.path, name: action.name });
+        return;
+      case "thread": {
+        // The row runs its own guards (a busy thread refuses an archive or a
+        // handoff, with the notice that explains the column staying), so the
+        // menu only names the column and the operation.
+        cue("press");
+        rowRegistry.rowFor(action.projectPath)?.runThreadAction(action.op, action.paneId);
+        return;
+      }
       case "review-changes":
         cue("press");
         goIntentSurface("overview");

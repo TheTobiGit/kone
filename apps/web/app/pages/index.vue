@@ -72,7 +72,11 @@ function onOpenRecent(recent: RecentProject) {
 
 // Opening a conversation from the cross-project sessions list: switch to its
 // project and hand ProjectView the thread to resume once it mounts.
-function onOpenSession(target: { path: string; name: string; threadId: string }) {
+function onOpenSession(target: {
+  path: string;
+  name: string;
+  threadId: string;
+}) {
   cue("open");
   openProject({ path: target.path, name: target.name }, target.threadId);
 }
@@ -197,6 +201,7 @@ const {
   dismiss,
   toggleStudio,
   toggleInbox,
+  toggleBench,
   portalState,
   pendingThreadJump,
   jumpToThread,
@@ -206,9 +211,13 @@ const {
 // portalState on every render.
 const studioState = computed(() => portalState("studio"));
 const inboxState = computed(() => portalState("inbox"));
+const benchState = computed(() => portalState("bench"));
 // The page under the plane, so a row's request for something the page owns (a
 // file's diff, the branch picker) can be handed down to it.
-const pageRef = ref<{ openFile: (p: string, r: DOMRect | null) => void; openBranch: () => void } | null>(null);
+const pageRef = ref<{
+  openFile: (p: string, r: DOMRect | null) => void;
+  openBranch: () => void;
+} | null>(null);
 
 // A row asked for something the page owns. The plane has already stepped aside
 // by the time these arrive, so they land on the page that was underneath all
@@ -252,6 +261,7 @@ const surfaceTop = computed<SurfaceId>(() =>
     launcherModal: isLauncherModalOpen.value,
     intentMenu: intent.isOpen.value,
     assistant: assistantOpen.value,
+    bench: activePortal.value === "bench",
     inbox: activePortal.value === "inbox",
     studio: activePortal.value === "studio",
     settings: settingsOpen.value,
@@ -285,6 +295,12 @@ function onSurfaceHotkey(e: KeyboardEvent) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
     toggleInbox();
+    return;
+  }
+  if (matchesShortcut("open-bench", e)) {
+    if (isLauncherModalOpen.value) return;
+    e.preventDefault();
+    toggleBench();
     return;
   }
   // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so
@@ -344,7 +360,11 @@ function onAttentionOpen(projectPath: string, threadId: string) {
   >
     <!-- Settings panel, pinned to the left edge and revealed as the stage slides
          aside. It sits behind the stage (z-0) and shows through the gap. -->
-    <SettingsDrawer :open="settingsOpen" :surface-top="surfaceTop" @close="settingsOpen = false" />
+    <SettingsDrawer
+      :open="settingsOpen"
+      :surface-top="surfaceTop"
+      @close="settingsOpen = false"
+    />
 
     <!-- The launcher "stage": everything the user normally sees. When settings
          is open it slides straight right to uncover the panel — no scale, just a
@@ -356,7 +376,16 @@ function onAttentionOpen(projectPath: string, threadId: string) {
       :animate="{ x: settingsOpen ? settingsWidth : 0 }"
       :transition="stageSpring"
     >
-      <div class="relative h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
+      <!-- Everything the drawer stands in front of. Inert while it is open, so
+           the work underneath cannot be tabbed into, clicked or read out while
+           it is only visible: the drawer is modal, and pointer, keyboard and
+           screen reader all have to say so. The veil below is a sibling rather
+           than a child for exactly this reason — it stays clickable. -->
+      <div
+        class="relative h-full min-h-screen overflow-hidden"
+        :class="settingsOpen ? 'rounded-[26px]' : ''"
+        :inert="settingsOpen"
+      >
         <ProjectView
           v-if="project"
           ref="pageRef"
@@ -380,7 +409,12 @@ function onAttentionOpen(projectPath: string, threadId: string) {
           @settings="settingsOpen = true"
           @profile="onOpenProfile"
         />
-        <HomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />
+        <HomeEmpty
+          v-else
+          :pending="pending"
+          @start="onStart"
+          @settings="settingsOpen = true"
+        />
 
         <!-- The studio plane, over whichever page is showing. Unkeyed and never
              unmounted: the pages above are keyed on their project path and go
@@ -407,22 +441,42 @@ function onAttentionOpen(projectPath: string, threadId: string) {
           @jump-consumed="clearThreadJump"
         />
 
-        <!-- Every parked thread's bot, top-right over whatever is showing. -->
-        <AttentionGlobalBots @open="onAttentionOpen" />
+        <!-- The bench, over both. Mounted once like its siblings: the queue it
+             holds belongs to a project, but the portal outlives any one page,
+             and a job keeps running whether or not its project is on screen. -->
+        <BenchAppBench
+          :state="benchState"
+          :surface-top="surfaceTop"
+          @close="() => dismiss('bench')"
+        />
+
       </div>
 
-      <!-- While open, tapping the shoved-aside stage closes the drawer (and
-           blocks the launcher underneath from being clicked). It sits above the
-           page (z-30) but below the studio plane (z-40) and the inbox (z-45),
-           so either portal stays usable while settings is revealed — a tap on
-           the work is a tap on the work, not a dismissal. -->
+      <!-- While open, tapping the shoved-aside stage closes the drawer. It sits
+           above everything the stage holds — the page (z-30), the studio plane
+           (z-40), the pill stack and the inbox (z-45), the bench (z-46) — so a
+           tap on the shoved-aside work dismisses the drawer instead of landing
+           on the work underneath. A drawer that can only be left by keyboard is
+           a trap: with an opaque portal up, this is the only pointer path back.
+           The keyboard half of the same contract is the `inert` above, and the
+           surface order in surfaceTop, which both put the drawer in front of
+           every portal while it is open — a veil that ate pointer events while
+           keys still reached the portal underneath was modal to the mouse and
+           modeless to the keyboard. -->
       <button
         v-if="settingsOpen"
         type="button"
-        class="absolute inset-0 z-[35] cursor-pointer"
+        class="absolute inset-0 z-[50] cursor-pointer"
         aria-label="Close settings"
         @click="settingsOpen = false"
       />
+
+      <!-- Every parked thread's bot, top-right over whatever is showing, the
+           veil included: a parked thread outranks every other flow, so tapping
+           one still jumps straight to its thread. Outside the inert wrapper for
+           that reason, but still inside the stage — the bots are `fixed` and the
+           stage's transform is their containing block, so they slide with it. -->
+      <AttentionGlobalBots @open="onAttentionOpen" />
     </motion.div>
 
     <UiFolderPickerModal
@@ -443,7 +497,10 @@ function onAttentionOpen(projectPath: string, threadId: string) {
       @cancel="onCreateCancel"
     />
 
-    <AssistantGlobalAssistantModal v-if="assistantOpen" :surface-top="surfaceTop" />
+    <AssistantGlobalAssistantModal
+      v-if="assistantOpen"
+      :surface-top="surfaceTop"
+    />
 
     <!-- The conversation-search palette, over every page. Mounted only while
          up, the way the assistant card is: the shell plays its own exit and a

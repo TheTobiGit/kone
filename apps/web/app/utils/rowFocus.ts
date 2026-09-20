@@ -8,23 +8,24 @@
 //
 // The plane shows two kinds of row. A *persisted* row is one with work on it,
 // owned by the axis (useStudioPlane), which is what remembers focus across
-// restarts. A *transient* row is the one AppStudio adds for the open project
-// when that project has no work yet — it is on screen, but the axis knows
+// restarts. A *transient* row is one AppStudio keeps on screen without any work
+// behind it — for the open project before it has any, and for the row the camera
+// is standing in once its last pane closes. It is on screen, but the axis knows
 // nothing about it and cannot remember or move it.
 //
 // The case this exists for: you are standing in a persisted row and you close
 // its last pane. The row stops being persisted, so the axis drops it and falls
 // back to whichever project slid into its index. But your project is still on
-// screen — it became the transient row a moment ago — and being sent into
-// someone else's work for the crime of tidying up your own is not something any
-// gesture asked for. So a pin to your own row wins over the axis's fallback.
+// screen — it became a transient row a moment ago — and being sent into someone
+// else's work for the crime of tidying up your own is not something any gesture
+// asked for. So a pin to your own row wins over the axis's fallback.
 
 /** A row as the plane renders it — the axis's persisted rows plus, at most, the
  *  transient one for the open project. */
 export interface FocusRow {
   projectPath: string;
-  /** True for the row that exists only because a project is open with no work
-   *  on it yet. */
+  /** True for a row with no work behind it — the open project before it has
+   *  any, or the row the camera is standing in after its last pane closed. */
   transient: boolean;
 }
 
@@ -57,9 +58,9 @@ export function resolveRowFocus({
     return pinned;
   }
   if (axisPath && rows.some((r) => r.projectPath === axisPath)) return axisPath;
-  // No persisted row is focused — an empty plane, or the focused row just died
-  // and its project is not the open one. The last row is where a newly-born or
-  // transient row sits, which is the only place worth landing.
+  // No persisted row is focused — an empty plane, or the focused row died with
+  // nothing pinned to hold its place. The last row is where a newly-born or
+  // landing row sits, which is the only place left worth landing.
   return rows[rows.length - 1]?.projectPath ?? null;
 }
 

@@ -3,8 +3,10 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
+  Note01Icon,
   AiBrain01Icon,
   BubbleChatTemporaryIcon,
+  Directions01Icon,
   FlashIcon,
   Folder01Icon,
   GitBranchIcon,
@@ -31,7 +33,7 @@ import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/com
 import { isWorkspacePending } from "~/utils/threadWorkspace";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
-import { botMark } from "~/utils/bot";
+import { isRouterId, JEV_LABEL } from "~/utils/agentRouting";
 import {
   describeModelId,
   effortForTier,
@@ -59,6 +61,20 @@ import {
 // the parent stays oblivious to whether a provider bakes it into ids or a flag.
 
 const props = defineProps<{
+  /** Which surface this is: a turn spoken into a thread, or a job filed on the
+   *  bench. It selects the affordance set and nothing else — the name field,
+   *  the park control and the project picker on a job; the queued-turn strip,
+   *  the stop square and the thread label on a turn.
+   *
+   *  One discriminant rather than a bag of booleans, because these affordances
+   *  only ever arrive in those two bundles, and six flags that are always set
+   *  together say less than one word. Every *capability* stays its own prop
+   *  (`compactable`, `agentSwitchable`, `branchSwitchable`, …) because those do
+   *  vary from host to host within a kind.
+   *
+   *  This was a second 2,000-line component until it wasn't: the job composer
+   *  was a copy of this file with ten props left unpassed. */
+  kind?: "turn" | "job";
   /** Absolute project root used by the @ file picker. */
   projectPath: string;
   /** Leave the context tray off. It is tucked in under the card everywhere
@@ -112,8 +128,20 @@ const props = defineProps<{
   /** Who you can hand the turn to. Guest is never in here — it is the absence of
    *  a choice, so the menu adds it itself and an empty roster still offers it. */
   agents?: Agent[];
-  /** The agent the next turn goes to, or null/undefined for a guest. */
+  /** The agent the next turn goes to, or null/undefined for a guest.
+   *
+   *  It can also hold the router's sentinel id — see `~/utils/agentRouting`.
+   *  The picker is one radio group and this is where its answer lives, so
+   *  "let Jev decide" travels on the same channel as "let Maya do it". Nothing
+   *  here resolves it to an agent: with the router selected nobody is working
+   *  the turn yet, and the slot says so. */
   agentId?: string | null;
+  /** What the router decided on the last send, already worded — null when it
+   *  has decided nothing. Shown whatever it decided, including "nothing
+   *  matched": a router that only spoke up when it found a specialist would be
+   *  indistinguishable, on the common path, from one that was silently
+   *  broken. */
+  routingNote?: string | null;
   /** When true (the default), the agent slot opens the roster. A thread has one
    *  agent for its whole life, so once it has started the host turns this off and
    *  the slot only names who is on it. */
@@ -166,6 +194,16 @@ const emit = defineEmits<{
   /** The draft, plus any picked files. The parent uploads the files (scoped to
    *  the final thread) and hands the resulting metadata to the agent turn. */
   send: [text: string, files?: File[]];
+  /** File the job — the `kind: "job"` commit. `intent` is its two halves:
+   *  queue it to run next, or park it as a draft nobody will start. The title
+   *  may be empty; the store derives one from the body, and deriving a second
+   *  one here would be two rules for one field. */
+  file: [
+    job: { title: string; body: string; intent: "queued" | "draft" },
+    files?: File[],
+  ];
+  /** Ask the host to choose the project this job runs in. */
+  "open-project": [];
   /** Drop one durably queued follow-up (the strip's Stop button). */
   "remove-queued": [queueId: string];
   /** Dispatch a queued follow-up immediately (steer into running turn or send). */
@@ -173,7 +211,8 @@ const emit = defineEmits<{
   /** Reorder the queued follow-ups. */
   "reorder-queued": [queueIds: string[]];
   interrupt: [];
-  /** null hands the turn to a guest — see `agentId`. */
+  /** null hands the turn to a guest, and the router's sentinel hands the
+   *  choice to Jev — see `agentId`. */
   "update:agentId": [id: string | null];
   "update:modelId": [id: string];
   "update:reasoning": [tier: EffortTier];
@@ -199,6 +238,19 @@ const emit = defineEmits<{
 const { cue } = useSound();
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
+
+/** A job is written on a bench that spans every project, so being aimed at one
+ *  is something it acquires rather than something it inherits from the surface
+ *  it was opened on. A turn is always spoken inside a project already open. */
+const isJob = computed(() => props.kind === "job");
+const hasProject = computed(() => props.projectPath.trim().length > 0);
+
+/** What the row is called in the list. Quiet until written in: a job that is
+ *  only a sentence long does not need naming twice, so leaving it blank is an
+ *  ordinary way to file one. */
+const title = ref("");
+const TITLE_MAX = 80;
+const hasTitle = computed(() => title.value.trim().length > 0);
 const canSwitchBranch = computed(() => props.branchSwitchable !== false);
 const showTray = computed(() => !props.hideContextTray);
 
@@ -217,6 +269,9 @@ const roster = computed<Agent[]>(() => props.agents ?? []);
 /** undefined when the turn goes to a guest. Deliberately no fall back to the
  *  first of the roster: an agent is opt-in, so nobody is assigned by default. */
 const currentAgent = computed(() => roster.value.find((a) => a.id === props.agentId));
+/** Whether the slot is holding the router rather than an agent. Never both:
+ *  the sentinel is not in the roster, so `currentAgent` is undefined here. */
+const isRouting = computed(() => isRouterId(props.agentId));
 const canSwitchAgent = computed(() => props.agentSwitchable !== false);
 
 /**
@@ -256,18 +311,26 @@ const beadBot = computed(() => {
 });
 
 /**
- * The mark next to the name in the tray. The bot when the agent has one —
- * this strip is the composer, so the creature it works through is the right
- * mark, the same one resting on the bead. A marble face only when there is no
- * bot to show: a named agent that never got one, or a guest rolled from the
- * thread. Null is the guest picker, which keeps the dice.
+ * The avatar next to the name in the tray. Uses the agent's photo avatar if they
+ * have one, or falls back to their SVG drawn face. Null is the guest/solo picker,
+ * which keeps the flash icon.
  */
-const trayMark = computed(() => {
-  if (beadBot.value) return botMark(beadBot.value);
-  return settledIdentity.value?.svg ?? currentAgent.value?.svg ?? null;
+const trayAvatar = computed<{ photo?: string; svg?: string } | null>(() => {
+  if (!canSwitchAgent.value && settledIdentity.value) {
+    if (settledIdentity.value.avatar) return { photo: settledIdentity.value.avatar };
+    if (settledIdentity.value.svg) return { svg: settledIdentity.value.svg };
+    return null;
+  }
+  if (currentAgent.value) {
+    if (currentAgent.value.avatar?.src) return { photo: currentAgent.value.avatar.src };
+    if (currentAgent.value.svg) return { svg: currentAgent.value.svg };
+    return null;
+  }
+  return null;
 });
 
 const agentPickerOpen = ref(false);
+const agentTriggerEl = ref<HTMLElement | null>(null);
 
 function openAgentPicker() {
   if (!canSwitchAgent.value) return;
@@ -277,7 +340,7 @@ function openAgentPicker() {
 
 function pickAgent(id: string | null) {
   agentPickerOpen.value = false;
-  if (id === (currentAgent.value?.id ?? null)) return;
+  if (id === (props.agentId ?? null)) return;
   emit("update:agentId", id);
   cue("select");
 }
@@ -584,6 +647,11 @@ function clearComposerEditor(): void {
 }
 
 const isEmpty = computed(() => text.value.trim().length === 0);
+const askLabel = computed(() => (isJob.value ? "What should this job do?" : "Ask anything…"));
+const seedLabel = computed(() => {
+  if (!isJob.value) return props.busy && !armed.value ? "Stop" : "Send";
+  return hasProject.value ? "Queue this job" : "Choose a project first";
+});
 
 const {
   attachments,
@@ -630,7 +698,13 @@ const SPRING_MIN = 64;
 let lastCard = false;
 
 const hasText = computed(() => text.value.trim().length > 0);
-const armed = computed(() => hasText.value || hasAttachments.value);
+const armed = computed(
+  () => hasText.value || hasAttachments.value || (isJob.value && hasTitle.value),
+);
+/** Whether the primary commit would actually land. A turn only needs writing;
+ *  a job also needs somewhere to run, and queuing an unaimed one would file
+ *  something the dispatcher can never pick up. */
+const commitReady = computed(() => (isJob.value ? armed.value && hasProject.value : armed.value));
 const card = computed(() => hasAttachments.value);
 
 // Read the surface's natural height at its current (settled) width.
@@ -739,6 +813,15 @@ onKeyStroke("Escape", () => {
   close();
 });
 
+/** The agent picker's Escape, taken in the capture phase so one press closes
+ *  one layer: without this the surface behind the composer — a portal that
+ *  answers Escape of its own — would take the same press and leave too. */
+function onEscapeCapture(event: KeyboardEvent): void {
+  if (!agentPickerOpen.value) return;
+  event.stopPropagation();
+  agentPickerOpen.value = false;
+}
+
 function onSurfaceClick() {
   if (!open.value) {
     void wake();
@@ -774,7 +857,7 @@ useEventListener(window, "keydown", onGlobalKey);
  *  (idle) and Enter — while a turn runs Enter also sends: the host's service
  *  durably enqueues the follow-up behind the running turn instead of
  *  dropping it, so no draft is ever lost or parked locally. */
-function dispatchDraft() {
+function dispatchDraft(intent: "queued" | "draft" = "queued") {
   if (!armed.value) {
     void wake();
     return;
@@ -787,6 +870,14 @@ function dispatchDraft() {
   // through the same table and the same gates — one command, one rule.
   const slash = parseLeadingSlashCommand(text.value);
   if (slash && runSlashCommand(slash.name, slash.focus, { fromMenu: false })) return;
+  // Queuing an unaimed job would file something the dispatcher can never pick
+  // up. Refused rather than silently downgraded to a draft: which shelf it
+  // lands on is the user's decision, not a fallback.
+  if (isJob.value && intent === "queued" && !hasProject.value) {
+    cue("error");
+    emit("open-project");
+    return;
+  }
   // Nothing to send it to. Return before clearComposerEditor() below — a send refused
   // for a reason the user hasn't fixed yet must not also cost them their draft.
   if (props.blockedReason) {
@@ -797,11 +888,24 @@ function dispatchDraft() {
   // A turn is valid with text, attachments, or both — an attachment-only send
   // (a screenshot with no words) is allowed.
   const files = attachments.value.map((a) => a.file);
-  emit("send", draft, files.length ? files : undefined);
+
+  if (isJob.value) {
+    emit("file", { title: title.value.trim(), body: draft, intent }, files.length ? files : undefined);
+    title.value = "";
+  } else {
+    emit("send", draft, files.length ? files : undefined);
+  }
+
   cue("send");
   clearComposerEditor();
   clearAttachments();
   syncSoon();
+}
+
+/** Park it. The other half of the job commit: same draft, the shelf nobody
+ *  dispatches from. */
+function park() {
+  dispatchDraft("draft");
 }
 
 function send() {
@@ -865,11 +969,12 @@ defineExpose({ wake, setDraft, focus });
   <div
     ref="dock"
     class="dock"
-    :class="{ 'dock--drag': dragging }"
+    :class="{ 'dock--drag': dragging, 'dock--job': isJob }"
     @dragenter="onDragEnter"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop="onDrop"
+    @keydown.capture.escape="onEscapeCapture"
   >
     <!-- Off-screen file picker, opened by the attach control. Accepts anything;
          images become vision blocks, everything else an on-disk path block. -->
@@ -908,6 +1013,7 @@ defineExpose({ wake, setDraft, focus });
          forwards its reports (cancel / send-now / reorder) and handles an
          edit by parking the row's text back in the field. -->
     <AgentQueueStrip
+      v-if="!isJob"
       :queued="queued"
       @remove-queued="emit('remove-queued', $event)"
       @send-now="emit('send-now', $event)"
@@ -992,6 +1098,25 @@ defineExpose({ wake, setDraft, focus });
         <!-- Field · the text alone. Every control now lives in the bar below it,
              inside the card, so the composer is one object on the ground rather
              than a pill with satellites floating either side. -->
+        <!-- Name · what the row is called in the list. It sits above the body
+             rather than beside it because that is the order it is read back in,
+             and it is quiet until written in: a job that is only a sentence
+             long does not need naming twice, so leaving it blank is an
+             ordinary way to file one. -->
+        <div v-if="isJob" class="title" :class="{ 'is-shown': open && !closing }">
+          <input
+            v-model="title"
+            type="text"
+            class="title__input"
+            placeholder="Name this job"
+            aria-label="Job name"
+            :tabindex="open ? 0 : -1"
+            :maxlength="TITLE_MAX"
+            @keydown.enter.prevent="field?.focus()"
+            @click.stop
+          />
+        </div>
+
         <div class="field">
           <!-- The field is a contenteditable surface: prose lives in text nodes
                and each completed @mention is an atomic MentionChip span (a type
@@ -1002,14 +1127,14 @@ defineExpose({ wake, setDraft, focus });
             <!-- Placeholder overlay, not a ::before: it sits above the empty
                  field but takes no layout, so the caret stays at the true left
                  edge (a pseudo-element would push the cursor after the label). -->
-            <span v-if="isEmpty" class="field__placeholder" aria-hidden="true">Ask anything…</span>
+            <span v-if="isEmpty" class="field__placeholder" aria-hidden="true">{{ askLabel }}</span>
             <div
               ref="field"
               class="field__input"
               contenteditable="true"
               role="textbox"
               aria-multiline="true"
-              aria-label="Ask anything"
+              :aria-label="askLabel"
               :tabindex="open ? 0 : -1"
               @keydown="onComposerKeydown"
               @input="onComposerInput"
@@ -1140,21 +1265,42 @@ defineExpose({ wake, setDraft, focus });
               {{ currentWindow.label }}
             </button>
 
-            <!-- The seed: a stop while a turn runs and the field is empty, a
-                 send the moment there is a draft (typing arms it — the send
-                 queues behind the running turn). -->
+            <!-- Park it. The quieter of a job's two commits, and deliberately a
+                 plain word next to the seed rather than a second disc: filing a
+                 draft and queuing one are not equal weights, and two discs side
+                 by side would say they were. -->
+            <button
+              v-if="isJob && armed"
+              type="button"
+              class="barbtn park"
+              aria-label="Save as draft"
+              title="Save as a draft — nothing will start it"
+              :tabindex="open ? 0 : -1"
+              @mousedown.prevent
+              @click.stop="park"
+            >
+              <HugeiconsIcon :icon="Note01Icon" :size="15" :stroke-width="1.9" />
+              <span class="park__label">Draft</span>
+            </button>
+
+            <!-- The seed. On a turn: a stop while one runs and the field is
+                 empty, a send the moment there is a draft (typing arms it — the
+                 send queues behind the running turn). On a job it is never a
+                 stop, because nothing runs behind this composer; it stays dim
+                 until the job could actually be picked up. -->
             <button
               type="button"
               class="seed"
-              :class="{ 'seed--armed': armed }"
-              :aria-label="busy && !armed ? 'Stop' : 'Send'"
+              :class="{ 'seed--armed': commitReady, 'seed--dim': isJob }"
+              :aria-label="seedLabel"
+              :title="isJob ? seedLabel : undefined"
               :tabindex="open ? 0 : -1"
               @mousedown.prevent
               @click.stop="send"
             >
               <!-- Stop square while a turn runs with nothing to send; the send
-                   arrow otherwise. -->
-              <svg v-if="busy && !armed" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
+                   arrow otherwise. A job has no turn to stop. -->
+              <svg v-if="!isJob && busy && !armed" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
                 <rect x="5" y="5" width="8" height="8" rx="2" fill="var(--accent-ink)" />
               </svg>
               <svg v-else class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
@@ -1195,35 +1341,83 @@ defineExpose({ wake, setDraft, focus });
         class="tray__item"
         :title="`${settledIdentity.name} is on this thread`"
       >
-        <!-- Decorative: the name is right beside it, and a rolled face carries the
-             generator's own title and licence text inside the SVG, which is read
-             out in full otherwise. -->
-        <span class="tray__face" aria-hidden="true" v-html="trayMark" />
+        <img
+          v-if="trayAvatar?.photo"
+          class="tray__avatar"
+          :src="trayAvatar.photo"
+          alt=""
+          draggable="false"
+        />
+        <span
+          v-else-if="trayAvatar?.svg"
+          class="tray__face"
+          aria-hidden="true"
+          v-html="trayAvatar.svg"
+        />
         <span class="tray__label tray__label--strong">{{ settledIdentity.name }}</span>
       </span>
       <button
         v-else
+        ref="agentTriggerEl"
         type="button"
         class="tray__item tray__item--action"
         :tabindex="open ? 0 : -1"
-        :aria-label="`${currentAgent?.name ?? GUEST_LABEL} is taking the turn. Change who takes it.`"
-        :title="
-          currentAgent
-            ? `${currentAgent.name}${currentAgent.role ? ` — ${currentAgent.role}` : ''}`
-            : `${GUEST_LABEL} — Solo pair programming mode`
+        :aria-label="
+          isRouting
+            ? `${JEV_LABEL} will choose who takes the turn. Change who takes it.`
+            : `${currentAgent?.name ?? GUEST_LABEL} is taking the turn. Change who takes it.`
         "
+        :title="isRouting ? JEV_LABEL : (currentAgent?.name ?? GUEST_LABEL)"
         @click.stop="openAgentPicker"
       >
-        <span v-if="trayMark" class="tray__face" aria-hidden="true" v-html="trayMark" />
+        <HugeiconsIcon v-if="isRouting" :icon="Directions01Icon" :size="13" :stroke-width="1.8" />
+        <img
+          v-else-if="trayAvatar?.photo"
+          class="tray__avatar"
+          :src="trayAvatar.photo"
+          alt=""
+          draggable="false"
+        />
+        <span
+          v-else-if="trayAvatar?.svg"
+          class="tray__face"
+          aria-hidden="true"
+          v-html="trayAvatar.svg"
+        />
         <HugeiconsIcon v-else :icon="FlashIcon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">
-          {{ currentAgent?.name ?? GUEST_LABEL }}
-        </span>
-        <span v-if="currentAgent?.role" class="tray__role">
-          · {{ currentAgent.role }}
+          {{ isRouting ? JEV_LABEL : (currentAgent?.name ?? GUEST_LABEL) }}
         </span>
       </button>
-      <span v-if="projectName" class="tray__item">
+      <span
+        v-if="routingNote"
+        class="tray__item tray__item--routing"
+        :title="routingNote"
+      >
+        <HugeiconsIcon :icon="Directions01Icon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label">{{ routingNote }}</span>
+      </span>
+      <!-- Where it runs. A picker on a job and a label on a turn: a turn is
+           spoken inside a project that is already open, but a job is written on
+           a bench that spans all of them, so being aimed is something it
+           acquires. Unset is the state a fresh job opens in, and it names
+           itself as the thing still missing rather than rendering nothing. -->
+      <button
+        v-if="isJob"
+        type="button"
+        class="tray__item tray__item--action"
+        :class="{ 'tray__item--wanted': !hasProject }"
+        :tabindex="open ? 0 : -1"
+        :aria-label="hasProject ? `Runs in ${projectName}. Change project.` : 'Choose the project this job runs in'"
+        :title="hasProject ? `Runs in ${projectName}` : 'Choose the project this job runs in'"
+        @click.stop="emit('open-project')"
+      >
+        <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label tray__label--strong">
+          {{ hasProject ? projectName : "Choose project" }}
+        </span>
+      </button>
+      <span v-else-if="projectName" class="tray__item">
         <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">{{ projectName }}</span>
       </span>
@@ -1260,6 +1454,7 @@ defineExpose({ wake, setDraft, focus });
         />
       </span>
       <span
+        v-if="!isJob"
         class="tray__item tray__item--end"
         :title="threadLabel"
       >
@@ -1271,746 +1466,21 @@ defineExpose({ wake, setDraft, focus });
     <!-- Partner / Solo Mode Picker in the app's modal shell -->
     <AgentPickerModal
       v-if="agentPickerOpen && canSwitchAgent"
+      :anchor-el="agentTriggerEl"
       :agents="roster"
-      :active-agent-id="currentAgent?.id ?? null"
+      :active-agent-id="isRouting ? agentId ?? null : currentAgent?.id ?? null"
       @select="pickAgent"
       @cancel="agentPickerOpen = false"
     />
   </div>
 </template>
 
+<style scoped src="../composer/composer.css"></style>
+
 <style scoped>
-.dock {
-  /* Accent rings (drag, armed) ride the same metal, not a hue. */
-  --chrome-ring: 138 141 149;
-
-  /* A column now: the card, with the context tray tucked in behind its floor. */
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  position: relative;
-  /* Fill the width the fixed bar gives us, capped so the reading measure stays
-     comfortable on wide screens and leaving a small gutter on narrow ones. The
-     resting orb (55px) still centres within this track. */
-  width: min(100% - 32px, 680px);
-  animation: dock-rise 440ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: var(--proj-enter-composer, 0ms);
-}
-
-/* The picker is anchored to the field rather than the viewport so it follows
-   the composer's morph on both the overview and board surfaces. */
-.mention-picker {
-  position: absolute;
-  z-index: 30;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 12px);
-  pointer-events: auto;
-}
-.mention-picker > :deep(*) {
-  width: 100%;
-}
-
-@keyframes dock-rise {
-  from {
-    opacity: 0;
-    transform: translateY(28px) scale(0.88);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-/* Dragging files over the dock: a soft chrome ring on the surface invites the
-   drop. No border/heavy shadow — a low, calm glow in kone's idiom. */
-.dock--drag .surface {
-  box-shadow: rgb(var(--chrome-ring) / 0.30) 0 0 0 3px;
-}
-
-/* A brighter chrome ring in dark, so the drag/armed glows keep their
-   weight off the near-black ground. Everything else follows the theme. */
-html.dark .dock {
-  --chrome-ring: 168 171 179;
-}
-
-/* ── The morphing surface ─────────────────────────────────────────────────── */
-/* At rest it's a 52px orb. Open, it becomes the gradient rim around a white
-   field. Width, corner radius, rim padding and height all ease together, so the
-   orb visibly expands and collapses. */
-.surface {
-  position: relative;
-  /* Above the tray, which is tucked in behind its bottom edge. */
-  z-index: 1;
-  overflow: hidden;
-  /* Own compositing layer — keeps the rounded-corner clip of the gradient rim
-     crisp instead of aliased. */
-  transform: translateZ(0);
-  isolation: isolate;
-  width: 55px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 50%;
-  cursor: pointer;
-  pointer-events: auto;
-}
-/* At rest and settled, the surface carries no gradient and unclips the resting bead. */
-.surface:not(.is-open):not(.is-closing) {
-  overflow: visible;
-  background-image: none;
-}
-.surface.is-closing {
-  width: 100%;
-  padding: 0;
-  border-radius: 26px;
-  border-color: var(--line);
-  background-image: none;
-  overflow: hidden;
-  cursor: pointer;
-  pointer-events: none;
-  opacity: 0;
-  box-shadow: none;
-  transition: opacity 0.18s ease;
-}
-.surface.is-open {
-  /* One open shape. It fills the dock's responsive track (full width up to the
-     680px cap) and only grows downward as the text runs on — nothing about the
-     frame moves while you type. */
-  width: 100%;
-  padding: 0;
-  border-radius: 26px;
-  border-color: var(--line);
-  background-image: none;
-  opacity: 1;
-  /* Soft and low — just enough to lift the card off the page and read the tray
-     as sitting under it. Never a heavy drop. */
-  box-shadow:
-    rgb(0 0 0 / 0.07) 0 10px 26px -12px,
-    rgb(0 0 0 / 0.05) 0 2px 6px -3px;
-  cursor: default;
-  display: flex;
-  flex-direction: column;
-  /* Open + everyday sizing: width tracks the text and height follows. This is
-     the typing curve — short and snappy with no overshoot, so per-keystroke
-     nudges keep up with the cursor instead of wobbling behind it. */
-  transition:
-    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
-    padding 0.13s ease,
-    width 0.12s cubic-bezier(0.4, 0, 0.2, 1),
-    height 0.14s cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 0.2s ease,
-    opacity 0.15s ease;
-}
-/* Big/structural moves (paste, drop, first/last wrap, pill↔card) overshoot and
-   settle back — a little spring so a large size change feels physical. */
-.surface.is-open.is-springy {
-  transition:
-    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
-    padding 0.13s ease,
-    width 0.34s cubic-bezier(0.34, 1.56, 0.64, 1),
-    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1),
-    border-color 0.2s ease,
-    opacity 0.15s ease;
-}
-/* Only through the wake expand: corners square off to the input's radius first,
-   then the body stretches out — so it never passes through an ellipse. Placed
-   after .is-springy so it wins during opening (both classes are on then). */
-.surface.is-open.is-opening {
-  transition:
-    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
-    padding 0.13s ease,
-    width 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
-    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
-    border-color 0.2s ease;
-}
-/* White field body. Transparent at rest so the orb reads as a solid marble.
-   Its corners track the surface's on the same curve so the gradient rim keeps an
-   even thickness all the way through the morph. */
-.panel {
-  position: relative;
-  /* Over the bead, so the opening card closes across the face. */
-  z-index: 1;
-  height: 100%;
-  border-radius: inherit;
-  background: transparent;
-}
-.surface.is-open .panel {
-  display: flex;
-  flex-direction: column;
-  background: var(--field);
-  /* Opaque from the first frame of the wake, so the card is a solid thing
-     growing over the face rather than a haze the face shows through; the slower
-     base curve then lets the face come back gently on the way in. */
-  transition: background-color 0.06s ease, border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1);
-  border-radius: 26px;
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-}
-.surface.is-closing .panel {
-  display: flex;
-  flex-direction: column;
-  background: var(--field);
-  border-radius: 26px;
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-}
-
-/* ── Resting bead ─────────────────────────────────────────────────────────── */
-/* Pinned to the bead's own footprint at the bottom of the surface — the edge
-   that doesn't move as the card grows — so the face holds still while the card
-   opens out of it. It sits under the field, not over it: the card covering the
-   face is the whole effect. */
-.orbfx {
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  z-index: 0;
-  transform: translateX(-50%);
-  pointer-events: none;
-  opacity: 1;
-  transition: opacity 0.18s ease;
-}
-.surface.is-open .orbfx {
-  opacity: 0;
-  transition: opacity 0.06s ease;
-}
-
-/* ── Dormant face ─────────────────────────────────────────────────────────── */
-/* Retired: the particle globe is the resting mark now, so the sleeping eyes/z
-   would only poke out past the orb. Kept in the DOM but hidden. */
-.face {
-  position: absolute;
-  inset: 0;
-  display: none;
-  place-items: center;
-  opacity: 1;
-  transition: opacity 0.18s ease;
-  pointer-events: none;
-  animation: breathe 5.5s ease-in-out infinite;
-}
-.surface.is-open .face { opacity: 0; transition: opacity 0.16s ease; }
-.face__eyes { width: 55px; height: 55px; }
-.face__z {
-  position: absolute;
-  font-style: italic;
-  font-weight: 600;
-  color: #b0b2b8;
-}
-.face__z--near { right: 8px; top: 6px; font-size: 12px; }
-.face__z--far { right: 1px; top: -2px; font-size: 9px; color: #c6c8ce; }
-@keyframes breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.04); }
-}
-
-/* ── Field ────────────────────────────────────────────────────────────────── */
-/* Fades in a beat after the expand begins so text never appears mid-squeeze. */
-.field {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  height: 100%;
-  /* The text sits high in the card with air under it — the bar below owns the
-     floor, so the field never pads down into it. */
-  padding: 16px 14px 4px;
-  opacity: 0;
-  pointer-events: none;
-}
-.surface.is-open .field {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-  opacity: 1;
-  pointer-events: auto;
-  transition: opacity 0.2s ease 0.08s;
-}
-.surface.is-closing .field {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-  opacity: 1;
-  pointer-events: none;
-}
-.surface:not(.is-open):not(.is-closing) .field {
-  flex: none;
-  opacity: 0;
-  pointer-events: none;
-}
-/* Closed, the panel is an invisible sheet lying over the face — its editor would
-   otherwise hand the bead a text cursor. Nothing in it is reachable until the
-   card is open anyway, so it stops taking the pointer entirely. */
-.surface:not(.is-open) .panel { pointer-events: none; }
-/* The contenteditable field. It flows text nodes + atomic chip spans, wrapping
-   at the card's fixed width and growing its own height — no textarea, no
-   overlay, and no per-keystroke width chase. */
-/* The input's box: positioned so its text (and caret) paint above the
-   placeholder overlay below. */
-.field__ed {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 0;
-  /* Open at two rows of room so the field never starts as a single cramped
-     line — text starts at the top and grows down from there. */
-  min-height: 50px;
-  display: flex;
-  align-items: flex-start;
-}
-.field__input {
-  position: relative;
-  z-index: 1;
-  flex: 1 1 0;
-  width: 100%;
-  min-width: 0;
-  min-height: 50px;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 22px;
-  letter-spacing: normal;
-  /* The card's width is fixed, so text simply wraps and the card grows down. */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-height: 260px;
-  overflow-x: hidden;
-  overflow-y: auto;
-  cursor: text;
-}
-.field__input:focus { outline: 0; }
-/* Placeholder overlay — shown only while the field is empty. It's a sibling
-   overlay (not ::before) so it never pushes the caret: an empty field's caret
-   stays at the true left edge under the label, and clearing the draft returns
-   the cursor to the start instead of leaving it after the text. */
-.field__placeholder {
-  position: absolute;
-  left: 0;
-  /* Sit on the first line so it lines up with the top-anchored caret. */
-  top: 0;
-  color: var(--placeholder);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 22px;
-  white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
-}
-
-/* ── The bar ──────────────────────────────────────────────────────────────── */
-/* One rail across the card's floor holding every control. Borderless, in kone's
-   idiom — the marks and labels carry the state, nothing draws a container. It
-   rises in from below as the card opens, just behind the field. */
-.bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex: 0 0 auto;
-  padding: 0 8px 9px 8px;
-  opacity: 0;
-  transform: translateY(6px);
-  pointer-events: none;
-}
-.bar.is-shown {
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-  transition:
-    opacity 0.22s ease 0.12s,
-    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.12s;
-}
-.surface.is-closing .bar {
-  opacity: 1;
-  transform: none;
-  pointer-events: none;
-}
-.bar__group {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-}
-/* The right group must be free to shrink — a long model name gives way before
-   the send seed ever gets pushed off the card's edge. */
-.bar__group--end { gap: 4px; flex: 0 1 auto; }
-
-/* Every control on the bar wears the same clothes: a bare 30px-tall slot whose
-   ink lifts on hover. Only the send seed breaks it. */
-.barbtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex-shrink: 0;
-  height: 30px;
-  padding: 0 7px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  opacity: 0.78;
-  transition: opacity 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
-}
-.barbtn:hover {
-  opacity: 1;
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
-}
-.barbtn:active { transform: scale(0.95); }
-/* A slot that only reports — same clothes, none of the affordance. */
-.barbtn--fixed { cursor: default; }
-.barbtn--fixed:hover { opacity: 0.78; background: transparent; }
-.barbtn--fixed:active { transform: none; }
-
-/* ── Context tray ─────────────────────────────────────────────────────────── */
-/* Who takes the turn and where it lands — agent, project, branch, thread —
-   tucked in behind the card so only its bottom strip shows. It's ground, not
-   chrome: a quieter surface, smaller type, and no hairline anywhere. */
-.tray {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  /* Narrower than the card, so it reads as something the card is standing on
-     rather than a second bar bolted to its bottom. */
-  width: calc(100% - 26px);
-  /* No z-index of its own, on purpose. A flex item honours z-index even while
-     it is statically positioned, so any value here makes the tray a stacking
-     context — and the roster opening out of it would then be pinned under the
-     card no matter how high its own layer went. The card is already lifted above
-     the tray by its own z-index, which is all the tuck needs. */
-  overflow: hidden;
-  height: 0;
-  margin-top: 0;
-  padding: 0 14px;
-  border-radius: 0 0 18px 18px;
-  background: var(--sunken);
-  opacity: 0;
-  transform: none;
-  pointer-events: none;
-  transition: opacity 0.16s ease;
-}
-.tray.is-shown {
-  /* Taller than it shows: the card's rounded floor covers the top 14px, so the
-     tray reads as one slab the composer is resting on. */
-  height: 40px;
-  margin-top: -14px;
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-  transition:
-    height 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
-    margin-top 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
-    opacity 0.24s ease 0.14s;
-}
-.tray.is-closing {
-  height: 40px;
-  margin-top: -14px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.18s ease;
-}
-.tray__item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  /* Sit on the strip that shows, not on the covered half. */
-  margin-top: 12px;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--faint);
-  font-family: var(--font-sans);
-  font-size: 11.5px;
-  line-height: 14px;
-  white-space: nowrap;
-}
-.tray__label {
-  color: var(--ink);
-  opacity: 0.62;
-  max-width: 148px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tray__label--strong { opacity: 0.86; }
-/* Reads at the same weight as the branch beside it — one statement about where
-   the work goes, not two facts of different importance. */
-.tray__workspace {
-  color: var(--ink);
-  opacity: 0.62;
-  max-width: 148px;
-}
-.tray__item--action {
-  cursor: pointer;
-  transition: background-color 0.2s ease;
-}
-.tray__item--action:hover {
-  background: color-mix(in srgb, var(--ink) 7%, transparent);
-}
-.tray__item--action:hover .tray__label { opacity: 0.9; }
-.tray__item--end {
-  margin-left: auto;
-  min-width: 0;
-}
-.tray__item--end .tray__label {
-  max-width: 220px;
-}
-.tray__role {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 14px;
-  opacity: 0.72;
-  white-space: nowrap;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Big enough to read as a face rather than a dot, and level with the glyphs
-   beside it: a marble has no stroke and no counters, so at their nominal size
-   it reads optically smaller than they do. A bot fills the same tile; its
-   outline's smoothing is allowed to bulge a hair past the box. */
-.tray__face {
-  display: block;
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-.tray__face :deep(svg) {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-/* ── Send seed ────────────────────────────────────────────────────────────── */
-.seed {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  margin-left: 4px;
-  border: 0;
-  padding: 0;
-  border-radius: 50%;
-  cursor: pointer;
-  background: var(--accent);
-  transition: box-shadow 0.3s ease, transform 0.2s ease;
-}
-.seed--armed {
-  box-shadow: rgb(var(--chrome-ring) / 0.16) 0 0 0 4px;
-}
-.seed:hover { transform: scale(1.06); }
-.seed:active { transform: scale(0.94); }
-.seed__arrow { width: 15px; height: 15px; }
-
-/* ── Chips ────────────────────────────────────────────────────────────────── */
-/* Attachment chips ride above the text, on the field's own left margin so the
-   card reads as one column: chips, then prose, then the bar. */
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 14px 14px 0;
-}
-/* With chips up top the field's own lead-in would double the gap. */
-.surface.is-card .field { padding-top: 10px; }
-.chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 5px 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--chip);
-  color: var(--faint);
-}
-.chip--image { padding-left: 4px; }
-/* Extension badge for non-image files — a soft neutral tile, no loud colour
-   (kone stays calm and borderless). */
-.chip__badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: 6px;
-  background: var(--line);
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 8.5px;
-  letter-spacing: 0.02em;
-  line-height: 1;
-}
-/* Image preview thumbnail. */
-.chip__thumb {
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  border-radius: 6px;
-  object-fit: cover;
-  display: block;
-}
-.chip__name {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 16px;
-  max-width: 104px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The remove target — a padded button around the ✕ so it's easy to hit and
-   only it drops the attachment. Ink lifts and a soft tile appears on hover. */
-.chip__remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--faint);
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
-}
-.chip__remove:hover { background: var(--line); color: var(--ink); }
-.chip__remove:active { transform: scale(0.9); }
-.chip__x { width: 12px; height: 12px; flex-shrink: 0; }
-.chips__notice {
-  align-self: center;
-  color: var(--faint);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-/* ── Model ────────────────────────────────────────────────────────────────── */
-/* Which model will answer — the vendor mark plus the family name, opening the
-   full picker. It's the one control allowed to give up width on a narrow card. */
-.model { flex: 0 1 auto; min-width: 0; gap: 7px; }
-.model__name {
-  color: var(--ink);
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 16px;
-  white-space: nowrap;
-  min-width: 0;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ── Permission mode (autonomy ladder) ────────────────────────────────────── */
-/* The hued icon carries the rung and a neutral label names it. Cycles on click,
-   with a tactile pop. */
-.mode { color: var(--mode-hue, var(--muted)); opacity: 0.92; }
-.mode__icon { width: 15px; height: 15px; }
-.mode__label {
-  color: var(--ink);
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 16px;
-  white-space: nowrap;
-}
-.mode--bump .mode__icon { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
-
-/* ── Attach control ───────────────────────────────────────────────────────── */
-/* The card's one bare glyph: a plus, opening the file picker. */
-.attach { width: 30px; padding: 0; }
-/* The real <input type=file> is off-screen; the attach button drives it. */
-.file-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* ── Effort control (brain-stack) ─────────────────────────────────────────── */
-/* The stack shows how hard it will think; the label names the rung, so the
-   cycle is readable at a glance rather than something you have to count. */
-.effort { gap: 6px; opacity: 0.9; }
-.effort__label {
-  color: var(--ink);
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 16px;
-  white-space: nowrap;
-}
-/* Each cycle step gives the stack a quick tactile pop. */
-.effort--bump .stack { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
-
-/* ── Fast mode toggle ─────────────────────────────────────────────────────── */
-.fast { width: 28px; padding: 0; color: var(--ink); opacity: 0.66; }
-.fast--on {
-  color: var(--boost);
-  opacity: 1;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--boost) 50%, transparent));
-}
-
-/* ── Context-window cycle ─────────────────────────────────────────────────── */
-.ctxwin {
-  min-width: 32px;
-  color: var(--ink);
-  font: 500 11px/1 var(--font-mono, ui-monospace, monospace);
-  letter-spacing: 0.02em;
-  opacity: 0.66;
-}
-@keyframes effort-pop {
-  0% { transform: scale(0.82); }
-  60% { transform: scale(1.12); }
-  100% { transform: scale(1); }
-}
-/* The brains overlap into a tight cluster; a soft halo blooms at the top tier. */
-.stack { display: inline-flex; align-items: center; }
-.stack > :deep(svg) { margin-left: -6px; }
-.stack > :deep(svg:first-child) { margin-left: 0; }
-.stack--glow > :deep(svg) { filter: drop-shadow(0 0 3px currentColor); }
-
-/* ── Popovers (agent roster · model picker · reasoning dial) ──────────────── */
-.pop { position: relative; display: flex; }
-.menu {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 6px;
-  border-radius: 14px;
-  background: var(--raised);
-  box-shadow:
-    rgb(0 0 0 / 0.10) 0 8px 28px -6px,
-    rgb(0 0 0 / 0.06) 0 2px 8px -2px,
-    var(--line) 0 0 0 1px;
-}
-.fade-enter-active { transition: opacity 0.24s ease 0.08s; }
-.fade-leave-active { transition: opacity 0.14s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-
-@media (prefers-reduced-motion: reduce) {
-  .surface, .panel, .face, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
-  .dock { animation: none; }
-  .face { animation: none; }
-  .bar, .tray { transition-duration: 0.01s; transition-delay: 0s; }
-  .fade-enter-active, .fade-leave-active { transition-duration: 0.01s; }
-  .menu-enter-active, .menu-leave-active { transition-duration: 0.01s; }
+/* The one tray item that reports a decision rather than naming a setting, so
+   it carries the second accent to say it isn't another thing you can click. */
+.tray__item--routing {
+  color: var(--accent-2);
 }
 </style>

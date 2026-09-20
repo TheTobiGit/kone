@@ -59,6 +59,10 @@ export interface AgentRosterEntry {
   /** The face's two colours, so a recolour can be described relative to what is
    *  already there. */
   face: { body: string; ink: string };
+  /** The picture the agent answers with, or null when it wears its drawn face. */
+  avatar: { source: string; src: string } | null;
+  /** The creature the agent works through, or null when it has none. */
+  bot: { form: string; color: string; expression: string } | null;
   /** The one model the agent runs on first, or null to inherit — at which
    *  point each turn (or a spawned child) rides its caller. */
   model: { provider: string; model: string; label?: string } | null;
@@ -123,6 +127,8 @@ function entryPayload(agent: AgentRosterEntry, settings: InternalSkillsSettings)
     role: agent.role,
     instructions: agent.instructions,
     face: { body: agent.face.body, ink: agent.face.ink },
+    avatar: agent.avatar ? { source: agent.avatar.source, src: agent.avatar.src } : null,
+    bot: agent.bot ? { form: agent.bot.form, color: agent.bot.color, expression: agent.bot.expression } : null,
     model: agent.model ? modelRefPayload(agent.model) : null,
     modelFallbacks: (agent.modelFallbacks ?? []).map(modelRefPayload),
     skills: activeSkills,
@@ -145,6 +151,9 @@ function entryLine(agent: AgentRosterEntry, settings: InternalSkillsSettings): s
     agent.builtIn ? "built-in" : "user-made",
     `model: ${chain}`,
   ];
+  if (agent.bot) bits.push(`bot: ${agent.bot.color} ${agent.bot.form} (${agent.bot.expression})`);
+  else bits.push("bot: none");
+  if (agent.avatar) bits.push(`picture: ${agent.avatar.source}`);
   if (activeSkills.length > 0) bits.push(`skills: ${activeSkills.join(", ")}`);
   if (agent.teams.length > 0) bits.push(`teams: ${agent.teams.length}`);
   if (agent.active) bits.push("takes the next turn");
@@ -268,24 +277,44 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     // app_update_agent land on the right row without waiting for a roster push.
     const agentId = `agent-${randomUUID()}`;
 
+    const bot = params.bot;
+    if (!bot || !bot.form.trim() || !bot.color.trim() || !bot.expression.trim()) {
+      throw new GatewayToolError(
+        "invalid_input",
+        "A new agent needs a bot (form, color, expression) — it has nothing to show while it works without one.",
+      );
+    }
+
     const fields: NonNullable<
       Extract<RuntimeEvent, { type: "app.agent_mutation" }>["fields"]
-    > = { name: params.name.trim() };
+    > = {
+      name: params.name.trim(),
+      bot: { form: bot.form.trim(), color: bot.color.trim(), expression: bot.expression.trim() },
+    };
     if (params.role !== undefined) fields.role = params.role;
     if (params.instructions !== undefined) fields.instructions = params.instructions;
     if (params.face !== undefined) fields.face = params.face;
+    if (params.avatar !== undefined) fields.avatar = params.avatar;
     if (params.model !== undefined) fields.model = params.model;
     if (params.modelFallbacks !== undefined) fields.modelFallbacks = [...params.modelFallbacks];
 
     const mutation: Parameters<typeof emitMutation>[1] = { op: "create", agentId, fields };
-    // The calling thread's project is the only one this session can speak for,
-    // and off a project there is no team to join.
-    if (params.addToActiveProject && ctx.cwd) mutation.projectPath = ctx.cwd;
+    // Every project team the new agent joins: the explicit list plus, when
+    // asked, the calling thread's own project. Off a project there is no
+    // calling team to join, so that flag alone contributes nothing.
+    const projectPaths = [...(params.teams ?? [])];
+    if (params.addToActiveProject && ctx.cwd && !projectPaths.includes(ctx.cwd)) {
+      projectPaths.push(ctx.cwd);
+    }
+    if (projectPaths.length > 0) {
+      mutation.projectPaths = projectPaths;
+      mutation.projectPath = projectPaths[0];
+    }
     emitMutation(ctx, mutation);
 
     const summary =
       `Created agent "${fields.name}" (\`${agentId}\`)` +
-      (mutation.projectPath ? ` and added it to the team for ${mutation.projectPath}` : "") +
+      (projectPaths.length > 0 ? ` and added it to the team for ${projectPaths.join(", ")}` : "") +
       ".";
 
     return {
@@ -300,6 +329,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
         summary,
         agentId,
         projectPath: mutation.projectPath ?? null,
+        projectPaths,
       },
     };
   };
@@ -318,6 +348,17 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     if (params.role !== undefined) fields.role = params.role;
     if (params.instructions !== undefined) fields.instructions = params.instructions;
     if (params.face !== undefined) fields.face = params.face;
+    if (params.avatar !== undefined) fields.avatar = params.avatar;
+    if (params.bot !== undefined) {
+      const bot = params.bot;
+      if (!bot.form.trim() || !bot.color.trim() || !bot.expression.trim()) {
+        throw new GatewayToolError(
+          "invalid_input",
+          "A bot needs a form, a color and an expression — all three, none blank.",
+        );
+      }
+      fields.bot = { form: bot.form.trim(), color: bot.color.trim(), expression: bot.expression.trim() };
+    }
     if (params.model !== undefined) fields.model = params.model;
     if (params.modelFallbacks !== undefined) fields.modelFallbacks = [...params.modelFallbacks];
 
@@ -338,6 +379,10 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
       fields,
     };
     if (cleared.length > 0) mutation.clear = [...cleared];
+    const addToTeams = (params.addToTeams ?? []).filter((path) => path.trim().length > 0);
+    const removeFromTeams = (params.removeFromTeams ?? []).filter((path) => path.trim().length > 0);
+    if (addToTeams.length > 0) mutation.addToTeams = [...addToTeams];
+    if (removeFromTeams.length > 0) mutation.removeFromTeams = [...removeFromTeams];
     emitMutation(ctx, mutation);
 
     const changed = Object.keys(fields);
@@ -348,6 +393,8 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
         `cleared ${cleared.join(", ")} (${target.builtIn ? "back to what kone ships" : "unset"})`,
       );
     }
+    if (addToTeams.length > 0) parts.push(`joined ${addToTeams.join(", ")}`);
+    if (removeFromTeams.length > 0) parts.push(`left ${removeFromTeams.join(", ")}`);
     const summary = `Updated agent "${target.name}" (\`${target.id}\`): ${parts.join("; ")}.`;
     const skillSettings = readInternalSkillsSettings();
 
@@ -359,6 +406,8 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
         agentId: target.id,
         set: changed,
         cleared: [...cleared],
+        addToTeams: [...addToTeams],
+        removeFromTeams: [...removeFromTeams],
         previous: entryPayload(target, skillSettings),
       },
     };
@@ -430,13 +479,13 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     {
       name: "app_list_agents",
       description:
-        "List the agents in kone's roster — the ones it ships plus any the user or an agent created — with each one's role, standing instructions, model (and fallback chain), skills, project teams, and whether it takes the user's next turn.",
+        "List the agents in kone's roster — the ones it ships plus any the user or an agent created — with each one's role, standing instructions, model (and fallback chain), skills, picture, bot, project teams, and whether it takes the user's next turn.",
       inputSchema: ListAppAgentsInputSchema,
       jsonSchema: LIST_APP_AGENTS_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "`app_list_agents`: the app's agent roster — ids, roles, instructions, models, and who takes the next turn.",
+        "`app_list_agents`: the app's agent roster — ids, roles, instructions, models, pictures, bots, and who takes the next turn.",
       promptGuidelines: [
         "Call `app_list_agents` before naming or editing an agent — the roster differs per install, so never assume an id.",
       ],
@@ -445,31 +494,37 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     {
       name: "app_create_agent",
       description:
-        "Add an agent to kone's roster: a name, an optional role line, the standing instructions it works from, the model it runs on (optionally with fallbacks), and the colours its face is drawn in. Use this when the user asks for a new agent or teammate in the app.",
+        "Add an agent to kone's roster: a name, an optional role line, the standing instructions it works from, the model it runs on (optionally with fallbacks), the colours its face is drawn in, the picture it answers with, the creature it works through (required), and the project teams it joins. Use this when the user asks for a new agent or teammate in the app.",
       inputSchema: CreateAppAgentInputSchema,
       jsonSchema: CREATE_APP_AGENT_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "`app_create_agent`: add an agent to the app's roster (name, role, instructions, model, face).",
+        "`app_create_agent`: add an agent to the app's roster (name, role, instructions, model, face, picture, bot, teams).",
       promptGuidelines: [
         "Use `app_create_agent` when the user asks for a new agent in the app — do not write files or edit config to make one.",
+        "Treat roster agents as coworkers: default to org chart titles with seniority and personality (Senior Frontend, Junior Backend, DevOps, QA). Never default to workflow roles like planner or reviewer. Those are preset subagents.",
+        "Keep `role` a title only, with no explainer. Put personality and ownership in `instructions`.",
+        "When the user says to add an agent to a project, they mean the global roster made available in that project: create it once and put it on that project team with `teams` or `addToActiveProject`.",
         "An agent's `instructions` are what reach the model when a thread is handed to it, so write them as standing orders rather than as a description.",
+        "Every new agent needs a `bot` (form, color, expression) — the call is refused without one.",
+        "Put the new agent on a team with `teams` (project paths) or `addToActiveProject`, or it can take no thread in any project.",
       ],
       handler: createAgentHandler,
     },
     {
       name: "app_update_agent",
       description:
-        "Edit an agent in kone's roster: rename it, rewrite its role or standing instructions, repaint its face, or pin the model it runs on. Fields left out are left alone; fields named in `clear` are handed back (to kone's shipped value on a built-in agent, unset on a user-made one).",
+        "Edit an agent in kone's roster: rename it, rewrite its role or standing instructions, repaint its face, replace its picture or bot, pin the model it runs on, or move it between project teams. Fields left out are left alone; fields named in `clear` are handed back (to kone's shipped value on a built-in agent, unset on a user-made one).",
       inputSchema: UpdateAppAgentInputSchema,
       jsonSchema: UPDATE_APP_AGENT_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "`app_update_agent`: edit an agent in the roster; `clear` hands a field back rather than emptying it.",
+        "`app_update_agent`: edit an agent in the roster; `clear` hands a field back rather than emptying it; `addToTeams`/`removeFromTeams` move it between teams.",
       promptGuidelines: [
         "Use `app_update_agent` to change an existing agent instead of creating a near-duplicate of it.",
+        "Use `addToTeams`/`removeFromTeams` to move an agent between project teams — creating a second agent to cover another project is a duplicate.",
       ],
       handler: updateAgentHandler,
     },

@@ -4,6 +4,7 @@ import { GatewayOpRepo } from "./store/gatewayOps.js";
 import { AttachmentRowRepo } from "./store/attachmentRows.js";
 import { WorkspaceRepo } from "./store/workspaces.js";
 import { ScratchpadRepo } from "./store/scratchpads.js";
+import { JobRepo, type ClaimedJob, type JobRunOutcome } from "./store/jobs.js";
 import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
@@ -15,10 +16,10 @@ import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
-import type { ChatAttachment, CompactionRecord, ForkContext, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage } from "./types.js";
+import type { ChatAttachment, CompactionRecord, ForkContext, HandoffLink, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
 import { type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -31,6 +32,7 @@ export class ConversationStore implements CheckpointStore {
   private readonly attachmentRows: AttachmentRowRepo;
   private readonly workspaces: WorkspaceRepo;
   private readonly scratchpads: ScratchpadRepo;
+  private readonly jobs: JobRepo;
   private readonly stats: StatsRepo;
   private readonly subagentPresets: SubagentPresetRepo;
   private readonly threadLifecycle: ThreadLifecycleRepo;
@@ -69,6 +71,7 @@ export class ConversationStore implements CheckpointStore {
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.scratchpads = new ScratchpadRepo(this.dbh);
+    this.jobs = new JobRepo(this.dbh);
     this.gatewayOps = new GatewayOpRepo(this.dbh);
     this.studio = new StudioRepo(this.dbh);
     this.stats = new StatsRepo(this.dbh);
@@ -433,31 +436,13 @@ export class ConversationStore implements CheckpointStore {
     return this.lineage.threadForkContext(threadId);
   }
 
+  /** Every handoff forked from a source thread, oldest first. @see LineageRepo */
+  handoffsFromSource(sourceThreadId: string): HandoffLink[] {
+    return this.lineage.handoffsFromSource(sourceThreadId);
+  }
+
   /** @see LineageRepo */
-  writeForkThread(input: {
-    threadId: string;
-    projectPath: string;
-    provider: ProviderKind;
-    model?: string;
-    createdAt: number;
-    title?: string;
-    sourceThreadId: string;
-    forkContext: ForkContext;
-    lineage: ThreadLineage;
-    requestId?: string;
-    /** Imported blocks in arrival order. Assistant rows carry their narrative
-     *  as text — the source's tool items are not imported — and get a
-     *  synthetic turn id so loadThread re-attaches that narrative as one
-     *  `assistant_text` item (an assistant block with no items would read as
-     *  an empty reply). */
-    importedBlocks: Array<{
-      id: string;
-      role: "user" | "assistant";
-      text: string;
-      at: number;
-      attachments?: ChatAttachment[];
-    }>;
-  }): boolean {
+  writeForkThread(input: Parameters<LineageRepo["writeForkThread"]>[0]): boolean {
     return this.lineage.writeForkThread(input);
   }
 
@@ -552,6 +537,101 @@ export class ConversationStore implements CheckpointStore {
   /** @see ScratchpadRepo */
   deleteScratchpad(padId: string): void {
     return this.scratchpads.deleteScratchpad(padId);
+  }
+
+  /** @see JobRepo */
+  createJob(input: JobCreateInput): JobRow | null {
+    return this.jobs.createJob(input);
+  }
+
+  /** @see JobRepo */
+  getJob(jobId: string): JobRow | null {
+    return this.jobs.getJob(jobId);
+  }
+
+  /** @see JobRepo */
+  listJobs(projectPath: string): JobRow[] {
+    return this.jobs.listJobs(projectPath);
+  }
+
+  listAllJobs(): JobRow[] {
+    return this.jobs.listAllJobs();
+  }
+
+  /** @see JobRepo */
+  updateJob(jobId: string, patch: JobPatch, at?: number): JobRow | null {
+    return this.jobs.updateJob(jobId, patch, at);
+  }
+
+  /** @see JobRepo */
+  setJobQueued(jobId: string, queued: boolean, at?: number): JobRow | null {
+    return this.jobs.setJobQueued(jobId, queued, at);
+  }
+
+  /** @see JobRepo */
+  requeueJob(jobId: string, at?: number): JobRow | null {
+    return this.jobs.requeueJob(jobId, at);
+  }
+
+  /** @see JobRepo */
+  reorderJobs(projectPath: string, jobIds: readonly string[], at?: number): boolean {
+    return this.jobs.reorderJobs(projectPath, jobIds, at);
+  }
+
+  /** @see JobRepo */
+  deleteJob(jobId: string): boolean {
+    return this.jobs.deleteJob(jobId);
+  }
+
+  /** @see JobRepo */
+  claimNextJob(input: {
+    projectPath: string;
+    claimedBy: string;
+    at?: number;
+    leaseMs?: number;
+    runId?: string;
+  }): ClaimedJob | null {
+    return this.jobs.claimNextJob(input);
+  }
+
+  /** @see JobRepo */
+  bindRunThread(runId: string, threadId: string, at?: number): JobRunRow | null {
+    return this.jobs.bindRunThread(runId, threadId, at);
+  }
+
+  /** @see JobRepo */
+  releaseJobClaim(runId: string, error: string, at?: number): boolean {
+    return this.jobs.releaseClaim(runId, error, at);
+  }
+
+  /** @see JobRepo */
+  settleJobRun(runId: string, outcome: JobRunOutcome, at?: number): JobRunRow | null {
+    return this.jobs.settleRun(runId, outcome, at);
+  }
+
+  /** @see JobRepo */
+  getJobRun(runId: string): JobRunRow | null {
+    return this.jobs.getJobRun(runId);
+  }
+
+  /** @see JobRepo */
+  listJobRuns(jobId: string): JobRunRow[] {
+    return this.jobs.listJobRuns(jobId);
+  }
+
+  /** @see JobRepo */
+  sweepExpiredJobClaims(at?: number): number {
+    return this.jobs.sweepExpiredClaims(at);
+  }
+
+  /** @see JobRepo */
+  getJobRunByThread(threadId: string): JobRunRow | null {
+    return this.jobs.getJobRunByThread(threadId);
+  }
+
+  /** @see JobRepo */
+  projectsWithQueuedJobs(): string[] {
+    return this.jobs.projectsWithQueuedJobs();
   }
 
   /** @see GatewayOpRepo */

@@ -40,6 +40,10 @@ export type AgentRosterEntry = {
   role: string;
   instructions: string;
   face: { body: string; ink: string };
+  /** The picture the agent answers with, or null for its drawn face. */
+  avatar: { source: string; src: string } | null;
+  /** The creature the agent works through, or null when it has none. */
+  bot: { form: string; color: string; expression: string } | null;
   model: { provider: string; model: string; label?: string } | null;
   /** Ordered fallbacks behind `model`. Empty when the agent inherits or has no
    *  second choice. */
@@ -148,6 +152,30 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/** One picture ref, or null if the payload isn't one. The bytes ride by value,
+ *  so only a non-empty `src` counts — an empty one would paint a blank where a
+ *  face used to be. */
+function readAvatarRef(
+  value: AgentRosterEntry["avatar"] | undefined,
+): AgentRosterEntry["avatar"] {
+  if (!value || !(value instanceof Object)) return null;
+  const source = nonEmpty(value.source);
+  const src = nonEmpty(value.src);
+  if (!source || !src) return null;
+  return { source, src };
+}
+
+/** One bot ref, or null if the payload isn't one. All three ids move together:
+ *  a bot missing any of them is not one. */
+function readBotRef(value: AgentRosterEntry["bot"] | undefined): AgentRosterEntry["bot"] {
+  if (!value || !(value instanceof Object)) return null;
+  const form = nonEmpty(value.form);
+  const color = nonEmpty(value.color);
+  const expression = nonEmpty(value.expression);
+  if (!form || !color || !expression) return null;
+  return { form, color, expression };
+}
+
 /** One model ref, or null if the payload isn't one. A ref missing either half
  *  names no model, and "no model" is a real answer here — the agent then runs
  *  wherever the turn does. */
@@ -186,6 +214,8 @@ function readAgentEntry(
   const body = nonEmpty(value.face?.body) ?? "";
   const ink = nonEmpty(value.face?.ink) ?? "";
   const model = readModelRef(value.model ?? null);
+  const avatar = readAvatarRef(value.avatar ?? null);
+  const bot = readBotRef(value.bot ?? null);
   return {
     id,
     // An agent with no readable name is still in the roster and still takes
@@ -194,6 +224,8 @@ function readAgentEntry(
     role: nonEmpty(value.role) ?? "",
     instructions: nonEmpty(value.instructions) ?? "",
     face: { body, ink },
+    avatar,
+    bot,
     model,
     modelFallbacks: model ? readModelChain(value.modelFallbacks) : [],
     skills: Array.isArray(value.skills)

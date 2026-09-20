@@ -42,6 +42,8 @@ function fakeRow(): StudioRowApi & { adopted: string[]; dismissed: string[] } {
     openScratchpad: () => {},
     flush: () => {},
     interruptIfRunning: () => {},
+    focusedThread: () => null,
+    runThreadAction: () => {},
   };
 }
 
