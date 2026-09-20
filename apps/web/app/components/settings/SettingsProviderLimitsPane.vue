@@ -4,11 +4,11 @@ import { GaugeIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import AgentSettingsLimits from "~/components/agent/AgentSettingsLimits.vue";
 
-// Provider limits in settings — the same panel as the agents space's Limits
-// section, global by nature (a quota belongs to the machine, not a project).
-// The drawer widens for it (see useSettingsSurface) so the meters can breathe.
-// The frame (mast, scroll smoke, foot) is the shared SettingsPageShell; this pane
-// is just its body.
+// Provider limits in settings — global by nature, since a quota belongs to the
+// machine and not to a project. AgentSettingsLimits is the whole panel and this
+// pane is only its body plus a frame: the mast, scroll smoke and foot come from
+// the shared SettingsPageShell, and the drawer's measure for this pane is set
+// in useSettingsSurface (PANE_MEASURE), which is the one place that decides it.
 
 defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();

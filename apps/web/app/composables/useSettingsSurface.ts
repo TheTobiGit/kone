@@ -40,10 +40,35 @@ const PAGE_MAX = 1040;
  *  aside for a page that is still a list of rows. */
 const COMPACT_MAX = 640;
 
-/** Pages that are a short list of one-line settings rather than a board. They
- *  take the compact measure, so the label and its value stay on speaking terms
- *  instead of sitting at opposite ends of a 1040px line. */
-const COMPACT_PANES: SettingsPane[] = ["studio", "typography"];
+/** Every pane's measure, in one place.
+ *
+ *  A table over the pane union rather than lists of panes. The width used to be
+ *  two overlapping arrays — one naming the pages, one naming the pages that stay
+ *  narrow — and a pane had to appear in *both* to come out narrow, because the
+ *  column case returned before the narrow case was ever consulted. A pane added
+ *  to one list and not the other silently took the wrong width. Here the
+ *  compiler will not accept a new pane until it has been given a measure.
+ *
+ *  `column` is the drawer as a list beside the launcher, which stays the
+ *  subject. `page` takes the full measure. `compact` is a page that stops
+ *  earlier — a short list of one-line settings, or cards that read top to bottom
+ *  in a single vertical column, where the full measure would leave a label and
+ *  its value at opposite ends of the line. */
+const PANE_MEASURE = {
+  root: "column",
+  profile: "page",
+  shortcuts: "page",
+  motion: "page",
+  appearance: "page",
+  typography: "compact",
+  studio: "compact",
+  providers: "page",
+  agentsUsage: "page",
+  providerLimits: "compact",
+  agentSkills: "page",
+  agentRoster: "page",
+  agentPresets: "page",
+} satisfies Record<SettingsPane, "column" | "page" | "compact">;
 
 const pane = ref<SettingsPane>("root");
 /** When true, the open page uses COMPACT_MAX instead of PAGE_MAX. The agent
@@ -52,37 +77,23 @@ const compact = ref(false);
 /** Whether the settings drawer is open. */
 const isOpen = ref(false);
 
-/** Panes that are pages rather than lists. Everything else keeps the column. */
-const PAGE_PANES: SettingsPane[] = [
-  "studio",
-  "providers",
-  "motion",
-  "appearance",
-  "typography",
-  "profile",
-  "shortcuts",
-  "agentsUsage",
-  "providerLimits",
-  "agentSkills",
-  "agentRoster",
-  "agentPresets",
-];
-
 export function useSettingsSurface() {
   const { width } = useWindowSize();
 
-  const isPage = computed(() => PAGE_PANES.includes(pane.value));
+  const isPage = computed(() => PANE_MEASURE[pane.value] !== "column");
 
   /** The drawer's width, and so the distance the stage slides. On the server (or
    *  before the first measurement) the window is 0 wide, which falls through to
    *  the column — the narrow case is always the safe one to render first. */
   const revealWidth = computed(() => {
-    if (!isPage.value) return COLUMN_WIDTH;
+    const measure = PANE_MEASURE[pane.value];
+    if (measure === "column") return COLUMN_WIDTH;
 
-    // Most pages take the full measure. A compact page (one agent's details, or
-    // a handful of settings rows) is a reading, so it stops earlier — the same
-    // formula, a tighter cap.
-    const tight = compact.value || COMPACT_PANES.includes(pane.value);
+    // `compact` is the runtime half of the same decision: the agent and subagent
+    // readings are sub-views rather than panes of their own, so they cannot be
+    // named in the table and instead raise this flag for as long as they are on
+    // screen.
+    const tight = measure === "compact" || compact.value;
     const cap = tight ? COMPACT_MAX : PAGE_MAX;
     return Math.round(Math.min(cap, Math.max(COLUMN_WIDTH, width.value - STAGE_REMAINDER)));
   });
