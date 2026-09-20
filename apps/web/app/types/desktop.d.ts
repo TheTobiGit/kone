@@ -3289,13 +3289,30 @@ export type RosterTeamMemberInput = {
 };
 
 /**
+ * Why a thread's agent is the one it has, when Jev chose them rather than a
+ * person. `outcome` is a `JevRouteOutcome`, but it crosses the store as a plain
+ * string — the store keeps the tag durable without having an opinion on the
+ * vocabulary, so the renderer decodes it again on the way back in.
+ */
+export type ThreadAgentRoute = {
+  outcome: string;
+  /** How firmly, 0–1, as the router reported it. */
+  confidence: number;
+};
+
+/**
  * Who worked a thread. `agentId` is null when it ran as a guest — a recorded
  * decision, not a missing one; a thread that never started has no binding at
  * all.
+ *
+ * `route` rides on the binding rather than beside it: who works a thread and
+ * why are one fact about one settlement, written together and deleted
+ * together. Null for a thread settled by hand, which is most of them.
  */
 export type ThreadAgentBinding = {
   threadId: string;
   agentId: string | null;
+  route: ThreadAgentRoute | null;
 };
 
 /** The whole roster layer in one reply: who exists, who worked what, and who is
@@ -3308,16 +3325,26 @@ export type RosterSnapshot = {
 };
 
 /** Settle who works a thread. Write-once: an already-settled thread keeps what
- *  it settled on, and the reply says what that is. A null `agentId` is a guest. */
+ *  it settled on, and the reply says what that is. A null `agentId` is a guest.
+ *
+ *  `route` is why, when Jev chose rather than a person — settled in the same
+ *  write as who, so the two can never disagree or outlive each other. Omitted
+ *  for a hand-picked agent. */
 export type RosterBindInput = {
   threadId: string;
   agentId: string | null;
+  route?: ThreadAgentRoute | null;
 };
 
 /** Carry a binding onto a thread reborn under a new id. */
 export type RosterCarryInput = {
   fromThreadId: string;
   toThreadId: string;
+  /** Whether the reason travels too. True only when the new id is the same
+   *  conversation continuing — a thread reborn by a provider or model switch.
+   *  A thread forked off this one is new work nobody routed, and a reason
+   *  copied onto it would name a request the router never read. */
+  withRoute?: boolean;
 };
 
 /** Point the next turn at an agent, or at a guest with null. */

@@ -22,7 +22,7 @@ import type {
   UserInputAnswers,
 } from "~/types/desktop";
 import { useAgentProviders } from "~/composables/useAgentProviders";
-import { agentPersonaForThread, carryThreadAgent } from "~/utils/agents";
+import { agentPersonaForThread, carryThreadIdentity } from "~/utils/agents";
 import { isWorkspaceCancel, peelIpcError } from "~/utils/ipcError";
 import { activePlanTask } from "~/utils/planTasks";
 
@@ -1050,7 +1050,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // a decision about who is working the thread. It has to happen before start()
     // below — the providers that carry an identity on a system channel fix theirs
     // when the process spawns, so a session that comes up nameless stays nameless.
-    carryThreadAgent(previousThreadId, threadId.value);
+    carryThreadIdentity(previousThreadId, threadId.value);
     tokenUsage.value = null;
     // The re-born thread is a fresh conversation — no stored pages to walk.
     olderCursor.value = null;

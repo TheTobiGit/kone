@@ -53,10 +53,10 @@ export function registerRosterIpc(): void {
   });
 
   ipcMain.handle("roster:bind", (_event, input: RosterBindInput) =>
-    store.bindThreadAgent(input.threadId, input.agentId),
+    store.bindThreadAgent(input.threadId, input.agentId, input.route),
   );
   ipcMain.handle("roster:carry", (_event, input: RosterCarryInput) =>
-    store.carryThreadAgent(input.fromThreadId, input.toThreadId),
+    store.carryThreadAgent(input.fromThreadId, input.toThreadId, input.withRoute ?? false),
   );
   ipcMain.handle("roster:select", (_event, input: RosterSelectInput) => {
     store.writeSelectedAgent(input.agentId);

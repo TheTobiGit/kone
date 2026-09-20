@@ -22,7 +22,7 @@ import {
   updateAgent,
   type Agent,
 } from "~/utils/agents";
-import { routeRequest } from "~/utils/agentRouting";
+import { routeForBinding, routeRequest } from "~/utils/agentRouting";
 import type { JevRouteResult } from "~/types/desktop";
 import { useProject } from "~/composables/useProject";
 
@@ -90,40 +90,63 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
   const lastRouted = ref<JevRouteResult | null>(null);
 
   /**
-   * Who should carry this request — the router's answer when it is selected,
-   * and the plain selection otherwise.
+   * Settle who works this thread, and why, from the request itself.
    *
-   * Every send goes through here, routed or not, so that the settle call sites
-   * have one shape to write and cannot accidentally skip routing. It resolves
-   * to an agent id or null, which is exactly what `settleThreadAgent` takes.
+   * One call rather than a resolve followed by a settle, and the signature is
+   * the whole point of it. The settle is write-once and can be refused, so who
+   * and why have to land in the same write — split across two calls, the second
+   * would not be refused and the thread would wear a receipt for a decision
+   * that never took effect. A pair of calls makes that a rule every future send
+   * site has to remember; one call makes it a rule nobody can break.
+   *
+   * Every send goes through here, routed or not, so that no send site can
+   * accidentally skip routing. The whole policy lives in here, including when
+   * *not* to route: a thread that has already been decided is never routed
+   * again — not merely to save the call, but because the binding would refuse
+   * the answer anyway, so a later turn would spend a request to produce a
+   * receipt announcing a decision that did not happen, and the session it
+   * claimed to describe was spawned with the first turn's persona and cannot
+   * become somebody else.
    *
    * The candidates are the project's team, not the whole roster: routing must
    * not hand a thread to somebody who was never added to the repository, which
    * is the same rule `pickedForProject` enforces for a hand-picked agent.
    */
-  async function resolveAgentId(request: string): Promise<string | null> {
-    if (!routing.value) {
-      const picked = selected.value;
-      return picked ? picked.id : null;
+  async function settleAgentFor(
+    request: string,
+    threadId: string | null | undefined,
+  ): Promise<void> {
+    const picked = pickedForProject.value?.id ?? null;
+    if (!routing.value || threadSettled(threadId)) {
+      settleThreadAgent(threadId, picked);
+      return;
     }
     routePending.value = true;
     try {
-      return await routeNow(request);
+      await routeAndSettle(request, threadId);
     } finally {
       routePending.value = false;
     }
   }
 
-  /** The routed half of `resolveAgentId`, split out only so the pending flag
-   *  can wrap it without the early return escaping the `finally`. */
-  async function routeNow(request: string): Promise<string | null> {
+  /** The routed half of `settleAgentFor`, split out only so the pending flag
+   *  can wrap it without an early return escaping the `finally`. */
+  async function routeAndSettle(
+    request: string,
+    threadId: string | null | undefined,
+  ): Promise<void> {
     // The repository's name, not its path: the leading directories are this
     // machine's filing, and they read to a classifier as words in the request.
     const path = projectPath.value;
     const name = path ? (path.split("/").filter(Boolean).pop() ?? null) : null;
     const result = await routeRequest(request, team.value, name);
-    lastRouted.value = result;
-    return result.agentId;
+    // The receipt waits on the decision landing. A round trip is long enough
+    // for another window to settle this thread first, and a line reading
+    // "Jev → Ada" over a thread Bob is working describes a send, not the
+    // conversation the user is looking at.
+    if (settleThreadAgent(threadId, result.agentId, routeForBinding(result))) {
+      lastRouted.value = result;
+    }
   }
 
   /** A routing round trip is in flight and a send is waiting behind it.
@@ -136,13 +159,43 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
 
   // Read the team back from the store whenever the active project changes. The
   // dev fallback is its own store, so this only does anything with a bridge.
+  //
+  // `teamReady` is what `pickedForProject` waits on. Until the read lands, "not
+  // on this team" and "not asked yet" look identical, and demoting the
+  // selection to a guest on the second one would announce a decision the user
+  // never made and then quietly take it back a moment later.
+  const teamReady = ref(false);
   watch(
     projectPath,
     (path) => {
-      if (path) void loadProjectTeam(path);
+      if (!path) {
+        // Off a project there is no team to wait for, and an empty one is the
+        // right answer rather than a gap.
+        teamReady.value = true;
+        return;
+      }
+      teamReady.value = false;
+      void loadProjectTeam(path).finally(() => {
+        teamReady.value = true;
+      });
     },
     { immediate: true },
   );
+
+  /**
+   * The selection as it applies to *this* project.
+   *
+   * The selection is app-wide, so it can be carrying an agent who is a teammate
+   * somewhere else and a stranger here; here that reads as a guest, rather than
+   * quietly working a project they were never added to. On-team members pass
+   * straight through, so nothing changes for the project they belong to.
+   */
+  const pickedForProject = computed<Agent | undefined>(() => {
+    const picked = selected.value;
+    if (!picked) return undefined;
+    if (!teamReady.value) return picked;
+    return isOnTeam(picked.id) ? picked : undefined;
+  });
 
   /** Whether an agent is on the active project's team. */
   function isOnTeam(id: string): boolean {
@@ -175,10 +228,11 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
   return {
     roster,
     selected,
+    pickedForProject,
     routing,
     lastRouted,
     routePending,
-    resolveAgentId,
+    settleAgentFor,
     team,
     teams,
     projectPath,

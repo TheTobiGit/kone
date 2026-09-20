@@ -2,7 +2,39 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
 import { withTransaction } from "../conversationMigrations.js";
-import { AGENT_COLUMNS, AGENT_NAME_MAX, AGENT_PAINT_MAX, AGENT_PROSE_MAX, AGENT_ROLE_MAX, clampAgentField, normalizeSkillRef, rowToAgent, serializeAgentAvatar, serializeAgentBot, serializeAgentList, serializeModelRef, type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type AgentRow, type ThreadAgentBinding } from "../rosterRecord.js";
+import { AGENT_COLUMNS, AGENT_NAME_MAX, AGENT_PAINT_MAX, AGENT_PROSE_MAX, AGENT_ROLE_MAX, clampAgentField, normalizeSkillRef, rowToAgent, serializeAgentAvatar, serializeAgentBot, serializeAgentList, serializeModelRef, type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type AgentRow, type ThreadAgentBinding, type ThreadAgentRoute } from "../rosterRecord.js";
+
+/** The binding row as stored. The two route columns are NULL together or set
+ *  together — nothing writes one without the other. */
+type ThreadAgentRow = {
+  thread_id: string;
+  agent_id: string | null;
+  route_outcome: string | null;
+  route_confidence: number | null;
+};
+
+const BINDING_COLUMNS = "thread_id, agent_id, route_outcome, route_confidence";
+
+/**
+ * A stored binding row, as the renderer reads it. A row from before the route
+ * columns existed reads as unrouted, which is what it was.
+ *
+ * The confidence is held to the 0–1 scale it is documented on. The column is a
+ * plain REAL and the tag beside it is whatever its writer called it, so a row
+ * from a newer build — or one written through a bug — can carry a number off
+ * the scale, and every reader downstream turns it into a percentage. One clamp
+ * here, where a stored row becomes a binding, rather than one in each of them.
+ * A value that is no number at all has no scale to be held to, so the route
+ * reads as absent rather than as a decision nobody can describe.
+ */
+function rowToBinding(row: ThreadAgentRow): ThreadAgentBinding {
+  const confidence = row.route_confidence;
+  const route: ThreadAgentRoute | null =
+    row.route_outcome === null || confidence === null || !Number.isFinite(confidence)
+      ? null
+      : { outcome: row.route_outcome, confidence: Math.min(1, Math.max(0, confidence)) };
+  return { threadId: row.thread_id, agentId: row.agent_id, route };
+}
 
 export class RosterRepo {
   constructor(private readonly dbh: ConversationDb) {}
@@ -384,18 +416,20 @@ export class RosterRepo {
 
   // ── who worked a thread, and who is up next ─────────────────────────────────
 
+
   /** Every binding there is, so the renderer can answer "who worked this?"
    *  without a round trip per thread. Rows are tiny and one per conversation. */
   listThreadAgents(): ThreadAgentBinding[] {
     const db = this.dbh.handle();
     if (!db) return [];
     try {
-      // SAFETY: the two columns named, of the table this schema declares —
-      // `thread_id` is a TEXT primary key and `agent_id` is nullable TEXT.
+      // SAFETY: the four columns named, of the table this schema declares —
+      // `thread_id` is a TEXT primary key, `agent_id` is nullable TEXT, and the
+      // two route columns are nullable TEXT / REAL.
       const rows = db
-        .prepare(`SELECT thread_id, agent_id FROM thread_agents ORDER BY settled_at ASC`)
-        .all() as Array<{ thread_id: string; agent_id: string | null }>;
-      return rows.map((row) => ({ threadId: row.thread_id, agentId: row.agent_id }));
+        .prepare(`SELECT ${BINDING_COLUMNS} FROM thread_agents ORDER BY settled_at ASC`)
+        .all() as ThreadAgentRow[];
+      return rows.map(rowToBinding);
     } catch (err) {
       console.error("[conversation-store] listThreadAgents failed:", err);
       return [];
@@ -410,9 +444,9 @@ export class RosterRepo {
       // SAFETY: as above, and `thread_id` is the primary key, so this is at most
       // one row of exactly that shape.
       const row = db
-        .prepare(`SELECT thread_id, agent_id FROM thread_agents WHERE thread_id = ?`)
-        .get(threadId) as { thread_id: string; agent_id: string | null } | undefined;
-      return row ? { threadId: row.thread_id, agentId: row.agent_id } : null;
+        .prepare(`SELECT ${BINDING_COLUMNS} FROM thread_agents WHERE thread_id = ?`)
+        .get(threadId) as ThreadAgentRow | undefined;
+      return row ? rowToBinding(row) : null;
     } catch (err) {
       console.error("[conversation-store] getThreadAgent failed:", err);
       return null;
@@ -430,15 +464,19 @@ export class RosterRepo {
    * Returns what the thread is bound to now — which for an already-settled
    * thread is what it was bound to before, not what was just asked for.
    */
-  bindThreadAgent(threadId: string, agentId: string | null): ThreadAgentBinding | null {
+  bindThreadAgent(
+    threadId: string,
+    agentId: string | null,
+    route?: ThreadAgentRoute | null,
+  ): ThreadAgentBinding | null {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
       db.prepare(
-        `INSERT INTO thread_agents (thread_id, agent_id, settled_at)
-         VALUES (?, ?, ?)
+        `INSERT INTO thread_agents (thread_id, agent_id, settled_at, route_outcome, route_confidence)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(thread_id) DO NOTHING`,
-      ).run(threadId, agentId, Date.now());
+      ).run(threadId, agentId, Date.now(), route?.outcome ?? null, route?.confidence ?? null);
       return this.getThreadAgent(threadId);
     } catch (err) {
       console.error("[conversation-store] bindThreadAgent failed:", err);
@@ -447,20 +485,34 @@ export class RosterRepo {
   }
 
   /**
-   * Hand a new thread the agent an old one had — for a thread reborn under a new
-   * id, which is what a provider or model switch does to a live session.
+   * Hand a new thread the agent an old one had.
    *
-   * The same work continuing under a new id is still the same colleague's, so
-   * the record follows it. It carries a guest binding too, and that matters as
-   * much: a guest thread restarted has to come back a guest rather than fall
-   * through to whoever is picked by then. Write-once at the far end.
+   * The same colleague follows the work wherever it goes next, and a guest
+   * binding carries too — a guest thread restarted has to come back a guest
+   * rather than fall through to whoever is picked by then. Write-once at the
+   * far end.
+   *
+   * `withRoute` decides whether the reason follows as well, and the two callers
+   * mean different things by carrying. A thread reborn under a new id — a
+   * provider or model switch tearing a live session down and starting another —
+   * is the same conversation, staffed by the same decision, so the reason
+   * travels with the colleague it explains; without it the reborn thread would
+   * read as hand-picked, which is not what happened. A thread forked off this
+   * one is new work that was never put to a router at all, and a reason copied
+   * onto it would claim a router read a request it never saw. Off by default,
+   * because "this is the same conversation" is the rarer claim and the one
+   * worth making out loud.
    */
-  carryThreadAgent(fromThreadId: string, toThreadId: string): ThreadAgentBinding | null {
+  carryThreadAgent(
+    fromThreadId: string,
+    toThreadId: string,
+    withRoute = false,
+  ): ThreadAgentBinding | null {
     const db = this.dbh.handle();
     if (!db) return null;
     const source = this.getThreadAgent(fromThreadId);
     if (!source) return null;
-    return this.bindThreadAgent(toThreadId, source.agentId);
+    return this.bindThreadAgent(toThreadId, source.agentId, withRoute ? source.route : null);
   }
 
   /** Who the next turn goes to, or null for a guest — which is also what nobody

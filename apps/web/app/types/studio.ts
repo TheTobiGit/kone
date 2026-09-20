@@ -92,3 +92,12 @@ export interface StudioLayout {
   /** The project whose row is focused, by path. Null on an empty plane. */
   focusedRow: string | null;
 }
+
+/** A project the camera can travel to, as the strip's project drop-down lists
+ *  them. `columns` is how much work is waiting there — zero for a project that
+ *  has a place on the plane but nothing open on it yet. */
+export interface StudioDestination {
+  projectPath: string;
+  name: string;
+  columns: number;
+}

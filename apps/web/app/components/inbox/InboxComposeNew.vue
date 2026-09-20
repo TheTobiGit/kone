@@ -231,7 +231,7 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // line on — an answer arriving after it would reach a session that had
     // already asked who it was.
     const id = s.threadId.value;
-    if (id) composer.settleThreadAgent(id, await composer.agentIdFor(text, id));
+    if (id) await composer.settleAgentFor(text, id);
     // Not awaited: see the handover note above.
     const sent = s.send(text, uploaded);
     // The send gate can still refuse on a status that went stale under the

@@ -18,7 +18,7 @@ import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ForkContext, HandoffLink, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
-import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding } from "./rosterRecord.js";
+import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
 import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
 import { type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
@@ -776,13 +776,21 @@ export class ConversationStore implements CheckpointStore {
   }
 
   /** @see RosterRepo */
-  bindThreadAgent(threadId: string, agentId: string | null): ThreadAgentBinding | null {
-    return this.roster.bindThreadAgent(threadId, agentId);
+  bindThreadAgent(
+    threadId: string,
+    agentId: string | null,
+    route?: ThreadAgentRoute | null,
+  ): ThreadAgentBinding | null {
+    return this.roster.bindThreadAgent(threadId, agentId, route);
   }
 
   /** @see RosterRepo */
-  carryThreadAgent(fromThreadId: string, toThreadId: string): ThreadAgentBinding | null {
-    return this.roster.carryThreadAgent(fromThreadId, toThreadId);
+  carryThreadAgent(
+    fromThreadId: string,
+    toThreadId: string,
+    withRoute = false,
+  ): ThreadAgentBinding | null {
+    return this.roster.carryThreadAgent(fromThreadId, toThreadId, withRoute);
   }
 
   /** @see RosterRepo */

@@ -18,6 +18,7 @@
  * (`ensure`) and what a cleared field falls back to.
  */
 import { useStorage } from "@vueuse/core";
+import { applyJevRoute, applyJevRouteSnapshot, carryJevRoute } from "~/utils/jevRoutes";
 import type {
   AgentAvatarRef,
   AgentBotRef,
@@ -28,6 +29,7 @@ import type {
   AgentRecord,
   RosterSnapshot,
   ThreadAgentBinding,
+  ThreadAgentRoute,
 } from "~/types/desktop";
 
 /**
@@ -219,6 +221,10 @@ export function applyRosterSnapshot(snapshot: RosterSnapshot): void {
     settled[binding.threadId] = binding.agentId ?? GUEST_BINDING;
   }
   threadBindings.value = settled;
+  // The routes ride on these same rows, so they reconcile against the same
+  // answer and by the same rule — including the pending set, whose writes the
+  // store cannot have yet.
+  applyJevRouteSnapshot(snapshot.bindings, pendingBindings);
   selectedAgentId.value = snapshot.selectedAgentId;
 }
 
@@ -349,12 +355,21 @@ async function reload(): Promise<void> {
  *  a hydrate landing in the same moment must not prune. */
 const pendingBindings = new Set<string>();
 
-/** Follow a write to the store with the answer it settled on. */
+/**
+ * Follow a write to the store with the answer it settled on.
+ *
+ * Both halves of the answer, and that is the point of taking the whole binding
+ * rather than the id off it. The write can be refused — another window settled
+ * this thread first — and the row that won may have been settled by hand, with
+ * no route on it at all. Applying only who would leave this window showing the
+ * right colleague under a marker naming a decision that never took effect, and
+ * nothing would take it down until the next full snapshot.
+ */
 function reconcile(threadId: string, answer: Promise<ThreadAgentBinding | null>): void {
   pendingBindings.add(threadId);
   void answer
     .then((binding) => {
-      if (binding) applyBinding(threadId, binding.agentId);
+      if (binding) applyBinding(threadId, binding);
     })
     .catch(() => {
       // The bridge went away mid-write. The local binding stands — it is the one
@@ -366,25 +381,50 @@ function reconcile(threadId: string, answer: Promise<ThreadAgentBinding | null>)
     });
 }
 
-/** Settle who works a thread, at the moment it starts. Returns what it is bound
- *  to now, which for an already-settled thread is what it settled on before. */
-export function bindThread(threadId: string, agentId: string | null): string | null {
-  const settled = threadBindings.value[threadId];
-  if (settled !== undefined) return settled === GUEST_BINDING ? null : settled;
+/**
+ * Settle who works a thread, at the moment it starts. Returns whether this call
+ * is the one that settled it — false for a thread that was already decided,
+ * which keeps what it decided on.
+ *
+ * `route` is why, when the router chose rather than a person, and it lands here
+ * rather than through a call of its own precisely because this call can be
+ * refused. Who and why are one fact about one settlement: they go into the same
+ * insert at the store, and into the same write-once check and the same warm
+ * cache line here, so there is no arrangement of calls that can leave a thread
+ * wearing a receipt for a decision that never took effect. Omitted for a
+ * hand-picked agent, which is most settlements.
+ */
+export function bindThread(
+  threadId: string,
+  agentId: string | null,
+  route?: ThreadAgentRoute | null,
+): boolean {
+  if (threadBindings.value[threadId] !== undefined) return false;
   threadBindings.value = { ...threadBindings.value, [threadId]: agentId ?? GUEST_BINDING };
+  applyJevRoute(threadId, agentId, route);
   const api = bridge();
-  if (api) reconcile(threadId, api.bind({ threadId, agentId }));
-  return agentId;
+  if (api) reconcile(threadId, api.bind({ threadId, agentId, route }));
+  return true;
 }
 
-/** Hand a new thread the agent an old one had. Write-once at the far end, and a
- *  guest binding carries too — a guest thread restarted has to come back one. */
-export function carryThread(fromThreadId: string, toThreadId: string): void {
+/**
+ * Hand a new thread the agent an old one had. Write-once at the far end, and a
+ * guest binding carries too — a guest thread restarted has to come back one.
+ *
+ * `withRoute` says whether the reason follows as well, and the two kinds of
+ * carry mean different things by it. A thread reborn under a new id is the same
+ * conversation, staffed by the same decision, so the reason travels with the
+ * colleague it explains. A thread forked off this one — a side chat — is new
+ * work nobody routed, and a reason copied onto it would claim the router read a
+ * request it never saw. Off by default, because the first is the rarer claim.
+ */
+export function carryThread(fromThreadId: string, toThreadId: string, withRoute = false): void {
   const source = threadBindings.value[fromThreadId];
   if (source === undefined || threadBindings.value[toThreadId] !== undefined) return;
   threadBindings.value = { ...threadBindings.value, [toThreadId]: source };
+  if (withRoute) carryJevRoute(fromThreadId, toThreadId);
   const api = bridge();
-  if (api) reconcile(toThreadId, api.carry({ fromThreadId, toThreadId }));
+  if (api) reconcile(toThreadId, api.carry({ fromThreadId, toThreadId, withRoute }));
 }
 
 /** Point the next turn at an agent, or at a guest with null. */
@@ -393,8 +433,14 @@ export function selectAgentId(agentId: string | null): void {
   void bridge()?.select({ agentId });
 }
 
-function applyBinding(threadId: string, agentId: string | null): void {
-  threadBindings.value = { ...threadBindings.value, [threadId]: agentId ?? GUEST_BINDING };
+/** Write a settled binding into the warm cache, both halves together — the one
+ *  place who and why are put in step after the store has spoken. */
+function applyBinding(threadId: string, binding: ThreadAgentBinding): void {
+  threadBindings.value = {
+    ...threadBindings.value,
+    [threadId]: binding.agentId ?? GUEST_BINDING,
+  };
+  applyJevRoute(threadId, binding.agentId, binding.route);
 }
 
 // ── each project's team ─────────────────────────────────────────────────────

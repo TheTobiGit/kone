@@ -5,6 +5,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import SettingsAgentDetail from "~/components/settings/SettingsAgentDetail.vue";
 import CreateAgentModal from "~/components/agent/CreateAgentModal.vue";
+import RosterFace from "~/components/agent/RosterFace.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSound } from "~/composables/useSound";
@@ -162,23 +163,23 @@ function onCreated(agent: Agent) {
                  The bot rides the portrait's corner rather than sitting in the
                  row below it: it belongs to this agent, and a mark on its own
                  line would read as a second agent. -->
-            <span class="ag__halo" :class="{ 'ag__halo--photo': c.avatar }">
-              <img
-                v-if="c.avatar"
-                class="ag__photo"
-                :src="c.avatar.src"
-                alt=""
-                draggable="false"
-              />
-              <span v-else class="ag__face" v-html="c.svg" />
-              <span
-                v-if="c.bot"
-                class="ag__bot"
-                :style="{ background: botGround(c.bot) }"
-                aria-hidden="true"
-                v-html="botMark(c.bot)"
-              />
-            </span>
+            <RosterFace
+              :agent="c"
+              :size="84"
+              :face-size="46"
+              ground="color-mix(in srgb, var(--ink) 7%, transparent)"
+              class="ag__halo"
+            >
+              <template #mark>
+                <span
+                  v-if="c.bot"
+                  class="ag__bot"
+                  :style="{ background: botGround(c.bot) }"
+                  aria-hidden="true"
+                  v-html="botMark(c.bot)"
+                />
+              </template>
+            </RosterFace>
 
             <!-- Identity, centred: name over its one-line role -->
             <h4 class="ag__name">{{ c.name }}</h4>
@@ -318,34 +319,24 @@ function onCreated(agent: Agent) {
 
 /* ── portrait ─────────────────────────────────────────────────────────────── */
 /* The face on a neutral disc — the colour that reads is the agent's own marble,
-   the disc a quiet, theme-following ring around it. */
+   the disc a quiet, theme-following ring around it. The disc, its size and the
+   inset the face sits at are all the portrait's own business; this adds only
+   the room under it and the way it answers a hover. */
 .ag__halo {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 84px;
-  height: 84px;
   margin-bottom: 20px;
-  border-radius: 50%;
-  background-color: color-mix(in srgb, var(--ink) 7%, transparent);
-}
-/* A picture is the portrait, so the disc it would have sat on goes away rather
-   than showing as a rim around it. */
-.ag__halo--photo {
-  background-color: transparent;
 }
 
-.ag__photo {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
-  user-select: none;
+.ag__halo :deep(.roster-face__photo),
+.ag__halo :deep(.roster-face__drawn) {
   transition: transform 240ms var(--ag-ease);
 }
-.ag__card:hover .ag__photo {
+/* A shade less on a picture than on a drawn face: the picture fills the disc,
+   so the same scale carries it further out. */
+.ag__card:hover .ag__halo :deep(.roster-face__photo) {
   transform: scale(1.04);
+}
+.ag__card:hover .ag__halo :deep(.roster-face__drawn) {
+  transform: scale(1.06);
 }
 
 /* Small, and on the ground its own colour needs — at this size a body that
@@ -366,22 +357,6 @@ function onCreated(agent: Agent) {
   width: 100%;
   height: 100%;
   overflow: visible;
-}
-
-.ag__face {
-  display: block;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  transition: transform 240ms var(--ag-ease);
-}
-.ag__card:hover .ag__face {
-  transform: scale(1.06);
-}
-.ag__face :deep(svg) {
-  display: block;
-  width: 100%;
-  height: 100%;
 }
 
 /* ── identity ─────────────────────────────────────────────────────────────── */
@@ -414,8 +389,8 @@ function onCreated(agent: Agent) {
 
 @media (prefers-reduced-motion: reduce) {
   .ag__card,
-  .ag__photo,
-  .ag__face {
+  .ag__halo :deep(.roster-face__photo),
+  .ag__halo :deep(.roster-face__drawn) {
     transition: none;
     transform: none;
   }

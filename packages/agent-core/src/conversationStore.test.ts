@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 10 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 11 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(10);
+    expect(version.user_version).toBe(11);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -194,6 +194,12 @@ describe("v1 baseline migration and schema", () => {
     expect(threads).not.toContain("updated_at");
     expect(threads).not.toContain("lineage_json");
     expect(threads).not.toContain("is_pinned");
+
+    // The route rides on the binding row rather than in a table of its own.
+    const bindings = columnNames(raw, "thread_agents");
+    for (const col of ["thread_id", "agent_id", "settled_at", "route_outcome", "route_confidence"]) {
+      expect(bindings).toContain(col);
+    }
 
     const tables = tableNames(raw);
     for (const table of [
@@ -237,6 +243,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 8, name: "ItemTextChunks" },
       { migration_id: 9, name: "Jobs" },
       { migration_id: 10, name: "JobAttachmentsAndOrder" },
+      { migration_id: 11, name: "ThreadAgentRoute" },
     ]);
 
     const idx = raw
@@ -1784,6 +1791,14 @@ describe("queued turns schema", () => {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         promoted_at INTEGER
+      );
+      -- Not read by this test, but the row below claims the v1 baseline ran,
+      -- and the baseline creates this table. Later rungs add columns to it, so
+      -- a fixture that skipped it would be claiming a lineage it doesn't have.
+      CREATE TABLE thread_agents (
+        thread_id  TEXT PRIMARY KEY,
+        agent_id   TEXT,
+        settled_at INTEGER NOT NULL
       );
       CREATE TABLE schema_migrations (
         migration_id INTEGER PRIMARY KEY,

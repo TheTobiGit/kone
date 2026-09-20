@@ -5,6 +5,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Directions01Icon, FlashIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { DEFAULT_PARTNER_LABEL, type Agent } from "~/utils/agents";
 import { JEV_DISCLOSURE, JEV_HOST, JEV_LABEL, JEV_ROUTER_ID, isRouterId } from "~/utils/agentRouting";
+import RosterFace from "~/components/agent/RosterFace.vue";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
 
@@ -290,24 +291,7 @@ const cardSpring = {
               :class="{ 'is-current': a.id === activeAgentId }"
               @click="choose(a.id)"
             >
-              <span
-                class="partner-avatar"
-                :class="{ 'partner-avatar--photo': Boolean(a.avatar?.src) }"
-                aria-hidden="true"
-              >
-                <img
-                  v-if="a.avatar?.src"
-                  class="partner-avatar__photo"
-                  :src="a.avatar.src"
-                  alt=""
-                  draggable="false"
-                />
-                <span
-                  v-else
-                  class="partner-avatar__face"
-                  v-html="a.svg"
-                />
-              </span>
+              <RosterFace :agent="a" :size="20" class="partner-face" />
               <span class="picker-label" :title="a.name">{{ a.name }}</span>
               <span v-if="a.role" class="partner-role" :title="a.role">{{ a.role }}</span>
               <span v-if="a.id === activeAgentId" class="partner-check">
@@ -428,24 +412,10 @@ const cardSpring = {
   border-radius: 50%;
   overflow: hidden;
 }
-.partner-avatar__photo {
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
-  user-select: none;
-}
-.partner-avatar__face {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-}
-.partner-avatar__face :deep(svg) {
-  width: 100%;
-  height: 100%;
-  display: block;
+/* Clipped to the disc, since the row it sits in is 20px of a list and a face
+   that painted a pixel outside it would show as a nick in the column. */
+.partner-face {
+  overflow: hidden;
 }
 .partner-avatar--flash {
   color: var(--accent);

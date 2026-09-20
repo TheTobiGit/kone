@@ -809,8 +809,8 @@ describe("the store's answer arriving", () => {
     applyRosterSnapshot({
       agents: [row(KONE.id, KONE.id, null)],
       bindings: [
-        { threadId: "thread-a", agentId: KONE.id },
-        { threadId: "thread-b", agentId: null },
+        { threadId: "thread-a", agentId: KONE.id, route: null },
+        { threadId: "thread-b", agentId: null, route: null },
       ],
       selectedAgentId: KONE.id,
     });
@@ -826,7 +826,7 @@ describe("the store's answer arriving", () => {
 
     applyRosterSnapshot({
       agents: [row(KONE.id, KONE.id, null)],
-      bindings: [{ threadId: "thread-kept", agentId: KONE.id }],
+      bindings: [{ threadId: "thread-kept", agentId: KONE.id, route: null }],
       selectedAgentId: null,
     });
 

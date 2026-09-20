@@ -849,6 +849,7 @@ describe("who worked a thread", () => {
     expect(store.bindThreadAgent("thread-1", "kone")).toEqual({
       threadId: "thread-1",
       agentId: "kone",
+      route: null,
     });
     expect(store.getThreadAgent("thread-1")?.agentId).toBe("kone");
   });
@@ -874,15 +875,101 @@ describe("who worked a thread", () => {
     expect(seeded().getThreadAgent("thread-1")).toBeNull();
   });
 
+  // Who worked a thread and why are one fact about one settlement, so they are
+  // written in the same insert and cannot drift apart.
+  test("a routed thread records why, beside who", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 0.82 });
+    expect(store.getThreadAgent("thread-1")).toEqual({
+      threadId: "thread-1",
+      agentId: "kone",
+      route: { outcome: "routed", confidence: 0.82 },
+    });
+  });
+
+  test("a thread settled by hand records no route, which is how it reads back", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone");
+    expect(store.getThreadAgent("thread-1")?.route).toBeNull();
+  });
+
+  // Write-once covers the whole settlement, not just its first column: the
+  // reason cannot be revised onto a decision that was already made.
+  test("a refused re-bind cannot slip a route onto a settled thread", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "gideon", { outcome: "routed", confidence: 0.9 });
+    expect(store.getThreadAgent("thread-1")).toEqual({
+      threadId: "thread-1",
+      agentId: "kone",
+      route: null,
+    });
+  });
+
+  // The tag is the caller's vocabulary; the store keeps it durable without
+  // having an opinion on the words.
+  test("an outcome the store has never heard of is kept verbatim", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone", { outcome: "delegated", confidence: 0.4 });
+    expect(store.getThreadAgent("thread-1")?.route).toEqual({
+      outcome: "delegated",
+      confidence: 0.4,
+    });
+  });
+
+  // A thread reborn under a new id — a provider or model switch tearing a live
+  // session down and starting another — is the same conversation, staffed by
+  // the same decision. One that kept its colleague but lost the reason would
+  // read as hand-picked, which is a different thing from what happened.
+  test("a carry asked for the whole identity brings the route with it", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 0.71 });
+    expect(store.carryThreadAgent("thread-1", "thread-2", true)?.route).toEqual({
+      outcome: "routed",
+      confidence: 0.71,
+    });
+  });
+
+  // A thread forked off another — a side chat, a handoff — inherits the
+  // colleague because the question of who works it was answered by the thread
+  // it came from. But it is new work that was never put to a router, and a
+  // reason copied onto it would claim the router read a request it never saw.
+  test("a fork carries the colleague without the reason", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 0.71 });
+    expect(store.carryThreadAgent("thread-1", "thread-2")).toEqual({
+      threadId: "thread-2",
+      agentId: "kone",
+      route: null,
+    });
+  });
+
+  // The column is a plain REAL and the tag beside it is whatever its writer
+  // called it, so a row can arrive off the scale it is documented on — and
+  // every reader downstream turns it into a percentage.
+  test("a confidence off the 0–1 scale is clamped back onto it on the way out", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 7.5 });
+    store.bindThreadAgent("thread-2", "kone", { outcome: "routed", confidence: -2 });
+    expect(store.getThreadAgent("thread-1")?.route?.confidence).toBe(1);
+    expect(store.getThreadAgent("thread-2")?.route?.confidence).toBe(0);
+  });
+
+  test("a confidence that is no number at all reads as no route", () => {
+    const store = seeded();
+    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: Number.NaN });
+    expect(store.getThreadAgent("thread-1")?.route).toBeNull();
+  });
+
   test("every binding comes back in the order they settled", () => {
     const store = seeded();
     store.bindThreadAgent("thread-1", "kone");
     store.bindThreadAgent("thread-2", null);
     store.bindThreadAgent("thread-3", "gideon");
     expect(store.listThreadAgents()).toEqual([
-      { threadId: "thread-1", agentId: "kone" },
-      { threadId: "thread-2", agentId: null },
-      { threadId: "thread-3", agentId: "gideon" },
+      { threadId: "thread-1", agentId: "kone", route: null },
+      { threadId: "thread-2", agentId: null, route: null },
+      { threadId: "thread-3", agentId: "gideon", route: null },
     ]);
   });
 
@@ -957,7 +1044,9 @@ describe("a thread that is deleted", () => {
 
     store.deleteThread("thread-1");
 
-    expect(store.listThreadAgents()).toEqual([{ threadId: "thread-2", agentId: "gideon" }]);
+    expect(store.listThreadAgents()).toEqual([
+      { threadId: "thread-2", agentId: "gideon", route: null },
+    ]);
   });
 
   test("a guest thread's binding goes too", () => {
@@ -1005,6 +1094,7 @@ describe("a thread that is deleted", () => {
     expect(store.bindThreadAgent("thread-1", "gideon")).toEqual({
       threadId: "thread-1",
       agentId: "gideon",
+      route: null,
     });
   });
 });

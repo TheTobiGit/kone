@@ -7,6 +7,7 @@ import {
   byRecency,
   liftLegacyPins,
   markThreadVisited,
+  ROW_CHANGING_EVENTS,
   SESSION_PIN_KEY,
   summarizeSession,
   type SessionProjectTag,
@@ -230,24 +231,7 @@ export function useSessionList(source: SessionListSource) {
   const agent = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   const detach = agent()?.onEvent((event: RuntimeEvent) => {
-    if (
-      event.type !== "turn.started" &&
-      event.type !== "turn.completed" &&
-      event.type !== "thread.token-usage.updated" &&
-      event.type !== "thread.title.updated" &&
-      // Archive/restore changed which set this list reads from — the live
-      // list and the archive are disjoint queries, so a stamp anywhere moves
-      // the row across. Reconcile by refetch rather than by patching rows:
-      // the stamp may have landed on a subtree, and this list may not even
-      // be the surface that asked for it. Done moves rows the same way,
-      // between the inbox and done views — including marks the retention
-      // sweep made while nobody was sending anything.
-      event.type !== "thread.archived" &&
-      event.type !== "thread.unarchived" &&
-      event.type !== "thread.done.updated"
-    ) {
-      return;
-    }
+    if (!ROW_CHANGING_EVENTS.has(event.type)) return;
     // Title updates are cheap and user-visible — apply in place when we already
     // have the row, otherwise fall through to a silent reload.
     if (event.type === "thread.title.updated") {

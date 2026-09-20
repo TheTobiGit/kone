@@ -143,13 +143,34 @@ export type AgentDuplicateInput = {
 };
 
 /**
+ * Why a thread's agent is the one it has, when a router chose them rather than
+ * a person.
+ *
+ * `outcome` is the caller's own tag, stored and handed back verbatim. The store
+ * keeps it durable without having an opinion on the vocabulary — the surface
+ * that writes the tag is the one that knows what its words mean, and decodes
+ * them again on the way back in.
+ */
+export type ThreadAgentRoute = {
+  outcome: string;
+  /** How firmly, 0–1, as the router reported it. */
+  confidence: number;
+};
+
+/**
  * Who worked a thread. `agentId` is null when it ran as a guest — a recorded
  * decision, not a missing one. A thread that never started has no binding at
  * all, which is why this is only ever handed out for a row that exists.
+ *
+ * `route` rides on the binding rather than beside it: who works a thread and
+ * why are one fact about one settlement, so they are written together and
+ * cannot drift apart or outlive each other. Null for a thread settled by hand,
+ * which is most of them.
  */
 export type ThreadAgentBinding = {
   threadId: string;
   agentId: string | null;
+  route: ThreadAgentRoute | null;
 };
 
 /**

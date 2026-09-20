@@ -26,7 +26,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Exchange01Icon, Folder01Icon, GitBranchIcon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
-import type { Pane } from "~/types/studio";
+import type { Pane, StudioDestination } from "~/types/studio";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 // The scroll rule the centring modes name, and the geometry it reads. Shared with
@@ -52,6 +52,8 @@ import { useStripRail } from "~/composables/useStripRail";
 import { useStripOverview } from "~/composables/useStripOverview";
 import { useStripPresets } from "~/composables/useStripPresets";
 import { useStripSeams } from "~/composables/useStripSeams";
+import StripProjectSwitch from "~/components/thread/StripProjectSwitch.vue";
+import { useStripUnread } from "~/composables/useStripUnread";
 import type { GitRemote } from "~/types/desktop";
 
 const props = defineProps<{
@@ -87,6 +89,10 @@ const props = defineProps<{
   origin?: GitRemote | null;
   /** Studio-wide 2D overview mode. When provided, controls this strip's overview state. */
   overview?: boolean;
+  /** Every project the plane can travel to, in the camera's own top-to-bottom
+   *  order — handed straight to the project switcher, which drops this row's
+   *  own project from it. */
+  destinations?: StudioDestination[];
 }>();
 
 const emit = defineEmits<{
@@ -143,6 +149,8 @@ const emit = defineEmits<{
   "update:overview": [value: boolean];
   /** Request studio-wide overview toggle. */
   "toggle-overview": [];
+  /** Travel to another project's row, picked from the project drop-down. */
+  "switch-row": [projectPath: string];
 }>();
 
 const { cue } = useSound();
@@ -371,11 +379,22 @@ const { plasmaOpacity, chooserDir, chooserActions, onChoose } = useStripChooser(
 // ── linking + blank-pane predicates ──────────────────────────────────────────
 // Side-chat seam joints, the seam menu's greyed rows, and the read-stamp
 // watcher (which moves with the panes it watches).
-const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
+const { canClose, hasBlankThread, isLinkedToNext, paneThreadId } = useStripLinking({
   panes: () => props.panes,
   visible: () => props.visible,
 });
 
+// ── unread marks ──────────────────────────────────────────────────────────────
+// Background threads with unseen activity wear a solid accent dash beside the
+// breathing live one. Same visit timestamps the inbox reads, refreshed from
+// the store on turn events.
+const { isUnread } = useStripUnread({
+  panes: () => props.panes,
+  paneThreadId,
+  projectPath: () => props.projectPath,
+  focusedId: () => props.focusedId,
+  visible: () => props.visible,
+});
 </script>
 
 <template>
@@ -399,16 +418,23 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
               'is-focused': c.id === focusedId,
               'is-dormant': !c.session && c.id !== focusedId,
               'is-live': c.kind === 'thread' && !!c.session && c.session.busy.value && c.id !== focusedId,
+              'is-unread': isUnread(c),
               'is-pulse': c.id === props.pulseKey,
               'is-sidechat': c.kind === 'thread' && !!c.session?.isSideChat.value,
             },
           ]"
-          :aria-label="`Column ${i + 1}: ${columnLabel(c)}`"
+          :aria-label="`Column ${i + 1}: ${columnLabel(c)}${isUnread(c) ? ', unread' : ''}`"
           :aria-current="c.id === focusedId"
           @click="onColumnClick(c.id)"
         />
       </div>
-      <span v-if="repo" class="index__project" :title="projectPath">{{ repo }}</span>
+      <StripProjectSwitch
+        v-if="repo"
+        :repo="repo"
+        :project-path="projectPath"
+        :destinations="destinations"
+        @switch="(path) => emit('switch-row', path)"
+      />
     </nav>
 
     <!-- Solo: leading pad centres the thread. Multi: tile from the left, trailing
@@ -876,25 +902,6 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
   align-items: center;
   gap: 6px;
 }
-.index__project {
-  position: absolute;
-  right: 2rem;
-  top: 50%;
-  transform: translateY(-50%);
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 240px;
-  user-select: none;
-  pointer-events: auto;
-  transition: color 0.18s ease;
-}
 .index__dash {
   pointer-events: auto;
   cursor: pointer;
@@ -967,6 +974,21 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
   50% {
     opacity: 1;
   }
+}
+/* An unseen reply waits as a solid accent dash — the same accent the live
+   dash breathes in, held still. Wider than rest so it carries at a glance,
+   narrower than focused so focus still wins the row. Live keeps its breath
+   when both land together; dormant yields to it. */
+.index__dash.is-unread {
+  width: 18px;
+  background: var(--accent);
+}
+.index__dash.is-unread:hover {
+  background: var(--accent);
+}
+.index__dash.is-unread.is-focused {
+  width: 24px;
+  background: var(--accent);
 }
 
 /* Empty-board chooser — an opaque layer over the rail, its pick stack centred.
