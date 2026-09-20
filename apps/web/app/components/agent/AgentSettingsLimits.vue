@@ -522,18 +522,21 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   flex-direction: column;
 }
 
-/* Cards run two-up once there's room for a full-width meter in each column —
-   the drawer widens to 1040px for this page, which the single column was
-   spending on whitespace. Flowed columns rather than a grid on purpose: cards
-   differ wildly in height (OpenCode has no meters, Claude has three), and grid
-   rows would leave a card-sized hole beside every short one. `columns: 310px 2`
-   is its own breakpoint — one column when there isn't room for two. */
+/* One card per row, read top to bottom.
+   This used to flow two-up via `columns: 310px 2`, which was its own breakpoint
+   — two columns where there was room, one where there wasn't. There is never
+   room: two 310px columns and their gutter need 684px and this page is a
+   reading that stops at 640px, so the rule only ever produced the single column
+   it falls back to. A breakpoint that cannot fire is worse than no breakpoint,
+   because it reads as a layout the page still supports. Stated as a real single
+   column instead. Restoring two-up is a `columns` rule again rather than a grid
+   — cards differ wildly in height (OpenCode has no meters, Claude has three)
+   and grid rows would leave a card-sized hole beside every short one — and it
+   belongs behind a container query on the page, not on a width this component
+   cannot see. */
 .cards {
-  columns: 310px 2;
-  column-gap: 64px;
-}
-.cards > * {
-  break-inside: avoid;
+  display: flex;
+  flex-direction: column;
 }
 
 /* No entrance choreography on the cards — they're present the moment the pane
@@ -559,10 +562,9 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 }
 
 /* ── card ─────────────────────────────────────────────────────────────────── */
-/* A hairline rule, not a box — kone separates with air and a single line. */
-/* Every card carries its rule, first one included: in a grid the two cells of a
-   row have to agree, and the rule under the caption reads as that group's header
-   line rather than an orphan. */
+/* A hairline rule, not a box — kone separates with air and a single line. In a
+   single vertical column the rule is a separator between cards, so the first
+   card has nothing above it to be separated from and skips its own. */
 .card {
   display: flex;
   flex-direction: column;
@@ -570,6 +572,9 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   padding: 28px 0 40px;
   border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   min-width: 0;
+}
+.card:first-child {
+  border-top: none;
 }
 
 .card__head {
@@ -624,16 +629,15 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 /* ── quiet rows ───────────────────────────────────────────────────────────── */
 /* A provider with no number to draw costs one ruled line and its sentence — the
    full card it used to get spent a meter's worth of height saying "there is no
-   meter". Two-up as well, so four of them read as a short block. */
+   meter". Single column for the same reason as the cards above: two 310px
+   columns and their gutter need 664px and the page stops at 640px, so the
+   two-up this carried never once fired. */
 .rows {
-  columns: 310px 2;
-  column-gap: 44px;
+  display: flex;
+  flex-direction: column;
   margin: 0;
   padding: 0;
   list-style: none;
-}
-.rows > * {
-  break-inside: avoid;
 }
 .row {
   display: flex;
@@ -642,6 +646,9 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   padding: 12px 0 14px;
   border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   min-width: 0;
+}
+.row:first-child {
+  border-top: none;
 }
 .row__head {
   display: flex;
