@@ -14,6 +14,7 @@
 import { computed } from "vue";
 import type { ComputedRef, Ref } from "vue";
 import type { InteractionMode, ProviderKind } from "~/types/desktop";
+import type { Agent } from "~/utils/agents";
 import type { EffortTier, ModelOption } from "~/utils/modelCatalog";
 import { familyForId } from "~/utils/modelCatalog";
 import {
@@ -119,6 +120,45 @@ export function useModelCommit(o: UseModelCommitOptions) {
     persistThreadSelection();
   }
 
+  /**
+   * Start the thread on its agent's own model.
+   *
+   * Takes the agent rather than the pin so that every caller asks the same
+   * question — "who is working this thread?" — and none of them has to know
+   * that an agent without a pin answers it by doing nothing. An agent with a
+   * pinned model is a statement about what it runs on, so a thread handed to
+   * one opens on that model rather than on whatever the composer happened to be
+   * showing when the message was typed. No agent, or one without a pin, leaves
+   * the composer's choice standing: no preference is not a preference for
+   * something else.
+   *
+   * Nothing is written to the last-used keys, unlike every other path here.
+   * This is not the user choosing a model, and recording it as one would let an
+   * agent's pin quietly become the default the next blank thread opens on.
+   */
+  async function applyAgentPin(settled: Agent | null): Promise<void> {
+    const pinned = settled?.capabilities.model ?? null;
+    if (!pinned) return;
+    await syncTarget();
+    const providerChanged = pinned.provider !== agent.provider.value;
+    const modelChanged = pinned.model !== agent.model.value;
+    if (!providerChanged && !modelChanged) return;
+    if (providerChanged) agent.setProvider(pinned.provider);
+    agent.setModel(pinned.model);
+    // A provider that bakes its model in at spawn has to be re-born to run the
+    // new one — but only if something is actually running. The common case here
+    // is a thread whose first turn is still being sent: nothing has spawned
+    // yet, so the pick simply rides out with it, and tearing a session down at
+    // that moment would be a teardown of nothing in the middle of a send.
+    const needsRestart =
+      providerChanged || (RESTART_ON_MODEL_CHANGE.has(pinned.provider) && modelChanged);
+    if (needsRestart && agent.session.value) {
+      if (agent.busy.value) await agent.interrupt();
+      await agent.restart();
+    }
+    persistThreadSelection();
+  }
+
   // The composer's inline fast-mode toggle acts on the CURRENT model only — it
   // doesn't change modelId/tier, just whether that model's real "fast" tier is
   // applied on the next turn.
@@ -170,6 +210,7 @@ export function useModelCommit(o: UseModelCommitOptions) {
   return {
     persistThreadSelection,
     applyModelEffort,
+    applyAgentPin,
     fastActive,
     onUpdateFastMode,
     onComposerModelId,

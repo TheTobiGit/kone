@@ -57,7 +57,35 @@ export const JEV_HOST = "api.typesafe.ai";
  *  the message itself, where it was typed, and who was available to take it.
  *  Kept next to the constant that makes the call so the two cannot drift. */
 export const JEV_DISCLOSURE =
-  `Sends your message, the project name, and your team's agent descriptions to ${JEV_HOST} to choose who answers. Nothing is sent until you pick Jev and send.`;
+  `Sends your message, the project name, and your team's agent descriptions to ${JEV_HOST} to choose who answers. With Jev picked, a paused draft is sent ahead so the choice is ready when you hit send.`;
+
+/** How long a draft sits untouched before it is routed ahead of the send.
+ *  Long enough that a steady typist never fires it mid-word, short enough
+ *  that the round trip is usually over by the time send is hit. */
+export const JEV_PREFETCH_DEBOUNCE_MS = 500;
+
+/** Drafts shorter than this never route ahead. A fragment that short carries
+ *  almost no signal about whose job it is, and routing it would spend a
+ *  network call to classify "fix" — the send still routes, so nothing is
+ *  lost by waiting for a few more words. */
+export const JEV_PREFETCH_MIN_CHARS = 12;
+
+/** Whether a draft is worth routing ahead of its send. Slash rows are local
+ *  UI — they never reach the router at send time either — and short
+ *  fragments classify noise rather than intent. */
+export function isPrefetchableDraft(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < JEV_PREFETCH_MIN_CHARS) return false;
+  return !trimmed.startsWith("/");
+}
+
+/** The form sends and prefetches are compared in. Sends leave the composer
+ *  trimmed, drafts leave it raw, so both ends trim before they are held
+ *  against each other — otherwise a trailing space would read as a new
+ *  request and throw away a warmed decision. */
+export function normalizeRouteText(text: string): string {
+  return text.trim();
+}
 
 /** Whether a selection is the router rather than an agent. Worth asking
  *  wherever a selection is about to be treated as somebody who can work. */

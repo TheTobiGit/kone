@@ -233,6 +233,10 @@ const emit = defineEmits<{
    *  composer's layer while it's open so the corner docks can't sit over it on
    *  a narrow window. */
   "update:open": [open: boolean];
+  /** The draft as typed, for hosts that work ahead of the send — Jev routes a
+   *  paused draft so the choice is ready when send lands. Raw text, untrimmed:
+   *  the host normalises before comparing it with a send. */
+  "update:draft": [text: string];
 }>();
 
 const { cue } = useSound();
@@ -944,6 +948,10 @@ onUnmounted(() => {
   clearAttachments();
 });
 watch(text, scheduleDraftSave);
+// Let hosts work ahead of the send off the same text. Emitted raw — the host
+// decides what is worth warming, so a keystroke here never costs a call by
+// itself.
+watch(text, (draft) => emit("update:draft", draft));
 
 async function setDraft(draft: string) {
   await wake();

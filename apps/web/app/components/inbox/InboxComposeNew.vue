@@ -195,6 +195,13 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
   await s.sendQueuedEntryNow(entry);
 }
 
+/** Warm Jev off the draft while it is still being typed. This pane is always
+ *  a blank thread, so every draft here is a first turn worth warming when
+ *  Jev is picked — the guard inside still decides what is worth a call. */
+function onComposerDraft(text: string): void {
+  composer.prefetchRoute(text);
+}
+
 async function onSend(text: string, files?: File[]): Promise<void> {
   if (sending.value) return;
   sending.value = true;
@@ -231,7 +238,7 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // line on — an answer arriving after it would reach a session that had
     // already asked who it was.
     const id = s.threadId.value;
-    if (id) await composer.settleAgentFor(text, id);
+    if (id) await composer.settleAndPin(text, id);
     // Not awaited: see the handover note above.
     const sent = s.send(text, uploaded);
     // The send gate can still refuse on a status that went stale under the
@@ -385,6 +392,7 @@ defineExpose({ focus });
         @update:context-window="composer.onContextWindow"
         @open-models="composer.openPicker"
         @open-branch="branchOpen = true"
+        @update:draft="onComposerDraft"
       />
     </div>
 

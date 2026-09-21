@@ -764,6 +764,7 @@ const {
   routing,
   lastRouted,
   routePending,
+  prefetchRoute,
   settleAgentFor,
   agentById,
   pendingThreadAgent,
@@ -830,6 +831,15 @@ const routingNote = computed<string | null>(() => {
 
 function onAgentPick(id: string | null) {
   selectAgent(id);
+}
+
+/** Warm Jev off the draft while it is still being typed. Blank threads only:
+ *  a settled thread never routes again, and a side chat inherits its source's
+ *  owner — warming for either would spend a call whose answer can never land. */
+function onComposerDraft(text: string): void {
+  if (!threadIsBlank.value || focusedIsSideChat.value) return;
+  if (!routing.value) return;
+  prefetchRoute(text);
 }
 
 // The selected agent's pinned model gates what the pickers may offer. No model
@@ -1308,6 +1318,7 @@ watch(
 const {
   persistThreadSelection,
   applyModelEffort,
+  applyAgentPin,
   fastActive,
   onUpdateFastMode,
   onComposerModelId,
@@ -1411,7 +1422,12 @@ async function onSend(text: string, files?: File[]) {
     // With the router selected, who works the thread is read out of the
     // request rather than off the picker — awaited before the send below, since
     // the session reads the persona off this binding as it spawns.
-    await settleAgentFor(text, currentId);
+    //
+    // And whoever it named runs on their own model when they have one. The
+    // composer never showed that pick — nobody was on the thread to pin it
+    // until this line — so it is applied here, before the send carries the
+    // turn out on it.
+    await applyAgentPin(await settleAgentFor(text, currentId));
   }
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
@@ -1783,6 +1799,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           @compact="onComposerCompact"
           @new-thread="onComposerNewThread"
           @update:open="composerOpen = $event"
+          @update:draft="onComposerDraft"
         />
       </div>
     </Transition>
