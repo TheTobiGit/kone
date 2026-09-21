@@ -46,17 +46,6 @@ export function modeKey(projectPath: string): string {
  *  pane; read at boot only when `modeKey(path)` holds nothing yet. */
 export const DEFAULT_MODE_KEY = "kone:default-mode";
 
-/** A model change on a provider that bakes model/effort at spawn (Claude,
- *  OpenCode, Antigravity — the effort rides the print `--model` label) can't
- *  apply to a running session; it needs a fresh one. Codex takes model/effort
- *  per turn, so it changes in place. Mirrors each adapter's
- *  `sessionModelSwitch`. */
-export const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>([
-  "claudeAgent",
-  "opencode",
-  "antigravity",
-]);
-
 export const PROVIDER_VENDOR = {
   codex: "OpenAI",
   claudeAgent: "Anthropic",

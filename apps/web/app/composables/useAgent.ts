@@ -1018,17 +1018,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   }
 
   /** Tear the live session down and start a fresh one under a new thread id.
-   *  Used when a change can't be applied to a running session — switching
-   *  provider (a different CLI entirely), or changing a Claude model, whose
-   *  effort/model are baked when the SDK subprocess spawns. Prior turns stay on
-   *  screen as history; new turns stream in under the new session. */
+   *  Used for the one change that can't be applied to a running session:
+   *  switching provider, which means a different CLI entirely. Prior turns stay
+   *  on screen as history; new turns stream in under the new session. */
   async function restart(): Promise<void> {
     // Nothing was ever spawned (a deferred thread whose provider the user just
     // switched). There's no CLI to re-birth, and eagerly starting one here would
     // put back exactly the boot-time spawn we removed.
     const wasLive = Boolean(session.value);
     await dispose();
-    // A restart is a deliberate re-birth of this session (provider/model switch),
+    // A restart is a deliberate re-birth of this session (a provider switch),
     // not a teardown — clear the dispose() latch so start() below runs.
     forgotten = false;
     rehydratedOnce = true;

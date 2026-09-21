@@ -17,11 +17,7 @@ import type { InteractionMode, ProviderKind } from "~/types/desktop";
 import type { Agent } from "~/utils/agents";
 import type { EffortTier, ModelOption } from "~/utils/modelCatalog";
 import { familyForId } from "~/utils/modelCatalog";
-import {
-  RESTART_ON_MODEL_CHANGE,
-  setAssistantLastUsedModel,
-  setLastUsedModel,
-} from "~/utils/modelPicker";
+import { setAssistantLastUsedModel, setLastUsedModel } from "~/utils/modelPicker";
 import type { useAgent } from "~/composables/useAgent";
 
 export type ModelPick = {
@@ -82,7 +78,6 @@ export function useModelCommit(o: UseModelCommitOptions) {
   async function applyModelEffort(picked: ModelPick): Promise<void> {
     await syncTarget();
     const providerChanged = picked.provider !== agent.provider.value;
-    const modelChanged = picked.modelId !== agent.model.value;
     if (providerChanged) agent.setProvider(picked.provider);
     agent.setModel(picked.modelId);
     agent.setReasoning(picked.tier);
@@ -108,9 +103,10 @@ export function useModelCommit(o: UseModelCommitOptions) {
       });
     }
 
-    const needsRestart =
-      providerChanged || (RESTART_ON_MODEL_CHANGE.has(picked.provider) && modelChanged);
-    if (needsRestart) {
+    // Only a provider switch needs a new session: every adapter takes a model
+    // change on the turn that carries it, so a pick reaches the running
+    // conversation without costing it.
+    if (providerChanged) {
       // A turn in flight is torn down by the restart — stop it cleanly first.
       if (agent.busy.value) await agent.interrupt();
       await agent.restart();
@@ -145,14 +141,12 @@ export function useModelCommit(o: UseModelCommitOptions) {
     if (!providerChanged && !modelChanged) return;
     if (providerChanged) agent.setProvider(pinned.provider);
     agent.setModel(pinned.model);
-    // A provider that bakes its model in at spawn has to be re-born to run the
-    // new one — but only if something is actually running. The common case here
-    // is a thread whose first turn is still being sent: nothing has spawned
-    // yet, so the pick simply rides out with it, and tearing a session down at
-    // that moment would be a teardown of nothing in the middle of a send.
-    const needsRestart =
-      providerChanged || (RESTART_ON_MODEL_CHANGE.has(pinned.provider) && modelChanged);
-    if (needsRestart && agent.session.value) {
+    // Only a different CLI needs a new session, and only if one is actually
+    // running. The common case here is a thread whose first turn is still being
+    // sent: nothing has spawned yet, so the pin simply rides out with it, and
+    // tearing a session down at that moment would be a teardown of nothing in
+    // the middle of a send.
+    if (providerChanged && agent.session.value) {
       if (agent.busy.value) await agent.interrupt();
       await agent.restart();
     }
