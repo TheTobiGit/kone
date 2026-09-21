@@ -13,6 +13,7 @@ import type {
   StoredThreadMeta,
   SubagentRun,
 } from "./types.js";
+import { copyTurnStamp } from "./types.js";
 import { threadEnvMode } from "./threadWorkspace.js";
 import type { ThreadEnvMode, ThreadWorkspace } from "./threadWorkspace.js";
 
@@ -144,6 +145,12 @@ export type BlockRow = {
   at: number;
   ended_at: number | null;
   attachments_json: string | null;
+  /** The reasoning-effort tier the request was sent with, in the renderer's
+   *  own vocabulary. NULL on rows written before the tier was journaled. */
+  effort: string | null;
+  /** The raw provider model id the request was sent with. NULL on rows
+   *  written before the model was journaled. */
+  model: string | null;
   source: BlockSource;
 };
 
@@ -609,6 +616,7 @@ export function assembleBlocks(
       };
       const attachments = parseAttachments(b.attachments_json);
       if (attachments?.length) block.attachments = attachments;
+      copyTurnStamp(b, block);
       if (b.source === "fork-import") block.source = "fork-import";
       return block;
     }

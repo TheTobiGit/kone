@@ -11,8 +11,9 @@ import type {
   StoredBlock,
   StoredThread,
   ThreadLineage,
+  TurnStamp,
 } from "./types.js";
-import { isEditForkContext, isHandoffForkContext } from "./types.js";
+import { copyTurnStamp, isEditForkContext, isHandoffForkContext } from "./types.js";
 import {
   HANDOFF_BOUNDARY_INSTRUCTION,
   HANDOFF_INTRO,
@@ -345,7 +346,7 @@ function buildImportedBlocks(
   text: string;
   at: number;
   attachments?: ChatAttachment[];
-}> {
+} & TurnStamp> {
   return source.blocks
     .filter((b) => b.source !== "fork-import")
     .map((b) => {
@@ -355,7 +356,10 @@ function buildImportedBlocks(
         text: blockText(b),
         at: b.at,
       };
-      if (b.role === "user" && b.attachments?.length) imported.attachments = b.attachments;
+      if (b.role === "user") {
+        if (b.attachments?.length) imported.attachments = b.attachments;
+        copyTurnStamp(b, imported);
+      }
       return imported;
     });
 }

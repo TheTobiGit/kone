@@ -633,6 +633,29 @@ describe("AgentService durable turn queue + steering", () => {
     expect(queued?.attachmentsJson).toBe(row.attachmentsJson);
   });
 
+  test("turn.queued carries the tier and model the row was journaled with", async () => {
+    const thread = "t-q-enqueue-stamps";
+    fakeStore.seedUserBlocks(thread, ["block-first", "block-followup"]);
+    await startBusyThread(thread, "live-1");
+
+    await service.sendTurn({
+      threadId: thread,
+      input: "follow-up please",
+      effort: "high",
+      model: "claude-opus-5",
+    });
+
+    const row = fakeStore.rows.find((r) => r.threadId === thread)!;
+    // SAFETY: the predicate matches only turn.queued events.
+    const queued = received.find(
+      (e) => e.threadId === thread && e.type === "turn.queued",
+    ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
+    // The event says exactly what the durable row says, so a live queue and a
+    // queue rebuilt after a quit stamp the promoted turn identically.
+    expect(queued?.effort).toBe(row.effort!);
+    expect(queued?.model).toBe(row.model!);
+  });
+
   test("turn.completed promotes the queued turn with its original overrides", async () => {
     const thread = "t-q-promote";
     fakeStore.seedUserBlocks(thread, ["b1"]);

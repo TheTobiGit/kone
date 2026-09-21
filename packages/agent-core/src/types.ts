@@ -640,9 +640,32 @@ export type StoredThreadMeta = {
   snippet?: string;
 };
 
+/** What one request was sent with. The two travel together everywhere a user
+ *  block does — journaled by the same insert, copied by the same fork, handoff
+ *  and export — so they are named once here and spread in rather than restated
+ *  field by field at each boundary. Both stored verbatim: the tier as the
+ *  renderer's own tag, the model as the raw provider id. Absent means nothing
+ *  was recorded, which never claims a switch. */
+export type TurnStamp = {
+  effort?: string;
+  model?: string;
+};
+
+/** Carry a request's stamps from whatever holds them — a block row off disk, a
+ *  stored block, another stamp — onto the row being built from it. A null or
+ *  absent axis is left unset rather than written as empty, so "nothing
+ *  recorded" survives every copy. */
+export function copyTurnStamp(
+  from: { effort?: string | null; model?: string | null },
+  to: TurnStamp,
+): void {
+  if (from.effort) to.effort = from.effort;
+  if (from.model) to.model = from.model;
+}
+
 /** One reconstructed block — the persisted form of a renderer timeline block. */
 export type StoredBlock =
-  | {
+  | ({
       id: string;
       role: "user";
       text: string;
@@ -652,7 +675,7 @@ export type StoredBlock =
        *  row); `"fork-import"` = copied in from a side chat's source thread,
        *  carrying its original `at` and never refreshing `updated_at`. */
       source?: BlockSource;
-    }
+    } & TurnStamp)
   | {
       id: string;
       role: "assistant";
@@ -1565,6 +1588,12 @@ export type RuntimeEvent =
       input?: string;
       /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
       attachmentsJson?: string | null;
+      /** What the queued request will run with, carried so the renderer's row
+       *  is complete without a re-read — the same pair the store journaled on
+       *  the row, so a live queue and a rehydrated one stamp the promoted turn
+       *  identically. */
+      effort?: string;
+      model?: string;
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was

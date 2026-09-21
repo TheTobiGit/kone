@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 11 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 12 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(11);
+    expect(version.user_version).toBe(12);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -244,6 +244,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 9, name: "Jobs" },
       { migration_id: 10, name: "JobAttachmentsAndOrder" },
       { migration_id: 11, name: "ThreadAgentRoute" },
+      { migration_id: 12, name: "BlockTurnStamps" },
     ]);
 
     const idx = raw
@@ -599,6 +600,91 @@ describe("listThreads archive views", () => {
     });
     threads = store.listThreads("/p");
     expect(threads[0]?.snippet).toBe("The capital of France is Paris.");
+  });
+});
+
+describe("user block model", () => {
+  test("a sent model is journaled on the request block and reads back", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-m", projectPath: "/p", provider: "claudeAgent" });
+    store.recordUserBlock({ threadId: "t-m", text: "first", at: 100, model: "claude-opus-5" });
+    store.recordUserBlock({ threadId: "t-m", text: "second", at: 200, model: "claude-sonnet-5" });
+
+    const loaded = store.loadThread("t-m");
+    expect(loaded).not.toBeNull();
+    const users = loaded!.blocks.filter((b) => b.role === "user");
+    expect(users.map((b) => (b.role === "user" ? b.model : undefined))).toEqual([
+      "claude-opus-5",
+      "claude-sonnet-5",
+    ]);
+  });
+
+  test("rows written without a model read back without one", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-m", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-m", text: "before models", at: 100 });
+
+    const loaded = store.loadThread("t-m");
+    const first = loaded!.blocks[0];
+    expect(first?.role).toBe("user");
+    if (first?.role === "user") expect(first.model).toBeUndefined();
+  });
+
+  test("the windowed page carries the model", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-m", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-m", text: "first", at: 100, model: "gpt-5.6" });
+    store.recordUserBlock({ threadId: "t-m", text: "second", at: 200, model: "gpt-5.6-codex" });
+
+    const page = store.loadThreadPage("t-m", { limit: 10 })!;
+    const users = page.blocks.filter((b) => b.role === "user");
+    expect(users.map((b) => (b.role === "user" ? b.model : undefined))).toEqual([
+      "gpt-5.6",
+      "gpt-5.6-codex",
+    ]);
+  });
+});
+
+describe("user block effort", () => {
+  test("a sent tier is journaled on the request block and reads back", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-e", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-e", text: "first", at: 100, effort: "medium" });
+    store.recordUserBlock({ threadId: "t-e", text: "second", at: 200, effort: "high" });
+
+    const loaded = store.loadThread("t-e");
+    expect(loaded).not.toBeNull();
+    const users = loaded!.blocks.filter((b) => b.role === "user");
+    expect(users.map((b) => (b.role === "user" ? b.effort : undefined))).toEqual([
+      "medium",
+      "high",
+    ]);
+  });
+
+  test("rows written without a tier read back without one", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-e", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-e", text: "before tiers", at: 100 });
+
+    const loaded = store.loadThread("t-e");
+    expect(loaded).not.toBeNull();
+    const first = loaded!.blocks[0];
+    expect(first?.role).toBe("user");
+    if (first?.role === "user") expect(first.effort).toBeUndefined();
+  });
+
+  test("the windowed page carries the tier", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-e", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-e", text: "first", at: 100, effort: "low" });
+    store.recordUserBlock({ threadId: "t-e", text: "second", at: 200, effort: "max" });
+
+    const page = store.loadThreadPage("t-e", { limit: 10 })!;
+    const users = page.blocks.filter((b) => b.role === "user");
+    expect(users.map((b) => (b.role === "user" ? b.effort : undefined))).toEqual([
+      "low",
+      "max",
+    ]);
   });
 });
 
