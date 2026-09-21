@@ -191,4 +191,29 @@ describe("promptAttachments", () => {
     expect(parts[0]?.filename).toBe("script.ts");
     expect(parts[0]?.url.startsWith("file://")).toBe(true);
   });
+
+  test("concurrent image reads keep attachment order with per-image bytes", async () => {
+    const { getAttachmentStore } = await import("./AttachmentStore.js");
+    const { buildCursorAttachmentInput } = await import("./promptAttachments.js");
+
+    const store = getAttachmentStore();
+    const payloads = ["first-bytes", "second-bytes", "third-bytes"];
+    const images = [];
+    for (const [index, payload] of payloads.entries()) {
+      images.push(
+        await store.save({
+          threadId: "th_1",
+          name: `img-${index}.png`,
+          mimeType: "image/png",
+          data: Buffer.from(payload).toString("base64"),
+        }),
+      );
+    }
+
+    const result = await buildCursorAttachmentInput(images);
+    expect(result.imageBlocks).toHaveLength(3);
+    expect(result.imageBlocks.map((block) => block.data)).toEqual(
+      payloads.map((payload) => Buffer.from(payload).toString("base64")),
+    );
+  });
 });
