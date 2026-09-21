@@ -57,7 +57,8 @@ const pct = computed(() => Math.round(props.route.confidence * 100));
   justify-content: center;
   gap: 6px;
   width: 100%;
-  padding: 6px 0 2px;
+  /* No padding of its own — the transcript column's gap spaces this mark
+     against the day divider above it and the first request below. */
   font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
