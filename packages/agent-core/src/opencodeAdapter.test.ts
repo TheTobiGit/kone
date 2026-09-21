@@ -263,12 +263,15 @@ export type OpenCodeServer = {
   child: { once: (event: string, listener: (code: number | null) => void) => void };
   dispose: () => Promise<void>;
 };
-export async function startOpenCodeServer(): Promise<OpenCodeServer> {
-  return {
-    baseUrl: "http://127.0.0.1:9",
-    child: { once: () => {} },
-    dispose: async () => {},
-  };
+export class OpenCodeServerPool {
+  async start(): Promise<OpenCodeServer> {
+    return {
+      baseUrl: "http://127.0.0.1:9",
+      child: { once: () => {} },
+      dispose: async () => {},
+    };
+  }
+  async dispose(): Promise<void> {}
 }
 `;
 
@@ -671,5 +674,85 @@ describe("OpenCode tool status ladder", () => {
       "call-error",
     ]);
     expect(ladder.every((e) => e.turnId === turn.turnId)).toBe(true);
+  });
+});
+
+// ── OpenCode gateway MCP registration ─────────────────────────────────────────
+// The registration rides beside session creation (not after it), so this pins
+// the contract that survived the parallelization: one POST /mcp carrying the
+// thread's bearer token, and a working session.
+describe("OpenCode gateway MCP registration", () => {
+  const THREAD = "mcp-thread";
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ method: string; route: string; body?: unknown }> = [];
+  let adapterModule: OpenCodeAdapterModule;
+
+  beforeAll(async () => {
+    adapterModule = await loadOpenCodeAdapterWithStubbedServer();
+  });
+
+  // Same per-test stub discipline as the describes above.
+  beforeEach(() => {
+    calls.length = 0;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const route = String(input).replace(/^https?:\/\/[^/]+/, "");
+      const method = init?.method ?? "GET";
+      const rawBody = init?.body;
+      const body = rawBody == null ? undefined : JSON.parse(String(rawBody));
+      calls.push({ method, route, body });
+      if (method === "GET" && route === "/event") {
+        return new Response(new ReadableStream({ start(controller) { controller.close(); } }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (method === "POST" && route === "/session") {
+        return new Response(JSON.stringify({ data: { id: "ses_1" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "POST" && route === "/mcp") {
+        return new Response(JSON.stringify({ kone: { status: "connected" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (route.startsWith("/session/ses_1/")) {
+        return new Response(JSON.stringify({ data: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: `unhandled ${method} ${route}` }), {
+        status: 404,
+      });
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("startSession registers the kone MCP server with the thread token", async () => {
+    const adapter = new adapterModule.OpenCodeAdapter(() => {});
+    const session = await adapter.startSession({
+      threadId: THREAD,
+      provider: "opencode",
+      cwd: "/tmp/kone-test-project",
+      model: "opencode-go/deepseek-v4-flash",
+      gatewayConnection: { url: "http://127.0.0.1:1", bearerToken: "thread-token", tools: [] },
+    });
+    expect(session.threadId).toBe(THREAD);
+
+    const mcp = calls.filter((c) => c.method === "POST" && c.route === "/mcp");
+    expect(mcp).toHaveLength(1);
+    // SAFETY: the /mcp post always carries a JSON body with name/config/directory.
+    const mcpBody = mcp[0]?.body as { name?: unknown; directory?: unknown; config?: { headers?: unknown } } | undefined;
+    expect(mcpBody?.name).toBe("kone");
+    expect(mcpBody?.directory).toBe("/tmp/kone-test-project");
+    expect(mcpBody?.config?.headers).toEqual({ Authorization: "Bearer thread-token" });
+
+    await adapter.stopSession(THREAD);
   });
 });
