@@ -5,6 +5,7 @@ import type {
   KoneAgentApi,
   ProviderKind,
   RuntimeEvent,
+  StoredBlock,
   ThreadEnvMode,
   SessionStartInput,
   TokenUsage,
@@ -295,10 +296,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
         return;
       }
       const known = new Set(blocks.value.map((b) => b.id));
-      const older = adoptStoredBlocks(
-        // SAFETY: page blocks deserialize to ThreadBlocks; adoptStoredBlocks re-checks shape.
-        (page.blocks as ThreadBlock[]).filter((b) => !known.has(b.id)),
-      );
+      const older = adoptStoredBlocks(page.blocks.filter((b) => !known.has(b.id)));
       if (older.length > 0) blocks.value = [...older, ...blocks.value];
       olderCursor.value = page.nextCursor;
     } catch (e) {
@@ -326,18 +324,14 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
         api.history.threadPage
           ? await api.history.threadPage(meta.threadId, { limit: PAGE_LIMIT }).catch(() => null)
           : null;
-      let resolvedBlocks: ThreadBlock[] | null = null;
+      let resolvedBlocks: StoredBlock[] | null = null;
       let nextCursor: string | null = null;
       if (page && page.blocks.length > 0) {
-        // SAFETY: page.blocks deserializes to ThreadBlocks by IPC contract.
-        resolvedBlocks = page.blocks as ThreadBlock[];
+        resolvedBlocks = page.blocks;
         nextCursor = page.nextCursor;
       } else {
         const full = await api.history.thread(meta.threadId).catch(() => null);
-        if (full && full.blocks.length > 0) {
-          // SAFETY: thread history blocks deserialize to ThreadBlocks by IPC contract.
-          resolvedBlocks = full.blocks as ThreadBlock[];
-        }
+        if (full && full.blocks.length > 0) resolvedBlocks = full.blocks;
       }
       if (resolvedBlocks && resolvedBlocks.length > 0) {
         threadId.value = meta.threadId;

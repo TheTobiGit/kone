@@ -14,6 +14,7 @@ import type {
 } from "~/types/desktop";
 import { originSubagentOfApproval } from "../agentPrefetch";
 import { canonicalizeItem } from "~/utils/toolName";
+import { isEffortTier } from "~/utils/modelCatalog";
 import type {
   AssistantBlock,
   PendingApproval,
@@ -432,6 +433,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
           createdAt: event.at,
           position: event.position,
         };
+        if (event.effort) entry.effort = event.effort;
+        if (event.model) entry.model = event.model;
         if (blockId) entry.blockId = blockId;
         // A re-seed may already hold this queueId — replace, never duplicate.
         // Arrival order wins: event.position goes stale after a cancellation
@@ -491,6 +494,13 @@ export function useSessionReducer(deps: SessionReducerDeps) {
             at: promo.createdAt,
           };
           if (attachments?.length) userBlock.attachments = attachments;
+          // What the turn runs with is on the row itself — the same fields the
+          // backend journals for it — so a promoted turn is stamped identically
+          // whether the row was enqueued a second ago or drained from storage
+          // after a quit. An unknown tier degrades to unstamped rather than
+          // being read as one.
+          if (isEffortTier(promo.effort)) userBlock.effort = promo.effort;
+          if (promo.model) userBlock.model = promo.model;
         }
 
         if (userBlock) {

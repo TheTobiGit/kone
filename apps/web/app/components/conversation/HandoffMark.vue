@@ -25,7 +25,7 @@ function open(): void {
 </script>
 
 <template>
-  <div class="handoff-mark">
+  <div class="thread-mark handoff-mark">
     <span class="handoff-verb">{{ mark.kind === "from" ? "Handed from" : "Handed to" }}</span>
     <button type="button" class="handoff-link" @click="open">
       <ProviderLogo :brand="mark.brand" :size="13" />
@@ -41,7 +41,6 @@ function open(): void {
   justify-content: center;
   gap: 6px;
   width: 100%;
-  padding: 6px 0 2px;
   font-size: 12px;
   color: var(--muted);
   user-select: none;

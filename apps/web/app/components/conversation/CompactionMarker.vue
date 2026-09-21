@@ -18,7 +18,7 @@ const label = computed(() => compactionMarkerLabel(props.marker, props.formatTim
 </script>
 
 <template>
-  <div class="thread-date">
+  <div class="thread-mark thread-date">
     <span class="thread-date__text">{{ label }}</span>
   </div>
 </template>

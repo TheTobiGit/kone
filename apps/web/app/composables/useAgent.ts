@@ -653,8 +653,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // flat. Normalize both to the same meta + blocks pair here.
     const meta: StoredThreadMeta = page ? page.meta : stored!;
     const sourceBlocks: StoredBlock[] = page ? page.blocks : stored!.blocks;
-    // SAFETY: both sources deserialize to ThreadBlocks by IPC contract.
-    blocks.value = adoptStoredBlocks(sourceBlocks as ThreadBlock[]);
+    blocks.value = adoptStoredBlocks(sourceBlocks);
     olderCursor.value = page ? page.nextCursor : null;
     title.value = meta.title?.trim() || "";
     adoptStoredThread(meta); // also restores the persisted context-meter snapshot
@@ -663,6 +662,20 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
      // The queue rows survive crashes — rebuild the strip from the bridge.
     seedQueuedTurns(api);
     deferStart();
+  }
+
+  /** The optimistic block an idle send puts on the timeline, stamped with what
+   *  the turn runs with — the timeline marks a change when either axis differs
+   *  from the previous request's stamp. A busy send pushes nothing here; its
+   *  stamps ride the durable queue row and come back on promotion.
+   *
+   *  One builder for send() and steerTurn() so the two can never disagree about
+   *  what a request looks like on screen. */
+  function buildUserBlock(id: string, text: string, files: ChatAttachment[]): UserBlock {
+    const block: UserBlock = { id, role: "user", text, at: Date.now(), effort: reasoning.value };
+    if (model.value) block.model = model.value;
+    if (files.length) block.attachments = files;
+    return block;
   }
 
   /** Send a user turn. Pushes the user block immediately when idle; the reply
@@ -686,16 +699,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     touch();
     const blockId = uid();
     const wasBusy = busy.value;
-    if (!wasBusy) {
-      const block: UserBlock = {
-        id: blockId,
-        role: "user",
-        text: trimmed,
-        at: Date.now(),
-      };
-      if (files.length) block.attachments = files;
-      blocks.value = [...blocks.value, block];
-    }
+    if (!wasBusy) blocks.value = [...blocks.value, buildUserBlock(blockId, trimmed, files)];
     // Instant label for a brand-new thread; desktop may refine it via
     // thread.title.updated once the agent rename lands. An attachment-only turn
     // seeds the label from the first file name.
@@ -762,16 +766,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     touch();
     const blockId = uid();
     const wasBusy = busy.value;
-    if (!wasBusy) {
-      const block: UserBlock = {
-        id: blockId,
-        role: "user",
-        text: trimmed,
-        at: Date.now(),
-      };
-      if (files.length) block.attachments = files;
-      blocks.value = [...blocks.value, block];
-    }
+    if (!wasBusy) blocks.value = [...blocks.value, buildUserBlock(blockId, trimmed, files)];
     if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
 
     const api = bridge();

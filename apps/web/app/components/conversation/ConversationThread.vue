@@ -26,11 +26,13 @@ import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
+import TurnSettingMark from "~/components/conversation/TurnSettingMark.vue";
 import HandoffMark from "~/components/conversation/HandoffMark.vue";
 import JevMark from "~/components/conversation/JevMark.vue";
 import { jevRouteFor } from "~/utils/jevRoutes";
 import { useHandoffMarks } from "~/composables/useHandoffMarks";
 import { groupHandoffMarks } from "~/utils/handoffMarkers";
+import { deriveTurnSettingMarks, type TurnSettingChange } from "~/utils/turnSettingMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { useSearchLanding } from "~/composables/useSearchLanding";
@@ -706,6 +708,19 @@ function handoffMarksFor(key: string) {
   return groupedHandoffMarks.value.byExchange.get(key) ?? [];
 }
 
+/** Model and reasoning-effort switches derived from the per-request stamps
+ *  the send path leaves on user blocks: a switch renders above the exchange
+ *  whose request introduced it. Computed over the full exchange list so a
+ *  baseline set above the collapsed window still carries forward — a marker
+ *  above the open window reappears with its exchange on reveal. */
+const turnSettingMarks = computed(() => deriveTurnSettingMarks(allExchanges.value));
+/** Zero or one change per exchange, as a list so the template resolves it once
+ *  — a `v-if` plus a non-null `:mark` would look it up twice per render. */
+function turnSettingMarkFor(key: string): TurnSettingChange[] {
+  const mark = turnSettingMarks.value.get(key);
+  return mark ? [mark] : [];
+}
+
 /**
  * The router's decision for this thread, when Jev staffed it — the record
  * behind the "Jev (…) → …" marker. Null for threads that were never routed,
@@ -1061,7 +1076,7 @@ watch(
 
     <template v-for="(ex, index) in exchanges" :key="ex.key">
       <!-- Centered date divider at top of thread and between different calendar days -->
-      <div v-if="shouldShowDayDivider(index)" class="thread-date">
+      <div v-if="shouldShowDayDivider(index)" class="thread-mark thread-date">
         <span class="thread-date__text">{{ dayDividerLabel(ex) }}</span>
       </div>
 
@@ -1084,6 +1099,15 @@ watch(
         :key="`handoff-${ex.key}-${m.key}`"
         :mark="m"
         @open-thread="(id) => emit('open-thread', id)"
+      />
+
+      <!-- The switch the new request introduced: the model, the tier, or both
+           changed before this request was sent, so the one marker that says so
+           precedes the request. -->
+      <TurnSettingMark
+        v-for="mark in turnSettingMarkFor(ex.key)"
+        :key="`turn-setting-${ex.key}`"
+        :mark="mark"
       />
 
       <div
@@ -1576,6 +1600,17 @@ watch(
 <style scoped>
 .thread {
   --rail: color-mix(in srgb, var(--ink) 12%, transparent);
+  /* The space a settled reply's footer holds open below the answer. Declared
+     rather than measured so it is a known quantity: the footer is invisible
+     until the turn is hovered, and the marks between exchanges subtract it to
+     sit centred in the band they divide. --turn-foot-lift is the footer's own
+     upward pull, declared here rather than restated by hand so the footer and
+     the correction can never drift apart. */
+  --turn-foot: 22px;
+  --turn-foot-lift: 7px;
+  /* How much of the band a mark leaves below itself, so it stays clear of the
+     footer a hovered turn reveals. */
+  --turn-mark-clearance: 10px;
 
   display: flex;
   flex-direction: column;
@@ -1717,6 +1752,23 @@ watch(
   to {
     transform: rotate(360deg);
   }
+}
+
+/* A mark between two exchanges — a day divider, a compaction, a handoff, a
+   model or effort change — is centred in the band it divides, and the band is
+   not symmetric: the exchange above it ends in a reply whose footer holds its
+   space open while staying invisible, so the mark would otherwise sit that
+   much too low. Trim the leading gap by the footer's reserve and the mark
+   reads as evenly spaced from the reply above and the request below. Only a
+   mark that directly follows an exchange pays this; one at the head of the
+   conversation has no reply above it.
+
+   `thread-mark` is the contract every mark root carries — the one class this
+   rule names, so a new kind of mark is spaced right by being a mark, rather
+   than by remembering to enlist itself in a selector list kept in a different
+   file from the component. */
+.exchange + .thread-mark {
+  margin-top: calc(var(--turn-foot-lift) - var(--turn-foot) - var(--turn-mark-clearance));
 }
 
 /* An exchange = one request + its response, stacked with breathing room. */
@@ -2107,7 +2159,11 @@ watch(
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: -7px;
+  margin-top: calc(-1 * var(--turn-foot-lift));
+  /* Reserve, not a ceiling: the marks above subtract exactly this much, and
+     content that outgrows it should push the row open rather than be clipped
+     inside a footer nobody sees until they hover. */
+  min-height: var(--turn-foot);
   width: 100%;
   max-width: 42rem;
   font-family: var(--font-mono);

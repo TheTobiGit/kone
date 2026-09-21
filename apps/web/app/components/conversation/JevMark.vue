@@ -34,7 +34,7 @@ const pct = computed(() => Math.round(props.route.confidence * 100));
 </script>
 
 <template>
-  <div v-if="agent" class="jev-mark" aria-label="Routed by Jev">
+  <div v-if="agent" class="thread-mark jev-mark" aria-label="Routed by Jev">
     <HugeiconsIcon
       :icon="Directions01Icon"
       :size="13"
