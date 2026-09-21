@@ -9,7 +9,7 @@ import type {
   SessionStartInput,
   TokenUsage,
 } from "~/types/desktop";
-import { EFFORT_META } from "~/utils/modelCatalog";
+import { isEffortTier } from "~/utils/modelCatalog";
 import { bootMode, MODES } from "~/utils/modelPicker";
 import { peelIpcError } from "~/utils/ipcError";
 import { adoptStoredBlocks } from "../agentPrefetch";
@@ -219,10 +219,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
     // Restore the rest of the committed selection. Effort is validated against
     // the known tier set — a tier added by a newer catalog must not wedge the
     // composer on an unrecognised rung.
-    if (stored.selection?.effort && stored.selection.effort in EFFORT_META) {
-      // SAFETY: the membership test above guards the cast.
-      reasoning.value = stored.selection.effort as ReasoningTier;
-    }
+    if (isEffortTier(stored.selection?.effort)) reasoning.value = stored.selection.effort;
     if (stored.selection?.serviceTier !== undefined) serviceTier.value = stored.selection.serviceTier;
     if (stored.selection?.contextWindow !== undefined) contextWindow.value = stored.selection.contextWindow;
     const storedMode = stored.selection?.mode;

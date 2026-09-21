@@ -15,7 +15,7 @@ import type {
 import type { Project } from "~/composables/useProject";
 import type { StudioDestination } from "~/types/studio";
 import type { GitRemote } from "~/types/desktop";
-import { buildModelCatalog, effortForTier, familyForId, EFFORT_META } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId, isEffortTier } from "~/utils/modelCatalog";
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
   bootMode,
@@ -1047,7 +1047,7 @@ function applyChatDefaults(): boolean {
   }
 
   const savedReasoning = bootReasoning();
-  if (savedReasoning && savedReasoning in EFFORT_META) {
+  if (isEffortTier(savedReasoning)) {
     const fam = familyForId(modelOptions.value, model.value);
     const eff = effortForTier(fam, savedReasoning);
     if (eff) agent.setReasoning(eff.tier);

@@ -7,8 +7,8 @@
 
 import type { AgentModelRef, InteractionMode, ProviderKind } from "~/types/desktop";
 import {
-  EFFORT_META,
   familyForId,
+  isEffortTier,
   type BrandKey,
   type EffortTier,
   type ModelOption,
@@ -111,10 +111,7 @@ export function bootReasoning(): EffortTier | undefined {
   if (!storage) return undefined;
   const stored =
     storage.getItem(REASONING_KEY) ?? storage.getItem(DEFAULT_REASONING_KEY);
-  if (stored === null || !(stored in EFFORT_META)) return undefined;
-  // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the `in`
-  // check above proves this is one of its keys.
-  return stored as EffortTier;
+  return isEffortTier(stored) ? stored : undefined;
 }
 
 /**
@@ -182,10 +179,7 @@ export function bootAssistantReasoning(): EffortTier | undefined {
     storage.getItem(ASSISTANT_REASONING_KEY) ??
     storage.getItem(REASONING_KEY) ??
     storage.getItem(DEFAULT_REASONING_KEY);
-  if (stored === null || !(stored in EFFORT_META)) return undefined;
-  // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the `in`
-  // check above proves this is one of its keys.
-  return stored as EffortTier;
+  return isEffortTier(stored) ? stored : undefined;
 }
 
 /**
