@@ -704,7 +704,10 @@ export function createMockTurnRunner(deps: {
   function demo(opts: { fast?: boolean } = {}): void {
     if (busy.value) return;
     const prompt = "Show me a full conversation";
-    blocks.value = [...blocks.value, { id: uid(), role: "user", text: prompt, at: Date.now() }];
+    blocks.value = [
+      ...blocks.value,
+      { id: uid(), role: "user", text: prompt, at: Date.now(), effort: reasoning.value },
+    ];
     if (!title.value) title.value = titleFromPrompt(prompt);
     mockTurn(prompt, { demo: true, ...opts });
   }

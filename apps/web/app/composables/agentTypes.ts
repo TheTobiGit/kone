@@ -24,6 +24,15 @@ export type UserBlock = {
   at: number;
   /** Files/images the user attached to this prompt (metadata only). */
   attachments?: ChatAttachment[];
+  /** The reasoning-effort tier this turn was sent with — stamped at send time
+   *  so the timeline can mark effort changes between turns. Absent on blocks
+   *  that predate the stamp (stored history) — those never claim a change. */
+  effort?: ReasoningTier;
+  /** The raw model id this turn was sent with, stamped for the same reason
+   *  and read the same way: absent never claims a change. Raw rather than a
+   *  display name so history keeps naming the model that actually ran, even
+   *  after a catalog renames it. */
+  model?: string;
 } & Historical;
 
 export type AssistantBlock = {
@@ -138,6 +147,12 @@ export type QueuedTurnRow = {
   input: string;
   createdAt: number;
   attachmentsJson?: string | null;
+  /** What the request will run with — the reasoning tier and the raw model id,
+   *  as the store journaled them on the row. Read back when the row is promoted
+   *  so a turn sent while busy is stamped exactly like an idle one, whether the
+   *  row was enqueued a second ago or drained from storage after a quit. */
+  effort?: string;
+  model?: string;
 };
 
 /** A queued follow-up as the UI presents it — the bridge row plus the local

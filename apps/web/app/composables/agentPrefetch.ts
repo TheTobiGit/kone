@@ -1,7 +1,14 @@
 import { computed, shallowRef } from "vue";
-import type { ApprovalDecision, StoredThread } from "~/types/desktop";
-import type { AssistantBlock, PendingApproval, RoutedPendingApproval, ThreadBlock } from "./agentTypes";
+import type { ApprovalDecision, StoredBlock, StoredThread } from "~/types/desktop";
+import type {
+  AssistantBlock,
+  PendingApproval,
+  RoutedPendingApproval,
+  ThreadBlock,
+  UserBlock,
+} from "./agentTypes";
 import { canonicalizeItem } from "~/utils/toolName";
+import { isEffortTier } from "~/utils/modelCatalog";
 
 // ── transcript prefetch ───────────────────────────────────────────────────────
 // A thread's transcript read is the one unavoidable round-trip left on the open
@@ -48,17 +55,24 @@ export function takePrefetched(id: string): Promise<StoredThread | null> | null 
   return Date.now() - hit.at < PREFETCH_TTL_MS ? hit.load : null;
 }
 
-/** Adopt stored blocks into a live timeline. Two jobs, both of them the
- *  boundary's: mark them `historical` (they mount settled, skipping the
- *  per-word reveal), and canonicalize every tool_call's name so the render
- *  path reads one spelling per tool — the same contract the live reducer
- *  applies to streamed items. */
-export function adoptStoredBlocks(blocks: ThreadBlock[]): ThreadBlock[] {
-  return blocks.map((b) =>
-    b.role === "assistant"
-      ? { ...b, historical: true, items: b.items.map(canonicalizeItem) }
-      : { ...b, historical: true },
-  );
+/** Decode stored blocks into a live timeline — the one boundary between what
+ *  the store journaled and what the render path may assume. Three jobs:
+ *  mark them `historical` (they mount settled, skipping the per-word reveal),
+ *  canonicalize every tool_call's name so the render path reads one spelling
+ *  per tool (the same contract the live reducer applies to streamed items),
+ *  and turn a request's journaled effort — a bare string on the row — into a
+ *  tier only when it names one this build knows. An unknown rung arrives as
+ *  unstamped, which marks nothing, rather than as a tier the timeline would
+ *  render wrong; downstream is therefore free to assume every tier it sees is
+ *  real. */
+export function adoptStoredBlocks(blocks: readonly StoredBlock[]): ThreadBlock[] {
+  return blocks.map((b) => {
+    if (b.role === "assistant") return { ...b, historical: true, items: b.items.map(canonicalizeItem) };
+    const { effort, ...rest } = b;
+    const out: UserBlock = { ...rest, historical: true };
+    if (isEffortTier(effort)) out.effort = effort;
+    return out;
+  });
 }
 
 export function uid(): string {
