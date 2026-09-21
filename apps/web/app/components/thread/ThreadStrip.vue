@@ -1577,6 +1577,15 @@ const { isUnread } = useStripUnread({
   height: 0;
 }
 
+/* A transcript opens on the same 34px rhythm it keeps between its own rows, so
+   the first thing in it — a day divider, a routing mark — clears the column
+   header by the same distance those rows clear each other. --fade-end already
+   pays part of that, and this pays the rest; the fade still ends where it did,
+   the first row simply no longer rests inside it. */
+.col__body[data-column-type="thread"] {
+  padding-top: calc(var(--fade-end) + 20px);
+}
+
 /* A terminal column is a PTY, not a chat log: it must NOT inherit the thread
  * body's tall top/bottom padding, its top/bottom mask fade, or its own scroll
  * container — all of which fade out, mis-size and clip xterm (which manages its

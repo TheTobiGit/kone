@@ -1598,12 +1598,14 @@ watch(
   margin: 0 auto;
 }
 
+/* No padding of its own: the column's 34px gap is the single authority on
+   vertical rhythm, and a divider that padded itself would space unevenly
+   against the marks it stacks with at the head of a conversation. */
 .thread-date {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 6px 0 2px;
   user-select: none;
   pointer-events: none;
 }
