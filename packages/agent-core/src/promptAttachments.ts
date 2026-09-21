@@ -45,6 +45,39 @@ function humanSize(bytes: number): string {
   return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
 }
 
+/** One attachment located on disk, with its bytes already read when the
+ *  builder asked for them. */
+type ResolvedAttachment = { att: ChatAttachment; absPath: string; bytes: Buffer | null };
+
+/** Locate every attachment on disk and read the bytes of the ones `wantsBytes`
+ *  selects, concurrently — the reads are independent, and a turn carrying
+ *  several images should pay one disk wait rather than one per file. The
+ *  result keeps the attachment order the caller gave, because that order is
+ *  the order the user attached them in and the prompt has to read the same
+ *  way.
+ *
+ *  Attachments that resolve to no path are dropped here — never uploaded, or
+ *  garbage-collected since — so a caller only ever sees one it can name. A
+ *  null `bytes` therefore means one thing to every caller: the file was
+ *  wanted natively and could not be read, so it belongs in the path block. */
+async function resolveAttachments(
+  attachments: ChatAttachment[] | undefined,
+  wantsBytes: (att: ChatAttachment) => boolean,
+): Promise<ResolvedAttachment[]> {
+  const store = getAttachmentStore();
+  const located = (attachments ?? []).flatMap((att) => {
+    const absPath = store.resolveAbsPath(att.id);
+    return absPath ? [{ att, absPath }] : [];
+  });
+  return Promise.all(
+    located.map(async ({ att, absPath }) => ({
+      att,
+      absPath,
+      bytes: wantsBytes(att) ? await store.readBytes(att.id) : null,
+    })),
+  );
+}
+
 /** The `<attached_files>` prompt block naming each file's on-disk path, or ""
  *  when there are none. */
 function fileBlock(entries: FileEntry[]): string {
@@ -66,16 +99,15 @@ function fileBlock(entries: FileEntry[]): string {
 export async function buildTextAttachmentBlock(
   attachments: ChatAttachment[] | undefined,
 ): Promise<string> {
-  const store = getAttachmentStore();
-  const files: FileEntry[] = [];
-
-  for (const att of attachments ?? []) {
-    const absPath = store.resolveAbsPath(att.id);
-    if (!absPath) continue; // never uploaded / GC'd — nothing to attach
-    files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
-  }
-
-  return fileBlock(files);
+  const resolved = await resolveAttachments(attachments, () => false);
+  return fileBlock(
+    resolved.map(({ att, absPath }) => ({
+      name: att.name,
+      mimeType: att.mimeType,
+      sizeBytes: att.sizeBytes,
+      absPath,
+    })),
+  );
 }
 
 /** Build Codex's image input items + a path block for everything else. Codex
@@ -84,19 +116,13 @@ export async function buildTextAttachmentBlock(
 export async function buildCodexAttachmentInput(
   attachments: ChatAttachment[] | undefined,
 ): Promise<{ imageItems: CodexImageItem[]; fileBlock: string }> {
-  const store = getAttachmentStore();
+  const resolved = await resolveAttachments(attachments, (att) => att.type === "image");
   const imageItems: CodexImageItem[] = [];
   const files: FileEntry[] = [];
-
-  for (const att of attachments ?? []) {
-    const absPath = store.resolveAbsPath(att.id);
-    if (!absPath) continue; // never uploaded / GC'd — nothing to attach
-    if (att.type === "image") {
-      const bytes = await store.readBytes(att.id);
-      if (bytes) {
-        imageItems.push({ type: "image", url: `data:${att.mimeType};base64,${bytes.toString("base64")}` });
-        continue;
-      }
+  for (const { att, absPath, bytes } of resolved) {
+    if (bytes) {
+      imageItems.push({ type: "image", url: `data:${att.mimeType};base64,${bytes.toString("base64")}` });
+      continue;
     }
     files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
   }
@@ -110,28 +136,27 @@ export async function buildCodexAttachmentInput(
 export async function buildClaudeAttachmentContent(
   attachments: ChatAttachment[] | undefined,
 ): Promise<{ imageBlocks: ClaudeImageBlock[]; fileBlock: string }> {
-  const store = getAttachmentStore();
+  const resolved = await resolveAttachments(
+    attachments,
+    (att) => att.type === "image" && CLAUDE_NATIVE_IMAGE_MIME_TYPES.has(att.mimeType.toLowerCase()),
+  );
   const imageBlocks: ClaudeImageBlock[] = [];
   const files: FileEntry[] = [];
 
-  for (const att of attachments ?? []) {
-    const absPath = store.resolveAbsPath(att.id);
-    if (!absPath) continue;
-    if (att.type === "image" && CLAUDE_NATIVE_IMAGE_MIME_TYPES.has(att.mimeType.toLowerCase())) {
-      const bytes = await store.readBytes(att.id);
-      if (bytes) {
-        imageBlocks.push({
-          type: "image",
-          source: {
-            type: "base64",
-            // SAFETY: att.mimeType.toLowerCase() was tested for membership in
-            // CLAUDE_NATIVE_IMAGE_MIME_TYPES directly above.
-            media_type: att.mimeType.toLowerCase() as ClaudeImageMediaType,
-            data: bytes.toString("base64"),
-          },
-        });
-        continue;
-      }
+  for (const { att, absPath, bytes } of resolved) {
+    if (bytes) {
+      imageBlocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          // SAFETY: bytes is non-null only for an attachment the predicate
+          // above accepted, which tested this same lowercased mime type for
+          // membership in CLAUDE_NATIVE_IMAGE_MIME_TYPES.
+          media_type: att.mimeType.toLowerCase() as ClaudeImageMediaType,
+          data: bytes.toString("base64"),
+        },
+      });
+      continue;
     }
     files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
   }
@@ -143,14 +168,13 @@ export async function buildClaudeAttachmentContent(
 export async function buildOpenCodeAttachmentParts(
   attachments: ChatAttachment[] | undefined,
 ): Promise<OpenCodeFilePart[]> {
-  const store = getAttachmentStore();
-  const parts: OpenCodeFilePart[] = [];
-  for (const att of attachments ?? []) {
-    const absPath = store.resolveAbsPath(att.id);
-    if (!absPath) continue;
-    parts.push({ type: "file", mime: att.mimeType, filename: att.name, url: pathToFileURL(absPath).href });
-  }
-  return parts;
+  const resolved = await resolveAttachments(attachments, () => false);
+  return resolved.map(({ att, absPath }) => ({
+    type: "file" as const,
+    mime: att.mimeType,
+    filename: att.name,
+    url: pathToFileURL(absPath).href,
+  }));
 }
 
 /** Build Cursor's ACP image blocks + a path block for everything else. Like
@@ -159,19 +183,14 @@ export async function buildOpenCodeAttachmentParts(
 export async function buildCursorAttachmentInput(
   attachments: ChatAttachment[] | undefined,
 ): Promise<{ imageBlocks: CursorImageBlock[]; fileBlock?: string }> {
-  const store = getAttachmentStore();
+  const resolved = await resolveAttachments(attachments, (att) => att.type === "image");
   const imageBlocks: CursorImageBlock[] = [];
   const files: FileEntry[] = [];
 
-  for (const att of attachments ?? []) {
-    const absPath = store.resolveAbsPath(att.id);
-    if (!absPath) continue; // never uploaded / GC'd — nothing to attach
-    if (att.type === "image") {
-      const bytes = await store.readBytes(att.id);
-      if (bytes) {
-        imageBlocks.push({ type: "image", mimeType: att.mimeType, data: bytes.toString("base64") });
-        continue;
-      }
+  for (const { att, absPath, bytes } of resolved) {
+    if (bytes) {
+      imageBlocks.push({ type: "image", mimeType: att.mimeType, data: bytes.toString("base64") });
+      continue;
     }
     files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
   }
