@@ -36,6 +36,7 @@ import {
   setLastUsedModel,
 } from "~/utils/modelPicker";
 import { JEV_ROUTER_ID, routingReceipt } from "~/utils/agentRouting";
+import type { Agent } from "~/utils/agents";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "~/composables/useGlobalAssistant";
 import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
 import type { ModelPick } from "~/composables/useModelCommit";
@@ -67,6 +68,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     routing,
     lastRouted,
     routePending,
+    prefetchRoute,
     settleAgentFor,
     selectAgent,
     agentById,
@@ -272,6 +274,48 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     agent.setMode(draft.mode.value);
   }
 
+  /**
+   * Record an agent's pinned model wherever this pane's next turn will read it.
+   *
+   * The same is-there-a-session-yet question every commit path below asks: with
+   * no session the draft is the only place a pick can live, and `applyDraft`
+   * carries it in later; with one, the draft has been spent and the pick goes
+   * straight to the session it would have reached. An agent with no pin says
+   * nothing about the model, so nothing is written.
+   */
+  async function landAgentPin(settled: Agent | null): Promise<void> {
+    const pinned = settled?.capabilities.model ?? null;
+    if (!pinned) return;
+    if (draft && !session.value) {
+      draft.provider.value = pinned.provider;
+      draft.model.value = pinned.model;
+      return;
+    }
+    await commit.applyAgentPin(settled);
+  }
+
+  /**
+   * Settle who works this thread, then start it on the model they run on.
+   *
+   * The two belong in one call. A hand-picked agent's pinned model reaches the
+   * composer the moment it is picked — the watcher below lands it in the draft,
+   * and the user sees what will run before they send. A routed one is named by
+   * the send itself, after every pick the composer could make, so its pin has
+   * nowhere else to land: without this, a thread handed to an agent that runs
+   * on one model would open on whatever the composer was showing.
+   *
+   * Only the agent this call actually put on the thread is applied. A later
+   * turn settles nothing, and its model stays the thread's own.
+   */
+  async function settleAndPin(
+    text: string,
+    threadId: string | null | undefined,
+  ): Promise<Agent | null> {
+    const settled = await settleAgentFor(text, threadId);
+    await landAgentPin(settled);
+    return settled;
+  }
+
   // ── the branch ───────────────────────────────────────────────────────────
   // Which branch the work would land on. The read follows the path: no status
   // watcher stands on the repository, because these surfaces hold no project
@@ -321,10 +365,8 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   // back to an unpinned agent restores the general last-used / default selection.
   watch(pickedForProject, (nextAgent, prevAgent) => {
     if (!draft || session.value) return;
-    const pinned = nextAgent?.capabilities?.model ?? null;
-    if (pinned) {
-      draft.provider.value = pinned.provider;
-      draft.model.value = pinned.model;
+    if (nextAgent?.capabilities?.model) {
+      void landAgentPin(nextAgent);
     } else if (prevAgent?.capabilities?.model) {
       if (isAssistant.value) {
         draft.provider.value = bootAssistantProvider();
@@ -460,7 +502,8 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     onApply,
     agents,
     agentId,
-    settleAgentFor,
+    settleAndPin,
+    prefetchRoute,
     routing,
     lastRouted,
     routingNote,

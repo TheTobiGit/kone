@@ -350,7 +350,7 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   const threadId = s.threadId.value;
   // Only the thread's first turn asks: every later one finds it already
   // decided and leaves both the binding and the router alone.
-  if (threadId) await composer.settleAgentFor(text, threadId);
+  if (threadId) await composer.settleAndPin(text, threadId);
   await s.send(text, await upload(files));
 }
 

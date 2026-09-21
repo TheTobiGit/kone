@@ -1,4 +1,4 @@
-import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
+import { computed, onMounted, onScopeDispose, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
 import {
   addAgentToProject,
   agentById,
@@ -22,7 +22,14 @@ import {
   updateAgent,
   type Agent,
 } from "~/utils/agents";
-import { routeForBinding, routeRequest } from "~/utils/agentRouting";
+import {
+  isPrefetchableDraft,
+  JEV_PREFETCH_DEBOUNCE_MS,
+  normalizeRouteText,
+  routeForBinding,
+  routeRequest,
+} from "~/utils/agentRouting";
+import { createWarmedRoute } from "~/utils/warmedRoute";
 import type { JevRouteResult } from "~/types/desktop";
 import { useProject } from "~/composables/useProject";
 
@@ -111,22 +118,65 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
    * The candidates are the project's team, not the whole roster: routing must
    * not hand a thread to somebody who was never added to the repository, which
    * is the same rule `pickedForProject` enforces for a hand-picked agent.
+   *
+   * Answers with the agent this call put on the thread, because who works a
+   * thread also decides what it runs on: an agent with a pinned model expects
+   * the thread to open on that model, and only the caller holding the send can
+   * put it there. Null means nobody was put there by this call — a guest, a
+   * request that went to the default partner, or a thread that was already
+   * settled and refused this answer. The refusal answering null is the point:
+   * the pins of an agent who is not on this thread must never reach it.
    */
   async function settleAgentFor(
     request: string,
     threadId: string | null | undefined,
-  ): Promise<void> {
-    const picked = pickedForProject.value?.id ?? null;
+  ): Promise<Agent | null> {
+    const picked = pickedForProject.value;
     if (!routing.value || threadSettled(threadId)) {
-      settleThreadAgent(threadId, picked);
-      return;
+      return settleThreadAgent(threadId, picked?.id ?? null) ? (picked ?? null) : null;
+    }
+    // A paused draft was routed ahead while it was being typed. When the send
+    // carries exactly that text — same words, same team, same project — the
+    // warmed decision is the send's decision, and awaiting it is instant
+    // rather than a fresh round trip.
+    const warmed = warmedRoute.take(normalizeRouteText(request));
+    if (warmed) {
+      routePending.value = true;
+      try {
+        return landRoute(await warmed, threadId);
+      } finally {
+        routePending.value = false;
+      }
     }
     routePending.value = true;
     try {
-      await routeAndSettle(request, threadId);
+      return await routeAndSettle(request, threadId);
     } finally {
       routePending.value = false;
     }
+  }
+
+  /**
+   * Write a decision onto the thread, and answer with who it put there.
+   *
+   * The receipt waits on the decision landing. A round trip is long enough for
+   * another window to settle this thread first, and a line reading "Jev → Ada"
+   * over a thread Bob is working describes a send, not the conversation the
+   * user is looking at. The answer is refused on the same terms, so a caller
+   * about to start the thread on an agent's model only ever gets the agent the
+   * thread actually has.
+   */
+  function landRoute(result: JevRouteResult, threadId: string | null | undefined): Agent | null {
+    if (!settleThreadAgent(threadId, result.agentId, routeForBinding(result))) return null;
+    lastRouted.value = result;
+    return result.agentId ? (agentById(result.agentId) ?? null) : null;
+  }
+
+  /** The repository's name, not its path: the leading directories are this
+   *  machine's filing, and they read to a classifier as words in the request. */
+  function currentProjectName(): string | null {
+    const path = projectPath.value;
+    return path ? (path.split("/").filter(Boolean).pop() ?? null) : null;
   }
 
   /** The routed half of `settleAgentFor`, split out only so the pending flag
@@ -134,19 +184,9 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
   async function routeAndSettle(
     request: string,
     threadId: string | null | undefined,
-  ): Promise<void> {
-    // The repository's name, not its path: the leading directories are this
-    // machine's filing, and they read to a classifier as words in the request.
-    const path = projectPath.value;
-    const name = path ? (path.split("/").filter(Boolean).pop() ?? null) : null;
-    const result = await routeRequest(request, team.value, name);
-    // The receipt waits on the decision landing. A round trip is long enough
-    // for another window to settle this thread first, and a line reading
-    // "Jev → Ada" over a thread Bob is working describes a send, not the
-    // conversation the user is looking at.
-    if (settleThreadAgent(threadId, result.agentId, routeForBinding(result))) {
-      lastRouted.value = result;
-    }
+  ): Promise<Agent | null> {
+    const result = await routeRequest(request, team.value, currentProjectName());
+    return landRoute(result, threadId);
   }
 
   /** A routing round trip is in flight and a send is waiting behind it.
@@ -156,6 +196,45 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
    *  that Jev is the choice in the picker, which is true long before and long
    *  after any request. */
   const routePending = ref(false);
+
+  // ── speculative routing: work while the draft is being typed ─────────────
+  // With Jev picked, a paused draft is routed ahead so the send finds the
+  // decision already made. The warmed slot describes the exact text it was
+  // asked about and the team and project it was asked under; a send carrying
+  // anything else routes fresh rather than trusting a decision made on
+  // different words.
+
+  /** The team and project a routing decision was made under. A decision is
+   *  only this send's decision if these still hold: the same words put to a
+   *  different team are a different question. */
+  function routeContext(): string {
+    return `${team.value.map((member) => member.id).sort().join(",")}\0${currentProjectName() ?? ""}`;
+  }
+
+  const warmedRoute = createWarmedRoute<JevRouteResult>({
+    route: (request) => routeRequest(request, team.value, currentProjectName()),
+    context: routeContext,
+    debounceMs: JEV_PREFETCH_DEBOUNCE_MS,
+    stillWanted: (request) => routing.value && isPrefetchableDraft(request),
+  });
+
+  onScopeDispose(() => warmedRoute.clear());
+
+  // Jev unpicked means no draft will ever be sent as a route: drop the pending
+  // ask and the warmed decision rather than spending a call whose answer can no
+  // longer be used — or worse, letting a later send reuse it.
+  watch(routing, (on) => {
+    if (!on) warmedRoute.clear();
+  });
+
+  /** Route a paused draft ahead of its send. No-op unless Jev is picked and
+   *  the draft is worth classifying; debounced so steady typing never fires.
+   *  Call it from the composer's draft with the thread still blank — a
+   *  settled thread never routes again, so warming for one is a spent call. */
+  function prefetchRoute(draft: string): void {
+    if (!routing.value || !isPrefetchableDraft(draft)) return;
+    warmedRoute.warm(normalizeRouteText(draft));
+  }
 
   // Read the team back from the store whenever the active project changes. The
   // dev fallback is its own store, so this only does anything with a bridge.
@@ -232,6 +311,7 @@ export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | nul
     routing,
     lastRouted,
     routePending,
+    prefetchRoute,
     settleAgentFor,
     team,
     teams,

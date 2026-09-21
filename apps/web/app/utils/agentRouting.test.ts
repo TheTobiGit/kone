@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  isPrefetchableDraft,
   isRouterId,
   JEV_ROUTER_ID,
+  normalizeRouteText,
   routeForBinding,
   routerCandidates,
   routingReceipt,
@@ -84,6 +86,27 @@ describe("routingReceipt", () => {
   test("distinguishes a missing key from nothing having matched", () => {
     expect(routingReceipt(result({ outcome: "unavailable" }))).toContain("not configured");
     expect(routingReceipt(result({ outcome: "no-match" }))).toContain("nobody on the team");
+  });
+});
+
+describe("isPrefetchableDraft", () => {
+  test("ignores fragments too short to classify", () => {
+    expect(isPrefetchableDraft("fix")).toBe(false);
+    expect(isPrefetchableDraft("   ")).toBe(false);
+  });
+
+  test("ignores slash rows, which never route at send time either", () => {
+    expect(isPrefetchableDraft("/compact focus on auth")).toBe(false);
+  });
+
+  test("warms a paused draft worth classifying", () => {
+    expect(isPrefetchableDraft("review this diff for race conditions")).toBe(true);
+  });
+});
+
+describe("normalizeRouteText", () => {
+  test("trims so a trailing space does not orphan a warmed decision", () => {
+    expect(normalizeRouteText("review this diff ")).toBe("review this diff");
   });
 });
 
