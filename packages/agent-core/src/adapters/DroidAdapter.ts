@@ -11,6 +11,7 @@ import {
 } from "../droidHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
 import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
+import { configValueEquals } from "./acpConfigAxes.js";
 import { refuseCriticalCommand } from "./acpSafety.js";
 import { errorText, isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
@@ -725,7 +726,7 @@ export class DroidAdapter implements ProviderAdapter {
     sessionId: string,
     modelId: string,
   ): Promise<{ values: readonly string[]; current?: string } | undefined> {
-    if (findOption(state.configOptions, MODEL_CONFIG_IDS)?.currentValue?.trim() === modelId) {
+    if (configValueEquals(findOption(state.configOptions, MODEL_CONFIG_IDS)?.currentValue, modelId)) {
       return this.effortsFrom(state.configOptions);
     }
     try {
@@ -986,11 +987,15 @@ export class DroidAdapter implements ProviderAdapter {
     // droid holds mode/model/effort on the session, not the turn, so re-assert
     // whatever this turn asked for before prompting. Each is best-effort: an
     // unavailable model or effort degrades to the session's current value
-    // rather than failing a turn the user already sent.
+    // rather than failing a turn the user already sent. Effort already at the
+    // requested value is skipped (applyConfigOptionIfNeeded), which saves an
+    // RPC plus its config-refresh poll on every follow-up turn that changes
+    // nothing.
     if (mode !== session.mode) await this.applyMode(session, mode);
     session.mode = mode;
-    if (input.model && input.model !== session.model) await this.applyModel(session, input.model);
-    if (input.effort) await this.applyConfigOption(session, EFFORT_CONFIG_IDS, input.effort);
+    const modelChanged = input.model !== undefined && input.model !== session.model;
+    if (modelChanged && input.model) await this.applyModel(session, input.model);
+    await this.applyConfigOptionIfNeeded(session, EFFORT_CONFIG_IDS, input.effort, modelChanged);
     // `serviceTier` / `contextWindow` are deliberately not applied: droid's
     // model surface advertises no fast/context axes, so the picker never
     // offers them — a per-turn value could only arrive from a stale selection.
@@ -1054,7 +1059,13 @@ export class DroidAdapter implements ProviderAdapter {
    *  `mcpServers` session param is ignored by droid — its CLI owns that
    *  surface). Thread-scoped name so concurrent droid sessions don't clobber
    *  each other's token. The bearer rides the `--header` arg, visible only to
-   *  local processes for the duration of the CLI call. */
+   *  local processes for the duration of the CLI call.
+   *
+   *  Remove-then-add, unconditionally: `add` collides with an entry already
+   *  under this name, and one can be there from a crashed session or from a
+   *  stopSession whose own remove timed out — that cleanup is best-effort and
+   *  bounded, so nothing upstream can promise the name is free. The remove is
+   *  the only retry of it. */
   private async registerGatewayMcp(threadId: string, connection: GatewayConnection): Promise<void> {
     const env = await buildDroidEnv();
     const name = koneMcpServerName(threadId);
@@ -1168,8 +1179,28 @@ export class DroidAdapter implements ProviderAdapter {
     await this.applyConfigOption(session, MODEL_CONFIG_IDS, model);
     // Only claim the model applied when droid's matrix actually reflects it —
     // an org-blocked model leaves the session on its current model.
-    const applied = findOption(session.configOptions, MODEL_CONFIG_IDS);
-    if (applied && applied.currentValue?.trim() === model.trim()) session.model = model;
+    if (configValueEquals(findOption(session.configOptions, MODEL_CONFIG_IDS)?.currentValue, model)) {
+      session.model = model;
+    }
+  }
+
+  /** Set one config axis only when it isn't already there. The
+   *  notification-fed matrix is the record of where each axis stands, so a
+   *  turn that asks for the value already in force costs nothing. `force`
+   *  overrides that record: a model change invalidates it, because the matrix
+   *  describes the model the session was on before, not the one it is moving
+   *  to. */
+  private async applyConfigOptionIfNeeded(
+    session: DroidSession,
+    ids: readonly string[],
+    value: string | undefined,
+    force: boolean,
+  ): Promise<void> {
+    if (!value) return;
+    if (!force && configValueEquals(findOption(session.configOptions, ids)?.currentValue, value)) {
+      return;
+    }
+    await this.applyConfigOption(session, ids, value);
   }
 
   /** Set one config axis (model/effort/mode) by config id. The response is
@@ -1206,9 +1237,7 @@ export class DroidAdapter implements ProviderAdapter {
     const startedAt = Date.now();
     while (Date.now() - startedAt < CONFIG_REFRESH_TIMEOUT_MS) {
       const option = findOption(state.configOptions, [configId]);
-      if (option && option.currentValue !== undefined && option.currentValue.trim() === value.trim()) {
-        return state.configOptions;
-      }
+      if (configValueEquals(option?.currentValue, value)) return state.configOptions;
       await sleep(25);
     }
     return undefined;
