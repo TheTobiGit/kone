@@ -1550,6 +1550,12 @@ export type RuntimeEvent =
       input?: string;
       /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
       attachmentsJson?: string | null;
+      /** What the queued request will run with, carried so the renderer's row
+       *  is complete without a re-read — the same pair the store journaled on
+       *  the row, so a live queue and a rehydrated one stamp the promoted turn
+       *  identically. */
+      effort?: string;
+      model?: string;
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -1892,6 +1898,12 @@ export type StoredBlock =
       text: string;
       at: number;
       attachments?: ChatAttachment[];
+      /** The reasoning-effort tier the request was sent with. Absent on rows
+       *  written before the tier was journaled — those never claim a switch. */
+      effort?: string;
+      /** The raw model id the request was sent with. Absent on rows written
+       *  before the model was journaled — those never claim a switch. */
+      model?: string;
       /** Absent = `"native"`; `"fork-import"` = copied in from a side chat's
        *  source thread (original `at`, never refreshes `updated_at`). */
       source?: BlockSource;

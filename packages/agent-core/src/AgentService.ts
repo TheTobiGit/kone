@@ -16,7 +16,7 @@ import {
   restoreCheckpoint,
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
-import { isCompactionSupported } from "./types.js";
+import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
@@ -2114,7 +2114,7 @@ export class AgentService {
       return this.adapterForThread(input.threadId).sendTurn(input);
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
-    this.dispatch({
+    const queued: Extract<RuntimeEvent, { type: "turn.queued" }> = {
       type: "turn.queued",
       threadId: input.threadId,
       provider,
@@ -2126,7 +2126,11 @@ export class AgentService {
       source: "kone.store",
       input: input.input,
       attachmentsJson: row.attachmentsJson,
-    });
+    };
+    // The stamps the row was journaled with, so the renderer can mark the
+    // promoted turn without waiting for a re-read of the queue.
+    copyTurnStamp(row, queued);
+    this.dispatch(queued);
     return { threadId: input.threadId, turnId: queueId };
   }
 

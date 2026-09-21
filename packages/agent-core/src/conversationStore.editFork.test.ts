@@ -257,6 +257,32 @@ describe("forkThreadAtBlock", () => {
     expect(u1).toBeTruthy();
   });
 
+  test("an edit fork carries each request's tier, and the edit inherits the replaced message's", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-e", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ threadId: "t-e", text: "first", at: 100, effort: "medium" });
+    store.recordUserBlock({ threadId: "t-e", text: "second", at: 200, effort: "high" });
+    const source = store.loadThread("t-e")!;
+    const second = source.blocks.filter((b) => b.role === "user")[1]!;
+
+    const forked = store.forkThreadAtBlock({
+      threadId: "f-e",
+      sourceThreadId: "t-e",
+      blockId: second.id,
+      editedText: "second, revised",
+      requestId: "r-e",
+    });
+    expect(forked.ok).toBe(true);
+    if (!forked.ok) return;
+
+    const fork = store.loadThread("f-e")!;
+    const users = fork.blocks.filter((b) => b.role === "user");
+    expect(users.map((b) => (b.role === "user" ? b.effort : undefined))).toEqual([
+      "medium",
+      "high",
+    ]);
+  });
+
   test("forking at the first block yields just the edited message", () => {
     const store = freshStore();
     const [u1] = seedSource(store);

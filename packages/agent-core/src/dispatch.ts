@@ -518,6 +518,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
             threadId: input.threadId,
             text: delivery.journal,
             attachments: input.attachments,
+            effort: input.effort,
+            model: input.model,
           });
     if (
       input.mode !== undefined ||

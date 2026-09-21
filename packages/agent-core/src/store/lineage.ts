@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import type { ChatAttachment, ForkContext, HandoffLink, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadEnvMode, ThreadLineage } from "../types.js";
+import type { ChatAttachment, ForkContext, HandoffLink, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadEnvMode, ThreadLineage, TurnStamp } from "../types.js";
 import { isHandoffForkContext } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, type ThreadRow } from "../conversationStoreTypes.js";
@@ -54,6 +54,8 @@ type ForkPrefixBlock = {
   at: number;
   ended_at: number | null;
   attachments_json: string | null;
+  effort: string | null;
+  model: string | null;
   source: string;
 };
 
@@ -65,6 +67,11 @@ type ForkPoint = {
   seq: number;
   at: number;
   attachmentsJson: string | null;
+  /** The replaced message's own tier, which the edited replacement inherits —
+   *  the edit restates that request, so the fork's timeline keeps its mark. */
+  effort: string | null;
+  /** …and its model, inherited for the same reason. */
+  model: string | null;
 };
 
 type ForkPointRead =
@@ -95,11 +102,18 @@ function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string
   // SAFETY: the projection names only the fork point's own columns.
   const forkPoint = db
     .prepare(
-      `SELECT seq, role, attachments_json, at FROM blocks
+      `SELECT seq, role, attachments_json, effort, model, at FROM blocks
         WHERE thread_id = ? AND block_id = ?`,
     )
     .get(sourceThreadId, blockId) as
-    | { seq: number; role: string; attachments_json: string | null; at: number }
+    | {
+        seq: number;
+        role: string;
+        attachments_json: string | null;
+        effort: string | null;
+        model: string | null;
+        at: number;
+      }
     | undefined;
   if (!forkPoint) return { ok: false, reason: "unknown-block" };
   if (forkPoint.role !== "user") return { ok: false, reason: "not-user-block" };
@@ -112,7 +126,13 @@ function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string
   if (queued) return { ok: false, reason: "queued-turn" };
   return {
     ok: true,
-    point: { seq: forkPoint.seq, at: forkPoint.at, attachmentsJson: forkPoint.attachments_json },
+    point: {
+      seq: forkPoint.seq,
+      at: forkPoint.at,
+      attachmentsJson: forkPoint.attachments_json,
+      effort: forkPoint.effort,
+      model: forkPoint.model,
+    },
   };
 }
 
@@ -131,7 +151,7 @@ function readForkPrefix(
     .prepare(
       `SELECT role, turn_id, text,
               CASE WHEN state = 'running' THEN 'interrupted' ELSE state END AS state,
-              error, at, ended_at, attachments_json, source
+              error, at, ended_at, attachments_json, effort, model, source
          FROM blocks
         WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
         ORDER BY seq`,
@@ -202,8 +222,8 @@ function insertForkThreadRow(
  *  timestamps, same attachment metadata, same settlement states. */
 function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPrefixBlock[]): void {
   const insertBlock = db.prepare(
-    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const block of prefix) {
     insertBlock.run(
@@ -217,6 +237,8 @@ function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPr
       block.at,
       block.ended_at,
       block.attachments_json,
+      block.effort,
+      block.model,
       block.source,
     );
   }
@@ -235,17 +257,21 @@ function insertForkEditedBlock(
     editedText: string;
     now: number;
     attachmentsJson: string | null;
+    effort: string | null;
+    model: string | null;
   },
 ): void {
   db.prepare(
-    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, source)
-     VALUES (?, ?, 'user', NULL, ?, NULL, NULL, ?, NULL, ?, 'native')`,
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source)
+     VALUES (?, ?, 'user', NULL, ?, NULL, NULL, ?, NULL, ?, ?, ?, 'native')`,
   ).run(
     input.editedBlockId,
     input.threadId,
     input.editedText,
     input.now,
     input.attachmentsJson,
+    input.effort,
+    input.model,
   );
 }
 
@@ -426,7 +452,7 @@ export class LineageRepo {
       text: string;
       at: number;
       attachments?: ChatAttachment[];
-    }>;
+    } & TurnStamp>;
   }): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
@@ -439,8 +465,8 @@ export class LineageRepo {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const insertBlock = db.prepare(
-        `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, at, ended_at, attachments_json, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork-import')`,
+        `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, at, ended_at, attachments_json, effort, model, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork-import')`,
       );
       const insertNarrativeItem = db.prepare(
         `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, at)
@@ -481,6 +507,8 @@ export class LineageRepo {
               block.at,
               block.role === "assistant" ? block.at : null,
               block.attachments?.length ? JSON.stringify(block.attachments) : null,
+              block.effort ?? null,
+              block.model ?? null,
             );
             // Imported history is written once and settled by construction,
             // so it indexes inline — there is no later completion event that
@@ -613,6 +641,8 @@ export class LineageRepo {
             editedText,
             now,
             attachmentsJson: pointRead.point.attachmentsJson,
+            effort: pointRead.point.effort,
+            model: pointRead.point.model,
           });
           copyForkSatellites(db, input.sourceThreadId, input.threadId, turnIds);
           // Markers at or before the edit point are this thread's history too;

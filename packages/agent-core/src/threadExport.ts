@@ -36,6 +36,7 @@ import type {
   StoredThreadMeta,
   SubagentRun,
 } from "./types.js";
+import { copyTurnStamp } from "./types.js";
 import type { StoredThreadPage, TurnUsageRecord } from "./conversationStoreTypes.js";
 
 /** The store surface the export reads. Narrow on purpose: tests drive the
@@ -421,6 +422,7 @@ function toExportBlock(block: StoredBlock): ThreadExportBlock {
         type: a.type,
       }));
     }
+    copyTurnStamp(block, userBlock);
     if (block.source === "fork-import") userBlock.source = "fork-import";
     return userBlock;
   }

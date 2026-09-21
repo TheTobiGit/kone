@@ -175,6 +175,8 @@ const ExportUserBlockSchema = z.object({
   text: z.string(),
   at: z.number(),
   attachments: z.array(ExportAttachmentSchema).optional(),
+  effort: z.string().optional(),
+  model: z.string().optional(),
   source: z.literal("fork-import").optional(),
 });
 
@@ -207,6 +209,8 @@ export type ThreadExportBlock = {
     sizeBytes: number;
     type: "image" | "file";
   }>;
+  effort?: string;
+  model?: string;
   source?: "fork-import";
 } | {
   id: string;

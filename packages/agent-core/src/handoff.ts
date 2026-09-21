@@ -10,7 +10,9 @@ import type {
   StoredBlock,
   StoredThread,
   ThreadLineage,
+  TurnStamp,
 } from "./types.js";
+import { copyTurnStamp } from "./types.js";
 
 // Thread handoff — handing a conversation to another provider/model.
 //
@@ -59,7 +61,7 @@ type HandoffImportedBlock = {
   text: string;
   at: number;
   attachments?: ChatAttachment[];
-};
+} & TurnStamp;
 
 /** Every user + assistant block of the source, in arrival order — including
  *  earlier `fork-import` rows, so a handoff of a handoff keeps the whole
@@ -73,7 +75,10 @@ function buildHandoffImportedBlocks(source: StoredThread): HandoffImportedBlock[
     const text = blockText(b).trim();
     if (!text) continue;
     const row: HandoffImportedBlock = { id: randomUUID(), role: b.role, text, at: b.at };
-    if (b.role === "user" && b.attachments?.length) row.attachments = b.attachments;
+    if (b.role === "user") {
+      if (b.attachments?.length) row.attachments = b.attachments;
+      copyTurnStamp(b, row);
+    }
     rows.push(row);
   }
   return rows;

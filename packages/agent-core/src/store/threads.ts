@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
-import type { ChatAttachment, InteractionMode, ProviderKind, StoredThreadMeta } from "../types.js";
+import type { ChatAttachment, InteractionMode, ProviderKind, StoredThreadMeta, TurnStamp } from "../types.js";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
 
@@ -64,7 +64,7 @@ export class ThreadRepo {
     text: string;
     at?: number;
     attachments?: ChatAttachment[];
-  }): number {
+  } & TurnStamp): number {
     const db = this.dbh.handle();
     if (!db) return 0;
     try {
@@ -76,14 +76,16 @@ export class ThreadRepo {
       // nothing. Cheap here: once per user turn, not per streamed delta.
       this.dbh.durably(db, () => {
         db.prepare(
-          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json)
-           VALUES (?, ?, 'user', ?, ?, ?)`,
+          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json, effort, model)
+           VALUES (?, ?, 'user', ?, ?, ?, ?, ?)`,
         ).run(
           blockId,
           input.threadId,
           input.text,
           at,
           input.attachments?.length ? JSON.stringify(input.attachments) : null,
+          input.effort ?? null,
+          input.model ?? null,
         );
         // A user block is written once, never streamed, so it indexes at write
         // time — no delta-amplification concern like the item path has.

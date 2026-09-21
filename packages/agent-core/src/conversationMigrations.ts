@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -811,6 +811,32 @@ function migration0011ThreadAgentRoute(db: DatabaseSync): void {
   addColumn(db, "thread_agents", "route_confidence", "REAL");
 }
 
+/**
+ * What each user request was sent with — the reasoning-effort tier and the
+ * model — on the request's own block row rather than in a table of its own:
+ * both say how one ask ran, which is one fact about one settlement. Written in
+ * the same insert, deleted by the same delete, and neither can name a block the
+ * transcript has forgotten. One step for both columns because they are one
+ * fact: a rung that added the tier and left the model for later would leave a
+ * database that can say half of how a turn ran.
+ *
+ * Both nullable, and NULL is the answer for every block written before these
+ * columns existed — those correctly read as "nothing recorded", which is
+ * exactly what the timeline shows for them (no marker, never a guess).
+ *
+ * Both stored verbatim — the tier as the renderer's own tag, the model as the
+ * raw provider id: the store keeps them durable without having an opinion on
+ * the vocabulary, and the renderer decodes them on the way back in.
+ */
+function migration0012BlockTurnStamps(db: DatabaseSync): void {
+  // Upgrade fixtures may record the baseline without creating every table —
+  // a missing blocks table means there is no transcript to stamp, so there
+  // is nothing to do. Real databases always carry the table from rung 1.
+  if (!hasTable(db, "blocks")) return;
+  addColumn(db, "blocks", "effort", "TEXT");
+  addColumn(db, "blocks", "model", "TEXT");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -823,6 +849,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 9, name: "Jobs", run: migration0009Jobs },
   { id: 10, name: "JobAttachmentsAndOrder", run: migration0010JobAttachmentsAndOrder },
   { id: 11, name: "ThreadAgentRoute", run: migration0011ThreadAgentRoute },
+  { id: 12, name: "BlockTurnStamps", run: migration0012BlockTurnStamps },
 ];
 
 export interface MigrationOptions {
