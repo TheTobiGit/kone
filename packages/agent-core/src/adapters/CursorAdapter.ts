@@ -14,6 +14,7 @@ import {
 import { JsonRpcClient } from "../jsonRpc.js";
 import type { JsonObject, JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
+import { configValueEquals } from "./acpConfigAxes.js";
 import { refuseCriticalCommand } from "./acpSafety.js";
 import { errorText, isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
@@ -1070,15 +1071,20 @@ export class CursorAdapter implements ProviderAdapter {
     // Cursor holds mode/model/effort on the session, not the turn, so re-assert
     // whatever this turn asked for before prompting. Each is best-effort: an
     // unavailable model or effort degrades to the session's current value
-    // rather than failing a turn the user already sent.
+    // rather than failing a turn the user already sent. Axes already at the
+    // requested value are skipped (applyConfigOptionIfNeeded), so a follow-up
+    // turn that changes nothing sends no RPCs here at all — the same guard
+    // mode and model above already had.
     if (mode !== session.mode) await this.applyMode(session, mode);
     session.mode = mode;
-    if (input.model && input.model !== session.model) await this.applyModel(session, input.model);
-    if (input.effort) await this.applyConfigOption(session, EFFORT_OPTION_IDS, input.effort);
+    const modelChanged = input.model !== undefined && input.model !== session.model;
+    if (modelChanged && input.model) await this.applyModel(session, input.model);
+    await this.applyConfigOptionIfNeeded(session, EFFORT_OPTION_IDS, input.effort, modelChanged);
     if (input.serviceTier !== undefined) {
-      await this.applyConfigOption(session, [FAST_OPTION_ID], input.serviceTier === "fast" ? "true" : "false");
+      const wantFast = input.serviceTier === "fast" ? "true" : "false";
+      await this.applyConfigOptionIfNeeded(session, [FAST_OPTION_ID], wantFast, modelChanged);
     }
-    if (input.contextWindow) await this.applyConfigOption(session, [CONTEXT_OPTION_ID], input.contextWindow);
+    await this.applyConfigOptionIfNeeded(session, [CONTEXT_OPTION_ID], input.contextWindow, modelChanged);
 
     // kone mints the turn id: Cursor's ACP has no turn identity at all (a turn
     // is just one `session/prompt` round-trip), and a per-session counter would
@@ -1217,6 +1223,24 @@ export class CursorAdapter implements ProviderAdapter {
       // Degrade to whatever the session is already on rather than losing the turn.
       this.warn(session, `Cursor rejected model "${model}"`, error);
     }
+  }
+
+  /** Set one model axis only when it isn't already there. The refreshed matrix
+   *  from the last set is the record of where each axis stands, so a turn that
+   *  asks for the value already in force costs nothing. `force` overrides that
+   *  record: a model change invalidates it, because the matrix describes the
+   *  model the session was on before, not the one it is moving to. */
+  private async applyConfigOptionIfNeeded(
+    session: CursorSession,
+    ids: readonly string[],
+    value: string | undefined,
+    force: boolean,
+  ): Promise<void> {
+    if (!value) return;
+    if (!force && configValueEquals(findOption(session.configOptions, ids)?.currentValue, value)) {
+      return;
+    }
+    await this.applyConfigOption(session, ids, value);
   }
 
   /** Set one model axis (effort/context/fast) by config id, ignoring axes this
