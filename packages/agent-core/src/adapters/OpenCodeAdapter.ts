@@ -7,7 +7,7 @@ import { probeResult } from "../spawn.js";
 import { versionProbeUsable } from "../providerHealth.js";
 import { probeDetail } from "../providerHealth.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
-import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
+import { OpenCodeServerPool, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { buildOpenCodeMcpServer } from "../gateway/injection.js";
 import {
@@ -603,7 +603,11 @@ class OpenCodeModelProbeError extends Error {
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
   readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true, compaction: { kind: "native" as const } };
-  private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
+  private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>();
+  /** Prebooted servers for the next thread start. Held here beside the live
+   *  sessions because it is the same kind of state — processes this adapter
+   *  owns and must take down with it. */
+  private readonly serverPool = new OpenCodeServerPool(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   /** The CLI executable to spawn — the user's override or the `opencode` default. */
   private binary = OPENCODE_BINARY;
   constructor(emit: EmitEvent) { this.emit = emit; }
@@ -674,8 +678,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   async startSession(input: SessionStartInput): Promise<Session> {
     const prior = this.sessions.get(input.threadId); if (prior) await this.stopSession(input.threadId);
-    const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv(); const server = await startOpenCodeServer({ cwd: input.cwd, env, binary: this.binary });
+    const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv(); const server = await this.serverPool.start({ cwd: input.cwd, env, binary: this.binary });
     const client = makeClient(server.baseUrl); let sessionId: string | undefined;
+    // The gateway registration needs only the client, the connection and the
+    // directory — not the session id — so it runs beside the session-create
+    // round trips below instead of after them. Never rejects: failures stay
+    // loud but non-fatal, exactly as when it was awaited inline.
+    const gatewayRegistration = input.gatewayConnection
+      ? this.registerGatewayMcp(client, input.gatewayConnection, input.cwd)
+      : null;
     const resume = input.resume?.trim();
     // Attempt resume for ANY non-empty stored id, not just `ses_`-prefixed
     // ones: a foreign id is rejected by the server with a 404, which is the
@@ -706,29 +717,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const resumedFrom = sessionId ? resume : undefined;
     if (!sessionId) sessionId = responseData(await client.request("POST", "/session", { permission: permissionRules(mode) }))?.id;
     if (!sessionId) { await server.dispose(); throw new Error("OpenCode session response did not include an id."); }
-    // kone gateway (docs/mcp-gateway-design.md §4): register the app's MCP
-    // server on this opencode server instance right after the session exists.
-    // The registry is per-server-process, so the tools die with the session's
-    // server — no cross-thread leakage. Failures are loud but non-fatal.
-    if (input.gatewayConnection) {
-      try {
-        const mcpResult = responseData(
-          await client.request("POST", "/mcp", {
-            name: "kone",
-            config: buildOpenCodeMcpServer(input.gatewayConnection),
-            directory: input.cwd,
-          }),
-        );
-        const koneStatus = record(record(mcpResult)?.kone);
-        if (koneStatus?.status !== "connected") {
-          console.error(
-            `[opencode] kone MCP server did not connect: ${String(koneStatus?.error ?? "unknown status")}`,
-          );
-        }
-      } catch (error) {
-        console.error("[opencode] kone MCP registration failed:", errorMessage(error));
-      }
-    }
+    // kone gateway (docs/mcp-gateway-design.md §4): the app's MCP server,
+    // registered on this opencode server instance while the session was being
+    // created above. The registry is per-server-process, so the tools die with
+    // the session's server — no cross-thread leakage.
+    if (gatewayRegistration) await gatewayRegistration;
     const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, agent: input.agent, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), pendingApprovals: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), settledSubagentToolUseIds: new Set(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
@@ -737,6 +730,30 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   private async sameDirectory(a: string, b: string): Promise<boolean> { try { return (await fs.realpath(path.resolve(a))) === (await fs.realpath(path.resolve(b))); } catch { return path.resolve(a) === path.resolve(b); } }
+
+  /** Register the kone gateway as the server's `kone` MCP entry. Runs beside
+   *  session creation (see startSession) and never rejects — a failure is
+   *  logged and the session proceeds without gateway tools rather than
+   *  refusing to start. */
+  private async registerGatewayMcp(client: OpenCodeClient, connection: GatewayConnection, cwd: string): Promise<void> {
+    try {
+      const mcpResult = responseData(
+        await client.request("POST", "/mcp", {
+          name: "kone",
+          config: buildOpenCodeMcpServer(connection),
+          directory: cwd,
+        }),
+      );
+      const koneStatus = record(record(mcpResult)?.kone);
+      if (koneStatus?.status !== "connected") {
+        console.error(
+          `[opencode] kone MCP server did not connect: ${String(koneStatus?.error ?? "unknown status")}`,
+        );
+      }
+    } catch (error) {
+      console.error("[opencode] kone MCP registration failed:", errorMessage(error));
+    }
+  }
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const session = this.require(input.threadId); const text = input.input.trim();
@@ -819,7 +836,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   // `interrupted` first (abortLiveTurn) or the journaled assistant block would
   // stay 'running' forever and the thread would reopen permanently busy.
   async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
-  async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); }
+  async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); await this.serverPool.dispose(); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); this.resolveApproval(session, requestId, decision); /* "Reject and stop" — the permission already gets its `reject` reply (toOpenCodeReply), and aborting the session turns that into an interrupted turn instead of a continued one. */ if (decision === "reject-and-stop") void this.interruptTurn(threadId); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> { const session = this.sessions.get(threadId); if (!session) return { owned: false }; const pending = session.pendingUserInputs.get(requestId); if (!pending) return { owned: false }; session.pendingUserInputs.delete(requestId); pending.resolve(answers); return { owned: true }; }
   async listSessions(): Promise<Session[]> { return [...this.sessions.values()].map((session) => this.toSession(session)); }
