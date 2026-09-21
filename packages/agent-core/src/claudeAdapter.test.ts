@@ -85,9 +85,20 @@ type AdapterHarnessState = {
   /** The stubbed SDK's initializationResult — the adapter's request/ack point.
    *  Tests drive resume failures here (transport vs. refusal). */
   initializationResult: ReturnType<typeof mock> | null;
+  /** Every live control the adapter applied on a turn, in order: the models it
+   *  asked for and the flag-layer patches it merged. */
+  setModelCalls: (string | undefined)[];
+  flagSettings: FlagPatch[];
 };
 
-const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null };
+/** The flag-layer keys this adapter merges (SDK `applyFlagSettings`). */
+type FlagPatch = {
+  fastMode?: boolean | null;
+  autoCompactWindow?: number | null;
+  effortLevel?: string | null;
+};
+
+const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null, setModelCalls: [], flagSettings: [] };
 
 const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage> }) => {
   state.promptIterable = input.prompt ?? null;
@@ -96,7 +107,12 @@ const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage> }) => {
     interrupt: () => state.interrupt?.(),
     stopTask: (taskId: string) => state.stopTask?.(taskId),
     setPermissionMode: async () => {},
-    applyFlagSettings: async () => {},
+    setModel: async (model?: string) => {
+      state.setModelCalls.push(model);
+    },
+    applyFlagSettings: async (settings: FlagPatch) => {
+      state.flagSettings.push(settings);
+    },
     close: () => {},
     [Symbol.asyncIterator]: () =>
       state.feed ? state.feed[Symbol.asyncIterator]() : (async function* () {})(),
@@ -135,6 +151,8 @@ function setup() {
   state.interrupt = mock(async () => {});
   state.initializationResult = mock(async () => ({}));
   state.promptIterable = null;
+  state.setModelCalls = [];
+  state.flagSettings = [];
   versionProbeResult = { outcome: "ok", stdout: "1.2.3 (Claude Code)", stderr: "", code: 0 };
   return { adapter, events };
 }
@@ -755,5 +773,113 @@ describe("Claude discovery", () => {
     // keep serving a stale ready row to someone who has signed out.
     expect(status.readiness).toBe("needs-login");
     expect(status.transient).toBeUndefined();
+  });
+});
+
+describe("ClaudeAdapter live model and effort", () => {
+  test("a model change on a later turn reaches the running session", async () => {
+    const { adapter } = setup();
+    // The stub is module-scoped, so count spawns from here rather than zero.
+    const spawnsBefore = stubQuery.mock.calls.length;
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      model: "claude-opus-5",
+    });
+
+    await adapter.sendTurn({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      input: "hello",
+      model: "claude-sonnet-5",
+    });
+
+    expect(state.setModelCalls).toEqual(["claude-sonnet-5"]);
+    // The session it reached is the one that was already running: the turn
+    // spawned no second query, so the conversation keeps its context.
+    expect(stubQuery).toHaveBeenCalledTimes(spawnsBefore + 1);
+  });
+
+  test("the model the session already runs is not re-sent", async () => {
+    const { adapter } = setup();
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      model: "claude-opus-5",
+    });
+
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "one", model: "claude-opus-5" });
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "two", model: "claude-opus-5" });
+
+    expect(state.setModelCalls).toEqual([]);
+  });
+
+  test("a refusal fallback stays in force across later turns", async () => {
+    const { adapter } = setup();
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      model: "claude-opus-5",
+    });
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "one", model: "claude-opus-5" });
+    // SAFETY: test fixture — the handler reads only the three fields written
+    // here, so the message needs none of SDKMessage's other members.
+    state.feed!.push({
+      type: "system",
+      subtype: "model_refusal_fallback",
+      original_model: "claude-opus-5",
+      fallback_model: "claude-sonnet-5",
+    } as never);
+    await flush();
+
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "two", model: "claude-opus-5" });
+
+    // The turn still asks for the model the user picked, and the reroute is
+    // what is actually running — re-asserting the refused one here would undo
+    // the fallback on every turn after it.
+    expect(state.setModelCalls).toEqual([]);
+  });
+
+  test("an effort change merges into the session's flag layer", async () => {
+    const { adapter } = setup();
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      model: "claude-opus-5",
+      effort: "medium",
+    });
+
+    await adapter.sendTurn({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      input: "hello",
+      model: "claude-opus-5",
+      effort: "high",
+    });
+
+    expect(state.flagSettings).toContainEqual({ effortLevel: "high" });
+  });
+
+  test("an effort the session already runs is not re-sent", async () => {
+    const { adapter } = setup();
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      effort: "high",
+    });
+
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello", effort: "high" });
+
+    expect(state.flagSettings).not.toContainEqual({ effortLevel: "high" });
+  });
+
+  test("the adapter reports its model switch as in-session", () => {
+    const { adapter } = setup();
+    expect(adapter.capabilities.sessionModelSwitch).toBe("in-session");
   });
 });

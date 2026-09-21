@@ -945,9 +945,11 @@ export async function ensureCapturePlugin(
 export class AntigravityPrintAdapter implements ProviderAdapter {
   readonly provider: typeof PROVIDER = PROVIDER;
   readonly capabilities: AdapterCapabilities = {
-    // The model/effort is baked into each `agy -p` invocation's --model label;
-    // switching means the next turn runs under a new label, so a mid-thread
-    sessionModelSwitch: "restart-session",
+    // `in-session`: a turn *is* an `agy -p` invocation, and it builds its own
+    // --model label from the model and effort that turn carries (see sendTurn).
+    // A switch is the next invocation's label; the conversation it resumes is
+    // untouched by it, so there is nothing to re-birth.
+    sessionModelSwitch: "in-session",
     // Transcript steps arrive as whole blobs, not incremental deltas.
     streamsText: false,
     supportsToolEvents: true,
