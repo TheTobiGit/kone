@@ -10,6 +10,7 @@ import {
   buildModelCatalog,
   describeModelId,
   EFFORT_META,
+  isEffortTier,
   type EffortTier,
   type ModelOption,
   type PickerProvider,
@@ -96,8 +97,7 @@ onMounted(() => {
   currentProvider.value = (localStorage.getItem(DEFAULT_PROVIDER_KEY) as ProviderKind | null) ?? null;
   currentModel.value = localStorage.getItem(DEFAULT_MODEL_KEY);
   const tier = localStorage.getItem(DEFAULT_REASONING_KEY);
-  // SAFETY: Invariant verified by checking tier in EFFORT_META dictionary
-  currentReasoning.value = tier && tier in EFFORT_META ? (tier as EffortTier) : null;
+  currentReasoning.value = isEffortTier(tier) ? tier : null;
 });
 
 // The active provider the modal opens on: the stored default, else the first

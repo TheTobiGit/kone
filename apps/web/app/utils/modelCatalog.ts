@@ -103,10 +103,19 @@ const EFFORT_ORDER: EffortTier[] = [
   "base",
 ];
 
+/** Whether a string is a tier this build knows. The one place that question is
+ *  answered: every boundary that takes a tier back as a bare string — local
+ *  storage, a stored thread's selection, a journaled request stamp — decodes it
+ *  through this rather than asserting, so an unknown rung degrades to "no tier"
+ *  instead of being cast into one. */
+export function isEffortTier(value: string | null | undefined): value is EffortTier {
+  return value !== null && value !== undefined && value in EFFORT_META;
+}
+
 /** Meta for a tier, tolerant of a provider reporting a rung we don't have
  *  bespoke styling for yet — falls back to `medium`'s look rather than
  *  throwing, so an unrecognised real value still renders sensibly. */
-function effortMeta(tier: EffortTier): EffortMeta {
+export function effortMeta(tier: EffortTier): EffortMeta {
   return EFFORT_META[tier] ?? EFFORT_META.medium;
 }
 
