@@ -93,11 +93,13 @@ import {
 // `ask` consults this callback for every tool, `accept-edits` only for the
 // non-file-edit tools, `full-access` never reaches it.
 //
-// Effort is a spawn-time SDK option (`Options.effort`), not a live control, so
-// the adapter advertises `sessionModelSwitch: "restart-session"`: changing the
-// model or effort restarts the session (ProjectView drives that). The cheap
-// live controls the SDK *does* expose — permission mode and fast mode — are
-// applied in-place.
+// Model and effort are spawn-time options (`Options.model` / `Options.effort`)
+// that the SDK also exposes as live controls — `query.setModel` and the flag
+// layer's `effortLevel` — so the adapter advertises
+// `sessionModelSwitch: "in-session"` and applies both from the turn that asks
+// for them (see applyLiveSettings), alongside permission mode, fast mode and
+// the auto-compact window. Nothing about a model change needs a new process,
+// which is what keeps a switch from costing the conversation.
 //
 // "Fast mode" is Claude's low-latency tier. Unlike effort it's a session
 // *Setting* (`Settings.fastMode`), so the SDK flips it live mid-session via
@@ -172,10 +174,9 @@ type ClaudeStreamEvent = Extract<SDKMessage, { type: "stream_event" }>["event"];
 export class ClaudeAdapter implements ProviderAdapter {
   readonly provider = "claudeAgent" as const;
   readonly capabilities: AdapterCapabilities = {
-    // Model + effort are baked when the SDK subprocess spawns, so a change
-    // restarts the session (ProjectView handles that). Permission mode is the
-    // one thing switched live, in sendTurn.
-    sessionModelSwitch: "restart-session",
+    // Model, effort and permission mode are all switched on the running
+    // session, from the turn that asks for them (see applyLiveSettings).
+    sessionModelSwitch: "in-session",
     streamsText: true,
     supportsToolEvents: true,
     supportsResume: true,
@@ -469,6 +470,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       threadId: input.threadId,
       cwd: input.cwd,
       model: input.model,
+      requestedModel: input.model,
       effort,
       mode,
       lastAssistantUuid: input.resumeSessionAt,
@@ -727,16 +729,57 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   /** The live session Settings a turn — or a steer, which has no new turn
-   *  boundary to hang them on — may change in place: permission mode, fast
-   *  mode, and the auto-compact window. Model and effort are spawn-fixed and
-   *  change via a session restart instead. */
+   *  boundary to hang them on — change in place: permission mode, model,
+   *  effort, fast mode, and the auto-compact window. */
   private async applyLiveSettings(session: ClaudeSession, input: SendTurnInput): Promise<void> {
-    // Permission mode is the one selection the SDK lets us change live; model
-    // and effort are spawn-fixed and change via a session restart instead.
     const mode = input.mode ?? session.mode;
     if (mode !== session.mode) {
       await session.query.setPermissionMode(toPermissionMode(mode));
       session.mode = mode;
+    }
+
+    // The model the next response comes from. `setModel` is a control request
+    // against the running process, so a pick reaches this conversation with
+    // its context rather than costing a fresh one — the whole reason the
+    // adapter reports `in-session`. It is only available while the prompt is
+    // a stream, which is how every session here is started (MessageQueue).
+    //
+    // Compared against `requestedModel`, never against the running `model`:
+    // after a refusal fallback those differ, and comparing against the running
+    // one would re-assert the refused model on the very next turn.
+    if (input.model !== undefined && input.model !== session.requestedModel) {
+      try {
+        await session.query.setModel(input.model);
+        session.requestedModel = input.model;
+        session.model = input.model;
+      } catch (err) {
+        // Refused (an id this account can't reach, a control channel that has
+        // gone away) — leave both fields alone so the next turn tries again,
+        // and let this turn run on the model already in place rather than
+        // failing a send over a setting. Logged rather than swallowed: the
+        // timeline has already marked this turn as a switch, so a refusal that
+        // left nothing behind is the one case where the transcript and the
+        // session disagree about what ran.
+        console.warn(`[claude] setModel refused (${input.model}) — turn runs on ${session.model}:`, err);
+      }
+    }
+
+    // Effort is the flag layer's `effortLevel`, merged into the session for
+    // subsequent turns. Sent whenever it differs from what the session is
+    // carrying, so a tier change no longer waits for a new thread to take
+    // hold — before this, a mid-thread effort pick reached the adapter and
+    // was dropped, because effort was only ever read at spawn.
+    const wantEffort = normalizeEffort(input.effort);
+    if (wantEffort !== undefined && wantEffort !== session.effort) {
+      try {
+        await session.query.applyFlagSettings({ effortLevel: wantEffort });
+        session.effort = wantEffort;
+      } catch (err) {
+        // Refused (the model has no effort axis, or the level is one it does
+        // not offer) — the turn still runs at the level already in force, and
+        // says so here for the same reason setModel does.
+        console.warn(`[claude] effortLevel refused (${wantEffort}) — turn runs at ${session.effort}:`, err);
+      }
     }
 
     // Fast mode is a live session Setting — flip it in place when the turn's
@@ -750,10 +793,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       try {
         await session.query.applyFlagSettings({ fastMode: wantsFast ? true : null });
         session.fastMode = wantsFast;
-      } catch {
+      } catch (err) {
         // The Setting can be refused (model doesn't support fast mode, or it's
         // on cooldown / disabled upstream) — leave state as-is; a later turn
         // retries. The turn itself still runs, just at the standard tier.
+        console.warn(`[claude] fastMode refused (${wantsFast}):`, err);
       }
     }
 
@@ -768,9 +812,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       try {
         await session.query.applyFlagSettings({ autoCompactWindow: wantWindow });
         session.autoCompactWindow = wantWindow;
-      } catch {
+      } catch (err) {
         // Refused (window unsupported, or auto-compact disabled upstream) —
         // leave state as-is; the turn still runs at the current window.
+        console.warn(`[claude] autoCompactWindow refused (${wantWindow}):`, err);
       }
     }
   }

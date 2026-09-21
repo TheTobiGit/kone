@@ -602,7 +602,10 @@ class OpenCodeModelProbeError extends Error {
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
-  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true, compaction: { kind: "native" as const } };
+  /** `in-session`: every prompt carries its own `model` in the request body
+   *  (see sendTurn), so a switch is the next turn's field rather than a new
+   *  server session. The variant (effort) rides the same request. */
+  readonly capabilities = { sessionModelSwitch: "in-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true, compaction: { kind: "native" as const } };
   private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>();
   /** Prebooted servers for the next thread start. Held here beside the live
    *  sessions because it is the same kind of state — processes this adapter

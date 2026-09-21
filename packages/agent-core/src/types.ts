@@ -159,11 +159,12 @@ export type SessionStartInput = {
   /** Provider model id (ModelDescriptor.id); provider default when omitted. */
   model?: string;
   mode?: InteractionMode;
-  /** Reasoning-effort tier to run at. Flag-based providers (Codex) take effort
-   *  per turn and ignore this; providers that fix effort when the session
-   *  process spawns (Claude, whose SDK `effort` is a spawn-time option) read it
-   *  here — changing it means restarting the session (AdapterCapabilities
-   *  `sessionModelSwitch: "restart-session"`). */
+  /** Reasoning-effort tier to run at, carried on every turn. Adapters that
+   *  take effort as a per-turn flag (Codex) pass it straight through; adapters
+   *  whose process takes it at spawn apply a change through whatever live
+   *  control they have (Claude merges it into the SDK flag layer) and fall
+   *  back to a session re-birth only where there is none — which is what an
+   *  adapter reporting `sessionModelSwitch: "restart-session"` is saying. */
   effort?: string;
   /** Provider-native conversation id to resume, when reopening a stored thread
    *  (StoredThreadMeta.conversationId). Present means "continue this prior
@@ -1725,10 +1726,19 @@ export function isCompactionSupported(
   return capability?.kind === "native" || capability?.kind === "command";
 }
 
+/** How a provider absorbs a model change on a thread that is already running.
+ *  `in-session` — the running session takes the new model on its next turn.
+ *  `restart-session` — the model is fixed when the process spawns, so the
+ *  session has to be re-born (its conversation is resumed across the re-birth,
+ *  so this costs a spawn, not the context). `unsupported` — the session runs
+ *  the model it started on for its whole life, and a pick only takes effect on
+ *  a new thread. */
+export type SessionModelSwitchMode = "in-session" | "restart-session" | "unsupported";
+
 /** Static feature flags so the facade/UI can pick fallbacks per provider. */
 export type AdapterCapabilities = {
   /** How switching model mid-thread behaves. */
-  sessionModelSwitch: "in-session" | "restart-session" | "unsupported";
+  sessionModelSwitch: SessionModelSwitchMode;
   /** Emits incremental text deltas (vs one final blob). */
   streamsText: boolean;
   /** Surfaces structured tool-call events. */

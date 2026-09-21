@@ -127,7 +127,15 @@ export type ClaudeSubagentRun = {
 export type ClaudeSession = {
   threadId: string;
   cwd: string;
+  /** The model actually answering. Follows a refusal fallback, so it can differ
+   *  from what was asked for — hence `requestedModel` beside it. */
   model?: string;
+  /** The model the user last asked for. Kept apart from `model` so a refusal
+   *  fallback stays in force: comparing a turn against what is *running* would
+   *  read the fallback as a change and re-assert the refused model on every
+   *  later turn, while comparing against what was *asked* only moves when the
+   *  user picks something new. */
+  requestedModel?: string;
   effort?: EffortLevel;
   mode: InteractionMode;
   query: Query;
