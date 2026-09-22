@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
+// One ipcRenderer per renderer, many subscribers: each ConversationThread
+// mounts useHandoffMarks (one "agent:event" listener per thread), plus one
+// per session list / scratchpad, plus app-wide singletons (useAgent registry,
+// useBench, …). The default max of 10 trips at 11 concurrent threads even
+// though every per-instance subscription is removed on unmount — so raise it.
+// Still finite so a genuine forgotten-removeListener leak warns instead of
+// growing silently.
+ipcRenderer.setMaxListeners(50);
+
 import type {
   AgentRecord,
   ConversationSearchHit,

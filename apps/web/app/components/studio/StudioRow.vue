@@ -321,7 +321,7 @@ const activePaneIsThread = computed(() => focusedThread.value !== null);
  *  The first block is the point of no return for both. */
 const threadIsBlank = computed(() => (focusedThread.value?.blocks.value.length ?? 0) === 0);
 // Why the focused thread's provider can't take a turn, or null. Drives both the
-// banner and the composer's refusal, so the two can never disagree.
+// composer's top strip and its send refusal, so the two can never disagree.
 const sendBlockedReason = computed(() => focusedThread.value?.sendBlockedReason.value ?? null);
 const sendBlockedStatus = computed(() => {
   const provider = focusedThread.value?.provider.value;
@@ -868,9 +868,11 @@ function onComposerDraft(text: string): void {
 // The selected agent's pinned model gates what the pickers may offer. No model
 // is unrestricted — every provider and every model stays open. A pinned model
 // is a hard pin: only its provider is offered, and only that one model within
-// it, so the composer can only answer there.
+// it, so the composer can only answer there. Null (no active provider) is never
+// allowed — it means a pick is still needed.
 const capModel = computed<AgentModelRef | null>(() => pickedForProject.value?.capabilities.model ?? null);
-function providerAllowed(p: ProviderKind): boolean {
+function providerAllowed(p: ProviderKind | null): boolean {
+  if (!p) return false;
   return capModel.value === null || capModel.value.provider === p;
 }
 function modelAllowed(provider: ProviderKind, key: string): boolean {
@@ -886,8 +888,10 @@ const catalogs = ref<Partial<Record<ProviderKind, ModelOption[]>>>({});
 // The active provider's catalog feeds the composer's own model name + effort
 // dial, narrowed to the models the selected agent may run. A disallowed current
 // model is moved off by the self-heal watcher above, which reads this list.
+// Null provider (none active) yields no options — no model.
 const modelOptions = computed(() => {
   const provider = agent.provider.value;
+  if (!provider) return [];
   return (catalogs.value[provider] ?? []).filter((m) => modelAllowed(provider, m.key));
 });
 
@@ -1041,32 +1045,56 @@ function applyChatDefaults(): boolean {
     localStorage.getItem(DEFAULT_PROVIDER_KEY) ?? localStorage.getItem(PROVIDER_KEY);
   const isReady = (p: string | null): p is ProviderKind =>
     Boolean(p) && readyProviders.some((s) => s.provider === p);
-  const chosen: ProviderKind | undefined = isReady(savedProvider)
-    ? savedProvider
-    : readyProviders.find((s) => s.provider === "codex")?.provider ??
-      readyProviders.find((s) => s.provider === "opencode")?.provider ??
-      readyProviders[0]?.provider;
+  // Stored choice wins when it names a ready+enabled provider. Otherwise a
+  // fresh install picks uniformly at random among ready providers — never a
+  // hardcoded `codex`. No ready provider → no provider, no model.
+  let chosen: ProviderKind | null = null;
+  if (isReady(savedProvider)) {
+    chosen = savedProvider;
+  } else if (readyProviders.length > 0) {
+    const idx = Math.floor(Math.random() * readyProviders.length);
+    chosen = readyProviders[Math.min(idx, readyProviders.length - 1)]?.provider ?? null;
+  }
 
   const providerChanged = Boolean(chosen) && chosen !== agent.provider.value;
-  if (chosen) agent.setProvider(chosen);
+  if (chosen) {
+    agent.setProvider(chosen);
+  } else if (readyProviders.length === 0) {
+    agent.setProvider(null);
+  }
 
   // Model — validate against the (now current) provider's catalog. A stored id
   // from another provider is dropped rather than ridden onto the wrong CLI.
-  const current = model.value;
-  const owned = (id: string | null | undefined) =>
-    Boolean(id) &&
-    modelOptions.value.some(
-      (o) => o.key === id || o.efforts.some((e) => e.modelId === id),
-    );
-  const savedModel = bootModel();
-  if (owned(savedModel)) {
-    agent.setModel(savedModel!);
-  } else if (owned(current)) {
-    // Already valid for this provider — leave it.
+  // With no provider there is no model either.
+  if (!chosen && readyProviders.length === 0) {
+    agent.setModel(undefined);
   } else {
-    const first = modelOptions.value[0];
-    const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-    agent.setModel(eff ? eff.modelId : undefined);
+    const current = model.value;
+    const owned = (id: string | null | undefined) =>
+      Boolean(id) &&
+      modelOptions.value.some(
+        (o) => o.key === id || o.efforts.some((e) => e.modelId === id),
+      );
+    const savedModel = bootModel();
+    if (owned(savedModel)) {
+      agent.setModel(savedModel!);
+    } else if (owned(current)) {
+      // Already valid for this provider — leave it.
+    } else {
+      // Random model within the chosen provider when a catalog is known, else
+      // that provider's default. The first random pick sticks via the
+      // model watcher persisting last-used.
+      const options = modelOptions.value;
+      const flat = options.flatMap((o) => o.efforts.map((e) => e.modelId));
+      if (flat.length > 0) {
+        const pick = flat[Math.min(Math.floor(Math.random() * flat.length), flat.length - 1)];
+        agent.setModel(pick);
+      } else {
+        const first = options[0];
+        const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+        agent.setModel(eff ? eff.modelId : undefined);
+      }
+    }
   }
 
   const savedReasoning = bootReasoning();
@@ -1296,11 +1324,14 @@ watch(
         : undefined,
     );
     if (import.meta.client && id && !capModel.value) {
-      setLastUsedModel({
-        provider: agent.provider.value,
-        modelId: id,
-        tier: reasoning.value,
-      });
+      const p = agent.provider.value;
+      if (p) {
+        setLastUsedModel({
+          provider: p,
+          modelId: id,
+          tier: reasoning.value,
+        });
+      }
     }
   },
   { immediate: true },
@@ -1309,8 +1340,10 @@ watch(
 // Persist the reasoning effort globally (app-wide last-used), like the model id.
 watch(reasoning, (tier) => {
   if (import.meta.client && !capModel.value) {
+    const p = agent.provider.value;
+    if (!p) return;
     setLastUsedModel({
-      provider: agent.provider.value,
+      provider: p,
       modelId: model.value,
       tier,
     });
@@ -1754,13 +1787,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         :class="{ 'composer-dock--open': composerOpen }"
         :inert="blocked"
       >
-        <ProviderHealthBanner
-          class="pointer-events-auto mb-2 w-[min(100%-32px,680px)]"
-          :status="sendBlockedStatus"
-          :reason="sendBlockedReason"
-          :checking="recheckingProviders"
-          @recheck="recheckProviders"
-        />
         <!-- Corner / above-composer dock stack (Tasks + Changes + Subagents) -->
         <Transition
           enter-active-class="transition-opacity duration-150 ease-out"
@@ -1805,6 +1831,8 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :fast-mode="fastActive"
           :context-window="contextWindow"
           :blocked-reason="sendBlockedReason"
+          :health-status="sendBlockedStatus"
+          :health-checking="recheckingProviders"
           :compactable="focusedCompactable"
           :creatable="blankThreadPane === null"
           @send="onSend"
@@ -1824,6 +1852,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           @new-thread="onComposerNewThread"
           @update:open="composerOpen = $event"
           @update:draft="onComposerDraft"
+          @recheck="recheckProviders"
         />
       </div>
     </Transition>

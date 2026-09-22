@@ -117,7 +117,7 @@ export type LiveAttentionItem = {
   /** The provider-native thread id (used to reopen / route). */
   threadId: string;
   title: string;
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   /** The raw model id the thread last ran on, if known. */
   model?: string;
   /** Which project's registry owns the live session — how the host routes the
@@ -187,7 +187,7 @@ export type QueueBridge = {
 export type ReasoningTier = EffortTier;
 
 export type UseAgentOptions = {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   /** Absolute path of the project the agent works in — or a getter, resolved
    *  when a session starts so it always reflects the active project. */
   cwd: string | (() => string);
@@ -213,7 +213,7 @@ export type ThreadSummary = {
   /** The provider-native thread id (used to reopen / route). */
   threadId: string;
   title: string;
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   /** The raw model id the thread last ran on, if known — lets the away pill show
    *  a harness provider's true model vendor on its badge corner. */
   model?: string;

@@ -30,8 +30,11 @@ export function titleBarOptions(platform: NodeJS.Platform): TitleBarOptions {
       trafficLightPosition: getMacTrafficLightPosition(),
     };
   }
-  // Keep the OS frame elsewhere so the platform supplies the window buttons.
-  return {};
+  // Linux and elsewhere: keep the native frame so the OS supplies the window
+  // buttons, but hide Electron's default File/Edit/View menu — macOS tucks it
+  // into the global bar and Windows hides it frameless, so Linux showing it
+  // in-window is the odd one out.
+  return { autoHideMenuBar: true };
 }
 
 export type WindowChromeState = {

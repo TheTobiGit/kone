@@ -21,7 +21,6 @@ import { computed, ref } from "vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
 import ProjectPickerModal from "~/components/project/ProjectPickerModal.vue";
-import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import { useBench } from "~/composables/useBench";
 import { bootProvider } from "~/utils/modelPicker";
 import type { RecentProject } from "~/composables/useRecentProjects";
@@ -105,9 +104,13 @@ const branch = computed(() =>
 const filing = ref(false);
 
 /** The picks, frozen. Read off the draft rather than off any session, because
- *  there is none — this is the only copy. */
+ *  there is none — this is the only copy. Null provider means no active
+ *  provider, so there is nothing to file: the caller guards this before
+ *  calling. */
 function currentTarget(): JobTarget {
-  const target: JobTarget = { provider: draft.provider.value };
+  const p = draft.provider.value;
+  if (!p) throw new Error("No provider selected");
+  const target: JobTarget = { provider: p };
   if (draft.model.value) target.model = draft.model.value;
   if (draft.reasoning.value) target.effort = draft.reasoning.value;
   target.mode = draft.mode.value;
@@ -131,6 +134,10 @@ async function onFile(
     projectOpen.value = true;
     return;
   }
+  // Null provider means blocked send with no model — nothing to file against.
+  // The composer already refuses this; guarded here so the freeze below never
+  // indexes a null provider.
+  if (!draft.provider.value) return;
   filing.value = true;
   try {
     // Uploaded before the row is written: a failed upload should leave you
@@ -180,14 +187,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
 
 <template>
   <div class="compose" @keydown.capture.escape="onEscapeCapture">
-    <ProviderHealthBanner
-      class="compose__banner"
-      :status="composer.sendBlockedStatus.value"
-      :reason="composer.sendBlockedReason.value"
-      :checking="composer.recheckingProviders.value"
-      @recheck="composer.recheckProviders"
-    />
-
     <AgentComposer
       kind="job"
       always-open
@@ -208,6 +207,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :context-window="composer.contextWindow.value"
       :picking="composer.pickerOpen.value"
       :blocked-reason="composer.sendBlockedReason.value"
+      :health-status="composer.sendBlockedStatus.value"
+      :health-checking="composer.recheckingProviders.value"
       @file="onFile"
       @open-project="projectOpen = true"
       @open-branch="branchOpen = true"
@@ -218,6 +219,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       @update:mode="composer.onMode"
       @update:fast-mode="composer.onFastMode"
       @update:context-window="composer.onContextWindow"
+      @recheck="composer.recheckProviders"
     />
 
     <ProjectPickerModal

@@ -8,7 +8,7 @@
 import type { ProviderKind, ProviderStatus } from "~/types/desktop";
 
 export type ProviderSendAvailability = {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   status: ProviderStatus | null;
   usable: boolean;
   /** Empty when usable — a reason to show only ever accompanies a refusal. */
@@ -20,13 +20,18 @@ export type ProviderSendAvailability = {
  *  the first moments of a cold launch, when the snapshot has not landed and the
  *  user has done nothing wrong.
  *
+ *  Null provider means no provider is active — always refused with no model.
+ *
  *  The signature is kept identical to the agent-core copy on purpose: the two
  *  are meant to be diffable line for line, and signatures drifting apart is how
  *  a silent composer/banner split would begin. */
 export function resolveProviderSendAvailability(input: {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   statuses: readonly ProviderStatus[];
 }): ProviderSendAvailability {
+  if (!input.provider) {
+    return { provider: null, status: null, usable: false, reason: "No provider installed. Install and sign in to a provider to send." };
+  }
   const status = input.statuses.find((row) => row.provider === input.provider) ?? null;
   if (!status || (status.available && status.readiness === "ready")) {
     return { provider: input.provider, status, usable: true, reason: "" };
