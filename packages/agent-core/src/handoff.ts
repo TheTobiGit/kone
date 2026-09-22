@@ -2,17 +2,17 @@ import { randomUUID } from "node:crypto";
 
 import { getConversationStore } from "./ConversationStore.js";
 import type {
-  ChatAttachment,
   CreateHandoffInput,
   CreateHandoffResult,
   ForkContext,
+  ForkImportedBlock,
+  HandoffCut,
   ProviderKind,
   StoredBlock,
   StoredThread,
   ThreadLineage,
-  TurnStamp,
 } from "./types.js";
-import { copyTurnStamp, isContinuationForkContext } from "./types.js";
+import { copyTurnStamp, isContinuationForkContext, nonBlank } from "./types.js";
 
 // Thread handoff — handing a conversation to another provider/model.
 //
@@ -108,15 +108,6 @@ export function transferText(block: StoredBlock): string | null {
   return `${head}${fitted}${tail}]`;
 }
 
-/** One imported transcript row, in the shape `writeForkThread` takes. */
-type HandoffImportedBlock = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  at: number;
-  attachments?: ChatAttachment[];
-} & TurnStamp;
-
 /** Every user + assistant block of the source, in arrival order — including
  *  earlier `fork-import` rows, so a handoff of a handoff keeps the whole
  *  chain. Assistant blocks contribute their narrative text, or — when a turn
@@ -125,22 +116,24 @@ type HandoffImportedBlock = {
  *  Tool items themselves are not imported. Ids are re-minted (randomUUID),
  *  `at` timestamps and attachments are kept.
  *
- *  With `throughBlockId` the copy stops after that block, so the import ends
- *  on the reply the user chose rather than on the source's newest turn. */
+ *  With a cut the copy stops after that block, so the import ends on the
+ *  reply the user chose rather than on the source's newest turn. */
 function buildHandoffImportedBlocks(
   source: StoredThread,
-  /** Stop after this block, inclusive. Absent imports the whole transcript. */
-  throughBlockId?: string,
-): HandoffImportedBlock[] {
-  const rows: HandoffImportedBlock[] = [];
-  let reachedCut = false;
-  for (const b of source.blocks) {
-    if (reachedCut) break;
-    if (throughBlockId && b.id === throughBlockId) reachedCut = true;
+  cut: HandoffCut,
+): ForkImportedBlock[] {
+  const throughBlockId = cut.kind === "branch" ? cut.throughBlockId : undefined;
+  let scoped = source.blocks;
+  if (throughBlockId !== undefined) {
+    const idx = source.blocks.findIndex((b) => b.id === throughBlockId);
+    if (idx >= 0) scoped = source.blocks.slice(0, idx + 1);
+  }
+  const rows: ForkImportedBlock[] = [];
+  for (const b of scoped) {
     if (b.role !== "user" && b.role !== "assistant") continue;
     const text = transferText(b);
     if (!text) continue;
-    const row: HandoffImportedBlock = { id: randomUUID(), role: b.role, text, at: b.at };
+    const row: ForkImportedBlock = { id: randomUUID(), role: b.role, text, at: b.at };
     if (b.role === "user") {
       if (b.attachments?.length) row.attachments = b.attachments;
       copyTurnStamp(b, row);
@@ -165,8 +158,7 @@ function forkPointOf(source: StoredThread): string | null {
  *  enforces them. */
 export function handoffEligibility(
   sourceThreadId: string,
-  /** Cut the import here, inclusive — see CreateHandoffInput.throughBlockId. */
-  throughBlockId?: string,
+  cut: HandoffCut,
 ): { ok: true } | { ok: false; reason: string } {
   const store = getConversationStore();
   const source = store.loadThread(sourceThreadId);
@@ -184,19 +176,20 @@ export function handoffEligibility(
   // terminates on its own and branching an un-run continuation is a real
   // request, not a duplicate.
   if (
-    !throughBlockId &&
+    cut.kind === "handoff" &&
     isContinuationForkContext(source.forkContext) &&
     !store.hasNativeAssistantTurn(sourceThreadId)
   ) {
     return { ok: false, reason: "Run at least one turn before handing this thread off again" };
   }
-  if (throughBlockId && !source.blocks.some((b) => b.id === throughBlockId)) {
+  const throughBlockId = cut.kind === "branch" ? cut.throughBlockId : undefined;
+  if (throughBlockId !== undefined && !source.blocks.some((b) => b.id === throughBlockId)) {
     return {
       ok: false,
       reason: `That message is not part of this conversation: ${throughBlockId}`,
     };
   }
-  if (buildHandoffImportedBlocks(source, throughBlockId).length === 0) {
+  if (buildHandoffImportedBlocks(source, cut).length === 0) {
     return { ok: false, reason: "There is no conversation to hand off yet" };
   }
   return { ok: true };
@@ -249,14 +242,14 @@ export function createHandoffThread(input: CreateHandoffInput): CreateHandoffRes
   if (!source) {
     throw new Error(`Handoff source thread not found: ${input.sourceThreadId}`);
   }
-  const eligible = handoffEligibility(input.sourceThreadId, input.throughBlockId);
+  const eligible = handoffEligibility(input.sourceThreadId, input);
   if (!eligible.ok) {
     throw new Error(eligible.reason);
   }
 
   // A handoff that names its own provider/model is just a duplicate — refuse
   // it rather than minting a twin the bootstrap would then re-narrate.
-  const sourceModel = source.model?.trim() ? source.model : undefined;
+  const sourceModel = nonBlank(source.model);
   const targetModel =
     input.target.model ?? (input.target.provider === source.provider ? sourceModel : undefined);
   // Forking from a chosen reply is a different request: what changes is
@@ -264,20 +257,21 @@ export function createHandoffThread(input: CreateHandoffInput): CreateHandoffRes
   // a legitimate target and only an untruncated handoff to identical hands
   // is the duplicate this refuses.
   if (
-    !input.throughBlockId &&
+    input.kind === "handoff" &&
     input.target.provider === source.provider &&
     (targetModel ?? undefined) === sourceModel
   ) {
     throw new Error("Select a different provider or model to hand off to");
   }
 
+  const throughBlockId = input.kind === "branch" ? input.throughBlockId : undefined;
   const createdAt = Date.now();
   const forkContext: ForkContext = {
     sourceThreadId: input.sourceThreadId,
-    forkPointBlockId: input.throughBlockId ?? forkPointOf(source),
+    forkPointBlockId: throughBlockId ?? forkPointOf(source),
     importedAt: createdAt,
     bootstrapStatus: "pending",
-    forkKind: input.throughBlockId ? "branch" : "handoff",
+    forkKind: input.kind,
     sourceProvider: source.provider,
   };
   // The source model rides the context the same way its provider does — the
@@ -299,12 +293,12 @@ export function createHandoffThread(input: CreateHandoffInput): CreateHandoffRes
     projectPath: source.projectPath,
     provider: input.target.provider,
     createdAt,
-    title: input.title?.trim() || source.title?.trim() || "Conversation",
+    title: nonBlank(input.title) ?? nonBlank(source.title) ?? "Conversation",
     sourceThreadId: input.sourceThreadId,
     forkContext,
     lineage,
     requestId: input.requestId,
-    importedBlocks: buildHandoffImportedBlocks(source, input.throughBlockId),
+    importedBlocks: buildHandoffImportedBlocks(source, input),
     // The handoff continues the same task where the source worked — branch,
     // worktree and all. The per-thread picker snapshot (effort/tier/window)
     // is deliberately NOT carried: it names the source provider's knobs in

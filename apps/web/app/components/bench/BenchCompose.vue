@@ -104,12 +104,11 @@ const branch = computed(() =>
 const filing = ref(false);
 
 /** The picks, frozen. Read off the draft rather than off any session, because
- *  there is none — this is the only copy. Null provider means no active
- *  provider, so there is nothing to file: the caller guards this before
- *  calling. */
-function currentTarget(): JobTarget {
+ *  there is none — this is the only copy. Null when no provider is picked yet;
+ *  the caller guards this before filing. */
+function currentTarget(): JobTarget | null {
   const p = draft.provider.value;
-  if (!p) throw new Error("No provider selected");
+  if (!p) return null;
   const target: JobTarget = { provider: p };
   if (draft.model.value) target.model = draft.model.value;
   if (draft.reasoning.value) target.effort = draft.reasoning.value;
@@ -138,6 +137,8 @@ async function onFile(
   // The composer already refuses this; guarded here so the freeze below never
   // indexes a null provider.
   if (!draft.provider.value) return;
+  const target = currentTarget();
+  if (!target) return;
   filing.value = true;
   try {
     // Uploaded before the row is written: a failed upload should leave you
@@ -151,7 +152,7 @@ async function onFile(
       projectPath: projectPath.value,
       title: job.title,
       body: job.body,
-      target: currentTarget(),
+      target,
       queue: job.intent === "queued",
       attachments,
     });

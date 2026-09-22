@@ -40,6 +40,8 @@ function threadSession(
     isSideChat: ref<boolean>(fields.sideChat ?? false),
     forkContext: ref<ForkContext | null>(fields.forkContext ?? null),
     blocks: ref<Array<{ role: string }>>(fields.userTurn ? [{ role: "user" }] : []),
+    timelineBlocks: ref<Array<{ at: number }>>([]),
+    handInRecords: ref<HandInRecord[]>([]),
     busy: ref<boolean>(false),
     queuedTurns: ref<Array<unknown>>([]),
     compacting: ref<boolean>(false),

@@ -15,13 +15,12 @@ import type {
 import type { Project } from "~/composables/useProject";
 import type { StudioDestination } from "~/types/studio";
 import type { GitRemote } from "~/types/desktop";
-import { buildModelCatalog, effortForTier, familyForId, isEffortTier } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
   bootMode,
   bootModel,
   bootProvider,
-  bootReasoning,
   DEFAULT_MODE_KEY,
   DEFAULT_MODEL_KEY,
   DEFAULT_PROVIDER_KEY,
@@ -31,7 +30,10 @@ import {
   PROVIDER_BRAND,
   PROVIDER_KEY,
   PROVIDER_VENDOR,
+  readLastUsed,
+  readUserDefault,
   REASONING_KEY,
+  resolveSessionModelSelection,
   setLastUsedModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
@@ -485,8 +487,13 @@ function openEditFork(paneId: string, blockId: string, text: string): void {
 // handoff mode for the source thread; the pick confirms the target and the
 // handoff opens as a column beside the source. The source column is never
 // touched — it keeps running where it is. Refused while the source is busy
-// (handing off would copy a moving transcript).
-const handoffPaneId = ref<string | null>(null);
+// (handing off would copy a moving transcript). A branch is the same intent
+// cut short at one reply, so the pending pick carries its kind once rather
+// than a handoff id plus a separate anchor.
+type PendingContinuation =
+  | { paneId: string; kind: "handoff" }
+  | { paneId: string; kind: "branch"; blockId: string };
+const pendingContinuation = ref<PendingContinuation | null>(null);
 function openHandoffPicker(paneId: string): void {
   const pane = panes.value.find((p) => p.id === paneId);
   if (pane?.kind !== "thread" || !pane.session) return;
@@ -497,13 +504,8 @@ function openHandoffPicker(paneId: string): void {
     return;
   }
   modelPickerOpen.value = false;
-  handoffPaneId.value = paneId;
+  pendingContinuation.value = { paneId, kind: "handoff" };
 }
-// A branch is a handoff cut short: the target thread ends at the reply the
-// user forked from, so the next turn continues from there. It shares the
-// picker and the open-beside-source placement; only the anchor differs, and
-// the same busy refusal applies (a moving transcript copies badly).
-const branchAnchor = ref<{ paneId: string; blockId: string } | null>(null);
 function openBranchPicker(paneId: string, blockId: string): void {
   const pane = panes.value.find((p) => p.id === paneId);
   if (pane?.kind !== "thread" || !pane.session) return;
@@ -514,11 +516,12 @@ function openBranchPicker(paneId: string, blockId: string): void {
     return;
   }
   modelPickerOpen.value = false;
-  branchAnchor.value = { paneId, blockId };
-  handoffPaneId.value = paneId;
+  pendingContinuation.value = { paneId, kind: "branch", blockId };
 }
 const handoffSource = computed(() => {
-  const pane = panes.value.find((p) => p.id === handoffPaneId.value);
+  const pending = pendingContinuation.value;
+  if (!pending) return null;
+  const pane = panes.value.find((p) => p.id === pending.paneId);
   if (!pane || pane.kind !== "thread" || !pane.session) return null;
   return {
     paneId: pane.id,
@@ -531,8 +534,7 @@ const handoffSource = computed(() => {
 });
 function closePicker(): void {
   modelPickerOpen.value = false;
-  handoffPaneId.value = null;
-  branchAnchor.value = null;
+  pendingContinuation.value = null;
 }
 function onPickerSelect(picked: ModelPick): void {
   // One picker, two commits: a handoff pick moves the source thread's
@@ -547,16 +549,18 @@ function onPickerSelect(picked: ModelPick): void {
 }
 async function confirmHandoff(picked: ModelPick): Promise<void> {
   const source = handoffSource.value;
-  const anchor = branchAnchor.value;
-  handoffPaneId.value = null;
-  branchAnchor.value = null;
-  if (!source) return;
+  const pending = pendingContinuation.value;
+  pendingContinuation.value = null;
+  if (!source || !pending) return;
   try {
-    const options: HandoffOptions = {
+    const base = {
       sourceThreadId: source.threadId,
       target: { provider: picked.provider, model: picked.modelId, effort: picked.tier },
     };
-    if (anchor) options.throughBlockId = anchor.blockId;
+    const options: HandoffOptions =
+      pending.kind === "branch"
+        ? { ...base, kind: "branch", throughBlockId: pending.blockId }
+        : { ...base, kind: "handoff" };
     const { threadId } = await createHandoff(options);
     const id = await studio.open("thread", { threadId, near: source.paneId });
     if (id) void composerRef.value?.wake();
@@ -1041,20 +1045,18 @@ function applyChatDefaults(): boolean {
   if (!import.meta.client) return false;
   const readyProviders = enabledReady.value;
 
-  const savedProvider =
-    localStorage.getItem(DEFAULT_PROVIDER_KEY) ?? localStorage.getItem(PROVIDER_KEY);
-  const isReady = (p: string | null): p is ProviderKind =>
-    Boolean(p) && readyProviders.some((s) => s.provider === p);
-  // Stored choice wins when it names a ready+enabled provider. Otherwise a
-  // fresh install picks uniformly at random among ready providers — never a
-  // hardcoded `codex`. No ready provider → no provider, no model.
-  let chosen: ProviderKind | null = null;
-  if (isReady(savedProvider)) {
-    chosen = savedProvider;
-  } else if (readyProviders.length > 0) {
-    const idx = Math.floor(Math.random() * readyProviders.length);
-    chosen = readyProviders[Math.min(idx, readyProviders.length - 1)]?.provider ?? null;
-  }
+  // Single resolver for fresh-install defaults: last-used wins, then the
+  // configured default, then a random ready pick (fresh install only), else
+  // nothing. The random pick persists via setLastUsedModel, so a reactive
+  // re-run reads the stored choice instead of re-rolling.
+  const resolved = resolveSessionModelSelection({
+    lastUsed: readLastUsed(),
+    userDefault: readUserDefault(),
+    availableProviders: readyProviders.map((s) => s.provider),
+    availableCatalogs: catalogs.value,
+    rand: Math.random,
+  });
+  const chosen = resolved.provider;
 
   const providerChanged = Boolean(chosen) && chosen !== agent.provider.value;
   if (chosen) {
@@ -1062,46 +1064,17 @@ function applyChatDefaults(): boolean {
   } else if (readyProviders.length === 0) {
     agent.setProvider(null);
   }
-
-  // Model — validate against the (now current) provider's catalog. A stored id
-  // from another provider is dropped rather than ridden onto the wrong CLI.
-  // With no provider there is no model either.
-  if (!chosen && readyProviders.length === 0) {
-    agent.setModel(undefined);
-  } else {
-    const current = model.value;
-    const owned = (id: string | null | undefined) =>
-      Boolean(id) &&
-      modelOptions.value.some(
-        (o) => o.key === id || o.efforts.some((e) => e.modelId === id),
-      );
-    const savedModel = bootModel();
-    if (owned(savedModel)) {
-      agent.setModel(savedModel!);
-    } else if (owned(current)) {
-      // Already valid for this provider — leave it.
-    } else {
-      // Random model within the chosen provider when a catalog is known, else
-      // that provider's default. The first random pick sticks via the
-      // model watcher persisting last-used.
-      const options = modelOptions.value;
-      const flat = options.flatMap((o) => o.efforts.map((e) => e.modelId));
-      if (flat.length > 0) {
-        const pick = flat[Math.min(Math.floor(Math.random() * flat.length), flat.length - 1)];
-        agent.setModel(pick);
-      } else {
-        const first = options[0];
-        const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-        agent.setModel(eff ? eff.modelId : undefined);
-      }
-    }
+  if (resolved.source === "catalog_fallback" && chosen) {
+    setLastUsedModel({ provider: chosen, modelId: resolved.model, tier: resolved.reasoning });
   }
 
-  const savedReasoning = bootReasoning();
-  if (isEffortTier(savedReasoning)) {
-    const fam = familyForId(modelOptions.value, model.value);
-    const eff = effortForTier(fam, savedReasoning);
-    if (eff) agent.setReasoning(eff.tier);
+  // Model and tier come from the same resolution: validated against the
+  // provider's catalog when it has loaded, carried as stored when it has
+  // not yet (so a slow catalog never wipes the choice — the next run after
+  // it lands validates then). With no provider there is no model either.
+  agent.setModel(resolved.model);
+  if (resolved.reasoning) {
+    agent.setReasoning(resolved.reasoning);
   }
 
   // Per-project mode wins; before this project has one, the app-wide default.

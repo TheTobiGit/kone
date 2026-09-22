@@ -15,13 +15,12 @@ export type TitleBarOptions = {
   frame?: false;
   titleBarStyle?: "hiddenInset";
   trafficLightPosition?: { x: number; y: number };
-  autoHideMenuBar?: boolean;
 };
 
 export function titleBarOptions(platform: NodeJS.Platform): TitleBarOptions {
   if (platform === "win32") {
     // Frame-free so the renderer draws its own caption cluster.
-    return { frame: false, autoHideMenuBar: true };
+    return { frame: false };
   }
   if (platform === "darwin") {
     // Native traffic lights, inset into the renderer's header strip.
@@ -31,10 +30,9 @@ export function titleBarOptions(platform: NodeJS.Platform): TitleBarOptions {
     };
   }
   // Linux and elsewhere: keep the native frame so the OS supplies the window
-  // buttons, but hide Electron's default File/Edit/View menu — macOS tucks it
-  // into the global bar and Windows hides it frameless, so Linux showing it
-  // in-window is the odd one out.
-  return { autoHideMenuBar: true };
+  // buttons. The application menu is removed globally via
+  // Menu.setApplicationMenu(null), so no per-window hiding is needed.
+  return {};
 }
 
 export type WindowChromeState = {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { MarkerExchange } from "./compactionMarkers";
-import { groupHandoffMarks, handoffMarkVerb, type HandoffMark } from "./handoffMarkers";
+import { groupMarks, handoffMarkVerb, type HandoffMark } from "./handoffMarkers";
 
 function mark(key: string, at: number): HandoffMark {
   return {
@@ -19,9 +19,9 @@ function exchange(key: string, firstAt: number | undefined): MarkerExchange {
   return { key, firstAt };
 }
 
-describe("groupHandoffMarks", () => {
+describe("groupMarks", () => {
   test("a marker sits above the first exchange starting at or after it", () => {
-    const grouped = groupHandoffMarks(
+    const grouped = groupMarks(
       [mark("h1", 150), mark("h2", 350)],
       [exchange("e1", 100), exchange("e2", 200), exchange("e3", 400)],
     );
@@ -31,18 +31,18 @@ describe("groupHandoffMarks", () => {
   });
 
   test("markers newer than every exchange trail the thread", () => {
-    const grouped = groupHandoffMarks([mark("h1", 500)], [exchange("e1", 100)]);
+    const grouped = groupMarks([mark("h1", 500)], [exchange("e1", 100)]);
     expect(grouped.byExchange.size).toBe(0);
     expect(grouped.trailing.map((m) => m.key)).toEqual(["h1"]);
   });
 
   test("a marker at the same instant precedes that exchange", () => {
-    const grouped = groupHandoffMarks([mark("h1", 200)], [exchange("e1", 200)]);
+    const grouped = groupMarks([mark("h1", 200)], [exchange("e1", 200)]);
     expect(grouped.byExchange.get("e1")?.map((m) => m.key)).toEqual(["h1"]);
   });
 
   test("no exchanges means everything trails", () => {
-    const grouped = groupHandoffMarks([mark("h1", 100)], []);
+    const grouped = groupMarks([mark("h1", 100)], []);
     expect(grouped.trailing.map((m) => m.key)).toEqual(["h1"]);
   });
 });

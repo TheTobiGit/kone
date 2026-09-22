@@ -5,6 +5,7 @@ import {
 import type {
   ApprovalDecision,
   ChatAttachment,
+  HandInInput,
   HandInRecord,
   InteractionMode,
   KoneAgentApi,
@@ -36,6 +37,7 @@ import {
   type UseAgentOptions,
   type ThreadSummary,
   type SessionCtx,
+  type HandInOutcome,
 } from "./agentTypes";
 
 import {
@@ -379,7 +381,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // a stored thread only *arms* a session, the id sits staged across any number
   // of provider switches, and handing a Codex conversation id to Claude is the
   // same desync AgentService's validModelFor guards one axis over.
-  let pendingResumeProvider: ProviderKind | null | undefined;
+  let pendingResumeProvider: ProviderKind | undefined;
 
   // ── actions ───────────────────────────────────────────────────────────────
 
@@ -482,11 +484,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (forgotten) return;
     const api = bridge();
     error.value = null;
-    if (!provider.value) {
-      error.value = "No provider installed. Install and sign in to a provider to send.";
-      sessionState.value = "error";
-      return;
-    }
     if (!api) {
       // Browser dev: no real session — pretend it's ready so the composer works.
       sessionState.value = "ready";
@@ -518,7 +515,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     try {
       const currentProvider = provider.value;
       if (!currentProvider) {
-        error.value = "No provider installed. Install and sign in to a provider to send.";
+        error.value = sendBlockedReason.value;
         sessionState.value = "error";
         return;
       }
@@ -873,18 +870,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  next turn replays the prior transcript into the new session. The thread
    *  id is deliberately kept — re-minting it is the very thing a hand-in
    *  exists to avoid — so the pane, the transcript and the stored conversation
-   *  all stay put. Returns false when there was nothing live to hand over, or
-   *  the swap failed; the caller falls back to a plain restart. */
-  async function handIn(target: {
-    provider: ProviderKind;
-    model?: string;
-    effort?: string;
-    mode?: InteractionMode;
-  }): Promise<boolean> {
+   *  all stay put. Returns "handed" when the swap landed, "not-applicable"
+   *  when there was nothing live to hand over, and "failed" when the swap
+   *  itself broke — three-way so a failed swap never reads as nothing to
+   *  carry. The caller restarts on anything but "handed" via switchProvider. */
+  async function handIn(target: HandInInput["target"]): Promise<HandInOutcome> {
     const api = bridge();
     // Nothing has run yet — there is no conversation to carry, and a restart
     // is the cheaper way to put a blank thread on another provider.
-    if (!api?.handIn || !session.value) return false;
+    if (!api?.handIn || !session.value) return "not-applicable";
     if (busy.value) await interrupt();
     stopMock();
     touch();
@@ -906,11 +900,26 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // No event is pushed for a hand-in, so the record list is re-read here —
       // the header and the timeline both draw from it.
       await loadHandIns();
-      return true;
+      return "handed";
     } catch (e) {
       error.value = peelIpcError(e, "Could not hand this thread over");
-      return false;
+      return "failed";
     }
+  }
+
+  /** Move this thread onto another provider's hands, owning the policy: a
+   *  live thread is handed over in place; a blank thread restarts (nothing to
+   *  carry, and the cheaper path). A failed swap never restarts: the desktop
+   *  side already wrote the record and retargeted the thread before its
+   *  startSession threw, so the stored owner is already the target —
+   *  restarting would mint a new thread id and strand the retargeted one.
+   *  The error stays on screen and the next send starts the session on the
+   *  thread as retargeted. The interrupt lives in handIn above, so there is
+   *  exactly one stop path. */
+  async function switchProvider(target: HandInInput["target"]): Promise<void> {
+    const outcome = await handIn(target);
+    if (outcome === "handed" || outcome === "failed") return;
+    await restart();
   }
 
   async function forkAtBlock(blockId: string, text: string): Promise<string | null> {
@@ -1068,7 +1077,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       const cid = session.value.conversationId;
       if (cid) {
         pendingResumeId = cid;
-        pendingResumeProvider = provider.value;
+        pendingResumeProvider = provider.value ?? undefined;
         // Claude resumes with the id + the last assistant message uuid; keep
         // the freshest one we've seen so the re-staged cursor is complete.
         if (lastResumeSessionAt) pendingResumeSessionAt = lastResumeSessionAt;
@@ -1230,7 +1239,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     send,
     steerTurn,
     forkAtBlock,
-    handIn,
+    switchProvider,
     handInRecords,
     cancelQueuedTurn,
     sendQueuedEntryNow,
@@ -1645,24 +1654,32 @@ export function useAgent(options: UseAgentOptions) {
   const contextWindow = computed(() => active.value?.contextWindow.value ?? options.contextWindow);
 
   /** Every thread's background snapshot — what the away-from-thread pill stack
-   *  reads to decide which threads to surface. */
-  const threads = computed<ThreadSummary[]>(() =>
-    sessions.value.map((s) => ({
-      key: s.key,
-      threadId: s.threadId.value,
-      title: s.title.value,
-      provider: s.provider.value,
-      model: s.model.value,
-      // A side chat's pill reads its own timeline — the fork-imported history
-      // is reference context, not something to surface as a "replied" state.
-      block: latestAssistant(s.timelineBlocks.value),
-      task: activePlanTask(s.timelineBlocks.value),
-      busy: s.busy.value,
-      attention: s.attention.value,
-      everRan: s.everRan.value,
-      isActive: s.key === activeKey.value,
-    })),
-  );
+   *  reads to decide which threads to surface. Drafts with no provider yet
+   *  (fresh install, nothing installed) carry no snapshot — "no provider" is
+   *  the draft having no session, not a thread with a null owner. */
+  const threads = computed<ThreadSummary[]>(() => {
+    const out: ThreadSummary[] = [];
+    for (const s of sessions.value) {
+      const provider = s.provider.value;
+      if (!provider) continue;
+      out.push({
+        key: s.key,
+        threadId: s.threadId.value,
+        title: s.title.value,
+        provider,
+        model: s.model.value,
+        // A side chat's pill reads its own timeline — the fork-imported history
+        // is reference context, not something to surface as a "replied" state.
+        block: latestAssistant(s.timelineBlocks.value),
+        task: activePlanTask(s.timelineBlocks.value),
+        busy: s.busy.value,
+        attention: s.attention.value,
+        everRan: s.everRan.value,
+        isActive: s.key === activeKey.value,
+      });
+    }
+    return out;
+  });
 
   // ── active-thread actions (delegate to whichever thread is on screen) ────────
   // Each delegates to the focused thread — and no-ops when the board has no
@@ -1718,15 +1735,9 @@ export function useAgent(options: UseAgentOptions) {
   };
   const demo = (opts?: { fast?: boolean }) => active.value?.demo(opts);
   const restart = async () => { await active.value?.restart(); };
-  // Falsy when there is no active session at all, which reads the same as a
-  // refused hand-in: the caller falls back to a restart either way.
-  const handIn = async (target: {
-    provider: ProviderKind;
-    model?: string;
-    effort?: string;
-    mode?: InteractionMode;
-  }) =>
-    (await active.value?.handIn(target)) ?? false;
+  const switchProvider = async (target: HandInInput["target"]) => {
+    await active.value?.switchProvider(target);
+  };
   const setProvider = (next: ProviderKind | null) => active.value?.setProvider(next);
   const setModel = (id: string | undefined) => active.value?.setModel(id);
   const setMode = (next: InteractionMode) => active.value?.setMode(next);
@@ -2087,7 +2098,7 @@ export function useAgent(options: UseAgentOptions) {
     // actions
     start,
     restart,
-    handIn,
+    switchProvider,
     newThread,
     newDetachedThread,
     newThreadAt,

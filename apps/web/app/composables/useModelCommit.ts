@@ -109,19 +109,13 @@ export function useModelCommit(o: UseModelCommitOptions) {
     if (providerChanged) {
       // A thread that has already run is handed over rather than re-born: the
       // thread id, its transcript and its pane all stay, and the next turn
-      // replays the conversation into the new hands. A restart is the fallback
-      // — right for a thread with nothing to carry, and the recovery when the
-      // hand-in itself fails.
-      const handed = await agent.handIn({
+      // replays the conversation into the new hands. switchProvider owns the
+      // hand-in-then-restart policy, so there is one stop-then-start path.
+      await agent.switchProvider({
         provider: picked.provider,
         model: picked.modelId,
         effort: picked.tier,
       });
-      if (!handed) {
-        // A turn in flight is torn down by the restart — stop it cleanly first.
-        if (agent.busy.value) await agent.interrupt();
-        await agent.restart();
-      }
     }
     // Persist last, once the swap has settled: a hand-in keeps the thread id
     // but a fallback restart re-mints it, so the selection is recorded against

@@ -220,7 +220,7 @@ export function resolveProviderSendAvailability(input: {
   statuses: readonly ProviderStatus[];
 }): ProviderSendAvailability {
   if (!input.provider) {
-    return { provider: null, status: null, usable: false, reason: "No provider installed." };
+    return { provider: null, status: null, usable: false, reason: "No provider installed. Install and sign in to a provider to send." };
   }
   const status = input.statuses.find((row) => row.provider === input.provider) ?? null;
   if (!status || wasUsable(status)) {

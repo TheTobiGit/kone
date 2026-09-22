@@ -302,12 +302,14 @@ export function isPlaceholderModelId(id: string | null | undefined): boolean {
  *  subagent's `model`). Prefers a real catalog label when one is passed. A miss
  *  against the catalog never borrows the first family's label: only a genuine
  *  match contributes a catalog name or brand, anything else prettifies the id
- *  itself, which is what the no-catalog path already does. */
+ *  itself, which is what the no-catalog path already does. A placeholder id
+ *  ("default", "auto", blank) carries no information and reads as absent, so
+ *  callers with provider context fall back to the provider's own label. */
 export function describeModelId(
   id: string | undefined,
   catalog?: ModelOption[],
 ): ModelDescription {
-  if (!id) return { brand: "generic", name: "Default model" };
+  if (!id || isPlaceholderModelId(id)) return { brand: "generic", name: "Default model" };
   const fam = catalog ? familyForIdStrict(catalog, id) : undefined;
   const { core } = splitEffort(id);
   const { brand } = brandOf(core);

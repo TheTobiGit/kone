@@ -4,14 +4,13 @@ import { buildSemanticBranchSummary, estimateBlockTokens, findCutPoint } from ".
 import { getConversationStore } from "./ConversationStore.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import type {
-  ChatAttachment,
   CreateSideChatInput,
   CreateSideChatResult,
   ForkContext,
+  ForkImportedBlock,
   StoredBlock,
   StoredThread,
   ThreadLineage,
-  TurnStamp,
 } from "./types.js";
 import { copyTurnStamp, isBranchForkContext, isEditForkContext, isHandoffForkContext } from "./types.js";
 import {
@@ -280,33 +279,11 @@ export function assembleSidechatPreamble(
   return `<sidechat_context>\n${context}\n</sidechat_context>\n\n${boundaryBlock(input, instruction)}`;
 }
 
-/**
- * The one-shot bootstrap preamble for a fork's first turn — the fully
- * assembled input text (imported context + boundary + the user's message
- * wrapped), or null when no bootstrap applies (not a fork, already
- * consumed, or nothing to import).
- *
- * An edit fork replays its copied prefix the same way a side chat replays
- * its import, but framed as continuation: the prefix is settled history the
- * turn builds on, and the boundary names the edited message as the thing to
- * answer. A handoff replays the full handed transcript framed the same way —
- * the new provider continues the same task as its new owner. Side chats keep
- * the reference-only framing.
- *
- * Throws when the imported context plus the new message would exceed the
- * send-turn cap — the turn is rejected up front rather than silently
- * dropping context.
- */
-/** The one-shot replay handed to a session born from a hand-in: the thread's
- *  own prior transcript, framed as the settled history of this same
- *  conversation, plus the user's message. Null when the thread has no
- *  pending hand-in, or has no history worth replaying.
- *
- *  Every block counts as history here — a hand-in keeps the thread, so its
- *  native turns are exactly what the new provider has not seen. Everything
- *  but the message being sent is replayed; the message itself arrives in
- *  `<latest_user_message>`. */
-/** The three strings one fork kind's replay is worded with. */
+/** The three strings one fork kind's replay is worded with, plus which blocks
+ *  replay as context. Edit forks replay all but the last block (everything
+ *  before the edited message); hand-ins replay everything (the thread is the
+ *  history); the rest replay fork-imported rows only (a side chat's own turns
+ *  are its live conversation, and a handoff's import is already fork-import). */
 type ForkFraming = {
   /** Header the replayed transcript opens with. */
   intro: string;
@@ -314,7 +291,14 @@ type ForkFraming = {
   instruction: string;
   /** Refusal for a first message that leaves no room for the transcript. */
   tooLong: string;
+  /** Which blocks replay as context. */
+  include: (block: StoredBlock, index: number, blocks: StoredBlock[]) => boolean;
 };
+
+/** Which blocks replay as context for an import: fork-imported rows only. A
+ *  side chat's own turns are its live conversation, and a handoff's or
+ *  branch's import is already fork-import — one predicate for all three. */
+const includeImportOnly = (block: StoredBlock): boolean => block.source === "fork-import";
 
 /** How a fork's one-shot replay is worded: the header the transcript opens
  *  with, the instruction that frames it, and the refusal for a first message
@@ -333,6 +317,7 @@ function forkFraming(ctx: ForkContext): ForkFraming {
       intro: EDIT_FORK_INTRO,
       instruction: EDIT_FORK_BOUNDARY_INSTRUCTION,
       tooLong: EDIT_FORK_MESSAGE_TOO_LONG,
+      include: (_block, index, blocks) => index < blocks.length - 1,
     };
   }
   if (isBranchForkContext(ctx)) {
@@ -340,6 +325,7 @@ function forkFraming(ctx: ForkContext): ForkFraming {
       intro: BRANCH_INTRO,
       instruction: BRANCH_BOUNDARY_INSTRUCTION,
       tooLong: BRANCH_MESSAGE_TOO_LONG,
+      include: includeImportOnly,
     };
   }
   if (isHandoffForkContext(ctx)) {
@@ -347,32 +333,79 @@ function forkFraming(ctx: ForkContext): ForkFraming {
       intro: HANDOFF_INTRO,
       instruction: HANDOFF_BOUNDARY_INSTRUCTION,
       tooLong: HANDOFF_MESSAGE_TOO_LONG,
+      include: includeImportOnly,
     };
   }
   return {
     intro: INTRO,
     instruction: SIDECHAT_BOUNDARY_INSTRUCTION,
     tooLong: SIDECHAT_MESSAGE_TOO_LONG,
+    include: includeImportOnly,
   };
 }
 
+/** How a hand-in's one-shot replay is worded. Every block counts as history
+ *  here — a hand-in keeps the thread, so its native turns are exactly what
+ *  the new provider has not seen. Everything but the message being sent is
+ *  replayed; the message itself arrives in `<latest_user_message>`. */
+const handInFraming: ForkFraming = {
+  intro: HAND_IN_INTRO,
+  instruction: HAND_IN_BOUNDARY_INSTRUCTION,
+  tooLong: HAND_IN_MESSAGE_TOO_LONG,
+  include: () => true,
+};
+
+/** Assemble one replay: budget the transcript against the send-turn cap,
+ *  frame it, and refuse a first message that leaves no room for it. Returns
+ *  null when there is nothing worth replaying. Throws when the imported
+ *  context plus the new message would exceed the cap — the turn is rejected
+ *  up front rather than silently dropping context. */
+function replayForTurn(
+  thread: Pick<StoredThread, "blocks" | "title" | "branch">,
+  input: string,
+  framing: ForkFraming,
+): string | null {
+  const boundary = boundaryBlock(input, framing.instruction);
+  const available = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
+  if (available <= 0) throw new Error(framing.tooLong);
+  const context = buildSidechatForkContext(thread, available, framing.intro, framing.include);
+  if (!context) return null;
+  const preamble = assembleSidechatPreamble(context, input, framing.instruction);
+  if (preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS) {
+    throw new Error(framing.tooLong);
+  }
+  return preamble;
+}
+
+/** The one-shot replay handed to a session born from a hand-in: the thread's
+ *  own prior transcript, framed as the settled history of this same
+ *  conversation, plus the user's message. Null when the thread has no
+ *  pending hand-in, or has no history worth replaying. */
 function handInBootstrapForTurn(threadId: string, input: string): string | null {
   const store = getConversationStore();
   if (!store.pendingHandIn(threadId)) return null;
   const thread = store.loadThread(threadId);
   if (!thread) return null;
-  const boundary = boundaryBlock(input, HAND_IN_BOUNDARY_INSTRUCTION);
-  const available = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
-  if (available <= 0) throw new Error(HAND_IN_MESSAGE_TOO_LONG);
-  const context = buildSidechatForkContext(thread, available, HAND_IN_INTRO, () => true);
-  if (!context) return null;
-  const preamble = assembleSidechatPreamble(context, input, HAND_IN_BOUNDARY_INSTRUCTION);
-  if (preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS) {
-    throw new Error(HAND_IN_MESSAGE_TOO_LONG);
-  }
-  return preamble;
+  return replayForTurn(thread, input, handInFraming);
 }
 
+/**
+ * The one-shot bootstrap preamble for a fork's first turn — the fully
+ * assembled input text (imported context + boundary + the user's message
+ * wrapped), or null when no bootstrap applies (not a fork, already
+ * consumed, or nothing to import).
+ *
+ * An edit fork replays its copied prefix the same way a side chat replays
+ * its import, but framed as continuation: the prefix is settled history the
+ * turn builds on, and the boundary names the edited message as the thing to
+ * answer. A handoff replays the full handed transcript framed the same way —
+ * the new provider continues the same task as its new owner. Side chats keep
+ * the reference-only framing.
+ *
+ * Throws when the imported context plus the new message would exceed the
+ * send-turn cap — the turn is rejected up front rather than silently
+ * dropping context.
+ */
 export function sidechatBootstrapForTurn(threadId: string, input: string): string | null {
   const store = getConversationStore();
   // A thread that has just changed hands replays first. Its bootstrap is not
@@ -388,45 +421,8 @@ export function sidechatBootstrapForTurn(threadId: string, input: string): strin
 
   const thread = store.loadThread(threadId);
   if (!thread) return null;
-  const isEdit = isEditForkContext(ctx);
-  const framing = forkFraming(ctx);
-  const instruction = framing.instruction;
-  const tooLong = framing.tooLong;
-  const boundary = boundaryBlock(input, instruction);
-  const available = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
-  if (available <= 0) {
-    throw new Error(tooLong);
-  }
-  // A handoff's and a branch's import is the whole stored transcript (every
-  // imported row is already `fork-import`), so the default fork-import-only
-  // replay covers both. An edit fork replays everything before its edited
-  // message instead.
-  const context = isEdit
-    ? buildSidechatForkContext(
-        thread,
-        available,
-        EDIT_FORK_INTRO,
-        (_block, index, blocks) => index < blocks.length - 1,
-      )
-    : buildSidechatForkContext(thread, available, framing.intro);
-  if (!context) return null;
-  // Double-check the assembled prompt fits the cap: the context block itself
-  // is budgeted, but the wrapper adds a little on top.
-  const preamble = assembleSidechatPreamble(context, input, instruction);
-  if (preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS) {
-    throw new Error(tooLong);
-  }
-  return preamble;
+  return replayForTurn(thread, input, forkFraming(ctx));
 }
-
-/** One imported transcript row, in the shape `writeForkThread` takes. */
-type ImportedBlock = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  at: number;
-  attachments?: ChatAttachment[];
-} & TurnStamp;
 
 /** The blocks of a source thread that get imported into a side chat: every
  *  non-streaming native user + assistant message. Fork-imported blocks of a
@@ -438,12 +434,12 @@ type ImportedBlock = {
  *  from); genuinely empty blocks are skipped. Tool items are not imported.
  *  Ids are re-minted (randomUUID), `at` timestamps and attachments are kept,
  *  and nothing from the renderer-only timeline leaks through. */
-function buildImportedBlocks(source: StoredThread): ImportedBlock[] {
-  const rows: ImportedBlock[] = [];
+function buildImportedBlocks(source: StoredThread): ForkImportedBlock[] {
+  const rows: ForkImportedBlock[] = [];
   for (const b of source.blocks) {
     if (b.source === "fork-import") continue;
     if (b.role === "user") {
-      const imported: ImportedBlock = {
+      const imported: ForkImportedBlock = {
         id: randomUUID(),
         role: "user",
         text: blockText(b),

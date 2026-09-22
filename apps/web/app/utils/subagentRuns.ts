@@ -17,7 +17,7 @@
 // the backend's spawnProjection.ts.
 
 import type { ThreadBlock } from "~/composables/useAgent";
-import { describeModelId, EFFORT_META, isPlaceholderModelId } from "~/utils/modelCatalog";
+import { describeModelId, EFFORT_META } from "~/utils/modelCatalog";
 import type { EffortTier } from "~/utils/modelCatalog";
 import type { ProviderKind } from "~/types/desktop";
 import type {
@@ -84,14 +84,12 @@ export function subagentTitle(run: Pick<SubagentRunSnapshot, "description" | "ag
   return "Subagent";
 }
 
-/** The engine's logomark + human model name (never the raw id). A placeholder
- *  model ("default"/"auto") names no real model, so it reads as absent — the
- *  same "Default model" a run without one gets — rather than prettifying into
- *  a name that points at nothing. */
+/** The engine's logomark + human model name (never the raw id). Placeholder
+ *  ids read as absent inside describeModelId, so this is a straight
+ *  pass-through. */
 export function subagentModel(
   run: Pick<SubagentRunSnapshot, "model">,
 ): ReturnType<typeof describeModelId> {
-  if (isPlaceholderModelId(run.model)) return { brand: "generic", name: "Default model" };
   return describeModelId(run.model);
 }
 

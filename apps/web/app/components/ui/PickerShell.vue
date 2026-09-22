@@ -67,8 +67,8 @@ const cardSpring = {
      top corners paint over the shell's curve. */
   overflow: hidden;
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
-    0 16px 36px -8px rgb(0 0 0 / 0.36);
+    0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
+    0 10px 28px -12px rgb(0 0 0 / 0.18);
 }
 .picker-inner {
   display: flex;

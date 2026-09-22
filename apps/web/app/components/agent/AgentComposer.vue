@@ -5,7 +5,6 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Note01Icon,
   AiBrain01Icon,
-  AlertCircleIcon,
   BubbleChatTemporaryIcon,
   Directions01Icon,
   FlashIcon,
@@ -18,6 +17,7 @@ import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
 import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
+import ComposerStatusTray from "~/components/agent/ComposerStatusTray.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
@@ -249,12 +249,6 @@ const emit = defineEmits<{
 
 const { cue } = useSound();
 
-// Top strip: the send-block reason, in the tray's quiet clothes. Null provider
-// (nothing installed) and not-installed are the hard stop; everything else is
-// a warning — a signed-out CLI is one terminal command away from working.
-const healthSevere = computed(
-  () => !props.healthStatus || props.healthStatus.readiness === "not-installed",
-);
 // No active provider: the model slot wears every provider's mark greyed rather
 // than a single live one, so the empty state reads as "nothing to run on".
 const noProvider = computed(() => !props.healthStatus);
@@ -1053,31 +1047,17 @@ defineExpose({ wake, setDraft, focus });
       @reorder-queued="emit('reorder-queued', $event)"
     />
 
-    <!-- Top tray — the send-block reason, hanging off the TOP of the card the
-         way the context tray hangs off its floor. Same slab, same small type,
-         same calm dot: ground, not chrome. Only rendered while blocked, so an
-         unblocked composer is exactly what it was. -->
-    <div
-      v-if="open && blockedReason"
-      class="tray tray--top"
-      :class="{ 'is-shown': open && !closing, 'is-closing': closing, 'tray--severe': healthSevere }"
-      role="status"
-      aria-label="Provider status"
-    >
-      <span class="tray__item">
-        <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" class="tray__alert" />
-        <span class="tray__label">{{ blockedReason }}</span>
-      </span>
-      <button
-        type="button"
-        class="tray__item tray__item--action"
-        :tabindex="open ? 0 : -1"
-        :disabled="healthChecking"
-        @click.stop="emit('recheck')"
-      >
-        <span class="tray__label tray__label--strong">{{ healthChecking ? "Checking…" : "Check again" }}</span>
-      </button>
-    </div>
+    <!-- Top status tray — the send-block reason, hanging off the top of the
+         card. Only rendered while blocked, so an unblocked composer is
+         exactly what it was. -->
+    <ComposerStatusTray
+      :open="open"
+      :closing="closing"
+      :blocked-reason="blockedReason"
+      :health-status="healthStatus"
+      :health-checking="healthChecking"
+      @recheck="emit('recheck')"
+    />
 
     <!-- One surface, morphing. Closed it's the orb; open it's the card. -->
     <div
@@ -1551,95 +1531,6 @@ defineExpose({ wake, setDraft, focus });
   color: var(--accent-2);
 }
 
-/* Top tray — the mirror of the context tray below, hung off the card's head
-   instead of its floor. Same slab (sunken, narrower than the card), same small
-   type, same calm dot. The card's rounded crown covers the tray's bottom 14px,
-   so it reads as one slab the composer is hanging from. Severe (no provider,
-   not installed) wears the danger dot; warnings wear the warn dot. */
-.tray--top {
-  --tray-tone: var(--warn);
-  border-radius: 18px 18px 0 0;
-  margin-top: 0;
-  margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  /* The slab itself carries the tone — a wash of warn/danger over the sunken
-     ground — so no dot is needed. */
-  background: color-mix(in srgb, var(--tray-tone) 12%, var(--sunken));
-  /* Items ride the VISIBLE top of the slab, not its vertical centre: the card
-     covers the tray's bottom 14px, so centred content gets its baseline cut. */
-  align-items: flex-start;
-}
-.tray--top.tray--severe {
-  --tray-tone: var(--danger);
-}
-.tray--top.is-shown {
-  height: 40px;
-  margin-top: 0;
-  margin-bottom: -14px;
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-  transition:
-    height 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
-    margin-bottom 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
-    opacity 0.24s ease 0.14s;
-}
-.tray--top.is-closing {
-  height: 40px;
-  margin-top: 0;
-  margin-bottom: -14px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.18s ease;
-}
-/* Sit on the strip that shows (the top), not the covered bottom half. The long
-   health sentence flexes to fill and ellipsises instead of truncating at the
-   tray's 148px chip width. */
-.tray--top .tray__item {
-  margin-top: 0;
-  margin-bottom: 0;
-  padding-top: 9px;
-  padding-bottom: 0;
-}
-.tray--top .tray__item:first-child {
-  flex: 1;
-  min-width: 0;
-}
-.tray--top .tray__label {
-  max-width: none;
-}
-.tray__alert {
-  flex: none;
-  color: var(--tray-tone);
-}
-.tray--top .tray__item:last-child {
-  margin-left: auto;
-}
-.tray--top .tray__item--action {
-  margin-top: 7px;
-  margin-bottom: 2px;
-  padding-top: 2px;
-  padding-bottom: 2px;
-  border-radius: 0;
-}
-.tray--top .tray__item--action:hover {
-  background: transparent;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: color-mix(in srgb, var(--tray-tone) 65%, transparent);
-}
-.tray--top .tray__item--action:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.tray--top .tray__item--action:hover .tray__label {
-  opacity: 0.9;
-}
-.tray--top .tray__item--action:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--tray-tone) 42%, transparent);
-}
 /* Empty model slot: every provider's mark, greyed and inert. */
 .model__marks {
   display: inline-flex;

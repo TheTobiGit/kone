@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, globalShortcut, Menu, nativeTheme, net, protocol, session, shell } from "electron";
+import { app, BrowserWindow, globalShortcut, Menu, nativeTheme, net, protocol, shell } from "electron";
 
 import { getAgentService, prepareQuitResumeForQuit, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
@@ -70,25 +70,6 @@ const PROD_CSP = [
   "frame-src 'none'",
 ].join("; ");
 
-function applyProductionCsp() {
-  // Backup for anything served over app:// that doesn't go through
-  // registerAppProtocol's header injection below (fetch() from the renderer,
-  // …). Skips when a CSP is already present so the two never stack.
-  session.defaultSession.webRequest.onHeadersReceived(
-    { urls: ["app://*"] },
-    (details, callback) => {
-      const headers = { ...details.responseHeaders };
-      const hasCsp = Object.keys(headers).some(
-        (name) => name.toLowerCase() === "content-security-policy",
-      );
-      if (!hasCsp) {
-        headers["Content-Security-Policy"] = [PROD_CSP];
-      }
-      callback({ responseHeaders: headers });
-    },
-  );
-}
-
 let mainWindow: BrowserWindow | null = null;
 
 protocol.registerSchemesAsPrivileged([
@@ -147,9 +128,7 @@ function registerAppProtocol() {
     }
 
     const res = await net.fetch(pathToFileURL(filePath).toString());
-    // Serve every renderer file with the production CSP. Done here (rather
-    // than only in onHeadersReceived) so the policy holds even if the
-    // webRequest hook ever stops firing for protocol.handle responses.
+    // Serve every renderer file with the production CSP.
     const headers = new Headers(res.headers);
     if (!headers.has("Content-Security-Policy")) {
       headers.set("Content-Security-Policy", PROD_CSP);
@@ -259,12 +238,6 @@ async function createWindow() {
   if (devIcon && process.platform !== "darwin") windowOptions.icon = devIcon;
 
   mainWindow = new BrowserWindow(windowOptions);
-  // Linux/Windows: drop Electron's default File/Edit/View menu so the window
-  // matches macOS (global bar) and Windows frameless — no in-window menu row.
-  // autoHideMenuBar above hides it; nulling removes it entirely, including
-  // the Alt-to-reveal path.
-  mainWindow.setMenu(null);
-  mainWindow.setMenuBarVisibility(false);
 
   // Remember size / position between launches.
   if (windowState.isMaximized) {
@@ -378,14 +351,13 @@ if (gotSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
-    // macOS keeps its global File/Edit/View bar; everywhere else the default
-    // Electron menu is just the in-window row from the screenshot — remove it.
+    // macOS keeps its global menu bar; everywhere else the default menu has
+    // no home, so remove it once for the whole app.
     if (process.platform !== "darwin") {
       Menu.setApplicationMenu(null);
     }
     if (!isDev) {
       registerAppProtocol();
-      applyProductionCsp();
     }
     registerAttachmentProtocol();
 

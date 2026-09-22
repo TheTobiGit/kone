@@ -48,11 +48,13 @@ export const liveAttention = computed<LiveAttentionItem[]>(() => {
       if (!attention) continue;
       const threadId = s.threadId.value;
       if (!threadId) continue;
+      const provider = s.provider.value;
+      if (!provider) continue;
       out.push({
         key: s.key,
         threadId,
         title: s.title.value,
-        provider: s.provider.value,
+        provider,
         model: s.model.value,
         projectPath,
         kind: attention.kind,
