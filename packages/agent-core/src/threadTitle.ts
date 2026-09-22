@@ -105,6 +105,26 @@ export function canReplaceThreadTitle(
   return seed !== undefined && seed.length > 0 ? trimmed === seed : false;
 }
 
+/** Decide whether a provider-proposed title may replace the thread's current
+ *  one. A provider names the conversation from the first prompt it saw, which
+ *  is only the user's first message on a brand-new thread — on a resume or a
+ *  hand-in it is the replay bootstrap, so the proposal would name the
+ *  bootstrap rather than the conversation. The gate is therefore history, not
+ *  the title text: accept only while no turn has settled yet, so a new thread
+ *  keeps the provider's nicer title even though it already sits on the
+ *  word-cap fallback, and a thread with answers keeps its own title. A
+ *  settled turn also stops the provider re-naming the thread on later turns.
+ *  Returns the cleaned title to persist, or null when the proposal is
+ *  dropped. */
+export function acceptProviderThreadTitle(input: {
+  hasSettledTurn: boolean;
+  proposedTitle: string;
+}): string | null {
+  if (input.hasSettledTurn) return null;
+  const cleaned = truncateThreadTitle(input.proposedTitle);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 function buildThreadTitlePrompt(message: string): string {
   return [
     "You generate concise chat thread titles.",

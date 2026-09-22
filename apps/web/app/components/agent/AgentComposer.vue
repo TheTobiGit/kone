@@ -380,10 +380,15 @@ const currentWindow = computed(() => {
 });
 
 const desc = computed(() => describeModelId(props.modelId, catalog.value));
+// Display resolves through the strict description while an id is pinned — the
+// family falls back to the first entry, which would name a model that never
+// ran for a stale id. With no id pinned the family's default still stands.
 const modelName = computed(
-  () => currentFamily.value?.label ?? (props.modelId ? desc.value.name : "Default model"),
+  () => (props.modelId ? desc.value.name : (currentFamily.value?.label ?? "Default model")),
 );
-const modelBrand = computed(() => currentFamily.value?.brand ?? desc.value.brand);
+const modelBrand = computed(
+  () => (props.modelId ? desc.value.brand : (currentFamily.value?.brand ?? desc.value.brand)),
+);
 
 // The model name opens the full picker (hosted by the parent); the composer
 // only displays the current family + brand. With nothing to switch to the slot

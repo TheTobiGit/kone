@@ -47,6 +47,30 @@ function importedAssistant(text: string, at = 2): StoredBlock {
   };
 }
 
+function nativeToolOnly(text: string, name: string, at: number): StoredBlock {
+  return {
+    id: `nt-${at}`,
+    role: "assistant",
+    turnId: `ntt-${at}`,
+    items: [{ itemId: `nt-${at}-tool`, kind: "tool_call", status: "completed", name, text }],
+    state: "completed",
+    at,
+    endedAt: at,
+  };
+}
+
+function nativeEmpty(at: number): StoredBlock {
+  return {
+    id: `ne-${at}`,
+    role: "assistant",
+    turnId: `net-${at}`,
+    items: [],
+    state: "completed",
+    at,
+    endedAt: at,
+  };
+}
+
 function nativeBlock(at: number): StoredBlock {
   return { id: `n-${at}`, role: "user", text: "native prompt", at };
 }
@@ -204,6 +228,49 @@ describe("buildSidechatForkContext", () => {
     expect(context).toContain("- User: Initial task");
     expect(context).toContain("Most recent imported messages:");
     expect(context).toContain("User:\nRecent task 2");
+  });
+
+  test("a tool-only turn replays as a one-line note, not an empty stanza", () => {
+    // Native rows keep their items (the hand-in replay and edit forks read
+    // them), so the tools a silent turn ran can still be named at replay time.
+    const context = buildSidechatForkContext(
+      thread([
+        { id: "u-1", role: "user", text: "migrate the db", at: 1 },
+        nativeToolOnly("src/schema.prisma", "Edit", 2),
+      ]),
+      SIDECHAT_TRANSCRIPT_CHAR_BUDGET,
+      undefined,
+      () => true,
+    );
+    expect(context).toContain("User:\nmigrate the db");
+    expect(context).toContain("Edit(src/schema.prisma)");
+    expect(context).toContain("[No written summary");
+  });
+
+  test("a genuinely empty block is skipped from the replay", () => {
+    const context = buildSidechatForkContext(
+      thread([
+        { id: "u-1", role: "user", text: "migrate the db", at: 1 },
+        nativeEmpty(2),
+      ]),
+      SIDECHAT_TRANSCRIPT_CHAR_BUDGET,
+      undefined,
+      () => true,
+    );
+    expect(context).toContain("User:\nmigrate the db");
+    expect(context).not.toContain("Assistant:");
+  });
+
+  test("several tool-only turns respect the shared budget", () => {
+    const blocks: StoredBlock[] = [{ id: "u-0", role: "user", text: "do it all", at: 0 }];
+    for (let i = 1; i <= 12; i++) {
+      blocks.push(nativeToolOnly(`src/module-${i}.ts with a long trailing argument tail`, "Edit", i));
+    }
+    const context = buildSidechatForkContext(thread(blocks, "Big migration"), 2_000, undefined, () => true);
+    expect(context).not.toBeNull();
+    expect(context && context.length).toBeLessThanOrEqual(2_000);
+    // The newest work survives the squeeze.
+    expect(context).toContain("src/module-12.ts");
   });
 });
 

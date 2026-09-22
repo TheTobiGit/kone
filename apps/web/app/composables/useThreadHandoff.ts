@@ -41,6 +41,10 @@ export type HandoffOptions = {
   target: HandoffTarget;
   /** Title override (default: the source thread's title). */
   title?: string;
+  /** Cut the copied transcript off after this block instead of carrying the
+   *  whole thread. Set when branching from one reply, so the new thread ends
+   *  on it and the next turn continues from there. */
+  throughBlockId?: string;
 };
 
 export type HandoffResult = {
@@ -57,9 +61,11 @@ export type HandoffResult = {
  *  twice rapidly for the same source + target yields one handoff; the second
  *  call resolves with the same thread id once the first settles. */
 export async function createHandoff(options: HandoffOptions): Promise<HandoffResult> {
-  const { sourceThreadId, target, title } = options;
+  const { sourceThreadId, target, title, throughBlockId } = options;
   const api = window.koneDesktop?.agent;
-  const flightKey = `${sourceThreadId}:${target.provider}:${target.model ?? ""}`;
+  // The anchor is part of the key: two branches off the same thread to the
+  // same target are different threads, and must not join each other's flight.
+  const flightKey = `${sourceThreadId}:${target.provider}:${target.model ?? ""}:${throughBlockId ?? ""}`;
 
   const existing = flights.get(flightKey);
   if (existing) {
@@ -84,6 +90,7 @@ export async function createHandoff(options: HandoffOptions): Promise<HandoffRes
     if (target.model) input.target.model = target.model;
     if (target.effort) input.target.effort = target.effort;
     if (title?.trim()) input.title = title.trim();
+    if (throughBlockId) input.throughBlockId = throughBlockId;
     const result: CreateHandoffResult = await api.createHandoff(input);
     return { threadId: result.threadId, status: result.status };
   })();

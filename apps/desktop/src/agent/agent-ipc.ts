@@ -64,18 +64,20 @@ import {
 import { localSpendForProvider } from "@kone/agent-core/quota/localSpend.js";
 import { createSidechatThread } from "@kone/agent-core/sidechat.js";
 import { createHandoffThread } from "@kone/agent-core/handoff.js";
+import { handInThread } from "@kone/agent-core/handIn.js";
 import { exportThread } from "@kone/agent-core/threadExport.js";
 import {
   parseThreadExportFormat,
   type ThreadExportDialogResult,
 } from "@kone/protocol/thread-export";
 import { getSpawnEngine, initSpawnEngine } from "@kone/agent-core/threadSpawn.js";
-import { truncateThreadTitle } from "@kone/agent-core/threadTitle.js";
+import { acceptProviderThreadTitle, truncateThreadTitle } from "@kone/agent-core/threadTitle.js";
 import type { UsageRange } from "@kone/agent-core/usage/report.js";
 import { buildAgentUsageReport } from "@kone/agent-core/usage/buildUsageReport.js";
 import type {
   ApprovalDecision,
   CreateHandoffInput,
+  HandInInput,
   CreateSideChatInput,
   ForkThreadAtBlockInput,
   ProviderConfig,
@@ -419,6 +421,28 @@ export function registerAgentIpc(): void {
    *  spawning turn's id for a spawned child's events, registered at dispatch —
    *  F10). */
   function broadcast(event: RuntimeEvent, journal = true): void {
+    // A provider naming the conversation itself (the self-naming adapters'
+    // `session_info_update`) is only trustworthy while the thread has never
+    // been answered: on a resume or a hand-in the provider's "first prompt"
+    // is the replay bootstrap, so its proposal names the bootstrap rather
+    // than the conversation. The gate is a settled turn — not the title text,
+    // and not the mere presence of an assistant block, whose running row
+    // already exists by the time the title arrives and so cannot tell a first
+    // turn from a later one. kone.store titles — the first-turn fallback, the
+    // background generated rename, a user rename — always pass through. An
+    // accepted proposal persists through the rename path so the store and the
+    // UI agree; anything else is dropped, so a thread with answers keeps its
+    // title and a provider cannot re-name it on later turns.
+    if (event.type === "thread.title.updated" && event.source !== "kone.store") {
+      const accepted = acceptProviderThreadTitle({
+        hasSettledTurn: store.hasSettledAssistantTurn(event.threadId),
+        proposedTitle: event.title,
+      });
+      if (!accepted) return;
+      store.renameThread(event.threadId, accepted);
+      event = { ...event, title: accepted };
+      journal = false;
+    }
     let stamped: RuntimeEvent;
     if (event.eventId !== undefined && event.parentTurnId !== undefined) {
       stamped = event;
@@ -746,6 +770,22 @@ export function registerAgentIpc(): void {
   // Handoff links leaving a source thread, oldest first — the timeline's
   // "Handed to" markers. Few rows ever (one per handoff), so this is always
   // the full list, never a page.
+  // Hand a live thread to another provider/model without leaving it: the
+  // thread id, title and transcript all survive and only the provider
+  // session underneath is replaced. Mirrors agent:create-handoff, minus the
+  // new thread — so there is no renderer-minted id and no idempotency key,
+  // because the thread already exists and IS the key.
+  ipcMain.handle("agent:hand-in", (_event, input: HandInInput) =>
+    handInThread(svc, input),
+  );
+
+  // Every time a thread changed hands, oldest first — the timeline's
+  // "changed hands" markers. Few rows ever (one per swap), so this is always
+  // a whole read.
+  ipcMain.handle("agent:history-hand-ins", (_event, threadId: string) =>
+    store.handInsForThread(threadId),
+  );
+
   ipcMain.handle("agent:history-handoffs", (_event, sourceThreadId: string) =>
     store.handoffsFromSource(sourceThreadId),
   );

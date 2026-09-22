@@ -16,7 +16,7 @@ import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
-import type { ChatAttachment, CompactionRecord, ForkContext, HandoffLink, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
+import type { ChatAttachment, CompactionRecord, ForkContext, HandInRecord, HandoffLink, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
 import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
@@ -55,6 +55,8 @@ export class ConversationStore implements CheckpointStore {
       touch: (db, threadId, at) => this.threads.touch(db, threadId, at),
       completeSidechatBootstrap: (db, threadId) =>
         this.lineage.completeSidechatBootstrap(db, threadId),
+      completeHandInBootstrap: (db, threadId) =>
+        this.lineage.completeHandInBootstrap(db, threadId),
     });
     this.threadLifecycle = new ThreadLifecycleRepo(this.dbh, {
       forgetConversationIds: (ids) => this.events.forgetConversationIds(ids),
@@ -431,6 +433,11 @@ export class ConversationStore implements CheckpointStore {
     return this.transcript.hasNativeAssistantTurn(threadId);
   }
 
+  /** @see TranscriptRepo */
+  hasSettledAssistantTurn(threadId: string): boolean {
+    return this.transcript.hasSettledAssistantTurn(threadId);
+  }
+
   /** @see LineageRepo */
   threadForkContext(threadId: string): ForkContext | null {
     return this.lineage.threadForkContext(threadId);
@@ -439,6 +446,21 @@ export class ConversationStore implements CheckpointStore {
   /** Every handoff forked from a source thread, oldest first. @see LineageRepo */
   handoffsFromSource(sourceThreadId: string): HandoffLink[] {
     return this.lineage.handoffsFromSource(sourceThreadId);
+  }
+
+  /** Record that a thread changed hands and retarget its row. @see LineageRepo */
+  writeHandIn(input: Parameters<LineageRepo["writeHandIn"]>[0]): HandInRecord | null {
+    return this.lineage.writeHandIn(input);
+  }
+
+  /** Every time this thread changed hands, oldest first. @see LineageRepo */
+  handInsForThread(threadId: string): HandInRecord[] {
+    return this.lineage.handInsForThread(threadId);
+  }
+
+  /** The hand-in still waiting to bootstrap its new session. @see LineageRepo */
+  pendingHandIn(threadId: string): HandInRecord | null {
+    return this.lineage.pendingHandIn(threadId);
   }
 
   /** @see LineageRepo */

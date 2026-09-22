@@ -8,13 +8,21 @@ import {
   Cancel01Icon,
   Copy01Icon,
   Folder01Icon,
+  GitForkIcon,
   Note01Icon,
   PencilEdit01Icon,
   RefreshIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
-import type { ChatAttachment, CompactionRecord, ForkContext, RuntimeItem, TurnCheckpointRecord } from "~/types/desktop";
+import type {
+  ChatAttachment,
+  CompactionRecord,
+  ForkContext,
+  HandInRecord,
+  RuntimeItem,
+  TurnCheckpointRecord,
+} from "~/types/desktop";
 import { groupCompactionMarkers } from "~/utils/compactionMarkers";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -26,12 +34,15 @@ import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
+import HandInMark from "~/components/conversation/HandInMark.vue";
+import { collapseHandInMarks, deriveHandInMarks } from "~/utils/handInMarkers";
 import TurnSettingMark from "~/components/conversation/TurnSettingMark.vue";
 import HandoffMark from "~/components/conversation/HandoffMark.vue";
 import JevMark from "~/components/conversation/JevMark.vue";
 import { jevRouteFor } from "~/utils/jevRoutes";
 import { useHandoffMarks } from "~/composables/useHandoffMarks";
 import { groupHandoffMarks } from "~/utils/handoffMarkers";
+import type { EffortTier } from "~/utils/modelCatalog";
 import { deriveTurnSettingMarks, type TurnSettingChange } from "~/utils/turnSettingMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
@@ -85,6 +96,14 @@ const props = defineProps<{
    *  `open-thread` somewhere (the studio does; inbox readers and the house
    *  assistant don't) — an unrouted jump would be a button that goes nowhere. */
   linkHandoffs?: boolean;
+  /** Every time this thread changed hands, oldest first. Owned by the session
+   *  so the strip header and these markers never disagree; absent on surfaces
+   *  that cannot hand a thread in. */
+  handIns?: HandInRecord[];
+  /** Offer the per-reply Fork control. Off unless the host can actually open
+   *  the branch it mints (the studio can; inbox readers and the house
+   *  assistant can't) — the same reasoning that gates `linkHandoffs`. */
+  allowBranch?: boolean;
   /** Ticking clock from useAgent, so "working · Xs" counts up live. */
   now: number;
   /** Strip column key — forwarded with scratchpad captures. */
@@ -158,6 +177,10 @@ const emit = defineEmits<{
   /** Load the next older page of a windowed stored thread and prepend it. The
    *  host owns the fetch (session.loadOlder); the thread only asks. */
   "load-older": [];
+  /** Branch a new thread off a settled assistant reply: the new thread ends
+   *  with that reply, so the next turn continues from it. The source is never
+   *  mutated. The host owns picking the target model and opening the branch. */
+  "branch-fork": [blockId: string];
   /** Jump to a thread linked from the handoff footer. The host owns
    *  panes/sessions and opens (or focuses) it. */
   "open-thread": [threadId: string];
@@ -171,6 +194,7 @@ const { cue } = useSound();
  *  outright by seeding nothing. */
 const agent = computed(() => agentIdentity(props.house ? null : props.agentSeed));
 const allowScratchpad = computed(() => props.scratchpad ?? !props.house);
+const allowBranch = computed(() => props.allowBranch ?? false);
 
 // Warm the Markdown parser on mount: markdown-it is code-split behind a dynamic
 // import, so the very first streamed reply would otherwise flash raw source for a
@@ -708,6 +732,25 @@ function handoffMarksFor(key: string) {
   return groupedHandoffMarks.value.byExchange.get(key) ?? [];
 }
 
+/** Hand-in markers — where this thread changed hands without changing
+ *  threads. Filed onto exchanges by the same march as the handoff marks, and
+ *  gated on the same host capability: a surface that cannot hand a thread in
+ *  has none to show. */
+const handInMarks = computed(() => deriveHandInMarks(props.handIns ?? []));
+const groupedHandInMarks = computed(() =>
+  groupHandoffMarks(
+    handInMarks.value,
+    allExchanges.value.map((ex) => ({ key: ex.key, firstAt: ex.blocks[0]?.at })),
+  ),
+);
+/** Deliberately no trailing bucket, unlike the handoff marks. A handoff has
+ *  somewhere to point the moment it happens; a hand-in is a statement about
+ *  the turns that follow it, so it stays invisible until one arrives — the
+ *  same rule the per-request setting markers follow. */
+function handInMarksFor(key: string) {
+  return collapseHandInMarks(groupedHandInMarks.value.byExchange.get(key) ?? []);
+}
+
 /** Model and reasoning-effort switches derived from the per-request stamps
  *  the send path leaves on user blocks: a switch renders above the exchange
  *  whose request introduced it. Computed over the full exchange list so a
@@ -718,7 +761,18 @@ const turnSettingMarks = computed(() => deriveTurnSettingMarks(allExchanges.valu
  *  — a `v-if` plus a non-null `:mark` would look it up twice per render. */
 function turnSettingMarkFor(key: string): TurnSettingChange[] {
   const mark = turnSettingMarks.value.get(key);
-  return mark ? [mark] : [];
+  if (!mark) return [];
+  // A hand-in row absorbs this exchange's switch entirely — it names both
+  // models and carries the tier inside its own legs — so the setting marker
+  // stands down rather than repeating it on a second line.
+  return handInMarksFor(key).length > 0 ? [] : [mark];
+}
+
+/** The tier change a hand-in on this exchange should carry in its legs. Read
+ *  from the same per-request stamps the setting marker uses, so the two can
+ *  never disagree about what the turn ran at. */
+function handInEffortFor(key: string): { from: EffortTier; to: EffortTier } | undefined {
+  return turnSettingMarks.value.get(key)?.effort;
 }
 
 /**
@@ -1104,6 +1158,12 @@ watch(
       <!-- The switch the new request introduced: the model, the tier, or both
            changed before this request was sent, so the one marker that says so
            precedes the request. -->
+      <HandInMark
+        v-for="m in handInMarksFor(ex.key)"
+        :key="`hand-in-${m.key}`"
+        :mark="m"
+        :effort="handInEffortFor(ex.key)"
+      />
       <TurnSettingMark
         v-for="mark in turnSettingMarkFor(ex.key)"
         :key="`turn-setting-${ex.key}`"
@@ -1482,6 +1542,17 @@ watch(
             >
               <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
               <span>Scratchpad</span>
+            </button>
+            <button
+              v-if="allowBranch && block.state === 'completed' && assistantText(block)"
+              type="button"
+              class="foot__copy"
+              :disabled="busy"
+              aria-label="Fork a new thread from this reply"
+              @click="emit('branch-fork', block.id)"
+            >
+              <HugeiconsIcon :icon="GitForkIcon" :size="13" :stroke-width="2" />
+              <span>Fork</span>
             </button>
             <TurnCheckpointRestore
               v-if="hasCheckpoint(block) && props.threadId"

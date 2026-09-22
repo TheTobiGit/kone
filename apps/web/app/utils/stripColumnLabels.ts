@@ -30,6 +30,35 @@ export function isHandoff(c: Pane): boolean {
   return c.session.forkContext?.value?.forkKind === "handoff";
 }
 
+/** Every set of hands this thread has actually been worked by, oldest first.
+ *  A hand-in is not a handoff: the thread did not go anywhere, it was picked
+ *  up by somebody else — so the header lists the hands rather than drawing a
+ *  transition arrow to another thread.
+ *
+ *  A swap only counts once a turn has landed under it, the same rule the
+ *  timeline marker follows. Choosing a provider stages it; until something is
+ *  actually sent, those hands have answered nothing and the header would be
+ *  claiming work that never happened. Empty when the thread has never changed
+ *  hands, which is the ordinary case and wants the plain single mark. */
+export function threadHands(c: Pane): BrandKey[] {
+  if (c.kind !== "thread" || !c.session) return [];
+  // Optional-chained: test doubles cast partial sessions, and only a live
+  // session carries its hand-in history.
+  const records = c.session.handInRecords?.value ?? [];
+  const first = records[0];
+  if (!first) return [];
+  const blocks = c.session.timelineBlocks?.value ?? [];
+  const answered = (at: number): boolean => blocks.some((b) => b.at > at);
+  const brands: BrandKey[] = [SESSION_BRAND[first.fromProvider] ?? "generic"];
+  for (const record of records) {
+    if (!answered(record.at)) continue;
+    const brand = SESSION_BRAND[record.toProvider] ?? "generic";
+    // A thread handed back to hands it already sits in adds nothing to read.
+    if (brand !== brands[brands.length - 1]) brands.push(brand);
+  }
+  return brands;
+}
+
 /** The handed-off-from brand for a handoff column. "generic" when the context
  *  names no source (a row written before provenance existed) — the arrow
  *  still reads, just without a vendor mark. */

@@ -288,6 +288,40 @@ export class TranscriptRepo {
     }
   }
 
+  /** Whether the thread has a settled (answered) turn yet — an assistant
+   *  block in a terminal state. Presence alone cannot answer that: the running
+   *  turn's own block already exists while its provider is still working, so a
+   *  first turn and a later one look identical to hasNativeAssistantTurn. Only
+   *  a settled turn means the provider has answered before, which is what
+   *  tells a brand-new conversation apart from a resumed or handed-in one.
+   *
+   *  Deliberately NOT filtered by source, unlike hasNativeAssistantTurn. A
+   *  handoff or branch thread's whole transcript is fork-imported history the
+   *  provider did not produce, and its first turn is the bootstrap replay —
+   *  so imported settled blocks must count here, or the provider would name
+   *  the thread after the bootstrap. Do not re-add the native filter: the two
+   *  predicates answer different questions on purpose. */
+  hasSettledAssistantTurn(threadId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      const row = db
+        .prepare(
+          `SELECT 1 FROM blocks
+            WHERE thread_id = ? AND role = 'assistant'
+              AND state IN ('completed', 'failed', 'interrupted')
+            LIMIT 1`,
+        )
+        .get(threadId);
+      // Nullish, not undefined-only: node:sqlite answers a miss with
+      // undefined while bun:sqlite answers null.
+      return row != null;
+    } catch (err) {
+      console.error("[conversation-store] hasSettledAssistantTurn failed:", err);
+      return false;
+    }
+  }
+
   /** The most recent assistant block's narrative text — its `assistant_text`
    *  items concatenated in arrival order, trimmed. This is what becomes the
    *  child's summary, so it is the narrative only: reasoning, plan and tool

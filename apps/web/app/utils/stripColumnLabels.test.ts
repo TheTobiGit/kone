@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ref } from "vue";
 
 import type { ThreadSession } from "~/composables/useAgent";
-import type { ForkContext, ProviderKind, ProviderStatus } from "~/types/desktop";
+import type { ForkContext, HandInRecord, ProviderKind, ProviderStatus } from "~/types/desktop";
 import type { Pane } from "~/types/studio";
 import {
   brandOf,
@@ -13,6 +13,7 @@ import {
   hasScratchpadPane,
   isHandoff,
   readCompactProps,
+  threadHands,
 } from "./stripColumnLabels";
 
 // These tests pin the strip's column-chrome reads: the brand mark, the header
@@ -217,5 +218,69 @@ describe("buildCompactBySession / readCompactProps", () => {
   test("a missing key reads as no props", () => {
     const map = buildCompactBySession([threadPane("a", threadSession("k1"))], []);
     expect(readCompactProps(map, "gone")).toEqual({});
+  });
+});
+
+/** A session that has changed hands, with a timeline to say which of those
+ *  swaps a turn has actually landed under. */
+function handInSession(
+  records: HandInRecord[],
+  blockTimes: number[] = [],
+): ThreadSession {
+  const fake = {
+    key: "k-hand-in",
+    provider: ref<ProviderKind>("claudeAgent"),
+    title: ref<string>(""),
+    isSideChat: ref<boolean>(false),
+    forkContext: ref<ForkContext | null>(null),
+    blocks: ref<Array<{ role: string }>>([]),
+    timelineBlocks: ref(blockTimes.map((at) => ({ at }))),
+    handInRecords: ref<HandInRecord[]>(records),
+    busy: ref<boolean>(false),
+    queuedTurns: ref<Array<unknown>>([]),
+    compacting: ref<boolean>(false),
+    compactError: ref<string | null>(null),
+    compactThread: () => {},
+  };
+  // SAFETY: threadHands reads only handInRecords and timelineBlocks; the rest
+  // stands in for the fields the sibling label helpers touch.
+  return fake as ThreadSession;
+}
+
+function handIn(from: ProviderKind, to: ProviderKind, at: number): HandInRecord {
+  return { threadId: "t1", fromProvider: from, toProvider: to, at };
+}
+
+describe("threadHands", () => {
+  test("a thread that never changed hands wants the plain single mark", () => {
+    expect(threadHands(threadPane("a", threadSession("k1")))).toEqual([]);
+  });
+
+  test("a staged swap with nothing sent yet still reads as the old hands", () => {
+    // The record exists the moment the provider is picked; no turn has landed
+    // under it, so the header must not claim the new hands answered anything.
+    const session = handInSession([handIn("opencode", "claudeAgent", 500)], [100, 200]);
+    expect(threadHands(threadPane("a", session))).toEqual(["opencode"]);
+  });
+
+  test("once a turn lands under the swap both hands read", () => {
+    const session = handInSession([handIn("opencode", "claudeAgent", 500)], [100, 600]);
+    expect(threadHands(threadPane("a", session))).toEqual(["opencode", "claude"]);
+  });
+
+  test("only the swaps that were answered count", () => {
+    const session = handInSession(
+      [handIn("opencode", "claudeAgent", 300), handIn("claudeAgent", "cursor", 900)],
+      [100, 400],
+    );
+    expect(threadHands(threadPane("a", session))).toEqual(["opencode", "claude"]);
+  });
+
+  test("handing back to hands it already sits in does not repeat a mark", () => {
+    const session = handInSession(
+      [handIn("opencode", "claudeAgent", 300), handIn("claudeAgent", "opencode", 500)],
+      [100, 400, 600],
+    );
+    expect(threadHands(threadPane("a", session))).toEqual(["opencode", "claude", "opencode"]);
   });
 });
