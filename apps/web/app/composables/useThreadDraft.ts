@@ -29,8 +29,9 @@ export function useThreadDraft(projectPath: MaybeRefOrGetter<string>) {
 
   // Seeded from the same keys the studio's boot restore reads, in the same
   // order — last used model choice wins for subsequent sessions, falling back to
-  // the user's configured default in Settings.
-  const provider = ref<ProviderKind>(bootProvider());
+  // the user's configured default in Settings. Null when no provider is active,
+  // so there is no model either (filled in once a ready provider reports).
+  const provider = ref<ProviderKind | null>(bootProvider());
   const model = ref<string | undefined>(bootModel());
   const reasoning = ref<EffortTier | undefined>(bootReasoning());
   const mode = ref<InteractionMode>(bootMode(path) ?? "accept-edits");

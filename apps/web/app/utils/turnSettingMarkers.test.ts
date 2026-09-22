@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ThreadBlock } from "~/composables/agentTypes";
+import { buildModelCatalog } from "~/utils/modelCatalog";
 import {
   deriveTurnSettingMarks,
   turnSettingChangeLabel,
@@ -126,6 +127,46 @@ describe("deriveTurnSettingMarks", () => {
   test("empty inputs mark nothing", () => {
     expect(deriveTurnSettingMarks([]).size).toBe(0);
   });
+
+  test("a placeholder model stamp reads as unstamped, not as a switch", () => {
+    // A request running the provider's own default spells it `default` rather
+    // than omitting the stamp — naming it would render a model that points at
+    // nothing, so the first real model after it sets the baseline silently.
+    const marks = deriveTurnSettingMarks([
+      exchange("a", [user("u1", { model: "default" })]),
+      exchange("b", [user("u2", { model: "claude-sonnet-5" })]),
+    ]);
+    expect(marks.size).toBe(0);
+  });
+
+  test("switching back to the provider default marks nothing", () => {
+    const marks = deriveTurnSettingMarks([
+      exchange("a", [user("u1", { model: "claude-opus-5" })]),
+      exchange("b", [user("u2", { model: "default" })]),
+    ]);
+    expect(marks.size).toBe(0);
+  });
+
+  test("a placeholder between two real models does not move the baseline", () => {
+    const marks = deriveTurnSettingMarks([
+      exchange("a", [user("u1", { model: "claude-opus-5" })]),
+      exchange("b", [user("u2", { model: "default" })]),
+      exchange("c", [user("u3", { model: "claude-sonnet-5" })]),
+    ]);
+    expect(marks.size).toBe(1);
+    expect(marks.get("c")).toEqual({
+      key: "c",
+      model: { from: "claude-opus-5", to: "claude-sonnet-5" },
+    });
+  });
+
+  test("effort on a placeholder-stamped request still marks on its own axis", () => {
+    const marks = deriveTurnSettingMarks([
+      exchange("a", [user("u1", { effort: "medium", model: "default" })]),
+      exchange("b", [user("u2", { effort: "high", model: "default" })]),
+    ]);
+    expect(marks.get("b")).toEqual({ key: "b", effort: { from: "medium", to: "high" } });
+  });
 });
 
 describe("turnSettingVerb", () => {
@@ -172,6 +213,19 @@ describe("turnSettingChangeLabel", () => {
     expect(label.endsWith("· High")).toBe(true);
   });
 
+  test("a stale stamp prettifies instead of borrowing the live catalog's first name", () => {
+    const catalog = buildModelCatalog([{ id: "claude-opus-5", label: "Claude Opus 5" }]);
+    const change = { key: "a", model: { from: "claude-opus-5", to: "gpt-9-futura" } };
+    expect(turnSettingLeg(change, "from", catalog).model).toEqual({
+      brand: "claude",
+      name: "Claude Opus 5",
+    });
+    expect(turnSettingLeg(change, "to", catalog).model).toEqual({
+      brand: "gpt",
+      name: "GPT 9 Futura",
+    });
+  });
+
   test("the spoken name and the rendered leg come from one resolver", () => {
     // The marker renders turnSettingLeg; the accessible name is built from the
     // same call, so a catalog rename can never move one without the other.
@@ -188,3 +242,4 @@ describe("turnSettingChangeLabel", () => {
     }
   });
 });
+

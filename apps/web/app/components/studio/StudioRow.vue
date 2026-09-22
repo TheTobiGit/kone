@@ -15,13 +15,12 @@ import type {
 import type { Project } from "~/composables/useProject";
 import type { StudioDestination } from "~/types/studio";
 import type { GitRemote } from "~/types/desktop";
-import { buildModelCatalog, effortForTier, familyForId, isEffortTier } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
   bootMode,
   bootModel,
   bootProvider,
-  bootReasoning,
   DEFAULT_MODE_KEY,
   DEFAULT_MODEL_KEY,
   DEFAULT_PROVIDER_KEY,
@@ -31,7 +30,10 @@ import {
   PROVIDER_BRAND,
   PROVIDER_KEY,
   PROVIDER_VENDOR,
+  readLastUsed,
+  readUserDefault,
   REASONING_KEY,
+  resolveSessionModelSelection,
   setLastUsedModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
@@ -47,7 +49,7 @@ import {
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
-import { createHandoff } from "~/composables/useThreadHandoff";
+import { createHandoff, type HandoffOptions } from "~/composables/useThreadHandoff";
 import { agentForThread } from "~/utils/agents";
 import { JEV_ROUTER_ID, routingReceipt } from "~/utils/agentRouting";
 import { compactPropsForSession } from "~/utils/compactAvailability";
@@ -321,7 +323,7 @@ const activePaneIsThread = computed(() => focusedThread.value !== null);
  *  The first block is the point of no return for both. */
 const threadIsBlank = computed(() => (focusedThread.value?.blocks.value.length ?? 0) === 0);
 // Why the focused thread's provider can't take a turn, or null. Drives both the
-// banner and the composer's refusal, so the two can never disagree.
+// composer's top strip and its send refusal, so the two can never disagree.
 const sendBlockedReason = computed(() => focusedThread.value?.sendBlockedReason.value ?? null);
 const sendBlockedStatus = computed(() => {
   const provider = focusedThread.value?.provider.value;
@@ -485,8 +487,13 @@ function openEditFork(paneId: string, blockId: string, text: string): void {
 // handoff mode for the source thread; the pick confirms the target and the
 // handoff opens as a column beside the source. The source column is never
 // touched — it keeps running where it is. Refused while the source is busy
-// (handing off would copy a moving transcript).
-const handoffPaneId = ref<string | null>(null);
+// (handing off would copy a moving transcript). A branch is the same intent
+// cut short at one reply, so the pending pick carries its kind once rather
+// than a handoff id plus a separate anchor.
+type PendingContinuation =
+  | { paneId: string; kind: "handoff" }
+  | { paneId: string; kind: "branch"; blockId: string };
+const pendingContinuation = ref<PendingContinuation | null>(null);
 function openHandoffPicker(paneId: string): void {
   const pane = panes.value.find((p) => p.id === paneId);
   if (pane?.kind !== "thread" || !pane.session) return;
@@ -497,10 +504,24 @@ function openHandoffPicker(paneId: string): void {
     return;
   }
   modelPickerOpen.value = false;
-  handoffPaneId.value = paneId;
+  pendingContinuation.value = { paneId, kind: "handoff" };
+}
+function openBranchPicker(paneId: string, blockId: string): void {
+  const pane = panes.value.find((p) => p.id === paneId);
+  if (pane?.kind !== "thread" || !pane.session) return;
+  if (pane.session.busy.value) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before forking.",
+    );
+    return;
+  }
+  modelPickerOpen.value = false;
+  pendingContinuation.value = { paneId, kind: "branch", blockId };
 }
 const handoffSource = computed(() => {
-  const pane = panes.value.find((p) => p.id === handoffPaneId.value);
+  const pending = pendingContinuation.value;
+  if (!pending) return null;
+  const pane = panes.value.find((p) => p.id === pending.paneId);
   if (!pane || pane.kind !== "thread" || !pane.session) return null;
   return {
     paneId: pane.id,
@@ -513,7 +534,7 @@ const handoffSource = computed(() => {
 });
 function closePicker(): void {
   modelPickerOpen.value = false;
-  handoffPaneId.value = null;
+  pendingContinuation.value = null;
 }
 function onPickerSelect(picked: ModelPick): void {
   // One picker, two commits: a handoff pick moves the source thread's
@@ -528,13 +549,19 @@ function onPickerSelect(picked: ModelPick): void {
 }
 async function confirmHandoff(picked: ModelPick): Promise<void> {
   const source = handoffSource.value;
-  handoffPaneId.value = null;
-  if (!source) return;
+  const pending = pendingContinuation.value;
+  pendingContinuation.value = null;
+  if (!source || !pending) return;
   try {
-    const { threadId } = await createHandoff({
+    const base = {
       sourceThreadId: source.threadId,
       target: { provider: picked.provider, model: picked.modelId, effort: picked.tier },
-    });
+    };
+    const options: HandoffOptions =
+      pending.kind === "branch"
+        ? { ...base, kind: "branch", throughBlockId: pending.blockId }
+        : { ...base, kind: "handoff" };
+    const { threadId } = await createHandoff(options);
     const id = await studio.open("thread", { threadId, near: source.paneId });
     if (id) void composerRef.value?.wake();
   } catch (err) {
@@ -845,9 +872,11 @@ function onComposerDraft(text: string): void {
 // The selected agent's pinned model gates what the pickers may offer. No model
 // is unrestricted — every provider and every model stays open. A pinned model
 // is a hard pin: only its provider is offered, and only that one model within
-// it, so the composer can only answer there.
+// it, so the composer can only answer there. Null (no active provider) is never
+// allowed — it means a pick is still needed.
 const capModel = computed<AgentModelRef | null>(() => pickedForProject.value?.capabilities.model ?? null);
-function providerAllowed(p: ProviderKind): boolean {
+function providerAllowed(p: ProviderKind | null): boolean {
+  if (!p) return false;
   return capModel.value === null || capModel.value.provider === p;
 }
 function modelAllowed(provider: ProviderKind, key: string): boolean {
@@ -863,8 +892,10 @@ const catalogs = ref<Partial<Record<ProviderKind, ModelOption[]>>>({});
 // The active provider's catalog feeds the composer's own model name + effort
 // dial, narrowed to the models the selected agent may run. A disallowed current
 // model is moved off by the self-heal watcher above, which reads this list.
+// Null provider (none active) yields no options — no model.
 const modelOptions = computed(() => {
   const provider = agent.provider.value;
+  if (!provider) return [];
   return (catalogs.value[provider] ?? []).filter((m) => modelAllowed(provider, m.key));
 });
 
@@ -1014,43 +1045,36 @@ function applyChatDefaults(): boolean {
   if (!import.meta.client) return false;
   const readyProviders = enabledReady.value;
 
-  const savedProvider =
-    localStorage.getItem(DEFAULT_PROVIDER_KEY) ?? localStorage.getItem(PROVIDER_KEY);
-  const isReady = (p: string | null): p is ProviderKind =>
-    Boolean(p) && readyProviders.some((s) => s.provider === p);
-  const chosen: ProviderKind | undefined = isReady(savedProvider)
-    ? savedProvider
-    : readyProviders.find((s) => s.provider === "codex")?.provider ??
-      readyProviders.find((s) => s.provider === "opencode")?.provider ??
-      readyProviders[0]?.provider;
+  // Single resolver for fresh-install defaults: last-used wins, then the
+  // configured default, then a random ready pick (fresh install only), else
+  // nothing. The random pick persists via setLastUsedModel, so a reactive
+  // re-run reads the stored choice instead of re-rolling.
+  const resolved = resolveSessionModelSelection({
+    lastUsed: readLastUsed(),
+    userDefault: readUserDefault(),
+    availableProviders: readyProviders.map((s) => s.provider),
+    availableCatalogs: catalogs.value,
+    rand: Math.random,
+  });
+  const chosen = resolved.provider;
 
   const providerChanged = Boolean(chosen) && chosen !== agent.provider.value;
-  if (chosen) agent.setProvider(chosen);
-
-  // Model — validate against the (now current) provider's catalog. A stored id
-  // from another provider is dropped rather than ridden onto the wrong CLI.
-  const current = model.value;
-  const owned = (id: string | null | undefined) =>
-    Boolean(id) &&
-    modelOptions.value.some(
-      (o) => o.key === id || o.efforts.some((e) => e.modelId === id),
-    );
-  const savedModel = bootModel();
-  if (owned(savedModel)) {
-    agent.setModel(savedModel!);
-  } else if (owned(current)) {
-    // Already valid for this provider — leave it.
-  } else {
-    const first = modelOptions.value[0];
-    const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-    agent.setModel(eff ? eff.modelId : undefined);
+  if (chosen) {
+    agent.setProvider(chosen);
+  } else if (readyProviders.length === 0) {
+    agent.setProvider(null);
+  }
+  if (resolved.source === "catalog_fallback" && chosen) {
+    setLastUsedModel({ provider: chosen, modelId: resolved.model, tier: resolved.reasoning });
   }
 
-  const savedReasoning = bootReasoning();
-  if (isEffortTier(savedReasoning)) {
-    const fam = familyForId(modelOptions.value, model.value);
-    const eff = effortForTier(fam, savedReasoning);
-    if (eff) agent.setReasoning(eff.tier);
+  // Model and tier come from the same resolution: validated against the
+  // provider's catalog when it has loaded, carried as stored when it has
+  // not yet (so a slow catalog never wipes the choice — the next run after
+  // it lands validates then). With no provider there is no model either.
+  agent.setModel(resolved.model);
+  if (resolved.reasoning) {
+    agent.setReasoning(resolved.reasoning);
   }
 
   // Per-project mode wins; before this project has one, the app-wide default.
@@ -1273,11 +1297,14 @@ watch(
         : undefined,
     );
     if (import.meta.client && id && !capModel.value) {
-      setLastUsedModel({
-        provider: agent.provider.value,
-        modelId: id,
-        tier: reasoning.value,
-      });
+      const p = agent.provider.value;
+      if (p) {
+        setLastUsedModel({
+          provider: p,
+          modelId: id,
+          tier: reasoning.value,
+        });
+      }
     }
   },
   { immediate: true },
@@ -1286,8 +1313,10 @@ watch(
 // Persist the reasoning effort globally (app-wide last-used), like the model id.
 watch(reasoning, (tier) => {
   if (import.meta.client && !capModel.value) {
+    const p = agent.provider.value;
+    if (!p) return;
     setLastUsedModel({
-      provider: agent.provider.value,
+      provider: p,
       modelId: model.value,
       tier,
     });
@@ -1671,6 +1700,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @side-chat="openSideChat"
         @handoff="openHandoffPicker"
         @edit-fork="openEditFork"
+        @branch-fork="openBranchPicker"
         @open-thread="openLinkedThread"
         @insert-column="insertPane"
         @terminal-write="terminal.write"
@@ -1730,13 +1760,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         :class="{ 'composer-dock--open': composerOpen }"
         :inert="blocked"
       >
-        <ProviderHealthBanner
-          class="pointer-events-auto mb-2 w-[min(100%-32px,680px)]"
-          :status="sendBlockedStatus"
-          :reason="sendBlockedReason"
-          :checking="recheckingProviders"
-          @recheck="recheckProviders"
-        />
         <!-- Corner / above-composer dock stack (Tasks + Changes + Subagents) -->
         <Transition
           enter-active-class="transition-opacity duration-150 ease-out"
@@ -1781,6 +1804,8 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :fast-mode="fastActive"
           :context-window="contextWindow"
           :blocked-reason="sendBlockedReason"
+          :health-status="sendBlockedStatus"
+          :health-checking="recheckingProviders"
           :compactable="focusedCompactable"
           :creatable="blankThreadPane === null"
           @send="onSend"
@@ -1800,6 +1825,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           @new-thread="onComposerNewThread"
           @update:open="composerOpen = $event"
           @update:draft="onComposerDraft"
+          @recheck="recheckProviders"
         />
       </div>
     </Transition>

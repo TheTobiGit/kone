@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, globalShortcut, nativeTheme, net, protocol, shell } from "electron";
+import { app, BrowserWindow, globalShortcut, Menu, nativeTheme, net, protocol, shell } from "electron";
 
 import { getAgentService, prepareQuitResumeForQuit, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
@@ -46,6 +46,29 @@ const devServerUrl = process.env.KONE_DEV_SERVER_URL ?? "http://localhost:3001";
  *  child refuses to die in time, the app quits anyway — escalation, in the
  */
 const QUIT_TEARDOWN_TIMEOUT_MS = 3_000;
+
+// Production Content-Security-Policy for the packaged renderer (app://).
+// No "unsafe-eval", no remote scripts: scripts/styles come from the bundle
+// itself ("self"/app:), with "unsafe-inline" kept because Nuxt emits inline
+// <script>/<style> (theme boot script, Vue SFC styles). Images/fonts may also
+// come from attachment:, data:, blob: and https: (avatars, repo logos).
+// Dev (localhost:3001) intentionally gets no CSP — Vite HMR needs
+// unsafe-eval/inline, and the dev warning is silenced via
+// ELECTRON_DISABLE_SECURITY_WARNINGS in scripts/dev.ts instead.
+const PROD_CSP = [
+  "default-src 'self' app:",
+  "script-src 'self' app: 'unsafe-inline'",
+  "style-src 'self' app: 'unsafe-inline' https:",
+  "img-src 'self' app: attachment: data: blob: https:",
+  "font-src 'self' app: data: https:",
+  "connect-src 'self' app: attachment: https:",
+  "media-src 'self' app: attachment: data: blob:",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self' app:",
+  "form-action 'none'",
+  "frame-src 'none'",
+].join("; ");
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -95,7 +118,7 @@ function getDevIconPath() {
 function registerAppProtocol() {
   const rendererRoot = getRendererPath();
 
-  protocol.handle("app", (request) => {
+  protocol.handle("app", async (request) => {
     const filePath = resolveAppProtocolPath(rendererRoot, request.url);
 
     if (filePath === null) {
@@ -104,7 +127,17 @@ function registerAppProtocol() {
       return new Response("Not found", { status: 404 });
     }
 
-    return net.fetch(pathToFileURL(filePath).toString());
+    const res = await net.fetch(pathToFileURL(filePath).toString());
+    // Serve every renderer file with the production CSP.
+    const headers = new Headers(res.headers);
+    if (!headers.has("Content-Security-Policy")) {
+      headers.set("Content-Security-Policy", PROD_CSP);
+    }
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
   });
 }
 
@@ -318,6 +351,11 @@ if (gotSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    // macOS keeps its global menu bar; everywhere else the default menu has
+    // no home, so remove it once for the whole app.
+    if (process.platform !== "darwin") {
+      Menu.setApplicationMenu(null);
+    }
     if (!isDev) {
       registerAppProtocol();
     }

@@ -27,7 +27,6 @@
 
 import { computed, onBeforeUnmount, ref } from "vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
-import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
@@ -268,13 +267,18 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // instant while the reading pane showed a blank frame.
     void agentIdentity(id);
     handedOver.value = true;
+    const handedProvider = provider.value;
+    // Null provider means no active provider — the send gate already refused
+    // such a send above (no block was written), so there is nothing to hand
+    // over. Guarded here for the type rather than a new behavior.
+    if (!handedProvider) return;
     emit(
       "started",
       {
         threadId: id,
         title: s.title.value || "New thread",
-        provider: provider.value,
-        brand: SESSION_BRAND[provider.value],
+        provider: handedProvider,
+        brand: SESSION_BRAND[handedProvider],
         updatedAt: Date.now(),
         projectPath: props.projectPath,
         projectName: props.projectName,
@@ -343,16 +347,10 @@ defineExpose({ focus });
     </div>
 
     <div class="new__dock">
-      <ProviderHealthBanner
-        class="new__banner"
-        :status="composer.sendBlockedStatus.value"
-        :reason="composer.sendBlockedReason.value"
-        :checking="composer.recheckingProviders.value"
-        @recheck="composer.recheckProviders"
-      />
       <!-- no thread yet — nothing exists to compact before the first send,
            so the `/compact` row stays hidden. This pane is the new thread,
-           so the `/new` row stays hidden too. -->
+           so the `/new` row stays hidden too. Health (incl. no provider)
+           rides the composer's own top strip, mirroring the tray below. -->
       <AgentComposer
         ref="composerRef"
         always-open
@@ -377,6 +375,8 @@ defineExpose({ focus });
         :fast-mode="composer.fastMode.value"
         :context-window="composer.contextWindow.value"
         :blocked-reason="composer.sendBlockedReason.value"
+        :health-status="composer.sendBlockedStatus.value"
+        :health-checking="composer.recheckingProviders.value"
         :compactable="false"
         :creatable="false"
         @send="onSend"
@@ -393,6 +393,7 @@ defineExpose({ focus });
         @open-models="composer.openPicker"
         @open-branch="branchOpen = true"
         @update:draft="onComposerDraft"
+        @recheck="composer.recheckProviders"
       />
     </div>
 

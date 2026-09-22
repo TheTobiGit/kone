@@ -23,11 +23,10 @@ describe("titleBarOptions", () => {
   test("win32 drops the frame for renderer-drawn caption buttons", () => {
     expect(titleBarOptions("win32")).toEqual({
       frame: false,
-      autoHideMenuBar: true,
     });
   });
 
-  test("linux keeps the native frame so the OS supplies window buttons", () => {
+  test("linux keeps the native frame with no per-window menu hiding", () => {
     expect(titleBarOptions("linux")).toEqual({});
   });
 });

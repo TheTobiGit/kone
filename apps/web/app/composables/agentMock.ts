@@ -16,7 +16,7 @@ import { titleFromPrompt, uid } from "./agentPrefetch";
 
 export function createMockTurnRunner(deps: {
   threadId: Ref<string>;
-  provider: Ref<ProviderKind>;
+  provider: Ref<ProviderKind | null>;
   sessionState: Ref<RuntimeSessionState>;
   reasoning: Ref<ReasoningTier>;
   blocks: Ref<ThreadBlock[]>;
@@ -96,9 +96,11 @@ export function createMockTurnRunner(deps: {
   }
 
   function base() {
+    const current = provider.value;
+    if (!current) throw new Error("Mock turn requires a provider");
     return {
       threadId: threadId.value,
-      provider: provider.value,
+      provider: current,
       at: Date.now(),
       source: "kone.mock" as const,
     };

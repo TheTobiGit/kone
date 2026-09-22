@@ -431,7 +431,7 @@ export type CreateHandoffInput = {
   /** Overrides the default (the source thread's title — a handoff continues
    *  the same task, so it keeps its name). */
   title?: string;
-};
+} & HandoffCut;
 
 export type CreateHandoffResult = {
   requestId: string;
@@ -446,15 +446,72 @@ export type CreateHandoffResult = {
   status: "created" | "exists";
 };
 
-/** One thread handed off from a source thread — the timeline's "Handed to"
- *  marker. Metadata only; the transcript stays on disk until opened. */
-export type HandoffLink = {
+/** One thread continued out of a source thread — the timeline's "Handed to"
+ *  and "Branched from here" markers. Metadata only; the transcript stays on
+ *  disk until opened. */
+export type ContinuationLink = {
   threadId: string;
   provider: ProviderKind;
   model?: string;
   title?: string;
-  /** Epoch millis when the handoff was created. */
+  /** Epoch millis when the fork was created. */
   handedAt: number;
+} & (
+  | { kind: "handoff" }
+  | {
+      /** A branch took the conversation from one reply onwards, so the marker
+       *  sits against that reply rather than at the end of the thread. */
+      kind: "branch";
+      fromBlockId: string;
+    }
+);
+
+/** Hand a thread INTO new hands without leaving it. A handoff mints a new
+ *  thread seeded with the old one's transcript; a hand-in performs the same
+ *  context transfer on the thread the user is already in — the thread id, its
+ *  title, its blocks and its place in the project all survive, and only the
+ *  provider session underneath is replaced. What the user sees is one
+ *  conversation that changed hands, not two conversations that share a past. */
+export type HandInTarget = {
+  provider: ProviderKind;
+  model?: string;
+  effort?: string;
+  mode?: InteractionMode;
+};
+
+export type HandInInput = {
+  /** The live thread changing hands. Unchanged by the operation — it is the
+   *  thread that carries on. */
+  threadId: string;
+  /** Who the thread carries on with. Provider is required; model and effort
+   *  fall back to the target provider's defaults when absent. */
+  target: HandInTarget;
+};
+
+export type HandInResult = {
+  /** The same thread id that went in — a hand-in never mints a thread. */
+  threadId: string;
+  /** The hand-in that was recorded, as the timeline will read it back. */
+  record: HandInRecord;
+  /** The session the target provider came up on, bound to the same thread.
+   *  Returned because `startSession` is not idempotent: the caller adopts
+   *  this rather than starting a second session for the same thread. */
+  session: Session;
+};
+
+/** One stretch boundary in a thread's provider history: the moment it passed
+ *  from one provider/model to another. Metadata only — the transcript either
+ *  side of the boundary is the thread's own blocks. Models are optional
+ *  because a thread that never ran a named model has none to name; absent
+ *  means nothing was recorded, never an empty label. */
+export type HandInRecord = {
+  threadId: string;
+  fromProvider: ProviderKind;
+  fromModel?: string;
+  toProvider: ProviderKind;
+  toModel?: string;
+  /** Epoch millis when the thread changed hands. */
+  at: number;
 };
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
@@ -664,6 +721,15 @@ export function copyTurnStamp(
   if (from.model) to.model = from.model;
 }
 
+/** One imported transcript row, in the shape `writeForkThread` takes. */
+export type ForkImportedBlock = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  at: number;
+  attachments?: ChatAttachment[];
+} & TurnStamp;
+
 /** One reconstructed block — the persisted form of a renderer timeline block. */
 export type StoredBlock =
   | ({
@@ -864,8 +930,18 @@ export type ForkContext = {
  *  reference-only context for a bounded side investigation; `"edit"` rewinds
  *  to an earlier user message and continues from an edited replacement;
  *  `"handoff"` hands the whole conversation to another provider/model, which
- *  continues the same task from the imported transcript. */
-export type ForkKind = "side_chat" | "edit" | "handoff";
+ *  continues the same task from the imported transcript; `"branch"` takes the
+ *  conversation from a chosen reply instead of from its end — the same
+ *  continuation as a handoff, cut short.
+ *
+ *  A branch is a separate kind rather than a handoff with a cut point
+ *  because the two answer different questions: a handoff asks "who continues
+ *  this?", a branch asks "from where?". They diverge on what a legal target
+ *  is (a branch to the same provider and model is the normal case), on the
+ *  wording the new session is bootstrapped with, and on what the timeline
+ *  should call the marker. One field the renderer can switch on keeps all
+ *  three from having to re-derive it from the presence of a cut point. */
+export type ForkKind = "side_chat" | "edit" | "handoff" | "branch";
 
 /** Whether a stored fork context marks an edit-and-resend retry rather than a
  *  side chat. Absent `forkKind` is always a side chat. */
@@ -879,6 +955,44 @@ export function isEditForkContext(context: ForkContext | null | undefined): bool
  *  reference-only context like a side chat. */
 export function isHandoffForkContext(context: ForkContext | null | undefined): boolean {
   return context?.forkKind === "handoff";
+}
+
+/** Whether a stored fork context marks a branch — the conversation taken
+ *  from a chosen reply rather than from its end. A continuation like a
+ *  handoff (its import is real history, shown in the timeline and replayed
+ *  as the conversation to continue), never reference-only context. */
+export function isBranchForkContext(context: ForkContext | null | undefined): boolean {
+  return context?.forkKind === "branch";
+}
+
+/** Whether a stored fork context continues the conversation it came from,
+ *  rather than borrowing it as reference. Handoffs and branches both do; a
+ *  side chat does not. Callers that must treat a continuation's import as the
+ *  conversation's real history ask this instead of naming one kind. */
+export function isContinuationForkContext(context: ForkContext | null | undefined): boolean {
+  return isHandoffForkContext(context) || isBranchForkContext(context);
+}
+
+/** Which continuation is being created: the whole conversation to new hands,
+ *  or the conversation cut short at one reply. Read `kind` once — never
+ *  re-derive it from the presence of a cut point. */
+export type HandoffCut =
+  | { kind: "handoff" }
+  | {
+      kind: "branch";
+      /** Cut the imported transcript here: copy the source's blocks up to and
+       *  INCLUDING this one and drop everything after it. Names a block in the
+       *  SOURCE thread — a fork's own blocks get re-minted ids, so an id from
+       *  anywhere else matches nothing and is rejected rather than silently
+       *  importing the whole transcript. */
+      throughBlockId: string;
+    };
+
+/** Blank means absent: whitespace-only strings read as undefined so stored
+ *  rows never carry an empty label where nothing was recorded. */
+export function nonBlank(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /** Fork a thread at one of its user blocks (edit-and-resend of an earlier

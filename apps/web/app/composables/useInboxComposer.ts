@@ -102,7 +102,8 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   const capModel = computed<AgentModelRef | null>(
     () => pickedForProject.value?.capabilities.model ?? null,
   );
-  function providerAllowed(p: ProviderKind): boolean {
+  function providerAllowed(p: ProviderKind | null): boolean {
+    if (!p) return false;
     return capModel.value === null || capModel.value.provider === p;
   }
   function modelAllowed(provider: ProviderKind, key: string): boolean {
@@ -156,9 +157,11 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     }
   }
 
-  const modelOptions = computed(() =>
-    (catalogs.value[provider.value] ?? []).filter((m) => modelAllowed(provider.value, m.key)),
-  );
+  const modelOptions = computed(() => {
+    const p = provider.value;
+    if (!p) return [];
+    return (catalogs.value[p] ?? []).filter((m) => modelAllowed(p, m.key));
+  });
 
   // Providers that are installed, enabled in settings, and open to the selected
   // agent. The enable toggle is a picker filter only — it never tears down a
@@ -392,7 +395,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   function onModelId(id: string): void {
     if (draft && !session.value) {
       draft.model.value = id;
-      if (!capModel.value) {
+      if (!capModel.value && draft.provider.value) {
         persistLastUsed({ provider: draft.provider.value, modelId: id, tier: draft.reasoning.value });
       }
       return;
@@ -403,7 +406,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   function onReasoning(tier: EffortTier): void {
     if (draft && !session.value) {
       draft.reasoning.value = tier;
-      if (!capModel.value) {
+      if (!capModel.value && draft.provider.value) {
         persistLastUsed({ provider: draft.provider.value, modelId: draft.model.value, tier });
       }
       return;

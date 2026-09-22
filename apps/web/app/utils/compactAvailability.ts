@@ -52,7 +52,7 @@ export type { MeterCompactProps } from "~/types/session";
  *  snapshot — plain values, so tests build it literally and live callers
  *  unwrap their session at the boundary. */
 export type CompactSnapshot = {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   hasUserTurn: boolean;
   working: boolean;
   compacting: boolean;
@@ -64,7 +64,7 @@ export type CompactSnapshot = {
  *  session with these refs qualifies and no composable import is needed.
  *  `blocks` only needs each block's role; `queuedTurns` only its length. */
 export type CompactSessionLike = {
-  provider: { value: ProviderKind };
+  provider: { value: ProviderKind | null };
   blocks: { value: Array<{ role: string }> };
   busy: { value: boolean };
   queuedTurns: { value: Array<unknown> };
@@ -92,6 +92,9 @@ export function compactPropsForSession(
   statuses: readonly ProviderStatus[],
 ): MeterCompactProps {
   if (!source) return {};
+  // No active provider → no Compact control either.
+  const sourceProvider = isSessionLike(source) ? source.provider.value : source.provider;
+  if (!sourceProvider) return {};
   // A live session unwraps to the same snapshot at the boundary; a plain
   // snapshot passes through untouched.
   let snapshot: CompactSnapshot;

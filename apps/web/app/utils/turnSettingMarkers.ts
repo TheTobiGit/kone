@@ -10,6 +10,7 @@
 import {
   describeModelId,
   effortMeta,
+  isPlaceholderModelId,
   type EffortMeta,
   type EffortTier,
   type ModelDescription,
@@ -43,7 +44,11 @@ export type TurnSettingChange = {
  *  its own default), and stored history predating either stamp carries
  *  neither. An unstamped axis neither marks nor moves its baseline — the
  *  first stamped request after history sets it silently, so reopening an old
- *  thread never accuses it of a switch that happened off-screen. */
+ *  thread never accuses it of a switch that happened off-screen.
+ *
+ *  A placeholder model stamp ("default") is the provider's own default spelled
+ *  as an id rather than stated by omission, so it reads as unstamped for the
+ *  same reason: naming it would render a model that points at nothing. */
 export function deriveTurnSettingMarks(
   exchanges: readonly TurnSettingExchange[],
 ): Map<string, TurnSettingChange> {
@@ -62,7 +67,7 @@ export function deriveTurnSettingMarks(
       effortBaseline = tier;
     }
     const model = request.model;
-    if (model) {
+    if (model && !isPlaceholderModelId(model)) {
       if (modelBaseline !== undefined && model !== modelBaseline) {
         change.model = { from: modelBaseline, to: model };
       }
@@ -118,3 +123,4 @@ export function turnSettingChangeLabel(
   };
   return `${turnSettingVerb(change)} ${say("from")} → ${say("to")}`;
 }
+

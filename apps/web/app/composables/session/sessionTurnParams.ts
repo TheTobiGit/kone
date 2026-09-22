@@ -20,10 +20,10 @@ export type SessionTurnParamsDeps = {
 export function useSessionTurnParams(deps: SessionTurnParamsDeps) {
   const { options, resolveCwd, clearStagedResume } = deps;
 
-  // The provider is mutable so a thread can switch engines (Codex ↔ Claude).
-  // Because the two are separate CLIs with no shared conversation, a switch is a
-  // fresh session — restart() below tears the old one down and starts anew.
-  const provider = ref<ProviderKind>(options.provider);
+  // Nullable: no active provider means no model — send/start stay blocked until
+  // a ready provider is picked. A switch onto a real provider clears the model
+  // because an id from the old catalog is meaningless to the new CLI.
+  const provider = ref<ProviderKind | null>(options.provider);
   const model = ref(options.model);
   const mode = ref<InteractionMode>(
     options.mode ?? bootMode(resolveCwd() ?? "") ?? "accept-edits",
@@ -32,7 +32,7 @@ export function useSessionTurnParams(deps: SessionTurnParamsDeps) {
   const serviceTier = ref<string | undefined>(options.serviceTier);
   const contextWindow = ref<string | undefined>(options.contextWindow);
 
-  function setProvider(next: ProviderKind): void {
+  function setProvider(next: ProviderKind | null): void {
     if (next === provider.value) return;
     provider.value = next;
     // Resume ids are provider-native. Handing one minted by the previous CLI to

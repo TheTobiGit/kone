@@ -29,7 +29,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
-import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import type { ChatAttachment } from "~/types/desktop";
@@ -505,13 +504,6 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
           </div>
 
           <div class="live__dock">
-            <ProviderHealthBanner
-              class="live__banner"
-              :status="composer.sendBlockedStatus.value"
-              :reason="composer.sendBlockedReason.value"
-              :checking="composer.recheckingProviders.value"
-              @recheck="composer.recheckProviders"
-            />
             <AgentComposer
               always-open
               hide-context-tray
@@ -532,6 +524,8 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               :context-window="composer.contextWindow.value"
               :picking="composer.pickerOpen.value"
               :blocked-reason="composer.sendBlockedReason.value"
+              :health-status="composer.sendBlockedStatus.value"
+              :health-checking="composer.recheckingProviders.value"
               :compactable="compactable"
               @send="onSend"
               @remove-queued="session?.cancelQueuedTurn($event)"
@@ -546,6 +540,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               @open-models="composer.openPicker"
               @compact="onComposerCompact"
               @new-thread="onComposerNewThread"
+              @recheck="composer.recheckProviders"
             />
           </div>
         </div>

@@ -353,7 +353,7 @@ export function useAgentProviders() {
   /** Whether a turn can go to this provider right now, and if not, the sentence
    *  to show. Reactive, so a pushed correction un-blocks the composer on its own
    *  — the user runs `codex login` in a terminal and comes back to a live one. */
-  const sendAvailability = (provider: ProviderKind) =>
+  const sendAvailability = (provider: ProviderKind | null) =>
     computed(() => resolveProviderSendAvailability({ provider, statuses: statuses.value }));
 
   /** Probe the machine. Cached after the first successful run unless `force`. */

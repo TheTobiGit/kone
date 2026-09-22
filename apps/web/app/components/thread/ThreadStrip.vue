@@ -37,7 +37,7 @@ import {
   LADDER_PX,
   padEndFor,
 } from "~/utils/stripScroll";
-import { brandOf, buildCompactBySession, columnLabel, handoffSourceBrand, hasScratchpadPane, isHandoff, readCompactProps } from "~/utils/stripColumnLabels";
+import { brandOf, buildCompactBySession, columnLabel, handoffSourceBrand, hasScratchpadPane, isHandoff, readCompactProps, threadHands } from "~/utils/stripColumnLabels";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import { type ThreadSession } from "~/composables/useAgent";
@@ -120,6 +120,10 @@ const emit = defineEmits<{
    *  that message). Carries the source pane id, the edited block id and the
    *  edited text; the row forks via IPC and opens the child beside the source. */
   "edit-fork": [paneId: string, blockId: string, text: string];
+  /** Branch this thread's column off a settled assistant reply. Carries the
+   *  source pane id and that reply's block id; the row asks for the target
+   *  model and opens the branch beside the source. */
+  "branch-fork": [paneId: string, blockId: string];
   /** Jump to a thread linked from a column's handoff footer. Carries the
    *  linked thread id; the row opens (or focuses) it. */
   "open-thread": [threadId: string];
@@ -554,6 +558,18 @@ const { isUnread } = useStripUnread({
                       <span class="col__handoff-arrow" aria-hidden="true">→</span>
                       <ProviderLogo :brand="brandOf(c)" :size="15" />
                     </span>
+                    <!-- Changed hands in place: the hands it has been through,
+                         earlier ones dimmer. No arrow — nothing moved, so
+                         nothing points anywhere. -->
+                    <span v-else-if="threadHands(c).length > 0" class="col__hands">
+                      <ProviderLogo
+                        v-for="(brand, hi) in threadHands(c)"
+                        :key="`${brand}-${hi}`"
+                        :brand="brand"
+                        :size="15"
+                        :class="{ 'col__hands-past': hi < threadHands(c).length - 1 }"
+                      />
+                    </span>
                     <ProviderLogo v-else :brand="brandOf(c)" :size="15" />
                     <span
                       v-if="c.session.isSideChat.value"
@@ -669,10 +685,13 @@ const { isUnread } = useStripUnread({
                     :older-error="c.session.olderError.value"
                     :fork-context="c.session.forkContext?.value ?? null"
                     :link-handoffs="true"
+                    :allow-branch="true"
+                    :hand-ins="c.session.handInRecords.value"
                     @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
                     @retry="(text) => onRetryTurn(c, text)"
                     @resend="(text) => onResendTurn(c, text)"
                     @edit-fork="(blockId, text) => emit('edit-fork', c.id, blockId, text)"
+                    @branch-fork="(blockId) => emit('branch-fork', c.id, blockId)"
                     @retry-load="() => onRetryLoad(c)"
                     @load-older="() => onLoadOlder(c)"
                     @open-thread="(id) => emit('open-thread', id)"
@@ -1393,6 +1412,16 @@ const { isUnread } = useStripUnread({
 .col__handoff-from {
   flex: none;
   opacity: 0.55;
+}
+.col__hands {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* The hands it passed through read quieter than the ones holding it now —
+   the live engine is what the eye should land on. */
+.col__hands-past {
+  opacity: 0.45;
 }
 .col__handoff-arrow {
   display: inline-flex;

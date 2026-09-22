@@ -187,7 +187,7 @@ export type QueueBridge = {
 export type ReasoningTier = EffortTier;
 
 export type UseAgentOptions = {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   /** Absolute path of the project the agent works in — or a getter, resolved
    *  when a session starts so it always reflects the active project. */
   cwd: string | (() => string);
@@ -239,3 +239,8 @@ export type SessionCtx = {
   /** Shared sound effects and animations across thread sessions. */
   soundCue?: (cue: string) => void;
 };
+
+/** The result of attempting to hand a live thread to another provider.
+ *  `"handed"` keeps the thread id; `"not-applicable"` means there was
+ *  nothing live to carry; `"failed"` means the swap itself broke. */
+export type HandInOutcome = "handed" | "not-applicable" | "failed";

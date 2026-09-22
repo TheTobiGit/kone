@@ -17,10 +17,11 @@ import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
 import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
+import ComposerStatusTray from "~/components/agent/ComposerStatusTray.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
-import type { AttachmentKind, InteractionMode, ThreadEnvMode } from "~/types/desktop";
+import type { AttachmentKind, InteractionMode, ProviderStatus, ThreadEnvMode } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
@@ -171,9 +172,14 @@ const props = defineProps<{
   /** Why the turn cannot go anywhere right now — the provider's CLI is missing,
    *  signed out, or wedged — or null when it can. Set, and Enter stops being a
    *  send: the draft is KEPT, because the refusal is about the machine, not
-   *  about what was written. The sentence itself belongs on the host's banner,
-   *  not in here; this only gates. */
+   *  about what was written. Rendered in the composer's own top strip (below),
+   *  not on a host banner; this only gates the send. */
   blockedReason?: string | null;
+  /** The provider's last known health, for the top strip's tone. Null when no
+   *  provider is active — the hard stop. */
+  healthStatus?: ProviderStatus | null;
+  /** A re-check is in flight; the strip's action reads as busy. */
+  healthChecking?: boolean;
   /** Projects the @ picker offers above files. Set by surfaces with no project
    *  of their own — the global assistant — so a mention can still point the
    *  turn at somewhere real. Everywhere else this stays empty and @ means
@@ -237,9 +243,16 @@ const emit = defineEmits<{
    *  paused draft so the choice is ready when send lands. Raw text, untrimmed:
    *  the host normalises before comparing it with a send. */
   "update:draft": [text: string];
+  /** Re-probe providers (the top strip's action). */
+  recheck: [];
 }>();
 
 const { cue } = useSound();
+
+// No active provider: the model slot wears every provider's mark greyed rather
+// than a single live one, so the empty state reads as "nothing to run on".
+const noProvider = computed(() => !props.healthStatus);
+const providerMarks = ["codex", "claude", "cursor", "opencode", "droid", "antigravity"] as const;
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 
@@ -380,10 +393,15 @@ const currentWindow = computed(() => {
 });
 
 const desc = computed(() => describeModelId(props.modelId, catalog.value));
+// Display resolves through the strict description while an id is pinned — the
+// family falls back to the first entry, which would name a model that never
+// ran for a stale id. With no id pinned the family's default still stands.
 const modelName = computed(
-  () => currentFamily.value?.label ?? (props.modelId ? desc.value.name : "Default model"),
+  () => (props.modelId ? desc.value.name : (currentFamily.value?.label ?? "Default model")),
 );
-const modelBrand = computed(() => currentFamily.value?.brand ?? desc.value.brand);
+const modelBrand = computed(
+  () => (props.modelId ? desc.value.brand : (currentFamily.value?.brand ?? desc.value.brand)),
+);
 
 // The model name opens the full picker (hosted by the parent); the composer
 // only displays the current family + brand. With nothing to switch to the slot
@@ -1029,6 +1047,18 @@ defineExpose({ wake, setDraft, focus });
       @reorder-queued="emit('reorder-queued', $event)"
     />
 
+    <!-- Top status tray — the send-block reason, hanging off the top of the
+         card. Only rendered while blocked, so an unblocked composer is
+         exactly what it was. -->
+    <ComposerStatusTray
+      :open="open"
+      :closing="closing"
+      :blocked-reason="blockedReason"
+      :health-status="healthStatus"
+      :health-checking="healthChecking"
+      @recheck="emit('recheck')"
+    />
+
     <!-- One surface, morphing. Closed it's the orb; open it's the card. -->
     <div
       ref="surface"
@@ -1217,6 +1247,15 @@ defineExpose({ wake, setDraft, focus });
               <ProviderLogo :brand="modelBrand" :size="15" />
               <span class="model__name">{{ modelName }}</span>
             </button>
+            <span
+              v-else-if="noProvider"
+              class="barbtn model barbtn--fixed model--empty"
+              title="No provider installed"
+            >
+              <span class="model__marks" aria-hidden="true">
+                <ProviderLogo v-for="b in providerMarks" :key="b" :brand="b" :size="12" />
+              </span>
+            </span>
             <span v-else class="barbtn model barbtn--fixed" :title="`Running on ${modelName}`">
               <ProviderLogo :brand="modelBrand" :size="15" />
               <span class="model__name">{{ modelName }}</span>
@@ -1490,5 +1529,14 @@ defineExpose({ wake, setDraft, focus });
    it carries the second accent to say it isn't another thing you can click. */
 .tray__item--routing {
   color: var(--accent-2);
+}
+
+/* Empty model slot: every provider's mark, greyed and inert. */
+.model__marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0.38;
+  filter: grayscale(1);
 }
 </style>
