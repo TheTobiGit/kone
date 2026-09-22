@@ -65,13 +65,20 @@ function getStorage(): Storage | null {
  * Which provider a brand-new session opens on.
  *
  * The last used provider wins (so subsequent sessions stay on whatever ran last),
- * falling back to the user's configured default in settings, then Codex.
+ * falling back to the user's configured default in settings. A provider that is
+ * not installed/active is never returned: when a ready list is given the stored
+ * choice is validated against it, and with no stored choice (fresh install) the
+ * caller picks a random ready provider — never a hardcoded `codex`. Null means
+ * no provider is active, so there is no model either.
  */
-export function bootProvider(): ProviderKind {
+export function bootProvider(readyProviders?: readonly ProviderKind[]): ProviderKind | null {
   const storage = getStorage();
-  if (!storage) return "codex";
+  if (!storage) return null;
   const stored = storage.getItem(PROVIDER_KEY) ?? storage.getItem(DEFAULT_PROVIDER_KEY);
-  return stored !== null && stored in PROVIDER_VENDOR ? toProviderKind(stored) : "codex";
+  if (stored === null || !(stored in PROVIDER_VENDOR)) return null;
+  const kind = toProviderKind(stored);
+  if (readyProviders !== undefined && !readyProviders.includes(kind)) return null;
+  return kind;
 }
 
 /**
@@ -128,16 +135,20 @@ export function setLastUsedModel(pick: {
  *
  * The assistant's own last used wins, falling back to the user's configured
  * default — same order the board uses, but scoped to the assistant so the
- * two surfaces don't step on each other's sticky choice.
+ * two surfaces don't step on each other's sticky choice. Never a hardcoded
+ * provider: null when nothing stored is active.
  */
-export function bootAssistantProvider(): ProviderKind {
+export function bootAssistantProvider(readyProviders?: readonly ProviderKind[]): ProviderKind | null {
   const storage = getStorage();
-  if (!storage) return "codex";
+  if (!storage) return null;
   const stored =
     storage.getItem(ASSISTANT_PROVIDER_KEY) ??
     storage.getItem(PROVIDER_KEY) ??
     storage.getItem(DEFAULT_PROVIDER_KEY);
-  return stored !== null && stored in PROVIDER_VENDOR ? toProviderKind(stored) : "codex";
+  if (stored === null || !(stored in PROVIDER_VENDOR)) return null;
+  const kind = toProviderKind(stored);
+  if (readyProviders !== undefined && !readyProviders.includes(kind)) return null;
+  return kind;
 }
 
 /**
@@ -230,10 +241,13 @@ export interface SessionModelResolveInput {
   /** Ready/enabled providers & model catalogs to validate against */
   availableCatalogs?: Partial<Record<ProviderKind, ModelOption[]>>;
   availableProviders?: readonly ProviderKind[];
+  /** Random source for the fresh-install fallback (defaults to Math.random).
+   *  Injected in tests for determinism. */
+  rand?: () => number;
 }
 
 export interface ResolvedSessionModel {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   model: string | undefined;
   reasoning: EffortTier | undefined;
   serviceTier: string | undefined;
@@ -243,7 +257,19 @@ export interface ResolvedSessionModel {
     | "agent_pinned"
     | "last_used"
     | "user_default"
-    | "catalog_fallback";
+    | "catalog_fallback"
+    | "none";
+}
+
+/** Pick one ready provider uniformly at random. Null when none is active —
+ *  the caller then yields no model either. */
+export function pickRandomReadyProvider(
+  ready: readonly ProviderKind[],
+  rand: () => number = Math.random,
+): ProviderKind | null {
+  if (ready.length === 0) return null;
+  const idx = Math.floor(rand() * ready.length);
+  return ready[Math.min(idx, ready.length - 1)] ?? null;
 }
 
 /**
@@ -253,7 +279,13 @@ export interface ResolvedSessionModel {
  * 2. Agent-pinned model preset (when running with a specialized agent)
  * 3. Last used model (sticky selection across subsequent sessions)
  * 4. User default setting (explicitly chosen baseline from Settings)
- * 5. Catalog fallback (first ready provider + default model)
+ * 5. Catalog fallback (random ready provider + random model — fresh install only)
+ * 6. None (no provider active → no model)
+ *
+ * A provider that is not in `availableProviders` is deactivated: stored
+ * preferences naming it are skipped, never ridden onto another CLI. The random
+ * fallback runs once on a fresh install; afterwards the sticky last-used choice
+ * wins, so the first random pick becomes the default until the user changes it.
  */
 export function resolveSessionModelSelection(
   input: SessionModelResolveInput,
@@ -265,6 +297,7 @@ export function resolveSessionModelSelection(
     userDefault,
     availableCatalogs,
     availableProviders,
+    rand = Math.random,
   } = input;
 
   function isProviderReady(p: ProviderKind): boolean {
@@ -369,10 +402,48 @@ export function resolveSessionModelSelection(
     };
   }
 
-  // 5. Catalog fallback (first healthy provider & default model)
-  const fallbackProvider: ProviderKind =
-    availableProviders && availableProviders.length > 0 ? availableProviders[0]! : "codex";
-  const fallbackResolved = resolveDefaultsFor(fallbackProvider);
+  // 5. Catalog fallback (random ready provider + random model — fresh install
+  // only; afterwards last_used wins and this pick becomes the sticky default).
+  // No ready provider → no model.
+  if (!availableProviders || availableProviders.length === 0) {
+    return {
+      provider: null,
+      model: undefined,
+      reasoning: undefined,
+      serviceTier: undefined,
+      contextWindow: undefined,
+      source: "none",
+    };
+  }
+  const fallbackProvider = pickRandomReadyProvider(availableProviders, rand);
+  if (!fallbackProvider) {
+    return {
+      provider: null,
+      model: undefined,
+      reasoning: undefined,
+      serviceTier: undefined,
+      contextWindow: undefined,
+      source: "none",
+    };
+  }
+  // Random model within the picked provider's catalog when one is known;
+  // otherwise the provider's own default (resolveDefaultsFor with no id picks
+  // the catalog's first family default).
+  const catalog = availableCatalogs?.[fallbackProvider];
+  let fallbackModel: string | undefined;
+  let fallbackTier: EffortTier | undefined;
+  if (catalog && catalog.length > 0) {
+    const flat: { modelId: string; tier: EffortTier }[] = [];
+    for (const fam of catalog) {
+      for (const e of fam.efforts) flat.push({ modelId: e.modelId, tier: e.tier });
+    }
+    if (flat.length > 0) {
+      const pick = flat[Math.min(Math.floor(rand() * flat.length), flat.length - 1)]!;
+      fallbackModel = pick.modelId;
+      fallbackTier = pick.tier;
+    }
+  }
+  const fallbackResolved = resolveDefaultsFor(fallbackProvider, fallbackModel, fallbackTier);
   return {
     provider: fallbackProvider,
     model: fallbackResolved.model,

@@ -379,7 +379,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // a stored thread only *arms* a session, the id sits staged across any number
   // of provider switches, and handing a Codex conversation id to Claude is the
   // same desync AgentService's validModelFor guards one axis over.
-  let pendingResumeProvider: ProviderKind | undefined;
+  let pendingResumeProvider: ProviderKind | null | undefined;
 
   // ── actions ───────────────────────────────────────────────────────────────
 
@@ -482,6 +482,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (forgotten) return;
     const api = bridge();
     error.value = null;
+    if (!provider.value) {
+      error.value = "No provider installed. Install and sign in to a provider to send.";
+      sessionState.value = "error";
+      return;
+    }
     if (!api) {
       // Browser dev: no real session — pretend it's ready so the composer works.
       sessionState.value = "ready";
@@ -511,9 +516,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     let stagedWorkspace: SessionStartInput["workspace"];
     const wasWorkspacePending = workspacePending.value;
     try {
+      const currentProvider = provider.value;
+      if (!currentProvider) {
+        error.value = "No provider installed. Install and sign in to a provider to send.";
+        sessionState.value = "error";
+        return;
+      }
       const startInput: SessionStartInput = {
         threadId: threadId.value,
-        provider: provider.value,
+        provider: currentProvider,
         cwd: ctx.resolveCwd(),
         model: model.value,
         mode: mode.value,
@@ -1716,7 +1727,7 @@ export function useAgent(options: UseAgentOptions) {
     mode?: InteractionMode;
   }) =>
     (await active.value?.handIn(target)) ?? false;
-  const setProvider = (next: ProviderKind) => active.value?.setProvider(next);
+  const setProvider = (next: ProviderKind | null) => active.value?.setProvider(next);
   const setModel = (id: string | undefined) => active.value?.setModel(id);
   const setMode = (next: InteractionMode) => active.value?.setMode(next);
   const setReasoning = (next: ReasoningTier) => active.value?.setReasoning(next);

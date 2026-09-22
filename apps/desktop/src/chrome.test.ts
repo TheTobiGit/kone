@@ -27,8 +27,8 @@ describe("titleBarOptions", () => {
     });
   });
 
-  test("linux keeps the native frame so the OS supplies window buttons", () => {
-    expect(titleBarOptions("linux")).toEqual({});
+  test("linux keeps the native frame but hides the in-window menu", () => {
+    expect(titleBarOptions("linux")).toEqual({ autoHideMenuBar: true });
   });
 });
 

@@ -208,7 +208,7 @@ export function stabilizeProviderStatuses(
  *    CLI a second later.
  */
 export type ProviderSendAvailability = {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   status: ProviderStatus | null;
   usable: boolean;
   /** Empty when usable — a reason to show only ever accompanies a refusal. */
@@ -216,9 +216,12 @@ export type ProviderSendAvailability = {
 };
 
 export function resolveProviderSendAvailability(input: {
-  provider: ProviderKind;
+  provider: ProviderKind | null;
   statuses: readonly ProviderStatus[];
 }): ProviderSendAvailability {
+  if (!input.provider) {
+    return { provider: null, status: null, usable: false, reason: "No provider installed." };
+  }
   const status = input.statuses.find((row) => row.provider === input.provider) ?? null;
   if (!status || wasUsable(status)) {
     return { provider: input.provider, status, usable: true, reason: "" };

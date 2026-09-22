@@ -47,7 +47,7 @@ export type SessionTranscriptDeps = {
   envMode: Ref<ThreadEnvMode | null>;
   workspacePending: Ref<boolean>;
   requestedBranch: Ref<string | null>;
-  provider: Ref<ProviderKind>;
+  provider: Ref<ProviderKind | null>;
   model: Ref<string | undefined>;
   mode: Ref<InteractionMode>;
   reasoning: Ref<ReasoningTier>;
@@ -60,7 +60,7 @@ export type SessionTranscriptDeps = {
   storeStagedWorkspace: (choice: SessionStartInput["workspace"]) => void;
   stageResume: (
     resumeId: string | undefined,
-    resumeProvider: ProviderKind,
+    resumeProvider: ProviderKind | null,
     resumeSessionAt: string | undefined,
   ) => void;
   reduce: (event: RuntimeEvent) => void;

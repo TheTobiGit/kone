@@ -16,7 +16,7 @@ import { titleFromPrompt, uid } from "./agentPrefetch";
 
 export function createMockTurnRunner(deps: {
   threadId: Ref<string>;
-  provider: Ref<ProviderKind>;
+  provider: Ref<ProviderKind | null>;
   sessionState: Ref<RuntimeSessionState>;
   reasoning: Ref<ReasoningTier>;
   blocks: Ref<ThreadBlock[]>;
@@ -98,7 +98,10 @@ export function createMockTurnRunner(deps: {
   function base() {
     return {
       threadId: threadId.value,
-      provider: provider.value,
+      // SAFETY: null provider means blocked send with no session — the send gate
+      // refuses before any mock event is built, so this never observes null in
+      // practice; RuntimeEvents always carry a provider.
+      provider: provider.value as ProviderKind,
       at: Date.now(),
       source: "kone.mock" as const,
     };

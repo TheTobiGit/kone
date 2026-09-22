@@ -139,4 +139,8 @@ run("bunx", ["electron", "."], desktopDir, {
   ...process.env,
   KONE_DEV: "1",
   KONE_DEV_SERVER_URL: devServerUrl,
+  // Vite HMR needs unsafe-eval/inline, so no strict CSP is applied in dev
+  // (see PROD_CSP in src/main.ts). Silence Electron's dev-only insecure-CSP
+  // warning instead of training everyone to ignore the console.
+  ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
 });

@@ -17,7 +17,9 @@ import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
 
 export function brandOf(c: Pane): BrandKey {
   if (c.kind !== "thread" || !c.session) return "generic";
-  return SESSION_BRAND[c.session.provider.value] ?? "generic";
+  const p = c.session.provider.value;
+  if (!p) return "generic";
+  return SESSION_BRAND[p] ?? "generic";
 }
 
 /** Whether this column continues a conversation handed off from another

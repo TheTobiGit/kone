@@ -182,11 +182,14 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => {
       agent.setModel(id);
       if (import.meta.client) {
-        persistLastUsed({
-          provider: agent.provider.value,
-          modelId: id,
-          tier: agent.reasoning.value,
-        });
+        const p = agent.provider.value;
+        if (p) {
+          persistLastUsed({
+            provider: p,
+            modelId: id,
+            tier: agent.reasoning.value,
+          });
+        }
       }
       persistThreadSelection();
     });
@@ -195,11 +198,14 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => {
       agent.setReasoning(tier);
       if (import.meta.client) {
-        persistLastUsed({
-          provider: agent.provider.value,
-          modelId: agent.model.value,
-          tier,
-        });
+        const p = agent.provider.value;
+        if (p) {
+          persistLastUsed({
+            provider: p,
+            modelId: agent.model.value,
+            tier,
+          });
+        }
       }
       persistThreadSelection();
     });

@@ -29,8 +29,9 @@ const props = defineProps<{
   /** Every installed provider's catalog (families with real efforts). */
   providers: PickerProvider[];
   /** Which provider the session is currently running on — its matching model is
-   *  the one marked current, and it's the rail tab opened first. */
-  activeProvider: ProviderKind;
+   *  the one marked current, and it's the rail tab opened first. Null when no
+   *  provider is active — the list opens on the first provider with no current. */
+  activeProvider: ProviderKind | null;
   /** The active raw model id — marked as current. For Codex this is a bare
    *  family id (e.g. `gpt-5.6-terra`); it does NOT carry the effort. */
   modelId?: string;
