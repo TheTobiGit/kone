@@ -45,6 +45,7 @@ describe("createHandoff", () => {
     const { inputs } = installBridge();
     const result = await createHandoff({
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent", model: "claude-sonnet-5" },
     });
     expect(result).toMatchObject({ status: "created", joined: false });
@@ -59,8 +60,8 @@ describe("createHandoff", () => {
   test("rapid repeats for the same source + target join one flight", async () => {
     const { inputs } = installBridge();
     const [a, b] = await Promise.all([
-      createHandoff({ sourceThreadId: "t-src", target: { provider: "claudeAgent" } }),
-      createHandoff({ sourceThreadId: "t-src", target: { provider: "claudeAgent" } }),
+      createHandoff({ sourceThreadId: "t-src", kind: "handoff", target: { provider: "claudeAgent" } }),
+      createHandoff({ sourceThreadId: "t-src", kind: "handoff", target: { provider: "claudeAgent" } }),
     ]);
     expect(inputs).toHaveLength(1);
     expect(a.threadId).toBe(b.threadId);
@@ -70,6 +71,7 @@ describe("createHandoff", () => {
   test("without a bridge it still resolves so the join semantics hold", async () => {
     const result = await createHandoff({
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "codex" },
     });
     expect(result.status).toBe("created");

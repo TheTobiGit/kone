@@ -105,6 +105,7 @@ describe("createHandoffThread", () => {
       requestId: "r-1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent", model: "claude-sonnet-5" },
     });
     expect(result.status).toBe("created");
@@ -149,6 +150,7 @@ describe("createHandoffThread", () => {
       requestId: "r-1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent" },
     });
     expect(first.status).toBe("created");
@@ -157,6 +159,7 @@ describe("createHandoffThread", () => {
       requestId: "r-1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent" },
     });
     expect(replay).toMatchObject({ status: "exists", threadId: "h-1" });
@@ -166,6 +169,7 @@ describe("createHandoffThread", () => {
         requestId: "r-1",
         threadId: "h-2",
         sourceThreadId: "t-src",
+      kind: "handoff",
         target: { provider: "claudeAgent" },
       }),
     ).toThrow(/Idempotency conflict/);
@@ -179,12 +183,14 @@ describe("createHandoffThread", () => {
       requestId: "r-a",
       threadId: "h-a",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent" },
     });
     const b = createHandoffThread({
       requestId: "r-b",
       threadId: "h-b",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "opencode" },
     });
     expect(a.status).toBe("created");
@@ -203,6 +209,7 @@ describe("createHandoffThread", () => {
         requestId: "r-x",
         threadId: "h-x",
         sourceThreadId: "missing",
+      kind: "handoff",
         target: { provider: "claudeAgent" },
       }),
     ).toThrow(/not found/);
@@ -211,6 +218,7 @@ describe("createHandoffThread", () => {
         requestId: "r-y",
         threadId: "h-y",
         sourceThreadId: "empty",
+      kind: "handoff",
         target: { provider: "claudeAgent" },
       }),
     ).toThrow(/no conversation/);
@@ -219,6 +227,7 @@ describe("createHandoffThread", () => {
         requestId: "r-z",
         threadId: "h-z",
         sourceThreadId: "t-src",
+      kind: "handoff",
         target: { provider: "codex", model: "gpt-x" },
       }),
     ).toThrow(/different provider or model/);
@@ -234,21 +243,23 @@ describe("createHandoffThread", () => {
       requestId: "r-1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent" },
     });
-    expect(handoffEligibility("h-1").ok).toBe(false);
+    expect(handoffEligibility("h-1", { kind: "handoff" }).ok).toBe(false);
 
     // One native turn on the handoff lifts the gate.
     store.recordUserBlock({ threadId: "h-1", text: "follow-up", at: 300 });
     store.applyEvent(turnStarted("h-1", "turn-3", 310));
     store.applyEvent(textItem("h-1", "turn-3", "i-3", "third answer"));
     store.applyEvent(turnCompleted("h-1", "turn-3", 350));
-    expect(handoffEligibility("h-1").ok).toBe(true);
+    expect(handoffEligibility("h-1", { kind: "handoff" }).ok).toBe(true);
 
     const again = createHandoffThread({
       requestId: "r-2",
       threadId: "h-2",
       sourceThreadId: "h-1",
+      kind: "handoff",
       target: { provider: "opencode" },
     });
     expect(again.status).toBe("created");
@@ -268,6 +279,7 @@ describe("createHandoffThread", () => {
       requestId: "r-1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent" },
     });
 
@@ -286,7 +298,7 @@ describe("createHandoffThread", () => {
     expect(sidechatBootstrapForTurn("h-1", "again")).toBeNull();
   });
 
-  test("handoffsFromSource lists only handoffs, oldest first", async () => {
+  test("continuationsFromSource lists only handoffs, oldest first", async () => {
     await seedSource();
     const { createHandoffThread } = await import("./handoff.js");
     const { getConversationStore } = await import("./ConversationStore.js");
@@ -296,12 +308,14 @@ describe("createHandoffThread", () => {
       requestId: "r-1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent", model: "claude-sonnet-5" },
     });
     createHandoffThread({
       requestId: "r-2",
       threadId: "h-2",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "opencode" },
     });
     // A non-handoff fork off the same source must not leak into the markers.
@@ -318,7 +332,7 @@ describe("createHandoffThread", () => {
     });
     expect(forked.ok).toBe(true);
 
-    const links = store.handoffsFromSource("t-src");
+    const links = store.continuationsFromSource("t-src");
     expect(links.map((l) => l.threadId)).toEqual(["h-1", "h-2"]);
     expect(links[0]).toMatchObject({
       provider: "claudeAgent",
@@ -327,7 +341,7 @@ describe("createHandoffThread", () => {
     });
     expect(links[0]!.handedAt).toBeGreaterThan(0);
     expect(links[1]).toMatchObject({ provider: "opencode" });
-    expect(store.handoffsFromSource("missing")).toEqual([]);
+    expect(store.continuationsFromSource("missing")).toEqual([]);
   });
 });
 
@@ -347,6 +361,7 @@ describe("createHandoffThread with a cut point", () => {
       threadId: "h-cut",
       sourceThreadId: "t-src",
       target: { provider: "claudeAgent", model: "claude-sonnet-5" },
+      kind: "branch",
       throughBlockId: anchor.id,
     });
     expect(result.status).toBe("created");
@@ -371,6 +386,7 @@ describe("createHandoffThread with a cut point", () => {
       threadId: "h-same",
       sourceThreadId: "t-src",
       target: { provider: "codex", model: "gpt-x" },
+      kind: "branch",
       throughBlockId: anchor.id,
     });
     expect(result.status).toBe("created");
@@ -386,7 +402,8 @@ describe("createHandoffThread with a cut point", () => {
         threadId: "h-bad",
         sourceThreadId: "t-src",
         target: { provider: "claudeAgent" },
-        throughBlockId: "not-a-block",
+        kind: "branch",
+      throughBlockId: "not-a-block",
       }),
     ).toThrow(/not part of this conversation/);
   });
@@ -476,12 +493,13 @@ describe("createHandoffThread with a tool-only tail", () => {
 
     const { createHandoffThread, handoffEligibility } = await import("./handoff.js");
     // A thread of nothing but a silent work turn is still a conversation.
-    expect(handoffEligibility("t-tools")).toEqual({ ok: true });
+    expect(handoffEligibility("t-tools", { kind: "handoff" })).toEqual({ ok: true });
 
     const result = createHandoffThread({
       requestId: "r-tools",
       threadId: "h-tools",
       sourceThreadId: "t-tools",
+      kind: "handoff",
       target: { provider: "claudeAgent" },
     });
     expect(result.status).toBe("created");
@@ -509,12 +527,14 @@ describe("branches are distinguishable from handoffs", () => {
       threadId: "h-b",
       sourceThreadId: "t-src",
       target: { provider: "codex", model: "gpt-x" },
+      kind: "branch",
       throughBlockId: anchor.id,
     });
     createHandoffThread({
       requestId: "r-h",
       threadId: "h-h",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "claudeAgent", model: "claude-sonnet-5" },
     });
 
@@ -524,13 +544,14 @@ describe("branches are distinguishable from handoffs", () => {
     // Both come back from the source's history read, oldest first, each
     // saying which it is — and only a branch names the block it was taken
     // from, because only a branch has a marker to sit against.
-    const links = store.handoffsFromSource("t-src");
+    const links = store.continuationsFromSource("t-src");
     expect(links.map((l) => [l.threadId, l.kind])).toEqual([
       ["h-b", "branch"],
       ["h-h", "handoff"],
     ]);
-    expect(links[0]!.fromBlockId).toBe(anchor.id);
-    expect(links[1]!.fromBlockId).toBeUndefined();
+    expect(links[0]!.kind).toBe("branch");
+    if (links[0]!.kind === "branch") expect(links[0]!.fromBlockId).toBe(anchor.id);
+    expect(links[1]!.kind).toBe("handoff");
   });
 
   test("a branch's first turn replays with its own wording", async () => {
@@ -547,6 +568,7 @@ describe("branches are distinguishable from handoffs", () => {
       threadId: "h-bw",
       sourceThreadId: "t-src",
       target: { provider: "codex", model: "gpt-x" },
+      kind: "branch",
       throughBlockId: anchor.id,
     });
 
@@ -571,6 +593,7 @@ describe("branches are distinguishable from handoffs", () => {
       threadId: "h-b2",
       sourceThreadId: "t-src",
       target: { provider: "codex", model: "gpt-x" },
+      kind: "branch",
       throughBlockId: anchor.id,
     });
     // Nothing has run on the branch yet, so its only blocks are its import.
@@ -578,9 +601,9 @@ describe("branches are distinguishable from handoffs", () => {
 
     // A second cut point is a real request — strictly earlier, so the chain
     // terminates on its own.
-    expect(handoffEligibility("h-b2", inner.id)).toEqual({ ok: true });
+    expect(handoffEligibility("h-b2", { kind: "branch", throughBlockId: inner.id })).toEqual({ ok: true });
     // Handing the whole un-run copy on is the duplicate the gate refuses.
-    expect(handoffEligibility("h-b2")).toEqual({
+    expect(handoffEligibility("h-b2", { kind: "handoff" })).toEqual({
       ok: false,
       reason: "Run at least one turn before handing this thread off again",
     });

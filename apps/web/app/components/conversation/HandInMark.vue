@@ -5,7 +5,7 @@ import { AiBrain01Icon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { effortMeta, type EffortTier } from "~/utils/modelCatalog";
 import { brainStack } from "~/utils/subagentRuns";
-import { type HandInMark } from "~/utils/handInMarkers";
+import { handInMarkLabel, type HandInMark } from "~/utils/handInMarkers";
 
 // One hand-in line in the timeline flow: the thread carried on here in new
 // hands. Both ends are named, because which model answered above the line is
@@ -36,11 +36,13 @@ const legs = computed(() =>
 );
 
 const label = computed(() => {
-  const say = (side: "from" | "to"): string => {
-    const tier = props.effort ? effortMeta(props.effort[side]).label : null;
-    return tier ? `${props.mark[side].label} at ${tier}` : props.mark[side].label;
-  };
-  return `Continued by ${say("to")}, from ${say("from")}`;
+  const effort = props.effort
+    ? {
+        from: { label: effortMeta(props.effort.from).label },
+        to: { label: effortMeta(props.effort.to).label },
+      }
+    : null;
+  return handInMarkLabel(props.mark, effort);
 });
 </script>
 

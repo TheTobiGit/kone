@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import type { ForkContext, HandoffLink, RuntimeEvent } from "~/types/desktop";
+import type { ContinuationLink, ForkContext, RuntimeEvent } from "~/types/desktop";
 import { describeModelId } from "~/utils/modelCatalog";
-import { type HandoffMark } from "~/utils/handoffMarkers";
+import { isContinuationForkKind, type HandoffMark } from "~/utils/handoffMarkers";
 import { SESSION_BRAND } from "~/types/session";
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
 
@@ -17,7 +17,7 @@ export function useHandoffMarks(opts: {
    *  assistant) opt out — no fetch, no marks, no subscription. */
   enabled: () => boolean;
 }) {
-  const links = ref<HandoffLink[]>([]);
+  const links = ref<ContinuationLink[]>([]);
 
   function bridge() {
     // Existence probe (not a narrowing check): the bridge only exists in the
@@ -36,7 +36,7 @@ export function useHandoffMarks(opts: {
       return;
     }
     try {
-      links.value = (await bridge()?.history?.handoffsFromSource(id)) ?? [];
+      links.value = (await bridge()?.history?.continuationsFromSource(id)) ?? [];
     } catch {
       links.value = [];
     }
@@ -46,7 +46,7 @@ export function useHandoffMarks(opts: {
     if (!opts.enabled()) return [];
     const out: HandoffMark[] = [];
     const ctx = opts.forkContext();
-    if (ctx?.forkKind === "handoff" || ctx?.forkKind === "branch") {
+    if (ctx && isContinuationForkKind(ctx.forkKind)) {
       // The source model rides the context the same way its provider does —
       // the mark names it long after the source row may be gone, falling
       // back to the provider when the source never ran named.
@@ -55,7 +55,7 @@ export function useHandoffMarks(opts: {
         key: "from",
         at: ctx.importedAt,
         kind: "from",
-        relation: ctx.forkKind === "branch" ? "branch" : "handoff",
+        relation: ctx.forkKind,
         threadId: ctx.sourceThreadId,
         label: ctx.sourceModel
           ? describeModelId(ctx.sourceModel).name

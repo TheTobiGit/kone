@@ -96,12 +96,11 @@ export function createMockTurnRunner(deps: {
   }
 
   function base() {
+    const current = provider.value;
+    if (!current) throw new Error("Mock turn requires a provider");
     return {
       threadId: threadId.value,
-      // SAFETY: null provider means blocked send with no session — the send gate
-      // refuses before any mock event is built, so this never observes null in
-      // practice; RuntimeEvents always carry a provider.
-      provider: provider.value as ProviderKind,
+      provider: current,
       at: Date.now(),
       source: "kone.mock" as const,
     };

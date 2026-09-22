@@ -11,12 +11,13 @@ import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
+import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
-import type { ChatAttachment, CompactionRecord, ForkContext, HandInRecord, HandoffLink, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
+import type { ChatAttachment, CompactionRecord, ContinuationLink, ForkContext, HandInRecord, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
 import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
@@ -39,6 +40,7 @@ export class ConversationStore implements CheckpointStore {
   private readonly queuedTurns: QueuedTurnRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly lineage: LineageRepo;
+  private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
@@ -51,12 +53,13 @@ export class ConversationStore implements CheckpointStore {
     this.dbh = new ConversationDb(userDataDir);
     this.threads = new ThreadRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
+    this.handIns = new HandInsRepo(this.dbh);
     this.events = new EventIngestRepo(this.dbh, {
       touch: (db, threadId, at) => this.threads.touch(db, threadId, at),
       completeSidechatBootstrap: (db, threadId) =>
         this.lineage.completeSidechatBootstrap(db, threadId),
       completeHandInBootstrap: (db, threadId) =>
-        this.lineage.completeHandInBootstrap(db, threadId),
+        this.handIns.completeHandInBootstrap(db, threadId),
     });
     this.threadLifecycle = new ThreadLifecycleRepo(this.dbh, {
       forgetConversationIds: (ids) => this.events.forgetConversationIds(ids),
@@ -443,24 +446,24 @@ export class ConversationStore implements CheckpointStore {
     return this.lineage.threadForkContext(threadId);
   }
 
-  /** Every handoff forked from a source thread, oldest first. @see LineageRepo */
-  handoffsFromSource(sourceThreadId: string): HandoffLink[] {
-    return this.lineage.handoffsFromSource(sourceThreadId);
+  /** Every continuation forked from a source thread, oldest first. @see LineageRepo */
+  continuationsFromSource(sourceThreadId: string): ContinuationLink[] {
+    return this.lineage.continuationsFromSource(sourceThreadId);
   }
 
-  /** Record that a thread changed hands and retarget its row. @see LineageRepo */
-  writeHandIn(input: Parameters<LineageRepo["writeHandIn"]>[0]): HandInRecord | null {
-    return this.lineage.writeHandIn(input);
+  /** Record that a thread changed hands and retarget its row. @see HandInsRepo */
+  writeHandIn(input: Parameters<HandInsRepo["writeHandIn"]>[0]): HandInRecord | null {
+    return this.handIns.writeHandIn(input);
   }
 
-  /** Every time this thread changed hands, oldest first. @see LineageRepo */
+  /** Every time this thread changed hands, oldest first. @see HandInsRepo */
   handInsForThread(threadId: string): HandInRecord[] {
-    return this.lineage.handInsForThread(threadId);
+    return this.handIns.handInsForThread(threadId);
   }
 
-  /** The hand-in still waiting to bootstrap its new session. @see LineageRepo */
+  /** The hand-in still waiting to bootstrap its new session. @see HandInsRepo */
   pendingHandIn(threadId: string): HandInRecord | null {
-    return this.lineage.pendingHandIn(threadId);
+    return this.handIns.pendingHandIn(threadId);
   }
 
   /** @see LineageRepo */

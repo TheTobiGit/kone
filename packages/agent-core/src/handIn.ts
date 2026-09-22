@@ -3,10 +3,11 @@ import type {
   HandInInput,
   HandInRecord,
   HandInResult,
-  ProviderKind,
   Session,
   SessionStartInput,
+  StoredThreadMeta,
 } from "./types.js";
+import { nonBlank } from "./types.js";
 
 // Thread hand-in — the same conversation, in new hands.
 //
@@ -44,13 +45,20 @@ export const HAND_IN_MESSAGE_TOO_LONG =
  *  the control on these; `handInThread` enforces them. */
 export function handInEligibility(
   threadId: string,
-  target: { provider: ProviderKind; model?: string },
+  target: HandInInput["target"],
 ): { ok: true } | { ok: false; reason: string } {
   const store = getConversationStore();
   const meta = store.threadMeta(threadId);
   if (!meta) return { ok: false, reason: `Hand-in thread not found: ${threadId}` };
-  const currentModel = meta.model?.trim() ? meta.model : undefined;
-  const targetModel = target.model?.trim() ? target.model : undefined;
+  return handInEligibilityForMeta(meta, target);
+}
+
+function handInEligibilityForMeta(
+  meta: Pick<StoredThreadMeta, "provider" | "model">,
+  target: HandInInput["target"],
+): { ok: true } | { ok: false; reason: string } {
+  const currentModel = nonBlank(meta.model);
+  const targetModel = nonBlank(target.model);
   // A hand-in to the hands the thread is already in is a no-op that would
   // still cost a session restart and leave a marker saying nothing changed.
   if (target.provider === meta.provider && targetModel === currentModel) {
@@ -95,12 +103,12 @@ export async function handInThread(
   const store = getConversationStore();
   const meta = store.threadMeta(input.threadId);
   if (!meta) throw new Error(`Hand-in thread not found: ${input.threadId}`);
-  const eligible = handInEligibility(input.threadId, input.target);
+  const eligible = handInEligibilityForMeta(meta, input.target);
   if (!eligible.ok) throw new Error(eligible.reason);
 
   const fromProvider = meta.provider;
-  const fromModel = meta.model?.trim() ? meta.model : undefined;
-  const toModel = input.target.model?.trim() ? input.target.model : undefined;
+  const fromModel = nonBlank(meta.model);
+  const toModel = nonBlank(input.target.model);
 
   // Dispose first. A stop that throws must not leave a retargeted thread
   // behind a still-running old session, so nothing is written until the old

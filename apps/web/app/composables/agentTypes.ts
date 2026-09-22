@@ -117,7 +117,7 @@ export type LiveAttentionItem = {
   /** The provider-native thread id (used to reopen / route). */
   threadId: string;
   title: string;
-  provider: ProviderKind | null;
+  provider: ProviderKind;
   /** The raw model id the thread last ran on, if known. */
   model?: string;
   /** Which project's registry owns the live session — how the host routes the
@@ -213,7 +213,7 @@ export type ThreadSummary = {
   /** The provider-native thread id (used to reopen / route). */
   threadId: string;
   title: string;
-  provider: ProviderKind | null;
+  provider: ProviderKind;
   /** The raw model id the thread last ran on, if known — lets the away pill show
    *  a harness provider's true model vendor on its badge corner. */
   model?: string;
@@ -239,3 +239,8 @@ export type SessionCtx = {
   /** Shared sound effects and animations across thread sessions. */
   soundCue?: (cue: string) => void;
 };
+
+/** The result of attempting to hand a live thread to another provider.
+ *  `"handed"` keeps the thread id; `"not-applicable"` means there was
+ *  nothing live to carry; `"failed"` means the swap itself broke. */
+export type HandInOutcome = "handed" | "not-applicable" | "failed";

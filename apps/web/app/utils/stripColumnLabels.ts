@@ -14,6 +14,8 @@ import type { Pane, PaneKind } from "~/types/studio";
 import { SESSION_BRAND } from "~/types/session";
 import { compactPropsForSession, type MeterCompactProps } from "~/utils/compactAvailability";
 import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
+import { handInHasLanded } from "~/utils/handInMarkers";
+import { isContinuationForkKind } from "~/utils/handoffMarkers";
 
 export function brandOf(c: Pane): BrandKey {
   if (c.kind !== "thread" || !c.session) return "generic";
@@ -23,13 +25,14 @@ export function brandOf(c: Pane): BrandKey {
 }
 
 /** Whether this column continues a conversation handed off from another
- *  provider. The header then reads old → new instead of a single mark, so a
- *  handoff never passes for a thread born where it runs. */
+ *  provider — handoffs and branches alike. The header then reads old → new
+ *  instead of a single mark, so a continuation never passes for a thread born
+ *  where it runs. Branches count because they are continuations too: taken
+ *  from one reply rather than from the end, but still another provider's
+ *  conversation carried on here. */
 export function isHandoff(c: Pane): boolean {
   if (c.kind !== "thread" || !c.session) return false;
-  // Optional-chained: test doubles cast partial sessions, and only the live
-  // session carries forkContext.
-  return c.session.forkContext?.value?.forkKind === "handoff";
+  return isContinuationForkKind(c.session.forkContext?.value?.forkKind);
 }
 
 /** Every set of hands this thread has actually been worked by, oldest first.
@@ -37,23 +40,18 @@ export function isHandoff(c: Pane): boolean {
  *  up by somebody else — so the header lists the hands rather than drawing a
  *  transition arrow to another thread.
  *
- *  A swap only counts once a turn has landed under it, the same rule the
- *  timeline marker follows. Choosing a provider stages it; until something is
- *  actually sent, those hands have answered nothing and the header would be
- *  claiming work that never happened. Empty when the thread has never changed
- *  hands, which is the ordinary case and wants the plain single mark. */
+ *  A swap only counts once a turn has landed under it (see handInHasLanded):
+ *  choosing a provider stages it, but until something is sent those hands
+ *  have answered nothing. Empty when the thread has never changed hands. */
 export function threadHands(c: Pane): BrandKey[] {
   if (c.kind !== "thread" || !c.session) return [];
-  // Optional-chained: test doubles cast partial sessions, and only a live
-  // session carries its hand-in history.
-  const records = c.session.handInRecords?.value ?? [];
+  const records = c.session.handInRecords.value;
   const first = records[0];
   if (!first) return [];
-  const blocks = c.session.timelineBlocks?.value ?? [];
-  const answered = (at: number): boolean => blocks.some((b) => b.at > at);
+  const blocks = c.session.timelineBlocks.value;
   const brands: BrandKey[] = [SESSION_BRAND[first.fromProvider] ?? "generic"];
   for (const record of records) {
-    if (!answered(record.at)) continue;
+    if (!handInHasLanded(record.at, blocks)) continue;
     const brand = SESSION_BRAND[record.toProvider] ?? "generic";
     // A thread handed back to hands it already sits in adds nothing to read.
     if (brand !== brands[brands.length - 1]) brands.push(brand);

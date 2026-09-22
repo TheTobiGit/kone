@@ -408,41 +408,21 @@ export function registerAgentIpc(): void {
     store,
     providers: svc,
     dispatcher,
-    emit: (event) => broadcast(event, false),
+    emit: (event) => {
+      const gated = gateProviderTitle(event);
+      if (gated) broadcast(gated.event, false);
+    },
     onEvents: (listener) => svc.onEvent(listener),
   });
 
   /** Push one runtime event to every subscribed renderer (and optionally
-   *  journal it). Title updates skip the store's applyEvent — they're written
-   *  directly via setTitle. The single choke point every event crosses, so it
-   *  stamps the two envelope fields consumers dedupe/correlate on: `eventId`
+   *  journal it). The single choke point every event crosses, so it stamps
+   *  the two envelope fields consumers dedupe/correlate on: `eventId`
    *  (assigned once here when the adapter didn't mint its own, so the journal
    *  and every renderer agree on one id per event) and `parentTurnId` (the
    *  spawning turn's id for a spawned child's events, registered at dispatch —
    *  F10). */
   function broadcast(event: RuntimeEvent, journal = true): void {
-    // A provider naming the conversation itself (the self-naming adapters'
-    // `session_info_update`) is only trustworthy while the thread has never
-    // been answered: on a resume or a hand-in the provider's "first prompt"
-    // is the replay bootstrap, so its proposal names the bootstrap rather
-    // than the conversation. The gate is a settled turn — not the title text,
-    // and not the mere presence of an assistant block, whose running row
-    // already exists by the time the title arrives and so cannot tell a first
-    // turn from a later one. kone.store titles — the first-turn fallback, the
-    // background generated rename, a user rename — always pass through. An
-    // accepted proposal persists through the rename path so the store and the
-    // UI agree; anything else is dropped, so a thread with answers keeps its
-    // title and a provider cannot re-name it on later turns.
-    if (event.type === "thread.title.updated" && event.source !== "kone.store") {
-      const accepted = acceptProviderThreadTitle({
-        hasSettledTurn: store.hasSettledAssistantTurn(event.threadId),
-        proposedTitle: event.title,
-      });
-      if (!accepted) return;
-      store.renameThread(event.threadId, accepted);
-      event = { ...event, title: accepted };
-      journal = false;
-    }
     let stamped: RuntimeEvent;
     if (event.eventId !== undefined && event.parentTurnId !== undefined) {
       stamped = event;
@@ -460,44 +440,60 @@ export function registerAgentIpc(): void {
     subscriptions.broadcast(wire);
   }
 
+  // A provider naming the conversation itself (the self-naming adapters'
+  // `session_info_update`) is only trustworthy while the thread has never
+  // been answered: on a resume or a hand-in the provider's "first prompt"
+  // is the replay bootstrap, so its proposal names the bootstrap rather
+  // than the conversation. The gate is a settled turn — not the title text,
+  // and not the mere presence of an assistant block, whose running row
+  // already exists by the time the title arrives and so cannot tell a first
+  // turn from a later one. kone.store titles — the first-turn fallback, the
+  // background generated rename, a user rename — always pass through. An
+  // accepted proposal persists through the rename path so the store and the
+  // UI agree; anything else is dropped, so a thread with answers keeps its
+  // title and a provider cannot re-name it on later turns.
+  function gateProviderTitle(event: RuntimeEvent): { event: RuntimeEvent; journal: boolean } | null {
+    if (event.type !== "thread.title.updated" || event.source === "kone.store") {
+      return { event, journal: true };
+    }
+    const accepted = acceptProviderThreadTitle({
+      hasSettledTurn: store.hasSettledAssistantTurn(event.threadId),
+      proposedTitle: event.title,
+    });
+    if (!accepted) return null;
+    store.renameThread(event.threadId, accepted);
+    return { event: { ...event, title: accepted }, journal: false };
+  }
+
+  /** Event types that stream to renderers but never journal: ephemeral live
+   *  round-trips, derived projections, and meta stamps the store already
+   *  wrote directly. */
+  const STREAM_ONLY_EVENT_TYPES: ReadonlySet<RuntimeEvent["type"]> = new Set<RuntimeEvent["type"]>([
+    "user-input.requested",
+    "user-input.resolved",
+    "approval.requested",
+    "approval.resolved",
+    "thread.spawned",
+    "thread.spawn-updated",
+    "thread.archived",
+    "thread.unarchived",
+    "thread.done.updated",
+    "app.theme_mutation",
+    "app.agent_mutation",
+    "app.subagent_presets_changed",
+    "app.strip_mutation",
+    "app.typography_mutation",
+    "bench.job-changed",
+  ]);
+
   // Fan the merged event stream out to every subscribed renderer, and journal
   // it to the conversation store on the way through (best-effort — the store
   // guards itself, so persistence can never disrupt the live stream).
-  svc.onEvent((event) => {
-    // User-input questions and tool approvals are ephemeral live round-trips
-    // (like title updates) — stream them to renderers but don't journal them
-    // into the transcript. Spawn events are derived projections recomputed from
-    // the store on every read — journaling them would write derived state back
-    // into the source of truth.
-    const journal =
-      event.type !== "user-input.requested" &&
-      event.type !== "user-input.resolved" &&
-      event.type !== "approval.requested" &&
-      event.type !== "approval.resolved" &&
-      event.type !== "thread.spawned" &&
-      event.type !== "thread.spawn-updated" &&
-      // Archive stamps are meta like title updates: setThreadArchived wrote
-      // the column directly, so journaling the announcement would record
-      // derived state in the transcript journal.
-      event.type !== "thread.archived" &&
-      event.type !== "thread.unarchived" &&
-      // Done marks are meta the same way: setThreadDone wrote the column
-      // directly, so the announcement is stream-only, never journaled.
-      event.type !== "thread.done.updated" &&
-      // App steering is live instruction for the renderer, not transcript: the
-      // theme, the agent roster, the preset sub-agents, the thread strip and
-      // the typography prefs are app state the user can see for themselves,
-      // and journaling the announcement would record derived state in the
-      // turn's transcript.
-      event.type !== "app.theme_mutation" &&
-      event.type !== "app.agent_mutation" &&
-      event.type !== "app.subagent_presets_changed" &&
-      event.type !== "app.strip_mutation" &&
-      event.type !== "app.typography_mutation" &&
-      // The bench's own announcements are about the job tables, which the
-      // store already wrote — journaling one would record a queue movement in
-      // some thread's transcript, and a filed draft belongs to no thread at all.
-      event.type !== "bench.job-changed";
+  svc.onEvent((incoming) => {
+    const gated = gateProviderTitle(incoming);
+    if (!gated) return;
+    const { event, journal: gateJournal } = gated;
+    const journal = gateJournal && !STREAM_ONLY_EVENT_TYPES.has(event.type);
     broadcast(event, journal);
     // When a turn settles, snapshot the repo state it left behind (branch +
     // working-tree diffstat) onto the thread, so the Project Home "recent
@@ -767,9 +763,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:history-compactions", (_event, threadId: string) =>
     store.listCompactions(threadId),
   );
-  // Handoff links leaving a source thread, oldest first — the timeline's
-  // "Handed to" markers. Few rows ever (one per handoff), so this is always
-  // the full list, never a page.
+  // Continuation links leaving a source thread, oldest first — the timeline's
+  // "Handed to" markers. Few rows ever (one per continuation), so this is
+  // always the full list, never a page.
+  ipcMain.handle("agent:history-continuations", (_event, sourceThreadId: string) =>
+    store.continuationsFromSource(sourceThreadId),
+  );
   // Hand a live thread to another provider/model without leaving it: the
   // thread id, title and transcript all survive and only the provider
   // session underneath is replaced. Mirrors agent:create-handoff, minus the
@@ -784,10 +783,6 @@ export function registerAgentIpc(): void {
   // a whole read.
   ipcMain.handle("agent:history-hand-ins", (_event, threadId: string) =>
     store.handInsForThread(threadId),
-  );
-
-  ipcMain.handle("agent:history-handoffs", (_event, sourceThreadId: string) =>
-    store.handoffsFromSource(sourceThreadId),
   );
   // Windowed thread read (user-anchored keyset pages): first page when no
   // cursor is given, then the next strictly older page per cursor. The

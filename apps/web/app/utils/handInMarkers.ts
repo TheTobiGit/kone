@@ -51,13 +51,34 @@ export function deriveHandInMarks(records: readonly HandInRecord[]): HandInMark[
     }));
 }
 
+/** Whether a hand-in counts yet: only once a turn has landed under it.
+ *  Choosing a provider stages it; until something is actually sent, those
+ *  hands have answered nothing and naming them would claim work that never
+ *  happened. One pure rule so the header and the timeline never disagree. */
+export function handInHasLanded(
+  at: number,
+  blocks: readonly { at: number }[],
+): boolean {
+  return blocks.some((b) => b.at > at);
+}
+
 /** The verb the marker leads with. A hand-in keeps the thread and changes who
  *  is answering it, so it reads as the conversation continuing in new hands
  *  rather than as a setting being retuned. */
 export const HAND_IN_VERB = "Continued by";
 
-export function handInMarkLabel(mark: HandInMark): string {
-  return `${HAND_IN_VERB} ${mark.to.label}, from ${mark.from.label}`;
+/** The tier each end of a hand-in ran at, when the same pick moved it. */
+export type HandInEffortLegs = {
+  from: { label: string };
+  to: { label: string };
+};
+
+export function handInMarkLabel(mark: HandInMark, effort?: HandInEffortLegs | null): string {
+  const say = (side: "from" | "to"): string => {
+    const tier = effort?.[side]?.label;
+    return tier ? `${mark[side].label} at ${tier}` : mark[side].label;
+  };
+  return `${HAND_IN_VERB} ${say("to")}, from ${say("from")}`;
 }
 
 /** Collapse a run of hand-ins that all land on the same turn into the one

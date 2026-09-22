@@ -140,9 +140,7 @@ export function useThreadPills(o: UseThreadPillsOptions) {
         key: t.key,
         threadId: t.threadId,
         title: t.title,
-        brand: t.provider
-          ? sessionBrand(t.provider, SESSION_BRAND[t.provider] ?? "generic", t.model)
-          : "generic",
+        brand: sessionBrand(t.provider, SESSION_BRAND[t.provider] ?? "generic", t.model),
         block: t.block,
         turnId: t.block?.turnId ?? "",
         task: t.task,

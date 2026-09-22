@@ -35,13 +35,13 @@ import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
 import HandInMark from "~/components/conversation/HandInMark.vue";
-import { collapseHandInMarks, deriveHandInMarks } from "~/utils/handInMarkers";
+import { collapseHandInMarks, deriveHandInMarks, handInHasLanded } from "~/utils/handInMarkers";
 import TurnSettingMark from "~/components/conversation/TurnSettingMark.vue";
 import HandoffMark from "~/components/conversation/HandoffMark.vue";
 import JevMark from "~/components/conversation/JevMark.vue";
 import { jevRouteFor } from "~/utils/jevRoutes";
 import { useHandoffMarks } from "~/composables/useHandoffMarks";
-import { groupHandoffMarks } from "~/utils/handoffMarkers";
+import { groupMarks } from "~/utils/handoffMarkers";
 import type { EffortTier } from "~/utils/modelCatalog";
 import { deriveTurnSettingMarks, type TurnSettingChange } from "~/utils/turnSettingMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
@@ -722,7 +722,7 @@ const handoffMarks = useHandoffMarks({
   enabled: () => props.linkHandoffs ?? false,
 });
 const groupedHandoffMarks = computed(() =>
-  groupHandoffMarks(
+  groupMarks(
     handoffMarks.marks.value,
     allExchanges.value.map((ex) => ({ key: ex.key, firstAt: ex.blocks[0]?.at })),
   ),
@@ -735,10 +735,16 @@ function handoffMarksFor(key: string) {
 /** Hand-in markers — where this thread changed hands without changing
  *  threads. Filed onto exchanges by the same march as the handoff marks, and
  *  gated on the same host capability: a surface that cannot hand a thread in
- *  has none to show. */
-const handInMarks = computed(() => deriveHandInMarks(props.handIns ?? []));
+ *  has none to show. Only landed swaps count (see handInHasLanded — the same
+ *  rule the header follows); unlanded ones stay invisible. */
+const handInMarks = computed(() => {
+  const blocks = allExchanges.value.flatMap((ex) => ex.blocks);
+  return deriveHandInMarks(props.handIns ?? []).filter((mark) =>
+    handInHasLanded(mark.at, blocks),
+  );
+});
 const groupedHandInMarks = computed(() =>
-  groupHandoffMarks(
+  groupMarks(
     handInMarks.value,
     allExchanges.value.map((ex) => ({ key: ex.key, firstAt: ex.blocks[0]?.at })),
   ),

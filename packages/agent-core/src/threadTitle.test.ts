@@ -205,6 +205,7 @@ describe("provider titles on forked threads", () => {
       requestId: "r-h1",
       threadId: "h-1",
       sourceThreadId: "t-src",
+      kind: "handoff",
       target: { provider: "cursor" },
     });
     expect(result.status).toBe("created");
@@ -230,6 +231,7 @@ describe("provider titles on forked threads", () => {
       requestId: "r-b1",
       threadId: "b-1",
       sourceThreadId: "t-src",
+      kind: "branch",
       throughBlockId: "u-2",
       target: { provider: "cursor" },
     });

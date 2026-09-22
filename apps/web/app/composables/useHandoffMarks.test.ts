@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { useHandoffMarks } from "./useHandoffMarks";
 import type {
+  ContinuationLink,
   ForkContext,
-  HandoffLink,
   ProviderKind,
   RuntimeEvent,
 } from "~/types/desktop";
@@ -11,20 +11,20 @@ import type {
 type BridgeHost = {
   koneDesktop: {
     agent: {
-      history: { handoffsFromSource: (sourceThreadId: string) => Promise<HandoffLink[]> };
+      history: { continuationsFromSource: (sourceThreadId: string) => Promise<ContinuationLink[]> };
       onEvent: (fn: (e: RuntimeEvent) => void) => () => void;
     };
   };
 };
 
-function installBridge(links: HandoffLink[]) {
+function installBridge(links: ContinuationLink[]) {
   let calls = 0;
   let listener: ((event: RuntimeEvent) => void) | null = null;
   const host: BridgeHost = {
     koneDesktop: {
       agent: {
         history: {
-          handoffsFromSource: () => {
+          continuationsFromSource: () => {
             calls += 1;
             return Promise.resolve(links);
           },

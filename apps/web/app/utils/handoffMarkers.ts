@@ -5,6 +5,7 @@
 // placement is pinned by unit tests rather than by scrolling long threads.
 import type { MarkerExchange } from "~/utils/compactionMarkers";
 import type { BrandKey } from "~/utils/modelCatalog";
+import type { ForkKind } from "~/types/desktop";
 
 /** One continuation marker line: a static verb plus the clickable other end.
  *  `at` is the fork's creation time — the point in the flow the marker sits
@@ -28,6 +29,16 @@ export function handoffMarkVerb(mark: Pick<HandoffMark, "kind" | "relation">): s
   return mark.kind === "from" ? "Handed from" : "Handed to";
 }
 
+/** Whether a fork kind continues the conversation it came from, rather than
+ *  borrowing it as reference. Handoffs and branches both do; side chats do
+ *  not. One predicate so the timeline and the header never disagree about
+ *  what counts as a continuation. */
+export function isContinuationForkKind(
+  kind: ForkKind | undefined,
+): kind is "handoff" | "branch" {
+  return kind === "handoff" || kind === "branch";
+}
+
 export type GroupedMarks<T> = {
   /** Markers keyed by the exchange they precede. A separate bucket below —
    *  never a sentinel string mixed into this map — so no exchange key can
@@ -37,17 +48,12 @@ export type GroupedMarks<T> = {
   trailing: T[];
 };
 
-/** The handoff timeline's own grouping. Every kind of timestamped mark files
- *  onto exchanges the same way, so the march below is generic and this alias
- *  is what the handoff callers read. */
-export type GroupedHandoffMarks = GroupedMarks<HandoffMark>;
-
 /** Group markers onto the exchange they precede: a marker belongs above the
  *  first exchange starting at or after it. Both sides march oldest-first, so
  *  each marker settles in a single pass — no find-per-marker scan. Grouped
  *  over the FULL exchange list (not the open window) so a marker above the
  *  collapsed window reappears with its exchange on reveal. */
-export function groupHandoffMarks<T extends { at: number }>(
+export function groupMarks<T extends { at: number }>(
   marks: readonly T[],
   exchanges: readonly MarkerExchange[],
 ): GroupedMarks<T> {

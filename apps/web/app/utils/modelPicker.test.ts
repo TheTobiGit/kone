@@ -245,10 +245,15 @@ describe("boot helpers & local storage persistence", () => {
     expect(bootProvider()).toBeNull();
   });
 
-  test("bootProvider deactivates a stored provider that is not ready", () => {
+  test("bootProvider returns what was stored; readiness is validated by the resolver", () => {
     localStorage.setItem(PROVIDER_KEY, "codex");
-    expect(bootProvider(["claudeAgent"])).toBeNull();
-    expect(bootProvider(["codex", "claudeAgent"])).toBe("codex");
+    expect(bootProvider()).toBe("codex");
+    const res = resolveSessionModelSelection({
+      lastUsed: { provider: "codex" },
+      availableProviders: ["claudeAgent"],
+      availableCatalogs: mockCatalogs,
+    });
+    expect(res.provider).not.toBe("codex");
   });
 
   test("resolve returns none when no provider is active", () => {
