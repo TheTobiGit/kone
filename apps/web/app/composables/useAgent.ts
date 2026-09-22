@@ -5,6 +5,7 @@ import {
 import type {
   ApprovalDecision,
   ChatAttachment,
+  HandInRecord,
   InteractionMode,
   KoneAgentApi,
   ProviderKind,
@@ -120,6 +121,27 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  turn. Never flips the session into the error state. */
   const warning = ref<string | null>(null);
   const tokenUsage = ref<TokenUsage | null>(null);
+  /** Every time this thread changed hands, oldest first. Held on the session
+   *  rather than fetched by whoever draws it: the strip renders one header per
+   *  column and cannot call a composable per column, and the timeline's
+   *  markers and the header must never disagree about who ran what. */
+  const handInRecords = ref<HandInRecord[]>([]);
+  async function loadHandIns(): Promise<void> {
+    // ctx.bridge, not the `bridge` alias below: this runs from an immediate
+    // watch during setup, before that binding is initialised.
+    const api = ctx.bridge();
+    const id = threadId.value;
+    if (!api?.history?.handInsForThread || !id) {
+      handInRecords.value = [];
+      return;
+    }
+    try {
+      handInRecords.value = (await api.history.handInsForThread(id)) ?? [];
+    } catch {
+      handInRecords.value = [];
+    }
+  }
+  watch(() => threadId.value, () => void loadHandIns(), { immediate: true });
   // Compaction state lives in the unit — the flat aliases below keep this
   // session's CompactSessionLike shape for compactPropsForSession.
   const compaction = useCompaction({ threadId, bridge: ctx.bridge });
@@ -835,6 +857,51 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  its first turn before this resolves — the caller opens the returned
    *  thread id. Resolves null when refused (a turn is running) or failed;
    *  failures surface on the session error like a failed send. */
+  /** Hand this thread to another provider without changing threads: the old
+   *  session is stopped, the thread's stored owner becomes the target, and the
+   *  next turn replays the prior transcript into the new session. The thread
+   *  id is deliberately kept — re-minting it is the very thing a hand-in
+   *  exists to avoid — so the pane, the transcript and the stored conversation
+   *  all stay put. Returns false when there was nothing live to hand over, or
+   *  the swap failed; the caller falls back to a plain restart. */
+  async function handIn(target: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  }): Promise<boolean> {
+    const api = bridge();
+    // Nothing has run yet — there is no conversation to carry, and a restart
+    // is the cheaper way to put a blank thread on another provider.
+    if (!api?.handIn || !session.value) return false;
+    if (busy.value) await interrupt();
+    stopMock();
+    touch();
+    try {
+      const result = await api.handIn({
+        threadId: threadId.value,
+        // The composer's current posture rides along: a provider that takes
+        // its permission mode as a spawn flag has to be born with it.
+        target: { mode: mode.value, ...target },
+      });
+      // The desktop side already stopped the old session and started the
+      // target one against this same thread. startSession is not idempotent,
+      // so adopt that handle rather than starting a second one here.
+      session.value = result.session;
+      // Usage is counted per provider session; the new hands start at zero.
+      tokenUsage.value = null;
+      sessionState.value = "ready";
+      error.value = null;
+      // No event is pushed for a hand-in, so the record list is re-read here —
+      // the header and the timeline both draw from it.
+      await loadHandIns();
+      return true;
+    } catch (e) {
+      error.value = peelIpcError(e, "Could not hand this thread over");
+      return false;
+    }
+  }
+
   async function forkAtBlock(blockId: string, text: string): Promise<string | null> {
     const trimmed = text.trim();
     if (!trimmed || busy.value) return null;
@@ -1152,6 +1219,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     send,
     steerTurn,
     forkAtBlock,
+    handIn,
+    handInRecords,
     cancelQueuedTurn,
     sendQueuedEntryNow,
     reorderQueuedTurns,
@@ -1638,6 +1707,15 @@ export function useAgent(options: UseAgentOptions) {
   };
   const demo = (opts?: { fast?: boolean }) => active.value?.demo(opts);
   const restart = async () => { await active.value?.restart(); };
+  // Falsy when there is no active session at all, which reads the same as a
+  // refused hand-in: the caller falls back to a restart either way.
+  const handIn = async (target: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  }) =>
+    (await active.value?.handIn(target)) ?? false;
   const setProvider = (next: ProviderKind) => active.value?.setProvider(next);
   const setModel = (id: string | undefined) => active.value?.setModel(id);
   const setMode = (next: InteractionMode) => active.value?.setMode(next);
@@ -1998,6 +2076,7 @@ export function useAgent(options: UseAgentOptions) {
     // actions
     start,
     restart,
+    handIn,
     newThread,
     newDetachedThread,
     newThreadAt,

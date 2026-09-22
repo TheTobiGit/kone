@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -837,6 +837,51 @@ function migration0012BlockTurnStamps(db: DatabaseSync): void {
   addColumn(db, "blocks", "model", "TEXT");
 }
 
+/**
+ * Which provider owned which stretch of a thread. A thread used to be
+ * single-provider — its `threads.provider` column was the whole truth — but a
+ * hand-in swaps the provider underneath a thread that keeps its id and its
+ * transcript, so that column is now only the *current* owner. This table is
+ * the rest: one row per swap, naming what was handed from, what it was handed
+ * to, and when.
+ *
+ * A row per event rather than a row per segment: an event is what actually
+ * happens and can be appended once, atomically, at the moment it happens. A
+ * segment table would need the open segment's end rewritten on every swap,
+ * which is two writes to say one thing and a half-closed row to recover from
+ * if the second one is lost. The segments are derivable — the thread's first
+ * provider is the oldest row's `from`, and every later stretch starts at a
+ * row's `at`.
+ *
+ * `from_model` / `to_model` are nullable: a thread that never ran a named
+ * model has none to record, and NULL reads as "nothing recorded" rather than
+ * an empty label the timeline would have to render.
+ */
+function migration0013ThreadHandIns(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS thread_hand_ins (
+      hand_in_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id     TEXT    NOT NULL,
+      from_provider TEXT    NOT NULL,
+      from_model    TEXT,
+      to_provider   TEXT    NOT NULL,
+      to_model      TEXT,
+      at            INTEGER NOT NULL,
+      -- One-shot bootstrap flag, the same shape a fork's context carries:
+      -- 'pending' until the first turn after the swap settles, then
+      -- 'completed'. It gates the prior-transcript replay so the new session
+      -- is handed the conversation exactly once.
+      bootstrap_status TEXT NOT NULL DEFAULT 'pending'
+    );
+  `);
+  // The only read is "every hand-in of this thread, oldest first" — the
+  // timeline's markers — so the index covers exactly that.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_thread_hand_ins_thread
+      ON thread_hand_ins(thread_id, at);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -850,6 +895,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 10, name: "JobAttachmentsAndOrder", run: migration0010JobAttachmentsAndOrder },
   { id: 11, name: "ThreadAgentRoute", run: migration0011ThreadAgentRoute },
   { id: 12, name: "BlockTurnStamps", run: migration0012BlockTurnStamps },
+  { id: 13, name: "ThreadHandIns", run: migration0013ThreadHandIns },
 ];
 
 export interface MigrationOptions {

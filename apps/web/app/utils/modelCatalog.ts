@@ -284,15 +284,31 @@ export type ModelDescription = {
   name: string;
 };
 
+/** Model ids that name no real model — aliases for "whatever the provider runs
+ *  by default" rather than a model anyone could pick. Rendering one through
+ *  the catalog resolver would prettify it into a name ("Default") that points
+ *  at nothing, so surfaces with provider context fall back to the provider's
+ *  own label instead, and surfaces without one treat the stamp as absent. */
+const PLACEHOLDER_MODEL_IDS: ReadonlySet<string> = new Set(["default", "auto"]);
+
+export function isPlaceholderModelId(id: string | null | undefined): boolean {
+  const trimmed = id?.trim().toLowerCase();
+  if (!trimmed) return true;
+  return PLACEHOLDER_MODEL_IDS.has(trimmed);
+}
+
 /** The logomark brand + display name for a raw model id, independent of any live
  *  catalog — for surfaces that hold an id but not the built family (e.g. a nested
- *  subagent's `model`). Prefers a real catalog label when one is passed. */
+ *  subagent's `model`). Prefers a real catalog label when one is passed. A miss
+ *  against the catalog never borrows the first family's label: only a genuine
+ *  match contributes a catalog name or brand, anything else prettifies the id
+ *  itself, which is what the no-catalog path already does. */
 export function describeModelId(
   id: string | undefined,
   catalog?: ModelOption[],
 ): ModelDescription {
   if (!id) return { brand: "generic", name: "Default model" };
-  const fam = catalog ? familyForId(catalog, id) : undefined;
+  const fam = catalog ? familyForIdStrict(catalog, id) : undefined;
   const { core } = splitEffort(id);
   const { brand } = brandOf(core);
   return { brand: fam?.brand ?? brand, name: fam?.label ?? prettifyModelId(core) };
@@ -480,10 +496,19 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
   });
 }
 
+/** The family that owns a given raw model id — or undefined on a miss. Display
+ *  paths resolve through this: a stale id (a stamp from a model this build no
+ *  longer offers) prettifies instead of borrowing the first family's name,
+ *  which would name a model that never ran. */
+export function familyForIdStrict(catalog: ModelOption[], id: string | undefined): ModelOption | undefined {
+  if (!id) return undefined;
+  return catalog.find((o) => o.efforts.some((e) => e.modelId === id));
+}
+
 /** The family that owns a given raw model id (or the first family as a fallback). */
 export function familyForId(catalog: ModelOption[], id: string | undefined): ModelOption | undefined {
   if (!id) return catalog[0];
-  return catalog.find((o) => o.efforts.some((e) => e.modelId === id)) ?? catalog[0];
+  return familyForIdStrict(catalog, id) ?? catalog[0];
 }
 
 /** The effort within a family matching a known reasoning tier (or the family

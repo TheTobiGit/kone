@@ -45,6 +45,9 @@ import type {
   CreateSideChatResult,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
+  HandInInput,
+  HandInRecord,
+  HandInResult,
   HandoffLink,
   InteractionMode,
   ModelDescriptor,
@@ -467,6 +470,10 @@ const api = {
     // id; a replayed id resolves "exists".
     createHandoff: (input: CreateHandoffInput): Promise<CreateHandoffResult> =>
       ipcRenderer.invoke("agent:create-handoff", input),
+    // Hand a live thread to another provider/model without leaving it — the
+    // thread id and transcript survive; only the session underneath changes.
+    handIn: (input: HandInInput): Promise<HandInResult> =>
+      ipcRenderer.invoke("agent:hand-in", input),
     // Edit-and-resend of an earlier user message: fork the thread at that
     // block (the source is never mutated) and dispatch the fork's first turn
     // from the edited text. The renderer mints the fork's ids; a replayed
@@ -536,6 +543,10 @@ const api = {
       // timeline's "Handed to" markers.
       handoffsFromSource: (sourceThreadId: string): Promise<HandoffLink[]> =>
         ipcRenderer.invoke("agent:history-handoffs", sourceThreadId),
+      // Every time this thread changed hands, oldest first — the timeline's
+      // "changed hands" markers.
+      handInsForThread: (threadId: string): Promise<HandInRecord[]> =>
+        ipcRenderer.invoke("agent:history-hand-ins", threadId),
       // Windowed thread read (user-anchored keyset pages): first page when no
       // cursor is given; pass `nextCursor` back verbatim for the next strictly
       // older page. Null when the thread is missing. The renderer treats the

@@ -7,7 +7,7 @@ import type {
   SubagentRun,
   SubagentStatus,
 } from "~/types/desktop";
-import { deriveActiveSubagents, deriveDelegates, formatElapsed } from "./subagentRuns";
+import { deriveActiveSubagents, deriveDelegates, formatElapsed, subagentModel } from "./subagentRuns";
 import type { DelegateState } from "./subagentRuns";
 
 let n = 0;
@@ -295,6 +295,21 @@ describe("deriveActiveSubagents", () => {
     ]);
     expect(sub.running).toBe(1);
     expect(sub.streaming).toBe(true);
+  });
+});
+
+describe("subagentModel", () => {
+  test("names a real model id", () => {
+    expect(subagentModel({ model: "claude-sonnet-4-5" })).toEqual({
+      brand: "claude",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("a placeholder model reads as absent, not as a prettified alias", () => {
+    expect(subagentModel({ model: "default" })).toEqual({ brand: "generic", name: "Default model" });
+    expect(subagentModel({ model: "auto" })).toEqual({ brand: "generic", name: "Default model" });
+    expect(subagentModel({})).toEqual({ brand: "generic", name: "Default model" });
   });
 });
 

@@ -47,7 +47,7 @@ import {
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
-import { createHandoff } from "~/composables/useThreadHandoff";
+import { createHandoff, type HandoffOptions } from "~/composables/useThreadHandoff";
 import { agentForThread } from "~/utils/agents";
 import { JEV_ROUTER_ID, routingReceipt } from "~/utils/agentRouting";
 import { compactPropsForSession } from "~/utils/compactAvailability";
@@ -499,6 +499,24 @@ function openHandoffPicker(paneId: string): void {
   modelPickerOpen.value = false;
   handoffPaneId.value = paneId;
 }
+// A branch is a handoff cut short: the target thread ends at the reply the
+// user forked from, so the next turn continues from there. It shares the
+// picker and the open-beside-source placement; only the anchor differs, and
+// the same busy refusal applies (a moving transcript copies badly).
+const branchAnchor = ref<{ paneId: string; blockId: string } | null>(null);
+function openBranchPicker(paneId: string, blockId: string): void {
+  const pane = panes.value.find((p) => p.id === paneId);
+  if (pane?.kind !== "thread" || !pane.session) return;
+  if (pane.session.busy.value) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before forking.",
+    );
+    return;
+  }
+  modelPickerOpen.value = false;
+  branchAnchor.value = { paneId, blockId };
+  handoffPaneId.value = paneId;
+}
 const handoffSource = computed(() => {
   const pane = panes.value.find((p) => p.id === handoffPaneId.value);
   if (!pane || pane.kind !== "thread" || !pane.session) return null;
@@ -514,6 +532,7 @@ const handoffSource = computed(() => {
 function closePicker(): void {
   modelPickerOpen.value = false;
   handoffPaneId.value = null;
+  branchAnchor.value = null;
 }
 function onPickerSelect(picked: ModelPick): void {
   // One picker, two commits: a handoff pick moves the source thread's
@@ -528,13 +547,17 @@ function onPickerSelect(picked: ModelPick): void {
 }
 async function confirmHandoff(picked: ModelPick): Promise<void> {
   const source = handoffSource.value;
+  const anchor = branchAnchor.value;
   handoffPaneId.value = null;
+  branchAnchor.value = null;
   if (!source) return;
   try {
-    const { threadId } = await createHandoff({
+    const options: HandoffOptions = {
       sourceThreadId: source.threadId,
       target: { provider: picked.provider, model: picked.modelId, effort: picked.tier },
-    });
+    };
+    if (anchor) options.throughBlockId = anchor.blockId;
+    const { threadId } = await createHandoff(options);
     const id = await studio.open("thread", { threadId, near: source.paneId });
     if (id) void composerRef.value?.wake();
   } catch (err) {
@@ -1671,6 +1694,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @side-chat="openSideChat"
         @handoff="openHandoffPicker"
         @edit-fork="openEditFork"
+        @branch-fork="openBranchPicker"
         @open-thread="openLinkedThread"
         @insert-column="insertPane"
         @terminal-write="terminal.write"

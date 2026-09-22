@@ -46,7 +46,7 @@ export function useHandoffMarks(opts: {
     if (!opts.enabled()) return [];
     const out: HandoffMark[] = [];
     const ctx = opts.forkContext();
-    if (ctx?.forkKind === "handoff") {
+    if (ctx?.forkKind === "handoff" || ctx?.forkKind === "branch") {
       // The source model rides the context the same way its provider does —
       // the mark names it long after the source row may be gone, falling
       // back to the provider when the source never ran named.
@@ -55,6 +55,7 @@ export function useHandoffMarks(opts: {
         key: "from",
         at: ctx.importedAt,
         kind: "from",
+        relation: ctx.forkKind === "branch" ? "branch" : "handoff",
         threadId: ctx.sourceThreadId,
         label: ctx.sourceModel
           ? describeModelId(ctx.sourceModel).name
@@ -69,6 +70,7 @@ export function useHandoffMarks(opts: {
         key: link.threadId,
         at: link.handedAt,
         kind: "to",
+        relation: link.kind,
         threadId: link.threadId,
         label: link.model ? describeModelId(link.model).name : PROVIDER_LABEL[link.provider],
         brand: SESSION_BRAND[link.provider] ?? "generic",

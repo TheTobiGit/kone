@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
 
 import type { MarkerExchange } from "./compactionMarkers";
-import { groupHandoffMarks, type HandoffMark } from "./handoffMarkers";
+import { groupHandoffMarks, handoffMarkVerb, type HandoffMark } from "./handoffMarkers";
 
 function mark(key: string, at: number): HandoffMark {
-  return { key, at, kind: "to", threadId: `thread-${key}`, label: key, brand: "generic" };
+  return {
+    key,
+    at,
+    kind: "to",
+    relation: "handoff",
+    threadId: `thread-${key}`,
+    label: key,
+    brand: "generic",
+  };
 }
 
 function exchange(key: string, firstAt: number | undefined): MarkerExchange {
@@ -36,5 +44,17 @@ describe("groupHandoffMarks", () => {
   test("no exchanges means everything trails", () => {
     const grouped = groupHandoffMarks([mark("h1", 100)], []);
     expect(grouped.trailing.map((m) => m.key)).toEqual(["h1"]);
+  });
+});
+
+describe("handoffMarkVerb", () => {
+  test("a handoff reads as the conversation changing hands", () => {
+    expect(handoffMarkVerb({ kind: "from", relation: "handoff" })).toBe("Handed from");
+    expect(handoffMarkVerb({ kind: "to", relation: "handoff" })).toBe("Handed to");
+  });
+
+  test("a branch reads as the conversation splitting, not moving", () => {
+    expect(handoffMarkVerb({ kind: "from", relation: "branch" })).toBe("Forked from");
+    expect(handoffMarkVerb({ kind: "to", relation: "branch" })).toBe("Forked to");
   });
 });

@@ -70,8 +70,8 @@ function handoffEvent(sourceThreadId: string): RuntimeEvent {
 describe("useHandoffMarks", () => {
   test("a handoff thread marks its source, oldest-first with its links", async () => {
     installBridge([
-      { threadId: "h-2", provider: "opencode", handedAt: 300 },
-      { threadId: "h-1", provider: "claudeAgent", model: "claude-sonnet-5", handedAt: 200 },
+      { threadId: "h-2", provider: "opencode", handedAt: 300, kind: "handoff" },
+      { threadId: "h-1", provider: "claudeAgent", model: "claude-sonnet-5", handedAt: 200, kind: "handoff" },
     ]);
     const forkContext: ForkContext = {
       sourceThreadId: "t-src",
@@ -111,7 +111,7 @@ describe("useHandoffMarks", () => {
   });
 
   test("disabled surfaces fetch nothing and mark nothing", async () => {
-    installBridge([{ threadId: "h-1", provider: "codex", handedAt: 200 }]);
+    installBridge([{ threadId: "h-1", provider: "codex", handedAt: 200, kind: "handoff" }]);
     const { marks, reload } = useHandoffMarks({
       threadId: () => "t-src",
       forkContext: () => null,
