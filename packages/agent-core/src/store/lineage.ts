@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import type { ChatAttachment, ForkContext, HandoffLink, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadEnvMode, ThreadLineage, TurnStamp } from "../types.js";
-import { isHandoffForkContext } from "../types.js";
+import type { ContinuationLink, ForkContext, ForkImportedBlock, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadEnvMode, ThreadLineage } from "../types.js";
+import { isBranchForkContext, isContinuationForkContext } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, type ThreadRow } from "../conversationStoreTypes.js";
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
@@ -329,6 +329,16 @@ function copyForkSatellites(
   ).run(threadId, sourceThreadId, ...turnIds);
 }
 
+/** The fields every continuation marker carries, before the kind tags it as
+ *  a handoff or a branch. Built once so the two branches below cannot drift. */
+interface ContinuationBase {
+  threadId: string;
+  provider: ProviderKind;
+  handedAt: number;
+  model?: string;
+  title?: string;
+}
+
 export class LineageRepo {
   constructor(private readonly dbh: ConversationDb) {}
 
@@ -375,10 +385,12 @@ export class LineageRepo {
     }
   }
 
-  /** Every handoff forked from a source thread, oldest first — the timeline's
-   *  "Handed to" markers. Side chats and edit forks share the
-   *  `source_thread_id` pointer, so the stored fork context discriminates. */
-  handoffsFromSource(sourceThreadId: string): HandoffLink[] {
+  /** Every continuation forked from a source thread — handoffs and branches
+   *  alike — oldest first, each tagged with which it is. These are the
+   *  timeline's markers. Side chats and edit forks share the
+   *  `source_thread_id` pointer but are not continuations, so the stored
+   *  fork context discriminates. */
+  continuationsFromSource(sourceThreadId: string): ContinuationLink[] {
     const db = this.dbh.handle();
     if (!db) return [];
     try {
@@ -396,23 +408,34 @@ export class LineageRepo {
         created_at: number;
         fork_context_json: string | null;
       }>;
-      const links: HandoffLink[] = [];
+      const links: ContinuationLink[] = [];
       for (const row of rows) {
-        if (!isHandoffForkContext(parseJsonObject<ForkContext>(row.fork_context_json))) continue;
+        const context = parseJsonObject<ForkContext>(row.fork_context_json);
+        if (!isContinuationForkContext(context)) continue;
         // SAFETY: threads.provider only ever stores ProviderKind strings —
         // every writer takes its provider typed as ProviderKind.
-        const link: HandoffLink = {
+        const provider = row.provider as ProviderKind;
+        const base: ContinuationBase = {
           threadId: row.thread_id,
-          provider: row.provider as ProviderKind,
+          provider,
           handedAt: row.created_at,
         };
-        if (row.model) link.model = row.model;
-        if (row.title) link.title = row.title;
-        links.push(link);
+        if (row.model) base.model = row.model;
+        if (row.title) base.title = row.title;
+        if (isBranchForkContext(context)) {
+          // A branch's fork point is the reply it was taken from, which is
+          // the block the marker belongs against. Every branch stores one;
+          // a row without it is corrupt rather than a handoff, so it is
+          // skipped instead of silently re-labelled.
+          if (!context?.forkPointBlockId) continue;
+          links.push({ ...base, kind: "branch", fromBlockId: context.forkPointBlockId });
+        } else {
+          links.push({ ...base, kind: "handoff" });
+        }
       }
       return links;
     } catch (err) {
-      console.error("[conversation-store] handoffsFromSource failed:", err);
+      console.error("[conversation-store] continuationsFromSource failed:", err);
       return [];
     }
   }
@@ -446,13 +469,7 @@ export class LineageRepo {
      *  synthetic turn id so loadThread re-attaches that narrative as one
      *  `assistant_text` item (an assistant block with no items would read as
      *  an empty reply). */
-    importedBlocks: Array<{
-      id: string;
-      role: "user" | "assistant";
-      text: string;
-      at: number;
-      attachments?: ChatAttachment[];
-    } & TurnStamp>;
+    importedBlocks: ForkImportedBlock[];
   }): boolean {
     const db = this.dbh.handle();
     if (!db) return false;

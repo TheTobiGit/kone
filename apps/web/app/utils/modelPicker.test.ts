@@ -143,6 +143,9 @@ describe("resolveSessionModelSelection — model resolution hierarchy", () => {
     const res = resolveSessionModelSelection({
       availableCatalogs: mockCatalogs,
       availableProviders: ["codex"],
+      // The fresh-install fallback draws a random ready provider/model, so pin
+      // the draw — near-1 lands on the last flat entry (the high rung here).
+      rand: () => 0.999,
     });
 
     expect(res).toEqual({
@@ -236,5 +239,47 @@ describe("boot helpers & local storage persistence", () => {
   test("bootMode returns null for unrecognized mode values", () => {
     localStorage.setItem(DEFAULT_MODE_KEY, "invalid-mode");
     expect(bootMode("/path/to/project")).toBeNull();
+  });
+
+  test("bootProvider returns null on fresh install with nothing stored", () => {
+    expect(bootProvider()).toBeNull();
+  });
+
+  test("bootProvider returns what was stored; readiness is validated by the resolver", () => {
+    localStorage.setItem(PROVIDER_KEY, "codex");
+    expect(bootProvider()).toBe("codex");
+    const res = resolveSessionModelSelection({
+      lastUsed: { provider: "codex" },
+      availableProviders: ["claudeAgent"],
+      availableCatalogs: mockCatalogs,
+    });
+    expect(res.provider).not.toBe("codex");
+  });
+
+  test("resolve returns none when no provider is active", () => {
+    const res = resolveSessionModelSelection({
+      availableProviders: [],
+      availableCatalogs: mockCatalogs,
+    });
+    expect(res.provider).toBeNull();
+    expect(res.model).toBeUndefined();
+    expect(res.source).toBe("none");
+  });
+
+  test("fresh-install fallback picks randomly among ready providers", () => {
+    const first = resolveSessionModelSelection({
+      availableCatalogs: mockCatalogs,
+      availableProviders: ["codex", "claudeAgent"],
+      rand: () => 0,
+    });
+    const last = resolveSessionModelSelection({
+      availableCatalogs: mockCatalogs,
+      availableProviders: ["codex", "claudeAgent"],
+      rand: () => 0.999,
+    });
+    expect(first.provider).toBe("codex");
+    expect(last.provider).toBe("claudeAgent");
+    expect(first.source).toBe("catalog_fallback");
+    expect(last.source).toBe("catalog_fallback");
   });
 });

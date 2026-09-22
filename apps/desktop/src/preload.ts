@@ -39,13 +39,16 @@ import type {
   ChatAttachment,
   CompactThreadResult,
   CompactionRecord,
+  ContinuationLink,
   CreateHandoffInput,
   CreateHandoffResult,
   CreateSideChatInput,
   CreateSideChatResult,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
-  HandoffLink,
+  HandInInput,
+  HandInRecord,
+  HandInResult,
   InteractionMode,
   ModelDescriptor,
   PreviewTurnCheckpointResult,
@@ -161,6 +164,31 @@ import type {
   GitHubStatus,
   GitHubUser,
 } from "./modules/git/index.js";
+
+// One ipcRenderer listener for the agent event stream, fanned out to a JS
+// set of callbacks. Many subscribers share one renderer — one thread per
+// ConversationThread plus singletons — so per-consumer ipcRenderer.on would
+// trip the default max-listener warning and cost a subscribe round-trip each.
+// A set keeps the fan-out local: one subscribe on the first callback, one
+// unsubscribe on the last removal.
+type AgentEventCallback = (event: RuntimeEvent) => void;
+const agentEventCallbacks = new Set<AgentEventCallback>();
+let agentEventListening = false;
+function ensureAgentEventListening(): void {
+  if (agentEventListening) return;
+  agentEventListening = true;
+  ipcRenderer.on("agent:event", (_event: IpcRendererEvent, frame: AgentEventFrame) => {
+    const callbacks = [...agentEventCallbacks];
+    if (Array.isArray(frame)) {
+      for (const event of frame) {
+        for (const cb of callbacks) cb(event);
+      }
+    } else {
+      for (const cb of callbacks) cb(frame);
+    }
+  });
+  void ipcRenderer.invoke("agent:subscribe");
+}
 
 const api = {
   platform: process.platform,
@@ -467,6 +495,10 @@ const api = {
     // id; a replayed id resolves "exists".
     createHandoff: (input: CreateHandoffInput): Promise<CreateHandoffResult> =>
       ipcRenderer.invoke("agent:create-handoff", input),
+    // Hand a live thread to another provider/model without leaving it — the
+    // thread id and transcript survive; only the session underneath changes.
+    handIn: (input: HandInInput): Promise<HandInResult> =>
+      ipcRenderer.invoke("agent:hand-in", input),
     // Edit-and-resend of an earlier user message: fork the thread at that
     // block (the source is never mutated) and dispatch the fork's first turn
     // from the edited text. The renderer mints the fork's ids; a replayed
@@ -532,10 +564,14 @@ const api = {
         ipcRenderer.invoke("agent:history-thread", threadId),
       compactions: (threadId: string): Promise<CompactionRecord[]> =>
         ipcRenderer.invoke("agent:history-compactions", threadId),
-      // Handoff links leaving a source thread, oldest first — the
+      // Continuation links leaving a source thread, oldest first — the
       // timeline's "Handed to" markers.
-      handoffsFromSource: (sourceThreadId: string): Promise<HandoffLink[]> =>
-        ipcRenderer.invoke("agent:history-handoffs", sourceThreadId),
+      continuationsFromSource: (sourceThreadId: string): Promise<ContinuationLink[]> =>
+        ipcRenderer.invoke("agent:history-continuations", sourceThreadId),
+      // Every time this thread changed hands, oldest first — the timeline's
+      // "changed hands" markers.
+      handInsForThread: (threadId: string): Promise<HandInRecord[]> =>
+        ipcRenderer.invoke("agent:history-hand-ins", threadId),
       // Windowed thread read (user-anchored keyset pages): first page when no
       // cursor is given; pass `nextCursor` back verbatim for the next strictly
       // older page. Null when the thread is missing. The renderer treats the
@@ -677,24 +713,22 @@ const api = {
       filePath: string,
     ): Promise<ThreadExportOutcome> =>
       ipcRenderer.invoke("agent:export-thread", threadId, format, filePath),
-    // The ONE runtime event stream. Subscribing registers this renderer in the
-    // main process; the returned fn unsubscribes and detaches the listener.
-    // Frames arrive singly or batched (see AgentEventFrame): a batch is fanned
-    // out here, so every consumer below keeps its single-event shape and the
-    // batching stays a transport detail.
-    onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {
-      const listener = (_event: IpcRendererEvent, frame: AgentEventFrame) => {
-        if (Array.isArray(frame)) {
-          for (const event of frame) cb(event);
-        } else {
-          cb(frame);
-        }
-      };
-      ipcRenderer.on("agent:event", listener);
-      void ipcRenderer.invoke("agent:subscribe");
+    // The ONE runtime event stream. Frames arrive singly or batched (see
+    // AgentEventFrame): a batch is fanned out to the local callback set, so
+    // every consumer keeps its single-event shape and the batching stays a
+    // transport detail. One ipcRenderer listener for the whole renderer —
+    // subscribing registers the renderer once, unsubscribing on the last
+    // removal.
+    onEvent: (cb: AgentEventCallback): (() => void) => {
+      ensureAgentEventListening();
+      agentEventCallbacks.add(cb);
       return () => {
-        ipcRenderer.removeListener("agent:event", listener);
-        void ipcRenderer.invoke("agent:unsubscribe");
+        agentEventCallbacks.delete(cb);
+        if (agentEventCallbacks.size === 0) {
+          agentEventListening = false;
+          ipcRenderer.removeAllListeners("agent:event");
+          void ipcRenderer.invoke("agent:unsubscribe");
+        }
       };
     },
   },

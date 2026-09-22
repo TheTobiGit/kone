@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
-import type { HandoffMark } from "~/utils/handoffMarkers";
+import { handoffMarkVerb, type HandoffMark } from "~/utils/handoffMarkers";
 
-// One handoff marker line in the timeline flow: the static verb plus the
-// clickable other end. Centered like the date/compaction dividers, but
-// interactive — `thread-date` itself is pointer-events: none, so this owns
-// its root.
+// One continuation marker line in the timeline flow — a handoff or a branch:
+// the verb for what happened plus the clickable other end. Centered like the
+// date/compaction dividers, but interactive — `thread-date` itself is
+// pointer-events: none, so this owns its root.
 
 const props = defineProps<{
   mark: HandoffMark;
@@ -26,7 +26,7 @@ function open(): void {
 
 <template>
   <div class="thread-mark handoff-mark">
-    <span class="handoff-verb">{{ mark.kind === "from" ? "Handed from" : "Handed to" }}</span>
+    <span class="handoff-verb">{{ handoffMarkVerb(mark) }}</span>
     <button type="button" class="handoff-link" @click="open">
       <ProviderLogo :brand="mark.brand" :size="13" />
       <span>{{ mark.label }}</span>

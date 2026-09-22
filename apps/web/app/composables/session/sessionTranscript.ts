@@ -47,7 +47,7 @@ export type SessionTranscriptDeps = {
   envMode: Ref<ThreadEnvMode | null>;
   workspacePending: Ref<boolean>;
   requestedBranch: Ref<string | null>;
-  provider: Ref<ProviderKind>;
+  provider: Ref<ProviderKind | null>;
   model: Ref<string | undefined>;
   mode: Ref<InteractionMode>;
   reasoning: Ref<ReasoningTier>;
@@ -60,7 +60,7 @@ export type SessionTranscriptDeps = {
   storeStagedWorkspace: (choice: SessionStartInput["workspace"]) => void;
   stageResume: (
     resumeId: string | undefined,
-    resumeProvider: ProviderKind,
+    resumeProvider: ProviderKind | undefined,
     resumeSessionAt: string | undefined,
   ) => void;
   reduce: (event: RuntimeEvent) => void;
@@ -233,7 +233,7 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
         mode.value = booted;
       }
     }
-    stageResume(stored.conversationId, provider.value, stored.resumeSessionAt);
+    stageResume(stored.conversationId, provider.value ?? undefined, stored.resumeSessionAt);
     // A side chat hides its fork-imported transcript (reference-only context)
     // and wears the temporary look; an edit fork or a handoff is a
     // continuation — its copied history is real history shown in the timeline

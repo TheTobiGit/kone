@@ -1061,7 +1061,16 @@ export type CreateHandoffInput = {
   };
   /** Overrides the default (the source thread's title). */
   title?: string;
-};
+} & (
+  | { kind: "handoff" }
+  | {
+      kind: "branch";
+      /** Cut the imported transcript off after this block instead of carrying
+       *  the whole thread. Set when branching from one reply, so the new thread
+       *  ends on it and the next turn continues from there. */
+      throughBlockId: string;
+    }
+);
 
 export type CreateHandoffResult = {
   requestId: string;
@@ -1076,16 +1085,61 @@ export type CreateHandoffResult = {
   status: "created" | "exists";
 };
 
-/** One thread handed off from a source thread — the timeline's "Handed to"
- *  marker. Metadata only. Mirrors packages/agent-core/src/types.ts. */
-export type HandoffLink = {
+// ── thread hand-in (mirror packages/agent-core/src/types.ts) ──────────────
+// A hand-in changes who is answering without changing the thread: the old
+// provider's session is stopped, the thread's stored owner becomes the
+// target, and the next turn replays the prior transcript into the new
+// session. One row per swap, so the timeline can mark each one.
+
+export type HandInRecord = {
+  threadId: string;
+  fromProvider: ProviderKind;
+  fromModel?: string;
+  toProvider: ProviderKind;
+  toModel?: string;
+  at: number;
+};
+
+export type HandInInput = {
+  threadId: string;
+  target: HandInTarget;
+};
+
+/** Who the thread carries on with. Provider is required; model and effort
+ *  fall back to the target provider's defaults when absent. */
+export type HandInTarget = {
+  provider: ProviderKind;
+  model?: string;
+  effort?: string;
+  mode?: InteractionMode;
+};
+
+export type HandInResult = {
+  threadId: string;
+  record: HandInRecord;
+  /** The session the target provider came up on, bound to the same thread.
+   *  Returned because `startSession` is not idempotent: the caller adopts
+   *  this rather than starting a second session for the same thread. */
+  session: Session;
+};
+
+/** One thread continued out of a source thread — the timeline's "Handed to"
+ *  and "Branched from here" markers. Metadata only. Mirrors
+ *  packages/agent-core/src/types.ts. */
+export type ContinuationLink = {
   threadId: string;
   provider: ProviderKind;
   model?: string;
   title?: string;
-  /** Epoch millis when the handoff was created. */
+  /** Epoch millis when the fork was created. */
   handedAt: number;
-};
+} & (
+  | { kind: "handoff" }
+  | {
+      kind: "branch";
+      fromBlockId: string;
+    }
+);
 
 // ── edit-and-resend fork (mirror packages/agent-core/src/types.ts) ─────────
 // Editing an earlier user message forks the thread at that block instead of
@@ -1803,7 +1857,7 @@ export type ForkContext = {
 };
 
 /** The user-initiated fork kinds. Mirrors packages/agent-core/src/types.ts. */
-export type ForkKind = "side_chat" | "edit" | "handoff";
+export type ForkKind = "side_chat" | "edit" | "handoff" | "branch";
 
 /** Where a stored block came from: a live conversation row (`"native"`) or a
  *  fork import (`"fork-import"`). Imported rows carry their original `at` and
@@ -2063,9 +2117,10 @@ export type KoneAgentHistoryApi = {
   /** Every settled compaction boundary on a thread, oldest first — what the
    *  timeline renders its "when/where compacted" markers from. */
   compactions: (threadId: string) => Promise<CompactionRecord[]>;
-  /** Every handoff forked from a source thread, oldest first — what the
+  /** Every continuation forked from a source thread, oldest first — what the
    *  timeline renders its "Handed to" markers from. */
-  handoffsFromSource: (sourceThreadId: string) => Promise<HandoffLink[]>;
+  continuationsFromSource: (sourceThreadId: string) => Promise<ContinuationLink[]>;
+  handInsForThread: (threadId: string) => Promise<HandInRecord[]>;
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;
@@ -2750,6 +2805,7 @@ export type KoneAgentApi = {
    *  `thread.handoff-created`; its first send carries the handed-transcript
    *  bootstrap. */
   createHandoff: (input: CreateHandoffInput) => Promise<CreateHandoffResult>;
+  handIn: (input: HandInInput) => Promise<HandInResult>;
   /** Fork a thread at one of its user blocks (edit-and-resend of an earlier
    *  message). The renderer mints the fork's ids; a replayed creation
    *  resolves "exists". The fork's first turn is dispatched before this

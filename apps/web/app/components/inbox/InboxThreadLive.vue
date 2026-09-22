@@ -18,7 +18,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
-import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import ThreadBranchDrift from "~/components/inbox/ThreadBranchDrift.vue";
 import ThreadWorkspacePrep from "~/components/inbox/ThreadWorkspacePrep.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
@@ -461,14 +460,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
            would land — so the nearer-term obstacle sits nearer the composer. -->
       <ThreadBranchDrift class="live__banner" :drift="branchDrift" />
 
-      <ProviderHealthBanner
-        class="live__banner"
-        :status="composer.sendBlockedStatus.value"
-        :reason="composer.sendBlockedReason.value"
-        :checking="composer.recheckingProviders.value"
-        @recheck="composer.recheckProviders"
-      />
-
       <ThreadDockStack
         :composer-open="composerOpen"
         :changes="activeChanges"
@@ -504,6 +495,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :context-window="composer.contextWindow.value"
         :picking="composer.pickerOpen.value"
         :blocked-reason="composer.sendBlockedReason.value"
+        :health-status="composer.sendBlockedStatus.value"
+        :health-checking="composer.recheckingProviders.value"
         :compactable="compactable"
         @send="onSend"
         @remove-queued="session?.cancelQueuedTurn($event)"
@@ -520,6 +513,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @compact="onComposerCompact"
         @new-thread="onComposerNewThread"
         @update:open="composerOpen = $event"
+        @recheck="composer.recheckProviders"
       />
     </div>
 

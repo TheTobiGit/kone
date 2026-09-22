@@ -84,7 +84,9 @@ export function subagentTitle(run: Pick<SubagentRunSnapshot, "description" | "ag
   return "Subagent";
 }
 
-/** The engine's logomark + human model name (never the raw id). */
+/** The engine's logomark + human model name (never the raw id). Placeholder
+ *  ids read as absent inside describeModelId, so this is a straight
+ *  pass-through. */
 export function subagentModel(
   run: Pick<SubagentRunSnapshot, "model">,
 ): ReturnType<typeof describeModelId> {

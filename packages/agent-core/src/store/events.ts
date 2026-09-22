@@ -46,6 +46,7 @@ function itemCursorKey(threadId: string, turnId: string, itemId: string): string
 export type EventIngestDeps = {
   touch(db: DatabaseSync, threadId: string, at: number): void;
   completeSidechatBootstrap(db: DatabaseSync, threadId: string): void;
+  completeHandInBootstrap(db: DatabaseSync, threadId: string): void;
 };
 
 /** Decode one settled-compaction boundary into its durable record, parsing
@@ -311,6 +312,10 @@ export class EventIngestRepo {
               // `<sidechat_context>` bootstrap — the imported transcript has
               // reached the model, so it is never injected again.
               this.deps.completeSidechatBootstrap(db, event.threadId);
+              // Same one-shot rule for a thread that changed hands: the new
+              // provider has now been handed the prior transcript, so the
+              // replay is spent.
+              this.deps.completeHandInBootstrap(db, event.threadId);
             });
           });
           this.deps.touch(db, event.threadId, event.at);

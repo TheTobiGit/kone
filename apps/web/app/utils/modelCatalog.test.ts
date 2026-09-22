@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ModelDescriptor } from "~/types/desktop";
-import { buildModelCatalog, describeModelId, familyForId, parseModelTsvRows } from "./modelCatalog";
+import { buildModelCatalog, describeModelId, familyForId, familyForIdStrict, isPlaceholderModelId, parseModelTsvRows } from "./modelCatalog";
 
 /** One descriptor per raw slug, labelled the way OpenCode's `models --verbose`
  *  labels them (the `name` field), so we exercise the real catalog path. */
@@ -197,5 +197,67 @@ describe("describeModelId and familyForId — robust model description and looku
     ]);
     expect(familyForId(catalog, "claude-opus-5")?.label).toBe("Claude Opus 5");
     expect(familyForId(catalog, undefined)?.label).toBe("Claude Opus 5");
+  });
+});
+
+describe("describeModelId with a catalog — a miss never borrows the first family", () => {
+  const catalog = buildModelCatalog([
+    { id: "claude-opus-5", label: "Claude Opus 5" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+  ]);
+
+  test("a known id resolves to its catalog label and brand", () => {
+    expect(describeModelId("claude-opus-5", catalog)).toEqual({
+      brand: "claude",
+      name: "Claude Opus 5",
+    });
+    expect(describeModelId("gpt-5.6-terra", catalog)).toEqual({
+      brand: "gpt",
+      name: "GPT-5.6 Terra",
+    });
+  });
+
+  test("an unknown id prettifies instead of borrowing catalog[0]'s name and brand", () => {
+    expect(describeModelId("gpt-9-futura", catalog)).toEqual({
+      brand: "gpt",
+      name: "GPT 9 Futura",
+    });
+    // A stale id from another vendor must not wear the first family's brand either.
+    expect(describeModelId("gemini-9-nova", catalog)).toEqual({
+      brand: "gemini",
+      name: "Gemini 9 Nova",
+    });
+  });
+
+  test("familyForIdStrict misses where familyForId still falls back", () => {
+    expect(familyForIdStrict(catalog, "gpt-9-futura")).toBeUndefined();
+    expect(familyForIdStrict(catalog, undefined)).toBeUndefined();
+    expect(familyForIdStrict(catalog, "claude-opus-5")?.label).toBe("Claude Opus 5");
+    // The picker's default resolution is unchanged.
+    expect(familyForId(catalog, "gpt-9-futura")?.label).toBe("Claude Opus 5");
+    expect(familyForId(catalog, undefined)?.label).toBe("Claude Opus 5");
+  });
+});
+
+describe("isPlaceholderModelId — aliases that name no real model", () => {
+  test("flags the provider-default aliases", () => {
+    expect(isPlaceholderModelId("default")).toBe(true);
+    expect(isPlaceholderModelId("auto")).toBe(true);
+    expect(isPlaceholderModelId(" Default ")).toBe(true);
+    expect(isPlaceholderModelId("AUTO")).toBe(true);
+  });
+
+  test("flags a missing id the same way", () => {
+    expect(isPlaceholderModelId(undefined)).toBe(true);
+    expect(isPlaceholderModelId(null)).toBe(true);
+    expect(isPlaceholderModelId("")).toBe(true);
+    expect(isPlaceholderModelId("   ")).toBe(true);
+  });
+
+  test("keeps real model ids", () => {
+    expect(isPlaceholderModelId("claude-sonnet-4-5")).toBe(false);
+    expect(isPlaceholderModelId("gpt-5.6-terra")).toBe(false);
+    expect(isPlaceholderModelId("composer-2.5")).toBe(false);
+    expect(isPlaceholderModelId("opencode-go/deepseek-v4-flash")).toBe(false);
   });
 });

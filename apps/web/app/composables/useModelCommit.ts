@@ -107,12 +107,19 @@ export function useModelCommit(o: UseModelCommitOptions) {
     // change on the turn that carries it, so a pick reaches the running
     // conversation without costing it.
     if (providerChanged) {
-      // A turn in flight is torn down by the restart — stop it cleanly first.
-      if (agent.busy.value) await agent.interrupt();
-      await agent.restart();
+      // A thread that has already run is handed over rather than re-born: the
+      // thread id, its transcript and its pane all stay, and the next turn
+      // replays the conversation into the new hands. switchProvider owns the
+      // hand-in-then-restart policy, so there is one stop-then-start path.
+      await agent.switchProvider({
+        provider: picked.provider,
+        model: picked.modelId,
+        effort: picked.tier,
+      });
     }
-    // Persist after any restart: a provider switch re-mints the thread id, and
-    // the selection must be recorded against the id the thread now carries.
+    // Persist last, once the swap has settled: a hand-in keeps the thread id
+    // but a fallback restart re-mints it, so the selection is recorded against
+    // whichever id the thread ends up carrying.
     persistThreadSelection();
   }
 
@@ -169,11 +176,14 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => {
       agent.setModel(id);
       if (import.meta.client) {
-        persistLastUsed({
-          provider: agent.provider.value,
-          modelId: id,
-          tier: agent.reasoning.value,
-        });
+        const p = agent.provider.value;
+        if (p) {
+          persistLastUsed({
+            provider: p,
+            modelId: id,
+            tier: agent.reasoning.value,
+          });
+        }
       }
       persistThreadSelection();
     });
@@ -182,11 +192,14 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => {
       agent.setReasoning(tier);
       if (import.meta.client) {
-        persistLastUsed({
-          provider: agent.provider.value,
-          modelId: agent.model.value,
-          tier,
-        });
+        const p = agent.provider.value;
+        if (p) {
+          persistLastUsed({
+            provider: p,
+            modelId: agent.model.value,
+            tier,
+          });
+        }
       }
       persistThreadSelection();
     });
