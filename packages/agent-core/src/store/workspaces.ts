@@ -1,6 +1,6 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import { threadEnvMode, type ThreadEnvMode, type ThreadWorkspace } from "../threadWorkspace.js";
+import { threadEnvMode, type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "../threadWorkspace.js";
 
 /** Subtree reader owned by the lifecycle repo, injected so this module never imports it. */
 export type WorkspaceDeps = {
@@ -165,7 +165,7 @@ export class WorkspaceRepo {
   idleWorktrees(
     cutoff: number,
     limit: number,
-  ): Array<{ worktreePath: string; projectPath: string; threadIds: string[] }> {
+  ): IdleWorktree[] {
     const db = this.dbh.handle();
     if (!db) return [];
     try {

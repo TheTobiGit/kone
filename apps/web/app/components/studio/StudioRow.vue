@@ -14,11 +14,7 @@ import type {
   UserInputAnswers,
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
-import {
-  LOCAL_WORKSPACE,
-  workspaceRequest,
-  type WorkspaceChoice,
-} from "~/utils/threadWorkspace";
+import { useKeyedWorkspaceChoice } from "~/composables/useWorkspaceChoice";
 import type { StudioDestination } from "~/types/studio";
 import type { GitRemote } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
@@ -109,10 +105,6 @@ const emit = defineEmits<{
    *  thread, a terminal, opening a pill's thread — asks for this rather than
    *  reaching for the surface it happens to be sharing the window with. */
   summon: [];
-  /** One of the row's own modals (the workspace picker, the worktree build)
-   *  opened or closed. They listen for Escape on the window after the plane
-   *  does, so the plane has to know to stand aside or one press closes both. */
-  overlay: [open: boolean];
   openFile: [path: string, rect: DOMRect | null];
   /** A pane was selected in overview mode — parent plane focuses and zooms in. */
   selectPane: [paneId: string];
@@ -1351,19 +1343,13 @@ watch(
 // own checkout, or a worktree of its own. The answer is draft state, held per
 // pane until that pane's first send hands it to the session. Nothing is built
 // while it sits here, so a pane closed after picking leaves no directory behind.
-const workspaceChoices = ref<Record<string, WorkspaceChoice>>({});
 const workspacePickerOpen = ref(false);
-
-const focusedWorkspaceChoice = computed<WorkspaceChoice>(
-  () => (focusedId.value ? workspaceChoices.value[focusedId.value] : undefined) ?? LOCAL_WORKSPACE,
-);
-
-function onWorkspacePick(choice: WorkspaceChoice): void {
-  workspacePickerOpen.value = false;
-  const paneId = focusedId.value;
-  if (!paneId) return;
-  workspaceChoices.value = { ...workspaceChoices.value, [paneId]: choice };
-}
+const workspace = useKeyedWorkspaceChoice({
+  key: () => focusedId.value,
+  drafting: () => threadIsBlank.value,
+  fallbackBranch: () => props.branch,
+});
+const { choice: focusedWorkspaceChoice, branch: composerBranch } = workspace;
 
 // A blank thread shows what it will do; a started one shows what it did.
 const composerEnvMode = computed<ThreadEnvMode | null>(() =>
@@ -1371,28 +1357,7 @@ const composerEnvMode = computed<ThreadEnvMode | null>(() =>
     ? focusedWorkspaceChoice.value.mode
     : (focusedThread.value?.envMode.value ?? null),
 );
-// A new worktree starting from another branch names that branch, since it is
-// where the first turn's work begins; otherwise the checkout's branch.
-const composerBranch = computed(() => {
-  const choice = focusedWorkspaceChoice.value;
-  if (threadIsBlank.value && choice.mode === "worktree" && choice.base) return choice.base;
-  return props.branch ?? undefined;
-});
 
-/** Backing out of a worktree still being built. The strip goes away at once —
- *  the decision is made and there is nothing further to watch — while the
- *  teardown happens behind it, once the creation it is undoing finishes. */
-async function onCancelWorkspace(): Promise<void> {
-  const s = focusedThread.value;
-  if (!s) return;
-  s.dismissWorkspaceSteps();
-  await s.cancelWorkspace();
-}
-
-watch(
-  () => workspacePickerOpen.value && !isOverview.value,
-  (open) => emit("overlay", open),
-);
 // A picker left standing over a row that went off screen would be waiting there,
 // stale, when it comes back.
 watch(
@@ -1401,10 +1366,6 @@ watch(
     if (!visible) workspacePickerOpen.value = false;
   },
 );
-// A row torn down with a modal up must not leave the plane standing aside for it.
-onBeforeUnmount(() => emit("overlay", false));
-
-
 
 // ── committing a model pick ──────────────────────────────────────────────────
 // One path for "which model runs the next turn", whether the answer came from
@@ -1509,8 +1470,8 @@ async function onSend(text: string, files?: File[]) {
   // a blank thread takes it — after the first block the thread already works
   // somewhere, and a retried failed start still holds the earlier request.
   const target = focusedThread.value;
-  const request = workspaceRequest(focusedWorkspaceChoice.value);
-  if (target && threadIsBlank.value && request) target.stageWorkspace(request);
+  const request = workspace.request();
+  if (target && request) target.stageWorkspace(request);
   // Now that the target is settled it has a durable id, so who is working it can
   // be recorded against it — this is the moment the thread acquires a face. Every
   // send runs this and only the first one lands: the record is write-once, so a
@@ -1902,7 +1863,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           @update:open="composerOpen = $event"
           @update:draft="onComposerDraft"
           @recheck="recheckProviders"
-          @cancel-workspace="onCancelWorkspace"
+          @cancel-workspace="focusedThread?.cancelWorkspace()"
           @dismiss-workspace="focusedThread?.dismissWorkspaceSteps()"
         />
       </div>
@@ -1961,7 +1922,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       :project-path="project.path"
       mode="select"
       :chosen="focusedWorkspaceChoice"
-      @picked="onWorkspacePick"
+      @picked="(choice) => { workspacePickerOpen = false; workspace.pick(choice); }"
       @cancel="workspacePickerOpen = false"
     />
 </template>

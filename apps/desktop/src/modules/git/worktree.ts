@@ -420,27 +420,27 @@ export async function removeWorktree(
     );
   }
 
-  // What sits on this checkout, resolved while it can still be asked. Detached
-  // checkouts answer non-zero here and user-named branches fail the pattern, so
-  // both resolve to no reclaim without a special case each.
-  let reclaim: { branch: string; head: string } | null = null;
-  if (input.reclaimGeneratedBranch) {
-    try {
-      const branch = (await git(target, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-      if (await isKoneOwnedBranch(target, branch)) {
-        const head = (
-          await git(target, ["rev-parse", "--verify", `refs/heads/${branch}`])
-        ).trim();
-        if (head) reclaim = { branch, head };
-      }
-    } catch {
-      // Gone already, detached, or otherwise unreadable: removal proceeds
-      // without a reclaim, and whatever is left is git's to report.
-      reclaim = null;
-    }
-  }
-
   await withRepoMutation(primary, async () => {
+    // What sits on this checkout, resolved while it can still be asked, and
+    // inside the lock so a branch rename cannot land between this read and the
+    // delete. Detached checkouts answer non-zero here and branches kone does not
+    // own fail the check, so both resolve to no reclaim without a special case.
+    let reclaim: { branch: string; head: string } | null = null;
+    if (input.reclaimGeneratedBranch) {
+      try {
+        const branch = (await git(target, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+        if (await isKoneOwnedBranch(target, branch)) {
+          const head = (
+            await git(target, ["rev-parse", "--verify", `refs/heads/${branch}`])
+          ).trim();
+          if (head) reclaim = { branch, head };
+        }
+      } catch {
+        // Gone already, detached, or otherwise unreadable: removal proceeds
+        // without a reclaim, and whatever is left is git's to report.
+        reclaim = null;
+      }
+    }
     try {
       await git(
         primary,
@@ -451,7 +451,7 @@ export async function removeWorktree(
       if (error instanceof GitError) throw classifyWorktreeError(error);
       throw error;
     }
-    // Copied to a const so the non-null check below survives into the closure.
+    // A const, so the non-null check below survives into the callback.
     const claimed = reclaim;
     if (claimed) {
       try {

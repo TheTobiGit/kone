@@ -16,16 +16,26 @@ import { workspaceMark, type WorkspaceFacts } from "~/utils/threadWorkspace";
 // Sized and coloured from whatever encloses it, so it can sit inside the inbox
 // row's mono chip and inside the composer tray without either being told about
 // the other.
+//
+// `iconOnly` drops the name for places too narrow to carry it, such as a
+// column header; the tooltip still says which folder.
 
-const props = defineProps<WorkspaceFacts>();
+const props = defineProps<WorkspaceFacts & { iconOnly?: boolean }>();
 
 const mark = computed(() => workspaceMark(props));
 </script>
 
 <template>
-  <span v-if="mark" class="wm" :class="{ 'wm--pending': mark.pending }" :title="mark.title">
-    <WorktreeIcon :size="10" />
-    <span class="wm__name">{{ mark.label }}</span>
+  <span
+    v-if="mark"
+    class="wm"
+    :class="{ 'wm--pending': mark.pending }"
+    :title="mark.title"
+    :role="iconOnly ? 'img' : undefined"
+    :aria-label="iconOnly ? mark.title : undefined"
+  >
+    <WorktreeIcon :size="iconOnly ? 12 : 10" />
+    <span v-if="!iconOnly" class="wm__name">{{ mark.label }}</span>
   </span>
 </template>
 

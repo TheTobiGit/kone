@@ -18,9 +18,10 @@ export type WorkspaceStepRow = {
   step: ThreadWorkspaceStep;
   label: string;
   state: WorkspaceStepState;
-  /** Why it failed, when it did — or, on a finished step, what is worth
-   *  knowing about how it went. */
-  message?: string;
+  /** Why it failed, when it did. */
+  error?: string;
+  /** On a finished step, what is worth knowing about how it went. */
+  note?: string;
 };
 
 /** The steps as they read, in the order they happen. */
@@ -41,15 +42,30 @@ export function initialWorkspaceSteps(): WorkspaceStepRow[] {
  *  which keeps a newer main process from growing the list under an older UI. */
 export function applyWorkspaceStep(
   rows: WorkspaceStepRow[],
-  report: { step: ThreadWorkspaceStep; state: "running" | "done" | "failed"; message?: string },
+  report: {
+    step: ThreadWorkspaceStep;
+    state: "running" | "done" | "failed";
+    error?: string;
+    note?: string;
+  },
 ): WorkspaceStepRow[] {
   return rows.map((row) => {
     if (row.step !== report.step) return row;
-    const next: WorkspaceStepRow = { ...row, state: report.state };
-    if (report.message) next.message = report.message;
-    else delete next.message;
+    // Each report says everything about its step, so a sentence the last
+    // report carried and this one doesn't is gone, not kept.
+    const next: WorkspaceStepRow = { step: row.step, label: row.label, state: report.state };
+    if (report.error) next.error = report.error;
+    if (report.note) next.note = report.note;
     return next;
   });
+}
+
+/** The sentence a settled build leaves on its summary line: the first note in
+ *  step order, so where the worktree started from outranks which files came
+ *  with it. Empty when no step left one. */
+export function settledWorkspaceNote(rows: WorkspaceStepRow[]): string {
+  for (const row of rows) if (row.note) return row.note;
+  return "";
 }
 
 /** Every step finished successfully — the point at which the stepper has nothing

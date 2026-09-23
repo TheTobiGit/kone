@@ -1,6 +1,6 @@
 import { git, repoRoot } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import { isGeneratedBranchName, sanitizeBranchSegment } from "./worktreePaths.js";
+import { branchSegmentOrNull, isGeneratedBranchName } from "./worktreePaths.js";
 
 // Giving a worktree's branch a name a person can read.
 //
@@ -15,7 +15,10 @@ import { isGeneratedBranchName, sanitizeBranchSegment } from "./worktreePaths.js
 //
 // A renamed branch is still kone's, so it is marked as such in the repository's
 // own config. Deleting the thread then reclaims it exactly as it would have
-// reclaimed the placeholder, and a branch a person named is never marked.
+// reclaimed the placeholder. The mark holds the name it was set under: `git
+// branch -m` carries a branch's config section to its new name, so a branch
+// the user renames arrives still marked, and only a mark that names the
+// branch it sits on counts.
 
 const OWNED_KEY = "kone-owned";
 const PREFIX = "kone/";
@@ -25,11 +28,7 @@ const MAX_SUFFIX = 100;
 /** The readable half of a branch name for a title, or null when the title has
  *  nothing a branch name can carry (all punctuation, or another script). */
 export function branchSlugFromTitle(title: string): string | null {
-  const slug = sanitizeBranchSegment(title);
-  // The sanitizer answers `update` when nothing survives; that is a fallback
-  // for directory names, not a name worth renaming a branch to.
-  if (slug === "update" && !/update/i.test(title)) return null;
-  return slug;
+  return branchSegmentOrNull(title);
 }
 
 async function branchTaken(root: string, branch: string): Promise<boolean> {
@@ -47,7 +46,7 @@ export async function isKoneOwnedBranch(dir: string, branch: string): Promise<bo
   if (isGeneratedBranchName(branch)) return true;
   try {
     const value = (await git(dir, ["config", "--get", `branch.${branch}.${OWNED_KEY}`])).trim();
-    return value === "true";
+    return value === branch;
   } catch {
     return false;
   }
@@ -69,21 +68,23 @@ export async function renameGeneratedBranch(
   title: string,
 ): Promise<string | null> {
   try {
-    const current = (await git(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-    if (!isGeneratedBranchName(current)) return null;
     const slug = branchSlugFromTitle(title);
     if (!slug) return null;
     const root = await repoRoot(worktreePath);
     if (!root) return null;
 
+    // The lock is the repository's, shared by every worktree of it, so this
+    // cannot interleave with a removal reading the branch it is about to delete.
     return await withRepoMutation(root, async () => {
+      const current = (await git(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+      if (!isGeneratedBranchName(current)) return null;
       let target = `${PREFIX}${slug}`;
       for (let n = 2; await branchTaken(root, target); n++) {
         if (n > MAX_SUFFIX) return null;
         target = `${PREFIX}${slug}-${n}`;
       }
       await git(worktreePath, ["branch", "-m", "--", current, target]);
-      await git(root, ["config", `branch.${target}.${OWNED_KEY}`, "true"]).catch((err: unknown) => {
+      await git(root, ["config", `branch.${target}.${OWNED_KEY}`, target]).catch((err) => {
         console.warn(`[git] could not mark '${target}' as kone's own:`, err);
       });
       return target;

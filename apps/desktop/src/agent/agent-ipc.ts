@@ -17,7 +17,7 @@ import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
 import { freshestBase } from "../modules/git/worktreeBase.js";
 import { renameGeneratedBranch } from "../modules/git/worktreeBranchName.js";
-import { sweepIdleWorktrees } from "../modules/git/worktreeSweep.js";
+import { startWorktreeSweeper, sweepIdleWorktrees } from "../modules/git/worktreeSweep.js";
 import { removeWorktree } from "../modules/git/worktree.js";
 import {
   collectSubtreeWorktrees,
@@ -124,6 +124,7 @@ let jobRunner: JobRunner | null = null;
 /** Teardown for the IRC delivery subscription — dropped at quit so no armed
  *  delivery timer holds the process open. */
 let stopIrcDelivery: (() => void) | null = null;
+let stopWorktreeSweeper: (() => void) | null = null;
 
 /** The bench runner, once registerAgentIpc has built it. Resolved lazily by
  *  the bench IPC handlers rather than handed to them at registration: the two
@@ -1048,7 +1049,8 @@ export function registerAgentIpc(): void {
   // effect while the setting is still on screen.
   ipcMain.handle("agent:worktree-cleanup-days", () => store.worktreeCleanupDays());
   ipcMain.handle("agent:set-worktree-cleanup-days", (_event, days: number | null) => {
-    store.setWorktreeCleanupDays(typeof days === "number" && Number.isFinite(days) ? days : null);
+    // Anything but a finite number from the renderer means off.
+    store.setWorktreeCleanupDays(days !== null && Number.isFinite(days) ? days : null);
     void runWorktreeSweep();
     return store.worktreeCleanupDays();
   });
@@ -1058,11 +1060,11 @@ export function registerAgentIpc(): void {
       isThreadLive: (threadId) => svc.hasLiveSession(threadId),
       detachWorktree: (worktreePath, branch) => store.detachWorktree(worktreePath, branch),
       cleanupDays: () => store.worktreeCleanupDays(),
-    }).catch((err: unknown) => {
+    }).catch((err) => {
       console.warn("[agent] worktree cleanup failed:", err);
       return 0;
     });
-  scheduleWorktreeSweep(runWorktreeSweep);
+  stopWorktreeSweeper ??= startWorktreeSweeper(runWorktreeSweep);
   // Read state lives in the DB beside pins and done, so a reply you have
   // already seen stays seen across profiles and restarts. A visit time, not an
   // unread flag: the surface showing the thread is the only writer, and every
@@ -1132,28 +1134,12 @@ export async function prepareQuitResumeForQuit(): Promise<void> {
   }
 }
 
-/** The first cleanup pass waits out the busy start; later ones run a few times
- *  a day, since "days old" does not need finer than that. */
-const WORKTREE_SWEEP_DELAY_MS = 5 * 60 * 1000;
-const WORKTREE_SWEEP_EVERY_MS = 6 * 60 * 60 * 1000;
-let worktreeSweepTimers: Array<ReturnType<typeof setTimeout>> = [];
-
-function scheduleWorktreeSweep(run: () => Promise<number>): void {
-  if (worktreeSweepTimers.length > 0) return;
-  const first = setTimeout(() => {
-    void run();
-    const every = setInterval(() => void run(), WORKTREE_SWEEP_EVERY_MS);
-    every.unref?.();
-    worktreeSweepTimers.push(every);
-  }, WORKTREE_SWEEP_DELAY_MS);
-  first.unref?.();
-  worktreeSweepTimers.push(first);
-}
-
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
-  for (const timer of worktreeSweepTimers) clearTimeout(timer);
-  worktreeSweepTimers = [];
+  if (stopWorktreeSweeper) {
+    stopWorktreeSweeper();
+    stopWorktreeSweeper = null;
+  }
   if (stopIrcDelivery) {
     stopIrcDelivery();
     stopIrcDelivery = null;

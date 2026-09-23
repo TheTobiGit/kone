@@ -10,6 +10,7 @@ import {
 import {
   failedWorkspaceStep,
   isWorkspaceCancellable,
+  settledWorkspaceNote,
   workspaceStepsSettled,
   type WorkspaceStepRow,
 } from "~/utils/workspaceSteps";
@@ -51,10 +52,10 @@ const heading = computed(() => {
 });
 
 /** The half-line beside the heading: what is happening now while it builds,
- *  and afterwards the one message the build left, when it left one. */
+ *  why it broke when it did, and the note it settled with otherwise. */
 const detail = computed(() => {
-  if (failed.value) return failed.value.message ?? failed.value.label;
-  if (settled.value) return props.steps.find((row) => row.message)?.message ?? "";
+  if (failed.value) return failed.value.error ?? failed.value.label;
+  if (settled.value) return settledWorkspaceNote(props.steps);
   const running = props.steps.find((row) => row.state === "running");
   return running ? `${running.label}…` : "";
 });
@@ -97,7 +98,7 @@ watch(failed, (row) => {
           </span>
           <span class="ws-tray__label">
             {{ row.label }}
-            <span v-if="row.message" class="ws-tray__why">{{ row.message }}</span>
+            <span v-if="row.error || row.note" class="ws-tray__why">{{ row.error ?? row.note }}</span>
           </span>
         </li>
       </ol>

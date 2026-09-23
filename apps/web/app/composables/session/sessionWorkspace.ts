@@ -1,7 +1,12 @@
 import { computed, ref, type Ref } from "vue";
 import type { KoneAgentApi, SessionStartInput, ThreadEnvMode } from "~/types/desktop";
 import { isWorkspacePending } from "~/utils/threadWorkspace";
-import { initialWorkspaceSteps, type WorkspaceStepRow } from "~/utils/workspaceSteps";
+import {
+  failedWorkspaceStep,
+  initialWorkspaceSteps,
+  workspaceStepsSettled,
+  type WorkspaceStepRow,
+} from "~/utils/workspaceSteps";
 
 /** Where this conversation works. The staged start choice stays in the
  *  session that creates this unit — start() consumes and clears it — so it
@@ -56,12 +61,24 @@ export function useSessionWorkspace(deps: SessionWorkspaceDeps) {
     workspaceSteps.value = [];
   }
 
+  /** A worktree build that has finished — or broken — has said what it had to
+   *  say by the time the next request goes out, so the request retires it. A
+   *  retry of a broken build then opens a fresh list instead of reporting into
+   *  the old one. A build still in flight is left alone. */
+  function retireWorkspaceSteps(): void {
+    const rows = workspaceSteps.value;
+    if (rows.length === 0) return;
+    if (workspaceStepsSettled(rows) || failedWorkspaceStep(rows)) dismissWorkspaceSteps();
+  }
+
   /** Back out of a worktree still being built.
    *
-   *  Does not interrupt git. The creation is already running, and what it
-   *  produces is removed once it finishes — so this is "undo whatever
-   *  finishes", not "stop trying". */
+   *  The stepper goes away at once — the decision is made and there is nothing
+   *  further to watch. Git is not interrupted: the creation is already running,
+   *  and what it produces is removed once it finishes — so this is "undo
+   *  whatever finishes", not "stop trying". */
   async function cancelWorkspace(): Promise<void> {
+    dismissWorkspaceSteps();
     const api = bridge();
     if (!api) return;
     await api.cancelWorkspace(threadId.value).catch(() => undefined);
@@ -82,6 +99,7 @@ export function useSessionWorkspace(deps: SessionWorkspaceDeps) {
     stageWorkspace,
     beginWorkspaceSteps,
     dismissWorkspaceSteps,
+    retireWorkspaceSteps,
     cancelWorkspace,
   };
 }

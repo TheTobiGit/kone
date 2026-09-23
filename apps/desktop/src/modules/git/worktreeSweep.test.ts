@@ -9,7 +9,12 @@ import { initTestRepo } from "@kone/git-core/testRepo.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { provisionWorktree } from "./worktreeProvision.js";
 import { worktrees } from "./worktree.js";
-import { sweepIdleWorktrees, worktreeRemovability, type IdleWorktree } from "./worktreeSweep.js";
+import {
+  sweepIdleWorktrees,
+  worktreeRemovability,
+  type IdleWorktree,
+  type WorktreeSweepDeps,
+} from "./worktreeSweep.js";
 
 const cleanup: Array<{ repo: string; state: string }> = [];
 
@@ -40,21 +45,18 @@ afterEach(async () => {
 function deps(entries: IdleWorktree[], live: string[] = []) {
   const detached: Array<{ worktreePath: string; branch: string }> = [];
   const cutoffs: number[] = [];
-  return {
-    detached,
-    cutoffs,
-    deps: {
-      idleWorktrees: (cutoff: number) => {
-        cutoffs.push(cutoff);
-        return entries;
-      },
-      isThreadLive: (id: string) => live.includes(id),
-      detachWorktree: (worktreePath: string, branch: string) => {
-        detached.push({ worktreePath, branch });
-      },
-      cleanupDays: () => 14 as number | null,
+  const sweepDeps: WorktreeSweepDeps = {
+    idleWorktrees: (cutoff: number) => {
+      cutoffs.push(cutoff);
+      return entries;
     },
+    isThreadLive: (id: string) => live.includes(id),
+    detachWorktree: (worktreePath: string, branch: string) => {
+      detached.push({ worktreePath, branch });
+    },
+    cleanupDays: () => 14,
   };
+  return { detached, cutoffs, deps: sweepDeps };
 }
 
 describe("what an idle worktree may lose", () => {
@@ -89,6 +91,39 @@ describe("what an idle worktree may lose", () => {
     await git(made.path, ["commit", "-am", "ignore logs"]);
     await writeFile(path.join(made.path, "debug.log"), "notes\n");
     expect(await worktreeRemovability(entry)).toEqual({ ok: false, reason: "keeps debug.log" });
+  });
+
+  test("a directory the project lists comes along whole and does not keep the worktree", async () => {
+    const repo = await makeRepo();
+    await writeFile(path.join(repo, ".gitignore"), ".env\nnode_modules/\ncerts/\n");
+    await writeFile(path.join(repo, ".worktreeinclude"), "certs/\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-m", "certs"]);
+    await mkdir(path.join(repo, "certs/nested"), { recursive: true });
+    await writeFile(path.join(repo, "certs/nested/a.crt"), "crt\n");
+    const made = await provisionWorktree({ projectPath: repo });
+    const entry = { worktreePath: made.path, projectPath: repo };
+
+    expect(made.copiedFiles).toContain("certs");
+    expect((await worktreeRemovability(entry)).ok).toBe(true);
+
+    await writeFile(path.join(made.path, "certs/nested/a.crt"), "edited\n");
+    expect(await worktreeRemovability(entry)).toEqual({ ok: false, reason: "keeps certs/nested/a.crt" });
+  });
+
+  test("an env file in a nested folder does not keep the worktree", async () => {
+    const repo = await makeRepo();
+    await mkdir(path.join(repo, "apps/web"), { recursive: true });
+    await writeFile(path.join(repo, "apps/web/.env"), "WEB=1\n");
+    await writeFile(path.join(repo, "apps/web/index.ts"), "x\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-m", "web"]);
+    const made = await provisionWorktree({ projectPath: repo });
+
+    expect(await worktreeRemovability({ worktreePath: made.path, projectPath: repo })).toEqual({
+      ok: true,
+      branch: made.branch,
+    });
   });
 
   test("a directory outside kone's worktrees folder is never offered", async () => {

@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { git, pathExists } from "@kone/git-core/core.js";
 import { initTestRepo } from "@kone/git-core/testRepo.js";
-import { copyPrivateFiles, isIncluded, parseIncludeRules, privateFilesToCopy } from "./worktreeInclude.js";
+import { copyPrivateFiles, privateEntries } from "./worktreeInclude.js";
 
 const made: string[] = [];
 
@@ -35,26 +35,6 @@ afterEach(async () => {
   await Promise.all(made.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe("include rules", () => {
-  test("a bare name matches at any depth, a slashed one only from the root", () => {
-    const rules = parseIncludeRules(".env\nconfig/local.json\n");
-    expect(isIncluded(rules, ".env", false)).toBe(true);
-    expect(isIncluded(rules, "apps/web/.env", false)).toBe(true);
-    expect(isIncluded(rules, "config/local.json", false)).toBe(true);
-    expect(isIncluded(rules, "apps/config/local.json", false)).toBe(false);
-  });
-
-  test("globs, comments, directories and a later ! taking one back", () => {
-    const rules = parseIncludeRules("# secrets\n*.pem\ncerts/\n!dev.pem\n\n**/fixtures/*.key\n");
-    expect(isIncluded(rules, "keys/prod.pem", false)).toBe(true);
-    expect(isIncluded(rules, "dev.pem", false)).toBe(false);
-    expect(isIncluded(rules, "certs", true)).toBe(true);
-    expect(isIncluded(rules, "certs", false)).toBe(false);
-    expect(isIncluded(rules, "fixtures/a.key", false)).toBe(true);
-    expect(isIncluded(rules, "test/fixtures/a.key", false)).toBe(true);
-  });
-});
-
 describe("private files", () => {
   test("ignored env files come along with no list at all", async () => {
     const repo = await makeRepo(".env\n.env.*\nnode_modules/\n");
@@ -62,7 +42,7 @@ describe("private files", () => {
     await write(repo, "apps/web/.env.local", "LOCAL=1\n");
     await write(repo, "node_modules/pkg/.env", "no\n");
 
-    expect((await privateFilesToCopy(repo)).sort()).toEqual([".env", "apps/web/.env.local"]);
+    expect((await privateEntries(repo)).sort()).toEqual([".env", "apps/web/.env.local"]);
   });
 
   test("a file git would track is never a candidate", async () => {
@@ -70,7 +50,7 @@ describe("private files", () => {
     // Not ignored: an unsaved change, which is not this feature's to carry.
     await write(repo, ".env", "SECRET=1\n");
 
-    expect(await privateFilesToCopy(repo)).toEqual([]);
+    expect(await privateEntries(repo)).toEqual([]);
   });
 
   test(".worktreeinclude adds files, directories and paths inside ignored directories", async () => {
@@ -81,11 +61,49 @@ describe("private files", () => {
     await write(repo, "config/local/db.json", "{}\n");
     await write(repo, "config/local/notes.txt", "skip\n");
 
-    expect((await privateFilesToCopy(repo)).sort()).toEqual([
+    expect((await privateEntries(repo)).sort()).toEqual([
       "certs",
       "config/local/db.json",
       "server.pem",
     ]);
+  });
+
+  test("the list reads the way a .gitignore does: classes, escapes and a ! taking one back", async () => {
+    const repo = await makeRepo(".env*\n*.pem\n\\#notes\n");
+    await write(repo, ".worktreeinclude", "# keys\n*.pem\n!dev.pem\n\\#notes\n");
+    await write(repo, ".env.a", "A=1\n");
+    await write(repo, ".envrc", "no\n");
+    await write(repo, "server.pem", "pem\n");
+    await write(repo, "dev.pem", "pem\n");
+    await write(repo, "#notes", "n\n");
+
+    expect((await privateEntries(repo)).sort()).toEqual(["#notes", ".env.a", "server.pem"]);
+  });
+
+  test("a character class in the list picks only what it names", async () => {
+    const repo = await makeRepo("secrets.*\n");
+    await write(repo, ".worktreeinclude", "secrets.[ab]\n");
+    await write(repo, "secrets.a", "a\n");
+    await write(repo, "secrets.b", "b\n");
+    await write(repo, "secrets.c", "c\n");
+
+    expect((await privateEntries(repo)).sort()).toEqual(["secrets.a", "secrets.b"]);
+  });
+
+  test("an env file inside an untracked directory comes along without the directory", async () => {
+    const repo = await makeRepo(".env\n");
+    await write(repo, "scratch/apps/.env", "SECRET=1\n");
+
+    expect(await privateEntries(repo)).toEqual(["scratch/apps/.env"]);
+  });
+
+  test("a listed directory a tool regenerates copies whole, and nothing inside is walked otherwise", async () => {
+    const repo = await makeRepo("node_modules/\n.env\n");
+    await write(repo, "node_modules/pkg/.env", "no\n");
+    expect(await privateEntries(repo)).toEqual([]);
+
+    await write(repo, ".worktreeinclude", "node_modules/\n");
+    expect(await privateEntries(repo)).toEqual(["node_modules"]);
   });
 
   test("copies into the new directory and leaves what is already there alone", async () => {

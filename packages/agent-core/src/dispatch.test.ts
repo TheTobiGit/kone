@@ -162,6 +162,8 @@ const released: Array<{
 const steps: Array<{ step: string; state: string }> = [];
 /** The note each finished fetch step carried, in order. */
 const fetchNotes: Array<string | undefined> = [];
+/** The error each failed step carried, in order. */
+const stepErrors: Array<string | undefined> = [];
 /** Every base freshen request, and what the next one answers (or throws). */
 const freshened: Array<{ projectPath: string; base?: string }> = [];
 let freshenAnswer: { base?: string; note?: string } | Error = {};
@@ -195,7 +197,8 @@ async function harness(): Promise<{
     broadcast: (event) => {
       if (event.type === "thread.workspace.progress") {
         steps.push({ step: event.step, state: event.state });
-        if (event.step === "fetch" && event.state === "done") fetchNotes.push(event.message);
+        if (event.step === "fetch" && event.state === "done") fetchNotes.push(event.note);
+        if (event.state === "failed") stepErrors.push(event.error);
       }
     },
     provisionWorkspace: async (request) => {
@@ -681,6 +684,7 @@ describe("thread dispatcher: where a session is spawned", () => {
   test("a failed build marks the step it failed on and stops there", async () => {
     const { dispatcher } = await harness();
     steps.length = 0;
+    stepErrors.length = 0;
     provisionFails = true;
 
     await expect(
@@ -699,6 +703,22 @@ describe("thread dispatcher: where a session is spawned", () => {
       { step: "create", state: "running" },
       { step: "create", state: "failed" },
     ]);
+    expect(stepErrors).toEqual(["git said no"]);
+  });
+
+  test("the start says which worktree the thread runs in, and a local one says none", async () => {
+    const { dispatcher } = await harness();
+
+    const built = await dispatcher.startThread({
+      threadId: "t-where",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "where" },
+    });
+    const local = await dispatcher.startThread({ threadId: "t-here", provider: "codex", cwd: CWD });
+
+    expect(built.worktreePath).toBe("/tmp/kone-worktrees/where");
+    expect(local.worktreePath).toBeUndefined();
   });
 
   test("cancelling mid-build removes what the creation produced", async () => {

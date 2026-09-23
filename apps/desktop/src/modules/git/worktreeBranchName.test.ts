@@ -55,6 +55,10 @@ describe("branch names from titles", () => {
     expect(branchSlugFromTitle("???")).toBeNull();
     expect(branchSlugFromTitle("Update docs")).toBe("update-docs");
   });
+
+  test("a title that is just the word update is still a slug", () => {
+    expect(branchSlugFromTitle("Update")).toBe("update");
+  });
 });
 
 describe("renaming a worktree's placeholder branch", () => {
@@ -102,5 +106,16 @@ describe("renaming a worktree's placeholder branch", () => {
 
     expect(await hasBranch(repo, "kone/tidy-the-readme")).toBe(false);
     expect(await isKoneOwnedBranch(repo, "kone/tidy-the-readme")).toBe(false);
+  });
+
+  test("a branch the user renames afterwards is theirs, and removal keeps it", async () => {
+    const repo = await makeRepo();
+    const made = await provisionWorktree({ projectPath: repo });
+    await renameGeneratedBranch(made.path, "Fix login");
+    await git(made.path, ["branch", "-m", "kone/fix-login", "fix-login-for-real"]);
+
+    expect(await isKoneOwnedBranch(repo, "fix-login-for-real")).toBe(false);
+    await removeWorktree(repo, { path: made.path, reclaimGeneratedBranch: true });
+    expect(await hasBranch(repo, "fix-login-for-real")).toBe(true);
   });
 });

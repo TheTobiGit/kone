@@ -121,8 +121,8 @@ const props = defineProps<{
    *  while busy enqueues; cancel/steer round-trip through the bridge). */
   queued?: QueuedTurnEntry[];
   /** A picker the parent hosts outside our dock is open — the model picker, the
-   *  workspace picker. While one is, a click in it or on its scrim, or the
-   *  Escape that dismisses it, must NOT collapse us. */
+   *  workspace picker. While one is, a click in it or on its scrim must NOT
+   *  collapse us. */
   picking?: boolean;
   /** Stay open, always. For a surface whose only purpose is writing: there is
    *  nothing else on it to look at, so there is nothing to collapse back to,
@@ -849,8 +849,6 @@ onKeyStroke("Escape", () => {
     agentPickerOpen.value = false;
     return;
   }
-  // The host's picker is the layer on top, and it answers this press itself.
-  if (props.picking) return;
   close();
 });
 

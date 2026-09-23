@@ -8,10 +8,19 @@ import {
   generatedBranchName,
   isGeneratedBranchName,
   isInsideWorktreesRoot,
+  branchSegmentOrNull,
   sanitizeBranchSegment,
   worktreeDigest,
   worktreeDirFor,
 } from "./worktreePaths.js";
+
+describe("branchSegmentOrNull", () => {
+  test("is null when nothing survives, where the path form falls back", () => {
+    expect(branchSegmentOrNull("///")).toBeNull();
+    expect(branchSegmentOrNull("日本語")).toBeNull();
+    expect(branchSegmentOrNull("feature/foo")).toBe("feature-foo");
+  });
+});
 
 describe("sanitizeBranchSegment", () => {
   test("flattens a namespaced branch into one component", () => {

@@ -30,6 +30,21 @@ import type {
   SessionStartInput,
   TurnStartResult,
 } from "./types.js";
+import {
+  describeCopiedFiles,
+  freshenBase,
+  type FreshenThreadWorkspaceBase,
+  type ProvisionThreadWorkspace,
+  type ReleaseThreadWorkspace,
+  type RenameThreadWorkspaceBranch,
+} from "./workspaceBuild.js";
+
+export type {
+  FreshenThreadWorkspaceBase,
+  ProvisionThreadWorkspace,
+  ReleaseThreadWorkspace,
+  RenameThreadWorkspaceBranch,
+} from "./workspaceBuild.js";
 
 // The thread dispatcher: the session lifecycle that used to live inside the
 // agent:* IPC closures (docs/thread-spawning-design.md §5.1). Driving a thread
@@ -37,70 +52,9 @@ import type {
 // on a child thread headlessly, doing exactly what the renderer's path does.
 // ipc.ts forwards to this module, so the renderer path is unchanged.
 
-/** Build the directory a worktree thread runs in. Injected because git lives in
- *  the desktop layer, and a headless host (a test, the spawn engine's own
- *  harness) can run every thread local without one. Absent means worktrees are
- *  unavailable here, and a thread that asked for one fails its send rather than
- *  quietly running in the project's checkout. */
-export type ProvisionThreadWorkspace = (input: {
-  projectPath: string;
-  branch?: string;
-  base?: string;
-}) => Promise<{
-  path: string;
-  branch: string;
-  /** True when the provisioner invented the branch name, so the caller may
-   *  clean it up later. Absent reads as not generated: never delete unless
-   *  the provisioner positively says it invented the name. */
-  generatedBranch?: boolean;
-  /** The branch already existed and was moved into this worktree. Its history
-   *  is not ours to discard, even when the name looks generated. */
-  attachedExisting?: boolean;
-  /** Project-relative paths of the private files (`.env` and the like) brought
-   *  into the new directory, for the setup steps to name. */
-  copiedFiles?: string[];
-}>;
-
-/** What the create step says about the private files a new worktree was
- *  given, or nothing when it was given none. */
-export function describeCopiedFiles(copied: readonly string[] | undefined): string | undefined {
-  if (!copied || copied.length === 0) return undefined;
-  const shown = copied.slice(0, 3).join(", ");
-  const more = copied.length - 3;
-  return more > 0 ? `Copied ${shown} and ${more} more.` : `Copied ${shown}.`;
-}
-
-/** Tear down a worktree this dispatcher built. Only ever called on one it just
- *  created and then had to give back — a user who cancelled while it was being
- *  made. Best effort: a worktree left behind is untidy, a failed teardown that
- *  masked the real error would be worse. */
-export type ReleaseThreadWorkspace = (input: {
-  projectPath: string;
-  worktreePath: string;
-  /** The branch the worktree was built on, for logging. The remover re-reads
-   *  the live branch itself rather than trusting this. */
-  branch?: string;
-  /** Delete the worktree's branch after removal, when it was generated for
-   *  this build. The remover still refuses user-named branches regardless. */
-  reclaimGeneratedBranch?: boolean;
-}) => Promise<void>;
-
-/** Where a new worktree's branch should start: the freshest copy of `base`
- *  (the project's current branch when absent) that loses nothing. Never throws —
- *  a starting point that cannot be freshened is still a starting point. `note`
- *  is a sentence for the setup card, present only when there is one to say. */
-export type FreshenThreadWorkspaceBase = (input: {
-  projectPath: string;
-  base?: string;
-}) => Promise<{ base?: string; note?: string }>;
-
-/** Give the placeholder branch a worktree was built on a name taken from the
- *  thread's title. Returns the new name, or null when the branch was left
- *  alone. Never throws — a thread keeps working on its placeholder either way. */
-export type RenameThreadWorkspaceBranch = (input: {
-  worktreePath: string;
-  title: string;
-}) => Promise<string | null>;
+/** Where a starting thread runs, and whether that place is its own worktree.
+ *  `worktreePath` is null for a thread sharing the project's checkout. */
+type ThreadPlace = { dir: string; worktreePath: string | null };
 
 /** The sentence worth showing from a failure, or `fallback` when it carries
  *  none worth reading. */
@@ -341,7 +295,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // per-project cwd at every call site and has no idea a thread might live in
     // a worktree. One authority for the answer, and a caller that forgot to ask
     // cannot defeat it.
-    const workingDir = await this.resolveThreadPlace(input);
+    const place = await this.resolveThreadPlace(input);
+    const workingDir = place.dir;
     let session: Session;
     try {
       session = await this.service.startSession(
@@ -383,6 +338,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (session.resumedFrom) this.threadsNeedingReplay.delete(input.threadId);
     else if (!this.store.threadForkContext(input.threadId) && this.store.hasUserTurn(input.threadId))
       this.threadsNeedingReplay.add(input.threadId);
+    // Said outright rather than left for the caller to infer from the cwd: a
+    // cwd that differs from the project only suggests a worktree, and the
+    // assistant's cwd differs without one.
+    if (place.worktreePath) return { ...session, worktreePath: place.worktreePath };
     return session;
   }
 
@@ -575,7 +534,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (userTurnCount === 1) {
       const provider = this.store.threadMeta(input.threadId)?.provider;
       if (provider) {
-        this.maybeNameThread(
+        // The branch is named from whatever title the thread settles on. By
+        // now the worktree already exists: startThread builds it before the
+        // session starts, and this is a send on that session. A thread whose
+        // worktree is not recorded yet has its rename skipped, not deferred.
+        void this.maybeNameThread(
           {
             threadId: input.threadId,
             provider,
@@ -584,7 +547,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
             message: input.input.trim() || input.attachments?.[0]?.name || "",
           },
           options,
-        );
+        ).then((title) => this.nameWorkspaceBranch(input.threadId, title));
       }
     }
     const dispatched =
@@ -639,21 +602,20 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  races it. `options.generateTitle: false` keeps the fallback but skips the
    *  background round trip.
    *
-   *  Whichever title the thread settles on also names its worktree's branch,
-   *  once — the placeholder a worktree is built on means nothing to anyone
-   *  reading the branch list. */
-  private maybeNameThread(
+   *  Resolves to the title the thread settled on, which the caller uses to
+   *  name the worktree's branch — the placeholder a worktree is built on
+   *  means nothing to anyone reading the branch list. Never rejects. */
+  private async maybeNameThread(
     input: { threadId: string; provider: ProviderKind; message: string },
     options?: StartThreadTurnOptions,
-  ): void {
+  ): Promise<string> {
     if (options?.title) {
       this.publishTitle({
         threadId: input.threadId,
         provider: input.provider,
         title: options.title,
       });
-      this.nameWorkspaceBranch(input.threadId, options.title);
-      return;
+      return options.title;
     }
     const fallback = buildPromptThreadTitleFallback(input.message);
     this.publishTitle({
@@ -661,54 +623,49 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       provider: input.provider,
       title: fallback,
     });
-    if (options?.generateTitle === false) {
-      this.nameWorkspaceBranch(input.threadId, fallback);
-      return;
-    }
+    if (options?.generateTitle === false) return fallback;
 
     const projectPath = this.store.threadProjectPath(input.threadId);
-    if (!projectPath) return;
+    if (!projectPath) return fallback;
 
     // An unknown or unreadable workspace skips naming rather than falling back
     // to the shared checkout: the one-shot must run where the thread runs.
     let namingDir: string | null = null;
     try {
       const workspace = this.store.threadWorkspace(input.threadId);
-      if (!workspace) return;
+      if (!workspace) return fallback;
       namingDir = threadWorkingDir({ projectPath, ...workspace });
     } catch {
-      return;
+      return fallback;
     }
     // A thread whose worktree is not built yet has nowhere to run the one-shot.
     // Naming is a convenience; skipping it costs a generated title, and running
     // it in the project's checkout would be the wrong directory.
-    if (!namingDir) return;
+    if (!namingDir) return fallback;
 
-    void generateThreadTitle({
-      // Another spawn, and the same reason the session's own cwd is resolved:
-      // the naming one-shot runs in a directory too.
-      cwd: namingDir,
-      message: input.message,
+    let generated: string | null;
+    try {
+      generated = await generateThreadTitle({
+        // Another spawn, and the same reason the session's own cwd is resolved:
+        // the naming one-shot runs in a directory too.
+        cwd: namingDir,
+        message: input.message,
+        provider: input.provider,
+      });
+    } catch (err) {
+      console.error("[thread-title] background rename failed:", err);
+      return fallback;
+    }
+    // Someone renamed the thread while the title was generating; their title
+    // is the one the thread settled on.
+    const current = this.store.getTitle(input.threadId);
+    if (!generated || !canReplaceThreadTitle(current, fallback)) return current ?? fallback;
+    this.publishTitle({
+      threadId: input.threadId,
       provider: input.provider,
-    })
-      .then((generated) => {
-        if (!generated) return fallback;
-        // Someone renamed the thread while the title was generating; their
-        // title is the one the branch should carry.
-        const current = this.store.getTitle(input.threadId);
-        if (!canReplaceThreadTitle(current, fallback)) return current ?? fallback;
-        this.publishTitle({
-          threadId: input.threadId,
-          provider: input.provider,
-          title: generated,
-        });
-        return generated;
-      })
-      .catch((err: unknown) => {
-        console.error("[thread-title] background rename failed:", err);
-        return fallback;
-      })
-      .then((title) => this.nameWorkspaceBranch(input.threadId, title));
+      title: generated,
+    });
+    return generated;
   }
 
   /** Rename the thread's worktree branch after `title`, when it has a worktree
@@ -723,7 +680,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       return;
     }
     if (!worktreePath) return;
-    void this.renameWorkspaceBranch({ worktreePath, title }).catch((err: unknown) => {
+    void this.renameWorkspaceBranch({ worktreePath, title }).catch((err) => {
       console.error("[thread-title] could not name the worktree branch:", err);
     });
   }
@@ -762,7 +719,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    * the shared checkout instead is the exact failure this feature exists to
    * prevent, so the send fails loudly and the user can try again.
    */
-  private async resolveThreadPlace(input: SessionStartInput): Promise<string> {
+  private async resolveThreadPlace(input: SessionStartInput): Promise<ThreadPlace> {
     const wanted = input.workspace?.mode === "worktree" ? input.workspace : null;
     // An unknown or unreadable workspace never falls back to the shared
     // checkout: a thread that might want isolation fails loudly instead. An
@@ -791,7 +748,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // the choice was made before the first message and does not reopen.
     if (state === "worktree-ready") {
       const settled = threadWorkingDir({ ...recorded, projectPath: input.cwd });
-      if (settled) return settled;
+      if (settled) return { dir: settled, worktreePath: settled };
     }
 
     if (wanted) {
@@ -801,18 +758,20 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       // both what it wanted and what it asked to call it rather than one that
       // silently reverts to sharing the project's checkout.
       this.store.setThreadWorkspace(input.threadId, { envMode: "worktree", requestedBranch: branch });
-      return this.buildThreadWorktree(input, {
+      const built = await this.buildThreadWorktree(input, {
         branch: branch ?? undefined,
         base: wanted.base,
       });
+      return { dir: built, worktreePath: built };
     }
 
     if (state === "worktree-pending") {
       if (!this.provisionWorkspace) throw new Error("Worktrees aren't available here.");
       const storedBranch = recorded.requestedBranch?.trim() ? recorded.requestedBranch.trim() : undefined;
-      return this.buildThreadWorktree(input, { branch: storedBranch });
+      const built = await this.buildThreadWorktree(input, { branch: storedBranch });
+      return { dir: built, worktreePath: built };
     }
-    return workingDirFor(input.cwd);
+    return { dir: workingDirFor(input.cwd), worktreePath: null };
   }
 
   /** Provision the worktree, wire its progress reports, and record the outcome.
@@ -827,8 +786,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const step = (
       name: ThreadWorkspaceStep,
       state: "running" | "done" | "failed",
-      message?: string,
-    ): void => this.emitWorkspaceStep(input, name, state, message);
+      detail?: string,
+    ): void => this.emitWorkspaceStep(input, name, state, detail);
 
     const request: Parameters<ProvisionThreadWorkspace>[0] = { projectPath: input.cwd };
     if (requestBranch.branch) request.branch = requestBranch.branch;
@@ -841,16 +800,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     step("fetch", "running");
     let freshNote: string | undefined;
     if (this.freshenWorkspaceBase && !request.branch) {
-      try {
-        const fresh = await this.freshenWorkspaceBase({
-          projectPath: input.cwd,
-          ...(request.base ? { base: request.base } : {}),
-        });
-        if (fresh.base) request.base = fresh.base;
-        freshNote = fresh.note;
-      } catch {
-        freshNote = "Couldn't get the latest changes — started from your copy.";
-      }
+      const fresh = await freshenBase(this.freshenWorkspaceBase, input.cwd, request.base);
+      if (fresh.base) request.base = fresh.base;
+      freshNote = fresh.note;
     }
     step("fetch", "done", freshNote);
 
@@ -904,10 +856,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     input: SessionStartInput,
     step: ThreadWorkspaceStep,
     state: "running" | "done" | "failed",
-    message?: string,
+    detail?: string,
   ): void {
     if (input.workspace?.mode === "worktree") {
-      this.emitWorkspaceStep(input, step, state, message);
+      this.emitWorkspaceStep(input, step, state, detail);
       return;
     }
     // A pending thread rebuilding from its stored request carries no workspace
@@ -921,18 +873,21 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       return;
     }
     if (recorded && threadWorkspaceState(recorded) !== "local") {
-      this.emitWorkspaceStep(input, step, state, message);
+      this.emitWorkspaceStep(input, step, state, detail);
     }
   }
 
   /** Broadcast one workspace step unconditionally. The build path calls this
    *  directly because it already knows it is building; the start boundary
-   *  above decides whether a given input warrants one. */
+   *  above decides whether a given input warrants one.
+   *
+   *  `detail` is the step's one sentence, and the state says which kind it is:
+   *  why a failed step failed, or a note on how a finished one went. */
   private emitWorkspaceStep(
     input: SessionStartInput,
     step: ThreadWorkspaceStep,
     state: "running" | "done" | "failed",
-    message?: string,
+    detail?: string,
   ): void {
     const event: RuntimeEvent = {
       type: "thread.workspace.progress",
@@ -943,7 +898,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       step,
       state,
     };
-    if (message) event.message = message;
+    if (detail && state === "failed") event.error = detail;
+    else if (detail && state === "done") event.note = detail;
     this.broadcast(event, false);
   }
 

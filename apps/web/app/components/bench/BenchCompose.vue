@@ -25,7 +25,7 @@ import { useBench } from "~/composables/useBench";
 import { bootProvider } from "~/utils/modelPicker";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import type { ChatAttachment, JobTarget } from "~/types/desktop";
-import { LOCAL_WORKSPACE, workspaceRequest, type WorkspaceChoice } from "~/utils/threadWorkspace";
+import { useWorkspaceChoice } from "~/composables/useWorkspaceChoice";
 
 const emit = defineEmits<{
   /** The job is on the bench. The portal closes the composer on this — the
@@ -53,7 +53,7 @@ function onPickProject(picked: RecentProject): void {
   // A worktree choice belongs to the checkout it was made against, so a new
   // project starts back at that project's own branch. The branch label follows
   // the path on its own.
-  workspace.value = LOCAL_WORKSPACE;
+  workspace.reset();
 }
 
 // The handle to the project's session registry. Constructing it spawns nothing
@@ -83,21 +83,11 @@ const composer = useInboxComposer({
 // is part of what the runner is handed. Nothing is built here: a worktree is
 // made by the run, so a job parked as a draft and deleted a week later leaves
 // no directory behind.
-const workspace = ref<WorkspaceChoice>(LOCAL_WORKSPACE);
-
-function onWorkspacePick(choice: WorkspaceChoice): void {
-  workspace.value = choice;
-  branchOpen.value = false;
-  if (choice.mode === "local") void composer.refreshBranch();
-}
-
-/** The branch the work starts from: the one a new worktree starts from while
- *  one is picked, otherwise what the project's checkout is actually on. */
-const branch = computed(() =>
-  workspace.value.mode === "worktree" && workspace.value.base
-    ? workspace.value.base
-    : (composer.branch.value ?? undefined),
-);
+const workspace = useWorkspaceChoice({
+  fallbackBranch: () => composer.branch.value,
+  onLocal: () => void composer.refreshBranch(),
+});
+const { choice: workspaceChoice, branch } = workspace;
 
 // ── filing ───────────────────────────────────────────────────────────────────
 
@@ -113,7 +103,7 @@ function currentTarget(): JobTarget | null {
   if (draft.model.value) target.model = draft.model.value;
   if (draft.reasoning.value) target.effort = draft.reasoning.value;
   target.mode = draft.mode.value;
-  const ws = workspaceRequest(workspace.value);
+  const ws = workspace.request();
   if (ws) target.workspace = ws;
   return target;
 }
@@ -192,7 +182,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :project-name="projectName"
       :disable-file-mentions="!projectPath"
       :branch="branch"
-      :env-mode="workspace.mode"
+      :env-mode="workspaceChoice.mode"
       :worktree-path="null"
       :agents="composer.agents.value"
       :agent-id="composer.agentId.value"
@@ -234,8 +224,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       v-if="branchOpen && projectPath"
       mode="select"
       :project-path="projectPath"
-      :chosen="workspace"
-      @picked="onWorkspacePick"
+      :chosen="workspaceChoice"
+      @picked="(choice) => { branchOpen = false; workspace.pick(choice); }"
       @cancel="branchOpen = false"
     />
 

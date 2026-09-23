@@ -48,6 +48,10 @@ export type ThreadWorkspace = {
   requestedBranch?: string | null;
 };
 
+/** A worktree directory every thread that uses it has left alone — what the
+ *  store hands the cleanup sweep. `threadIds` is every thread that shares it. */
+export type IdleWorktree = { worktreePath: string; projectPath: string; threadIds: string[] };
+
 function trimmed(value: string | null | undefined): string | null {
   const text = value?.trim();
   return text ? text : null;

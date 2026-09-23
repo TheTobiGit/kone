@@ -164,9 +164,13 @@ function onCancel() {
   close(() => emit("cancel"));
 }
 
+// Taken in the capture phase and stopped there, so one press closes one layer:
+// focus usually stays on whatever opened the picker, outside this card, and the
+// surfaces behind it answer Escape on the window too.
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     e.preventDefault();
+    e.stopImmediatePropagation();
     onCancel();
   }
 }
@@ -176,7 +180,7 @@ let opener: HTMLElement | null = null;
 onMounted(async () => {
   // SAFETY: activeElement is the element focused just before open; null is allowed by the type.
   opener = document.activeElement as HTMLElement | null;
-  window.addEventListener("keydown", onKeydown);
+  window.addEventListener("keydown", onKeydown, { capture: true });
   window.addEventListener("resize", syncHeight);
   // Reveal with the loading state, then let the ResizeObserver spring the card's
   // height as the list lands (and reflows on a switch error).
@@ -191,7 +195,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("keydown", onKeydown, { capture: true });
   window.removeEventListener("resize", syncHeight);
   ro?.disconnect();
   opener?.focus();
