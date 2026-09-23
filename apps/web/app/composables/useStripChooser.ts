@@ -18,28 +18,16 @@ import { useSound } from "./useSound";
 // as readers rather than values. The pick itself leaves as a callback, so
 // this has no opinion about the component's event names.
 export function useStripChooser(deps: {
-  projectPath: () => string | undefined;
   bindingFor: (id: string) => string;
   displayTokens: (binding: string) => string[];
   emits: {
     choose: (kind: PaneKind) => void;
   };
 }) {
-  const { projectPath, bindingFor, displayTokens, emits } = deps;
+  const { bindingFor, displayTokens, emits } = deps;
   const { cue } = useSound();
   const { scheme } = useTheme();
   const plasmaOpacity = computed(() => (scheme.value === "dark" ? 0.5 : 1));
-
-  // Everything before the folder's own name in the project path — the faded lead
-  // of the chooser pill. The trailing separator is kept so the two spans read as
-  // one continuous path; null when there is no parent (a root-level project).
-  const chooserDir = computed(() => {
-    const full = projectPath();
-    if (!full) return null;
-    const cut = full.lastIndexOf("/");
-    if (cut <= 0) return null;
-    return full.slice(0, cut + 1);
-  });
 
   const chooserActions = computed(() =>
     PANE_KINDS.map((meta) => ({
@@ -58,5 +46,5 @@ export function useStripChooser(deps: {
     emits.choose(kind);
   }
 
-  return { plasmaOpacity, chooserDir, chooserActions, onChoose };
+  return { plasmaOpacity, chooserActions, onChoose };
 }

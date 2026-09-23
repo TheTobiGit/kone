@@ -9,7 +9,8 @@
 // strip: the three pane bodies take different props and emit different events,
 // so `<component :is>` would lose type-checking for no real gain.
 
-import { BubbleChatAddIcon, ComputerTerminal01Icon, Note01Icon } from "@hugeicons/core-free-icons";
+import { ComputerTerminal01Icon, Note01Icon } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineLinearIcon, type IconPaths } from "~/utils/solarChatIcons";
 import { SCRATCHPAD_TITLE } from "~/composables/useScratchpad";
 import type { PaneKind } from "~/types/studio";
 
@@ -19,7 +20,9 @@ export interface PaneKindMeta {
   label: string;
   /** Seam insert-menu row label. Today's exact copy. */
   insertLabel: string;
-  icon: unknown; // Hugeicons IconSvgElement
+  /** Drawn by `<HugeiconsIcon>` — the Hugeicons set plus the chat marks, which
+   *  share its `[tag, attrs]` shape. One renderer for every kind, no branches. */
+  icon: IconPaths;
   /** Only one per project may exist (scratchpad, today). */
   singleton: boolean;
   /** The shortcut id in useShortcuts ACTIONS that opens this kind. */
@@ -41,7 +44,7 @@ export const PANE_KINDS: readonly PaneKindMeta[] = [
     kind: "thread",
     label: "New thread",
     insertLabel: "New thread",
-    icon: BubbleChatAddIcon,
+    icon: SolarChatRoundLineLinearIcon,
     singleton: false,
     shortcutId: "new-thread",
     composer: true,

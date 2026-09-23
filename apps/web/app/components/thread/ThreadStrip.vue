@@ -23,7 +23,8 @@ import { computed, ref } from "vue";
 import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Exchange01Icon, Folder01Icon, GitBranchIcon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, Cancel01Icon, Exchange01Icon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineBrokenIcon } from "~/utils/solarChatIcons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, StudioDestination } from "~/types/studio";
@@ -53,6 +54,7 @@ import { useStripOverview } from "~/composables/useStripOverview";
 import { useStripPresets } from "~/composables/useStripPresets";
 import { useStripSeams } from "~/composables/useStripSeams";
 import StripProjectSwitch from "~/components/thread/StripProjectSwitch.vue";
+import StripChooserHead from "~/components/thread/StripChooserHead.vue";
 import { useStripUnread } from "~/composables/useStripUnread";
 import type { GitRemote } from "~/types/desktop";
 
@@ -371,8 +373,7 @@ const hasScratchpad = computed(() => hasScratchpadPane(props.panes));
 // The same pane-kind registry the seam menu offers, laid out as a centered pick
 // for a desktop with no windows at all. The shortcut-chip readers come from
 // the keyboard cluster; the pick leaves as `choose`.
-const { plasmaOpacity, chooserDir, chooserActions, onChoose } = useStripChooser({
-  projectPath: () => props.projectPath,
+const { plasmaOpacity, chooserActions, onChoose } = useStripChooser({
   bindingFor,
   displayTokens,
   emits: {
@@ -519,7 +520,7 @@ const { isUnread } = useStripUnread({
                     title="Open a side chat"
                     @click.stop="emit('side-chat', c.id)"
                   >
-                    <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="13" :stroke-width="2" aria-hidden="true" />
+                    <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="13" :stroke-width="2" aria-hidden="true" />
                   </button>
                   <button
                     v-if="
@@ -576,7 +577,7 @@ const { isUnread } = useStripUnread({
                       class="col__sidechat"
                       :title="'Side chat — forked from a conversation'"
                     >
-                      <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="11" :stroke-width="2" aria-hidden="true" />
+                      <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="11" :stroke-width="2" aria-hidden="true" />
                     </span>
                     <!-- The title opens the info panel — which is also where it
                          gets renamed, so the header itself stays a read-out. -->
@@ -818,21 +819,7 @@ const { isUnread } = useStripUnread({
         <!-- The row this empty board belongs to, named above the pick — the
              chooser covers the whole surface, so without it nothing says
              which project you'd be starting a column in. -->
-        <p v-if="repo" class="chooser__pill" :title="projectPath">
-          <HugeiconsIcon :icon="Folder01Icon" :size="15" :stroke-width="1.7" aria-hidden="true" />
-          <span class="chooser__path">{{ chooserDir }}</span>
-          <span class="chooser__title">{{ repo }}</span>
-          <template v-if="branch">
-            <span class="chooser__sep" aria-hidden="true"></span>
-            <HugeiconsIcon
-              :icon="GitBranchIcon"
-              :size="13"
-              :stroke-width="1.7"
-              aria-hidden="true"
-            />
-            <span class="chooser__branch">{{ branch }}</span>
-          </template>
-        </p>
+        <StripChooserHead :project-path="projectPath" :repo="repo" :branch="branch" />
         <div class="chooser__actions">
           <!-- Each row leans gently toward the cursor as it approaches, then
                eases back — the same magnet pull the app's other action rows
@@ -1043,80 +1030,13 @@ const { isUnread } = useStripUnread({
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  /* Wider than the action column: the identity pill above it carries a whole
-     path + branch, and crushing it to 16rem ellipsized both into noise. The
-     actions keep their own 16rem column, centred, so the pick stack is
-     unchanged. */
-  width: min(30rem, 100%);
-}
-.chooser__pill {
-  display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-  min-width: 0;
-  max-width: 100%;
-  margin: 0 auto 1.15rem;
-  color: var(--ink);
-}
-.chooser__pill > svg {
-  align-self: center;
-  flex: none;
-}
-.chooser__path {
-  overflow: hidden;
-  flex: 0 1 auto;
-  min-width: 0;
-  color: var(--muted);
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  font-weight: 450;
-  letter-spacing: -0.005em;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* Truncate from the front, not the end: when space runs out, what must
-     survive is the segments nearest the project name — "/…/Developer/" says
-     more than "/Users/gideonsar…". Reversing the direction moves the ellipsis
-     to the left edge while the Latin text itself still lays out left-to-right. */
-  direction: rtl;
-  text-align: left;
-}
-.chooser__title {
-  flex: none;
-  font-family: var(--font-serif);
-  font-optical-sizing: auto;
-  font-size: 16px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
-}
-/* The branch tail — a hairline divider, then the checked-out branch beside its
-   glyph. Quieter than the name but firmer than the path: it is state, not
-   location, and it changes as you work. */
-.chooser__sep {
-  align-self: center;
-  width: 1px;
-  height: 13px;
-  background: color-mix(in srgb, var(--ink) 14%, transparent);
-}
-.chooser__branch {
-  max-width: 14rem;
-  overflow: hidden;
-  color: var(--ink-soft);
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: min(16rem, 100%);
 }
 .chooser__actions {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: min(16rem, 100%);
-  margin: 0 auto;
+  width: 100%;
 }
 .chooser__row {
   display: flex;

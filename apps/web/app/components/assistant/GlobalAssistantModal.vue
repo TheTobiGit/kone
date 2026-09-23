@@ -25,8 +25,8 @@ import {
   Delete02Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
-  Message01Icon,
 } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
@@ -383,8 +383,9 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
                       <!-- Section 1: Previous chats list card -->
                       <section class="history-card history-card--list" aria-label="Previous chats">
                         <p v-if="isHistoryLoading" class="history-note">Loading history…</p>
-                        <p v-else-if="threads.length === 0" class="history-note">
-                          No previous chats yet
+                        <p v-else-if="threads.length === 0" class="history-note history-note--empty">
+                          <HugeiconsIcon :icon="SolarChatRoundLineLinearIcon" :size="18" :stroke-width="1.5" aria-hidden="true" />
+                          <span>No previous chats yet</span>
                         </p>
                         <div v-else class="history-scroll">
                           <div
@@ -400,9 +401,9 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
                           >
                             <span class="history-row__lead">
                               <HugeiconsIcon
-                                :icon="Message01Icon"
+                                :icon="SolarChatRoundLineLinearIcon"
                                 :size="15"
-                                :stroke-width="1.7"
+                                :stroke-width="1.5"
                                 class="history-row__icon"
                                 aria-hidden="true"
                               />
@@ -804,6 +805,15 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
   text-align: center;
   font-size: 12px;
   color: var(--muted);
+}
+
+.history-note--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 1.1rem 0.65rem 1.25rem;
+  color: var(--faint);
 }
 
 .history-scroll {

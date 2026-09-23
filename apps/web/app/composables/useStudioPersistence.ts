@@ -181,6 +181,16 @@ export function useStudioPersistence(projectPath: string | (() => string)) {
    *  has already enqueued the message. */
   function flushRow(row?: StudioRow): void {
     if (row) {
+      if (row.panes.length === 0) {
+        // The unmount flush of a row whose removal is what unmounted it: the
+        // row is already gone, so there is nothing to remove. Writing again
+        // would mint a new document identity with identical contents,
+        // scheduling a second plane update while the first one's keyed patch
+        // is still unmounting. This stays on the teardown path — saveRow keeps
+        // its plain contract (an empty row removes its row) for every caller.
+        const plane = planeRef.value ?? emptyPlane();
+        if (!plane.rows.some((r) => r.projectPath === row.projectPath)) return;
+      }
       saveRow(row);
       return;
     }

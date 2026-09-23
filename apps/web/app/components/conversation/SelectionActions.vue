@@ -3,7 +3,8 @@ import { computed, ref, watch } from "vue";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon, Copy01Icon, MessageAdd01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import type { StudioIntent } from "~/types/studio";
 
 const props = defineProps<{
@@ -185,7 +186,7 @@ const style = computed(() => ({
           <span>Scratchpad</span>
         </button>
         <button type="button" class="selection-actions__btn" @click="onNewThread">
-          <HugeiconsIcon :icon="MessageAdd01Icon" :size="12" :stroke-width="2" />
+          <HugeiconsIcon :icon="SolarChatRoundLineLinearIcon" :size="12" :stroke-width="1.5" />
           <span>New thread</span>
         </button>
       </motion.div>
