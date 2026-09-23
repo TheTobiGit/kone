@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiBrain01Icon,
   Copy01Icon,
   Download01Icon,
+  Folder01Icon,
   GitBranchIcon,
   LinkSquare02Icon,
   PencilEdit01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
+import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
 import { useThreadExport } from "~/composables/useThreadExport";
 import type { ThreadExportFormat } from "~/types/desktop";
 import { THREAD_EXPORT_FORMAT_LABELS, THREAD_EXPORT_FORMATS } from "~/utils/threadExport";
@@ -18,7 +20,7 @@ import { describeModelId, EFFORT_META, type BrandKey, type EffortTier } from "~/
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
 import { formatContextTokens as fmt } from "~/utils/formatContextTokens";
 import { brainStack } from "~/utils/subagentRuns";
-import { isWorkspacePending } from "~/utils/threadWorkspace";
+import { basename, isWorkspacePending } from "~/utils/threadWorkspace";
 import type { ThreadSession } from "~/composables/useAgent";
 import type { GitRemote, ProviderKind, ThreadEnvMode } from "~/types/desktop";
 
@@ -36,6 +38,9 @@ const props = defineProps<{
   anchor: DOMRect;
   /** The project's folder name — shown when the thread lives in a git repo. */
   repo?: string;
+  /** The project's own checkout on disk — where a thread that is not in a
+   *  worktree works, and so what its Folder row opens. */
+  projectPath?: string;
   /** The project's current git branch, if any. Its presence is what marks the
    *  thread as living in a git project — the whole Project section hangs on it. */
   branch?: string;
@@ -53,6 +58,9 @@ const props = defineProps<{
 }>();
 
 const inGitProject = computed(() => Boolean(props.branch));
+/** The Project section stands for a thread in a git repo, and for any thread
+ *  with a folder to open — a plain folder is still somewhere it works. */
+const hasProjectSection = computed(() => inGitProject.value || Boolean(folderPath.value));
 
 const emit = defineEmits<{ close: []; rename: [title: string] }>();
 
@@ -111,6 +119,47 @@ function openRepo(): void {
   cue("press");
   void git.github.open(url);
 }
+
+// ── the folder it works in ──────────────────────────────────────────────────
+// Every thread works somewhere on disk: its own worktree, or the project's
+// checkout. The row opens that folder in the file manager the way the Repo row
+// opens the hosted repo. The folder name shows; the full path is the tooltip.
+const inWorktree = computed(() => Boolean(props.worktreePath?.trim()));
+const folderPath = computed(() =>
+  inWorktree.value ? props.worktreePath ?? null : props.projectPath?.trim() || null,
+);
+const folderName = computed(() => (folderPath.value ? basename(folderPath.value) : null));
+const worktreePending = computed(() =>
+  isWorkspacePending({ envMode: props.envMode ?? null, worktreePath: props.worktreePath ?? null }),
+);
+const { reveal } = useReveal();
+function openFolder(): void {
+  const path = folderPath.value;
+  if (!path) return;
+  cue("press");
+  void reveal(path);
+}
+
+// ── the branch it is on ─────────────────────────────────────────────────────
+// A worktree carries a branch of its own, which is not the one the project's
+// checkout is on — so a thread in one asks its own folder. Until that answers,
+// or when it cannot, the row falls back to the project's branch.
+const worktreeBranch = ref<string | null>(null);
+watch(
+  () => props.worktreePath,
+  async (path) => {
+    worktreeBranch.value = null;
+    if (!path) return;
+    try {
+      const status = await git.status(path);
+      if (props.worktreePath === path) worktreeBranch.value = status?.branch ?? null;
+    } catch {
+      // Gone from disk, or not a repository any more: the fallback stands.
+    }
+  },
+  { immediate: true },
+);
+const shownBranch = computed(() => worktreeBranch.value ?? props.branch);
 
 const s = props.session;
 
@@ -417,7 +466,7 @@ onBeforeUnmount(() => {
             </dd>
           </div>
 
-          <template v-if="inGitProject">
+          <template v-if="hasProjectSection">
             <p class="tip__section">Project</p>
             <div v-if="repoPath" class="tip__row">
               <dt>Repo</dt>
@@ -440,22 +489,36 @@ onBeforeUnmount(() => {
                 <span v-else :title="repoPath">{{ repoPath }}</span>
               </dd>
             </div>
-            <div class="tip__row">
+            <div v-if="shownBranch" class="tip__row">
               <dt>Branch</dt>
-              <dd class="tip__branch" :title="branch">
+              <dd class="tip__branch" :title="shownBranch">
                 <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="2" aria-hidden="true" />
-                <span>{{ branch }}</span>
+                <span>{{ shownBranch }}</span>
               </dd>
             </div>
             <!-- Only when it is not the ordinary answer. A thread in the
                  project's checkout works where the Repo row already said. -->
-            <div v-if="worktreePath || isWorkspacePending({ envMode, worktreePath })" class="tip__row">
-              <dt>Works in</dt>
-              <dd class="tip__branch">
-                <ThreadWorkspaceMark
-                  :worktree-path="worktreePath"
-                  :env-mode="envMode"
-                />
+            <!-- Where the thread works, whichever kind of place that is. A
+                 worktree wears its mark ahead of the name, so the one row says
+                 both where and what. -->
+            <div v-if="worktreePending || folderName" class="tip__row">
+              <dt>Folder</dt>
+              <dd class="tip__repo">
+                <span v-if="worktreePending" class="tip__folder tip__muted">
+                  <WorktreeIcon :size="12" />
+                  Worktree being created…
+                </span>
+                <a
+                  v-else-if="folderName && folderPath"
+                  class="tip__link"
+                  :href="`file://${folderPath}`"
+                  :title="`${inWorktree ? 'Worktree' : 'Project folder'} — show in Finder\n${folderPath}`"
+                  @click.prevent="openFolder()"
+                >
+                  <WorktreeIcon v-if="inWorktree" :size="12" class="tip__folder-mark" />
+                  <span class="tip__link-text">{{ folderName }}</span>
+                  <HugeiconsIcon :icon="Folder01Icon" :size="12" :stroke-width="1.9" aria-hidden="true" />
+                </a>
               </dd>
             </div>
           </template>
@@ -625,7 +688,7 @@ onBeforeUnmount(() => {
 .tip__brains--glow > :deep(svg) {
   filter: drop-shadow(0 0 3px currentColor);
 }
-/* Repo — a real link, so it wears the underline every other link in the app
+/* Repo and Folder — real links, so it wears the underline every other link in the app
    wears, with the leaves-the-app glyph trailing the path. The path truncates
    before the glyph does; the full URL is on the title. */
 .tip__repo {
@@ -634,6 +697,11 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   min-width: 0;
   overflow: visible;
+}
+.tip__folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 .tip__link {
   display: inline-flex;

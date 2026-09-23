@@ -1374,7 +1374,7 @@ export type RuntimeEventSource =
 /** The three things that happen between choosing a worktree and a session
  *  running in it. Named rather than numbered so a surface can render them in a
  *  fixed order and still recognize one that arrives out of turn. */
-export type ThreadWorkspaceStep = "create" | "link" | "start";
+export type ThreadWorkspaceStep = "fetch" | "create" | "link" | "start";
 
 export type AgentBaseEvent = {
   threadId: string;
@@ -2739,6 +2739,10 @@ export type KoneAgentApi = {
   /** Run the thread-retention sweep now rather than on its timer; quiet
    *  threads settle while someone is looking. Resolves when the pass ends. */
   sweepRetention: () => Promise<void>;
+  /** Days an unused worktree is kept before cleanup removes it; null is off. */
+  worktreeCleanupDays: () => Promise<number | null>;
+  /** Save the cleanup window and run a pass; answers the stored value. */
+  setWorktreeCleanupDays: (days: number | null) => Promise<number | null>;
   /** Persisted conversation history (read-only). */
   history: KoneAgentHistoryApi;
   /** Ranged token/cost accounting over the same per-turn rows history is built

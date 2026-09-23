@@ -2641,6 +2641,64 @@ describe("thread workspace", () => {
     expect(store.deleteThread("w-kept")).toEqual({ ok: true });
     expect(store.isWorktreePathReferenced("/wt/shared")).toBe(false);
   });
+
+  test("idleWorktrees offers a directory only when every thread using it has gone quiet", () => {
+    const store = freshStore();
+    const DAY = 24 * 60 * 60 * 1000;
+    const old = Date.now() - 20 * DAY;
+    function worktreeThread(threadId: string, worktreePath: string, at: number): void {
+      store.ensureThread({ threadId, projectPath: "/p", provider: "codex" });
+      store.setThreadWorkspace(threadId, { envMode: "worktree", worktreePath });
+      const raw = rawDb();
+      raw
+        .prepare(`UPDATE threads SET last_activity_at = ?, last_visited_at = ? WHERE thread_id = ?`)
+        .run(at, at, threadId);
+      raw.close();
+    }
+    worktreeThread("i-old", "/wt/old", old);
+    worktreeThread("i-shared-old", "/wt/shared", old);
+    // A second thread still working in the same directory keeps it.
+    worktreeThread("i-shared-new", "/wt/shared", Date.now());
+    worktreeThread("i-pinned", "/wt/pinned", old);
+    store.setPinned("i-pinned", true);
+    worktreeThread("i-queued", "/wt/queued", old);
+    store.enqueueQueuedTurn({
+      queueId: "q-idle",
+      threadId: "i-queued",
+      userBlockId: "ub-idle",
+      input: "later",
+      at: Date.now(),
+    });
+    store.ensureThread({ threadId: "i-local", projectPath: "/p", provider: "codex" });
+
+    expect(store.idleWorktrees(Date.now() - 14 * DAY, 25)).toEqual([
+      { worktreePath: "/wt/old", projectPath: "/p", threadIds: ["i-old"] },
+    ]);
+  });
+
+  test("detachWorktree leaves the thread waiting to rebuild on its branch", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "d-1", projectPath: "/p", provider: "codex" });
+    store.setThreadWorkspace("d-1", { envMode: "worktree", worktreePath: "/wt/d" });
+
+    store.detachWorktree("/wt/d", "kone/fix-login");
+
+    expect(store.threadWorkspace("d-1")).toEqual({
+      envMode: "worktree",
+      worktreePath: null,
+      requestedBranch: "kone/fix-login",
+    });
+    expect(store.isWorktreePathReferenced("/wt/d")).toBe(false);
+  });
+
+  test("the cleanup setting defaults to two weeks and can be turned off", () => {
+    const store = freshStore();
+    expect(store.worktreeCleanupDays()).toBe(14);
+    store.setWorktreeCleanupDays(null);
+    expect(store.worktreeCleanupDays()).toBeNull();
+    store.setWorktreeCleanupDays(30);
+    expect(store.worktreeCleanupDays()).toBe(30);
+  });
 });
 
 describe("turn checkpoints (v6)", () => {

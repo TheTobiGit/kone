@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { hasOwnWorkspace, isWorkspacePending, workspaceMark } from "./threadWorkspace";
+import {
+  LOCAL_WORKSPACE,
+  hasOwnWorkspace,
+  isWorkspacePending,
+  workspaceMark,
+  workspaceRequest,
+} from "./threadWorkspace";
 
 describe("workspaceMark", () => {
   test("a thread in the project's checkout has no mark", () => {
@@ -68,5 +74,23 @@ describe("hasOwnWorkspace", () => {
     // Pending has nowhere to open — the whole reason it is its own state.
     expect(hasOwnWorkspace({ envMode: "worktree" })).toBe(false);
     expect(hasOwnWorkspace({})).toBe(false);
+  });
+});
+
+describe("workspaceRequest", () => {
+  test("the project's own checkout asks for nothing", () => {
+    expect(workspaceRequest(LOCAL_WORKSPACE)).toBeUndefined();
+    expect(workspaceRequest({ mode: "local", base: "main" })).toBeUndefined();
+  });
+
+  test("a new worktree from the current branch carries no base", () => {
+    expect(workspaceRequest({ mode: "worktree", base: null })).toEqual({ mode: "worktree" });
+  });
+
+  test("a new worktree from another branch carries it as the base, never as its own branch", () => {
+    expect(workspaceRequest({ mode: "worktree", base: "main" })).toEqual({
+      mode: "worktree",
+      base: "main",
+    });
   });
 });

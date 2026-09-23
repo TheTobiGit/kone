@@ -56,7 +56,19 @@ export type ProvisionThreadWorkspace = (input: {
   /** The branch already existed and was moved into this worktree. Its history
    *  is not ours to discard, even when the name looks generated. */
   attachedExisting?: boolean;
+  /** Project-relative paths of the private files (`.env` and the like) brought
+   *  into the new directory, for the setup steps to name. */
+  copiedFiles?: string[];
 }>;
+
+/** What the create step says about the private files a new worktree was
+ *  given, or nothing when it was given none. */
+export function describeCopiedFiles(copied: readonly string[] | undefined): string | undefined {
+  if (!copied || copied.length === 0) return undefined;
+  const shown = copied.slice(0, 3).join(", ");
+  const more = copied.length - 3;
+  return more > 0 ? `Copied ${shown} and ${more} more.` : `Copied ${shown}.`;
+}
 
 /** Tear down a worktree this dispatcher built. Only ever called on one it just
  *  created and then had to give back — a user who cancelled while it was being
@@ -73,6 +85,23 @@ export type ReleaseThreadWorkspace = (input: {
   reclaimGeneratedBranch?: boolean;
 }) => Promise<void>;
 
+/** Where a new worktree's branch should start: the freshest copy of `base`
+ *  (the project's current branch when absent) that loses nothing. Never throws —
+ *  a starting point that cannot be freshened is still a starting point. `note`
+ *  is a sentence for the setup card, present only when there is one to say. */
+export type FreshenThreadWorkspaceBase = (input: {
+  projectPath: string;
+  base?: string;
+}) => Promise<{ base?: string; note?: string }>;
+
+/** Give the placeholder branch a worktree was built on a name taken from the
+ *  thread's title. Returns the new name, or null when the branch was left
+ *  alone. Never throws — a thread keeps working on its placeholder either way. */
+export type RenameThreadWorkspaceBranch = (input: {
+  worktreePath: string;
+  title: string;
+}) => Promise<string | null>;
+
 /** The sentence worth showing from a failure, or `fallback` when it carries
  *  none worth reading. */
 function messageOf(error: Error, fallback: string): string {
@@ -87,6 +116,8 @@ export interface ThreadDispatcherDeps {
   broadcast: (event: RuntimeEvent, journal?: boolean) => void;
   provisionWorkspace?: ProvisionThreadWorkspace;
   releaseWorkspace?: ReleaseThreadWorkspace;
+  freshenWorkspaceBase?: FreshenThreadWorkspaceBase;
+  renameWorkspaceBranch?: RenameThreadWorkspaceBranch;
 }
 
 export interface StartThreadOptions {
@@ -243,6 +274,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private readonly broadcast: ThreadDispatcherDeps["broadcast"];
   private readonly provisionWorkspace: ProvisionThreadWorkspace | undefined;
   private readonly releaseWorkspace: ReleaseThreadWorkspace | undefined;
+  private readonly freshenWorkspaceBase: FreshenThreadWorkspaceBase | undefined;
+  private readonly renameWorkspaceBranch: RenameThreadWorkspaceBranch | undefined;
   /** Threads whose user backed out while their worktree was being built.
    *
    *  Cancelling is not "stop trying" — git is already mid-checkout and there is
@@ -272,6 +305,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.broadcast = deps.broadcast;
     this.provisionWorkspace = deps.provisionWorkspace;
     this.releaseWorkspace = deps.releaseWorkspace;
+    this.freshenWorkspaceBase = deps.freshenWorkspaceBase;
+    this.renameWorkspaceBranch = deps.renameWorkspaceBranch;
   }
 
   spawnParentTurnId(threadId: string): string | undefined {
@@ -602,7 +637,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  the seed is never clobbered. An explicit `options.title` replaces the
    *  fallback AND skips generation — it is a deliberate choice, so nothing
    *  races it. `options.generateTitle: false` keeps the fallback but skips the
-   *  background round trip. */
+   *  background round trip.
+   *
+   *  Whichever title the thread settles on also names its worktree's branch,
+   *  once — the placeholder a worktree is built on means nothing to anyone
+   *  reading the branch list. */
   private maybeNameThread(
     input: { threadId: string; provider: ProviderKind; message: string },
     options?: StartThreadTurnOptions,
@@ -613,6 +652,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         provider: input.provider,
         title: options.title,
       });
+      this.nameWorkspaceBranch(input.threadId, options.title);
       return;
     }
     const fallback = buildPromptThreadTitleFallback(input.message);
@@ -621,7 +661,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       provider: input.provider,
       title: fallback,
     });
-    if (options?.generateTitle === false) return;
+    if (options?.generateTitle === false) {
+      this.nameWorkspaceBranch(input.threadId, fallback);
+      return;
+    }
 
     const projectPath = this.store.threadProjectPath(input.threadId);
     if (!projectPath) return;
@@ -649,17 +692,40 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       provider: input.provider,
     })
       .then((generated) => {
-        if (!generated) return;
-        if (!canReplaceThreadTitle(this.store.getTitle(input.threadId), fallback)) return;
+        if (!generated) return fallback;
+        // Someone renamed the thread while the title was generating; their
+        // title is the one the branch should carry.
+        const current = this.store.getTitle(input.threadId);
+        if (!canReplaceThreadTitle(current, fallback)) return current ?? fallback;
         this.publishTitle({
           threadId: input.threadId,
           provider: input.provider,
           title: generated,
         });
+        return generated;
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error("[thread-title] background rename failed:", err);
-      });
+        return fallback;
+      })
+      .then((title) => this.nameWorkspaceBranch(input.threadId, title));
+  }
+
+  /** Rename the thread's worktree branch after `title`, when it has a worktree
+   *  and the branch is still a placeholder. Off the hot path; the info panel
+   *  reads the branch from git, so nothing here needs to be told. */
+  private nameWorkspaceBranch(threadId: string, title: string): void {
+    if (!this.renameWorkspaceBranch || !title.trim()) return;
+    let worktreePath: string | null | undefined;
+    try {
+      worktreePath = this.store.threadWorkspace(threadId)?.worktreePath;
+    } catch {
+      return;
+    }
+    if (!worktreePath) return;
+    void this.renameWorkspaceBranch({ worktreePath, title }).catch((err: unknown) => {
+      console.error("[thread-title] could not name the worktree branch:", err);
+    });
   }
 
   /** Snapshot the working tree as the conversation's baseline the first time a
@@ -768,6 +834,26 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (requestBranch.branch) request.branch = requestBranch.branch;
     if (requestBranch.base) request.base = requestBranch.base;
 
+    // The starting point, made current first. Always reported, even when there
+    // is nothing to fetch, because the stepper lists it and waits for it. Only
+    // a new branch has a starting point to freshen — a named branch that
+    // already exists is moved in as it stands.
+    step("fetch", "running");
+    let freshNote: string | undefined;
+    if (this.freshenWorkspaceBase && !request.branch) {
+      try {
+        const fresh = await this.freshenWorkspaceBase({
+          projectPath: input.cwd,
+          ...(request.base ? { base: request.base } : {}),
+        });
+        if (fresh.base) request.base = fresh.base;
+        freshNote = fresh.note;
+      } catch {
+        freshNote = "Couldn't get the latest changes — started from your copy.";
+      }
+    }
+    step("fetch", "done", freshNote);
+
     step("create", "running");
     let made: Awaited<ReturnType<ProvisionThreadWorkspace>>;
     try {
@@ -783,7 +869,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       );
       throw error;
     }
-    step("create", "done");
+    step("create", "done", describeCopiedFiles(made.copiedFiles));
 
     // The cancel lands here, not earlier: git was already mid-checkout and
     // there was nothing to interrupt. What was made gets unmade, including

@@ -18,20 +18,18 @@ export function useSessionWorkspace(deps: SessionWorkspaceDeps) {
   const { threadId, bridge, storeStagedWorkspace } = deps;
 
   /** The directory this conversation works in, when it is not the project's own
-   *  checkout. Null for the ordinary case and for a worktree still being built —
+   *  checkout — seeded from the stored thread, or recorded by the start that
+   *  built it. Null for the ordinary case and for a worktree still being built —
    *  the two are told apart by the pending derivation below, because one has a
    *  place and the other only has an intention. */
   const worktreePath = ref<string | null>(null);
-  /** What this conversation asked for, seeded when a stored thread is adopted.
-   *  Null until then, and once a build has settled — the store is the record
-   *  from that point on, and the list row carries the directory once it
-   *  refreshes. */
+  /** What this conversation asked for, seeded when a stored thread is adopted
+   *  and set to `worktree` by the start that built one. Null until then. */
   const envMode = ref<ThreadEnvMode | null>(null);
   /** Whether the worktree this conversation asked for is still being built:
    *  intent without a place. Derived, not carried, so it can never disagree
-   *  with the two facts behind it — the start below clears the intent when the
-   *  build settles, which is what flips this, because the renderer never learns
-   *  the built directory itself. */
+   *  with the two facts behind it — the start records the built directory when
+   *  the build settles, which is what flips this. */
   const workspacePending = computed(() =>
     isWorkspacePending({ envMode: envMode.value, worktreePath: worktreePath.value }),
   );
@@ -41,9 +39,9 @@ export function useSessionWorkspace(deps: SessionWorkspaceDeps) {
   /** The build of this conversation's worktree, step by step, while it happens.
    *
    *  Empty at rest and for every thread that never asked for one. It is filled
-   *  when the send stages a worktree and left standing afterwards only if a step
-   *  failed — the stepper is what accounts for the failure, so withdrawing it
-   *  would leave the user with nothing to read. */
+   *  when the send stages a worktree and left standing afterwards, at the head
+   *  of the thread, as the account of where the thread works and how it got
+   *  there — including, when a step failed, what went wrong. */
   const workspaceSteps = ref<WorkspaceStepRow[]>([]);
 
   /** Open the stepper. Called by the send that staged a worktree, so the list is
@@ -52,8 +50,8 @@ export function useSessionWorkspace(deps: SessionWorkspaceDeps) {
     workspaceSteps.value = initialWorkspaceSteps();
   }
 
-  /** Put the stepper away. Only ever the user's choice or a settled build —
-   *  never something that happens to a failure on its own. */
+  /** Put the stepper away. Only ever the user's choice — never something that
+   *  happens to a failure on its own. */
   function dismissWorkspaceSteps(): void {
     workspaceSteps.value = [];
   }

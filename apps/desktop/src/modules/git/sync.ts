@@ -22,7 +22,7 @@ const AUTH_FAILURE =
 // the Electron main process for the full command timeout when a credential
 // helper misbehaves; pinning these makes a missing credential fail fast so the
 // UI can surface the auth error instead of hanging.
-const NON_INTERACTIVE_NETWORK_ENV = {
+export const NON_INTERACTIVE_NETWORK_ENV = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "",
   GCM_INTERACTIVE: "never",

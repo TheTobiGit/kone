@@ -473,6 +473,10 @@ html.dark .dock {
   text-overflow: ellipsis;
 }
 .tray__label--strong { opacity: 0.86; }
+/* The qualifier after a label ("from dev"): part of the same statement, a
+   step quieter so the label still leads. */
+.tray__label--soft { opacity: 0.42; }
+.tray__item--action:hover .tray__label--soft { opacity: 0.6; }
 /* Reads at the same weight as the branch beside it — one statement about where
    the work goes, not two facts of different importance. */
 .tray__workspace {

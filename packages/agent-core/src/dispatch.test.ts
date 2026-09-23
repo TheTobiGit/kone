@@ -102,7 +102,7 @@ beforeAll(async () => {
  *  with the thread already registered and its session up. */
 /** What the injected provisioner was asked for. The real one runs git; here the
  *  point is the ordering around it, not the checkout. */
-const provisioned: Array<{ projectPath: string; branch?: string }> = [];
+const provisioned: Array<{ projectPath: string; branch?: string; base?: string }> = [];
 let provisionFails = false;
 /** Override what the fake provisioner reports about the branch it built. Absent
  *  means derived: a build with no requested branch reports a generated one, a
@@ -160,6 +160,13 @@ const released: Array<{
 }> = [];
 /** Every workspace progress report, in order. */
 const steps: Array<{ step: string; state: string }> = [];
+/** The note each finished fetch step carried, in order. */
+const fetchNotes: Array<string | undefined> = [];
+/** Every base freshen request, and what the next one answers (or throws). */
+const freshened: Array<{ projectPath: string; base?: string }> = [];
+let freshenAnswer: { base?: string; note?: string } | Error = {};
+/** Every branch rename the dispatcher asked for. */
+const renamed: Array<{ worktreePath: string; title: string }> = [];
 
 async function harness(): Promise<{
   store: StoreType;
@@ -188,6 +195,7 @@ async function harness(): Promise<{
     broadcast: (event) => {
       if (event.type === "thread.workspace.progress") {
         steps.push({ step: event.step, state: event.state });
+        if (event.step === "fetch" && event.state === "done") fetchNotes.push(event.message);
       }
     },
     provisionWorkspace: async (request) => {
@@ -205,6 +213,15 @@ async function harness(): Promise<{
     releaseWorkspace: async (input) => {
       if (releaseFails) throw new Error("remove refused");
       released.push(input);
+    },
+    freshenWorkspaceBase: async (input) => {
+      freshened.push(input);
+      if (freshenAnswer instanceof Error) throw freshenAnswer;
+      return freshenAnswer;
+    },
+    renameWorkspaceBranch: async (input) => {
+      renamed.push(input);
+      return null;
     },
   });
   store.ensureThread({ threadId: THREAD, projectPath: CWD, provider: "codex" });
@@ -554,6 +571,8 @@ describe("thread dispatcher: where a session is spawned", () => {
     });
 
     expect(steps).toEqual([
+      { step: "fetch", state: "running" },
+      { step: "fetch", state: "done" },
       { step: "create", state: "running" },
       { step: "create", state: "done" },
       { step: "link", state: "running" },
@@ -561,6 +580,93 @@ describe("thread dispatcher: where a session is spawned", () => {
       { step: "start", state: "running" },
       { step: "start", state: "done" },
     ]);
+  });
+
+  test("a new branch starts from the freshened base, and says where", async () => {
+    const { dispatcher } = await harness();
+    provisioned.length = 0;
+    freshened.length = 0;
+    fetchNotes.length = 0;
+    freshenAnswer = { base: "abc123", note: "Started from the latest origin/main." };
+
+    await dispatcher.startThread({
+      threadId: "t-fresh",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", base: "main" },
+    });
+    freshenAnswer = {};
+
+    expect(freshened).toEqual([{ projectPath: CWD, base: "main" }]);
+    expect(provisioned.at(-1)?.base).toBe("abc123");
+    expect(fetchNotes).toEqual(["Started from the latest origin/main."]);
+  });
+
+  test("a freshen that throws still builds, from the base as asked", async () => {
+    const { dispatcher } = await harness();
+    provisioned.length = 0;
+    fetchNotes.length = 0;
+    freshenAnswer = new Error("network down");
+
+    await dispatcher.startThread({
+      threadId: "t-stale",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", base: "main" },
+    });
+    freshenAnswer = {};
+
+    expect(provisioned.at(-1)?.base).toBe("main");
+    expect(fetchNotes).toHaveLength(1);
+    expect(fetchNotes[0]).toContain("your copy");
+  });
+
+  test("a named branch is moved in as it stands, not freshened", async () => {
+    const { dispatcher } = await harness();
+    freshened.length = 0;
+    fetchNotes.length = 0;
+
+    await dispatcher.startThread({
+      threadId: "t-named",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "feature" },
+    });
+
+    expect(freshened).toEqual([]);
+    expect(fetchNotes).toEqual([undefined]);
+  });
+
+  test("the thread's first title names its worktree branch", async () => {
+    const { dispatcher } = await harness();
+    renamed.length = 0;
+    await dispatcher.startThread({
+      threadId: "t-rename",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree" },
+    });
+
+    await dispatcher.sendThreadTurn(
+      { threadId: "t-rename", input: "fix the login redirect" },
+      { title: "Fix login redirect" },
+    );
+
+    expect(renamed).toEqual([
+      { worktreePath: "/tmp/kone-worktrees/kone-deadbeef", title: "Fix login redirect" },
+    ]);
+  });
+
+  test("a thread in the project's own checkout has no branch to rename", async () => {
+    const { dispatcher } = await harness();
+    renamed.length = 0;
+
+    await dispatcher.sendThreadTurn(
+      { threadId: THREAD, input: "first message" },
+      { title: "First message" },
+    );
+
+    expect(renamed).toEqual([]);
   });
 
   test("a thread that never asked for a worktree reports nothing", async () => {
@@ -588,6 +694,8 @@ describe("thread dispatcher: where a session is spawned", () => {
     provisionFails = false;
 
     expect(steps).toEqual([
+      { step: "fetch", state: "running" },
+      { step: "fetch", state: "done" },
       { step: "create", state: "running" },
       { step: "create", state: "failed" },
     ]);
@@ -811,6 +919,8 @@ describe("thread dispatcher: where a session is spawned", () => {
       requestedBranch: null,
     });
     expect(steps).toEqual([
+      { step: "fetch", state: "running" },
+      { step: "fetch", state: "done" },
       { step: "create", state: "running" },
       { step: "create", state: "done" },
       { step: "link", state: "running" },
@@ -842,6 +952,8 @@ describe("thread dispatcher: where a session is spawned", () => {
       requestedBranch: null,
     });
     expect(steps).toEqual([
+      { step: "fetch", state: "running" },
+      { step: "fetch", state: "done" },
       { step: "create", state: "running" },
       { step: "create", state: "done" },
       { step: "link", state: "running" },

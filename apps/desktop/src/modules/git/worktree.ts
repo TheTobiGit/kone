@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { GitError, git, repoRoot } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import { isGeneratedBranchName } from "./worktreePaths.js";
+import { forgetKoneOwnedBranch, isKoneOwnedBranch } from "./worktreeBranchName.js";
 import type { CreateWorktreeOptions, GitWorktree } from "@kone/git-core/types.js";
 
 // Linked worktrees: additional checkouts of one repository, each on its own
@@ -392,8 +392,8 @@ export async function attachWorktree(
  * does not offer. A locked worktree is unlocked on purpose or not removed.
  *
  * `reclaimGeneratedBranch` additionally deletes the worktree's branch, but
- * only when kone generated its name (`kone/<hex>`, the only names kone may
- * clean up). A branch a person named is never touched, whatever this flag
+ * only when it is kone's: a generated `kone/<hex>` name, or one kone renamed
+ * from it and marked. A branch a person named is never touched, whatever this flag
  * says. The name and its HEAD are read from the checkout BEFORE the removal —
  * afterwards the directory is gone and can no longer answer — and the ref is
  * deleted compare-and-swap against that HEAD, so a concurrent process that
@@ -427,7 +427,7 @@ export async function removeWorktree(
   if (input.reclaimGeneratedBranch) {
     try {
       const branch = (await git(target, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-      if (isGeneratedBranchName(branch)) {
+      if (await isKoneOwnedBranch(target, branch)) {
         const head = (
           await git(target, ["rev-parse", "--verify", `refs/heads/${branch}`])
         ).trim();
@@ -468,6 +468,7 @@ export async function removeWorktree(
             `refs/heads/${claimed.branch}`,
             claimed.head,
           ]);
+          await forgetKoneOwnedBranch(primary, claimed.branch);
         }
       } catch (error) {
         console.warn(

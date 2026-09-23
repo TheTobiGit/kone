@@ -24,7 +24,8 @@ import ProjectPickerModal from "~/components/project/ProjectPickerModal.vue";
 import { useBench } from "~/composables/useBench";
 import { bootProvider } from "~/utils/modelPicker";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import type { ChatAttachment, JobTarget, ThreadEnvMode } from "~/types/desktop";
+import type { ChatAttachment, JobTarget } from "~/types/desktop";
+import { LOCAL_WORKSPACE, workspaceRequest, type WorkspaceChoice } from "~/utils/threadWorkspace";
 
 const emit = defineEmits<{
   /** The job is on the bench. The portal closes the composer on this — the
@@ -52,7 +53,7 @@ function onPickProject(picked: RecentProject): void {
   // A worktree choice belongs to the checkout it was made against, so a new
   // project starts back at that project's own branch. The branch label follows
   // the path on its own.
-  workspace.value = { mode: "local", branch: null };
+  workspace.value = LOCAL_WORKSPACE;
 }
 
 // The handle to the project's session registry. Constructing it spawns nothing
@@ -82,8 +83,7 @@ const composer = useInboxComposer({
 // is part of what the runner is handed. Nothing is built here: a worktree is
 // made by the run, so a job parked as a draft and deleted a week later leaves
 // no directory behind.
-type WorkspaceChoice = { mode: ThreadEnvMode; branch: string | null };
-const workspace = ref<WorkspaceChoice>({ mode: "local", branch: null });
+const workspace = ref<WorkspaceChoice>(LOCAL_WORKSPACE);
 
 function onWorkspacePick(choice: WorkspaceChoice): void {
   workspace.value = choice;
@@ -91,11 +91,11 @@ function onWorkspacePick(choice: WorkspaceChoice): void {
   if (choice.mode === "local") void composer.refreshBranch();
 }
 
-/** The branch the work lands on: a picked worktree branch while there is one,
- *  otherwise what the project's checkout is actually on. */
+/** The branch the work starts from: the one a new worktree starts from while
+ *  one is picked, otherwise what the project's checkout is actually on. */
 const branch = computed(() =>
-  workspace.value.mode === "worktree" && workspace.value.branch
-    ? workspace.value.branch
+  workspace.value.mode === "worktree" && workspace.value.base
+    ? workspace.value.base
     : (composer.branch.value ?? undefined),
 );
 
@@ -113,11 +113,8 @@ function currentTarget(): JobTarget | null {
   if (draft.model.value) target.model = draft.model.value;
   if (draft.reasoning.value) target.effort = draft.reasoning.value;
   target.mode = draft.mode.value;
-  if (workspace.value.mode === "worktree") {
-    const ws: NonNullable<JobTarget["workspace"]> = { mode: "worktree" };
-    if (workspace.value.branch) ws.branch = workspace.value.branch;
-    target.workspace = ws;
-  }
+  const ws = workspaceRequest(workspace.value);
+  if (ws) target.workspace = ws;
   return target;
 }
 
@@ -237,6 +234,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       v-if="branchOpen && projectPath"
       mode="select"
       :project-path="projectPath"
+      :chosen="workspace"
       @picked="onWorkspacePick"
       @cancel="branchOpen = false"
     />

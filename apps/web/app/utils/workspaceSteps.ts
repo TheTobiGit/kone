@@ -1,6 +1,6 @@
 // The few seconds between choosing a worktree and having one.
 //
-// Three steps, in a fixed order, because they happen in that order and a list
+// Four steps, in a fixed order, because they happen in that order and a list
 // that reorders itself as reports land is harder to read than one that does
 // not. The reducer only ever changes a step's state — it never adds, removes or
 // moves one — so the shape on screen is stable from the first frame.
@@ -18,18 +18,20 @@ export type WorkspaceStepRow = {
   step: ThreadWorkspaceStep;
   label: string;
   state: WorkspaceStepState;
-  /** Why it failed, when it did. */
+  /** Why it failed, when it did — or, on a finished step, what is worth
+   *  knowing about how it went. */
   message?: string;
 };
 
 /** The steps as they read, in the order they happen. */
 const STEP_LABELS: ReadonlyArray<{ step: ThreadWorkspaceStep; label: string }> = [
+  { step: "fetch", label: "Getting latest changes" },
   { step: "create", label: "Creating branch and worktree" },
   { step: "link", label: "Linking thread workspace" },
   { step: "start", label: "Starting session" },
 ];
 
-/** All three, none started. The shape a surface renders before any report. */
+/** Every step, none started. The shape a surface renders before any report. */
 export function initialWorkspaceSteps(): WorkspaceStepRow[] {
   return STEP_LABELS.map(({ step, label }) => ({ step, label, state: "pending" }));
 }

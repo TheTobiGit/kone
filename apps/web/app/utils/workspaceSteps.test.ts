@@ -9,11 +9,12 @@ import {
 } from "./workspaceSteps";
 
 describe("workspace steps", () => {
-  test("start from three pending steps in a fixed order", () => {
+  test("start from four pending steps in a fixed order", () => {
     const rows = initialWorkspaceSteps();
 
-    expect(rows.map((r) => r.step)).toEqual(["create", "link", "start"]);
+    expect(rows.map((r) => r.step)).toEqual(["fetch", "create", "link", "start"]);
     expect(rows.map((r) => r.label)).toEqual([
+      "Getting latest changes",
       "Creating branch and worktree",
       "Linking thread workspace",
       "Starting session",
@@ -27,8 +28,8 @@ describe("workspace steps", () => {
       state: "running",
     });
 
-    expect(rows.map((r) => r.step)).toEqual(["create", "link", "start"]);
-    expect(rows.map((r) => r.state)).toEqual(["pending", "running", "pending"]);
+    expect(rows.map((r) => r.step)).toEqual(["fetch", "create", "link", "start"]);
+    expect(rows.map((r) => r.state)).toEqual(["pending", "pending", "running", "pending"]);
   });
 
   test("a failure stays put, and what comes after it stays pending", () => {
@@ -44,7 +45,7 @@ describe("workspace steps", () => {
 
     expect(failedWorkspaceStep(rows)?.step).toBe("create");
     expect(failedWorkspaceStep(rows)?.message).toBe("a branch named 'foo' already exists");
-    expect(rows.map((r) => r.state)).toEqual(["failed", "pending", "pending"]);
+    expect(rows.map((r) => r.state)).toEqual(["pending", "failed", "pending", "pending"]);
     expect(workspaceStepsSettled(rows)).toBe(false);
   });
 
@@ -56,13 +57,13 @@ describe("workspace steps", () => {
     });
     rows = applyWorkspaceStep(rows, { step: "create", state: "done" });
 
-    expect(rows[0]?.message).toBeUndefined();
+    expect(rows[1]?.message).toBeUndefined();
     expect(failedWorkspaceStep(rows)).toBeNull();
   });
 
-  test("settled only when all three are done", () => {
+  test("settled only when every step is done", () => {
     let rows = initialWorkspaceSteps();
-    for (const step of ["create", "link", "start"] as const) {
+    for (const step of ["fetch", "create", "link", "start"] as const) {
       expect(workspaceStepsSettled(rows)).toBe(false);
       rows = applyWorkspaceStep(rows, { step, state: "done" });
     }
@@ -74,7 +75,7 @@ describe("workspace steps", () => {
     const before = initialWorkspaceSteps();
     applyWorkspaceStep(before, { step: "create", state: "done" });
 
-    expect(before[0]?.state).toBe("pending");
+    expect(before[1]?.state).toBe("pending");
   });
 });
 
@@ -92,6 +93,7 @@ describe("isWorkspaceCancellable", () => {
 
   test("not cancellable once the start step runs — nothing left to undo", () => {
     let rows = initialWorkspaceSteps();
+    rows = applyWorkspaceStep(rows, { step: "fetch", state: "done" });
     rows = applyWorkspaceStep(rows, { step: "create", state: "done" });
     rows = applyWorkspaceStep(rows, { step: "link", state: "done" });
     rows = applyWorkspaceStep(rows, { step: "start", state: "running" });
@@ -100,7 +102,7 @@ describe("isWorkspaceCancellable", () => {
 
   test("not cancellable once settled or failed", () => {
     let rows = initialWorkspaceSteps();
-    for (const step of ["create", "link", "start"] as const) {
+    for (const step of ["fetch", "create", "link", "start"] as const) {
       rows = applyWorkspaceStep(rows, { step, state: "done" });
     }
     expect(isWorkspaceCancellable(rows)).toBe(false);

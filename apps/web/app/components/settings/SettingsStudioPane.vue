@@ -205,6 +205,32 @@ function widthValue(kind: PaneKind): string {
 function chooseWidth(kind: PaneKind, id: string) {
   setDefaultWidth(kind, Number(id));
 }
+
+// ── worktree cleanup ──────────────────────────────────────────────────────────
+// How long a worktree nobody works in stays on disk. Only a worktree that would
+// lose nothing is removed, its branch is kept, and opening its thread again
+// builds a fresh one — so this is a disk setting, not a risk setting. Stored by
+// the desktop app, which runs the cleanup; absent outside it.
+const CLEANUP_OPTIONS = [
+  { id: "off", label: "Never" },
+  { id: "7", label: "7 days" },
+  { id: "14", label: "14 days" },
+  { id: "30", label: "30 days" },
+];
+const cleanupDays = ref<string | null>(null);
+onMounted(async () => {
+  const days = await window.koneDesktop?.agent?.worktreeCleanupDays?.().catch(() => undefined);
+  if (days !== undefined) cleanupDays.value = days === null ? "off" : String(days);
+});
+
+async function chooseCleanup(id: string) {
+  if (cleanupDays.value === id) return;
+  cleanupDays.value = id;
+  const saved = await window.koneDesktop?.agent
+    ?.setWorktreeCleanupDays?.(id === "off" ? null : Number(id))
+    .catch(() => undefined);
+  if (saved !== undefined) cleanupDays.value = saved === null ? "off" : String(saved);
+}
 </script>
 
 <template>
@@ -284,6 +310,26 @@ function chooseWidth(kind: PaneKind, id: string) {
             :tabbable="open"
             :setting="`the width a new ${row.paneName} opens at`"
             @pick="(id) => chooseWidth(row.kind, id)"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- Worktrees — how long one nobody works in stays on disk. -->
+    <div v-if="cleanupDays !== null" class="studio__group">
+      <h2 class="studio__heading">Worktrees</h2>
+      <div class="studio__rows">
+        <div class="studio__row">
+          <h3 class="studio__title" title="Only a worktree with nothing unsaved in it is removed. Its branch stays, and opening the chat again rebuilds it.">
+            Remove unused after
+          </h3>
+
+          <SettingsInlineChoice
+            :options="CLEANUP_OPTIONS"
+            :value="cleanupDays"
+            :tabbable="open"
+            setting="how long an unused worktree is kept"
+            @pick="chooseCleanup"
           />
         </div>
       </div>

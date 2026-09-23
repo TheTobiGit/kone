@@ -16,6 +16,9 @@ import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
+import ComposerWorkspaceTray from "~/components/agent/ComposerWorkspaceTray.vue";
+import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
+import type { WorkspaceStepRow } from "~/utils/workspaceSteps";
 import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ComposerStatusTray from "~/components/agent/ComposerStatusTray.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
@@ -117,8 +120,9 @@ const props = defineProps<{
    *  strip above the card renders from these — the host owns the queue (send
    *  while busy enqueues; cancel/steer round-trip through the bridge). */
   queued?: QueuedTurnEntry[];
-  /** The full model picker is open (hosted by the parent, outside our dock).
-   *  While it is, a click in it — or on its scrim — must NOT collapse us. */
+  /** A picker the parent hosts outside our dock is open — the model picker, the
+   *  workspace picker. While one is, a click in it or on its scrim, or the
+   *  Escape that dismisses it, must NOT collapse us. */
   picking?: boolean;
   /** Stay open, always. For a surface whose only purpose is writing: there is
    *  nothing else on it to look at, so there is nothing to collapse back to,
@@ -180,6 +184,9 @@ const props = defineProps<{
   healthStatus?: ProviderStatus | null;
   /** A re-check is in flight; the strip's action reads as busy. */
   healthChecking?: boolean;
+  /** The build of this thread's worktree, step by step, for the strip under
+   *  the card's roof. Empty (or absent) for a thread that never asked for one. */
+  workspaceSteps?: WorkspaceStepRow[];
   /** Projects the @ picker offers above files. Set by surfaces with no project
    *  of their own — the global assistant — so a mention can still point the
    *  turn at somewhere real. Everywhere else this stays empty and @ means
@@ -232,6 +239,10 @@ const emit = defineEmits<{
   compact: [focus: string];
   /** Ask the host to open the branch picker (the tray's branch chip). */
   "open-branch": [];
+  /** Back out of the worktree still being built for this thread. */
+  "cancel-workspace": [];
+  /** Put away the account of this thread's worktree build. */
+  "dismiss-workspace": [];
   /** ask the host to start a new thread. carries no payload — the pending
    *  draft is dropped, never carried over to the fresh thread. */
   "new-thread": [];
@@ -269,6 +280,12 @@ const title = ref("");
 const TITLE_MAX = 80;
 const hasTitle = computed(() => title.value.trim().length > 0);
 const canSwitchBranch = computed(() => props.branchSwitchable !== false);
+/** A new worktree has been picked but nothing is built yet — the first send
+ *  does that. The chip then says what the send will make and where it starts,
+ *  rather than naming a branch the work will not be on. */
+const draftWorktree = computed(
+  () => canSwitchBranch.value && props.envMode === "worktree" && !props.worktreePath,
+);
 const showTray = computed(() => !props.hideContextTray);
 
 // ── agent (leading the context tray) ─────────────────────────────────────────
@@ -832,6 +849,8 @@ onKeyStroke("Escape", () => {
     agentPickerOpen.value = false;
     return;
   }
+  // The host's picker is the layer on top, and it answers this press itself.
+  if (props.picking) return;
   close();
 });
 
@@ -1045,6 +1064,15 @@ defineExpose({ wake, setDraft, focus });
       @send-now="emit('send-now', $event)"
       @edit="onQueueEdit"
       @reorder-queued="emit('reorder-queued', $event)"
+    />
+
+    <!-- The worktree this thread is being moved into, while it is built and
+         until it is put away. Withheld while the send is blocked: that strip
+         is about whether the turn happens at all, which comes first. -->
+    <ComposerWorkspaceTray
+      :steps="open && !blockedReason ? (workspaceSteps ?? []) : []"
+      @cancel="emit('cancel-workspace')"
+      @dismiss="emit('dismiss-workspace')"
     />
 
     <!-- Top status tray — the send-block reason, hanging off the top of the
@@ -1472,7 +1500,19 @@ defineExpose({ wake, setDraft, focus });
            the workspace can be chosen — so this one control asks both halves of
            "where does this work land". -->
       <button
-        v-if="branch && canSwitchBranch"
+        v-if="branch && draftWorktree"
+        type="button"
+        class="tray__item tray__item--action"
+        :aria-label="`New worktree from ${branch}. Choose where this conversation works.`"
+        :title="`A new worktree, starting from ${branch} — click to change`"
+        @click.stop="emit('open-branch')"
+      >
+        <WorktreeIcon :size="13" />
+        <span class="tray__label">New worktree</span>
+        <span class="tray__label tray__label--soft">from {{ branch }}</span>
+      </button>
+      <button
+        v-else-if="branch && canSwitchBranch"
         type="button"
         class="tray__item tray__item--action"
         :aria-label="`On ${branch}. Choose where this conversation works.`"
@@ -1492,8 +1532,12 @@ defineExpose({ wake, setDraft, focus });
       </span>
       <!-- Frozen once the thread has started: the same words, with nothing that
            implies you can still change them. Renders nothing for a conversation
-           in the project's own checkout. -->
-      <span v-if="worktreePath || isWorkspacePending({ envMode, worktreePath })" class="tray__item">
+           in the project's own checkout, nor for a worktree only picked so far —
+           the chip above already says that. -->
+      <span
+        v-if="!draftWorktree && (worktreePath || isWorkspacePending({ envMode, worktreePath }))"
+        class="tray__item"
+      >
         <ThreadWorkspaceMark
           class="tray__workspace"
           :worktree-path="worktreePath"
