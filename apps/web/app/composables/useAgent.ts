@@ -1,9 +1,5 @@
 import { computed, getCurrentInstance, onBeforeUnmount, ref, shallowRef, watch } from "vue";
-import {
-  failedWorkspaceStep,
-  initialWorkspaceSteps,
-  workspaceStepsSettled,
-} from "~/utils/workspaceSteps";
+import { initialWorkspaceSteps } from "~/utils/workspaceSteps";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -114,6 +110,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const workspaceSteps = workspace.workspaceSteps;
   const beginWorkspaceSteps = workspace.beginWorkspaceSteps;
   const dismissWorkspaceSteps = workspace.dismissWorkspaceSteps;
+  const retireWorkspaceSteps = workspace.retireWorkspaceSteps;
   const cancelWorkspace = workspace.cancelWorkspace;
   const stageWorkspace = workspace.stageWorkspace;
   const session = shallowRef<Session | null>(null);
@@ -565,8 +562,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // does not rebuild — matching the one-shot staging — and a surface that
       // never re-reads the stored row still shows the thread in its worktree.
       if (stagedWorkspace?.mode === "worktree" || wasWorkspacePending) {
-        const builtAt = session.value.cwd;
-        if (builtAt && builtAt !== startInput.cwd) {
+        const builtAt = session.value.worktreePath;
+        if (builtAt) {
           worktreePath.value = builtAt;
           envMode.value = "worktree";
         } else {
@@ -710,16 +707,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *
    *  One builder for send() and steerTurn() so the two can never disagree about
    *  what a request looks like on screen. */
-  /** A worktree build that has finished — or broken — has said what it had to
-   *  say by the time the next request goes out, so the request retires it. A
-   *  retry of a broken build then opens a fresh list instead of reporting into
-   *  the old one. A build still in flight is left alone. */
-  function retireWorkspaceSteps(): void {
-    const rows = workspaceSteps.value;
-    if (rows.length === 0) return;
-    if (workspaceStepsSettled(rows) || failedWorkspaceStep(rows)) dismissWorkspaceSteps();
-  }
-
   function buildUserBlock(id: string, text: string, files: ChatAttachment[]): UserBlock {
     const block: UserBlock = { id, role: "user", text, at: Date.now(), effort: reasoning.value };
     if (model.value) block.model = model.value;

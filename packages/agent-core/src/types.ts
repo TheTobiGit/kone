@@ -224,6 +224,10 @@ export type Session = {
    *  a parent's strength onto a child that doesn't request one. */
   effort?: string;
   mode: InteractionMode;
+  /** The thread's own worktree, when the start ran it in one. Absent for a
+   *  thread sharing the project's checkout — the cwd alone can't tell the two
+   *  apart, since the assistant's cwd differs from its project without one. */
+  worktreePath?: string;
 };
 
 // ── Attachments ────────────────────────────────────────────────────────────
@@ -1492,9 +1496,12 @@ export type RuntimeEvent =
       type: "thread.workspace.progress";
       step: ThreadWorkspaceStep;
       state: "running" | "done" | "failed";
-      /** Why it failed, when it did — or, on a step that finished, what is
-       *  worth knowing about how (where a worktree started from). */
-      message?: string;
+      /** Why the step failed. Only on a failed step. */
+      error?: string;
+      /** What is worth knowing about how a finished step went — where the
+       *  worktree started from, which private files came along. Only on a
+       *  step that finished. */
+      note?: string;
     })
   // The provider compacted the thread's context window — natively (Codex
   // `thread/compacted`, OpenCode `session.compacted`, Claude's

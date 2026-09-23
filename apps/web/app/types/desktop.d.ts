@@ -901,6 +901,9 @@ export type Session = {
    *  turn and records nothing at session level). */
   effort?: string;
   mode: InteractionMode;
+  /** The thread's own worktree, when the start ran it in one. Absent for a
+   *  thread sharing the project's checkout. */
+  worktreePath?: string;
 };
 
 // ── Attachments (mirror packages/agent-core/src/types.ts) ─────────────────────
@@ -1371,7 +1374,7 @@ export type RuntimeEventSource =
   // never crosses the bridge, so nothing downstream can observe this source.
   | "kone.mock";
 
-/** The three things that happen between choosing a worktree and a session
+/** The four things that happen between choosing a worktree and a session
  *  running in it. Named rather than numbered so a surface can render them in a
  *  fixed order and still recognize one that arrives out of turn. */
 export type ThreadWorkspaceStep = "fetch" | "create" | "link" | "start";
@@ -1409,7 +1412,11 @@ export type RuntimeEvent =
       type: "thread.workspace.progress";
       step: ThreadWorkspaceStep;
       state: "running" | "done" | "failed";
-      message?: string;
+      /** Why the step failed. Only on a failed step. */
+      error?: string;
+      /** What is worth knowing about how a finished step went. Only on a step
+       *  that finished. */
+      note?: string;
     })
   // The provider compacted the thread's context window — natively or
   // synthesized after a manual `/compact` turn. Consumers invalidate any

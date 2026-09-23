@@ -36,16 +36,14 @@ const DIGEST_LENGTH = 6;
 const MAX_BRANCH_SEGMENT = 64;
 
 /**
- * A branch name reduced to something safe to use as a single path component.
+ * A branch name reduced to something safe to use as a single path component,
+ * or null when nothing in it survives (all punctuation, or another script).
  *
  * Lossy on purpose — this is a label, not an identifier, and the digest beside
  * it is what keeps two different branches apart. Slashes become dashes so a
  * `feature/foo` branch is one directory rather than two.
- *
- * Never returns an empty string: a branch named entirely in characters this
- * strips would otherwise produce a path ending in a separator.
  */
-export function sanitizeBranchSegment(branch: string): string {
+export function branchSegmentOrNull(branch: string): string | null {
   const collapsed = branch
     .toLowerCase()
     .replace(/['"`]/g, "")
@@ -53,8 +51,15 @@ export function sanitizeBranchSegment(branch: string): string {
     .replace(/\//g, "-")
     .replace(/-{2,}/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "");
-  if (!collapsed) return "update";
-  return collapsed.slice(0, MAX_BRANCH_SEGMENT).replace(/[-_]+$/, "") || "update";
+  return collapsed.slice(0, MAX_BRANCH_SEGMENT).replace(/[-_]+$/, "") || null;
+}
+
+/**
+ * {@link branchSegmentOrNull}, but never empty: a branch named entirely in
+ * characters it strips would otherwise produce a path ending in a separator.
+ */
+export function sanitizeBranchSegment(branch: string): string {
+  return branchSegmentOrNull(branch) ?? "update";
 }
 
 /** Resolve symlinks without touching the disk beyond what resolution needs.

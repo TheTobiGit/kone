@@ -43,13 +43,27 @@ async function read(root: string, args: string[]): Promise<string | null> {
   }
 }
 
-async function isAncestor(root: string, older: string, newer: string): Promise<boolean> {
-  try {
-    await git(root, ["merge-base", "--is-ancestor", older, newer]);
-    return true;
-  } catch {
-    return false;
-  }
+/** What the branch's own ref says about it and its upstream, in one read. */
+type Tracking = {
+  remote: string;
+  mergeRef: string;
+  /** The remote-tracking ref, e.g. `refs/remotes/origin/main`. */
+  upstreamRef: string;
+  /** The same, as a person reads it: `origin/main`. */
+  upstreamName: string;
+  local: string;
+};
+
+async function tracking(root: string, branch: string): Promise<Tracking | null> {
+  const out = await read(root, [
+    "for-each-ref",
+    "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)%00%(upstream:short)%00%(objectname)",
+    `refs/heads/${branch}`,
+  ]);
+  if (!out) return null;
+  const [remote, mergeRef, upstreamRef, upstreamName, local] = out.split("\0");
+  if (!remote || !mergeRef || !upstreamRef || !upstreamName || !local) return null;
+  return { remote, mergeRef, upstreamRef, upstreamName, local };
 }
 
 function commits(n: number): string {
@@ -70,11 +84,11 @@ export async function freshestBase(projectPath: string, base?: string | null): P
   const branch = picked ?? (await read(root, ["branch", "--show-current"]));
   if (!branch) return keep;
 
-  const remote = await read(root, ["config", "--get", `branch.${branch}.remote`]);
-  const mergeRef = await read(root, ["config", "--get", `branch.${branch}.merge`]);
   // No upstream, or one that is another local branch ("."): there is no remote
   // copy to be fresher than.
-  if (!remote || !mergeRef || remote === ".") return keep;
+  const ref = await tracking(root, branch);
+  if (!ref || ref.remote === ".") return keep;
+  const { remote, mergeRef, upstreamRef, upstreamName, local } = ref;
 
   try {
     await withRepoMutation(root, () =>
@@ -92,19 +106,17 @@ export async function freshestBase(projectPath: string, base?: string | null): P
     return { ...keep, note: `${why} — started from your copy of ${branch}.` };
   }
 
-  const upstreamName =
-    (await read(root, ["rev-parse", "--abbrev-ref", `${branch}@{upstream}`])) ?? `${remote}/${branch}`;
-  const local = await read(root, ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`]);
-  const upstream = await read(root, [
-    "rev-parse",
-    "--verify",
-    "--end-of-options",
-    `${branch}@{upstream}^{commit}`,
-  ]);
-  if (!local || !upstream || local === upstream) return keep;
+  // The fetch moved only the remote-tracking ref, so the local sha read above
+  // still stands.
+  const upstream = await read(root, ["rev-parse", "--verify", "--end-of-options", `${upstreamRef}^{commit}`]);
+  if (!upstream || upstream === local) return keep;
 
-  if (await isAncestor(root, local, upstream)) {
-    const behind = Number(await read(root, ["rev-list", "--count", `${local}..${upstream}`])) || 0;
+  // `ahead` is what the user's copy has that the remote's lacks; none means it
+  // is only behind, and the remote's copy loses nothing.
+  const counts = await read(root, ["rev-list", "--left-right", "--count", `${local}...${upstream}`]);
+  if (!counts) return keep;
+  const [ahead, behind] = counts.split(/\s+/).map(Number);
+  if (ahead === 0 && behind) {
     return {
       base: upstream,
       note: `Started from the latest ${upstreamName}, ${commits(behind)} newer than your copy.`,

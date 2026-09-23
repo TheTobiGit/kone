@@ -5,6 +5,7 @@ import {
   failedWorkspaceStep,
   initialWorkspaceSteps,
   isWorkspaceCancellable,
+  settledWorkspaceNote,
   workspaceStepsSettled,
 } from "./workspaceSteps";
 
@@ -40,25 +41,34 @@ describe("workspace steps", () => {
     rows = applyWorkspaceStep(rows, {
       step: "create",
       state: "failed",
-      message: "a branch named 'foo' already exists",
+      error: "a branch named 'foo' already exists",
     });
 
     expect(failedWorkspaceStep(rows)?.step).toBe("create");
-    expect(failedWorkspaceStep(rows)?.message).toBe("a branch named 'foo' already exists");
+    expect(failedWorkspaceStep(rows)?.error).toBe("a branch named 'foo' already exists");
     expect(rows.map((r) => r.state)).toEqual(["pending", "failed", "pending", "pending"]);
     expect(workspaceStepsSettled(rows)).toBe(false);
   });
 
-  test("a later report without a message clears the earlier one", () => {
+  test("a later report without a sentence clears the earlier one", () => {
     let rows = applyWorkspaceStep(initialWorkspaceSteps(), {
       step: "create",
       state: "failed",
-      message: "gone wrong",
+      error: "gone wrong",
     });
     rows = applyWorkspaceStep(rows, { step: "create", state: "done" });
 
-    expect(rows[1]?.message).toBeUndefined();
+    expect(rows[1]?.error).toBeUndefined();
     expect(failedWorkspaceStep(rows)).toBeNull();
+  });
+
+  test("a settled build's summary is the first note in step order", () => {
+    let rows = initialWorkspaceSteps();
+    rows = applyWorkspaceStep(rows, { step: "fetch", state: "done", note: "Started from origin/main." });
+    rows = applyWorkspaceStep(rows, { step: "create", state: "done", note: "Copied .env." });
+
+    expect(settledWorkspaceNote(rows)).toBe("Started from origin/main.");
+    expect(settledWorkspaceNote(initialWorkspaceSteps())).toBe("");
   });
 
   test("settled only when every step is done", () => {
@@ -109,7 +119,7 @@ describe("isWorkspaceCancellable", () => {
     const failed = applyWorkspaceStep(initialWorkspaceSteps(), {
       step: "create",
       state: "failed",
-      message: "gone wrong",
+      error: "gone wrong",
     });
     expect(isWorkspaceCancellable(failed)).toBe(false);
   });

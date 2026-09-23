@@ -143,16 +143,6 @@ const blocks = computed(() => session.value?.timelineBlocks.value ?? []);
  *  its next turn would land on. The row carries what the thread's last settled
  *  turn stamped on it; the composer has already read what the checkout says now
  *  — so the comparison costs nothing beyond what both ends already hold. */
-/** Backing out of a worktree still being built. The stepper goes away at once —
- *  the decision is made and there is nothing further to watch — while the
- *  teardown happens behind it, once the creation it is undoing finishes. */
-async function onCancelWorkspace(): Promise<void> {
-  const s = session.value;
-  if (!s) return;
-  s.dismissWorkspaceSteps();
-  await s.cancelWorkspace();
-}
-
 const branchDrift = computed(() =>
   resolveBranchDrift({
     recorded: props.row.branch,
@@ -506,7 +496,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @new-thread="onComposerNewThread"
         @update:open="composerOpen = $event"
         @recheck="composer.recheckProviders"
-        @cancel-workspace="onCancelWorkspace"
+        @cancel-workspace="session?.cancelWorkspace()"
         @dismiss-workspace="session?.dismissWorkspaceSteps()"
       />
     </div>

@@ -31,7 +31,7 @@ import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
 import type { ChatAttachment } from "~/types/desktop";
-import { LOCAL_WORKSPACE, workspaceRequest, type WorkspaceChoice } from "~/utils/threadWorkspace";
+import { useWorkspaceChoice } from "~/composables/useWorkspaceChoice";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import type { ThreadSession } from "~/composables/useAgent";
@@ -130,31 +130,14 @@ const composer = useInboxComposer({
 const branchOpen = ref(false);
 
 // Where this conversation will work, held as draft state until the first send.
-//
-// Nothing is created while it sits here: choosing a workspace is a decision, and
-// a user who opens the picker and then closes the pane must leave no directory
-// behind. The send hands it to the session, which hands it to the one start that
-// builds the worktree — after which the choice is locked, because a running
-// session cannot change the directory it is in.
-const workspace = ref<WorkspaceChoice>(LOCAL_WORKSPACE);
-
-function onWorkspacePick(choice: WorkspaceChoice): void {
-  workspace.value = choice;
-  branchOpen.value = false;
-  // Local means the project's own checkout, so the branch shown is the
-  // project's and worth re-reading; a worktree does not exist yet and has
-  // nothing to read.
-  if (choice.mode === "local") void composer.refreshBranch();
-}
-
-// The branch the work starts from. A new worktree starting from another branch
-// names that one; otherwise the composer's read of the project's checkout.
-const displayedBranch = computed(
-  () =>
-    workspace.value.mode === "worktree" && workspace.value.base
-      ? workspace.value.base
-      : (composer.branch.value ?? undefined),
-);
+// The send hands it to the session, which hands it to the one start that builds
+// the worktree — after which the choice is locked, because a running session
+// cannot change the directory it is in.
+const workspace = useWorkspaceChoice({
+  fallbackBranch: () => composer.branch.value,
+  onLocal: () => void composer.refreshBranch(),
+});
+const { choice: workspaceChoice, branch: displayedBranch } = workspace;
 
 const busy = computed(() => session.value?.busy.value ?? false);
 const queued = computed(() => session.value?.queuedTurns.value ?? []);
@@ -221,7 +204,7 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // Where the work lands, handed over at the same moment as the rest of the
     // draft. The session consumes it on its one start; a retry of a failed send
     // finds the session already there and leaves the earlier choice standing.
-    const request = existing ? undefined : workspaceRequest(workspace.value);
+    const request = existing ? undefined : workspace.request();
     if (request) s.stageWorkspace(request);
     // Who is on the thread, settled on the turn that made it — and settled
     // *before* it, because the session reads the persona off this binding as it
@@ -253,7 +236,7 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // accepted one has it on screen for the whole build instead of appearing a
     // beat into it. It follows the session, so it survives this pane handing
     // over.
-    if (!existing && workspace.value.mode === "worktree") s.beginWorkspaceSteps();
+    if (!existing && workspaceChoice.value.mode === "worktree") s.beginWorkspaceSteps();
     const claimed = key.value;
     if (!id || !claimed) return;
     // Warm the avatar cache for the new thread id so the header and transcript
@@ -354,7 +337,7 @@ defineExpose({ focus });
         :project-name="projectName"
         :branch="displayedBranch ?? undefined"
         :branch-switchable="!sending"
-        :env-mode="workspace.mode"
+        :env-mode="workspaceChoice.mode"
         :thread-name="session?.title.value"
         :thread-id="session?.threadId.value"
         :busy="busy"
@@ -401,8 +384,8 @@ defineExpose({ focus });
       v-if="branchOpen"
       mode="select"
       :project-path="projectPath"
-      :chosen="workspace"
-      @picked="onWorkspacePick"
+      :chosen="workspaceChoice"
+      @picked="(choice) => { branchOpen = false; workspace.pick(choice); }"
       @cancel="branchOpen = false"
     />
 

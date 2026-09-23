@@ -1,9 +1,10 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
+import type { IdleWorktree } from "@kone/agent-core/threadWorkspace.js";
 import { git } from "@kone/git-core/core.js";
 import { removeWorktree } from "./worktree.js";
-import { ignoredEntries, isIncluded, isRegeneratedDir, readIncludeRules } from "./worktreeInclude.js";
+import { ignoredEntries, isRegeneratedDir, privateEntries } from "./worktreeInclude.js";
 import { isInsideWorktreesRoot, worktreesRoot } from "./worktreePaths.js";
 
 // Putting away worktrees nobody has used in a while.
@@ -17,14 +18,15 @@ import { isInsideWorktreesRoot, worktreesRoot } from "./worktreePaths.js";
 //   - it is on a branch, which is kept, so every commit stays reachable;
 //   - nothing is uncommitted or untracked;
 //   - every ignored file in it is either something a tool regenerates
-//     (`node_modules`, build output) or a private file copied from the project
-//     that still matches the project's copy.
+//     (`node_modules`, build output) or a private file — a file, or a file in
+//     a directory, the copy step would have brought across — that still
+//     matches the project's copy.
 //
 // Anything else — a scratch file, an edited `.env`, a locked worktree — keeps
 // the directory, and the next pass asks again. The thread itself is untouched:
 // opening it again builds a fresh worktree on the branch it left behind.
 
-export type IdleWorktree = { worktreePath: string; projectPath: string; threadIds: string[] };
+export type { IdleWorktree };
 
 export type WorktreeSweepDeps = {
   /** Worktrees idle since `cutoff`, oldest first. */
@@ -64,18 +66,36 @@ export async function worktreeRemovability(
   try {
     const status = await git(dir, ["status", "--porcelain", "--ignore-submodules=none"]);
     if (status.trim()) return { ok: false, reason: "has changes" };
-    const rules = await readIncludeRules(entry.projectPath);
+    // The worktree's private entries, by the project's rules: what the copy
+    // step brought in, plus anything since that the same rules would pick.
+    const kept = await privateEntries(dir, entry.projectPath);
+    const isPrivate = (rel: string) => kept.some((p) => rel === p || rel.startsWith(`${p}/`));
     for (const item of await ignoredEntries(dir)) {
-      const isDir = item.endsWith("/");
-      const rel = isDir ? item.slice(0, -1) : item;
+      const rel = item.replace(/\/$/, "");
       if (rel.split("/").some(isRegeneratedDir)) continue;
-      if (!isDir && isIncluded(rules, rel, false) && (await sameFile(entry.projectPath, dir, rel))) continue;
-      return { ok: false, reason: `keeps ${rel}` };
+      // A directory holding nothing private keeps the worktree without its
+      // contents being read one by one.
+      if (!isPrivate(rel) && !kept.some((p) => p.startsWith(`${rel}/`))) return { ok: false, reason: `keeps ${rel}` };
+      const files = item.endsWith("/") ? await filesUnder(dir, rel) : [rel];
+      for (const file of files) {
+        if (isPrivate(file) && (await sameFile(entry.projectPath, dir, file))) continue;
+        return { ok: false, reason: `keeps ${file}` };
+      }
     }
   } catch {
     return { ok: false, reason: "unreadable" };
   }
   return { ok: true, branch };
+}
+
+/** Every file under a directory, relative to `root`, outside the directories
+ *  a tool regenerates. */
+async function filesUnder(root: string, rel: string): Promise<string[]> {
+  const entries = await readdir(path.join(root, rel), { recursive: true, withFileTypes: true });
+  return entries
+    .filter((item) => !item.isDirectory())
+    .map((item) => path.relative(root, path.join(item.parentPath, item.name)).split(path.sep).join("/"))
+    .filter((file) => !file.split("/").some(isRegeneratedDir));
 }
 
 /** Whether the worktree's copy of a private file still matches the project's. */
@@ -115,4 +135,25 @@ export async function sweepIdleWorktrees(deps: WorktreeSweepDeps, now = Date.now
   }
   if (removed > 0) console.info(`[git] removed ${removed} idle worktree(s)`);
   return removed;
+}
+
+/** The first pass waits out the busy start; later ones run a few times a day,
+ *  since "days old" does not need finer than that. */
+const SWEEP_DELAY_MS = 5 * 60 * 1000;
+const SWEEP_EVERY_MS = 6 * 60 * 60 * 1000;
+
+/** Sweep on a schedule for as long as the app runs. Answers the stop. Timers
+ *  are unref'd, so a pending pass never holds the process open. */
+export function startWorktreeSweeper(run: () => Promise<number>): () => void {
+  let every: ReturnType<typeof setInterval> | null = null;
+  const first = setTimeout(() => {
+    void run();
+    every = setInterval(() => void run(), SWEEP_EVERY_MS);
+    every.unref?.();
+  }, SWEEP_DELAY_MS);
+  first.unref?.();
+  return () => {
+    clearTimeout(first);
+    if (every) clearInterval(every);
+  };
 }
