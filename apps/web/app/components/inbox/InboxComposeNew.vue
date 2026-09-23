@@ -30,7 +30,8 @@ import AgentComposer from "~/components/agent/AgentComposer.vue";
 import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
-import type { ChatAttachment, SessionStartInput } from "~/types/desktop";
+import type { ChatAttachment } from "~/types/desktop";
+import { LOCAL_WORKSPACE, workspaceRequest, type WorkspaceChoice } from "~/utils/threadWorkspace";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import type { ThreadSession } from "~/composables/useAgent";
@@ -135,8 +136,7 @@ const branchOpen = ref(false);
 // behind. The send hands it to the session, which hands it to the one start that
 // builds the worktree — after which the choice is locked, because a running
 // session cannot change the directory it is in.
-type WorkspaceChoice = { mode: "local" | "worktree"; branch: string | null };
-const workspace = ref<WorkspaceChoice>({ mode: "local", branch: null });
+const workspace = ref<WorkspaceChoice>(LOCAL_WORKSPACE);
 
 function onWorkspacePick(choice: WorkspaceChoice): void {
   workspace.value = choice;
@@ -147,13 +147,12 @@ function onWorkspacePick(choice: WorkspaceChoice): void {
   if (choice.mode === "local") void composer.refreshBranch();
 }
 
-// The branch the work would land on. A picked worktree branch names where the
-// first turn will go, so it wins while picked; otherwise the composer's read
-// of the project's checkout.
+// The branch the work starts from. A new worktree starting from another branch
+// names that one; otherwise the composer's read of the project's checkout.
 const displayedBranch = computed(
   () =>
-    workspace.value.mode === "worktree" && workspace.value.branch
-      ? workspace.value.branch
+    workspace.value.mode === "worktree" && workspace.value.base
+      ? workspace.value.base
       : (composer.branch.value ?? undefined),
 );
 
@@ -222,11 +221,8 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // Where the work lands, handed over at the same moment as the rest of the
     // draft. The session consumes it on its one start; a retry of a failed send
     // finds the session already there and leaves the earlier choice standing.
-    if (!existing && workspace.value.mode === "worktree") {
-      const request: SessionStartInput["workspace"] = { mode: "worktree" };
-      if (workspace.value.branch) request.branch = workspace.value.branch;
-      s.stageWorkspace(request);
-    }
+    const request = existing ? undefined : workspaceRequest(workspace.value);
+    if (request) s.stageWorkspace(request);
     // Who is on the thread, settled on the turn that made it — and settled
     // *before* it, because the session reads the persona off this binding as it
     // spawns. The record is write-once, so only this turn's answer can land; a
@@ -405,6 +401,7 @@ defineExpose({ focus });
       v-if="branchOpen"
       mode="select"
       :project-path="projectPath"
+      :chosen="workspace"
       @picked="onWorkspacePick"
       @cancel="branchOpen = false"
     />

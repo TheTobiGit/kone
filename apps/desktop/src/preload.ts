@@ -464,6 +464,11 @@ const api = {
     // the inbox asks for one when it opens, so quiet threads settle while
     // someone is looking. Resolves when the pass ends.
     sweepRetention: (): Promise<void> => ipcRenderer.invoke("agent:retention-sweep"),
+    // Days an unused worktree is kept before cleanup removes it; null is off.
+    worktreeCleanupDays: (): Promise<number | null> =>
+      ipcRenderer.invoke("agent:worktree-cleanup-days"),
+    setWorktreeCleanupDays: (days: number | null): Promise<number | null> =>
+      ipcRenderer.invoke("agent:set-worktree-cleanup-days", days),
     // Session lifecycle — these resolve when the turn is *accepted*; the actual
     // output arrives on the agent:event stream (subscribe via onEvent).
     startSession: (input: SessionStartInput): Promise<Session> =>

@@ -10,9 +10,15 @@ import type {
   ChatAttachment,
   InteractionMode,
   ProviderKind,
+  ThreadEnvMode,
   UserInputAnswers,
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
+import {
+  LOCAL_WORKSPACE,
+  workspaceRequest,
+  type WorkspaceChoice,
+} from "~/utils/threadWorkspace";
 import type { StudioDestination } from "~/types/studio";
 import type { GitRemote } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
@@ -82,9 +88,9 @@ const props = defineProps<{
    *  that asks "is a conversation actually visible right now". */
   visible: boolean;
   /** Something is over the row. Docks and the chooser step aside and return when
-   *  it closes. Nothing page-owned can be: a file detail or a branch picker
-   *  belongs to the page under the plane, so asking for one dismisses the plane
-   *  first. This is here for an overlay the plane itself raises. */
+   *  it closes. Nothing page-owned can be: a file detail belongs to the page
+   *  under the plane, so asking for one dismisses the plane first. This is here
+   *  for an overlay the plane itself raises. */
   blocked: boolean;
   /** The row's repository, for the strip's column chrome. Passed in rather than
    *  read here: the working tree is watched once, by the surface that owns it. */
@@ -103,9 +109,10 @@ const emit = defineEmits<{
    *  thread, a terminal, opening a pill's thread — asks for this rather than
    *  reaching for the surface it happens to be sharing the window with. */
   summon: [];
-  openBranch: [];
-  /** Pick a branch. The row's composer offers it, but the picker belongs to the
-   *  repository surface — the row has no business owning a checkout. */
+  /** One of the row's own modals (the workspace picker, the worktree build)
+   *  opened or closed. They listen for Escape on the window after the plane
+   *  does, so the plane has to know to stand aside or one press closes both. */
+  overlay: [open: boolean];
   openFile: [path: string, rect: DOMRect | null];
   /** A pane was selected in overview mode — parent plane focuses and zooms in. */
   selectPane: [paneId: string];
@@ -1335,8 +1342,67 @@ watch(
   () => studio.focusedId,
   () => {
     modelPickerOpen.value = false;
+    workspacePickerOpen.value = false;
   },
 );
+
+// ── where a new thread works ─────────────────────────────────────────────────
+// The composer's branch chip asks where a blank thread will work: the project's
+// own checkout, or a worktree of its own. The answer is draft state, held per
+// pane until that pane's first send hands it to the session. Nothing is built
+// while it sits here, so a pane closed after picking leaves no directory behind.
+const workspaceChoices = ref<Record<string, WorkspaceChoice>>({});
+const workspacePickerOpen = ref(false);
+
+const focusedWorkspaceChoice = computed<WorkspaceChoice>(
+  () => (focusedId.value ? workspaceChoices.value[focusedId.value] : undefined) ?? LOCAL_WORKSPACE,
+);
+
+function onWorkspacePick(choice: WorkspaceChoice): void {
+  workspacePickerOpen.value = false;
+  const paneId = focusedId.value;
+  if (!paneId) return;
+  workspaceChoices.value = { ...workspaceChoices.value, [paneId]: choice };
+}
+
+// A blank thread shows what it will do; a started one shows what it did.
+const composerEnvMode = computed<ThreadEnvMode | null>(() =>
+  threadIsBlank.value
+    ? focusedWorkspaceChoice.value.mode
+    : (focusedThread.value?.envMode.value ?? null),
+);
+// A new worktree starting from another branch names that branch, since it is
+// where the first turn's work begins; otherwise the checkout's branch.
+const composerBranch = computed(() => {
+  const choice = focusedWorkspaceChoice.value;
+  if (threadIsBlank.value && choice.mode === "worktree" && choice.base) return choice.base;
+  return props.branch ?? undefined;
+});
+
+/** Backing out of a worktree still being built. The strip goes away at once —
+ *  the decision is made and there is nothing further to watch — while the
+ *  teardown happens behind it, once the creation it is undoing finishes. */
+async function onCancelWorkspace(): Promise<void> {
+  const s = focusedThread.value;
+  if (!s) return;
+  s.dismissWorkspaceSteps();
+  await s.cancelWorkspace();
+}
+
+watch(
+  () => workspacePickerOpen.value && !isOverview.value,
+  (open) => emit("overlay", open),
+);
+// A picker left standing over a row that went off screen would be waiting there,
+// stale, when it comes back.
+watch(
+  () => props.visible,
+  (visible) => {
+    if (!visible) workspacePickerOpen.value = false;
+  },
+);
+// A row torn down with a modal up must not leave the plane standing aside for it.
+onBeforeUnmount(() => emit("overlay", false));
 
 
 
@@ -1438,6 +1504,13 @@ async function onSend(text: string, files?: File[]) {
   // conversation id. Settling the target first is what makes the model shown
   // in the composer the model that actually runs.
   await syncComposerTarget();
+  // Where the work lands, read off the pane the send is going to and staged on
+  // its session before the turn: the session consumes it on its one start. Only
+  // a blank thread takes it — after the first block the thread already works
+  // somewhere, and a retried failed start still holds the earlier request.
+  const target = focusedThread.value;
+  const request = workspaceRequest(focusedWorkspaceChoice.value);
+  if (target && threadIsBlank.value && request) target.stageWorkspace(request);
   // Now that the target is settled it has a durable id, so who is working it can
   // be recorded against it — this is the moment the thread acquires a face. Every
   // send runs this and only the first one lands: the record is write-once, so a
@@ -1785,13 +1858,15 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           class="pointer-events-auto"
           :project-path="project.path"
           :project-name="project.name"
-          :branch="branch ?? undefined"
+          :branch="composerBranch"
           :branch-switchable="threadIsBlank && !focusedIsSideChat"
+          :env-mode="composerEnvMode"
+          :worktree-path="threadIsBlank ? null : focusedThread?.worktreePath.value"
           :thread-name="focusedThread?.title.value"
           :thread-id="focusedThread?.threadId.value"
           :busy="busy"
           :queued="queuedTurns"
-          :picking="modelPickerOpen"
+          :picking="modelPickerOpen || workspacePickerOpen"
           :agents="agents"
           :agent-id="composerAgentId"
           :routing-note="routingNote"
@@ -1806,6 +1881,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :blocked-reason="sendBlockedReason"
           :health-status="sendBlockedStatus"
           :health-checking="recheckingProviders"
+          :workspace-steps="focusedThread?.workspaceSteps.value ?? []"
           :compactable="focusedCompactable"
           :creatable="blankThreadPane === null"
           @send="onSend"
@@ -1820,12 +1896,14 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           @update:fast-mode="onUpdateFastMode"
           @update:context-window="onComposerContextWindow"
           @open-models="modelSwitchable && (modelPickerOpen = true)"
-          @open-branch="emit('openBranch')"
+          @open-branch="workspacePickerOpen = true"
           @compact="onComposerCompact"
           @new-thread="onComposerNewThread"
           @update:open="composerOpen = $event"
           @update:draft="onComposerDraft"
           @recheck="recheckProviders"
+          @cancel-workspace="onCancelWorkspace"
+          @dismiss-workspace="focusedThread?.dismissWorkspaceSteps()"
         />
       </div>
     </Transition>
@@ -1874,6 +1952,17 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       @select="onPickerSelect"
       @apply="applyModelEffort"
       @cancel="closePicker"
+    />
+
+    <!-- Where a blank thread works: its project's checkout or its own worktree.
+         Nothing is built by picking; the first send does that. -->
+    <ConversationBranchPickerModal
+      v-if="workspacePickerOpen && !isOverview"
+      :project-path="project.path"
+      mode="select"
+      :chosen="focusedWorkspaceChoice"
+      @picked="onWorkspacePick"
+      @cancel="workspacePickerOpen = false"
     />
 </template>
 

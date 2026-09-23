@@ -60,11 +60,10 @@ const emit = defineEmits<{
    *  turn, a new thread, a terminal. Opening the plane is the page's call. */
   summon: [];
   close: [];
-  /** Both of these belong to the page under the plane, so asking for one
-   *  dismisses the plane on the way — an opaque layer can't have a page's modal
-   *  or detail view show through it. */
+  /** The file's detail view belongs to the page under the plane, so asking for
+   *  it dismisses the plane on the way — an opaque layer can't have a page's
+   *  detail view show through it. */
   openFile: [path: string, rect: DOMRect | null];
-  openBranch: [];
 }>();
 
 const { cue } = useSound();
@@ -418,6 +417,10 @@ function refuse(): void {
 //   new column there belongs to that project and no other surface is asking for
 //   the key.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  // A row's own modal answers its own keys; it listens on the window too, but
+  // after this does, so Escape would otherwise close the plane out from under it.
+  if (rowOverlays.value.size > 0) return;
+
   if (ownsKey(props.surfaceTop, "studio", e)) {
     if (matchesShortcut("toggle-overview", e)) {
       e.preventDefault();
@@ -564,9 +567,15 @@ function onOpenFile(path: string, rect: DOMRect | null): void {
   emit("close");
   emit("openFile", path, rect);
 }
-function onOpenBranch(): void {
-  emit("close");
-  emit("openBranch");
+
+// Rows with a modal of their own standing open — the workspace picker, a
+// worktree build. The plane keeps its keys out of the way while any is up.
+const rowOverlays = ref(new Set<string>());
+function onRowOverlay(projectPath: string, open: boolean): void {
+  const next = new Set(rowOverlays.value);
+  if (open) next.add(projectPath);
+  else next.delete(projectPath);
+  rowOverlays.value = next;
 }
 
 // A row asks to be brought forward — its first turn, a new thread, a terminal.
@@ -639,7 +648,7 @@ defineExpose({
           :destinations="destinations"
           @summon="onSummon(row.projectPath)"
           @switch-row="onSwitchRow"
-          @open-branch="onOpenBranch"
+          @overlay="(open) => onRowOverlay(row.projectPath, open)"
           @open-file="onOpenFile"
           @toggle-overview="toggleStudioOverview"
           @select-pane="(paneId) => onSelectRowPane(row.projectPath, paneId)"

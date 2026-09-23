@@ -1439,10 +1439,10 @@ export type RuntimeEventSource =
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
-/** The three things that happen between choosing a worktree and a session
- *  running in it. Named rather than numbered so a surface can render them in a
- *  fixed order and still recognize one that arrives out of turn. */
-export type ThreadWorkspaceStep = "create" | "link" | "start";
+/** The things that happen between choosing a worktree and a session running in
+ *  it. Named rather than numbered so a surface can render them in a fixed order
+ *  and still recognize one that arrives out of turn. */
+export type ThreadWorkspaceStep = "fetch" | "create" | "link" | "start";
 
 /** Where a job sits on the bench. Declared here rather than beside the job row
  *  because the runtime event carries it and conversationStoreTypes already
@@ -1492,7 +1492,8 @@ export type RuntimeEvent =
       type: "thread.workspace.progress";
       step: ThreadWorkspaceStep;
       state: "running" | "done" | "failed";
-      /** Why it failed, when it did. */
+      /** Why it failed, when it did — or, on a step that finished, what is
+       *  worth knowing about how (where a worktree started from). */
       message?: string;
     })
   // The provider compacted the thread's context window — natively (Codex

@@ -273,12 +273,10 @@ function onBranchSwitched() {
   branchPickerOpen.value = false;
 }
 
-// What the app above can ask of this page. Both are things a studio row can need
-// and cannot own: the diff overlay and the branch picker belong to the project,
-// not to a row of panes.
+// What the app above can ask of this page: a studio row can need the diff
+// overlay and cannot own it — it belongs to the project, not to a row of panes.
 defineExpose({
   openFile: onOpenFileFromGit,
-  openBranch: openBranchPicker,
 });
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it

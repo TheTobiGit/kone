@@ -213,20 +213,16 @@ const studioState = computed(() => portalState("studio"));
 const inboxState = computed(() => portalState("inbox"));
 const benchState = computed(() => portalState("bench"));
 // The page under the plane, so a row's request for something the page owns (a
-// file's diff, the branch picker) can be handed down to it.
+// file's diff) can be handed down to it.
 const pageRef = ref<{
   openFile: (p: string, r: DOMRect | null) => void;
-  openBranch: () => void;
 } | null>(null);
 
 // A row asked for something the page owns. The plane has already stepped aside
-// by the time these arrive, so they land on the page that was underneath all
-// along — and are simply dropped when there is no project page to receive them.
+// by the time this arrives, so it lands on the page that was underneath all
+// along — and is simply dropped when there is no project page to receive them.
 function onStudioOpenFile(path: string, rect: DOMRect | null) {
   pageRef.value?.openFile(path, rect);
-}
-function onStudioOpenBranch() {
-  pageRef.value?.openBranch();
 }
 
 // The assistant's card is mounted only while it is up, the way every other
@@ -427,7 +423,6 @@ function onAttentionOpen(projectPath: string, threadId: string) {
           @summon="() => summon('studio')"
           @close="() => dismiss('studio')"
           @open-file="onStudioOpenFile"
-          @open-branch="onStudioOpenBranch"
         />
 
         <!-- The inbox, over both the page and the plane. Mounted once alongside

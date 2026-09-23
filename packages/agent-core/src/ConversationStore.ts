@@ -353,6 +353,29 @@ export class ConversationStore implements CheckpointStore {
     return this.workspaces.isWorktreePathReferenced(worktreePath);
   }
 
+  /** @see WorkspaceRepo */
+  idleWorktrees(
+    cutoff: number,
+    limit: number,
+  ): Array<{ worktreePath: string; projectPath: string; threadIds: string[] }> {
+    return this.workspaces.idleWorktrees(cutoff, limit);
+  }
+
+  /** @see WorkspaceRepo */
+  detachWorktree(worktreePath: string, branch: string): void {
+    this.workspaces.detachWorktree(worktreePath, branch);
+  }
+
+  /** @see WorkspaceRepo */
+  worktreeCleanupDays(): number | null {
+    return this.workspaces.worktreeCleanupDays();
+  }
+
+  /** @see WorkspaceRepo */
+  setWorktreeCleanupDays(days: number | null): void {
+    this.workspaces.setWorktreeCleanupDays(days);
+  }
+
   /** @see ThreadRepo */
   isAssistantThread(threadId: string): boolean {
     return this.threads.isAssistantThread(threadId);

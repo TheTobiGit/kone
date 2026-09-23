@@ -153,4 +153,129 @@ export class WorkspaceRepo {
       return true;
     }
   }
+
+  // ── idle worktree cleanup ─────────────────────────────────────────────────
+
+  /** Worktree directories every referencing thread has left alone since
+   *  `cutoff`, oldest first. "Left alone" is the later of the last activity and
+   *  the last visit, the same clock the thread sweep reads, taken across every
+   *  thread that shares the directory. A pinned thread keeps its directory, and
+   *  so does anything with work in flight: a queued turn, a running reply or a
+   *  running subagent on any of them. */
+  idleWorktrees(
+    cutoff: number,
+    limit: number,
+  ): Array<{ worktreePath: string; projectPath: string; threadIds: string[] }> {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection names only the three aliases asked for.
+      const rows = db
+        .prepare(
+          `SELECT t.worktree_path AS worktree_path,
+                  MIN(t.project_path) AS project_path,
+                  GROUP_CONCAT(t.thread_id, char(31)) AS thread_ids
+             FROM threads t
+            WHERE t.worktree_path IS NOT NULL AND t.worktree_path <> ''
+            GROUP BY t.worktree_path
+           HAVING MAX(MAX(t.last_activity_at, COALESCE(t.last_visited_at, 0))) < ?
+              AND SUM(t.pinned_at IS NOT NULL) = 0
+              AND NOT EXISTS (
+                SELECT 1 FROM queued_turns q JOIN threads x ON x.thread_id = q.thread_id
+                 WHERE x.worktree_path = t.worktree_path AND q.state IN ('queued', 'promoting'))
+              AND NOT EXISTS (
+                SELECT 1 FROM blocks b JOIN threads x ON x.thread_id = b.thread_id
+                 WHERE x.worktree_path = t.worktree_path
+                   AND b.role = 'assistant' AND b.state = 'running')
+              AND NOT EXISTS (
+                SELECT 1 FROM subagents sa JOIN threads x ON x.thread_id = sa.thread_id
+                 WHERE x.worktree_path = t.worktree_path
+                   AND sa.status IN ('starting', 'running'))
+            ORDER BY MAX(MAX(t.last_activity_at, COALESCE(t.last_visited_at, 0))) ASC
+            LIMIT ?`,
+        )
+        .all(cutoff, limit) as Array<{
+        worktree_path: string;
+        project_path: string | null;
+        thread_ids: string | null;
+      }>;
+      return rows.flatMap((row) =>
+        row.project_path
+          ? [
+              {
+                worktreePath: row.worktree_path,
+                projectPath: row.project_path,
+                threadIds: (row.thread_ids ?? "").split("\u001f").filter(Boolean),
+              },
+            ]
+          : [],
+      );
+    } catch (err) {
+      console.error("[conversation-store] idleWorktrees failed:", err);
+      return [];
+    }
+  }
+
+  /** Forget a directory that cleanup removed, keeping the way back: every
+   *  thread that used it becomes a worktree thread still waiting for its
+   *  directory, on the branch it left behind, so opening it again builds a
+   *  fresh one on that branch with nothing lost. */
+  detachWorktree(worktreePath: string, branch: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE threads SET worktree_path = NULL, env_mode = 'worktree', requested_branch = ?
+          WHERE worktree_path = ?`,
+      ).run(branch, worktreePath);
+    } catch (err) {
+      console.error("[conversation-store] detachWorktree failed:", err);
+    }
+  }
+
+  /** Days a worktree may sit unused before cleanup removes it; null is off.
+   *  Unset reads as the default. */
+  worktreeCleanupDays(): number | null {
+    const db = this.dbh.handle();
+    if (!db) return DEFAULT_WORKTREE_CLEANUP_DAYS;
+    try {
+      // SAFETY: app_state holds at most one row for this key.
+      const row = db
+        .prepare(`SELECT value FROM app_state WHERE key = '${CLEANUP_DAYS_KEY}'`)
+        .get() as { value: string } | undefined;
+      return parseCleanupDays(row?.value);
+    } catch (err) {
+      console.error("[conversation-store] worktreeCleanupDays failed:", err);
+      return DEFAULT_WORKTREE_CLEANUP_DAYS;
+    }
+  }
+
+  setWorktreeCleanupDays(days: number | null): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    const value = days === null ? "off" : String(Math.max(1, Math.round(days)));
+    try {
+      db.prepare(
+        `INSERT INTO app_state (key, value, updated_at)
+         VALUES ('${CLEANUP_DAYS_KEY}', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at`,
+      ).run(value, Date.now());
+    } catch (err) {
+      console.error("[conversation-store] setWorktreeCleanupDays failed:", err);
+    }
+  }
+}
+
+const CLEANUP_DAYS_KEY = "worktree_cleanup_days";
+/** Two weeks: long enough that a thread put down for a holiday is still there,
+ *  short enough that the disk does not fill with checkouts nobody opens. */
+export const DEFAULT_WORKTREE_CLEANUP_DAYS = 14;
+
+function parseCleanupDays(value: string | undefined): number | null {
+  if (value === undefined || value === "") return DEFAULT_WORKTREE_CLEANUP_DAYS;
+  if (value === "off") return null;
+  const days = Number(value);
+  return Number.isFinite(days) && days >= 1 ? Math.round(days) : DEFAULT_WORKTREE_CLEANUP_DAYS;
 }

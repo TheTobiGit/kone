@@ -61,6 +61,19 @@ async function kindOf(run: Promise<unknown>): Promise<string | null> {
 }
 
 describe("provisionWorktree", () => {
+  test("brings the project's ignored env files into the new directory", async () => {
+    const { repo } = await makeRepo();
+    writeFileSync(path.join(repo, ".gitignore"), ".env\n", "utf8");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-m", "ignore env"]);
+    writeFileSync(path.join(repo, ".env"), "SECRET=1\n", "utf8");
+
+    const made = await provisionWorktree({ projectPath: repo });
+
+    expect(made.copiedFiles).toEqual([".env"]);
+    expect(await pathExists(path.join(made.path, ".env"))).toBe(true);
+  });
+
   test("creates the worktree outside the project and leaves its branch alone", async () => {
     const { repo, state } = await makeRepo();
 

@@ -24,6 +24,8 @@ import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, Cancel01Icon, Exchange01Icon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { workspaceMark } from "~/utils/threadWorkspace";
+import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
 import { SolarChatRoundLineBrokenIcon } from "~/utils/solarChatIcons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
@@ -289,6 +291,16 @@ const {
 // beneath it. We keep the opening title's viewport rect as the anchor and the
 // session itself (its refs stay live while the panel is open).
 const { infoPaneId, infoAnchor, infoSession, toggleInfo, closeInfo } = useStripInfo();
+
+/** The folder a thread column works in when it is not the project's own
+ *  checkout — built, or still being built — and null for the ordinary case. */
+function columnWorkspace(c: Pane) {
+  if (c.kind !== "thread" || !c.session) return null;
+  return workspaceMark({
+    worktreePath: c.session.worktreePath.value,
+    envMode: c.session.envMode.value,
+  });
+}
 
 // ── pane event forwarding ───────────────────────────────────────────────────
 // Column intents relayed to their sessions (or re-emitted to the row). The
@@ -579,6 +591,17 @@ const { isUnread } = useStripUnread({
                     >
                       <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="11" :stroke-width="2" aria-hidden="true" />
                     </span>
+                    <!-- Works in a folder of its own rather than the project's
+                         checkout. The icon is the whole signal; which folder is
+                         the tooltip, and the info panel opens it. -->
+                    <span
+                      v-if="columnWorkspace(c)"
+                      class="col__worktree"
+                      :class="{ 'is-pending': columnWorkspace(c)?.pending }"
+                      :title="columnWorkspace(c)?.pending ? 'Worktree being created' : `Worktree · ${columnWorkspace(c)?.label}`"
+                    >
+                      <WorktreeIcon :size="12" />
+                    </span>
                     <!-- The title opens the info panel — which is also where it
                          gets renamed, so the header itself stays a read-out. -->
                     <h2
@@ -868,6 +891,7 @@ const { isUnread } = useStripUnread({
       :session="infoSession"
       :anchor="infoAnchor"
       :repo="repo"
+      :project-path="projectPath"
       :branch="branch"
       :origin="origin"
       :worktree-path="infoSession.worktreePath.value"
@@ -1256,7 +1280,7 @@ const { isUnread } = useStripUnread({
 
 .col__head {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   min-width: 0;
   padding: 0 0.4rem 0.85rem;
@@ -1320,6 +1344,20 @@ const { isUnread } = useStripUnread({
   flex: none;
   align-items: center;
   color: color-mix(in srgb, var(--accent) 72%, var(--ink-soft));
+}
+/* Muted like the title beside it: a worktree is where a thread lives, not a
+   state to be alarmed by. */
+.col__worktree {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  /* Half the header's gap: the mark belongs to the title it qualifies, not to
+     the provider logo on its other side. */
+  margin-inline-end: -4px;
+  color: var(--muted);
+}
+.col__worktree.is-pending {
+  opacity: 0.55;
 }
 /* Handoff provenance in the header: the source mark, a quiet arrow and the
    live mark as one tight, vertically-centred unit ahead of the title. */

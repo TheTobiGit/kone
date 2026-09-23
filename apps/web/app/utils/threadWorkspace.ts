@@ -46,7 +46,7 @@ export type WorkspaceFacts = {
 
 /** The last path segment, tolerating a trailing separator and either separator
  *  style — the path comes from the platform git ran on, not from this one. */
-function basename(fullPath: string): string {
+export function basename(fullPath: string): string {
   const parts = fullPath.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || fullPath;
 }
@@ -89,4 +89,20 @@ export function workspaceMark(facts: WorkspaceFacts): WorkspaceMark | null {
  *  open a path. A pending thread answers false: it has nowhere to open. */
 export function hasOwnWorkspace(facts: WorkspaceFacts): boolean {
   return Boolean(facts.worktreePath?.trim());
+}
+
+/** Where a new conversation will work, as its composer holds it before the
+ *  first send. A worktree always gets a new branch of its own; `base` is the
+ *  branch that new one starts from, and null means the project's current one. */
+export type WorkspaceChoice = { mode: ThreadEnvMode; base: string | null };
+
+export const LOCAL_WORKSPACE: WorkspaceChoice = { mode: "local", base: null };
+
+/** The start request a choice asks for, or undefined for the project's own
+ *  checkout — which is what a start with no workspace already does. */
+export function workspaceRequest(
+  choice: WorkspaceChoice,
+): { mode: "worktree"; base?: string } | undefined {
+  if (choice.mode !== "worktree") return undefined;
+  return choice.base ? { mode: "worktree", base: choice.base } : { mode: "worktree" };
 }

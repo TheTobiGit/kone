@@ -4,6 +4,7 @@ import path from "node:path";
 import { GitError, git, pathExists, repoRoot } from "@kone/git-core/core.js";
 import type { CreateWorktreeOptions, GitWorktree } from "@kone/git-core/types.js";
 import { addWorktree, attachWorktree, branchExists, canonical, removeWorktree, worktrees } from "./worktree.js";
+import { copyPrivateFiles } from "./worktreeInclude.js";
 import {
   generatedBranchName,
   isGeneratedBranchName,
@@ -43,6 +44,9 @@ export type ProvisionedWorktree = {
   /** The branch already existed and was moved into this worktree, rather than
    *  created for it. Its history is not ours to discard. */
   attachedExisting: boolean;
+  /** The private files (`.env` and the like) brought into a new directory,
+   *  project-relative. Empty for an adopted worktree, which already had its own. */
+  copiedFiles: string[];
 };
 
 export type ProvisionWorktreeInput = {
@@ -165,7 +169,9 @@ export async function provisionWorktree(
   const existing = (await worktrees(project)).find(
     (worktree) => !worktree.main && worktree.branch === branch,
   );
-  if (existing) return { path: existing.path, branch, generatedBranch, attachedExisting: true };
+  if (existing) {
+    return { path: existing.path, branch, generatedBranch, attachedExisting: true, copiedFiles: [] };
+  }
 
   if (!(await isUsableTarget(target))) {
     throw GitError.classified(
@@ -202,5 +208,6 @@ export async function provisionWorktree(
   }
 
   await populateSubmodules(created.path);
-  return { path: created.path, branch, generatedBranch, attachedExisting: attaching };
+  const copiedFiles = await copyPrivateFiles(project, created.path);
+  return { path: created.path, branch, generatedBranch, attachedExisting: attaching, copiedFiles };
 }

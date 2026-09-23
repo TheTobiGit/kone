@@ -19,7 +19,6 @@ import ConversationThread from "~/components/conversation/ConversationThread.vue
 import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ThreadBranchDrift from "~/components/inbox/ThreadBranchDrift.vue";
-import ThreadWorkspacePrep from "~/components/inbox/ThreadWorkspacePrep.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
@@ -398,20 +397,12 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       @open-info="toggleInfo"
     />
 
-    <!-- Building this conversation's worktree, while it happens. Renders only
-         for the seconds it takes, and only for a thread that asked for one. -->
-    <ThreadWorkspacePrep
-      v-if="session && session.workspaceSteps.value.length > 0"
-      :steps="session.workspaceSteps.value"
-      @cancel="onCancelWorkspace"
-      @dismiss="session?.dismissWorkspaceSteps()"
-    />
-
     <ThreadInfoPanel
       v-if="session && infoAnchor"
       :session="session"
       :anchor="infoAnchor"
       :repo="row.projectName"
+      :project-path="projectPath"
       :branch="composer.branch.value ?? row.branch ?? undefined"
       :origin="origin"
       :worktree-path="row.worktreePath"
@@ -497,6 +488,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :blocked-reason="composer.sendBlockedReason.value"
         :health-status="composer.sendBlockedStatus.value"
         :health-checking="composer.recheckingProviders.value"
+        :workspace-steps="session?.workspaceSteps.value ?? []"
         :compactable="compactable"
         @send="onSend"
         @remove-queued="session?.cancelQueuedTurn($event)"
@@ -514,6 +506,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @new-thread="onComposerNewThread"
         @update:open="composerOpen = $event"
         @recheck="composer.recheckProviders"
+        @cancel-workspace="onCancelWorkspace"
+        @dismiss-workspace="session?.dismissWorkspaceSteps()"
       />
     </div>
 

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { HugeiconsIcon } from "@hugeicons/vue";
-import { GitForkIcon } from "@hugeicons/core-free-icons";
+import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
 import { workspaceMark, type WorkspaceFacts } from "~/utils/threadWorkspace";
 
 // "This conversation works in a directory of its own."
@@ -25,7 +24,7 @@ const mark = computed(() => workspaceMark(props));
 
 <template>
   <span v-if="mark" class="wm" :class="{ 'wm--pending': mark.pending }" :title="mark.title">
-    <HugeiconsIcon :icon="GitForkIcon" :size="10" :stroke-width="2" aria-hidden="true" />
+    <WorktreeIcon :size="10" />
     <span class="wm__name">{{ mark.label }}</span>
   </span>
 </template>

@@ -1,6 +1,8 @@
 import { computed, getCurrentInstance, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import {
+  failedWorkspaceStep,
   initialWorkspaceSteps,
+  workspaceStepsSettled,
 } from "~/utils/workspaceSteps";
 import type {
   ApprovalDecision,
@@ -557,12 +559,19 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (resumeSessionAt) startInput.resumeSessionAt = resumeSessionAt;
       session.value = await api.startSession(startInput);
       sessionState.value = session.value.status;
-      // A build that succeeded is no longer pending: the store holds the
-      // directory now and the list row will show it once it refreshes. Clear
-      // the intent so a later restart does not rebuild, which is also what
-      // flips the pending derivation above — matching the one-shot staging.
+      // A build that succeeded is no longer pending: the session came up in the
+      // directory it built, so that is where this conversation works now. The
+      // place is what flips the pending derivation above, so a later restart
+      // does not rebuild — matching the one-shot staging — and a surface that
+      // never re-reads the stored row still shows the thread in its worktree.
       if (stagedWorkspace?.mode === "worktree" || wasWorkspacePending) {
-        envMode.value = null;
+        const builtAt = session.value.cwd;
+        if (builtAt && builtAt !== startInput.cwd) {
+          worktreePath.value = builtAt;
+          envMode.value = "worktree";
+        } else {
+          envMode.value = null;
+        }
         requestedBranch.value = null;
       }
     } catch (e) {
@@ -701,6 +710,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *
    *  One builder for send() and steerTurn() so the two can never disagree about
    *  what a request looks like on screen. */
+  /** A worktree build that has finished — or broken — has said what it had to
+   *  say by the time the next request goes out, so the request retires it. A
+   *  retry of a broken build then opens a fresh list instead of reporting into
+   *  the old one. A build still in flight is left alone. */
+  function retireWorkspaceSteps(): void {
+    const rows = workspaceSteps.value;
+    if (rows.length === 0) return;
+    if (workspaceStepsSettled(rows) || failedWorkspaceStep(rows)) dismissWorkspaceSteps();
+  }
+
   function buildUserBlock(id: string, text: string, files: ChatAttachment[]): UserBlock {
     const block: UserBlock = { id, role: "user", text, at: Date.now(), effort: reasoning.value };
     if (model.value) block.model = model.value;
@@ -729,6 +748,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     touch();
     const blockId = uid();
     const wasBusy = busy.value;
+    retireWorkspaceSteps();
     if (!wasBusy) blocks.value = [...blocks.value, buildUserBlock(blockId, trimmed, files)];
     // Instant label for a brand-new thread; desktop may refine it via
     // thread.title.updated once the agent rename lands. An attachment-only turn
@@ -796,6 +816,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     touch();
     const blockId = uid();
     const wasBusy = busy.value;
+    retireWorkspaceSteps();
     if (!wasBusy) blocks.value = [...blocks.value, buildUserBlock(blockId, trimmed, files)];
     if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
 

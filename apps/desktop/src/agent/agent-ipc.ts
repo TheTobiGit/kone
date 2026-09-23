@@ -15,6 +15,9 @@ import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
+import { freshestBase } from "../modules/git/worktreeBase.js";
+import { renameGeneratedBranch } from "../modules/git/worktreeBranchName.js";
+import { sweepIdleWorktrees } from "../modules/git/worktreeSweep.js";
 import { removeWorktree } from "../modules/git/worktree.js";
 import {
   collectSubtreeWorktrees,
@@ -162,6 +165,11 @@ export function registerAgentIpc(): void {
     // worktree built before its session starts, and the project's checkout is
     // never moved to satisfy it.
     provisionWorkspace: (request) => provisionWorktree(request),
+    // A new worktree starts from the latest copy of its branch when the user's
+    // copy is only behind, and from the user's copy whenever the latest would
+    // drop commits or cannot be reached.
+    freshenWorkspaceBase: ({ projectPath, base }) => freshestBase(projectPath, base),
+    renameWorkspaceBranch: ({ worktreePath, title }) => renameGeneratedBranch(worktreePath, title),
     // Only ever a worktree this dispatcher just built and had to give back.
     // Not forced: a directory with work in it is never removed on a cancel, and
     // git refusing is the refusal to respect. A branch this build invented goes
@@ -1035,6 +1043,26 @@ export function registerAgentIpc(): void {
   // is looking rather than minutes later in the middle of a thread.
   // Idempotent — a sweep with no candidates is two small reads and no writes.
   ipcMain.handle("agent:retention-sweep", () => svc.sweepStaleThreads());
+  // Old worktrees are put away after the number of days the user picked (null
+  // is off). Changing it runs a pass straight away, so a shorter window takes
+  // effect while the setting is still on screen.
+  ipcMain.handle("agent:worktree-cleanup-days", () => store.worktreeCleanupDays());
+  ipcMain.handle("agent:set-worktree-cleanup-days", (_event, days: number | null) => {
+    store.setWorktreeCleanupDays(typeof days === "number" && Number.isFinite(days) ? days : null);
+    void runWorktreeSweep();
+    return store.worktreeCleanupDays();
+  });
+  const runWorktreeSweep = (): Promise<number> =>
+    sweepIdleWorktrees({
+      idleWorktrees: (cutoff, limit) => store.idleWorktrees(cutoff, limit),
+      isThreadLive: (threadId) => svc.hasLiveSession(threadId),
+      detachWorktree: (worktreePath, branch) => store.detachWorktree(worktreePath, branch),
+      cleanupDays: () => store.worktreeCleanupDays(),
+    }).catch((err: unknown) => {
+      console.warn("[agent] worktree cleanup failed:", err);
+      return 0;
+    });
+  scheduleWorktreeSweep(runWorktreeSweep);
   // Read state lives in the DB beside pins and done, so a reply you have
   // already seen stays seen across profiles and restarts. A visit time, not an
   // unread flag: the surface showing the thread is the only writer, and every
@@ -1104,8 +1132,28 @@ export async function prepareQuitResumeForQuit(): Promise<void> {
   }
 }
 
+/** The first cleanup pass waits out the busy start; later ones run a few times
+ *  a day, since "days old" does not need finer than that. */
+const WORKTREE_SWEEP_DELAY_MS = 5 * 60 * 1000;
+const WORKTREE_SWEEP_EVERY_MS = 6 * 60 * 60 * 1000;
+let worktreeSweepTimers: Array<ReturnType<typeof setTimeout>> = [];
+
+function scheduleWorktreeSweep(run: () => Promise<number>): void {
+  if (worktreeSweepTimers.length > 0) return;
+  const first = setTimeout(() => {
+    void run();
+    const every = setInterval(() => void run(), WORKTREE_SWEEP_EVERY_MS);
+    every.unref?.();
+    worktreeSweepTimers.push(every);
+  }, WORKTREE_SWEEP_DELAY_MS);
+  first.unref?.();
+  worktreeSweepTimers.push(first);
+}
+
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
+  for (const timer of worktreeSweepTimers) clearTimeout(timer);
+  worktreeSweepTimers = [];
   if (stopIrcDelivery) {
     stopIrcDelivery();
     stopIrcDelivery = null;
