@@ -6,7 +6,8 @@
 
 import { computed } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, BubbleChatTemporaryIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineBrokenIcon } from "~/utils/solarChatIcons";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
@@ -83,7 +84,7 @@ const effectiveBrand = computed(() =>
       <div class="ith__body">
         <div class="ith__title-row">
           <span v-if="sideChat" class="ith__sidechat" title="Side chat — forked from a conversation">
-            <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="11" :stroke-width="2" aria-hidden="true" />
+            <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="11" :stroke-width="2" aria-hidden="true" />
           </span>
           <h2
             v-if="infoClickable"

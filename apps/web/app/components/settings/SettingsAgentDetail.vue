@@ -9,12 +9,12 @@ import {
   Delete02Icon,
   Folder01Icon,
   IdIcon,
-  Message01Icon,
   NoteIcon,
   PencilEdit02Icon,
   SparklesIcon,
   UserGroupIcon,
 } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import CreateAgentModal from "~/components/agent/CreateAgentModal.vue";
 import RosterFace from "~/components/agent/RosterFace.vue";
@@ -404,7 +404,7 @@ watch(
             :aria-expanded="hasMultipleProjects ? menuOpen : undefined"
             @click="toggleChatAction"
           >
-            <HugeiconsIcon :icon="Message01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+            <HugeiconsIcon :icon="SolarChatRoundLineLinearIcon" :size="13" :stroke-width="1.5" aria-hidden="true" />
             <span>Chat with {{ agent.name }}</span>
             <HugeiconsIcon
               v-if="hasMultipleProjects"

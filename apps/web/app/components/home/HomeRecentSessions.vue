@@ -2,7 +2,6 @@
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Archive02Icon,
-  BubbleChatTemporaryIcon,
   Clock01Icon,
   Delete02Icon,
   Folder01Icon,
@@ -10,6 +9,7 @@ import {
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineBrokenIcon } from "~/utils/solarChatIcons";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
@@ -383,7 +383,7 @@ function hasMetricValue(s: SessionSummary): boolean {
           <div class="rs__main">
             <div class="rs__title">
               <span v-if="s.sideChat" class="rs__sidechat" title="Side chat — forked from a conversation">
-                <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="12" :stroke-width="2" aria-hidden="true" />
+                <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="12" :stroke-width="2" aria-hidden="true" />
               </span>
               <span class="rs__name">{{ s.title }}</span>
             </div>

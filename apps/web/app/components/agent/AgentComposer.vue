@@ -5,7 +5,6 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Note01Icon,
   AiBrain01Icon,
-  BubbleChatTemporaryIcon,
   Directions01Icon,
   FlashIcon,
   Folder01Icon,
@@ -13,6 +12,7 @@ import {
   PlusSignIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
@@ -1505,7 +1505,7 @@ defineExpose({ wake, setDraft, focus });
         class="tray__item tray__item--end"
         :title="threadLabel"
       >
-        <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="13" :stroke-width="1.8" />
+        <HugeiconsIcon :icon="SolarChatRoundLineLinearIcon" :size="13" :stroke-width="1.5" />
         <span class="tray__label">{{ threadLabel }}</span>
       </span>
     </div>

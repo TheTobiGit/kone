@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { nextTick } from "vue";
 import { useStudioPlane, __basename } from "./useStudioPlane";
-import { useStudioPersistence, resetStudioPlane } from "./useStudioPersistence";
+import { useStudioPersistence, resetStudioPlane, studioPlane } from "./useStudioPersistence";
 import type { PaneEntry } from "~/types/studio";
 
 // The plane is module state, so each test starts from an empty one. Rows are
@@ -13,6 +13,14 @@ function pane(id: string): PaneEntry {
 
 function seed(projectPath: string, paneIds: string[]): void {
   useStudioPersistence(projectPath).saveRow({
+    projectPath,
+    panes: paneIds.map(pane),
+    focusedId: paneIds[0] ?? null,
+  });
+}
+
+function flush(projectPath: string, paneIds: string[]): void {
+  useStudioPersistence(projectPath).flushRow({
     projectPath,
     panes: paneIds.map(pane),
     focusedId: paneIds[0] ?? null,
@@ -55,6 +63,26 @@ describe("row set", () => {
 
     seed(A, []); // its last pane closed
     expect(plane.rows.value.map((r) => r.name)).toEqual(["synara"]);
+  });
+
+  test("flushing an already-removed row writes nothing", () => {
+    seed(A, ["p1"]);
+    seed(A, []); // its last pane closed — the row is gone
+    const afterRemove = studioPlane().value;
+    expect(afterRemove?.rows).toEqual([]);
+
+    // The unmount flush of that same empty row must not mint a new document:
+    // same identity means no reactive update fires while the keyed patch that
+    // removed it is still unmounting.
+    flush(A, []);
+    expect(studioPlane().value).toBe(afterRemove);
+  });
+
+  test("flushing a live row still writes it through", () => {
+    seed(A, ["p1"]);
+    flush(A, ["p1", "p2"]);
+    expect(studioPlane().value?.rows).toHaveLength(1);
+    expect(studioPlane().value?.rows[0]?.panes).toHaveLength(2);
   });
 });
 

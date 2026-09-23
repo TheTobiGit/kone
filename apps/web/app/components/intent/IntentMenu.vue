@@ -9,7 +9,6 @@ import {
   ArrowTurnBackwardIcon,
   Cancel01Icon,
   Clock01Icon,
-  BubbleChatTemporaryIcon,
   Download01Icon,
   Exchange01Icon,
   FoldVerticalIcon,
@@ -25,6 +24,7 @@ import {
   PlusSignIcon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
+import { SolarChatRoundLineBrokenIcon, type IconPaths } from "~/utils/solarChatIcons";
 import PickerShell from "~/components/ui/PickerShell.vue";
 import type { IntentIcon, IntentItem, IntentSection } from "~/composables/useIntentMenu";
 import type { SurfaceId } from "~/utils/surfaceTop";
@@ -67,9 +67,9 @@ const icons = {
   settings: Settings02Icon,
   archive: Archive02Icon,
   compact: FoldVerticalIcon,
-  "side-chat": BubbleChatTemporaryIcon,
+  "side-chat": SolarChatRoundLineBrokenIcon,
   handoff: Exchange01Icon,
-} satisfies Record<IntentIcon, typeof InboxIcon>;
+} satisfies Record<IntentIcon, IconPaths>;
 
 const shellEl = ref<HTMLElement | null>(null);
 const left = ref(props.x);
