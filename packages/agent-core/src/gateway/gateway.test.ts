@@ -314,6 +314,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_spawn_targets",
       "kone_spawn_worker",
       "kone_spawn_worker_preset",
+      "kone_delegate_to_teammate",
       "kone_spawn_batch",
       "kone_continue_thread",
       "kone_cancel_worker",

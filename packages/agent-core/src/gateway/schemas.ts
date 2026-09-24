@@ -186,6 +186,10 @@ const INTERACTION_MODES = ["ask", "accept-edits", "full-access"] as const;
 
 export const SpawnTargetsInputSchema = z.object({});
 
+/** Why the parent is handing this off, in its own words — shown to the user
+ *  in the thread where the worker was spawned. Never reaches the worker. */
+const SpawnWhySchema = z.string().min(1).max(280).optional();
+
 export const SpawnWorkerInputSchema = z.object({
   /** The child's first turn — the brief it wakes up to. */
   prompt: z.string().min(1),
@@ -193,6 +197,7 @@ export const SpawnWorkerInputSchema = z.object({
   requestId: z.string().min(1).max(200),
   /** Overrides the prompt-derived working title. */
   title: z.string().min(1).optional(),
+  why: SpawnWhySchema,
   /** Where to run. Omitted, the worker inherits this thread's provider and
    *  model — a custom spawn with no model of its own. */
   target: z
@@ -216,6 +221,7 @@ export const SpawnWorkerPresetInputSchema = z.object({
   requestId: z.string().min(1).max(200),
   /** Overrides the task-derived working title. */
   title: z.string().min(1).optional(),
+  why: SpawnWhySchema,
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
   /** A model named for this spawn only — the user asking for this piece of
@@ -240,6 +246,7 @@ export const DelegateToTeammateInputSchema = z.object({
   requestId: z.string().min(1).max(200),
   /** Overrides the task-derived working title. */
   title: z.string().min(1).optional(),
+  why: SpawnWhySchema,
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
   /** A model named for this delegation only — beats the teammate's own chain. */
@@ -258,6 +265,7 @@ export const SpawnBatchItemSchema = z.object({
   prompt: z.string().min(1),
   /** Optional working title. */
   title: z.string().min(1).optional(),
+  why: SpawnWhySchema,
   /** Direct target provider and model. */
   target: z
     .object({
@@ -348,12 +356,19 @@ export const SPAWN_TARGETS_JSON_SCHEMA = {
   properties: {},
 } satisfies GatewayRecord;
 
+const SPAWN_WHY_JSON_SCHEMA = {
+  type: "string",
+  description:
+    "One short clause, in your own voice, on why you are handing this off rather than doing it yourself — it completes the sentence \"…because\" and the user reads it in the thread at the point you spawned the worker. e.g. \"the suite takes ten minutes and I can keep refactoring meanwhile\".",
+} satisfies GatewayRecord;
+
 export const SPAWN_WORKER_JSON_SCHEMA = {
   type: "object",
   properties: {
     prompt: { type: "string" },
     requestId: { type: "string" },
     title: { type: "string" },
+    why: SPAWN_WHY_JSON_SCHEMA,
     target: {
       type: "object",
       properties: {
@@ -379,6 +394,7 @@ export const SPAWN_WORKER_PRESET_JSON_SCHEMA = {
     task: { type: "string" },
     requestId: { type: "string" },
     title: { type: "string" },
+    why: SPAWN_WHY_JSON_SCHEMA,
     mode: { type: "string", enum: [...INTERACTION_MODES] },
     model: {
       type: "object",
@@ -404,6 +420,7 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
     task: { type: "string" },
     requestId: { type: "string" },
     title: { type: "string" },
+    why: SPAWN_WHY_JSON_SCHEMA,
     mode: { type: "string", enum: [...INTERACTION_MODES] },
     model: {
       type: "object",
@@ -470,6 +487,7 @@ export const SPAWN_BATCH_JSON_SCHEMA = {
           requestId: { type: "string" },
           prompt: { type: "string" },
           title: { type: "string" },
+          why: SPAWN_WHY_JSON_SCHEMA,
           target: {
             type: "object",
             properties: {

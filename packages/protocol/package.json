@@ -16,6 +16,10 @@
       "types": "./src/planTasks.ts",
       "default": "./src/planTasks.ts"
     },
+    "./spawn-record": {
+      "types": "./src/spawnRecord.ts",
+      "default": "./src/spawnRecord.ts"
+    },
     "./subagent-presets": {
       "types": "./src/subagentPresets.ts",
       "default": "./src/subagentPresets.ts"
