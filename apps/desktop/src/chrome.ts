@@ -13,15 +13,12 @@ export function getMacTrafficLightPosition(): MacTrafficLightPosition {
 
 export type TitleBarOptions = {
   frame?: false;
+  hasShadow?: false;
   titleBarStyle?: "hiddenInset";
   trafficLightPosition?: { x: number; y: number };
 };
 
 export function titleBarOptions(platform: NodeJS.Platform): TitleBarOptions {
-  if (platform === "win32") {
-    // Frame-free so the renderer draws its own caption cluster.
-    return { frame: false };
-  }
   if (platform === "darwin") {
     // Native traffic lights, inset into the renderer's header strip.
     return {
@@ -29,10 +26,17 @@ export function titleBarOptions(platform: NodeJS.Platform): TitleBarOptions {
       trafficLightPosition: getMacTrafficLightPosition(),
     };
   }
-  // Linux and elsewhere: keep the native frame so the OS supplies the window
-  // buttons. The application menu is removed globally via
-  // Menu.setApplicationMenu(null), so no per-window hiding is needed.
-  return {};
+  // Windows and Linux: frame-free so the renderer draws its own caption
+  // cluster (<WindowCaption>, fixed top-right). The application menu is
+  // removed globally via Menu.setApplicationMenu(null), so no per-window
+  // hiding is needed.
+  if (platform === "linux") {
+    // No shadow: on Wayland a frameless window otherwise gets GTK drop
+    // shadows and extended resize borders, drawn as a band of empty surface
+    // around the content (and tiling compositors like niri show it as a gap).
+    return { frame: false, hasShadow: false };
+  }
+  return { frame: false };
 }
 
 export type WindowChromeState = {

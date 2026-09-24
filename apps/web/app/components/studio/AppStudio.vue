@@ -660,6 +660,17 @@ defineExpose({
   /* Hide/show timing lives with .portal-fade in assets/css/main.css. */
   --portal-fade-extra: background-color var(--portal-fade-ms, 220ms) ease;
 }
+/* Frameless shells: the plane covers the project page's titlebar band, so it
+   carries its own window drag surface along the top edge — down to just past
+   the strip index line, whose controls opt back out (see ThreadStrip,
+   StripProjectSwitch). Painted first, so everything in the rows sits over it. */
+.frameless .plane::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3.25rem;
+  -webkit-app-region: drag;
+}
 .plane.is-overview {
   background: color-mix(in srgb, var(--ink) 3.5%, var(--ground));
 }

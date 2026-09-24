@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, spawnSync } from "node:child_process";
-import { cpSync, existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -135,7 +135,36 @@ if (!existsSync(mainEntry)) {
   shutdown(1);
 }
 
-run("bunx", ["electron", "."], desktopDir, {
+/**
+ * Resolve `--no-sandbox` for the local Electron binary when its setuid helper
+ * can't be used (dev checkouts are user-owned, never root-owned 4755).
+ * Chromium reads sandbox flags when its zygote/GPU processes spawn — an
+ * in-process appendSwitch in main.ts arrives too late and leaves a
+ * half-sandboxed renderer that dies allocating shared memory on first paint —
+ * so this is decided here, in the launcher, and passed as real CLI argv
+ * (t3code's electron-launcher.mjs does the same check). Never weakens a
+ * correctly installed sandbox.
+ */
+function resolveLinuxSandboxArgs(): string[] {
+  if (process.platform !== "linux") return [];
+  try {
+    const resolved = import.meta.resolve("electron/dist/electron");
+    const binaryPath = resolved.startsWith("file://")
+      ? fileURLToPath(resolved)
+      : resolved;
+    const st = statSync(path.join(path.dirname(binaryPath), "chrome-sandbox"));
+    if (st.uid === 0 && (st.mode & 0o4777) === 0o4755) return [];
+  } catch {
+    // Unresolvable binary — launch as before rather than block dev.
+    return [];
+  }
+  console.warn(
+    "[dev] Electron chrome-sandbox is not root-owned with mode 4755; launching local Electron with --no-sandbox.",
+  );
+  return ["--no-sandbox"];
+}
+
+run("bunx", ["electron", ...resolveLinuxSandboxArgs(), "."], desktopDir, {
   ...process.env,
   KONE_DEV: "1",
   KONE_DEV_SERVER_URL: devServerUrl,

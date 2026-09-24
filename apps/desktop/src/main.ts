@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -46,6 +47,58 @@ const devServerUrl = process.env.KONE_DEV_SERVER_URL ?? "http://localhost:3001";
  *  child refuses to die in time, the app quits anyway — escalation, in the
  */
 const QUIT_TEARDOWN_TIMEOUT_MS = 3_000;
+
+// Linux shell identity + sandbox, applied before `app.whenReady()`.
+// Chromium caches its portal/WM identity at startup, so this must run at
+// module scope — anything async would lose the race and leave the window
+// grouped under the hosting binary's name in the taskbar.
+function configureLinuxShell(): void {
+  if (process.platform !== "linux") return;
+  // Deterministic WM_CLASS so the window groups under Kone instead of the
+  // hosting Electron binary's name (matters most for run-from-source dev,
+  // where the binary is stock Electron). NOTE: no setDesktopName() here —
+  // that call registers the app with xdg-desktop-portal, and with no
+  // matching .desktop entry installed the portal leaves Chromium's
+  // renderer sandbox unable to allocate shared memory (exit 133 on first
+  // paint). t3code pairs setDesktopName with installing the entry; kone
+  // has no external URL scheme to register, so WM_CLASS alone is the safe
+  // subset.
+  // NOTE: `--no-sandbox` is deliberately NOT appended here — see
+  // scripts/dev.ts `resolveLinuxSandboxArgs` for the rationale (in-process
+  // flags arrive too late for the zygote/GPU spawn).
+  if (!app.commandLine.hasSwitch("class")) {
+    app.commandLine.appendSwitch("class", isDev ? "kone-dev" : "kone");
+  }
+  // Containers often mount /dev/shm tiny or unreadable; Chromium's renderer
+  // then dies on first paint (exit 133, "Unable to access /dev/shm").
+  // Detect it up front and fall back to /tmp-backed shared memory.
+  // KONE_DISABLE_DEV_SHM=1 forces the fallback (restricted sandboxes where
+  // the main-process probe passes but the renderer still fails);
+  // KONE_DISABLE_DEV_SHM=0 forces it off.
+  const shmOverride = process.env.KONE_DISABLE_DEV_SHM?.trim();
+  if (
+    !app.commandLine.hasSwitch("disable-dev-shm-usage") &&
+    (shmOverride === "1" || (shmOverride !== "0" && !isDevShmUsable()))
+  ) {
+    console.warn(
+      "[main] /dev/shm unusable — falling back to /tmp shared memory " +
+        "(KONE_DISABLE_DEV_SHM overrides). For best performance, mount /dev/shm with mode 1777.",
+    );
+    app.commandLine.appendSwitch("disable-dev-shm-usage");
+  }
+}
+
+/** True when the renderer's /dev/shm shared-memory mount is writable. */
+function isDevShmUsable(): boolean {
+  try {
+    fs.accessSync("/dev/shm", fs.constants.W_OK | fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+configureLinuxShell();
 
 // Production Content-Security-Policy for the packaged renderer (app://).
 // No "unsafe-eval", no remote scripts: scripts/styles come from the bundle
@@ -233,6 +286,11 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Boot unthrottled: the window starts hidden (show: false) and Chromium
+      // throttles hidden renderers (timers coalesce, rAF stops), which stalls
+      // first paint. Re-enabled on first reveal below so a hidden or
+      // minimized window goes back to being cheap after it has shown once.
+      backgroundThrottling: false,
     },
   };
   if (devIcon && process.platform !== "darwin") windowOptions.icon = devIcon;
@@ -288,18 +346,29 @@ async function createWindow() {
     }, RENDERER_RECOVERY_RELOAD_DELAY_MS);
   });
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow?.show();
-
-    // Warm the agent layer a beat after first paint — not at IPC registration.
-    // Registration runs before the window exists, so firing the four CLI probes
-    // (`codex --version`, …) plus the app-server handshake there made them
-    // compete with window creation and the renderer's first frame for CPU and
-    // process slots, slowing first paint. Warming after show leaves first
-    // paint and hydration the machine to themselves; the ~250ms beat guarantees
-    // this no longer runs mid-paint. Fire-and-forget: `warm()` dedupes and
-    // never rejects, and the renderer's own warmup (`agent:surface` →
-    // `agent:warm`) coalesces onto this run, so nothing waits on the send path.
+  // First reveal once every gate has fired: `ready-to-show` everywhere,
+  // plus `did-finish-load` on Linux (ready-to-show can fire before the
+  // renderer has actually painted there; hold for the load event so the
+  // first frame is real paint). Hands the window back to normal
+  // hidden-window throttling (see backgroundThrottling above), shows it,
+  // and warms the agent layer a beat after first paint — not at IPC
+  // registration. Registration runs before the window exists, so firing the
+  // four CLI probes (`codex --version`, …) plus the app-server handshake
+  // there made them compete with window creation and the renderer's first
+  // frame for CPU and process slots, slowing first paint. Warming after show
+  // leaves first paint and hydration the machine to themselves; the ~250ms
+  // beat guarantees this no longer runs mid-paint. Fire-and-forget: `warm()`
+  // dedupes and never rejects, and the renderer's own warmup
+  // (`agent:surface` → `agent:warm`) coalesces onto this run, so nothing
+  // waits on the send path.
+  const once = (emitter: { once(event: string, cb: () => void): void }, event: string): Promise<void> =>
+    new Promise((resolve) => emitter.once(event, () => resolve()));
+  const gates: Promise<void>[] = [once(mainWindow, "ready-to-show")];
+  if (process.platform === "linux") gates.push(once(mainWindow.webContents, "did-finish-load"));
+  void Promise.all(gates).then(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.setBackgroundThrottling(true);
+    mainWindow.show();
     setTimeout(() => {
       void getAgentService().warm().catch(() => {});
     }, 250);
@@ -325,7 +394,14 @@ async function createWindow() {
   });
 
   if (isDev) {
-    await mainWindow.loadURL(devServerUrl);
+    // A failed dev load (server not up yet, renderer died mid-load) must log,
+    // not reject into an unhandled promise from the whenReady chain.
+    try {
+      await mainWindow.loadURL(devServerUrl);
+    } catch (err) {
+      console.error(`[main] failed to load dev renderer at ${devServerUrl}:`, err);
+      return;
+    }
     mainWindow.webContents.openDevTools({ mode: "detach" });
     return;
   }
@@ -333,7 +409,11 @@ async function createWindow() {
   // Load the root path (not "/index.html") so Nuxt's client router matches the
   // home route. The app:// handler maps "/" to the index.html file on disk;
   // pointing the router at "/index.html" makes it 404 against its own routes.
-  await mainWindow.loadURL("app://./");
+  try {
+    await mainWindow.loadURL("app://./");
+  } catch (err) {
+    console.error("[main] failed to load packaged renderer:", err);
+  }
 }
 
 if (gotSingleInstanceLock) {

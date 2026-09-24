@@ -914,6 +914,13 @@ const { isUnread } = useStripUnread({
   pointer-events: none;
   transition: opacity 0.28s ease;
 }
+/* Frameless shells: the strip only renders inside the studio plane, which
+   paints over the project page's titlebar band, so the dashes keep their own
+   line. The plane's top edge is the window drag band (see AppStudio); every
+   control on this line opts back out so it stays clickable. */
+.frameless .index__dash {
+  -webkit-app-region: no-drag;
+}
 .index__dashes {
   display: flex;
   align-items: center;

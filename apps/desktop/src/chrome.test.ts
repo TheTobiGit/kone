@@ -26,8 +26,11 @@ describe("titleBarOptions", () => {
     });
   });
 
-  test("linux keeps the native frame with no per-window menu hiding", () => {
-    expect(titleBarOptions("linux")).toEqual({});
+  test("linux drops the frame for renderer-drawn caption buttons", () => {
+    expect(titleBarOptions("linux")).toEqual({
+      frame: false,
+      hasShadow: false,
+    });
   });
 });
 

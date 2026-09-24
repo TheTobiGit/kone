@@ -131,7 +131,7 @@ function onSideAction(
 
 <template>
   <main
-    class="relative flex h-screen flex-col overflow-hidden bg-ground px-16 pt-5 pb-16"
+    class="relative flex h-[var(--app-h)] flex-col overflow-hidden bg-ground px-16 pt-5 pb-16"
   >
     <h1 class="sr-only">Your projects</h1>
 
