@@ -15,7 +15,6 @@
 // `always-open` keeps it covered for the modal's whole life.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { motion, AnimatePresence } from "motion-v";
 import { onClickOutside, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -149,21 +148,13 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 watch(blocks, () => void nextTick(measure));
 
 // ── modal surface & transitions ─────────────────────────────────────────────
-const { shown, close: playExit } = useModalExit();
+const { shown, closing, close: playExit } = useModalExit();
 
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
-
-const popSpring = {
-  type: "spring",
-  stiffness: 340,
-  damping: 24,
-  mass: 0.85,
-} as const;
+// Enter and exit are CSS keyframes on the card (see `.modal-card`), not a JS
+// spring: they run on the compositor, so the card keeps moving while the
+// transcript and composer mount underneath it on the same frames, and the exit
+// is a fixed length that always finishes inside useModalExit's window instead
+// of a spring that was still settling when the card unmounted.
 
 /** Every dismissal — the button, the scrim, Escape, the hotkey, the tray icon —
  *  runs the same exit. The composable owns the open flag and is toggled from
@@ -294,15 +285,9 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
   <div class="fixed inset-0 z-50 flex items-end justify-center overflow-hidden p-4 sm:p-6">
     <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="requestClose" />
 
-    <motion.div
+    <div
       class="modal-card relative z-20 w-full max-w-xl overflow-hidden"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
+      :class="{ 'modal-card--out': closing }"
       role="dialog"
       aria-modal="true"
       aria-label="Assistant"
@@ -346,15 +331,10 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
                 />
               </button>
 
-              <AnimatePresence>
-                <motion.div
+              <Transition name="pop">
+                <div
                   v-if="showHistoryDropdown"
-                  key="assistant-history-pop"
                   class="history-shell"
-                  :initial="{ opacity: 0, y: -6, scale: 0.97 }"
-                  :animate="{ opacity: 1, y: 0, scale: 1 }"
-                  :exit="{ opacity: 0, y: -6, scale: 0.97 }"
-                  :transition="popSpring"
                   role="dialog"
                   aria-modal="true"
                   aria-label="Chat history"
@@ -449,8 +429,8 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
                       </section>
                     </div>
                   </div>
-                </motion.div>
-              </AnimatePresence>
+                </div>
+              </Transition>
             </div>
           </div>
 
@@ -540,7 +520,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
           </div>
         </div>
       </div>
-    </motion.div>
+    </div>
 
     <!-- The full providers → models → effort picker. It is the surface's to
          host, not the composer's: it lands outside the composer's dock, which
@@ -570,6 +550,53 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   display: flex;
   flex-direction: column;
+  /* Rises from the bottom edge it is anchored to. Transform + opacity only, so
+     the whole move stays on the compositor. */
+  transform-origin: 50% 100%;
+  animation: card-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+/* The exit is quicker than the entrance and eases in, so the card gets out of
+   the way; 180ms keeps it well inside useModalExit's 240ms before unmount. */
+.modal-card--out {
+  animation: card-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  /* Opaque well before the move ends, so the card never reads as a ghost
+     sliding into place. */
+  55% {
+    opacity: 1;
+  }
+}
+@keyframes card-out {
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+/* History popover: drops from the chip, leaves faster than it came. */
+.pop-enter-active {
+  transition:
+    opacity 160ms ease-out,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.pop-leave-active {
+  transition:
+    opacity 110ms ease-in,
+    transform 110ms ease-in;
+}
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+}
+.history-shell {
+  transform-origin: 0 0;
 }
 
 .assistant {
@@ -1053,8 +1080,14 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
 
 
 @media (prefers-reduced-motion: reduce) {
-  .assistant__chev {
+  .assistant__chev,
+  .pop-enter-active,
+  .pop-leave-active {
     transition: none;
+  }
+  .modal-card,
+  .modal-card--out {
+    animation-duration: 1ms;
   }
 }
 </style>
