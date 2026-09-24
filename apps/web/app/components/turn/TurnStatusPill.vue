@@ -323,8 +323,6 @@ const hasOverline = computed(() => !!threadLabel.value);
   overflow: hidden;
   cursor: pointer;
   text-align: left;
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
   transition:
     width 0.4s cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),

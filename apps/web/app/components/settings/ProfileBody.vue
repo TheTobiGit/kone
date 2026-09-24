@@ -458,16 +458,7 @@ function removePhoto(): void {
       class="edit-host pointer-events-none fixed inset-0 z-50"
       :style="hostStyle"
     >
-      <motion.div
-        class="modal-scrim pointer-events-auto absolute inset-0"
-        :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-        :animate="{
-          opacity: editShown ? 1 : 0,
-          backdropFilter: editShown ? 'blur(4px)' : 'blur(0px)',
-        }"
-        :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-        @click="closeEdit"
-      />
+      <UiModalScrim :shown="editShown" class="modal-scrim pointer-events-auto absolute inset-0" @click="closeEdit" />
 
       <div class="pointer-events-none absolute inset-0 flex items-start justify-end p-6">
         <motion.div

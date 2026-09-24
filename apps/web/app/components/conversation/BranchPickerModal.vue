@@ -211,16 +211,7 @@ const cardSpring = {
 
 <template>
   <div class="fixed inset-0 z-50 flex items-end justify-start overflow-hidden p-10">
-    <motion.div
-      class="modal-scrim absolute inset-0"
-      :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        backdropFilter: shown ? 'blur(4px)' : 'blur(0px)',
-      }"
-      :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-      @click="onCancel"
-    />
+    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="onCancel" />
 
     <motion.div
       class="modal-card relative z-20 w-fit max-w-md overflow-hidden"

@@ -193,13 +193,7 @@ const cardSpring = {
       :class="[!cardPos.left ? 'flex items-end justify-center pb-24 p-4' : '']"
     >
       <!-- Scrim with plain dimming, no background blur -->
-      <motion.div
-        class="modal-scrim pointer-events-auto absolute inset-0"
-        :initial="{ opacity: 0 }"
-        :animate="{ opacity: shown ? 1 : 0 }"
-        :transition="{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }"
-        @click="onCancel"
-      />
+      <UiModalScrim :shown="shown" class="modal-scrim pointer-events-auto absolute inset-0" @click="onCancel" />
 
       <motion.div
         class="modal-card pointer-events-auto relative z-20 w-80 overflow-hidden"

@@ -203,9 +203,7 @@ button.here__name:focus-visible {
   max-width: 17rem;
   padding: 0.25rem;
   border-radius: 0.75rem;
-  background-color: color-mix(in srgb, var(--ground) 88%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  backdrop-filter: blur(16px) saturate(1.4);
+  background-color: color-mix(in srgb, var(--ground) 96%, transparent);
   box-shadow:
     0 1px 0 color-mix(in srgb, var(--ink) 5%, transparent) inset,
     0 16px 40px -18px rgb(0 0 0 / 0.32);

@@ -292,13 +292,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
 
 <template>
   <div class="fixed inset-0 z-50 flex items-end justify-center overflow-hidden p-4 sm:p-6">
-    <motion.div
-      class="modal-scrim absolute inset-0"
-      :initial="{ opacity: 0 }"
-      :animate="{ opacity: shown ? 1 : 0 }"
-      :transition="{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }"
-      @click="requestClose"
-    />
+    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="requestClose" />
 
     <motion.div
       class="modal-card relative z-20 w-full max-w-xl overflow-hidden"
