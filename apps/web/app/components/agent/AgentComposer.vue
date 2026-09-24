@@ -500,7 +500,9 @@ function cycleMode() {
   });
 }
 
-const open = ref(false);
+// An always-open composer is born open: it never shows the orb, so it has
+// nothing to wake from.
+const open = ref(props.alwaysOpen ?? false);
 watch(open, (v) => emit("update:open", v));
 // `text` is the serialized value the composer sends: plain prose with each
 // completed mention written back as its full @path token. The editable field is
@@ -733,6 +735,10 @@ function onPaste(e: ClipboardEvent) {
 const REST = 55;
 const surfaceH = ref(REST);
 const opening = ref(false);
+// Holds every transition off for the first frame of a composer that mounts
+// open, so the card is simply there at its size rather than morphing out of
+// an orb it never was.
+const instant = ref(props.alwaysOpen ?? false);
 const springy = ref(false);
 const SPRING_MIN = 64;
 let lastCard = false;
@@ -975,7 +981,12 @@ async function onQueueEdit(entry: QueuedTurnEntry) {
 onMounted(() => {
   restoreDraft();
   sync();
-  if (props.alwaysOpen) void wake();
+  if (props.alwaysOpen) {
+    // Focus after the tick, not now: the host's own mount hook runs after ours
+    // and may read the element focused before it opened.
+    void nextTick(() => field.value?.focus());
+    requestAnimationFrame(() => requestAnimationFrame(() => (instant.value = false)));
+  }
 });
 onUnmounted(() => {
   if (closeTimer) clearTimeout(closeTimer);
@@ -1013,7 +1024,7 @@ defineExpose({ wake, setDraft, focus });
   <div
     ref="dock"
     class="dock"
-    :class="{ 'dock--drag': dragging, 'dock--job': isJob }"
+    :class="{ 'dock--drag': dragging, 'dock--job': isJob, 'dock--still': alwaysOpen }"
     @dragenter="onDragEnter"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
@@ -1090,7 +1101,7 @@ defineExpose({ wake, setDraft, focus });
     <div
       ref="surface"
       class="surface"
-      :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-closing': closing, 'is-springy': springy }"
+      :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-closing': closing, 'is-springy': springy, 'is-instant': instant }"
       :style="{ height: (open ? surfaceH : (closing ? closingH : REST)) + 'px' }"
       role="button"
       :aria-label="open ? undefined : 'Wake the agent'"
