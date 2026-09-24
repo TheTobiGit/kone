@@ -23,6 +23,7 @@ let fitAddon: FitAddon | null = null;
 let webgl: WebglAddon | null = null;
 let detachSink: (() => void) | null = null;
 let noticeShown = false;
+let visibilityObserver: IntersectionObserver | null = null;
 const { scheme, extras } = useTheme();
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -78,7 +79,8 @@ function buildTheme(): ITheme {
 
 /** Fit to the container, but only once it actually has a size, and clamp the
  *  result — a fit before fonts/layout settle can otherwise produce a wild
- */
+ *  value. View fit is immediate (cheap, local); the backend PTY resize is
+ *  debounced below so a window drag doesn't re-spawn the PTY per pixel. */
 function fitSafely(): void {
   if (!term || !fitAddon || !container.value) return;
   const { clientWidth, clientHeight } = container.value;
@@ -88,9 +90,23 @@ function fitSafely(): void {
   } catch {
     return;
   }
-  const cols = Math.max(2, Math.min(1000, term.cols));
-  const rows = Math.max(1, Math.min(500, term.rows));
-  emit("resize", cols, rows);
+  scheduleBackendResize();
+}
+
+/** Backend PTY resizes are debounced: each one is an IPC round-trip plus a
+ *  SIGWINCH + shell reflow, so a live window drag would otherwise storm the
+ *  main process. 120ms matches t3code's backend resize debounce. */
+let backendResizeTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleBackendResize(): void {
+  if (!term) return;
+  if (backendResizeTimer) clearTimeout(backendResizeTimer);
+  backendResizeTimer = setTimeout(() => {
+    backendResizeTimer = null;
+    if (!term) return;
+    const cols = Math.max(2, Math.min(1000, term.cols));
+    const rows = Math.max(1, Math.min(500, term.rows));
+    emit("resize", cols, rows);
+  }, 120);
 }
 
 // Rebuild the terminal theme when the resolved scheme flips. Guarded: before
@@ -134,27 +150,79 @@ onMounted(() => {
 
   // Fit once layout settles (double rAF: lay out, then measure), then attach the
   // live sink so replay wraps at the real width. The composable owns replay.
+  // WebGL loads idle (not mid-paint) and only when visible.
+  const onVisibility = (visible: boolean): void => {
+    if (!term) return;
+    if (visible) loadWebgl();
+    else parkWebgl();
+  };
   requestAnimationFrame(() =>
     requestAnimationFrame(() => {
       if (!term) return;
       fitSafely();
-      loadWebgl();
       detachSink = props.session.attach({
         write: (data) => term?.write(data),
         reset: () => term?.reset(),
       });
       maybeShowExitNotice(props.session.status);
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(() => loadWebgl());
+      } else {
+        setTimeout(() => loadWebgl(), 0);
+      }
     }),
   );
+
+  // Park the GPU context while the pane is off-screen; reload on return.
+  if ("IntersectionObserver" in window && container.value) {
+    visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry) onVisibility(entry.isIntersecting);
+      },
+      { threshold: 0 },
+    );
+    visibilityObserver.observe(container.value);
+  }
 
   useResizeObserver(container, () => fitSafely());
 });
 
-/** Load the WebGL renderer for crisp text (once the container is sized). If the
- *  GPU context is unavailable or later lost, dispose it and let xterm fall back
- *  to the DOM renderer. */
+/** Load the WebGL renderer for crisp text (once the container is sized and
+ *  visible). Lazy + visibility-gated: on Linux/software GL a hidden terminal
+ *  must not hold a GPU context, and an eager load during first paint competes
+ *  with hydration. If the GPU context is unavailable or later lost, dispose it
+ *  and let xterm fall back to the DOM renderer. */
+/** Page-cached WebGL2 availability: one throwaway context per page, not one
+ *  per show/hide cycle. */
+let webglAvailable: boolean | null = null;
+function isWebglAvailable(): boolean {
+  if (webglAvailable !== null) return webglAvailable;
+  try {
+    const probe = document.createElement("canvas");
+    const gl = probe.getContext("webgl2", { failIfMajorPerformanceCaveat: true });
+    if (!gl) {
+      webglAvailable = false;
+      return false;
+    }
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    probe.remove();
+  } catch {
+    webglAvailable = false;
+    return false;
+  }
+  webglAvailable = true;
+  return true;
+}
+
 function loadWebgl(): void {
-  if (!term || webgl) return;
+  if (!term || webgl || !container.value) return;
+  // Hidden tab/panel: skip — the IntersectionObserver below retries on show.
+  if (container.value.clientWidth <= 0 || container.value.clientHeight <= 0) return;
+  if (typeof document !== "undefined" && document.hidden) return;
+  // Probe before paying for the addon: no WebGL2 (headless/software GL) means
+  // the DOM renderer stays, with no context to create and lose.
+  if (!isWebglAvailable()) return;
   try {
     const addon = new WebglAddon();
     addon.onContextLoss(() => {
@@ -166,6 +234,17 @@ function loadWebgl(): void {
   } catch {
     // No WebGL (headless/software GL) — the DOM renderer stays.
   }
+}
+
+/** Drop the WebGL context while hidden so background terminals hold no GPU
+ *  resources; re-created on next show via loadWebgl(). */
+function parkWebgl(): void {
+  try {
+    webgl?.dispose();
+  } catch {
+    // Disposal is best-effort; the DOM renderer continues regardless.
+  }
+  webgl = null;
 }
 
 /** Once, when the PTY exits/errors, print a dim closing line so a dead shell
@@ -185,6 +264,10 @@ watch(() => props.session.status, (status) => maybeShowExitNotice(status));
 
 onBeforeUnmount(() => {
   detachSink?.();
+  visibilityObserver?.disconnect();
+  visibilityObserver = null;
+  if (backendResizeTimer) clearTimeout(backendResizeTimer);
+  backendResizeTimer = null;
   webgl?.dispose();
   fitAddon?.dispose();
   term?.dispose();
