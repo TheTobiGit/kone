@@ -285,4 +285,56 @@ describe("TerminalManager", () => {
     const { mgr } = makeManager(fake);
     await expect(mgr.restart({ terminalId: "nope" })).rejects.toThrow();
   });
+
+  test("activity polling takes one shared snapshot per tick for every terminal", async () => {
+    const pids = [5001, 5002, 5003];
+    let spawnIndex = 0;
+    let captures = 0;
+    const mgr = new TerminalManager({
+      spawn: async () => ({ ...fakePty().process, pid: pids[spawnIndex++]! }),
+      subprocessPollIntervalMs: 5,
+      captureProcessTable: async () => {
+        captures += 1;
+        // Only the second terminal has a real child running.
+        return new Map([[5002, [{ pid: 6000, command: "/usr/bin/vim notes.md" }]]]);
+      },
+    });
+    const events: TerminalEvent[] = [];
+    mgr.onEvent((e) => events.push(e));
+    for (const id of ["a", "b", "c"]) await mgr.open({ terminalId: id, cwd: "/tmp" });
+
+    await Bun.sleep(30);
+    await mgr.disposeAll();
+
+    const ticks = captures;
+    expect(ticks).toBeGreaterThan(0);
+    // One snapshot per tick, not one per terminal per tick.
+    const activity = events.filter((e) => e.type === "activity");
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({ terminalId: "b", hasRunningSubprocess: true, childCommandLabel: "vim" });
+    await Bun.sleep(20);
+    expect(captures).toBe(ticks);
+  });
+
+  test("failed snapshots keep the last known state and back off", async () => {
+    let captures = 0;
+    const mgr = new TerminalManager({
+      spawn: async () => fakePty().process,
+      subprocessPollIntervalMs: 5,
+      captureProcessTable: async () => {
+        captures += 1;
+        return null;
+      },
+    });
+    const events: TerminalEvent[] = [];
+    mgr.onEvent((e) => events.push(e));
+    await mgr.open({ terminalId: "a", cwd: "/tmp" });
+
+    // Backoff 5, 10, 20, 40ms… — a fixed 5ms cadence would reach ~16 captures.
+    await Bun.sleep(80);
+    await mgr.disposeAll();
+    expect(captures).toBeGreaterThan(0);
+    expect(captures).toBeLessThanOrEqual(5);
+    expect(events.some((e) => e.type === "activity")).toBe(false);
+  });
 });

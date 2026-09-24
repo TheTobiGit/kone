@@ -11,6 +11,7 @@
 // (captureComplete: false), never a throw.
 
 import { execFile, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -115,6 +116,17 @@ const WINDOWS_PROCESS_TABLE_SCRIPT =
   "$cmd = if ($_.CommandLine) { [string]$_.CommandLine } else { [string]$_.Name }; " +
   "Write-Output ('{0}|{1}|{2}' -f $_.ProcessId, $_.ParentProcessId, $cmd) }";
 
+// `ps` resolved to an absolute path once. Spawning by bare name walks every
+// PATH entry per spawn (one failed exec per directory until the hit), which
+// adds up at the terminal poller's 1s cadence on a long login-shell PATH.
+let resolvedPsCommand: string | null = null;
+function psCommand(): string {
+  if (resolvedPsCommand === null) {
+    resolvedPsCommand = ["/bin/ps", "/usr/bin/ps"].find((candidate) => existsSync(candidate)) ?? "ps";
+  }
+  return resolvedPsCommand;
+}
+
 /** `ps -eo pid=,ppid=,command=` lines -> children-by-ppid map. Skips malformed
  *  lines and empty commands rather than failing the whole snapshot. The full
  *  command column (not a short comm) is what lets a kill-time identity re-read
@@ -216,7 +228,7 @@ export function captureProcessChildrenMap(): ProcessChildrenMap | null {
       if (result.error || result.status !== 0) return null;
       return parseWindowsProcessTable(result.stdout);
     }
-    const result = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
+    const result = spawnSync(psCommand(), ["-eo", "pid=,ppid=,command="], {
       encoding: "utf8",
       maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
       timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
@@ -254,7 +266,7 @@ export function readCurrentCommands(pids: readonly number[]): ProcessCommandMap 
   const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
   if (unique.length === 0) return new Map();
   try {
-    const result = spawnSync("ps", ["-p", unique.join(","), "-o", "pid=,command="], {
+    const result = spawnSync(psCommand(), ["-p", unique.join(","), "-o", "pid=,command="], {
       encoding: "utf8",
       maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
       timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
@@ -476,7 +488,7 @@ export async function captureProcessChildrenMapAsync(): Promise<ProcessChildrenM
       );
       return parseWindowsProcessTable(stdout);
     }
-    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,command="], {
+    const { stdout } = await execFileAsync(psCommand(), ["-eo", "pid=,ppid=,command="], {
       encoding: "utf8",
       maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
       timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
@@ -496,6 +508,16 @@ export function inspectSubprocessActivity(rootPid: number): SubprocessActivityIn
     return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
   }
   const childrenByParentPid = captureProcessChildrenMap();
+  return walkSubprocessActivity(rootPid, childrenByParentPid);
+}
+
+/** `inspectSubprocessActivity` against a snapshot the caller already took, so
+ *  one full-system scan can serve every terminal on a poll tick. A null
+ *  snapshot (failed scan) yields captureComplete: false. */
+export function inspectSubprocessActivityInSnapshot(
+  rootPid: number,
+  childrenByParentPid: ProcessChildrenMap | null,
+): SubprocessActivityInspection {
   return walkSubprocessActivity(rootPid, childrenByParentPid);
 }
 
