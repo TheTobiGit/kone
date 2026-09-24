@@ -48,8 +48,10 @@ import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointResto
 import { agentIdentity } from "~/utils/agentIdentity";
 import { useSearchLanding } from "~/composables/useSearchLanding";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
-import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
-import type { TranscriptMode } from "~/utils/transcriptMode";
+import { segText } from "~/utils/conversationSegments";
+import SpawnWorkerMark from "~/components/conversation/SpawnWorkerMark.vue";
+import type { ConversationSurface, ResponseDisplay } from "~/utils/responseDisplay";
+import { planTurn, type TurnPlan } from "~/utils/turnPlan";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
 // The live conversation — where the agent's turns become a timeline.
@@ -131,11 +133,13 @@ const props = defineProps<{
   loadingOlder?: boolean;
   /** The last load-older attempt failed — the affordance shows a retry. */
   olderError?: string | null;
-  /** How much of a running turn this reading shows — the working transcript
-   *  (every part, as it arrives) or the quiet reply (one status line while the
-   *  agent works, then the answer). Defaults to the transcript; a surface that
-   *  wants the quiet read has to ask for it. See utils/transcriptMode. */
-  mode?: TranscriptMode;
+  /** Where this conversation is being read — each surface reads turns the way
+   *  the reader set it (useResponsePrefs). Defaults to the studio. */
+  surface?: ConversationSurface;
+  /** How turns read here, when it isn't the reader's own setting — the
+   *  Conversation settings page previews a choice before it is made. Absent
+   *  everywhere else. */
+  display?: ResponseDisplay;
   /** Keep an empty thread empty — no standing art. The art is an invitation to
    *  type, so it belongs where there is a composer under it and the blankness
    *  is a beginning. Somewhere you can only read, the same blankness means the
@@ -202,49 +206,27 @@ const allowBranch = computed(() => props.allowBranch ?? false);
 // the first chunk.
 if (import.meta.client) void useMarkdown().parse("");
 
-// ── per-turn view, built once ──────────────────────────────────────────────────
-// What the template needs to render one assistant turn: the settled groups, plus
-// the live activity batch (if the turn is still running).
+// ── per-turn plan, built once ──────────────────────────────────────────────────
+// What the template needs to render one assistant turn, under the reader's
+// choices: what folds behind "Worked for…", what stands in the open, the live
+// batch at the tail, and whether a status line stands in for the work. The rules
+// live in utils/turnPlan, where every combination of choices is tested.
 //
 // One working orb per turn, anchored in AgentActivity from the first moment the
 // turn runs. It stays mounted (stable key) while steps stream in — orb → line →
 // thinking — instead of a stack-level orb handing off to a second one. So the
-// *last* steps group is lifted out of `groups` while it's live and handed back as
-// `live`; once text takes over (or the turn ends) it rejoins the list and folds
-// into its horizontal strip.
-// `groups` + `live` drive a RUNNING turn — the settled batches inline plus the
-// one live tail.
-//
-// `foldedGroups` + `replyGroups` drive a SETTLED turn. Everything the agent did
-// AND said on the way to its answer — tool calls, thinking, and the narration
-// text between them — collapses behind a single "Worked for {duration}" fold;
-// only the turn's final reply stays open. The reply is the turn's trailing text
-// group (the last thing it said with no tool call after it). A turn that ends on
-// a tool call has no trailing reply, so everything folds and the fold opens by
-// default rather than collapsing to nothing.
-type TextGroup = Extract<RenderGroup, { kind: "text" }>;
-type BlockView = {
-  groups: RenderGroup[];
-  live: { segments: Segment[] } | null;
-  foldedGroups: RenderGroup[];
-  replyGroups: TextGroup[];
-};
+// plan lifts the *last* batch out while it's live and hands it back as `live`;
+// once text takes over (or the turn ends) it rejoins the rest and folds into its
+// horizontal strip.
 
-function buildView(block: AssistantBlock): BlockView {
-  const all = renderGroups(block);
-  const last = all[all.length - 1];
-  const replyIsTrailingText = last?.kind === "text";
-  const foldedGroups = replyIsTrailingText ? all.slice(0, -1) : all;
-  // SAFETY: replyIsTrailingText means last.kind === "text", which is a TextGroup.
-  const replyGroups = replyIsTrailingText ? [last as TextGroup] : [];
-  const tail = all[all.length - 1];
-  const tailIsSteps = tail?.kind === "steps";
-  const live = block.state === "running" && (all.length === 0 || tailIsSteps);
-  if (!live) return { groups: all, live: null, foldedGroups, replyGroups };
-  if (tailIsSteps)
-    return { groups: all.slice(0, -1), live: { segments: tail.segments }, foldedGroups, replyGroups };
-  return { groups: all, live: { segments: [] }, foldedGroups, replyGroups };
-}
+// How the reader likes turns to read — see utils/responseDisplay. Shared prefs,
+// so a change in settings reshapes every thread on screen at once.
+const prefs = useResponsePrefs();
+const display = computed(() => props.display ?? prefs.displays.value[props.surface ?? "studio"]);
+
+/** Read whole, a message is only ever shown complete, so it mounts without the
+ *  per-word reveal a streaming one plays. */
+const wholeText = computed(() => display.value.live.text === "whole");
 
 // Built once per turn and kept until that turn's content actually changes.
 //
@@ -263,39 +245,55 @@ function buildView(block: AssistantBlock): BlockView {
 // adapters today, but it makes the memo silently depend on no provider ever
 // emitting a straggler item after its turn.completed, and the failure mode is a
 // turn frozen permanently mid-render rather than one late row.
-const viewCache = new Map<
+const planCache = new Map<
   string,
-  { items: RuntimeItem[]; state: AssistantBlock["state"]; view: BlockView }
+  {
+    items: RuntimeItem[];
+    state: AssistantBlock["state"];
+    display: ResponseDisplay;
+    manual: boolean | undefined;
+    plan: TurnPlan;
+  }
 >();
-const viewByBlock = computed(() => {
-  const out = new Map<string, BlockView>();
+const planByBlock = computed(() => {
+  const out = new Map<string, TurnPlan>();
+  const shown = display.value;
   for (const b of props.blocks) {
     if (b.role !== "assistant") continue;
-    const hit = viewCache.get(b.id);
+    const hit = planCache.get(b.id);
+    const manual = openFolds[b.id];
     // `state` too: it decides whether the tail batch is the live one, and a turn
-    // can settle without its items changing at all.
-    if (hit && hit.items === b.items && hit.state === b.state) {
-      out.set(b.id, hit.view);
+    // can settle without its items changing at all. `display` and the turn's own
+    // toggle because each reshapes the plan.
+    if (
+      hit &&
+      hit.items === b.items &&
+      hit.state === b.state &&
+      hit.display === shown &&
+      hit.manual === manual
+    ) {
+      out.set(b.id, hit.plan);
       continue;
     }
-    const view = buildView(b);
-    viewCache.set(b.id, { items: b.items, state: b.state, view });
-    out.set(b.id, view);
+    const plan = planTurn(b, shown, manual);
+    planCache.set(b.id, { items: b.items, state: b.state, display: shown, manual, plan });
+    out.set(b.id, plan);
   }
-  for (const id of viewCache.keys()) if (!out.has(id)) viewCache.delete(id);
+  for (const id of planCache.keys()) if (!out.has(id)) planCache.delete(id);
   return out;
 });
 
-// The quiet read: the agent's work never renders while the turn is running —
-// one status line stands in for all of it, and the reply replaces the line when
-// the turn settles. Everything the turn did is still reachable afterwards through
-// the same work fold a transcript reading uses; this only decides what happens
-// without being asked.
-const quiet = computed(() => props.mode === "reply");
-
-const EMPTY_VIEW: BlockView = { groups: [], live: null, foldedGroups: [], replyGroups: [] };
-function viewOf(block: AssistantBlock): BlockView {
-  return viewByBlock.value.get(block.id) ?? EMPTY_VIEW;
+const EMPTY_PLAN: TurnPlan = {
+  fold: null,
+  foldOpen: false,
+  inline: [],
+  live: null,
+  status: false,
+  activity: "auto",
+  toggle: null,
+};
+function planOf(block: AssistantBlock): TurnPlan {
+  return planByBlock.value.get(block.id) ?? EMPTY_PLAN;
 }
 
 // ── timing / status ────────────────────────────────────────────────────────────
@@ -327,13 +325,12 @@ function workLabel(block: AssistantBlock): string {
   if (block.state === "failed") return `Ended ${dur}`;
   return dur;
 }
+// Each turn's own toggle, once pressed — open shows the whole turn, closed folds
+// it to the reply. Unset, the turn reads as the reader's choices start it.
 const openFolds = reactive<Record<string, boolean>>({});
-function isFoldOpen(blockId: string, defaultOpen = false): boolean {
-  return openFolds[blockId] ?? defaultOpen;
-}
-function toggleFold(blockId: string, defaultOpen = false): void {
-  const next = !isFoldOpen(blockId, defaultOpen);
-  openFolds[blockId] = next;
+function toggleTurn(block: AssistantBlock): void {
+  const next = !planOf(block).toggle?.open;
+  openFolds[block.id] = next;
   cue(next ? "expand" : "collapse");
 }
 function clock(at: number): string {
@@ -1410,20 +1407,22 @@ watch(
               :still="block.state !== 'running'"
             />
             <AgentFace v-else :seed="agentSeed" :size="26" class="speaker__face" />
+            <!-- The turn's own toggle: the whole turn, or just its reply —
+                 whatever the reader's choices started it as. -->
             <button
-              v-if="block.state !== 'running' && viewOf(block).foldedGroups.length"
+              v-if="planOf(block).toggle"
               type="button"
               class="speaker__head speaker__head--toggle"
-              :aria-expanded="isFoldOpen(block.id, viewOf(block).replyGroups.length === 0)"
-              :aria-label="`${isFoldOpen(block.id, viewOf(block).replyGroups.length === 0) ? 'Hide' : 'Show'} agent work (${workLabel(block)})`"
-              @click="toggleFold(block.id, viewOf(block).replyGroups.length === 0)"
+              :aria-expanded="planOf(block).toggle!.open"
+              :aria-label="`${planOf(block).toggle!.open ? 'Hide' : 'Show'} agent work (${workLabel(block)})`"
+              @click="toggleTurn(block)"
             >
               <span class="speaker__name">{{ agent.name }}</span>
               <span class="speaker__meta">
-                <span class="speaker__label">{{ workLabel(block) }}</span>
+                <span class="speaker__label">{{ block.state === "running" ? "working" : workLabel(block) }}</span>
                 <HugeiconsIcon
                   class="speaker__chev"
-                  :class="{ 'speaker__chev--open': isFoldOpen(block.id, viewOf(block).replyGroups.length === 0) }"
+                  :class="{ 'speaker__chev--open': planOf(block).toggle!.open }"
                   :icon="ArrowDown01Icon"
                   :size="12"
                   :stroke-width="2"
@@ -1435,83 +1434,82 @@ watch(
             </div>
           </div>
 
-          <!-- RUNNING, quiet read — the work stays out of sight and the turn
-               says one sentence about itself ("Reading useAgent.ts", "Thinking"),
-               until it settles and its reply takes the line's place. -->
+          <!-- The turn, as the plan lays it out (utils/turnPlan). Settled and
+               folding at the end, the work sits behind the agent-name toggler
+               and only the reply (and any spawns it said) stays open; otherwise
+               the parts stand inline in arrival order — steps, updates and spawn
+               lines, whichever the reader shows — with the live batch's orb, or
+               a status line, at the tail while it runs. One branch for every
+               state, so a turn settling doesn't remount what's on screen. -->
+          <TurnWorkFold
+            v-if="planOf(block).fold?.length"
+            :groups="planOf(block).fold!"
+            :open="planOf(block).foldOpen"
+            :historical="block.historical"
+            :fold="planOf(block).activity"
+          />
+          <template
+            v-for="grp in planOf(block).inline"
+            :key="grp.kind === 'text' ? grp.seg.key : grp.key"
+          >
+            <AgentActivity
+              v-if="grp.kind === 'steps'"
+              :segments="grp.segments"
+              :running="block.state === 'running'"
+              :is-tail="false"
+              :historical="block.historical"
+              :fold="planOf(block).activity"
+            />
+            <div
+              v-else-if="grp.kind === 'text'"
+              class="answer-wrap"
+              :data-markdown-source="segText(grp.seg)"
+            >
+              <MarkdownMessage
+                class="answer"
+                :source="segText(grp.seg)"
+                :historical="block.historical || wholeText"
+              />
+            </div>
+            <SpawnWorkerMark
+              v-else
+              :record="grp.record"
+              :linkable="linkHandoffs"
+              :animate="!block.historical"
+              @open-thread="emit('open-thread', $event)"
+            />
+          </template>
+
+          <!-- Live activity — one orb for the whole run: from send through every
+               thinking step and tool call until text takes over. -->
+          <AgentActivity
+            v-if="planOf(block).live"
+            :key="`${block.id}:live-activity`"
+            :segments="planOf(block).live!"
+            :running="true"
+            :is-tail="true"
+            :historical="block.historical"
+            :fold="planOf(block).activity"
+          />
+          <!-- With the work hidden, one sentence about it ("Reading useAgent.ts",
+               "Thinking") says the agent is still at it. -->
           <TurnStatusLine
-            v-if="block.state === 'running' && quiet"
+            v-if="planOf(block).status"
             :key="`${block.id}:status`"
             :block="block"
             :now="now"
           />
 
-          <!-- RUNNING — the live read: settled batches inline, in arrival order,
-               plus the one live tail orb below. Steps and text interleave exactly
-               as they land so tools-after-text read correctly while the turn is
-               in flight. -->
-          <template v-else-if="block.state === 'running'">
-            <template
-              v-for="grp in viewOf(block).groups"
-              :key="grp.kind === 'text' ? grp.seg.key : grp.key"
-            >
-              <AgentActivity
-                v-if="grp.kind === 'steps'"
-                :segments="grp.segments"
-                :running="true"
-                :is-tail="false"
-                :historical="block.historical"
-              />
-              <div
-                v-else-if="grp.kind === 'text'"
-                class="answer-wrap"
-                :data-markdown-source="segText(grp.seg)"
-              >
-                <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
-              </div>
-            </template>
-
-            <!-- Live activity — one orb for the whole run: from send through every
-                 thinking step and tool call until text takes over. -->
-            <AgentActivity
-              v-if="viewOf(block).live"
-              :key="`${block.id}:live-activity`"
-              :segments="viewOf(block).live!.segments"
-              :running="true"
-              :is-tail="true"
-              :historical="block.historical"
-            />
-          </template>
-
-          <!-- SETTLED — the calm read: everything the agent did and said on the
-               way to its answer (tool calls, thinking, and the narration between
-               them) collapses behind the agent-name toggler, and only the final
-               reply stays open. A turn that ended on a tool call has no trailing
-               reply, so the fold opens by default rather than collapsing to nothing. -->
-          <template v-else>
-            <TurnWorkFold
-              v-if="viewOf(block).foldedGroups.length"
-              :groups="viewOf(block).foldedGroups"
-              :open="isFoldOpen(block.id, viewOf(block).replyGroups.length === 0)"
-              :historical="block.historical"
-            />
-            <div
-              v-for="grp in viewOf(block).replyGroups"
-              :key="grp.seg.key"
-              class="answer-wrap"
-              :data-markdown-source="segText(grp.seg)"
-            >
-              <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
-            </div>
-            <!-- An appearance change the turn made is still in force whether or
-                 not its work is folded away, and the control that takes it back
-                 belongs with the reply that announced it — so it stands here in
-                 either state. The step row inside the fold reads the same change
-                 the other way, against the call that made it. -->
-            <TurnThemeReceipts
-              class="turn-themes"
-              :items="block.items"
-            />
-          </template>
+          <!-- An appearance change the turn made is still in force whether or
+               not its work is folded away, and the control that takes it back
+               belongs with the reply that announced it — so it stands here in
+               any settled read. The step row reads the same change the other
+               way, against the call that made it. -->
+          <TurnThemeReceipts
+            v-if="block.state !== 'running'"
+            class="turn-themes"
+            :items="block.items"
+          />
 
           <!-- Failure note — the error plus Retry (re-sends the request that
                preceded it) and Dismiss (presentational: the block stays failed

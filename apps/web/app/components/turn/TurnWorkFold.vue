@@ -2,7 +2,8 @@
 import { ref, watch } from "vue";
 import AgentActivity from "~/components/agent/AgentActivity.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
-import { segText, type RenderGroup } from "~/utils/conversationSegments";
+import { segText, type WorkGroup } from "~/utils/conversationSegments";
+import type { ActivityFold } from "~/utils/responseDisplay";
 
 // A settled turn's work — every thinking beat, tool call AND the running
 // narration between them — folded behind the agent-name toggler so the transcript
@@ -14,11 +15,14 @@ import { segText, type RenderGroup } from "~/utils/conversationSegments";
 const props = defineProps<{
   /** Everything before the final reply — steps and narration text, in arrival
    *  order. */
-  groups: RenderGroup[];
+  groups: WorkGroup[];
   /** Whether the fold is open. */
   open: boolean;
   /** Loaded from storage — carried through to the batches. */
   historical?: boolean;
+  /** How the batches hold themselves once the fold is open — the reader's
+   *  tool-call choice, carried through. */
+  fold?: ActivityFold;
 }>();
 
 // Mount the body on first open (or immediately for live turns so the initial close
@@ -45,6 +49,7 @@ watch(
               :running="false"
               :is-tail="false"
               :historical="historical"
+              :fold="fold"
             />
             <!-- The agent's between-tool narration — quieter than the reply, so it
                  reads as the story of the work, not the answer. -->

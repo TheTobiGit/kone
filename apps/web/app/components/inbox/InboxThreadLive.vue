@@ -409,12 +409,12 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     >
       <ConversationThread
         :blocks="blocks"
+        surface="inbox"
         :compactions="session?.compactions.value ?? []"
         :checkpoints="session?.checkpoints.value ?? []"
         :now="agent.now.value"
         :thread-id="row.threadId"
         :agent-seed="row.threadId"
-        mode="reply"
         :load-failed="session?.transcriptLoadFailed.value"
         :loading="starting"
         :busy="busy"

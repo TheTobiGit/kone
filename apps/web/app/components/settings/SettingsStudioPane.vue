@@ -31,7 +31,7 @@ import { usePaneWidthPrefs } from "~/composables/usePaneWidthPrefs";
 import type { PaneKind } from "~/types/studio";
 import { LADDER_PX } from "~/utils/stripScroll";
 
-// The Studio pane — what the studio hands the next thing you open, in two
+// The Workspace pane — what the studio hands the next thing you open, in two
 // groups: what the *composer* starts a chat with (which model answers, how much
 // it may do without asking), and how wide each kind of *pane* opens.
 //
@@ -40,6 +40,9 @@ import { LADDER_PX } from "~/utils/stripScroll";
 // (utils/modelPicker) and the rungs useStudio hands a pane it's about to mint.
 // Anything that already carries its own choice keeps it; these seed the ones
 // that don't.
+//
+// How an agent's turns *read* is not a default but a taste, so it lives on its
+// own page — SettingsConversationPane.
 
 defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
@@ -236,9 +239,9 @@ async function chooseCleanup(id: string) {
 <template>
   <SettingsPageShell
     :open="open"
-    breadcrumb="Ecosystem / Studio"
+    breadcrumb="Ecosystem / Workspace"
     :breadcrumb-icon="ListViewIcon"
-    label="Studio defaults"
+    label="Workspace defaults"
     @back="$emit('back')"
   >
     <!-- Each setting is one line: its name on the left, what it's set to on the

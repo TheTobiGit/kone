@@ -7,9 +7,16 @@ import type {
   RuntimeItem,
   RuntimeItemKind,
   RuntimeSessionState,
+  SpawnedThread,
+  SpawnedThreadStatus,
   SubagentRunSnapshot,
   TokenUsage,
 } from "~/types/desktop";
+import {
+  formatSpawnBatchRecord,
+  formatSpawnRecord,
+  type SpawnRecord,
+} from "@kone/protocol/spawn-record";
 import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
 import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "./agentTypes";
 import { titleFromPrompt, uid } from "./agentPrefetch";
@@ -205,6 +212,127 @@ export function createMockTurnRunner(deps: {
       item.status = "failed";
       item.detail = error;
       emit(item, "item.completed");
+    };
+
+    // A worker spawn — `kone_spawn_worker` settling with the record the gateway
+    // writes, then the child's own lifecycle arriving as the parent's session
+    // would see it. The reply's spawn line reads the record; its status reads
+    // the child. Returns the child's settle, so the script can land it before
+    // the turn ends (stopMock clears every pending timer at the settle).
+    type DemoSpawn = {
+      title: string;
+      why: string;
+      model: string;
+      /** The preset the worker is cut from — a `kone_spawn_worker_preset` call. */
+      preset?: string;
+      /** The teammate the work is delegated to — a `kone_delegate_to_teammate`
+       *  call. Not on any real roster, so the line draws it by name. */
+      agent?: string;
+    };
+    type DemoChild = { finish: (summary: string) => void };
+    const NO_CHILD: DemoChild = { finish: () => {} };
+
+    // One child opening: its record, and its lifecycle on the parent's dock.
+    const openChild = (opts: DemoSpawn): { record: SpawnRecord; child: DemoChild } => {
+      const childId = uid();
+      const parentThreadId = threadId.value;
+      const createdAt = Date.now();
+      const child = (status: SpawnedThreadStatus, extra: Partial<SpawnedThread> = {}): SpawnedThread => ({
+        threadId: childId,
+        parentThreadId,
+        title: opts.title,
+        provider: "claudeAgent",
+        model: opts.model,
+        status,
+        terminal: status === "completed",
+        createdAt,
+        updatedAt: Date.now(),
+        ...extra,
+      });
+      reduce({ ...base(), threadId: childId, type: "thread.spawned", spawned: child("starting") });
+      void wait(1400).then(() => {
+        if (cancelled) return;
+        reduce({ ...base(), threadId: childId, type: "thread.spawn-updated", spawned: child("working") });
+      });
+      const record: SpawnRecord = {
+        threadId: childId,
+        title: opts.title,
+        provider: "claudeAgent",
+        model: opts.model,
+        why: opts.why,
+        summary: opts.agent
+          ? `Delegated "${opts.title}" to ${opts.agent} as ${childId}.`
+          : `Spawned "${opts.title}"${opts.preset ? ` from preset ${opts.preset}` : ""} as ${childId}.`,
+      };
+      if (opts.preset) record.preset = opts.preset;
+      if (opts.agent) {
+        record.agent = opts.agent;
+        record.agentId = `demo-${opts.agent.toLowerCase()}`;
+      }
+      return {
+        record,
+        child: {
+          finish: (summary) => {
+            if (cancelled) return;
+            reduce({
+              ...base(),
+              threadId: childId,
+              type: "thread.spawn-updated",
+              spawned: child("completed", { summary, elapsedMs: Date.now() - createdAt }),
+            });
+          },
+        },
+      };
+    };
+
+    // A spawn call — worker, preset or delegation by what it names — settling
+    // with the record the gateway writes. The reply's spawn line reads the
+    // record; the dock reads the child. Returns the child's settle, so the
+    // script can land it before the turn ends (stopMock clears every pending
+    // timer at the settle).
+    const spawnWorker = async (opts: DemoSpawn & { ms?: number }): Promise<DemoChild> => {
+      const item: RuntimeItem = {
+        itemId: uid(),
+        kind: "tool_call",
+        status: "in-progress",
+        name: opts.agent
+          ? "kone_delegate_to_teammate"
+          : opts.preset
+            ? "kone_spawn_worker_preset"
+            : "kone_spawn_worker",
+        text: opts.title,
+      };
+      emit(item, "item.started");
+      await wait(opts.ms ?? 700);
+      if (cancelled) return NO_CHILD;
+      const { record, child } = openChild(opts);
+      item.status = "completed";
+      item.detail = formatSpawnRecord(record);
+      emit(item, "item.completed");
+      return child;
+    };
+
+    // A `kone_spawn_batch` call: every item opens at once, and the reply says
+    // each one on its own line.
+    const spawnBatch = async (items: DemoSpawn[], ms = 900): Promise<DemoChild[]> => {
+      const item: RuntimeItem = {
+        itemId: uid(),
+        kind: "tool_call",
+        status: "in-progress",
+        name: "kone_spawn_batch",
+        text: `${items.length} threads`,
+      };
+      emit(item, "item.started");
+      await wait(ms);
+      if (cancelled) return [];
+      const opened = items.map(openChild);
+      item.status = "completed";
+      item.detail = formatSpawnBatchRecord({
+        spawns: opened.map((o) => o.record),
+        summary: `Spawned ${opened.length} threads.`,
+      });
+      emit(item, "item.completed");
+      return opened.map((o) => o.child);
     };
 
     // A thinking segment with no surfaced text — the "model didn't share its
@@ -463,6 +591,24 @@ export function createMockTurnRunner(deps: {
         "Here's the shape of it: the composer emits a turn, and `useAgent` folds the provider's event stream into this timeline in arrival order.",
       );
       if (cancelled) return;
+      // The demo hands a slice of the work to a worker mid-reply — the spawn
+      // line lands between this narration and the next, where it was said.
+      let demoWorker: DemoChild | null = null;
+      let demoReviewer: DemoChild | null = null;
+      let demoBatch: DemoChild[] = [];
+      if (opts.demo) {
+        demoWorker = await spawnWorker({
+          title: "Audit the thread's render tests",
+          why: "the suite is slow and I can keep working on the renderer meanwhile",
+          model: "claude-haiku-4-5",
+        });
+        if (cancelled) return;
+        await stream(
+          "assistant_text",
+          "While that runs, I'll make the render change myself.",
+        );
+        if (cancelled) return;
+      }
       if (opts.demo) {
         await stream(
           "reasoning_text",
@@ -557,6 +703,33 @@ export function createMockTurnRunner(deps: {
           760,
         );
         if (cancelled) return;
+        // A specialist from a preset — the reply names the preset, so it reads
+        // apart from the worker briefed from scratch above.
+        await stream("assistant_text", "The lint failure is mine to fix, but the diff deserves a second pair of eyes.");
+        if (cancelled) return;
+        demoReviewer = await spawnWorker({
+          title: "Review the word-keyed render diff",
+          why: "a fresh read catches what I've stopped seeing",
+          model: "claude-sonnet-5",
+          preset: "Reviewer",
+        });
+        if (cancelled) return;
+        // A batch — two pieces at once, one to a fresh worker and one handed to
+        // a teammate whose layer it is. Each lands as its own line.
+        demoBatch = await spawnBatch([
+          {
+            title: "Benchmark the streaming renderer",
+            why: "the numbers take a while to settle",
+            model: "claude-haiku-4-5",
+          },
+          {
+            title: "Check the markdown sanitizer against the new keys",
+            why: "the sanitizer is her code",
+            model: "claude-sonnet-5",
+            agent: "Ada",
+          },
+        ]);
+        if (cancelled) return;
         // Several real nested subagents, launched together — the corner
         // Subagents dock fills with concurrent runs (each streaming its own
         // transcript) that settle one by one as the parent waits on the batch.
@@ -648,6 +821,10 @@ export function createMockTurnRunner(deps: {
       // The demo shows the no-content thinking case; a normal thinky turn shows a
       // second thought that DOES carry text.
       if (opts.demo) {
+        demoWorker?.finish("All 14 render tests pass; no ordering regressions found.");
+        demoReviewer?.finish("Diff reads clean; one nit on key stability for repeated words.");
+        demoBatch[0]?.finish("Streaming holds 60fps up to 4k words; no layout thrash.");
+        demoBatch[1]?.finish("Sanitizer passes the keyed spans through untouched.");
         await setPlan(
           demoPlan.map((task) => ({ ...task, status: "completed" as const })),
           360,
