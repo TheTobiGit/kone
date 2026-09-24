@@ -460,10 +460,13 @@ function commitBinary() {
   void upkeep.check({ force: true, checkLatest: providerSettings.updateChecks.value });
 }
 
-function toggleEnabled() {
+async function toggleEnabled() {
   const provider = current.value.provider;
-  providerSettings.setEnabled(provider, !providerSettings.isEnabled(provider));
   cue("toggle");
+  await providerSettings.setEnabled(provider, !providerSettings.isEnabled(provider));
+  // Re-probe so statuses converge now: without this the composer's error strip
+  // lingers on the stale row until the next manual "Check again".
+  void providers.refresh().catch(() => {});
 }
 
 // ── models ────────────────────────────────────────────────────────────────────
