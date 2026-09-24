@@ -120,14 +120,20 @@ const ACTIONS: ShortcutAction[] = [
     default: "mod+k",
     rebindable: true,
   },
-  {
-    id: "play-demo",
-    label: "Play demo thread",
-    hint: "Run a scripted conversation so the thread UI can be reviewed without a live agent.",
-    group: "Conversation",
-    default: "mod+shift+d",
-    rebindable: true,
-  },
+  // A review tool for the thread UI, so dev builds only: production neither lists
+  // nor matches it, and the mock turn runner it drives isn't shipped there.
+  ...(import.meta.dev
+    ? [
+        {
+          id: "play-demo",
+          label: "Play demo thread",
+          hint: "Run a scripted conversation so the thread UI can be reviewed without a live agent.",
+          group: "Conversation",
+          default: "mod+shift+d",
+          rebindable: true,
+        } satisfies ShortcutAction,
+      ]
+    : []),
   {
     id: "new-thread",
     label: "New thread",

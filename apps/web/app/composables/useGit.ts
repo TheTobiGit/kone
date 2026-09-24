@@ -34,32 +34,13 @@ import type {
   GitStatus,
 } from "~/types/desktop";
 
-import {
-  mockBranches,
-  mockCommitAuthors,
-  mockCommitDetail,
-  mockCommitDiff,
-  mockContent,
-  mockContributors,
-  mockDetect,
-  mockDiff,
-  mockFiles,
-  mockGhContributors,
-  mockGhMe,
-  mockGhRepo,
-  mockGhStatus,
-  mockIdentity,
-  mockLog,
-  mockLogo,
-  mockPrDetail,
-  mockPrDiff,
-  mockPrs,
-  mockReadme,
-  mockRemotes,
-  mockRepoState,
-  mockStashes,
-  mockStatus,
-} from "~/lib/devMocks";
+// The demo world only exists under `nuxt dev`. It is loaded lazily behind
+// `import.meta.dev`, so a production build drops the module rather than
+// shipping it unreached.
+type DevMocks = typeof import("~/lib/devMocks");
+const loadMocks: (() => Promise<DevMocks>) | null = import.meta.dev
+  ? () => import("~/lib/devMocks")
+  : null;
 
 // Reads git state through the Electron bridge. Git inspection lives in the
 // main process (it needs a real filesystem + the `git` binary), so there is no
@@ -76,53 +57,53 @@ export function useGit() {
 
     detect(dir: string): Promise<GitRepo | null> {
       if (git) return git.detect(dir);
-      return withLatency(mockDetect(dir));
+      return fromMocks((m) => m.mockDetect(dir));
     },
     status(dir: string): Promise<GitStatus | null> {
       if (git) return git.status(dir);
-      return withLatency(mockStatus(dir));
+      return fromMocks((m) => m.mockStatus(dir));
     },
     diff(dir: string, path: string, staged: boolean): Promise<GitFileDiff | null> {
       if (git) return git.diff(dir, path, staged);
-      return withLatency(mockDiff(dir, path));
+      return fromMocks((m) => m.mockDiff(dir, path));
     },
     content(dir: string, path: string): Promise<GitFileContent | null> {
       if (git) return git.content(dir, path);
-      return withLatency(mockContent(dir, path));
+      return fromMocks((m) => m.mockContent(dir, path));
     },
     files(dir: string, query?: string): Promise<GitProjectFile[]> {
       if (git) return git.files(dir, query);
-      return withLatency(mockFiles(dir, query)).then((files) => files ?? []);
+      return fromMocks((m) => m.mockFiles(dir, query)).then((files) => files ?? []);
     },
     branches(dir: string): Promise<GitBranch[]> {
       if (git) return git.branches(dir);
       // Browser dev: resolve against the demo-world repos so the switcher is
       // demoable (checkout below stays a no-op — nothing on disk to move).
-      return withLatency(mockBranches(dir)).then((b) => b ?? []);
+      return fromMocks((m) => m.mockBranches(dir)).then((b) => b ?? []);
     },
     log(dir: string, limit?: number, skip?: number): Promise<GitCommit[]> {
       if (git) return git.log(dir, limit, skip);
-      return withLatency(mockLog(dir, limit, skip)).then((c) => c ?? []);
+      return fromMocks((m) => m.mockLog(dir, limit, skip)).then((c) => c ?? []);
     },
     remotes(dir: string): Promise<GitRemote[]> {
       if (git) return git.remotes(dir);
-      return withLatency(mockRemotes(dir)).then((r) => r ?? []);
+      return fromMocks((m) => m.mockRemotes(dir)).then((r) => r ?? []);
     },
     repoState(dir: string): Promise<GitRepoState | null> {
       if (git) return git.repoState(dir);
-      return withLatency(mockRepoState(dir));
+      return fromMocks((m) => m.mockRepoState(dir));
     },
     commitDetail(dir: string, hash: string): Promise<GitCommitDetail | null> {
       if (git) return git.commitDetail(dir, hash);
-      return withLatency(mockCommitDetail(dir, hash));
+      return fromMocks((m) => m.mockCommitDetail(dir, hash));
     },
     commitDiff(dir: string, hash: string, path: string): Promise<GitFileDiff | null> {
       if (git) return git.commitDiff(dir, hash, path);
-      return withLatency(mockCommitDiff(dir, hash, path));
+      return fromMocks((m) => m.mockCommitDiff(dir, hash, path));
     },
     stashes(dir: string): Promise<GitStashEntry[]> {
       if (git) return git.stashes(dir);
-      return withLatency(mockStashes(dir)).then((s) => s ?? []);
+      return fromMocks((m) => m.mockStashes(dir)).then((s) => s ?? []);
     },
     // Worktrees need a real filesystem and a git binary, so browser dev has
     // none to report rather than a demo-world stand-in — a mock worktree would
@@ -253,21 +234,21 @@ export function useGit() {
     // dev resolves against the demo world.
     readme(dir: string): Promise<GitReadme | null> {
       if (git) return git.readme(dir);
-      return withLatency(mockReadme(dir));
+      return fromMocks((m) => m.mockReadme(dir));
     },
     identity(dir: string): Promise<GitIdentity> {
       if (git) return git.identity(dir);
-      return withLatency(mockIdentity(dir)).then(
+      return fromMocks((m) => m.mockIdentity(dir)).then(
         (id) => id ?? { name: null, email: null },
       );
     },
     logo(dir: string): Promise<GitLogo | null> {
       if (git) return git.logo(dir);
-      return withLatency(mockLogo(dir));
+      return fromMocks((m) => m.mockLogo(dir));
     },
     contributors(dir: string): Promise<GitContributors> {
       if (git) return git.contributors(dir);
-      return withLatency(mockContributors(dir)).then(
+      return fromMocks((m) => m.mockContributors(dir)).then(
         (c) => c ?? { source: "git", people: [], total: 0 },
       );
     },
@@ -278,48 +259,52 @@ export function useGit() {
     github: {
       status(): Promise<GitHubStatus> {
         if (git) return git.github.status();
-        return withLatency(mockGhStatus()).then((s) => s ?? mockGhStatus());
+        return fromMocks((m) => m.mockGhStatus()).then(
+          (s) => s ?? { installed: false, authenticated: false, user: null, message: null },
+        );
       },
       repo(dir: string): Promise<GitHubRepoInfo | null> {
         if (git) return git.github.repo(dir);
-        return withLatency(mockGhRepo(dir));
+        return fromMocks((m) => m.mockGhRepo(dir));
       },
       contributors(dir: string): Promise<GitContributors | null> {
         if (git) return git.github.contributors(dir);
-        return withLatency(mockGhContributors(dir));
+        return fromMocks((m) => m.mockGhContributors(dir));
       },
       commitAuthors(dir: string): Promise<GitCommitAuthors | null> {
         if (git) return git.github.commitAuthors(dir);
-        return withLatency(mockCommitAuthors());
+        return fromMocks((m) => m.mockCommitAuthors());
       },
       me(): Promise<GitHubUser | null> {
         if (git) return git.github.me();
-        return withLatency(mockGhMe());
+        return fromMocks((m) => m.mockGhMe());
       },
       prs(
         dir: string,
         opts?: { state?: "open" | "all"; limit?: number },
       ): Promise<GitHubPullRequest[]> {
         if (git) return git.github.prs(dir, opts);
-        return withLatency(mockPrs(dir, opts?.state ?? "open")).then((p) => p ?? []);
+        return fromMocks((m) => m.mockPrs(dir, opts?.state ?? "open")).then((p) => p ?? []);
       },
       prDetail(dir: string, number: number): Promise<GitHubPullRequestDetail | null> {
         if (git) return git.github.prDetail(dir, number);
-        return withLatency(mockPrDetail(number));
+        return fromMocks((m) => m.mockPrDetail(number));
       },
       prDiff(dir: string, number: number): Promise<GitFileDiff[]> {
         if (git) return git.github.prDiff(dir, number);
-        return withLatency(mockPrDiff(number)).then((f) => f ?? []);
+        return fromMocks((m) => m.mockPrDiff(number)).then((f) => f ?? []);
       },
       createPr(dir: string, opts: GitHubPrCreateOptions): Promise<GitHubPrCreateResult> {
         if (git) return git.github.createPr(dir, opts);
         // The dev world mints the next number so the composer's success line reads
         // like the real thing.
-        const next = (mockPrs(dir, "all")[0]?.number ?? 0) + 1;
-        return withLatency({
-          number: next,
-          url: `https://github.com/kone-dev/kone/pull/${next}`,
-        }).then((r) => r!);
+        return fromMocks((m) => {
+          const next = (m.mockPrs(dir, "all")[0]?.number ?? 0) + 1;
+          return { number: next, url: `https://github.com/kone-dev/kone/pull/${next}` };
+        }).then((r) => {
+          if (!r) throw new Error("Creating a pull request needs the desktop app.");
+          return r;
+        });
       },
       checkoutPr(dir: string, number: number): Promise<void> {
         return git ? git.github.checkoutPr(dir, number) : beat();
@@ -337,6 +322,13 @@ export function useGit() {
  *  caller's in-flight state gets at least one frame on screen. */
 function beat(): Promise<void> {
   return withLatency(true).then(() => undefined);
+}
+
+/** Browser dev's answer for a read: the demo world's value after a git-like
+ *  moment. Null in a production build, where the bridge answers instead. */
+function fromMocks<T>(read: (m: DevMocks) => T | null): Promise<T | null> {
+  if (!loadMocks) return Promise.resolve(null);
+  return loadMocks().then((m) => withLatency(read(m)));
 }
 
 // A short, slightly-staggered delay stands in for real git latency, so the dev

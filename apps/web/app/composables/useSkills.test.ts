@@ -200,7 +200,6 @@ describe("useSkills CLI state management", () => {
     expect(res.ok).toBe(true);
     expect(order).toEqual(["cli:enabled", "internal:true"]);
     expect(skill.internalEnabled).toBe(true);
-    expect(skills.internalSettings.value).toEqual({ disabled: [], disabledPlugins: [] });
   });
 
   it("disabling writes only the kone gate and leaves CLI config alone", async () => {
@@ -225,7 +224,6 @@ describe("useSkills CLI state management", () => {
     expect(res.ok).toBe(true);
     expect(cliWrites).toBe(0);
     expect(skill.internalEnabled).toBe(false);
-    expect(skills.internalSettings.value.disabled).toContain(skill.path);
   });
 
   it("a failed CLI restore aborts the kone write and refreshes the CLI read", async () => {
@@ -363,7 +361,6 @@ describe("useSkills CLI state management", () => {
     expect(res.ok).toBe(true);
     expect<{ id: string; on: boolean } | null>(written).toEqual({ id: plugin.name, on: false });
     expect(plugin.internalEnabled).toBe(false);
-    expect(skills.internalSettings.value.disabledPlugins).toContain(plugin.name);
   });
 
   it("without a bridge loadStates stays inert and setState reports the absence", async () => {

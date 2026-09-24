@@ -149,16 +149,6 @@ export function useProjectGit(project: Ref<Project>) {
   function unstageAll() {
     unstagePaths(changes.value.filter((c) => c.staged).map((c) => c.path));
   }
-  // Commit stays optimistic for now — it's the one action not wired to real git
-  // (that needs a message flow). The staged files leave the view and the branch
-  // moves one ahead; a real disk change would re-surface them until it's wired.
-  function commit() {
-    if (stagedCount.value === 0) return;
-    changes.value = changes.value.filter((c) => !c.staged);
-    ahead.value += 1;
-    hasCommits.value = true;
-  }
-
   onMounted(() => {
     void refresh();
     void readOrigin();
@@ -197,6 +187,5 @@ export function useProjectGit(project: Ref<Project>) {
     discardPaths,
     stageAll,
     unstageAll,
-    commit,
   };
 }

@@ -1,0 +1,4 @@
+# `bun test` runs the app code outside Nuxt, where `import.meta.dev` is never
+# defined. Tests exercise the dev-only paths (the mock turn runner), so define it.
+[define]
+"import.meta.dev" = "true"

@@ -68,6 +68,18 @@ import { useSessionTranscript, PAGE_LIMIT } from "./session/sessionTranscript";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
+/** The mock runner a production build gets: there is always a bridge, so no
+ *  mock turn ever starts and each call is a no-op. */
+const INERT_MOCK_RUNNER: ReturnType<typeof createMockTurnRunner> = {
+  stopMock: () => {},
+  mockQueueFollowUp: () => {},
+  mockTurn: () => {},
+  demo: () => {},
+  getMockTurnId: () => null,
+  hasPendingApproval: () => false,
+  respondApproval: () => false,
+};
+
 // ── one thread ────────────────────────────────────────────────────────────────
 
 /** One conversation thread: its own timeline, provider session, model/config,
@@ -993,6 +1005,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   }
 
   // ── browser dev mock ────────────────────────────────────────────────────────
+  // Scripted turns for `nuxt dev` (no bridge) and the play-demo shortcut. Built
+  // only under `import.meta.dev`, so a production build tree-shakes agentMock
+  // away and gets the inert runner instead.
   const {
     stopMock,
     mockQueueFollowUp,
@@ -1001,18 +1016,20 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     getMockTurnId,
     hasPendingApproval: mockHasPendingApproval,
     respondApproval: mockRespondApproval,
-  } = createMockTurnRunner({
-    threadId,
-    provider,
-    sessionState,
-    reasoning,
-    blocks,
-    title,
-    tokenUsage,
-    queuedTurnsRaw,
-    reduce,
-    busy,
-  });
+  } = import.meta.dev
+    ? createMockTurnRunner({
+        threadId,
+        provider,
+        sessionState,
+        reasoning,
+        blocks,
+        title,
+        tokenUsage,
+        queuedTurnsRaw,
+        reduce,
+        busy,
+      })
+    : INERT_MOCK_RUNNER;
 
   /** Interrupt the running turn. */
   async function interrupt(): Promise<void> {

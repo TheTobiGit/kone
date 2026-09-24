@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef } from "vue";
+import { ref, shallowRef } from "vue";
 import type {
   InternalSkillsSettings,
   KoneAgentInventoryApi,
@@ -7,7 +7,6 @@ import type {
   SkillDetail,
   SkillEntry,
   SkillMutateResult,
-  SkillRootTarget,
   SkillState,
   SkillStateResult,
   StateWriteResult,
@@ -118,12 +117,6 @@ export function useSkills(
   const states = shallowRef<Map<string, SkillStateResult>>(new Map(stateCache));
   const reading = ref(false);
 
-  // Last settings object the backend returned from a write, adopted verbatim —
-  // the backend owns the disabled-list matching, so kone never reconstructs
-  // the list locally. Reads come from the inventory scan's per-entry
-  // `internalEnabled` annotation (see isKoneEnabled), not from here.
-  const internalSettings = ref<InternalSkillsSettings>({ disabled: [], disabledPlugins: [] });
-
   // One in-flight toggle per skill/plugin, keyed so two rows never serialize
   // behind each other. A Set (not a single string) is what lets parallel
   // toggles proceed independently.
@@ -161,7 +154,6 @@ export function useSkills(
         { path: skill.path, name: skill.name },
         enabled,
       );
-      if (updated) internalSettings.value = updated;
       return updated ?? null;
     } catch {
       return null;
@@ -176,7 +168,6 @@ export function useSkills(
     if (!api?.setPluginInternalState) return null;
     try {
       const updated = await api.setPluginInternalState(plugin.name || plugin.path, enabled);
-      if (updated) internalSettings.value = updated;
       return updated ?? null;
     } catch {
       return null;
@@ -361,10 +352,6 @@ export function useSkills(
   // Detail pane — table + file content
   const detail = ref<SkillDetail | null>(null);
   const detailLoading = ref(false);
-  // kept for compat with old detail view imports
-  const findings = ref<any[]>([]);
-  const signals = ref<any>(null);
-  const blockingFindings = computed<any[]>(() => []);
 
   async function openSkill(skill: SkillEntry): Promise<void> {
     const api = bridge()?.inventory;
@@ -380,22 +367,7 @@ export function useSkills(
     }
   }
 
-  // ── adding and removing ────────────────────────────────────────────────────
-  // Where a skill can go is a separate question from what is installed: a
-  // machine with no skills at all still has a folder per CLI, and that is
-  // exactly the machine most in need of somewhere to put the first one.
-
-  const roots = ref<SkillRootTarget[]>([]);
-
-  async function loadRoots(): Promise<void> {
-    const api = bridge()?.skills;
-    if (!api?.roots) return;
-    try {
-      roots.value = await api.roots(projectPath());
-    } catch {
-      roots.value = [];
-    }
-  }
+  // ── removing ────────────────────────────────────────────────────────────────
 
   /** Every mutation answers the same way: the backend's own finished sentence,
    *  said back to the user unchanged. Composing wording here would mean guessing
@@ -409,30 +381,6 @@ export function useSkills(
     };
   }
 
-  async function scaffold(
-    root: string,
-    name: string,
-    description: string,
-  ): Promise<SkillMutateResult> {
-    const api = bridge()?.skills;
-    if (!api?.scaffold) return failed("scaffold", null);
-    try {
-      return await api.scaffold(root, name, description);
-    } catch (error) {
-      return failed("scaffold", error);
-    }
-  }
-
-  async function installFromGit(url: string, destRoot: string): Promise<SkillMutateResult> {
-    const api = bridge()?.skills;
-    if (!api?.installFromGit) return failed("install", null);
-    try {
-      return await api.installFromGit(url, destRoot);
-    } catch (error) {
-      return failed("install", error);
-    }
-  }
-
   async function remove(skillDir: string): Promise<SkillMutateResult> {
     const api = bridge()?.skills;
     if (!api?.remove) return failed("remove", null);
@@ -444,10 +392,6 @@ export function useSkills(
   }
 
   return {
-    roots,
-    loadRoots,
-    scaffold,
-    installFromGit,
     remove,
     states,
     reading,
@@ -455,13 +399,8 @@ export function useSkills(
     loadStates,
     setState,
     detail,
-    findings,
-    blockingFindings,
-    signals,
     detailLoading,
     openSkill,
-    internalSettings,
-    busyKeys,
     isSkillBusy,
     isPluginBusy,
     isEffectiveEnabled,
