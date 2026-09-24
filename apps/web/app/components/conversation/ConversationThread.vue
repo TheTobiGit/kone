@@ -38,6 +38,7 @@ import { collapseHandInMarks, deriveHandInMarks, handInHasLanded } from "~/utils
 import TurnSettingMark from "~/components/conversation/TurnSettingMark.vue";
 import HandoffMark from "~/components/conversation/HandoffMark.vue";
 import JevMark from "~/components/conversation/JevMark.vue";
+import AgentConnectedMark from "~/components/conversation/AgentConnectedMark.vue";
 import { jevRouteFor } from "~/utils/jevRoutes";
 import { useHandoffMarks } from "~/composables/useHandoffMarks";
 import { groupMarks } from "~/utils/handoffMarkers";
@@ -795,6 +796,16 @@ function handInEffortFor(key: string): { from: EffortTier; to: EffortTier } | un
  */
 const jevMark = computed(() => (props.hasOlder ? null : jevRouteFor(props.threadId) ?? null));
 
+/**
+ * The agent to announce as connected at the head of the thread — once there is
+ * one to name. kone's own conversations have no agent to connect, a routed
+ * thread already names its agent in Jev's mark, and like that mark it waits
+ * until the head of the conversation is actually on screen.
+ */
+const connectedSeed = computed(() =>
+  props.house || props.hasOlder || jevMark.value ? null : props.agentSeed ?? null,
+);
+
 /** Show a centered date divider on the first visible exchange, and whenever
  *  consecutive exchanges cross midnight into a new calendar day. */
 function shouldShowDayDivider(index: number): boolean {
@@ -1142,6 +1153,13 @@ watch(
       <!-- Jev's routing decision, under the day divider at the head of the
            conversation — the thread-level receipt for who staffed it. -->
       <JevMark v-if="index === 0 && jevMark" :route="jevMark" />
+      <!-- Otherwise the agent that picked the thread up, announced once. -->
+      <AgentConnectedMark
+        v-else-if="index === 0 && connectedSeed"
+        :key="`connected-${connectedSeed}`"
+        :seed="connectedSeed"
+        :animate="!ex.blocks[0]?.historical"
+      />
 
       <!-- Centered compaction markers settled since the previous exchange -->
       <CompactionMarker
@@ -1685,10 +1703,13 @@ watch(
   /* How much of the band a mark leaves below itself, so it stays clear of the
      footer a hovered turn reveals. */
   --turn-mark-clearance: 10px;
+  /* The column's vertical rhythm: the space between exchanges, and between
+     the marks at the head of a conversation and the first request. */
+  --thread-gap: 24px;
 
   display: flex;
   flex-direction: column;
-  gap: 34px;
+  gap: var(--thread-gap);
   width: 100%;
   max-width: 720px;
   /* ── Flex containment, declared here for the whole column ─────────────────
@@ -1707,7 +1728,7 @@ watch(
   margin: 0 auto;
 }
 
-/* No padding of its own: the column's 34px gap is the single authority on
+/* No padding of its own: the column's --thread-gap is the single authority on
    vertical rhythm, and a divider that padded itself would space unevenly
    against the marks it stacks with at the head of a conversation. */
 .thread-date {
@@ -1845,13 +1866,20 @@ watch(
   margin-top: calc(var(--turn-foot-lift) - var(--turn-foot) - var(--turn-mark-clearance));
 }
 
+/* Marks stacked at the head of a conversation — the day, then who picked the
+   thread up — read as one caption, so they sit closer to each other than the
+   column's rhythm spaces the rows around them. */
+.thread-mark + .thread-mark {
+  margin-top: calc(10px - var(--thread-gap));
+}
+
 /* An exchange = one request + its response, stacked with breathing room. */
 .exchange {
   position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 34px;
+  gap: 20px;
   transition:
     opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
     filter 0.45s cubic-bezier(0.22, 1, 0.36, 1);
