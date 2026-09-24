@@ -327,16 +327,7 @@ const cardSpring = {
     <div v-if="open" class="pointer-events-none fixed inset-0 z-50" :style="hostStyle">
       <!-- Scrim: dim + blur ramp together on one tween, matching the pickers —
            but only over the sidebar. -->
-      <motion.div
-        class="modal-scrim pointer-events-auto absolute inset-0"
-        :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-        :animate="{
-          opacity: shown ? 1 : 0,
-          backdropFilter: shown ? 'blur(4px)' : 'blur(0px)',
-        }"
-        :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-        @click="cancel"
-      />
+      <UiModalScrim :shown="shown" class="modal-scrim pointer-events-auto absolute inset-0" @click="cancel" />
 
       <div class="pointer-events-none absolute inset-0 flex items-end justify-end p-6">
         <motion.div

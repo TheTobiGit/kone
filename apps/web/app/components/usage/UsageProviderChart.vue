@@ -480,8 +480,7 @@ const hoverRows = computed(() => {
   min-width: 11rem;
   padding: 11px 13px;
   border-radius: 13px;
-  background-color: color-mix(in srgb, var(--ground) 90%, transparent);
-  backdrop-filter: blur(12px) saturate(1.3);
+  background-color: color-mix(in srgb, var(--ground) 97%, transparent);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent),
     0 10px 28px -10px color-mix(in srgb, var(--ink) 24%, transparent);

@@ -235,13 +235,7 @@ onBeforeUnmount(() => {
       class="pointer-events-none fixed inset-0 z-50"
       :style="hostStyle"
     >
-    <motion.div
-      class="dm-scrim pointer-events-auto absolute inset-0"
-      :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-      :animate="{ opacity: shown ? 1 : 0, backdropFilter: shown ? 'blur(4px)' : 'blur(0px)' }"
-      :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-      @click="close"
-    />
+    <UiModalScrim :shown="shown" class="dm-scrim pointer-events-auto absolute inset-0" @click="close" />
 
     <div class="pointer-events-none absolute inset-0 flex items-end justify-end p-6">
     <motion.div

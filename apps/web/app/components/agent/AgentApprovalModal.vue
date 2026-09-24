@@ -154,15 +154,7 @@ const cardSpring = {
   >
     <!-- Scrim: a soft dim + blur, matching the pickers. The turn is parked on
          this decision, so the scrim is inert — the only way forward is to pick. -->
-    <motion.div
-      class="modal-scrim absolute inset-0"
-      :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        backdropFilter: shown ? 'blur(4px)' : 'blur(0px)',
-      }"
-      :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-    />
+    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" />
 
     <motion.div
       class="modal-card relative z-20 w-full max-w-lg overflow-hidden"

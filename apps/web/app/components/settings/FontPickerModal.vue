@@ -181,13 +181,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
     :style="hostStyle"
     @keydown.esc.stop.prevent="onEsc"
   >
-    <motion.div
-      class="fp-scrim pointer-events-auto absolute inset-0"
-      :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-      :animate="{ opacity: shown ? 1 : 0, backdropFilter: shown ? 'blur(4px)' : 'blur(0px)' }"
-      :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-      @click="cancel"
-    />
+    <UiModalScrim :shown="shown" class="fp-scrim pointer-events-auto absolute inset-0" @click="cancel" />
 
     <div class="pointer-events-none absolute inset-0 flex items-end justify-end overflow-hidden p-6">
       <motion.div

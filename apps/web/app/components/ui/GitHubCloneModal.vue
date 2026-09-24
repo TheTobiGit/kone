@@ -224,16 +224,7 @@ const viewMorph = {
     <!-- Scrim: dim + blur ramp together on one tween. It stays put across the
          form ↔ destination-browser morph — the card's content changes, the
          background never does. -->
-    <motion.div
-      class="modal-scrim absolute inset-0"
-      :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        backdropFilter: shown ? 'blur(4px)' : 'blur(0px)',
-      }"
-      :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-      @click="cancel"
-    />
+    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="cancel" />
 
     <motion.div
       class="modal-card relative z-20 w-full max-w-md overflow-hidden"
