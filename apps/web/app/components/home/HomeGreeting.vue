@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 
@@ -187,6 +187,59 @@ const body = computed<Seg[]>(() => {
   const { headline, subline } = lines.value;
   return subline.length ? [...headline, mut(". "), ...subline] : headline;
 });
+
+// Per-word reveal: each segment splits into words and the whitespace between
+// them. Words carry a stagger rank in reading order; whitespace stays plain
+// text so the prose
+// still wraps at word boundaries. The switcher trigger animates as one unit
+// (the name + its chevron).
+interface Part {
+  t: string;
+  /** Stagger position, or null for whitespace (not animated). */
+  rank: number | null;
+}
+const WORD_SPLIT = /(\S+|\s+)/g;
+
+// Segments are keyed by content plus which occurrence of that content they
+// are — not by position — so a segment that survives an update keeps its
+// element (and stays still) even when an earlier part of the sentence changes
+// length. Only segments that are genuinely new mount, and so only they animate.
+const keys = computed(() => {
+  const seen = new Map<string, number>();
+  return body.value.map((seg) => {
+    const base = `${seg.tone}:${seg.t}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return `${base}#${n}`;
+  });
+});
+
+// Keys already on screen before the latest update. Empty on first render, so
+// the whole sentence reveals then.
+const shown = ref(new Set<string>());
+// Page-entrance delay applies to the first reveal only, not to later updates.
+const settled = ref(false);
+watch(keys, (_next, prev) => {
+  settled.value = true;
+  shown.value = new Set(prev);
+});
+
+// Stagger ranks count only the words that are new in this render, so the
+// first changed word goes immediately and the rest follow it in reading order.
+// Words in unchanged segments aren't remounted, so their rank never plays.
+const parts = computed<Part[][]>(() => {
+  let rank = 0;
+  return body.value.map((seg, i) => {
+    const fresh = !shown.value.has(keys.value[i]!);
+    const next = () => (fresh ? rank++ : 0);
+    return isTrigger(i)
+      ? [{ t: seg.t, rank: next() }]
+      : (seg.t.match(WORD_SPLIT) ?? []).map((t) => ({
+          t,
+          rank: /\S/.test(t) ? next() : null,
+        }));
+  });
+});
 </script>
 
 <template>
@@ -210,19 +263,24 @@ const body = computed<Seg[]>(() => {
       <span v-else class="t-ink">there</span>
     </p>
 
-    <!-- The state message — one continuous, wrapping paragraph. Segments reveal
-         in sequence, each resolving from soft focus, so the sentence assembles
-         itself; the stagger re-fires when the git read swaps loading → loaded.
-         Keyed by content (not index) so unchanged leading segments — the project
-         name — hold still while the tail streams in. -->
-    <TransitionGroup tag="p" name="seg" class="line line--body" appear>
+    <!-- The state message — one continuous, wrapping paragraph. Words rise in
+         one after another (per-word crossfade), so the sentence assembles
+         itself. Keyed by content (see `keys`) so on an update only the
+         segments that changed animate; everything else holds still. -->
+    <TransitionGroup
+      tag="p"
+      name="seg"
+      class="line line--body"
+      :class="{ 'line--settled': settled }"
+      appear
+    >
       <component
         :is="isTrigger(i) ? 'button' : 'span'"
         v-for="(seg, i) in body"
-        :key="`${i}:${seg.tone}:${seg.t}`"
+        :key="keys[i]"
         class="seg"
-        :class="[`t-${seg.tone}`, { proj: isTrigger(i) }]"
-        :style="{ '--i': i }"
+        :class="[`t-${seg.tone}`, { 'proj word': isTrigger(i) }]"
+        :style="isTrigger(i) ? { '--w': parts[i]?.[0]?.rank ?? 0 } : undefined"
         :type="isTrigger(i) ? 'button' : undefined"
         :aria-haspopup="isTrigger(i) ? 'menu' : undefined"
         @click="isTrigger(i) && emit('switch')"
@@ -237,7 +295,12 @@ const body = computed<Seg[]>(() => {
             aria-hidden="true"
           />
         </template>
-        <template v-else>{{ seg.t }}</template>
+        <template v-for="(part, j) in parts[i] ?? []" v-else :key="j">
+          <span v-if="part.rank !== null" class="word" :style="{ '--w': part.rank }">{{
+            part.t
+          }}</span>
+          <template v-else>{{ part.t }}</template>
+        </template>
       </component>
     </TransitionGroup>
   </div>
@@ -249,8 +312,11 @@ const body = computed<Seg[]>(() => {
   flex-direction: column;
   gap: 2px;
   font-family: var(--font-sans);
-  /* The whole greeting settles up into place on mount — one soft, unhurried
-     motion under the per-segment reveal. */
+}
+
+/* The welcome line settles up into place on mount; the state message below
+   brings its own per-word reveal, so it doesn't ride this rise too. */
+.line--hey {
   animation: greet-rise 400ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-greet, 0ms);
 }
@@ -266,27 +332,35 @@ const body = computed<Seg[]>(() => {
   }
 }
 
-/* Per-segment reveal — each word-group fades up out of soft focus, delayed by
-   its position so the sentence writes itself left-to-right. Blur + opacity are
-   inline-safe, so the prose still wraps as one continuous paragraph. */
-.seg {
-  transition:
-    opacity 360ms ease,
-    filter 360ms ease;
-  transition-delay: calc(var(--proj-enter-greet, 0ms) + var(--i, 0) * 22ms);
+/* Per-word crossfade — each word fades up 6px into place, 35ms after the one
+   before it, on a long ease-out so the sentence settles quickly but calmly. Words are
+   inline-block (transforms don't apply to inline boxes); the whitespace between
+   them stays plain text, so the paragraph still wraps as prose. */
+.word {
+  display: inline-block;
+  animation: word-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--proj-enter-greet, 0ms) + var(--w, 0) * 35ms);
 }
-.seg-enter-from {
-  opacity: 0;
-  filter: blur(6px);
+.line--settled .word {
+  animation-delay: calc(var(--w, 0) * 35ms);
 }
-/* A segment that drops out (a state change) leaves without a stagger so the
-   line never holds a stale word next to its replacement. */
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+/* A segment that drops out (a state change) lifts away fast and without a
+   stagger, so the line never holds a stale word over its replacement. */
 .seg-leave-active {
   position: absolute;
-  transition: opacity 160ms ease;
+  transition:
+    opacity 120ms cubic-bezier(0.7, 0, 0.84, 0),
+    transform 120ms cubic-bezier(0.7, 0, 0.84, 0);
 }
 .seg-leave-to {
   opacity: 0;
+  transform: translateY(-6px);
 }
 
 .line {
@@ -349,10 +423,7 @@ const body = computed<Seg[]>(() => {
   letter-spacing: inherit;
   color: var(--ink);
   cursor: pointer;
-  transition:
-    background-color 0.18s ease,
-    opacity 520ms ease,
-    filter 520ms ease;
+  transition: background-color 0.18s ease;
 }
 .seg.proj:hover {
   background-color: color-mix(in srgb, var(--ink) 6%, transparent);
@@ -444,18 +515,14 @@ const body = computed<Seg[]>(() => {
 }
 
 /* Honour a reduced-motion preference: show the greeting settled, no rise, no
-   blur-in, no stagger. */
+   word stagger. */
 @media (prefers-reduced-motion: reduce) {
-  .greet {
+  .line--hey,
+  .word {
     animation: none;
   }
-  .seg {
+  .seg-leave-active {
     transition: none;
-    transition-delay: 0ms;
-  }
-  .seg-enter-from {
-    opacity: 1;
-    filter: none;
   }
 }
 </style>
