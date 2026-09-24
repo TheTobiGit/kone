@@ -16,7 +16,12 @@
 // under the shell, and ACK-based PTY pause/resume so a slow renderer can't
 // balloon memory.
 
-import { inspectSubprocessActivityAsync, killProcessTree } from "@kone/git-core/processTree.js";
+import {
+  captureProcessChildrenMapAsync,
+  inspectSubprocessActivityInSnapshot,
+  killProcessTree,
+  type ProcessChildrenMap,
+} from "@kone/git-core/processTree.js";
 import { createModeReplayTracker, type ModeReplayTracker } from "./modeReplay.js";
 import { sanitizeTerminalHistoryChunk } from "./sanitize.js";
 import { spawnPty, type PtyProcess } from "./Pty.js";
@@ -53,8 +58,14 @@ const ACK_LOW_WATERMARK = 5_000;
  *  renderer may have detached; each ack resets the countdown. */
 const ACK_FORCE_RESUME_TIMEOUT_MS = 10_000;
 
-/** Poll cadence for subprocess-activity detection under each running shell. */
+/** Poll cadence for subprocess-activity detection. One full-system process
+ *  snapshot per tick serves every running shell — a per-terminal scan
+ *  multiplies `ps` forks by the open terminal count. */
 const SUBPROCESS_POLL_INTERVAL_MS = 1_000;
+/** Ceiling for the poll's exponential backoff after failed snapshots, so a
+ *  broken `ps` (restricted sandbox, missing binary) isn't re-forked every
+ *  second forever. */
+const MAX_SUBPROCESS_POLL_INTERVAL_MS = 60_000;
 
 type TerminalSession = {
   terminalId: string;
@@ -66,6 +77,9 @@ type TerminalSession = {
   cols: number;
   rows: number;
   status: "starting" | "ready" | "exited" | "closed" | "error";
+  /** Set once a close/restart starts tree-killing the PTY; the activity poll
+   *  skips it from then on. */
+  leaving: boolean;
   /** Sanitized scrollback (queries stripped) — the replay half of `history`. */
   history: string;
   /** Tail of a control sequence split across chunks, held between onData
@@ -89,7 +103,6 @@ type TerminalSession = {
   unackedBytes: number;
   paused: boolean;
   ackTimer: ReturnType<typeof setTimeout> | null;
-  pollTimer: ReturnType<typeof setTimeout> | null;
   /** Headless xterm tracking live terminal modes for the replay preamble. */
   modeTracker: ModeReplayTracker;
 };
@@ -97,15 +110,29 @@ type TerminalSession = {
 type TerminalManagerOptions = {
   /** Test seam: how a PTY is spawned. Defaults to the real node-pty path. */
   spawn?: typeof spawnPty;
+  /** Test seam: the full-system process snapshot behind activity polling.
+   *  Defaults to one async `ps` (or PowerShell) scan. */
+  captureProcessTable?: () => Promise<ProcessChildrenMap | null>;
+  /** Test seam: base activity-poll interval. */
+  subprocessPollIntervalMs?: number;
 };
 
 export class TerminalManager {
   private sessions = new Map<string, TerminalSession>();
   private emit: EmitTerminalEvent | null = null;
   private spawn: typeof spawnPty;
+  private captureProcessTable: () => Promise<ProcessChildrenMap | null>;
+  private subprocessPollIntervalMs: number;
+  /** Manager-wide activity poll: one timer and at most one snapshot in flight,
+   *  whatever the terminal count. */
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollInFlight = false;
+  private pollFailures = 0;
 
   constructor(options: TerminalManagerOptions = {}) {
     this.spawn = options.spawn ?? spawnPty;
+    this.captureProcessTable = options.captureProcessTable ?? captureProcessChildrenMapAsync;
+    this.subprocessPollIntervalMs = options.subprocessPollIntervalMs ?? SUBPROCESS_POLL_INTERVAL_MS;
   }
 
   /** Register the single event sink. Called once from the IPC layer. */
@@ -231,40 +258,58 @@ export class TerminalManager {
   }
 
   // ── Subprocess-activity polling ───────────────────────────────────────────
-  private schedulePoll(s: TerminalSession): void {
-    if (s.pollTimer !== null) return;
-    s.pollTimer = setTimeout(() => {
-      s.pollTimer = null;
-      void this.pollSubprocessActivity(s);
-    }, SUBPROCESS_POLL_INTERVAL_MS);
+  /** Arm the shared poll unless it is already armed or running, or no session
+   *  is left to watch. Failed snapshots back off exponentially. */
+  private schedulePoll(): void {
+    if (this.pollTimer !== null || this.pollInFlight) return;
+    if (![...this.sessions.values()].some((s) => s.status === "ready" && !s.leaving)) return;
+    const delay = Math.min(
+      this.subprocessPollIntervalMs * 2 ** this.pollFailures,
+      MAX_SUBPROCESS_POLL_INTERVAL_MS,
+    );
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      void this.pollSubprocessActivity();
+    }, delay);
   }
 
-  private async pollSubprocessActivity(s: TerminalSession): Promise<void> {
-    if (s.status !== "ready") return;
-    const inspection = await inspectSubprocessActivityAsync(s.process.pid);
-    // Only trust an "idle" reading when the process snapshot actually
-    // succeeded; a failed capture means absence is unproven, so keep the last
-    // known state rather than flashing the busy state off.
-    if (!inspection.captureComplete) {
-      this.schedulePoll(s);
-      return;
+  private async pollSubprocessActivity(): Promise<void> {
+    this.pollInFlight = true;
+    let snapshot: ProcessChildrenMap | null = null;
+    try {
+      snapshot = await this.captureProcessTable();
+    } catch {
+      snapshot = null;
+    } finally {
+      this.pollInFlight = false;
     }
-    if (
-      inspection.hasRunningSubprocess !== s.hasRunningSubprocess ||
-      inspection.childCommandLabel !== s.childCommandLabel
-    ) {
-      s.hasRunningSubprocess = inspection.hasRunningSubprocess;
-      s.childCommandLabel = inspection.childCommandLabel;
-      this.fire(
-        this.stamp(s, {
-          terminalId: s.terminalId,
-          type: "activity",
-          hasRunningSubprocess: s.hasRunningSubprocess,
-          childCommandLabel: s.childCommandLabel,
-        }),
-      );
+    this.pollFailures = snapshot === null ? this.pollFailures + 1 : 0;
+    // Sessions are read after the await, so ones closed, exited or restarted
+    // while the scan ran are judged by their current state, not a stale one.
+    for (const s of this.sessions.values()) {
+      if (s.status !== "ready" || s.leaving) continue;
+      const inspection = inspectSubprocessActivityInSnapshot(s.process.pid, snapshot);
+      // Only trust an "idle" reading when the process snapshot actually
+      // succeeded; a failed capture means absence is unproven, so keep the last
+      // known state rather than flashing the busy state off.
+      if (!inspection.captureComplete) continue;
+      if (
+        inspection.hasRunningSubprocess !== s.hasRunningSubprocess ||
+        inspection.childCommandLabel !== s.childCommandLabel
+      ) {
+        s.hasRunningSubprocess = inspection.hasRunningSubprocess;
+        s.childCommandLabel = inspection.childCommandLabel;
+        this.fire(
+          this.stamp(s, {
+            terminalId: s.terminalId,
+            type: "activity",
+            hasRunningSubprocess: s.hasRunningSubprocess,
+            childCommandLabel: s.childCommandLabel,
+          }),
+        );
+      }
     }
-    this.schedulePoll(s);
+    this.schedulePoll();
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -290,7 +335,7 @@ export class TerminalManager {
     const session = await this.spawnSession(input);
     const snap = this.snapshot(session);
     this.fire(this.stamp(session, { terminalId: input.terminalId, type: "started", snapshot: snap }));
-    this.schedulePoll(session);
+    this.schedulePoll();
     return snap;
   }
 
@@ -325,6 +370,7 @@ export class TerminalManager {
       cols,
       rows,
       status: "ready",
+      leaving: false,
       history: "",
       pendingControlSequence: "",
       pendingOutput: [],
@@ -340,7 +386,6 @@ export class TerminalManager {
       unackedBytes: 0,
       paused: false,
       ackTimer: null,
-      pollTimer: null,
       modeTracker: createModeReplayTracker(cols, rows),
     };
     if (input.env) session.env = input.env;
@@ -356,12 +401,9 @@ export class TerminalManager {
     });
     session.detachExit = process.onExit(({ exitCode, signal }) => {
       // Drain buffered output before the exit line so the shell's last bytes
-      // aren't lost behind the batch timer, then stop the activity poll.
+      // aren't lost behind the batch timer. The shared activity poll skips
+      // the session from here on and stops once no session is left running.
       this.flushOutput(session);
-      if (session.pollTimer !== null) {
-        clearTimeout(session.pollTimer);
-        session.pollTimer = null;
-      }
       session.status = "exited";
       session.exitCode = exitCode !== undefined && exitCode !== null && Number.isFinite(exitCode) ? exitCode : null;
       session.exitSignal = signal !== undefined && signal !== null && Number.isFinite(signal) ? signal : null;
@@ -410,10 +452,6 @@ export class TerminalManager {
       clearTimeout(s.ackTimer);
       s.ackTimer = null;
     }
-    if (s.pollTimer !== null) {
-      clearTimeout(s.pollTimer);
-      s.pollTimer = null;
-    }
     s.detachData();
     s.detachExit();
     s.modeTracker.dispose();
@@ -434,7 +472,7 @@ export class TerminalManager {
     this.fire(
       this.stamp(spawn, { terminalId: input.terminalId, type: "restarted", snapshot: snap }),
     );
-    this.schedulePoll(spawn);
+    this.schedulePoll();
     return snap;
   }
 
@@ -450,10 +488,6 @@ export class TerminalManager {
     if (s.ackTimer !== null) {
       clearTimeout(s.ackTimer);
       s.ackTimer = null;
-    }
-    if (s.pollTimer !== null) {
-      clearTimeout(s.pollTimer);
-      s.pollTimer = null;
     }
     // Detach the session's own observers before forcing the PTY to die, so the
     // deliberate kill can't masquerade as a natural shell exit and emit a
@@ -474,6 +508,9 @@ export class TerminalManager {
    *  the tab. The one-shot exit listener disposes itself, so repeated kills can't
    *  leak listeners. */
   private async killSession(s: TerminalSession): Promise<void> {
+    // Stop the shared activity poll scanning for this session through the
+    // kill's grace period — it is going away either way.
+    s.leaving = true;
     if (s.paused) {
       s.paused = false;
       s.process.resume();
@@ -500,6 +537,10 @@ export class TerminalManager {
         this.close({ terminalId: s.terminalId }).catch(() => {}),
       ),
     );
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
   }
 }
 

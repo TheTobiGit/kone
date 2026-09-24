@@ -25,7 +25,9 @@ export {
   resetCloneForTests,
 } from "./clone.js";
 export {
+  captureProcessChildrenMapAsync,
   inspectSubprocessActivityAsync,
+  inspectSubprocessActivityInSnapshot,
   killProcessTree,
 } from "./processTree.js";
 export {
