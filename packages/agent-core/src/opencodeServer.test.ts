@@ -7,6 +7,8 @@ import {
   isRetryableOpenCodeServerFailure,
   OpenCodeServerPool,
   OPENCODE_SERVER_RETRY_DELAYS_MS,
+  parseOpenCodeServerPassword,
+  parseOpenCodeServerUrl,
   type OpenCodeServer,
 } from "./opencodeServer.js";
 
@@ -39,6 +41,25 @@ describe("isRetryableOpenCodeServerFailure", () => {
 describe("OPENCODE_SERVER_RETRY_DELAYS_MS", () => {
   test("is the bounded 500ms/1500ms ladder", () => {
     expect(OPENCODE_SERVER_RETRY_DELAYS_MS).toEqual([500, 1_500]);
+  });
+});
+
+describe("openCode v2 serve output", () => {
+  test("parses both v1 and v2 listening lines", () => {
+    expect(parseOpenCodeServerUrl("opencode server listening on http://127.0.0.1:1234")).toBe(
+      "http://127.0.0.1:1234",
+    );
+    expect(parseOpenCodeServerUrl("server listening on http://127.0.0.1:35221")).toBe(
+      "http://127.0.0.1:35221",
+    );
+    expect(parseOpenCodeServerUrl("server password abc")).toBeUndefined();
+  });
+
+  test("parses the v2 server password", () => {
+    expect(parseOpenCodeServerPassword("server password hLFEhS96sGHe0qJQlMcicPSlP7Hvvfn1egDqfpIYO_o")).toBe(
+      "hLFEhS96sGHe0qJQlMcicPSlP7Hvvfn1egDqfpIYO_o",
+    );
+    expect(parseOpenCodeServerPassword("server listening on http://127.0.0.1:1")).toBeUndefined();
   });
 });
 

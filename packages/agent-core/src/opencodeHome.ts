@@ -7,7 +7,9 @@ export const OPENCODE_BINARY = "opencode";
 export const MINIMUM_OPENCODE_VERSION = "1.14.19";
 
 export function parseOpenCodeVersion(stdout: string): string | undefined {
-  return stdout.match(/\b(\d+\.\d+\.\d+)\b/)?.[1];
+  // v2 prints `opencode v2.0.12` (no word boundary between `v` and the digit,
+  // so `\b` would miss it); v1 prints a bare `1.14.19`. Match digits directly.
+  return stdout.match(/(\d+\.\d+\.\d+)/)?.[1];
 }
 
 export async function buildOpenCodeEnv(): Promise<NodeJS.ProcessEnv> {
@@ -52,4 +54,14 @@ export async function probeOpenCodeVersion(): Promise<{ version?: string; error?
 
 export function isOpenCodeVersionSupported(version: string | undefined): boolean {
   return version !== undefined && compareVersions(version, MINIMUM_OPENCODE_VERSION) >= 0;
+}
+
+/** True for OpenCode v2+ (`2.x.x`). v2 removed `models --verbose`, changed
+ *  `serve` output to `server listening on ...` + `server password ...`, moved
+ *  HTTP routes under `/api/*` with Basic auth, and emits `{id,type,data}`
+ *  SSE events. Callers use this to pick the v1 or v2 code path. */
+export function isOpenCodeV2(version: string | undefined): boolean {
+  if (!version) return false;
+  const major = Number(version.split(".")[0]);
+  return Number.isFinite(major) && major >= 2;
 }
