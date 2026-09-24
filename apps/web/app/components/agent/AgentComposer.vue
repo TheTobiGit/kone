@@ -391,7 +391,8 @@ const catalog = computed<ModelOption[]>(() => props.models ?? []);
 const canSwitchModel = computed(() => props.modelSwitchable !== false);
 const currentFamily = computed(() => familyForId(catalog.value, props.modelId));
 const currentEffort = computed(() => effortForTier(currentFamily.value, props.reasoning));
-const showEffort = computed(() => hasEffortChoice(currentFamily.value));
+// No active provider: no effort choice is offered — there is nothing to run it on.
+const showEffort = computed(() => !noProvider.value && hasEffortChoice(currentFamily.value));
 // Fast mode — a plain on/off toggle for the current family's real "fast"
 // service tier (Codex's `serviceTiers`), when it has one. Most models don't.
 const fastTier = computed(() => currentFamily.value?.fastTier);
@@ -1077,7 +1078,7 @@ defineExpose({ wake, setDraft, focus });
          card. Only rendered while blocked, so an unblocked composer is
          exactly what it was. -->
     <ComposerStatusTray
-      :open="open"
+      :expanded="open"
       :closing="closing"
       :blocked-reason="blockedReason"
       :health-status="healthStatus"

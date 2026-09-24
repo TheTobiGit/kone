@@ -5,7 +5,9 @@ import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import type { ProviderStatus } from "~/types/desktop";
 
 const props = defineProps<{
-  open: boolean;
+  /** Composer open state: the tray is visible whenever blocked, expanded only
+   *  while the composer card is open. */
+  expanded: boolean;
   closing: boolean;
   blockedReason: string | null | undefined;
   healthStatus: ProviderStatus | null | undefined;
@@ -23,14 +25,14 @@ const severe = computed(
   () => !props.healthStatus || props.healthStatus.readiness === "not-installed",
 );
 
-const visible = computed(() => props.open && !!props.blockedReason);
+const visible = computed(() => !!props.blockedReason);
 </script>
 
 <template>
   <div
     v-if="visible"
     class="status-tray"
-    :class="{ 'is-shown': open && !closing, 'is-closing': closing, 'is-severe': severe }"
+    :class="{ 'is-shown': expanded && !closing, 'is-closing': closing, 'is-severe': severe }"
     role="status"
     aria-label="Provider status"
   >
@@ -41,7 +43,7 @@ const visible = computed(() => props.open && !!props.blockedReason);
     <button
       type="button"
       class="status-tray__item status-tray__action"
-      :tabindex="open ? 0 : -1"
+      :tabindex="expanded ? 0 : -1"
       :disabled="healthChecking"
       @click.stop="emit('recheck')"
     >
@@ -56,21 +58,33 @@ const visible = computed(() => props.open && !!props.blockedReason);
 /* The send-block reason, hanging off the top of the composer card. Its own
    slab — sunken ground washed with the tone — so it never re-states the base
    tray rules to zero them out. Severe (no provider, not installed) wears
-   danger; warnings wear warn. */
+   danger; warnings wear warn.
+   Collapsed/expanded/closing mirror the bottom context tray (`.tray`), so the
+   two slabs open on the same beat instead of the top one popping in first. */
 .status-tray {
   --tray-tone: var(--warn);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  gap: 4px;
+  width: calc(100% - 26px);
+  box-sizing: border-box;
+  overflow: hidden;
   border-radius: 18px 18px 0 0;
   background: color-mix(in srgb, var(--tray-tone) 12%, var(--sunken));
-  height: 40px;
-  margin-bottom: -14px;
-  padding-bottom: 0;
+  height: 0;
+  margin-bottom: 0;
+  padding: 0 8px 14px;
+  opacity: 0;
+  transform: none;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
 }
 .status-tray.is-severe {
   --tray-tone: var(--danger);
 }
 .status-tray.is-shown {
+  height: 40px;
+  margin-bottom: -14px;
   opacity: 1;
   transform: none;
   pointer-events: auto;
@@ -80,6 +94,8 @@ const visible = computed(() => props.open && !!props.blockedReason);
     opacity 0.24s ease 0.14s;
 }
 .status-tray.is-closing {
+  height: 40px;
+  margin-bottom: -14px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.18s ease;
@@ -88,20 +104,19 @@ const visible = computed(() => props.open && !!props.blockedReason);
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding-top: 9px;
+  min-width: 0;
+  padding: 3px 6px;
 }
 .status-tray__item:first-child {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-}
-.status-tray__item:last-child {
-  margin-left: auto;
 }
 .status-tray__label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12.5px;
+  line-height: 16px;
 }
 .status-tray__label--strong {
   font-weight: 600;
@@ -111,14 +126,15 @@ const visible = computed(() => props.open && !!props.blockedReason);
   color: var(--tray-tone);
 }
 .status-tray__action {
-  margin-top: 7px;
-  margin-bottom: 2px;
-  padding: 2px 6px;
+  flex: none;
+  margin-left: auto;
+  padding: 3px 6px;
   border: 0;
-  border-radius: 0;
+  border-radius: 7px;
   background: transparent;
   cursor: pointer;
   color: inherit;
+  white-space: nowrap;
 }
 .status-tray__action:hover {
   background: transparent;
