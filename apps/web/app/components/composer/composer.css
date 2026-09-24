@@ -32,6 +32,15 @@
   animation: dock-rise 440ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-composer, 0ms);
 }
+/* An always-open composer arrives with its host rather than rising after it. */
+.dock--still {
+  animation: none;
+}
+/* Its first frame, when it mounts already open: no morph out of the orb. */
+.surface.is-instant,
+.surface.is-instant * {
+  transition: none !important;
+}
 
 /* The picker is anchored to the field rather than the viewport so it follows
    the composer's morph on both the overview and board surfaces. */
