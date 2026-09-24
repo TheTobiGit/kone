@@ -1,12 +1,36 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 // Sandbox copies of the adapter live inside the app tree (not the OS tmpdir)
 // so bare-specifier workspace imports like @kone/protocol resolve via normal
 // node_modules lookup from the copied module's location.
 const SANDBOX_DIR = path.join(import.meta.dir, ".sandbox");
+const SANDBOX_PREFIX = "kone-opencode-adapter-real-";
+const createdSandboxDirs: string[] = [];
+
+// Sweep stale sandbox copies from previous runs (own prefix only —
+// providerDiscovery.test.ts shares .sandbox/). Runs at import so leftovers
+// never accumulate no matter how the run ends.
+try {
+  mkdirSync(SANDBOX_DIR, { recursive: true });
+  for (const entry of readdirSync(SANDBOX_DIR)) {
+    if (entry.startsWith(SANDBOX_PREFIX)) rmSync(path.join(SANDBOX_DIR, entry), { recursive: true, force: true });
+  }
+} catch {
+  /* best effort — the loader below creates what it needs */
+}
+
+afterAll(() => {
+  for (const dir of createdSandboxDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+});
 import { tmpdir } from "node:os";
 
 import { setUserDataDir } from "./userDataDir.js";
@@ -32,11 +56,14 @@ import {
   isOpenCodeNotFound,
   isOpenCodeTurnEnd,
   normalizeOpenCodeTokenUsage,
+  parseOpenCodeModelListApi,
   parseOpenCodeModels,
   permissionRules,
+  permissionRulesV2,
   reconcileOpenCodeText,
   selectOpenCodeTurnId,
   translateOpenCodeEvent,
+  v2PermissionAction,
 } from "./adapters/OpenCodeAdapter.js";
 import type { RecordLike } from "./adapters/OpenCodeAdapter.js";
 import type { RuntimeEvent } from "./types.js";
@@ -69,6 +96,46 @@ describe("OpenCode pure translation helpers", () => {
     expect(parseOpenCodeModels(output)[0]?.contextWindowTokens).toBe(128000);
   });
 
+  test("parses the v2 plain slug list (no JSON blocks)", () => {
+    const output = ["opencode/big-pickle", "opencode/gpt-5-5", ""].join("\n");
+    expect(parseOpenCodeModels(output)).toEqual([
+      { id: "opencode/big-pickle", label: "opencode/big-pickle" },
+      { id: "opencode/gpt-5-5", label: "opencode/gpt-5-5" },
+    ]);
+    // Help/error text carries no slugs and parses to nothing.
+    expect(parseOpenCodeModels("DESCRIPTION\n  List all available models\n")).toEqual([]);
+  });
+
+  test("maps v1 permission keys onto v2 and fails deny closed to ask", () => {
+    const v2 = permissionRulesV2("accept-edits");
+    expect(v2[0]).toEqual({ action: "*", resource: "*", effect: "ask" });
+    expect(v2).toContainEqual({ action: "edit", resource: "*", effect: "allow" });
+    expect(v2.some((r) => r.effect === "deny")).toBe(false);
+  });
+
+  test("maps renamed v1 actions to their v2 names", () => {
+    expect(v2PermissionAction("bash")).toBe("shell");
+    expect(v2PermissionAction("task")).toBe("subagent");
+    expect(v2PermissionAction("write")).toBe("edit");
+    expect(v2PermissionAction("patch")).toBe("edit");
+    expect(v2PermissionAction("edit")).toBe("edit");
+    expect(v2PermissionAction("read")).toBe("read");
+  });
+
+  test("parses `api model.list` JSON with context and variants", () => {
+    const stdout = JSON.stringify({
+      data: [
+        { providerID: "opencode", modelID: "gpt-6-sol", name: "GPT-6 Sol", variants: [{ id: "high" }, { id: "max" }], limit: { context: 1050000 }, enabled: true },
+        { providerID: "opencode", modelID: "off", name: "Off", enabled: false },
+        { providerID: "", modelID: "x", name: "Bad" },
+      ],
+    });
+    expect(parseOpenCodeModelListApi(stdout)).toEqual([
+      { id: "opencode/gpt-6-sol", label: "GPT-6 Sol", contextWindowTokens: 1050000, reasoningEfforts: ["high", "max"], defaultReasoningEffort: "high" },
+    ]);
+    expect(parseOpenCodeModelListApi("not json")).toEqual([]);
+  });
+
   test("reconciles snapshot-then-delta and delta-then-snapshot without duplication", () => {
     const first = reconcileOpenCodeText(undefined, "A B");
     const afterDelta = appendOpenCodeTextDelta(first.text, "Bonus");
@@ -83,6 +150,8 @@ describe("OpenCode pure translation helpers", () => {
     expect(isOpenCodeTurnEnd({ type: "session.idle", properties: { sessionID: "ses_1" } })).toBe(true);
     expect(isOpenCodeTurnEnd({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "idle" } } })).toBe(true);
     expect(isOpenCodeTurnEnd({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "busy" } } })).toBe(false);
+    expect(isOpenCodeTurnEnd({ type: "session.execution.succeeded", properties: { sessionID: "ses_1" } })).toBe(true);
+    expect(isOpenCodeTurnEnd({ type: "session.execution.failed", properties: { sessionID: "ses_1" } })).toBe(true);
   });
 
   test("drops events from another session", () => {
@@ -277,7 +346,8 @@ export class OpenCodeServerPool {
 
 async function loadOpenCodeAdapterWithStubbedServer(): Promise<OpenCodeAdapterModule> {
   mkdirSync(SANDBOX_DIR, { recursive: true });
-  const dir = mkdtempSync(path.join(SANDBOX_DIR, "kone-opencode-adapter-real-"));
+  const dir = mkdtempSync(path.join(SANDBOX_DIR, SANDBOX_PREFIX));
+  createdSandboxDirs.push(dir);
   const stubServerPath = path.join(dir, "opencodeServerStub.ts");
   writeFileSync(stubServerPath, OPENCODE_SERVER_STUB_SOURCE);
   let source = readFileSync(OPENCODE_ADAPTER_SOURCE, "utf8");

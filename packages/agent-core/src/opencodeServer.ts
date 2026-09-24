@@ -8,6 +8,9 @@ import { OPENCODE_BINARY } from "./opencodeHome.js";
 
 export type OpenCodeServer = {
   baseUrl: string;
+  /** v2 `serve` prints `server password ...` and requires Basic auth
+   *  (`opencode:<password>`) on every request. Absent on v1. */
+  password?: string;
   child: ChildProcess;
   dispose: () => Promise<void>;
 };
@@ -36,8 +39,16 @@ export function isRetryableOpenCodeServerFailure(detail: string): boolean {
 }
 
 export function parseOpenCodeServerUrl(line: string): string | undefined {
-  if (!line.startsWith("opencode server listening")) return undefined;
-  return line.match(/on\s+(https?:\/\/[^\s]+)/)?.[1];
+  const trimmed = line.trim();
+  // v1: `opencode server listening on http://...`; v2: `server listening on http://...`.
+  if (!trimmed.startsWith("opencode server listening") && !trimmed.startsWith("server listening")) return undefined;
+  return trimmed.match(/on\s+(https?:\/\/[^\s]+)/)?.[1];
+}
+
+/** v2 prints `server password <token>` after the listening line. */
+export function parseOpenCodeServerPassword(line: string): string | undefined {
+  const match = line.trim().match(/^server password\s+(\S+)/);
+  return match?.[1];
 }
 
 async function startOpenCodeServerOnce(input: {
@@ -45,6 +56,7 @@ async function startOpenCodeServerOnce(input: {
   env: NodeJS.ProcessEnv;
   /** CLI executable to serve from; defaults to `opencode` on PATH. */
   binary?: string;
+  expectPassword?: boolean;
   /** Invoked synchronously with the child right after spawn, so a background
    *  boot can be tracked (and torn down) before it becomes ready. */
   onChild?: (child: ChildProcess) => void;
@@ -76,25 +88,49 @@ async function startOpenCodeServerOnce(input: {
     }
   };
 
-  const url = await new Promise<string>((resolve, reject) => {
+  // Only v2 prints a password line, so only an expected-v2 boot waits for
+  // one; everything else (v1, or a version probe that never answered)
+  // resolves on the listening line with no grace timer.
+  const expectPassword = input.expectPassword === true;
+  const { url, password } = await new Promise<{ url: string; password?: string }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timed out waiting for OpenCode server start after 30000ms.")), 30_000);
-    const settle = (error?: Error, value?: string) => {
+    let seenUrl: string | undefined;
+    let seenPassword: string | undefined;
+    const settle = (error?: Error, value?: { url: string; password?: string }) => {
       clearTimeout(timer);
       if (error) reject(error); else if (value) { ready = true; resolve(value); }
     };
-    const out = createInterface({ input: child.stdout! });
-    out.on("line", (line) => {
-      stdout += `${line}\n`;
-      const parsed = parseOpenCodeServerUrl(line);
-      if (parsed && !ready) settle(undefined, parsed);
-    });
-    createInterface({ input: child.stderr! }).on("line", (line) => { stderr += `${line}\n`; });
+    const maybeResolve = () => {
+      if (!seenUrl || ready) return;
+      if (seenPassword) {
+        settle(undefined, { url: seenUrl, password: seenPassword });
+        return;
+      }
+      if (!expectPassword) settle(undefined, { url: seenUrl });
+    };
+    const onLine = (line: string, to: "stdout" | "stderr") => {
+      if (to === "stdout") stdout += `${line}\n`;
+      else stderr += `${line}\n`;
+      const parsedUrl = parseOpenCodeServerUrl(line);
+      if (parsedUrl && !seenUrl) {
+        seenUrl = parsedUrl;
+        maybeResolve();
+      }
+      const parsedPassword = parseOpenCodeServerPassword(line);
+      if (parsedPassword && !seenPassword) {
+        seenPassword = parsedPassword;
+        maybeResolve();
+      }
+    };
+    createInterface({ input: child.stdout! }).on("line", (line) => onLine(line, "stdout"));
+    // Password/listening lines occasionally land on stderr; probe both.
+    createInterface({ input: child.stderr! }).on("line", (line) => onLine(line, "stderr"));
     child.once("error", (error) => settle(error instanceof Error ? error : new Error(String(error))));
     child.once("exit", (code, signal) => {
       if (!ready) settle(new Error(`OpenCode server exited before readiness (${code ?? signal ?? "unknown"}).\nstdout:\n${stdout}\nstderr:\n${stderr}`));
     });
   }).catch(async (error) => { await disposeUnready(child); throw error; });
-  return { baseUrl: url, child, dispose };
+  return password ? { baseUrl: url, password, child, dispose } : { baseUrl: url, child, dispose };
 }
 
 /** Tear down a server that never became ready. Unlike the graceful dispose
@@ -133,6 +169,11 @@ type LaunchInput = {
   env: NodeJS.ProcessEnv;
   /** CLI executable to serve from; defaults to `opencode` on PATH. */
   binary?: string;
+  /** True when the version probe already identified v2: the boot waits for
+   *  the `server password` line. Anything else resolves on the listening
+   *  line — v1 never prints a password, and an unanswered version probe
+   *  must not slow every v1 start by a grace window. */
+  expectPassword?: boolean;
 };
 
 /** A stable digest of the environment a server was booted with. Hashed rather

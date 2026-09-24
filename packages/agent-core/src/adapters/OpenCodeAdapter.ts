@@ -6,10 +6,15 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "@kone/
 import { probeResult } from "../spawn.js";
 import { versionProbeUsable } from "../providerHealth.js";
 import { probeDetail } from "../providerHealth.js";
-import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
+import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeV2, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
+import {
+  dialectForServer,
+  modelProbesForVersion,
+  type OpenCodeDialect,
+} from "./opencodeDialect.js";
+import { normalizeV2Event } from "./opencodeV2Events.js";
 import { OpenCodeServerPool, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
-import { buildOpenCodeMcpServer } from "../gateway/injection.js";
 import {
   checkCommandSafety,
   describeScreenedCall,
@@ -24,23 +29,19 @@ import { normalizeUserInputQuestions } from "./userInputQuestions.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
-/** One decoded JSON value from opencode's HTTP/SSE surface — message infos,
- *  parts, tool state blobs, event properties. Field-level probes (`stringField`,
- *  `record`, `nonNegativeInteger`, …) narrow it at the read sites. */
-type OpenCodeJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | undefined
-  | RecordLike
-  | OpenCodeJsonValue[];
-
-/** A string-keyed JSON object as opencode returns it, before fields are trusted. */
-export interface RecordLike {
-  [key: string]: OpenCodeJsonValue;
-}
-type OpenCodeEvent = { type: string; properties?: RecordLike };
+export type { OpenCodeJsonValue, RecordLike } from "./opencodeJson.js";
+import {
+  jsonNumber,
+  modelSlug,
+  nonNegativeInteger,
+  record,
+  responseData,
+  stringField,
+  textField,
+  type OpenCodeEvent,
+  type OpenCodeJsonValue,
+  type RecordLike,
+} from "./opencodeJson.js";
 type OpenCodeClient = { request(method: string, route: string, body?: OpenCodeJsonValue, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
 /** One opencode `task` tool call, recognized from its tool part. opencode runs
  *  the child as a *separate session* on the same server, so we also track the
@@ -63,6 +64,7 @@ type OpenCodeSubagentRun = {
 type OpenCodeSession = {
   threadId: string; cwd: string; model?: string; variant?: string; contextWindow?: number; mode: InteractionMode; baseUrl: string;
   client: OpenCodeClient; server: OpenCodeServer; openCodeSessionId: string; activeTurnId?: string;
+  dialect: OpenCodeDialect;
   /** The kone gateway connection minted at startSession — the agent's app tools. */
   gatewayConnection?: GatewayConnection;
   /** The named agent this session works as, when the thread was handed to one —
@@ -80,7 +82,7 @@ type OpenCodeSession = {
   lastEmittedTokenUsageKey?: string;
   pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
   /** Which question-reply route answered last — `/question/{id}/reply`
-   *  (`root`) on current servers, `/api/session/{sid}/question/{id}/reply`
+   *  (`root`) on current servers, `/session/{sid}/question/{id}/reply`
    *  (`sessionScoped`) on older ones. Set only after a successful reply, so a
    *  transient failure re-probes next time instead of pinning the fallback. */
   questionReplyRoute?: "root" | "sessionScoped";
@@ -114,13 +116,6 @@ type PendingApproval = {
   subagentToolUseId?: string;
 };
 
-const SLUG_LINE = /^(\S+\/\S+)\s*$/;
-
-function record(value: OpenCodeJsonValue | null | undefined): RecordLike | undefined {
-  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
-  return value && value instanceof Object && !Array.isArray(value) ? (value as RecordLike) : undefined;
-}
-function responseData(value: any): any { return value?.data ?? value; }
 function errorMessage(cause: unknown): string {
   // Every shape the server sends — a thrown Error, a bare `{ message }`, and
   // the `{ name, data: { message } }` records `session.error` carries — is
@@ -141,40 +136,17 @@ function statusOf(cause: unknown): number | undefined {
   return undefined;
 }
 
-/** Parses OpenCode's pretty-printed, slug-prefixed model inventory. */
-export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
-  const models: ModelDescriptor[] = [];
-  let slug: string | undefined; let json: string[] = [];
-  const flush = () => {
-    if (!slug) return;
-    try {
-       // SAFETY: JSON.parse yields unknown; the field probes below validate before use.
-       const model = JSON.parse(json.join("\n")) as RecordLike;
-       const name = textField(model.name)?.trim() ?? "";
-       if (!name) return;
-       const providerId = textField(model.providerID)?.trim() ?? "";
-       const modelId = textField(model.id)?.trim() ?? "";
-       const id = providerId && modelId ? `${providerId}/${modelId}` : slug;
-       const variants = record(model.variants);
-       const efforts = variants ? Object.keys(variants) : [];
-       const limit = record(model.limit);
-       const contextWindowTokens = jsonNumber(limit?.context) && limit.context > 0 ? limit.context : undefined;
-       const descriptor: ModelDescriptor = { id, label: name };
-       if (contextWindowTokens !== undefined) descriptor.contextWindowTokens = contextWindowTokens;
-       if (efforts.length) descriptor.reasoningEfforts = efforts;
-       if (efforts.includes("medium")) descriptor.defaultReasoningEffort = "medium";
-       else if (efforts.includes("high")) descriptor.defaultReasoningEffort = "high";
-       models.push(descriptor);
-    } catch { /* skip one malformed block */ }
-  };
-  for (const line of stdout.split("\n")) {
-    const match = line.match(SLUG_LINE);
-    if (match) { flush(); slug = match[1]; json = []; continue; }
-    if (slug) json.push(line);
-  }
-  flush();
-  return models;
-}
+// `parseOpenCodeModels`, `permissionRules` and the v2 model/permission
+// helpers live in `./opencodeDialect.js` (single source). Re-exported here
+// so existing imports and tests keep working.
+export {
+  modelDescriptor,
+  parseOpenCodeModelListApi,
+  parseOpenCodeModels,
+  permissionRules,
+  permissionRulesV2,
+  v2PermissionAction,
+} from "./opencodeDialect.js";
 
 /** OpenCode deltas can be full replacement snapshots rather than incremental appends. */
 export type OpenCodeTextDelta = { text: string; delta: string };
@@ -211,29 +183,6 @@ export type OpenCodeTokenTally = { input: number; output: number };
 export function accumulateOpenCodeTokens(current: { input: number; output: number }, tokens: OpenCodeJsonValue | null | undefined): OpenCodeTokenTally {
   const t = record(tokens); if (!t) return current;
   return { input: current.input + (jsonNumber(t.input) ? t.input : 0), output: current.output + (jsonNumber(t.output) ? t.output : 0) + (jsonNumber(t.reasoning) ? t.reasoning : 0) };
-}
-
-function nonNegativeInteger(value: OpenCodeJsonValue | null | undefined): number | undefined {
-  return jsonNumber(value) && value >= 0 && Number.isInteger(value) ? value : undefined;
-}
-
-function stringField(value: OpenCodeJsonValue | null | undefined, key: string): string | undefined {
-  return textField(record(value)?.[key]);
-}
-
-/** A decoded JSON number — finiteness separates the number variant from every
- *  other JSON variant without inspecting representations. */
-function jsonNumber(value: OpenCodeJsonValue | undefined): value is number {
-  return Number.isFinite(value);
-}
-
-/** The text under an opencode JSON field when it is one — the same variant
- *  split antigravitySubagents uses: booleans by value, numbers by finiteness,
- *  composites by their constructors. */
-function textField(value: OpenCodeJsonValue | undefined): string | undefined {
-  if (value === undefined || value === null || value === true || value === false) return undefined;
-  if (Array.isArray(value) || value instanceof Object || jsonNumber(value)) return undefined;
-  return String(value);
 }
 
 /** Per-question selections opencode echoes back on reply events — an array of
@@ -371,53 +320,6 @@ export function buildOpenCodeTokenUsageKey(input: {
   ].join(":");
 }
 
-export function permissionRules(mode: InteractionMode): RecordLike[] {
-  // Full access allows everything — except that `bash` is routed back here as an
-  // ask, and answered instantly. The rung's contract is "never prompts", not
-  // "never looks": a server-side blanket allow means the command never crosses
-  // this process, and the handful of commands that end the machine rather than
-  // the worktree are then unrefusable on the one rung with nobody to ask. The
-  // ask is auto-approved in `permissionAsked` after the screen, so nothing
-  // surfaces and nothing waits on a human. OpenCode resolves against the LAST
-  // matching rule, so this has to come after the catch-all.
-  if (mode === "full-access") {
-    return [
-      { permission: "*", pattern: "*", action: "allow" },
-      { permission: "bash", pattern: "*", action: "ask" },
-    ];
-  }
-  if (mode === "accept-edits") {
-    // Closed by default: a deny base, then explicit allows for read operations
-    // and edit/write, with the mutating/network/out-of-tree families asked.
-    // A deny base also blocks custom/MCP tools and future mutating tools that
-    // a short denylist would accidentally leave enabled.
-    return [
-      { permission: "*", pattern: "*", action: "deny" },
-      { permission: "read", pattern: "*", action: "allow" },
-      { permission: "glob", pattern: "*", action: "allow" },
-      { permission: "grep", pattern: "*", action: "allow" },
-      { permission: "list", pattern: "*", action: "allow" },
-      { permission: "lsp", pattern: "*", action: "allow" },
-      { permission: "codesearch", pattern: "*", action: "allow" },
-      { permission: "todoread", pattern: "*", action: "allow" },
-      { permission: "todowrite", pattern: "*", action: "allow" },
-      { permission: "question", pattern: "*", action: "allow" },
-      { permission: "edit", pattern: "*", action: "allow" },
-      { permission: "write", pattern: "*", action: "allow" },
-      { permission: "bash", pattern: "*", action: "ask" },
-      { permission: "webfetch", pattern: "*", action: "ask" },
-      { permission: "websearch", pattern: "*", action: "ask" },
-      { permission: "external_directory", pattern: "*", action: "ask" },
-    ];
-  }
-  return [{ permission: "*", pattern: "*", action: "ask" }, ...["bash", "edit", "webfetch", "websearch", "external_directory"].map((permission) => ({ permission, pattern: "*", action: "ask" })), { permission: "question", pattern: "*", action: "allow" }];
-}
-
-function modelSlug(slug: string | undefined): { providerID: string; modelID: string } | undefined {
-  if (!slug) return undefined; const at = slug.indexOf("/"); if (at <= 0 || at === slug.length - 1) return undefined;
-  return { providerID: slug.slice(0, at), modelID: slug.slice(at + 1) };
-}
-
 function toolKind(tool: string): RuntimeItemKind { return /^todo(write|read)$/i.test(tool) ? "plan_text" : "tool_call"; }
 /** Normalize an opencode permission ask into the neutral approval request. The
  *  ask names the permission being requested (`bash`, `edit:path`, a URL for
@@ -504,33 +406,44 @@ function base(session: OpenCodeSession, source: RuntimeEvent["source"] = "openco
   return { threadId: session.threadId, provider: "opencode", at: Date.now(), source, refs: { conversationId: session.openCodeSessionId } } as Omit<RuntimeEvent, "type">;
 }
 
-function makeClient(baseUrl: string): OpenCodeClient {
-  const url = (route: string) => `${baseUrl.replace(/\/$/, "")}${route}`;
+function makeClient(baseUrl: string, dialect: OpenCodeDialect, password?: string): OpenCodeClient {
+  const trimBase = baseUrl.replace(/\/$/, "");
+  const auth = password ? { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } : undefined;
+  const url = (route: string) => `${trimBase}${dialect.apiPrefix}${route}`;
+  const headersFor = (extra?: Record<string, string>) => ({ ...auth, ...extra });
   return {
     async request(method, route, body, signal) {
-      // GET requests reject a body at the fetch level; attach payload keys only when one exists.
-      const init: RequestInit = { method, signal };
-      if (body !== undefined) Object.assign(init, { headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const init: RequestInit = { method, signal, headers: headersFor() };
+      if (body !== undefined) Object.assign(init, { headers: headersFor({ "content-type": "application/json" }), body: JSON.stringify(body) });
       const response = await fetch(url(route), init);
       const text = await response.text(); let parsed: any; try { parsed = text ? JSON.parse(text) : undefined; } catch { parsed = text; }
       if (!response.ok) { const error = new Error(`OpenCode ${method} ${route} failed with ${response.status}`); Object.assign(error, { status: response.status, body: parsed }); throw error; }
       return parsed;
     },
     async *events(signal) {
-      const response = await fetch(url("/event"), { headers: { accept: "text/event-stream" }, signal });
+      const response = await fetch(url("/event"), { headers: headersFor({ accept: "text/event-stream" }), signal });
       if (!response.ok || !response.body) throw new Error(`OpenCode event stream failed with ${response.status}`);
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
       try {
         while (true) {
           const next = await reader.read(); if (next.done) break; buffer += decoder.decode(next.value, { stream: true });
           const frames = buffer.split(/\n\n/); buffer = frames.pop() ?? "";
-          // SAFETY: JSON.parse yields unknown and malformed SSE frames are skipped by the catch below.
           for (const frame of frames) {
             const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
             if (!data) continue;
-            // SAFETY: JSON.parse yields unknown; malformed SSE frames are skipped by the catch below.
-            const event = JSON.parse(data) as OpenCodeEvent;
-            yield event;
+            try {
+              // SAFETY: JSON.parse yields unknown; the record and textField
+              // probes below validate before use, and malformed frames are skipped.
+              const raw = JSON.parse(data) as RecordLike;
+              const rawType = textField(raw.type);
+              if (rawType === undefined) continue;
+              const rawData = record(raw.data);
+              const properties = record(raw.properties) ?? (rawData ? { sessionID: textField(rawData.sessionID) ?? "", ...rawData } : {});
+              // SAFETY: rawType passed the textField probe and properties is a
+              // probed record, so this rebuilds the translator input from
+              // validated fields instead of trusting the wire shape.
+              yield { type: rawType, properties } as OpenCodeEvent;
+            } catch { /* skip malformed SSE frame */ }
           }
         }
       } finally { reader.releaseLock(); }
@@ -547,7 +460,10 @@ export function translateOpenCodeEvent(sessionId: string, event: OpenCodeEvent):
 }
 
 export function isOpenCodeTurnEnd(event: OpenCodeEvent): boolean {
-  return event.type === "session.idle" || (event.type === "session.status" && record(event.properties?.status)?.type === "idle");
+  return event.type === "session.idle"
+    || event.type === "session.execution.succeeded"
+    || event.type === "session.execution.failed"
+    || (event.type === "session.status" && record(event.properties?.status)?.type === "idle");
 }
 
 export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
@@ -613,6 +529,26 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private readonly serverPool = new OpenCodeServerPool(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   /** The CLI executable to spawn — the user's override or the `opencode` default. */
   private binary = OPENCODE_BINARY;
+  private cachedVersion: string | undefined;
+  private versionPromise: Promise<string | undefined> | null = null;
+
+  private ensureVersion(): Promise<string | undefined> {
+    if (this.cachedVersion !== undefined) return Promise.resolve(this.cachedVersion);
+    if (!this.versionPromise) {
+      this.versionPromise = (async () => {
+        const env = await buildOpenCodeEnv();
+        const result = await probeResult(this.binary, ["--version"], env, 5_000);
+        const version = parseOpenCodeVersion(`${result.stdout}\n${result.stderr}`);
+        this.cachedVersion = version;
+        this.versionPromise = null;
+        return version;
+      })().catch(() => {
+        this.versionPromise = null;
+        return undefined;
+      });
+    }
+    return this.versionPromise;
+  }
   constructor(emit: EmitEvent) { this.emit = emit; }
 
   /** Adopt the user's persisted install settings. A blank binaryPath falls back
@@ -622,6 +558,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (next === this.binary) return;
     this.binary = next;
     this.modelsCache = null;
+    this.cachedVersion = undefined;
   }
 
   async discover(): Promise<ProviderStatus> {
@@ -632,9 +569,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // Hand the classifier the real failure: its quarantine / code-signature
     // branches can only fire on the CLI's own words.
     const version = parseOpenCodeVersion(`${result.stdout}\n${result.stderr}`);
+    this.cachedVersion = version;
     if (!versionProbeUsable(result, version)) return classifyOpenCodeSpawnFailure(result.error ?? new Error(probeDetail(result) ?? "OpenCode could not be started."));
     if (!isOpenCodeVersionSupported(version)) return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", version, message: `OpenCode v${version ?? "unknown"} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.` };
-    try { const models = await this.listModels(); return { provider: "opencode", label: "OpenCode", available: true, authStatus: models.length ? "authenticated" : "unknown", readiness: models.length ? "ready" : "needs-login", version, message: models.length ? undefined : "OpenCode is available, but no connected providers were reported. Run `opencode providers login`." }; }
+    try { const models = await this.listModels(); return { provider: "opencode", label: "OpenCode", available: true, authStatus: models.length ? "authenticated" : "unknown", readiness: models.length ? "ready" : "needs-login", version, message: models.length ? undefined : "OpenCode is available, but no connected providers were reported. Run `opencode auth login`." }; }
     // An inventory that never came back is not a verdict about sign-in either:
     // keep whatever the last conclusive round said rather than writing an error
     // row over it. See stabilizeProviderStatuses.
@@ -664,31 +602,38 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildOpenCodeEnv();
+    const version = await this.ensureVersion();
+    const probes = modelProbesForVersion(version);
     let inconclusive = false;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await probeResult(this.binary, ["models", "--verbose"], env, 30_000);
-      // A listing that never ran to completion tells us nothing; one that ran
-      // and printed nothing is an answer (no connected providers).
+    for (let attempt = 0; attempt < probes.length; attempt += 1) {
+      const probe = probes[attempt]!;
+      const result = await probeResult(this.binary, probe.args, env, 30_000);
       inconclusive = result.outcome === "timeout" || result.outcome === "failure";
       if (result.outcome === "ok" || result.outcome === "nonzero") {
-        const models = parseOpenCodeModels(result.stdout);
-        if (models.length || attempt === 1) { for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens); return models; }
+        const models = probe.parse(result.stdout);
+        if (models.length || attempt === probes.length - 1) {
+          for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens);
+          return models;
+        }
       }
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
+      if (attempt < probes.length - 1) await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
     throw new OpenCodeModelProbeError(inconclusive, "OpenCode model inventory failed.");
   }
 
   async startSession(input: SessionStartInput): Promise<Session> {
     const prior = this.sessions.get(input.threadId); if (prior) await this.stopSession(input.threadId);
-    const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv(); const server = await this.serverPool.start({ cwd: input.cwd, env, binary: this.binary });
-    const client = makeClient(server.baseUrl); let sessionId: string | undefined;
+    const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv();
+    const version = await this.ensureVersion();
+    const server = await this.serverPool.start({ cwd: input.cwd, env, binary: this.binary, expectPassword: isOpenCodeV2(version) });
+    const dialect = dialectForServer(server);
+    const client = makeClient(server.baseUrl, dialect, server.password); let sessionId: string | undefined;
     // The gateway registration needs only the client, the connection and the
     // directory — not the session id — so it runs beside the session-create
     // round trips below instead of after them. Never rejects: failures stay
     // loud but non-fatal, exactly as when it was awaited inline.
     const gatewayRegistration = input.gatewayConnection
-      ? this.registerGatewayMcp(client, input.gatewayConnection, input.cwd)
+      ? this.registerGatewayMcp(client, dialect, input.gatewayConnection, input.cwd)
       : null;
     const resume = input.resume?.trim();
     // Attempt resume for ANY non-empty stored id, not just `ses_`-prefixed
@@ -700,32 +645,26 @@ export class OpenCodeAdapter implements ProviderAdapter {
       try {
         const found = responseData(await client.request("GET", `/session/${encodeURIComponent(resume)}`));
         sessionId = found?.id ?? resume;
-        const same = found?.directory ? await this.sameDirectory(found.directory, input.cwd) : true;
+        const foundDir = found?.directory ?? found?.location?.directory;
+        const same = foundDir ? await this.sameDirectory(foundDir, input.cwd) : true;
         const adoptedId = sessionId;
         if (!adoptedId) throw new Error("OpenCode resume response did not include an id.");
-        if (!same) {
-          sessionId = responseData(await client.request("POST", `/session/${encodeURIComponent(adoptedId)}/fork`, { directory: input.cwd, permission: permissionRules(mode) }))?.id;
-          // Belt-and-braces: the fork may ignore the permission field (or carry
-          // the resumed session's ruleset), so re-assert the mode's ruleset on
-          // the forked session before the event pump starts below — a fork of a
-          // full-access session must not keep allow-all under ask/accept-edits.
-          if (sessionId) await client.request("PATCH", `/session/${encodeURIComponent(sessionId)}`, { permission: permissionRules(mode) });
-        }
-        else await client.request("PATCH", `/session/${encodeURIComponent(adoptedId)}`, { permission: permissionRules(mode) });
+        if (!same) sessionId = await dialect.forkInto(client, adoptedId, input.cwd, mode);
+        else await dialect.applyMode(client, adoptedId, mode);
       } catch (error) { if (!isOpenCodeNotFound(error)) { await server.dispose(); throw error; } }
     }
     // Set only if the resume id was found and adopted above (or forked from, which
     // copies the transcript). A pruned id leaves it undefined and falls through to a
     // fresh session, which the caller has to be able to tell apart — see Session.resumedFrom.
     const resumedFrom = sessionId ? resume : undefined;
-    if (!sessionId) sessionId = responseData(await client.request("POST", "/session", { permission: permissionRules(mode) }))?.id;
+    if (!sessionId) sessionId = await dialect.createSession(client, { cwd: input.cwd, mode, model: input.model, effort: input.effort });
     if (!sessionId) { await server.dispose(); throw new Error("OpenCode session response did not include an id."); }
     // kone gateway (docs/mcp-gateway-design.md §4): the app's MCP server,
     // registered on this opencode server instance while the session was being
     // created above. The registry is per-server-process, so the tools die with
     // the session's server — no cross-thread leakage.
     if (gatewayRegistration) await gatewayRegistration;
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, agent: input.agent, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), pendingApprovals: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), settledSubagentToolUseIds: new Set(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, dialect, resumedFrom, gatewayConnection: input.gatewayConnection, agent: input.agent, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), pendingApprovals: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), settledSubagentToolUseIds: new Set(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -738,21 +677,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
    *  session creation (see startSession) and never rejects — a failure is
    *  logged and the session proceeds without gateway tools rather than
    *  refusing to start. */
-  private async registerGatewayMcp(client: OpenCodeClient, connection: GatewayConnection, cwd: string): Promise<void> {
+  private async registerGatewayMcp(client: OpenCodeClient, dialect: OpenCodeDialect, connection: GatewayConnection, cwd: string): Promise<void> {
     try {
-      const mcpResult = responseData(
-        await client.request("POST", "/mcp", {
-          name: "kone",
-          config: buildOpenCodeMcpServer(connection),
-          directory: cwd,
-        }),
-      );
-      const koneStatus = record(record(mcpResult)?.kone);
-      if (koneStatus?.status !== "connected") {
-        console.error(
-          `[opencode] kone MCP server did not connect: ${String(koneStatus?.error ?? "unknown status")}`,
-        );
-      }
+      await dialect.registerMcp(client, connection, cwd);
     } catch (error) {
       console.error("[opencode] kone MCP registration failed:", errorMessage(error));
     }
@@ -771,7 +698,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const mode = input.mode ?? session.mode;
     if (mode !== session.mode) {
       try {
-        await session.client.request("PATCH", `/session/${encodeURIComponent(session.openCodeSessionId)}`, { permission: permissionRules(mode) });
+        await session.dialect.applyMode(session.client, session.openCodeSessionId, mode);
         session.mode = mode;
       } catch (error) {
         console.error("[opencode] failed to apply permission mode:", errorMessage(error));
@@ -789,15 +716,21 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.runOrdinal += 1;
     if (!prompt && !files.length) throw new Error("Turn input must include text or an attachment.");
     if (input.model) { session.model = input.model; session.contextWindow = this.modelContextWindows.get(input.model); }
+    if (input.effort) session.variant = input.effort;
     const model = modelSlug(input.model ?? session.model); if (!model) throw new Error("OpenCode model selection must use the 'provider/model' format.");
     // `serviceTier` / `contextWindow` are deliberately not applied: opencode's
     // model surface advertises no fast/context axes, so the picker never
     // offers them — a per-turn value could only arrive from a stale selection.
     const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { session.activeTurnId = turnId; session.lastEmittedTokenUsageKey = undefined; this.emit({ ...base(session), type: "turn.started", turnId }); }
-    const parts = [...(prompt ? [{ type: "text", text: prompt }] : []), ...files];
     const variant = input.effort ?? session.variant;
-    const requestBody = variant ? { model, parts, variant } : { model, parts };
-    try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/prompt_async`, requestBody); }
+    try {
+      await session.dialect.prompt(session.client, session.openCodeSessionId, {
+        model,
+        variant,
+        prompt,
+        files: files.map((f) => ({ uri: f.url, name: f.filename, mime: f.mime })),
+      });
+    }
     catch (error) { if (!steering) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "failed", message: errorMessage(error) }); } throw error; }
     return { threadId: input.threadId, turnId };
   }
@@ -818,17 +751,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
     return result;
   }
 
-  async interruptTurn(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session?.activeTurnId) return; this.drain(session); session.interrupting = true; await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); }
-  /** Trigger provider-native context compaction for the session (`POST
-   *  /session/:id/summarize`). The server announces the settled boundary as a
+  async interruptTurn(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session?.activeTurnId) return; this.drain(session); session.interrupting = true; await session.client.request("POST", session.dialect.interruptRoute(session.openCodeSessionId)); }
+  /** Trigger provider-native context compaction for the session. The server announces the settled boundary as a
    *  `session.compacted` event (see handleEvent), which becomes the
    *  `thread.state.changed` "compacted" event. */
   async compactThread(threadId: string): Promise<void> {
     const session = this.require(threadId);
     if (session.activeTurnId) throw new Error("OpenCode cannot compact while a turn is running.");
-    const model = modelSlug(session.model);
-    if (!model) throw new Error("OpenCode compaction requires an active 'provider/model' selection.");
-    await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/summarize`, model);
+    await session.dialect.compact(session.client, session.openCodeSessionId, modelSlug(session.model));
   }
   // Deliberate stop = the one stop-lifecycle contract every adapter shares: a
   // terminal `session.exited` with code null (the sibling ACP/JSON-RPC
@@ -838,7 +768,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   // sealing in abortLiveTurn) for every session. The turn is sealed as
   // `interrupted` first (abortLiveTurn) or the journaled assistant block would
   // stay 'running' forever and the thread would reopen permanently busy.
-  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
+  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", session.dialect.interruptRoute(session.openCodeSessionId)); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); await this.serverPool.dispose(); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); this.resolveApproval(session, requestId, decision); /* "Reject and stop" — the permission already gets its `reject` reply (toOpenCodeReply), and aborting the session turns that into an interrupted turn instead of a continued one. */ if (decision === "reject-and-stop") void this.interruptTurn(threadId); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> { const session = this.sessions.get(threadId); if (!session) return { owned: false }; const pending = session.pendingUserInputs.get(requestId); if (!pending) return { owned: false }; session.pendingUserInputs.delete(requestId); pending.resolve(answers); return { owned: true }; }
@@ -917,7 +847,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
     this.emitTokenUsage(session, usage);
   }
 
-  private handleEvent(session: OpenCodeSession, event: OpenCodeEvent): void {
+  private handleEvent(session: OpenCodeSession, incoming: OpenCodeEvent): void {
+    const event = normalizeV2Event(session, incoming);
     const p = event.properties ?? {}; const active = session.activeTurnId;
     switch (event.type) {
       case "message.updated": {
@@ -1018,7 +949,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         }
         this.emitSubagent(session, run, "subagent.updated");
       }
-    } else if (String(part.tool ?? "") === "task") {
+    } else if (String(part.tool ?? "") === "task" || String(part.tool ?? "") === "subagent") {
       this.handleTaskTool(session, part, state);
     }
   }
@@ -1068,7 +999,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /** Folds a child session's events into its run: roles, transcript items
    *  (scoped with the run's tool-use id), token spend. Never touches the parent
    *  turn's lifecycle — the child going idle is not the parent finishing. */
-  private handleChildEvent(session: OpenCodeSession, toolUseId: string, event: OpenCodeEvent): void {
+  private handleChildEvent(session: OpenCodeSession, toolUseId: string, incoming: OpenCodeEvent): void {
+    const event = normalizeV2Event(session, incoming);
     const p = event.properties ?? {};
     // A settled run's in-flight tail is dropped the same way the Claude adapter
     // drops one — the run is closed, and re-projecting its leftovers would
@@ -1206,17 +1138,21 @@ export class OpenCodeAdapter implements ProviderAdapter {
       console.warn(`[opencode] permission.asked without a request id; cannot fail-closed without an id to reply to — dropping, the provider turn may be waiting for a reply that never comes (thread ${session.threadId})`);
       return;
     }
+    const reply = (decision: "once" | "always" | "reject") => {
+      const { route, body } = session.dialect.permissionReply(session.openCodeSessionId, requestId, decision);
+      return session.client.request("POST", route, body);
+    };
     /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */
     if (!session.activeTurnId) {
       session.pendingPermissions.set(requestId, p.permission ?? null);
-      void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ });
+      void reply("reject").catch(() => { /* provider will surface session.error */ });
       return;
     }
     /* `full-access` never parks: an ask is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". The one exception is a command that is irreversible past the working tree, which this gate is now the last place to stop (see permissionRules). */
     if (session.mode === "full-access") {
       session.pendingPermissions.delete(requestId);
       const refusal = criticalCommandInPermission(p, session.threadId);
-      void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: refusal ? "reject" : "once" }).catch(() => { /* provider will surface session.error */ });
+      void reply(refusal ? "reject" : "once").catch(() => { /* provider will surface session.error */ });
       return;
     }
     session.pendingPermissions.set(requestId, p.permission ?? null);
@@ -1226,7 +1162,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         approval,
         resolve: (decision) => {
           resolve(decision);
-          void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ });
+          void reply(toOpenCodeReply(decision)).catch(() => { /* provider will surface session.error */ });
         },
         subagentToolUseId,
       });
@@ -1291,7 +1227,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
    *  failure below surfaces as a session error plus a log, never silently. */
   private postQuestionReply(session: OpenCodeSession, requestId: string, payload: { answers: string[][] }): void {
     const root = `/question/${encodeURIComponent(requestId)}/reply`;
-    const scoped = `/api/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`;
+    const scoped = `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`;
     if (session.questionReplyRoute === "root") {
       void session.client.request("POST", root, payload).then(
         () => undefined,
