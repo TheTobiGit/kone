@@ -210,11 +210,11 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
     >
       <ConversationThread
         :blocks="blocks"
+        surface="inbox"
         :compactions="compactions"
         :now="now"
         :thread-id="row.threadId"
         :agent-seed="row.threadId"
-        mode="reply"
         :loading="loading"
         :load-failed="loadFailed"
         :has-older="cursor !== null"

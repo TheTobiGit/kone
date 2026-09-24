@@ -461,9 +461,9 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               house
               :scratchpad="false"
               :blocks="blocks"
+              surface="assistant"
               :now="agent.now.value"
               :thread-id="session?.threadId.value"
-              mode="reply"
               :load-failed="session?.transcriptLoadFailed.value"
               :loading="starting"
               :busy="busy"

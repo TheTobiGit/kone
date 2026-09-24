@@ -582,7 +582,7 @@ export function agentById(id: string | null | undefined): Agent | undefined {
  * threads they worked: their row outlives them precisely so the conversations
  * still have a name and a face on them.
  */
-function agentOrDeparted(id: string | null | undefined): Agent | undefined {
+export function agentOrDeparted(id: string | null | undefined): Agent | undefined {
   if (!id) return undefined;
   const row = rosterRows().find((r) => r.agentId === id);
   return row ? resolveRow(row) : undefined;

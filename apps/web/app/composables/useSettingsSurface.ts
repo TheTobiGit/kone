@@ -19,6 +19,7 @@ export type SettingsPane =
   | "motion"
   | "appearance"
   | "typography"
+  | "conversation"
   | "studio"
   | "providers"
   | "agentsUsage"
@@ -61,6 +62,7 @@ const PANE_MEASURE = {
   motion: "page",
   appearance: "page",
   typography: "compact",
+  conversation: "page",
   studio: "compact",
   providers: "page",
   agentsUsage: "page",

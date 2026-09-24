@@ -37,6 +37,7 @@ import {
   type Segment,
 } from "~/utils/conversationSegments";
 import { toolMeta, type HugeIcon } from "~/utils/toolPresentation";
+import type { ActivityFold } from "~/utils/responseDisplay";
 import { thinkingOrbHue } from "~/utils/toolOrbDraw";
 
 // ── Agent activity ─────────────────────────────────────────────────────────────
@@ -95,6 +96,11 @@ const props = defineProps<{
   isTail?: boolean;
   /** Mount without entrance motion (a thread loaded from storage). */
   historical?: boolean;
+  /** How the batch holds itself (the reader's work display — see
+   *  utils/responseDisplay): "auto" runs the live window and folds into the
+   *  strip when done; "open" shows every step, live and after; "closed" is the
+   *  strip from the first step, rows only when asked. */
+  fold?: ActivityFold;
 }>();
 
 const WINDOW = 5;
@@ -106,12 +112,27 @@ const total = computed(() => entries.value.length);
 // The batch is active only while the turn runs and this is the live tail group.
 const active = computed(() => props.running && props.isTail === true);
 
-// A done batch can be unfolded back into its full step list. `expanded` is the
-// user's toggle; it only applies once the batch is done (an active batch owns
-// its own sliding window).
+// The reader's choice only sets where a batch starts; the head folds and
+// unfolds it by hand from then on, live or done.
+//
+// Folding as it goes, an active batch runs its own sliding window of rows until
+// the agent moves on — or until the reader folds it by hand, which hands it to
+// `expanded` like any done batch. Kept open or kept folded, a batch never ticks:
+// it is simply unfolded (every step, as it lands) or folded (the strip beside a
+// live orb) until someone says otherwise.
 const { cue } = useSound();
-const expanded = ref(false);
-const canExpand = computed(() => !active.value && total.value > 0);
+const foldedByHand = ref(false);
+const ticking = computed(() => active.value && props.fold !== "open" && props.fold !== "closed" && !foldedByHand.value);
+
+const expanded = ref(props.fold === "open");
+watch(
+  () => props.fold,
+  (fold) => {
+    foldedByHand.value = false;
+    expanded.value = fold === "open";
+  },
+);
+const canExpand = computed(() => total.value > 0);
 
 // The chip strip folds and unfolds in lockstep with the window below — same
 // duration, same curve. Without this the strip only shrinks when AnimatePresence
@@ -168,6 +189,14 @@ async function unfurlStrip(): Promise<void> {
 
 function toggleExpanded(): void {
   if (!canExpand.value) return;
+  // A ticking batch folds by hand into its strip: the rows go the way they do
+  // when the agent moves on, and the batch answers to `expanded` from here.
+  if (ticking.value) {
+    foldedByHand.value = true;
+    expanded.value = false;
+    cue("toggle");
+    return;
+  }
   if (expanded.value) void unfurlStrip();
   else foldStrip();
   expanded.value = !expanded.value;
@@ -215,7 +244,7 @@ watch(
 //   Done & collapsed: no rows — every step is a chip on the orb's line.
 //   Done & expanded: no chips — every step drops down into a full row.
 const archived = computed(() => {
-  if (active.value) return entries.value.slice(0, Math.max(0, total.value - WINDOW));
+  if (ticking.value) return entries.value.slice(0, Math.max(0, total.value - WINDOW));
   return expanded.value ? [] : entries.value;
 });
 
@@ -224,7 +253,7 @@ const archived = computed(() => {
 // finished one. `rowsAlive` lags that by one animation: the rows stay mounted
 // through the fold-away so there's something to animate, and unmount when the
 // height transition lands on 0.
-const wantRows = computed(() => active.value || expanded.value);
+const wantRows = computed(() => ticking.value || expanded.value);
 const rowsAlive = ref(wantRows.value);
 
 // While rows are folding away the entry list must not change under them, or the
@@ -239,12 +268,12 @@ const KEEP = WINDOW + 8;
 const rowList = computed<ActivityEntry[]>(() => {
   if (!rowsAlive.value) return [];
   if (frozen.value) return frozen.value;
-  return active.value ? entries.value.slice(-KEEP) : entries.value;
+  return ticking.value ? entries.value.slice(-KEEP) : entries.value;
 });
 
 // A live batch past five steps runs as a ticker: the box holds the last five and
 // the rest overflow above the clip.
-const windowed = computed(() => active.value && rowList.value.length > WINDOW);
+const windowed = computed(() => ticking.value && rowList.value.length > WINDOW);
 // Whether anything is actually cut off — measured, so the top fade is on for the
 // ticker *and* for the fold, and off for a short batch that fits.
 const masked = ref(false);
@@ -493,8 +522,8 @@ function stepProps(e: ActivityEntry) {
       v-if="active || total > 0"
       class="head"
       :class="{ 'head--toggle': canExpand }"
-      :aria-label="canExpand ? (expanded ? 'Collapse steps' : `Show all ${total} steps`) : undefined"
-      :aria-expanded="canExpand ? (expanded ? 'true' : 'false') : undefined"
+      :aria-label="canExpand ? (wantRows ? 'Collapse steps' : `Show all ${total} steps`) : undefined"
+      :aria-expanded="canExpand ? (wantRows ? 'true' : 'false') : undefined"
       @click="toggleExpanded"
     >
       <span class="head__orb">
@@ -536,7 +565,7 @@ function stepProps(e: ActivityEntry) {
         :size="13"
         :stroke-width="2"
         class="head__chev"
-        :class="{ 'head__chev--open': expanded }"
+        :class="{ 'head__chev--open': wantRows }"
       />
     </component>
 
