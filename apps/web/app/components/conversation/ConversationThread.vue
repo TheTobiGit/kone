@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -1189,20 +1188,18 @@ watch(
         :running="ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running')"
       />
 
-    <motion.div
+    <div
       v-for="block in ex.blocks"
       :key="block.id"
       :data-turn-id="block.id"
       class="turn"
       :class="[
         block.role === 'user' ? 'turn--you' : 'turn--kone',
+        block.historical ? '' : 'turn--enter',
         block.role === 'assistant' && block.state !== 'running' ? 'turn--settled' : '',
         block.role === 'assistant' && flash[block.id] ? 'turn--flash' : '',
         block.id === searchFlash ? 'turn--search-flash' : '',
       ]"
-      :initial="block.historical ? false : { opacity: 0, y: 14, x: block.role === 'user' ? 18 : -6 }"
-      :animate="{ opacity: 1, y: 0, x: 0 }"
-      :transition="{ type: 'spring', stiffness: 320, damping: 30, mass: 0.8 }"
     >
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
       <template v-if="block.role === 'user'">
@@ -1569,7 +1566,7 @@ watch(
           </div>
         </div>
       </template>
-    </motion.div>
+    </div>
     </div>
     </template>
     <!-- Compaction markers newer than every exchange trail the thread. -->
@@ -1889,6 +1886,30 @@ watch(
 }
 .turn--you {
   align-items: flex-end;
+}
+/* A live turn slides in once from its speaker's side. Plain CSS rather than a
+   motion component per turn: the animation ends and leaves nothing running. */
+.turn--enter {
+  animation: turn-enter 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.turn--enter.turn--you {
+  --turn-enter-x: 18px;
+}
+@keyframes turn-enter {
+  from {
+    opacity: 0;
+    transform: translate(var(--turn-enter-x, -6px), 14px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn--enter {
+    animation-name: turn-fade;
+  }
+}
+@keyframes turn-fade {
+  from {
+    opacity: 0;
+  }
 }
 /* The row a conversation-search hit landed on: a quiet accent ring that fades
    with the flash timer. An outline rather than a wash — the row keeps its own

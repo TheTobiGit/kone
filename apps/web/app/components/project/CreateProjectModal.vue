@@ -262,9 +262,9 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
             v-if="view === 'form'"
             key="create"
             class="flex flex-col px-4 py-4"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <!-- Header band: just Cancel (no title). -->
@@ -289,8 +289,8 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
                   key="form"
                   class="flex flex-col"
                   :initial="{ opacity: 0, y: 6 }"
-                  :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-                  :exit="{ opacity: 0, y: -8, filter: 'blur(3px)' }"
+                  :animate="{ opacity: 1, y: 0 }"
+                  :exit="{ opacity: 0, y: -8 }"
                   :transition="bodyMorph"
                 >
                   <!-- Name — the star. Borderless; reads as text until focused,
@@ -358,8 +358,8 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
                   v-else
                   key="creating"
                   class="flex flex-col"
-                  :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-                  :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
+                  :initial="{ opacity: 0, y: 10 }"
+                  :animate="{ opacity: 1, y: 0 }"
                   :exit="{ opacity: 0, y: 6 }"
                   :transition="bodyMorph"
                 >
@@ -430,9 +430,9 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
             v-else-if="view === 'more'"
             key="more"
             class="flex flex-col px-4 py-4"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <div
@@ -572,9 +572,9 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
             v-else
             key="dest"
             class="flex flex-col"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <UiFolderBrowser

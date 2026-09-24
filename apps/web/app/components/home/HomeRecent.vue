@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion } from "motion-v";
-import ArrowDown01 from "~/components/icons/animated/ArrowDown01.vue";
-import AppleFinder from "~/components/icons/animated/AppleFinder.vue";
-import Cancel01 from "~/components/icons/animated/Cancel01.vue";
-import Pin from "~/components/icons/animated/Pin.vue";
-import Search01 from "~/components/icons/animated/Search01.vue";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import {
+  AppleFinderIcon,
+  ArrowDown01Icon,
+  Cancel01Icon,
+  PinIcon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import type { ActionKey } from "~/components/start/StartActions.vue";
 import type { RecentProject } from "~/composables/useRecentProjects";
 
@@ -136,10 +139,6 @@ function onSideAction(
     <h1 class="sr-only">Your projects</h1>
 
     <HomeHeader>
-      <template #leading>
-        <HomeRotatingWordmark />
-      </template>
-
       <template #trailing>
         <div class="flex items-center gap-3">
           <SettingsButton @open="emit('settings')" />
@@ -147,7 +146,8 @@ function onSideAction(
           <label
             class="flex h-9 items-center gap-2.5 rounded-[11px] bg-hover px-3 transition-colors focus-within:bg-hover"
           >
-            <Search01
+            <HugeiconsIcon
+              :icon="Search01Icon"
               :size="15"
               :stroke-width="2"
               class="shrink-0 text-muted"
@@ -172,7 +172,8 @@ function onSideAction(
             @click="cycleSort"
           >
             <span>{{ sortLabel }}</span>
-            <ArrowDown01
+            <HugeiconsIcon
+              :icon="ArrowDown01Icon"
               :size="12"
               :stroke-width="2"
               class="text-muted"
@@ -267,7 +268,8 @@ function onSideAction(
               @mousedown.prevent
               @click.stop="onSideAction(project.path, 'pin')"
             >
-              <Pin
+              <HugeiconsIcon
+                :icon="PinIcon"
                 :size="14"
                 :stroke-width="project.pinned ? 2.4 : 1.8"
                 aria-hidden="true"
@@ -283,7 +285,8 @@ function onSideAction(
               @mousedown.prevent
               @click.stop="onSideAction(project.path, 'reveal')"
             >
-              <AppleFinder
+              <HugeiconsIcon
+                :icon="AppleFinderIcon"
                 :size="15"
                 :stroke-width="1.7"
                 aria-hidden="true"
@@ -299,7 +302,8 @@ function onSideAction(
               @mousedown.prevent
               @click.stop="onSideAction(project.path, 'forget')"
             >
-              <Cancel01
+              <HugeiconsIcon
+                :icon="Cancel01Icon"
                 :size="14"
                 :stroke-width="2"
                 aria-hidden="true"

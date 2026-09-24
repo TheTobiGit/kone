@@ -552,16 +552,14 @@ function stepProps(e: ActivityEntry) {
       @transitionend="onWinTransitionEnd"
     >
       <div ref="innerEl" class="window__inner">
-        <motion.div
+        <div
           v-for="e in rowList"
           :key="e.key"
           class="window__row"
-          :initial="historical ? false : { opacity: 0 }"
-          :animate="{ opacity: 1 }"
-          :transition="{ duration: 0.26, ease: 'easeOut' }"
+          :class="{ 'window__row--enter': !historical }"
         >
           <ActivityStep :entry="e" rail v-bind="stepProps(e)" />
-        </motion.div>
+        </div>
       </div>
     </div>
   </section>
@@ -717,8 +715,15 @@ function stepProps(e: ActivityEntry) {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px);
   mask-image: linear-gradient(to bottom, transparent 0, #000 26px);
 }
-.window__row {
-  will-change: opacity;
+/* A row fades in once as it arrives; a plain CSS animation, so nothing stays
+   alive per row once it has played. */
+.window__row--enter {
+  animation: row-enter 260ms ease-out;
+}
+@keyframes row-enter {
+  from {
+    opacity: 0;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .window,

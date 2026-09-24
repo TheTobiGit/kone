@@ -2,21 +2,23 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion } from "motion-v";
-import AiChip from "~/components/icons/animated/AiChip.vue";
-import Analytics01 from "~/components/icons/animated/Analytics01.vue";
-import DistributeHorizontalCenter from "~/components/icons/animated/DistributeHorizontalCenter.vue";
-import Gauge from "~/components/icons/animated/Gauge.vue";
-import Keyboard from "~/components/icons/animated/Keyboard.vue";
-import ListView from "~/components/icons/animated/ListView.vue";
-import Paragraph from "~/components/icons/animated/Paragraph.vue";
-import Puzzle from "~/components/icons/animated/Puzzle.vue";
-import Swatch from "~/components/icons/animated/Swatch.vue";
-import User from "~/components/icons/animated/User.vue";
-import UserMultiple from "~/components/icons/animated/UserMultiple.vue";
-import WorkflowSquare01 from "~/components/icons/animated/WorkflowSquare01.vue";
-import VolumeHigh from "~/components/icons/animated/VolumeHigh.vue";
-import VolumeMute01 from "~/components/icons/animated/VolumeMute01.vue";
-import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import {
+  AiChipIcon,
+  Analytics01Icon,
+  DistributeHorizontalCenterIcon,
+  GaugeIcon,
+  KeyboardIcon,
+  ListViewIcon,
+  ParagraphIcon,
+  PuzzleIcon,
+  SwatchIcon,
+  UserIcon,
+  UserMultipleIcon,
+  VolumeHighIcon,
+  VolumeMute01Icon,
+  WorkflowSquare01Icon,
+} from "@hugeicons/core-free-icons";
 import { CENTER_MODES } from "~/utils/stripScroll";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
@@ -89,34 +91,9 @@ function onSoundToggle() {
   // If we just switched sound back on, confirm it with a soft cue (a no-op the
   // other way, since cues stay silent while muted).
   cue("toggle");
-  // The volume glyph is a click-to-start: fire it once the icon has swapped to
-  // the new mute state (the ref re-binds on the swapped component).
-  void nextTick(() => volumeHandle.value?.startAnimation());
 }
 
-import type { ComponentPublicInstance } from "vue";
 import type { SurfaceId } from "~/utils/surfaceTop";
-
-// The nav rows and the volume glyph drive their own icons. Hover on a row replays
-// its glyph (row-level, not the tiny icon); toggling sound fires the volume glyph
-// on demand. Manual trigger in both cases — the row/switch is the hover target.
-const navIconHandles = new Map<string, AnimatedIconHandle>();
-function setNavIcon(key: string, el: AnimatedIconHandle | Element | ComponentPublicInstance | null): void {
-  if (el)
-    // SAFETY: every :ref wired to setNavIcon sits on an animated icon component
-    // that defineExposes exactly startAnimation/stopAnimation — AnimatedIconHandle.
-    navIconHandles.set(key, el as AnimatedIconHandle);
-  else navIconHandles.delete(key);
-}
-function playNavIcon(key: string): void {
-  navIconHandles.get(key)?.startAnimation();
-}
-const volumeHandle = ref<AnimatedIconHandle | null>(null);
-function setVolumeIcon(el: AnimatedIconHandle | Element | ComponentPublicInstance | null): void {
-  // SAFETY: the :ref is on the VolumeHigh/VolumeMute01 animated icon, whose
-  // defineExpose is exactly startAnimation/stopAnimation — AnimatedIconHandle.
-  volumeHandle.value = el as AnimatedIconHandle | null;
-}
 
 // ── pane navigation ──────────────────────────────────────────────────────────
 // Root lists the section groups; each detail pane is reached by tapping its row.
@@ -311,14 +288,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open profile settings"
-            @mouseenter="playNavIcon('profile')"
             @click="openProfile"
           >
-            <User
-              :ref="(el) => setNavIcon('profile', el)"
+            <HugeiconsIcon
+              :icon="UserIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -342,14 +317,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open keyboard shortcuts settings"
-            @mouseenter="playNavIcon('shortcuts')"
             @click="openShortcuts"
           >
-            <Keyboard
-              :ref="(el) => setNavIcon('shortcuts', el)"
+            <HugeiconsIcon
+              :icon="KeyboardIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -367,14 +340,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open thread strip settings"
-            @mouseenter="playNavIcon('motion')"
             @click="openMotion"
           >
-            <DistributeHorizontalCenter
-              :ref="(el) => setNavIcon('motion', el)"
+            <HugeiconsIcon
+              :icon="DistributeHorizontalCenterIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -394,14 +365,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open appearance settings"
-            @mouseenter="playNavIcon('appearance')"
             @click="openAppearance"
           >
-            <Swatch
-              :ref="(el) => setNavIcon('appearance', el)"
+            <HugeiconsIcon
+              :icon="SwatchIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -417,14 +386,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open typography settings"
-            @mouseenter="playNavIcon('typography')"
             @click="openTypography"
           >
-            <Paragraph
-              :ref="(el) => setNavIcon('typography', el)"
+            <HugeiconsIcon
+              :icon="ParagraphIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -446,14 +413,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open agents settings"
-            @mouseenter="playNavIcon('agentRoster')"
             @click="openAgentRoster"
           >
-            <UserMultiple
-              :ref="(el) => setNavIcon('agentRoster', el)"
+            <HugeiconsIcon
+              :icon="UserMultipleIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -474,14 +439,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open sub-agents settings"
-            @mouseenter="playNavIcon('agentPresets')"
             @click="openAgentPresets"
           >
-            <WorkflowSquare01
-              :ref="(el) => setNavIcon('agentPresets', el)"
+            <HugeiconsIcon
+              :icon="WorkflowSquare01Icon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -499,14 +462,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open studio settings"
-            @mouseenter="playNavIcon('studio')"
             @click="openStudio"
           >
-            <ListView
-              :ref="(el) => setNavIcon('studio', el)"
+            <HugeiconsIcon
+              :icon="ListViewIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -522,14 +483,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open providers settings"
-            @mouseenter="playNavIcon('providers')"
             @click="openProviders"
           >
-            <AiChip
-              :ref="(el) => setNavIcon('providers', el)"
+            <HugeiconsIcon
+              :icon="AiChipIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -552,14 +511,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open agent skills settings"
-            @mouseenter="playNavIcon('skills')"
             @click="openAgentSkills"
           >
-            <Puzzle
-              :ref="(el) => setNavIcon('skills', el)"
+            <HugeiconsIcon
+              :icon="PuzzleIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -571,14 +528,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open agent usage settings"
-            @mouseenter="playNavIcon('usage')"
             @click="openAgentsUsage"
           >
-            <Analytics01
-              :ref="(el) => setNavIcon('usage', el)"
+            <HugeiconsIcon
+              :icon="Analytics01Icon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -593,14 +548,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             :tabindex="open ? 0 : -1"
             aria-label="Open provider limits settings"
-            @mouseenter="playNavIcon('limits')"
             @click="openProviderLimits"
           >
-            <Gauge
-              :ref="(el) => setNavIcon('limits', el)"
+            <HugeiconsIcon
+              :icon="GaugeIcon"
               :size="17"
               :stroke-width="1.7"
-              trigger="manual"
               class="shrink-0 text-muted transition-colors group-hover:text-ink"
               aria-hidden="true"
             />
@@ -620,12 +573,10 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
          root pane only; a detail pane fills the panel. -->
     <div v-if="pane === 'root'" class="mt-auto flex items-center justify-between gap-4">
       <span class="flex items-center gap-3">
-        <component
-          :is="muted ? VolumeMute01 : VolumeHigh"
-          :ref="setVolumeIcon"
+        <HugeiconsIcon
+          :icon="muted ? VolumeMute01Icon : VolumeHighIcon"
           :size="17"
           :stroke-width="1.7"
-          trigger="manual"
           class="text-ink-soft"
           aria-hidden="true"
         />
