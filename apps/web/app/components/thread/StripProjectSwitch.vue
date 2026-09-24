@@ -157,6 +157,12 @@ function closeToTrigger(): void {
   transform: translateY(-50%);
   pointer-events: auto;
 }
+/* Frameless shells: clear the fixed caption cluster (`--caption-inset`) and
+   stay clickable inside the studio's window drag band. */
+.frameless .here {
+  right: calc(2rem + var(--caption-inset));
+  -webkit-app-region: no-drag;
+}
 .here__name {
   display: block;
   font-family: var(--font-sans);

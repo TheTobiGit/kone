@@ -136,6 +136,34 @@
   --term-selection: color-mix(in oklab, var(--accent) 24%, transparent);
 }
 
+/* Window chrome, set at boot by the frameless plugin (not by the caption
+   component mounting).
+   `--caption-inset`: width the overlay caption cluster (win32) clears from
+   trailing corners. 0 by default so every surface can pad against the
+   variable instead of hard-coding 138px.
+   `--titlebar-h` / `--app-h`: the Linux title bar sits above the app, so the
+   app's viewport is the window minus the bar. Surfaces size to `--app-h`
+   rather than `100vh`, which would still measure the whole window. The bar
+   overlaps the app by `--titlebar-overlap`: every surface already opens with
+   top padding, so the bar tucks into it instead of stacking a second gap. */
+:root {
+  --caption-inset: 0px;
+  --titlebar-h: 0px;
+  --titlebar-overlap: 0px;
+  --app-h: 100vh;
+}
+.frameless {
+  --caption-inset: 138px;
+}
+.titlebar {
+  --titlebar-h: 22px;
+  --titlebar-overlap: 14px;
+  --app-h: calc(100vh - var(--titlebar-h) + var(--titlebar-overlap));
+}
+.titlebar body {
+  padding-top: calc(var(--titlebar-h) - var(--titlebar-overlap));
+}
+
 /* The runtime tags <html> with this for the span of a theme swap so every
    surface lands on its new colour in the same frame instead of cross-fading.
    Transitions only; canvas-driven animation is untouched. */

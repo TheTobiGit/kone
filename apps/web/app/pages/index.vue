@@ -350,7 +350,7 @@ function onAttentionOpen(projectPath: string, threadId: string) {
 
 <template>
   <div
-    class="relative h-full min-h-screen overflow-hidden bg-sunken"
+    class="relative h-full min-h-[var(--app-h)] overflow-hidden bg-sunken"
     :style="fadeStyle"
     @contextmenu="intent.open"
   >
@@ -366,7 +366,7 @@ function onAttentionOpen(projectPath: string, threadId: string) {
          is open it slides straight right to uncover the panel — no scale, just a
          shift, the X account-drawer motion. -->
     <motion.div
-      class="stage relative z-10 h-full min-h-screen overflow-hidden bg-ground"
+      class="stage relative z-10 h-full min-h-[var(--app-h)] overflow-hidden bg-ground"
       :style="{ willChange: 'transform' }"
       :class="settingsOpen ? 'rounded-[26px]' : ''"
       :animate="{ x: settingsOpen ? settingsWidth : 0 }"
@@ -378,7 +378,7 @@ function onAttentionOpen(projectPath: string, threadId: string) {
            screen reader all have to say so. The veil below is a sibling rather
            than a child for exactly this reason — it stays clickable. -->
       <div
-        class="relative h-full min-h-screen overflow-hidden"
+        class="relative h-full min-h-[var(--app-h)] overflow-hidden"
         :class="settingsOpen ? 'rounded-[26px]' : ''"
         :inert="settingsOpen"
       >
@@ -520,6 +520,13 @@ function onAttentionOpen(projectPath: string, threadId: string) {
         @pick="intent.pick"
         @close="intent.close"
       />
+    </Teleport>
+
+    <!-- Renderer-drawn window caption for frameless shells (win32/linux).
+         Teleported for the same reason as the intent menu: `fixed` must stay
+         window-anchored when the stage slides. Renders nothing on macOS/web. -->
+    <Teleport to="body">
+      <UiWindowCaption />
     </Teleport>
   </div>
 </template>

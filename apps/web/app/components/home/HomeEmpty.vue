@@ -19,12 +19,12 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
 
 <template>
   <main
-    class="relative flex h-full min-h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px]"
+    class="relative flex h-full min-h-[var(--app-h)] flex-col overflow-hidden bg-ground px-16 pt-[52px]"
   >
     <h1 class="sr-only">Start a project</h1>
 
     <!-- Wordmark top-left, settings top-right — both on the page's inset row. -->
-    <div class="relative z-10 flex items-center justify-between">
+    <div class="empty-top relative z-10 flex items-center justify-between">
       <div>
         <HomeRotatingWordmark />
       </div>
@@ -69,3 +69,16 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
     </motion.div>
   </main>
 </template>
+
+<style scoped>
+/* Frameless shells (win32/linux): clear the fixed caption cluster (`--caption-inset`)
+   from the settings button, and make the inset row a window drag surface —
+   it is in-flow with nothing beneath, so dragging is safe. */
+.frameless .empty-top {
+  padding-right: var(--caption-inset);
+  -webkit-app-region: drag;
+}
+.frameless .empty-top button {
+  -webkit-app-region: no-drag;
+}
+</style>

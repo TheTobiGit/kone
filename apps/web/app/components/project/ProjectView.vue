@@ -896,6 +896,23 @@ function onDiscardFile(path: string) {
   height: 3.25rem;
   pointer-events: none;
 }
+/* Frameless shells (win32/linux): the band goes solid and becomes the window
+   drag region — a frameless window with no drag surface can't be moved. Every
+   control opts back out to no-drag for itself; the strip index below shifts
+   down (see ThreadStrip) so its dashes stay clickable. */
+.frameless .project-chrome {
+  pointer-events: auto;
+  -webkit-app-region: drag;
+}
+.frameless .project-back-magnet,
+.frameless .project-nav,
+.frameless .project-avatar-slot {
+  -webkit-app-region: no-drag;
+}
+/* Clear the fixed caption cluster (`--caption-inset`) from the avatar corner. */
+.frameless .project-avatar-slot {
+  right: calc(2rem + var(--caption-inset));
+}
 .project-back-magnet,
 .project-nav,
 .project-avatar-slot {
@@ -1082,7 +1099,7 @@ function onDiscardFile(path: string) {
    `visibility` (never display:none / v-if) so every layout box stays measurable
    while hidden. */
 .project-main {
-  height: 100vh;
+  height: var(--app-h);
   overflow: hidden;
   /* Above the peek (below this layer) so it covers the peek at rest; the slide
      below opens the gap it shows through. */

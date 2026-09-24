@@ -225,6 +225,11 @@ function onOpen(threadId: string): void {
      around the row belongs to the surface beneath. */
   pointer-events: none;
 }
+/* Frameless shells: clear the fixed caption cluster (`--caption-inset`) from the corner
+   the row grows from. */
+.frameless .global-bots {
+  right: calc(20px + var(--caption-inset));
+}
 
 .bots {
   /* The row is only a rail for alignment; each bot takes its own clicks, and
