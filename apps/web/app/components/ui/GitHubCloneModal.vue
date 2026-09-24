@@ -251,9 +251,9 @@ const viewMorph = {
             v-if="view === 'form'"
             key="clone"
             class="flex flex-col px-4 py-4"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <!-- Header band: just Cancel (no title). -->
@@ -280,8 +280,8 @@ const viewMorph = {
                   key="form"
                   class="flex flex-col"
                   :initial="{ opacity: 0, y: 6 }"
-                  :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-                  :exit="{ opacity: 0, y: -8, filter: 'blur(3px)' }"
+                  :animate="{ opacity: 1, y: 0 }"
+                  :exit="{ opacity: 0, y: -8 }"
                   :transition="bodyMorph"
                 >
                   <!-- Reference field — the star. Borderless; reads as text
@@ -369,8 +369,8 @@ const viewMorph = {
                   v-else
                   key="progress"
                   class="flex flex-col"
-                  :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-                  :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
+                  :initial="{ opacity: 0, y: 10 }"
+                  :animate="{ opacity: 1, y: 0 }"
                   :exit="{ opacity: 0, y: 6 }"
                   :transition="bodyMorph"
                 >
@@ -431,9 +431,9 @@ const viewMorph = {
             v-else
             key="dest"
             class="flex flex-col"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <UiFolderBrowser

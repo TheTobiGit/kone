@@ -1,24 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import type { Component } from "vue";
-import { useIntersectionObserver } from "@vueuse/core";
+import { computed, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import {
-  AiBrain01Icon,
-  ArrowRight01Icon,
-  CommandLineIcon,
-  Delete02Icon,
-  File01Icon,
-  FileEditIcon,
-  GlobalSearchIcon,
-  Link01Icon,
-  ListViewIcon,
-  Rocket01Icon,
-  Search01Icon,
-  SourceCodeIcon,
-  ToolsIcon,
-  WorkflowSquare01Icon,
-} from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import FileChip from "~/components/git-space/FileChip.vue";
 import SiteChip from "~/components/site/SiteChip.vue";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
@@ -26,20 +9,6 @@ import ActivityStepDetail from "~/components/conversation/ActivityStepDetail.vue
 import ActivityThemeReceipt from "~/components/conversation/ActivityThemeReceipt.vue";
 import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
-import AiBrain01 from "~/components/icons/animated/AiBrain01.vue";
-import CommandLine from "~/components/icons/animated/CommandLine.vue";
-import Delete02 from "~/components/icons/animated/Delete02.vue";
-import File01 from "~/components/icons/animated/File01.vue";
-import FileEdit from "~/components/icons/animated/FileEdit.vue";
-import GlobalSearch from "~/components/icons/animated/GlobalSearch.vue";
-import Link01 from "~/components/icons/animated/Link01.vue";
-import ListView from "~/components/icons/animated/ListView.vue";
-import Rocket01 from "~/components/icons/animated/Rocket01.vue";
-import Search01 from "~/components/icons/animated/Search01.vue";
-import SourceCode from "~/components/icons/animated/SourceCode.vue";
-import Tools from "~/components/icons/animated/Tools.vue";
-import WorkflowSquare01 from "~/components/icons/animated/WorkflowSquare01.vue";
-import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -49,28 +18,7 @@ import {
   toolMeta,
   toolPhraseParts,
   toolStatus,
-  type HugeIcon,
 } from "~/utils/toolPresentation";
-
-// The animated twin for each tool glyph, keyed by the very icon data toolMeta
-// hands back — so a settled tool row can play its own gesture as it scrolls
-// into view (Search dips into the lens, Delete lifts its lid, the terminal
-// caret steps). Keys are the stable module singletons from core-free-icons,
-// matched by reference.
-const ANIMATED_TOOL_ICON = new Map<HugeIcon, Component>([
-  [File01Icon, File01],
-  [FileEditIcon, FileEdit],
-  [ListViewIcon, ListView],
-  [Delete02Icon, Delete02],
-  [Search01Icon, Search01],
-  [SourceCodeIcon, SourceCode],
-  [CommandLineIcon, CommandLine],
-  [GlobalSearchIcon, GlobalSearch],
-  [Link01Icon, Link01],
-  [WorkflowSquare01Icon, WorkflowSquare01],
-  [Rocket01Icon, Rocket01],
-  [ToolsIcon, Tools],
-]);
 
 // One row of the Agent Activity feed — a single thinking segment or tool call.
 // Icon → label (with inline file/site chips) → status → a chevron that slides a
@@ -102,30 +50,6 @@ const tool = computed(() => (props.entry.type === "tool" ? props.entry.item : nu
 
 const meta = computed(() => (tool.value ? toolMeta(tool.value.name) : null));
 const status = computed(() => (tool.value ? toolStatus(tool.value) : "done"));
-
-// The row's own icon, animated. One glyph shows at a time (thinking brain or the
-// tool's twin), so a single handle drives whichever is mounted; the row plays it
-// when the row enters the viewport, so scrolling a transcript plays each gesture
-// as it arrives instead of waiting for a pointer to find it.
-const animatedTool = computed(() =>
-  meta.value ? ANIMATED_TOOL_ICON.get(meta.value.icon) ?? null : null,
-);
-const rowEl = ref<HTMLElement | null>(null);
-const iconApi = ref<AnimatedIconHandle | null>(null);
-function playIcon(): void {
-  iconApi.value?.startAnimation();
-}
-
-// Track visibility separately so an icon that mounts onto an already-visible
-// row (a running orb settling into its glyph) still gets its one play.
-const rowVisible = ref(false);
-useIntersectionObserver(rowEl, ([entry]) => {
-  rowVisible.value = entry?.isIntersecting ?? false;
-  if (rowVisible.value) playIcon();
-});
-watch(iconApi, () => {
-  if (rowVisible.value) playIcon();
-});
 
 // ── appearance rows ─────────────────────────────────────────────────────────
 // A theme tool's whole effect lands on the window, so the row shows the palette
@@ -176,7 +100,6 @@ function toggle(): void {
       :is="clickable ? 'button' : 'div'"
       :type="clickable ? 'button' : undefined"
       class="astep__row"
-      ref="rowEl"
       :class="{ 'astep__row--clickable': clickable }"
       :title="tool ? toolDetailFull(tool) || undefined : undefined"
       @click="toggle"
@@ -190,7 +113,7 @@ function toggle(): void {
             :size="16"
             aria-label="Thinking"
           />
-          <AiBrain01 v-else ref="iconApi" :size="14" :stroke-width="1.8" trigger="manual" />
+          <HugeiconsIcon v-else :icon="AiBrain01Icon" :size="14" :stroke-width="1.8" />
         </template>
         <template v-else-if="tool && meta">
           <TurnOrb
@@ -199,14 +122,6 @@ function toggle(): void {
             :icon="meta.icon"
             :size="16"
             :aria-label="`${meta.label} running`"
-          />
-          <component
-            :is="animatedTool"
-            v-else-if="animatedTool"
-            ref="iconApi"
-            :size="14"
-            :stroke-width="1.8"
-            trigger="manual"
           />
           <HugeiconsIcon v-else :icon="meta.icon" :size="14" :stroke-width="1.8" />
         </template>

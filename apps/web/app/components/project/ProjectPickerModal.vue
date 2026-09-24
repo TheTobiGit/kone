@@ -6,11 +6,11 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowRight01Icon,
   Folder01Icon,
+  FolderOpenIcon,
   GitBranchIcon,
+  GithubIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
-import PlusSign from "~/components/icons/animated/PlusSign.vue";
-import FolderOpen from "~/components/icons/animated/FolderOpen.vue";
-import Github from "~/components/icons/animated/Github.vue";
 import { useRecentProjects, type RecentProject } from "~/composables/useRecentProjects";
 import { useProjectSummaries } from "~/composables/useProjectSummaries";
 import { useSound } from "~/composables/useSound";
@@ -55,9 +55,9 @@ subscribe(() => displayProjects.value.map((p) => p.path));
 
 // ── new project actions ──────────────────────────────────────────────────────
 const actions = [
-  { key: "create", label: "Create a new project", icon: PlusSign },
-  { key: "open", label: "Open from local folder", icon: FolderOpen },
-  { key: "clone", label: "Clone from GitHub", icon: Github },
+  { key: "create", label: "Create a new project", icon: PlusSignIcon },
+  { key: "open", label: "Open from local folder", icon: FolderOpenIcon },
+  { key: "clone", label: "Clone from GitHub", icon: GithubIcon },
 ] as const;
 
 type ActionKey = (typeof actions)[number]["key"];
@@ -225,12 +225,7 @@ const cardSpring = {
               @click="handleAction(action.key)"
             >
               <span class="action-row__icon">
-                <component
-                  :is="action.icon"
-                  :size="16"
-                  :stroke-width="1.7"
-                  trigger="hover"
-                />
+                <HugeiconsIcon :icon="action.icon" :size="16" :stroke-width="1.7" />
               </span>
               <span class="action-row__label">{{ action.label }}</span>
               <HugeiconsIcon

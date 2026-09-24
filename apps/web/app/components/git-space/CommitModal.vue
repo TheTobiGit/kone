@@ -335,9 +335,9 @@ const viewMorph = {
             v-if="step === 'select'"
             key="select"
             class="flex flex-col px-4 py-4"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <!-- Header Band: Eyebrow + Cancel -->
@@ -420,9 +420,9 @@ const viewMorph = {
             v-else-if="step === 'message'"
             key="message"
             class="flex flex-col px-4 py-4"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <!-- Header Band: Back + Branch info + Cancel -->
@@ -530,9 +530,9 @@ const viewMorph = {
             v-else-if="step === 'success'"
             key="success"
             class="flex flex-col px-4 py-4"
-            :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
-            :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
-            :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
+            :initial="{ opacity: 0, y: 10 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -10 }"
             :transition="viewMorph"
           >
             <!-- Header Band -->
