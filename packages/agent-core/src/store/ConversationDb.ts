@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "../sqlite.js";
 import { isSpawnedRelationship } from "../types.js";
@@ -5,6 +6,21 @@ import type { RelationshipToParent } from "../types.js";
 import { readAntigravityConversationUsage, resolveAntigravityContextWindow } from "../usage/local/antigravityScan.js";
 import { getUserDataDir } from "../userDataDir.js";
 import { REOPEN_COOLDOWN_MS, UnsupportedSchemaError, assistantBlockId, migrate } from "../conversationMigrations.js";
+
+/** Max cached prepared statements per connection (FIFO eviction). Matches the
+ *  200-entry budget synara/t3code use: enough for the static query set, small
+ *  enough that dynamic SQL can't grow the map without limit. */
+const STATEMENT_CACHE_MAX = 200;
+
+/** Host-scaled SQLite page-cache + mmap budget. Small machines stay lean;
+ *  large ones let the event log sit in memory instead of hitting ext4/btrfs
+ *  per query. `cache_size` is negative KB; `mmap_size` is bytes. */
+function sqliteMemoryBudget() {
+  const totalGb = os.totalmem() / 1024 ** 3;
+  if (totalGb >= 32) return { cacheSizeKb: 256 * 1024, mmapSize: 1024 * 1024 * 1024 };
+  if (totalGb >= 16) return { cacheSizeKb: 128 * 1024, mmapSize: 512 * 1024 * 1024 };
+  return { cacheSizeKb: 64 * 1024, mmapSize: 256 * 1024 * 1024 };
+}
 
 export class ConversationDb {
   private db: DatabaseSync | null = null;
@@ -29,11 +45,17 @@ export class ConversationDb {
   constructor(private readonly userDataDir?: string) {}
 
   /** Cached statement preparation to avoid parsing and compiling SQL strings
-   *  repeatedly on the high-frequency streaming path. */
+   *  repeatedly on the high-frequency streaming path. Bounded (FIFO eviction)
+   *  so dynamic SQL can't grow the map without limit. */
   prepare(db: DatabaseSync, sql: string): StatementSync {
     let stmt = this.statements.get(sql);
     if (!stmt) {
       stmt = db.prepare(sql);
+      // FIFO cap: Map preserves insertion order, so the first key is oldest.
+      if (this.statements.size >= STATEMENT_CACHE_MAX) {
+        const oldest = this.statements.keys().next().value;
+        if (oldest !== undefined) this.statements.delete(oldest);
+      }
       this.statements.set(sql, stmt);
     }
     return stmt;
@@ -55,6 +77,13 @@ export class ConversationDb {
       // wants the patience configured here.
       db.exec("PRAGMA busy_timeout = 5000");
       db.exec("PRAGMA journal_mode = WAL");
+      // No `locking_mode = EXCLUSIVE`: tests and manual diagnostics open a
+      // second (readonly) connection to the same file while the store holds
+      // its own; EXCLUSIVE would SQLITE_BUSY them. WAL + NORMAL already lets
+      // readers proceed without blocking the writer.
+      const budget = sqliteMemoryBudget();
+      db.exec(`PRAGMA cache_size = -${budget.cacheSizeKb}`);
+      db.exec(`PRAGMA mmap_size = ${budget.mmapSize}`);
       // WAL's default `synchronous = NORMAL` doesn't fsync on commit: the file
       // stays consistent through a crash, but transactions committed since the
       // last checkpoint can be *rolled back* by a power cut (SIGKILL is safe —
