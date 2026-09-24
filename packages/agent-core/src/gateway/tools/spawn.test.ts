@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { initSpawnEngine as realInitSpawnEngine } from "../../threadSpawn.js";
+import { parseSpawnRecord, parseSpawnRecords } from "@kone/protocol/spawn-record";
 
 import type { AgentPersona, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
 import type {
@@ -13,6 +14,7 @@ import {
   CANCEL_WORKER_JSON_SCHEMA,
   CONTINUE_THREAD_JSON_SCHEMA,
   DECLINE_CHILD_GATE_JSON_SCHEMA,
+  DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
   READ_RESPONSE_JSON_SCHEMA,
   SPAWN_BATCH_JSON_SCHEMA,
   SPAWN_WORKER_PRESET_JSON_SCHEMA,
@@ -258,6 +260,7 @@ describe("spawn gateway tools", () => {
       kone_spawn_targets: { permission: "allow", requiresActiveTurn: false },
       kone_spawn_worker: { permission: "allow", requiresActiveTurn: true },
       kone_spawn_worker_preset: { permission: "allow", requiresActiveTurn: true },
+      kone_delegate_to_teammate: { permission: "allow", requiresActiveTurn: true },
       kone_spawn_batch: { permission: "allow", requiresActiveTurn: true },
       kone_continue_thread: { permission: "allow", requiresActiveTurn: true },
       kone_cancel_worker: { permission: "allow", requiresActiveTurn: true },
@@ -275,6 +278,7 @@ describe("spawn gateway tools", () => {
       "kone_spawn_targets",
       "kone_spawn_worker",
       "kone_spawn_worker_preset",
+      "kone_delegate_to_teammate",
       "kone_spawn_batch",
       "kone_continue_thread",
       "kone_cancel_worker",
@@ -286,6 +290,7 @@ describe("spawn gateway tools", () => {
     expect(byName["kone_spawn_targets"]).toEqual(SPAWN_TARGETS_JSON_SCHEMA);
     expect(byName["kone_spawn_worker"]).toEqual(SPAWN_WORKER_JSON_SCHEMA);
     expect(byName["kone_spawn_worker_preset"]).toEqual(SPAWN_WORKER_PRESET_JSON_SCHEMA);
+    expect(byName["kone_delegate_to_teammate"]).toEqual(DELEGATE_TO_TEAMMATE_JSON_SCHEMA);
     expect(byName["kone_spawn_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
     expect(byName["kone_continue_thread"]).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
     expect(byName["kone_cancel_worker"]).toEqual(CANCEL_WORKER_JSON_SCHEMA);
@@ -733,6 +738,41 @@ describe("spawn gateway tools", () => {
     });
   });
 
+  test("kone_spawn_worker records the spawn and its why for the thread to read back", async () => {
+    let capturedRequest: FakeSpawnRequest | null = null;
+    currentEngine = makeEngine({
+      spawn: async (caller, request) => {
+        capturedRequest = request;
+        return {
+          requestId: request.requestId,
+          threadId: "child-1",
+          parentThreadId: caller.threadId,
+          title: "Fix tests",
+          provider: "codex",
+          model: "gpt-5",
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_spawn_worker", {
+      prompt: "Fix the tests.",
+      requestId: "op-1",
+      why: "  the suite is slow and I can keep refactoring meanwhile ",
+    });
+    expect(parseSpawnRecord(res.content[0]?.text)).toEqual({
+      threadId: "child-1",
+      title: "Fix tests",
+      provider: "codex",
+      model: "gpt-5",
+      why: "the suite is slow and I can keep refactoring meanwhile",
+      summary: 'Spawned "Fix tests" on codex/gpt-5 as child-1.',
+    });
+    // The why is the thread's to show, not the child's to read.
+    expect(capturedRequest).not.toHaveProperty("why");
+  });
+
   test("kone_spawn_worker with no target inherits the caller's provider and model", async () => {
     let capturedRequest: FakeSpawnRequest | null = null;
     currentEngine = makeEngine({
@@ -1147,6 +1187,14 @@ describe("spawn gateway tools", () => {
 /** A targets report offering the given providers/models, all available unless
  *  overridden — the shape the preset tool flattens into an availability
  *  snapshot for the fallback resolver. */
+/** The sentence a batch result carries for the model, inside its record. */
+function batchSummary(res: { content: Array<{ text?: string }> }): string | undefined {
+  const text = res.content[0]?.text;
+  if (!text) return undefined;
+  const parsed: unknown = JSON.parse(text);
+  return (parsed as { summary?: string }).summary;
+}
+
 function targetsReport(
   providers: Array<{ provider: string; available?: boolean; models: string[] }>,
 ): FakeTargetsReport {
@@ -1196,6 +1244,44 @@ describe("kone_spawn_worker_preset", () => {
       mode: undefined,
     });
     expect(res.structuredContent).toMatchObject({ preset: "Explorer", selection: "assigned" });
+  });
+
+  test("records the spawn with its preset and why for the thread to read back", async () => {
+    let capturedRequest: FakeSpawnRequest | null = null;
+    currentEngine = makeEngine({
+      targets: async () => targetsReport([{ provider: "claudeAgent", models: ["haiku"] }]),
+      spawn: async (caller, request) => {
+        capturedRequest = request;
+        return {
+          requestId: request.requestId,
+          threadId: "child-1",
+          parentThreadId: caller.threadId,
+          title: "Look around",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [makePreset()]) }));
+    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+      preset: "explorer",
+      task: "Map the auth flow.",
+      requestId: "op-1",
+      why: "I need the map before I touch the middleware",
+    });
+    // The preset reads back by its own name, not the caller's spelling of it.
+    expect(parseSpawnRecord(res.content[0]?.text)).toEqual({
+      threadId: "child-1",
+      title: "Look around",
+      provider: "claudeAgent",
+      model: "haiku",
+      preset: "Explorer",
+      why: "I need the map before I touch the middleware",
+      summary: 'Spawned "Look around" from preset Explorer on claudeAgent/haiku as child-1.',
+    });
+    expect(capturedRequest).not.toHaveProperty("why");
   });
 
   test("resolves a preset by id when the name doesn't match", async () => {
@@ -1558,7 +1644,7 @@ describe("kone_spawn_batch", () => {
       target: { provider: "codex", model: "gpt-5" },
       mode: "ask",
     });
-    expect(res.content[0]?.text).toBe('Spawned 2 threads: "Task 1" (child-op-1), "Task 2" (child-op-2).');
+    expect(batchSummary(res)).toBe('Spawned 2 threads: "Task 1" (child-op-1), "Task 2" (child-op-2).');
     expect(res.structuredContent).toEqual({
       batch: {
         total: 2,
@@ -1632,7 +1718,7 @@ describe("kone_spawn_batch", () => {
       target: { provider: "claudeAgent", model: "haiku" },
       mode: undefined,
     });
-    expect(res.content[0]?.text).toBe('Spawned 1 thread: "Explore Auth" (child-op-preset-1).');
+    expect(batchSummary(res)).toBe('Spawned 1 thread: "Explore Auth" (child-op-preset-1).');
     expect(res.structuredContent).toEqual({
       batch: {
         total: 1,
@@ -1700,7 +1786,7 @@ describe("kone_spawn_batch", () => {
       delegateToAgentId: "agent-backend",
       persona: { name: "Backend", instructions: "You own the API layer." },
     });
-    expect(res.content[0]?.text).toBe('Spawned 1 thread: "Build /users" (child-op-delegate-1).');
+    expect(batchSummary(res)).toBe('Spawned 1 thread: "Build /users" (child-op-delegate-1).');
     expect(res.structuredContent).toEqual({
       batch: {
         total: 1,
@@ -1755,7 +1841,7 @@ describe("kone_spawn_batch", () => {
       ],
     });
     expect(res.isError).toBe(false);
-    expect(res.content[0]?.text).toBe(
+    expect(batchSummary(res)).toBe(
       'Spawned 1 thread: "Valid Task" (child-op-1). 1 spawn failed: item 1: No agent "Backend" on this project\'s team.',
     );
     expect(res.structuredContent).toEqual({
@@ -1860,7 +1946,7 @@ describe("kone_spawn_batch", () => {
       ],
     });
     expect(res.isError).toBe(false);
-    expect(res.content[0]?.text).toBe(
+    expect(batchSummary(res)).toBe(
       'Spawned 1 thread: "Task OK" (child-op-ok). 1 spawn failed: item 1: Spawn depth limit reached (max 2).',
     );
     expect(res.structuredContent).toEqual({
@@ -1886,5 +1972,96 @@ describe("kone_spawn_batch", () => {
         ],
       },
     });
+  });
+});
+
+describe("kone_delegate_to_teammate", () => {
+  const delegatingEngine = (captured: FakeSpawnRequest[]) =>
+    makeEngine({
+      targets: async () => targetsReport([{ provider: "codex", models: ["gpt-5"] }]),
+      spawn: async (caller, request) => {
+        captured.push(request);
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? "Build /users",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+  const backend = makeAgent({ model: { provider: "codex", model: "gpt-5" } });
+
+  test("runs the work as the teammate and records who was asked, and why", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = delegatingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
+    const res = await registry.call(ctx, "kone_delegate_to_teammate", {
+      agent: "backend",
+      task: "Build the /users endpoint.",
+      requestId: "op-1",
+      why: "the API layer is theirs",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(captured).toEqual([
+      {
+        requestId: "op-1",
+        prompt: "Build the /users endpoint.",
+        title: undefined,
+        target: { provider: "codex", model: "gpt-5" },
+        mode: undefined,
+        delegateToAgentId: "agent-backend",
+        persona: { name: "Backend", instructions: "You own the API layer." },
+      },
+    ]);
+    expect(parseSpawnRecord(res.content[0]?.text)).toEqual({
+      threadId: "child-op-1",
+      title: "Build /users",
+      provider: "codex",
+      model: "gpt-5",
+      agent: "Backend",
+      agentId: "agent-backend",
+      why: "the API layer is theirs",
+      summary:
+        'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Collect its response with kone_wait_for_responses.',
+    });
+    expect(res.structuredContent).toMatchObject({ agent: "Backend", delegation: { threadId: "child-op-1" } });
+  });
+
+  test("an agent off this project's team is not found", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = delegatingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
+    const res = await registry.call(ctx, "kone_delegate_to_teammate", {
+      agent: "Frontend",
+      task: "Build the page.",
+      requestId: "op-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+    expect(captured).toHaveLength(0);
+  });
+
+  test("a batch records every thread it opened, in item order, each with its own why", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = delegatingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        { requestId: "a", prompt: "Write the tests.", title: "Tests", why: "it's mechanical" },
+        { requestId: "b", prompt: "Build it.", title: "Build", agent: "Backend", why: "it's their layer" },
+        { requestId: "c", prompt: "Nope.", agent: "Frontend" },
+      ],
+    });
+    expect(
+      parseSpawnRecords(res.content[0]?.text).map((r) => [r.threadId, r.agent ?? null, r.why]),
+    ).toEqual([
+      ["child-a", null, "it's mechanical"],
+      ["child-b", "Backend", "it's their layer"],
+    ]);
+    expect(batchSummary(res)).toContain('1 spawn failed: item 2: No agent "Frontend"');
   });
 });
