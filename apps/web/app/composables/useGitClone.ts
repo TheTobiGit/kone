@@ -133,7 +133,11 @@ export function useGitClone() {
     stage.value = stageFor(0);
 
     const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
-    return bridge?.clone ? realClone(bridge, url, target) : mockClone(target);
+    if (bridge?.clone) return realClone(bridge, url, target);
+    if (import.meta.dev) return mockClone(target);
+    cloneError.value = "Cloning needs the desktop app.";
+    phase.value = "error";
+    return Promise.resolve(null);
   }
 
   // Real clone: subscribe to streamed progress, then await the spawned process.

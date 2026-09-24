@@ -48,7 +48,8 @@ let inFlight: Promise<void> | null = null;
 
 /** Dev fallback (browser, no bridge): a plausible spread of install channels so
  *  the pane's states — behind, current, self-updating, bundled, unrecognised —
- *  are all exercised without an Electron shell. Never used in the app. */
+ *  are all exercised without an Electron shell. Only read under
+ *  `import.meta.dev`, so production builds drop it. */
 const MOCK = {
   codex: {
     provider: "codex",
@@ -177,7 +178,9 @@ export function useProviderMaintenance() {
         const api = bridge();
         const list = api
           ? await api.maintenance({ checkLatest: options?.checkLatest ?? true, force })
-          : Object.values(MOCK);
+          : import.meta.dev
+            ? Object.values(MOCK)
+            : [];
         maintenance.value = Object.fromEntries(list.map((m) => [m.provider, m]));
         checked = true;
         checkedAt.value = Date.now();
@@ -212,6 +215,17 @@ export function useProviderMaintenance() {
     runs.value = { ...runs.value, [provider]: start };
 
     const api = bridge();
+    if (!api && !import.meta.dev) {
+      const done: UpdateRun = {
+        ...start,
+        running: false,
+        outcome: "unsupported",
+        message: "Updating needs the desktop app.",
+        finishedAt: Date.now(),
+      };
+      runs.value = { ...runs.value, [provider]: done };
+      return done;
+    }
     if (!api) {
       // Browser dev: pretend the installer ran, so the pane's running →
       // succeeded transition can be seen without an Electron shell.

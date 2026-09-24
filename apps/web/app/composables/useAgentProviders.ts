@@ -363,7 +363,7 @@ export function useAgentProviders() {
     loadError.value = null;
     try {
       const api = bridge();
-      statuses.value = api ? await api.discover() : MOCK_STATUSES;
+      statuses.value = api ? await api.discover() : import.meta.dev ? MOCK_STATUSES : [];
       probed = true;
       confirmed.value = true;
       return statuses.value;
@@ -385,7 +385,7 @@ export function useAgentProviders() {
     if (cached && !force) return cached;
     const api = bridge();
     let raw: ModelDescriptor[];
-    if (!api) raw = MOCK_MODELS[provider] ?? [];
+    if (!api) raw = import.meta.dev ? (MOCK_MODELS[provider] ?? []) : [];
     else {
       try {
         raw = await api.models(provider);
@@ -410,9 +410,10 @@ export function useAgentProviders() {
     hydrating = (async () => {
       const api = bridge();
       if (!api?.surface) {
-        // Browser dev (no bridge): the mocks are the snapshot.
-        statuses.value = MOCK_STATUSES;
-        modelCache.value = { ...MOCK_MODELS };
+        // Browser dev (no bridge): the mocks are the snapshot. Gated on
+        // `import.meta.dev` at every read so production drops the mock tables.
+        statuses.value = import.meta.dev ? MOCK_STATUSES : [];
+        modelCache.value = import.meta.dev ? { ...MOCK_MODELS } : {};
         probed = true;
         hydrated = true;
         return;

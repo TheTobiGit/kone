@@ -185,7 +185,10 @@ function buildAllRecentSessions(archived: boolean) {
     // takes its place — enough for the archived view to be demoable, and
     // disjoint from the live slice so switching between them actually changes
     // what is on screen.
-    mock: () => (archived ? mockSessions().slice(-2) : mockSessions().slice(0, -2)),
+    // Dev-only so production drops the mock rows.
+    mock: import.meta.dev
+      ? () => (archived ? mockSessions().slice(-2) : mockSessions().slice(0, -2))
+      : () => [],
     trigger: () => recents.value.map((p) => p.path).join("\n"),
   });
 }

@@ -113,7 +113,8 @@ export function useRecentSessions(cwd: () => string) {
       const metas = await api.list(projectPath);
       return metas.map((meta) => ({ meta, project: { projectPath } }));
     },
-    mock: mockSessions,
+    // Dev-only so production drops the mock rows.
+    mock: import.meta.dev ? mockSessions : () => [],
     trigger: cwd,
   });
 }

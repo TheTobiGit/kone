@@ -108,9 +108,11 @@ export function useCreateProject() {
     createError.value = null;
 
     const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
-    return bridge?.create
-      ? realCreate(bridge, options)
-      : mockCreate(target);
+    if (bridge?.create) return realCreate(bridge, options);
+    if (import.meta.dev) return mockCreate(target);
+    createError.value = "Creating a project needs the desktop app.";
+    phase.value = "error";
+    return Promise.resolve(null);
   }
 
   async function realCreate(
