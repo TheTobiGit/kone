@@ -73,7 +73,6 @@ const isPreview = computed(() => summary.change.value?.preview === true);
   align-items: center;
   gap: 8px;
   width: 100%;
-  max-width: 42rem;
   min-height: 28px;
   padding: 0;
   font-size: 0.86rem;

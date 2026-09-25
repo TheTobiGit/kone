@@ -87,7 +87,6 @@ onMounted(() => {
    binary fact, and the grid track below carries the motion. */
 .fold {
   width: 100%;
-  max-width: 42rem;
   min-width: 0;
 }
 /* Height animation without JS measurement: the region is a one-track grid that

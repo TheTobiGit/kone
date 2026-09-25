@@ -7,6 +7,7 @@ import type { ThreadBlock } from "~/composables/useAgent";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { PREVIEW_HOLD_MS } from "~/composables/useConversationPreview";
 import type { ResponseDisplay } from "~/utils/responseDisplay";
+import type { ConversationStyle } from "~/utils/conversationStyle";
 
 // The Conversation page's stage: a turn playing on the actual thread renderer,
 // under exactly the choices being staged. A thin line under it tracks the take
@@ -16,6 +17,8 @@ const props = defineProps<{
   open: boolean;
   /** The choices the take plays under. */
   display: ResponseDisplay;
+  /** The style the take is drawn in. */
+  conversationStyle: ConversationStyle;
   /** A tile is being tried on, so the stage isn't showing what's set. */
   probing: boolean;
   blocks: ThreadBlock[];
@@ -56,6 +59,7 @@ watch(
           :blocks="blocks"
           :now="now"
           :display="display"
+          :conversation-style="conversationStyle"
           agent-seed="conversation-preview"
           :scratchpad="false"
           hide-empty-art

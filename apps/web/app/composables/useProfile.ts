@@ -34,6 +34,11 @@ function slugHandle(raw: string): string {
     .slice(0, 24);
 }
 
+// The name worn over your own requests — "You" until the machine's account
+// name resolves, so the face is never an empty disc. Single authority for
+// the fallback: YouHead and ReplyRef read these, never their own literals.
+export const YOU_FALLBACK_NAME = "You";
+
 export function useProfile() {
   const { username, displayName: osName, resolve } = useUser();
 
@@ -53,6 +58,11 @@ export function useProfile() {
 
   const initial = computed(() => name.value.charAt(0).toUpperCase() || "");
 
+  // Your side of the transcript: the display name (or "You") and its initial
+  // (empty when a photo draws the face instead).
+  const youName = computed(() => name.value || YOU_FALLBACK_NAME);
+  const youInitial = computed(() => (image.value ? "" : initial.value || YOU_FALLBACK_NAME.charAt(0)));
+
   const avatarStyle = computed(() =>
     image.value
       ? {
@@ -71,6 +81,8 @@ export function useProfile() {
     name,
     handle,
     initial,
+    youName,
+    youInitial,
     color,
     image,
     avatarStyle,

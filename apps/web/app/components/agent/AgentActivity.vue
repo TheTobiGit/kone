@@ -138,7 +138,7 @@ const canExpand = computed(() => total.value > 0);
 // The chip strip folds and unfolds in lockstep with the window below — same
 // duration, same curve. Without this the strip only shrinks when AnimatePresence
 // finally unmounts the exiting chips, so the rows finish opening before the
-// chevron (which rides the strip's edge) jumps toward the orb.
+// chips snap away.
 const STRIP_FOLD = "width 380ms cubic-bezier(0.22, 0.61, 0.36, 1)";
 
 function settleStrip(el: HTMLElement): void {
@@ -616,11 +616,11 @@ function stepProps(e: ActivityEntry) {
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
-  /* Hug the orb · chips · arrow so the clickable area and hover background stop at
-     the arrow instead of running to the far edge; cap at the row so a long run
-     still shrinks the strip and lets its fade take over. */
-  width: fit-content;
-  max-width: 100%;
+  /* Span the row so the chevron pins to the right edge, in the same column as
+     every step row's chevron, however many chips the run has. A long run still
+     shrinks the strip and lets its fade take over. The right bleed below keeps
+     the chevron flush with the rows' edge while the hover pill clears it. */
+  width: calc(100% + 6px);
   min-height: 26px;
   /* Pull the window up so the 22px rail closes the distance to the orb when rows
      follow. No left bleed: the orb must sit at the content edge (x=0) to line up with the
@@ -654,9 +654,8 @@ function stepProps(e: ActivityEntry) {
   isolation: isolate;
   transform: translateZ(0);
 }
-/* The clipped one-line track. It shrinks to its chips so the chevron trails
-   immediately after the last one, and fades rather than cuts when a very long
-   run outgrows the available width — the toggle is there to see the full list. */
+/* The clipped one-line track. It fades rather than cuts when a very long run
+   outgrows the available width — the toggle is there to see the full list. */
 .head__strip {
   display: flex;
   flex: 0 1 auto;
@@ -686,6 +685,7 @@ function stepProps(e: ActivityEntry) {
 }
 .head__chev {
   flex: none;
+  margin-left: auto;
   opacity: 0.5;
   transition: transform 0.22s ease;
 }

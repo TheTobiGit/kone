@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, type ComponentPublicInstance } from "vue";
+import { ref } from "vue";
 import ConversationGlyph from "~/components/settings/ConversationGlyph.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
+import { useRovingRadios } from "~/composables/useRovingRadios";
 import {
   RESPONSE_OPTIONS,
   type ChoiceOption,
@@ -68,29 +69,9 @@ function leave(opt: ChoiceOption): void {
 const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
 
-// ── roving radios ─────────────────────────────────────────────────────────────
 // Arrows move the selection and the focus together within a row, the way a
-// native radiogroup does. Modified arrows and any key while the drawer is shut
-// pass straight through — a focused radio mustn't swallow the app's shortcuts.
-const tileEls = new Map<ChoiceOption, HTMLElement>();
-function setTileEl(el: Element | ComponentPublicInstance | null, opt: ChoiceOption) {
-  if (el instanceof HTMLElement) tileEls.set(opt, el);
-  else tileEls.delete(opt);
-}
-
-function onKeydown(e: KeyboardEvent, row: Row, i: number) {
-  if (!props.open) return;
-  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-  const forward = e.key === "ArrowDown" || e.key === "ArrowRight";
-  const back = e.key === "ArrowUp" || e.key === "ArrowLeft";
-  if (!forward && !back) return;
-  e.preventDefault();
-  const n = row.options.length;
-  const next = row.options[(i + (forward ? 1 : -1) + n) % n];
-  if (!next) return;
-  choose(next);
-  tileEls.get(next)?.focus();
-}
+// native radiogroup does — shared with the style tiles above.
+const { setTileEl, onKeydown } = useRovingRadios<ChoiceOption>();
 </script>
 
 <template>
@@ -125,7 +106,7 @@ function onKeydown(e: KeyboardEvent, row: Row, i: number) {
                 :title="opt.description"
                 :tabindex="open && isSet(opt) ? 0 : -1"
                 @click="choose(opt)"
-                @keydown="onKeydown($event, row, i)"
+                @keydown="onKeydown($event, i, row.options, choose, open)"
                 @pointerenter="emit('probe', opt)"
                 @pointerleave="leave(opt)"
                 @focus="emit('probe', opt)"

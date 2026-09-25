@@ -7,9 +7,6 @@ import {
   Cancel01Icon,
   Copy01Icon,
   Folder01Icon,
-  GitForkIcon,
-  Note01Icon,
-  PencilEdit01Icon,
   RefreshIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -22,7 +19,6 @@ import type {
   TurnCheckpointRecord,
 } from "~/types/desktop";
 import { groupCompactionMarkers } from "~/utils/compactionMarkers";
-import FileChip from "~/components/git-space/FileChip.vue";
 import TurnThemeReceipts from "~/components/turn/TurnThemeReceipts.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
@@ -42,9 +38,14 @@ import { agentIdentity } from "~/utils/agentIdentity";
 import { useSearchLanding } from "~/composables/useSearchLanding";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import type { ResponseDisplay } from "~/utils/responseDisplay";
+import { STYLE_SPECS, type ConversationStyle } from "~/utils/conversationStyle";
+import { formatFileSize } from "~/utils/formatFile";
 import AssistantTurnBody from "~/components/conversation/AssistantTurnBody.vue";
+import UserTurn from "~/components/conversation/UserTurn.vue";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 import TextSwap from "~/components/ui/TextSwap.vue";
+import ReplyRef from "~/components/conversation/ReplyRef.vue";
+import TurnActions from "~/components/conversation/TurnActions.vue";
 
 // The live conversation — where the agent's turns become a timeline.
 //
@@ -151,6 +152,9 @@ const props = defineProps<{
    *  (such as the global assistant modal) omit them. Defaults to true unless
    *  explicitly false or when `house` is set. */
   scratchpad?: boolean;
+  /** Draw the thread in this style instead of the reader's — the Conversation
+   *  settings page previews a style before it is picked. */
+  conversationStyle?: ConversationStyle;
 }>();
 
 const emit = defineEmits<{
@@ -189,6 +193,70 @@ const agent = computed(() => agentIdentity(props.house ? null : props.agentSeed)
 const allowScratchpad = computed(() => props.scratchpad ?? !props.house);
 const allowBranch = computed(() => props.allowBranch ?? false);
 
+// ── the look ─────────────────────────────────────────────────────────────────
+// Which layout the turns are drawn in (utils/conversationStyle). The parts and
+// their order never change with it — only where they sit and what ties a
+// request to its reply — so almost all of a style is the stylesheet keyed off
+// the root's `thread--style-*` class. The one row this style owns in
+// STYLE_SPECS is the single authority the script and template read: your face
+// and name over a request, the time inside a chat bubble, and the rest.
+// Everything below `spec` is a projection of it — except the elbow (see
+// showsElbow), the one switch the table cannot express.
+const readerStyle = useConversationStyle().style;
+const look = computed<ConversationStyle>(() => props.conversationStyle ?? readerStyle.value);
+const spec = computed(() => STYLE_SPECS[look.value]);
+/** Every style but kone's own family seats a turn's actions in its head line
+ *  on hover rather than holding a row open under it — a row the size of a
+ *  line, under every message, is most of what makes a flat transcript look
+ *  loose. Replies dock into the speaker line, requests into the you-head —
+ *  except the styles with no head: the prompt's sit at the end of its command
+ *  line, the chat's beside its bubbles (see spec.userActs / spec.sideActs). */
+const floatActs = computed(() => spec.value.floatActs);
+const faceSize = computed(() => spec.value.face);
+/** Whether the reply draws its speaker face — the style table's `face: 0`
+ *  sentinel projected once, here, instead of a magic size check in the body. */
+const showFace = computed(() => spec.value.face > 0);
+/** The default style's elbow alone: kone-quiet is kone with the connector not
+ *  mounted, so the two share a spec row and this is the one switch the table
+ *  cannot express. */
+const showsElbow = computed(() => look.value === "kone");
+/** A message's time the way its style says it: Discord's "Today at 11:55 AM",
+ *  everywhere else the bare clock. */
+function stampFor(at: number): string {
+  return spec.value.headStamp === "day-at-clock" ? `${formatDayDivider(at, props.now)} at ${clock(at)}` : clock(at);
+}
+/** The time a reply wears in its head — the styles whose actions float have no
+ *  footer to carry it. A turn that didn't finish says how it ended beside it. */
+function replyStamp(block: AssistantBlock): string | undefined {
+  if (spec.value.headStamp === "none") return undefined;
+  const at = stampFor(block.at);
+  return block.state === "running" || block.state === "completed" ? at : `${at} · ${statusFor(block).text}`;
+}
+/** A chat bubble's corner: the time, and how the turn ended if it didn't. */
+function bubbleStamp(block: AssistantBlock): string {
+  const at = clock(block.at);
+  return block.state === "completed" ? at : `${statusFor(block).text} · ${at}`;
+}
+/** A chat request's ticks: sent, delivered while the reply is being written,
+ *  read once it has been. Derived once per exchange in `allExchanges` below
+ *  (see `EnrichedExchange.receipt`) so the template reads `ex.receipt` O(1)
+ *  instead of scanning `ex.blocks` per row per render. */
+export type ReceiptState = "sent" | "delivered" | "read";
+
+// Your face and name over a request (YouHead) and the channel's reply
+// lead-in (ReplyRef) read identity but never resolve it: the lookup behind
+// useUser is cached process-wide, so one warm per thread is enough — not one
+// per head in a 60-turn thread. Re-warmed when the look changes under the
+// thread (the settings stage probes styles through `conversationStyle`).
+const profile = useProfile();
+const needsHeads = computed(() => spec.value.youHead || spec.value.replyRef);
+onMounted(() => {
+  if (needsHeads.value) void profile.resolve();
+});
+watch(needsHeads, (needs) => {
+  if (needs) void profile.resolve();
+});
+
 // Warm the Markdown parser on mount: markdown-it is code-split behind a dynamic
 // import, so the very first streamed reply would otherwise flash raw source for a
 // beat while it loads. Kicking the load off now means text renders formatted from
@@ -216,6 +284,20 @@ function statusOf(block: AssistantBlock): StatusLabel {
   if (block.state === "interrupted") return { text: "stopped", tone: "muted" };
   return { text: `replied in ${elapsed(block)}`, tone: "muted" };
 }
+// One status object per assistant block, derived once per render (tracks
+// `props.now` through `elapsed`). The template reads through `statusFor`
+// — O(1) map gets — so a row never pays the 3x `statusOf` calls the footer
+// plus its stamp used to make.
+const statusById = computed(() => {
+  const m = new Map<string, StatusLabel>();
+  for (const b of props.blocks) {
+    if (b.role === "assistant") m.set(b.id, statusOf(b));
+  }
+  return m;
+});
+function statusFor(block: AssistantBlock): StatusLabel {
+  return statusById.value.get(block.id) ?? statusOf(block);
+}
 // The receipt on a settled turn's work fold. Duration is the whole turn's span
 // (`elapsed` reads block.at → block.endedAt), phrased by how the turn ended.
 function workLabel(block: AssistantBlock): string {
@@ -234,6 +316,14 @@ function toggleTurn(block: AssistantBlock, open: boolean): void {
 }
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+/** A settled reply with words to copy, save or fork from. */
+function canActOn(block: AssistantBlock): boolean {
+  return block.state === "completed" && !!assistantText(block);
+}
+/** A settled reply with a file restore to offer. */
+function hasTurnCheckpoint(block: AssistantBlock): boolean {
+  return block.state !== "running" && hasCheckpoint(block) && !!props.threadId;
 }
 function assistantText(block: AssistantBlock): string {
   return block.items
@@ -262,14 +352,6 @@ watch(
 // ── attachments & lightbox ───────────────────────────────────────────────────
 const desktopAgent = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
-}
-
 function isImageAttachment(att: ChatAttachment): boolean {
   return att.type === "image" || att.mimeType.toLowerCase().startsWith("image/");
 }
@@ -292,6 +374,31 @@ function partitionAttachments(attachments?: ChatAttachment[]) {
     }
   }
   return { images, videos, files };
+}
+export type AttachmentPartition = {
+  images: ChatAttachment[];
+  videos: ChatAttachment[];
+  files: ChatAttachment[];
+};
+const EMPTY_PARTITION: AttachmentPartition = { images: [], videos: [], files: [] };
+// One exchange = one request + the assistant turn(s) answering it, with the
+// per-row lookups the template used to recompute (some twice, some 5x+ per
+// render) derived once here: the request text (channel reply-ref + retry),
+// the first assistant reply and its receipt ticks, and the partitioned
+// attachments per user block. All O(1) reads from here on; grouping itself
+// is the single O(n) pass.
+type EnrichedExchange = {
+  key: string;
+  blocks: ThreadBlock[];
+  requestText: string;
+  reply: AssistantBlock | undefined;
+  receipt: ReceiptState;
+  parts: Map<string, AttachmentPartition>;
+};
+/** Pre-partitioned attachments for one user block in an enriched exchange —
+ *  O(1); the template must never call `partitionAttachments` directly. */
+function partsFor(ex: EnrichedExchange, block: ThreadBlock): AttachmentPartition {
+  return ex.parts.get(block.id) ?? EMPTY_PARTITION;
 }
 
 const copiedPathId = ref<string | null>(null);
@@ -368,19 +475,6 @@ function onLightboxKeydown(e: KeyboardEvent) {
 }
 // ── copy ──────────────────────────────────────────────────────────────────────
 const copied = ref<string | null>(null);
-const USER_REQUEST_LIMIT = 900;
-const expandedUserRequests = reactive<Record<string, boolean>>({});
-function isLongUserRequest(block: Extract<ThreadBlock, { role: "user" }>): boolean {
-  return block.text.length > USER_REQUEST_LIMIT;
-}
-function userRequestText(block: Extract<ThreadBlock, { role: "user" }>): string {
-  if (!isLongUserRequest(block) || expandedUserRequests[block.id]) return block.text;
-  return `${block.text.slice(0, USER_REQUEST_LIMIT).trimEnd()}…`;
-}
-function toggleUserRequest(block: Extract<ThreadBlock, { role: "user" }>): void {
-  expandedUserRequests[block.id] = !expandedUserRequests[block.id];
-  cue(expandedUserRequests[block.id] ? "expand" : "collapse");
-}
 async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
   if (!block.text || !import.meta.client) return;
   try {
@@ -441,7 +535,9 @@ function hasCheckpoint(block: AssistantBlock): boolean {
 // this component never touches the send path itself.
 const dismissedTurnErrors = reactive<Record<string, boolean>>({});
 /** The user request this assistant turn answers — the nearest user block above
- *  it. Retry re-sends that, so a failed turn gets exactly its own prompt back. */
+ *  it. Retry re-sends that, so a failed turn gets exactly its own prompt back.
+ *  Fallback for non-exchange callers only: the template and `retryTurn` read
+ *  `ex.requestText` (O(1)) instead of scanning per row per render. */
 function userRequestFor(block: AssistantBlock): string {
   for (let i = props.blocks.indexOf(block) - 1; i >= 0; i--) {
     const b = props.blocks[i];
@@ -449,8 +545,8 @@ function userRequestFor(block: AssistantBlock): string {
   }
   return "";
 }
-function retryTurn(block: AssistantBlock): void {
-  const text = userRequestFor(block);
+function retryTurn(block: AssistantBlock, requestText: string): void {
+  const text = requestText || userRequestFor(block);
   if (!text.trim() || props.busy) return;
   cue("press");
   emit("retry", text);
@@ -461,51 +557,21 @@ function dismissTurnError(block: AssistantBlock): void {
 }
 
 // ── edit-and-resend ──────────────────────────────────────────────────────────
-// The edit affordance lives on every user turn. Saving an edit of the LAST
-// user turn ships the text through the host's send path as a new turn on
-// this thread; saving an edit of any earlier turn forks the thread at that
-// block instead (the transcript keeps the original either way — rolling it
-// back would rewrite history the replies after it already answered).
-const editingUser = ref<string | null>(null);
-const editDraft = ref("");
-const editInput = ref<HTMLTextAreaElement | null>(null);
+// The edit affordance lives on every user turn (see UserTurn, which owns the
+// draft field and the expand state). Saving an edit of the LAST user turn
+// ships the text through the host's send path as a new turn on this thread;
+// saving an edit of any earlier turn forks the thread at that block instead
+// (the transcript keeps the original either way — rolling it back would
+// rewrite history the replies after it already answered).
 const lastUserBlockId = computed(() => lastUserBlock()?.id ?? null);
-function startEditUser(block: Extract<ThreadBlock, { role: "user" }>): void {
-  editingUser.value = block.id;
-  editDraft.value = block.text;
-  cue("toggle");
-  void nextTick(() => {
-    editInput.value?.focus();
-    editInput.value?.select();
-    sizeEdit();
-  });
-}
-// Seamless auto-grow: the field never scrolls or shows a resize grabber — it
-// takes exactly the height of its text, so the bubble simply grows with it.
-function sizeEdit(): void {
-  const el = editInput.value;
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
-}
-function autoGrowEdit(): void {
-  sizeEdit();
-}
-function cancelEditUser(): void {
-  editingUser.value = null;
-  editDraft.value = "";
-}
-function saveEditUser(): void {
-  const blockId = editingUser.value;
-  const text = editDraft.value.trim();
-  if (!blockId || !text || props.busy) return;
-  editingUser.value = null;
-  editDraft.value = "";
+function saveUserEdit(block: Extract<ThreadBlock, { role: "user" }>, text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed || props.busy) return;
   cue("press");
   // The last user turn is still replaceable by a follow-up; anything earlier
   // has replies after it, so the edit branches the thread at that block.
-  if (blockId === lastUserBlockId.value) emit("resend", text);
-  else emit("edit-fork", blockId, text);
+  if (block.id === lastUserBlockId.value) emit("resend", trimmed);
+  else emit("edit-fork", block.id, trimmed);
 }
 
 // ── a stored conversation whose transcript never arrived ─────────────────────
@@ -564,12 +630,38 @@ const hasRunningExchange = computed(
 );
 
 // Group the flat block list into exchanges: each user request opens a new group
-// and the assistant turn(s) that follow it belong to that group.
-const allExchanges = computed(() => {
-  const groups: { key: string; blocks: ThreadBlock[] }[] = [];
+// and the assistant turn(s) that follow it belong to that group. The request
+// text, first reply, receipt, and per-user-block partitions are derived here
+// once per blocks change — O(n) total, O(1) per row from here on. `requestText`
+// is always derived (cheap O(1) slice of the grouping pass), so the channel
+// style's reply-ref pays no scan and every other style pays nothing extra.
+const allExchanges = computed<EnrichedExchange[]>(() => {
+  const groups: EnrichedExchange[] = [];
   for (const b of props.blocks) {
-    if (b.role === "user" || groups.length === 0) groups.push({ key: b.id, blocks: [b] });
-    else groups[groups.length - 1]!.blocks.push(b);
+    if (b.role === "user" || groups.length === 0) {
+      const parts = new Map<string, AttachmentPartition>();
+      if (b.role === "user" && b.attachments?.length) {
+        parts.set(b.id, partitionAttachments(b.attachments));
+      }
+      groups.push({
+        key: b.id,
+        blocks: [b],
+        requestText: b.role === "user" ? b.text : "",
+        reply: undefined,
+        receipt: "sent",
+        parts,
+      });
+    } else groups[groups.length - 1]!.blocks.push(b);
+  }
+  for (const g of groups) {
+    const reply = g.blocks.find((b): b is AssistantBlock => b.role === "assistant");
+    g.reply = reply;
+    g.receipt = !reply ? "sent" : reply.state === "running" ? "delivered" : "read";
+    for (const b of g.blocks) {
+      if (b.role === "user" && b.attachments?.length && !g.parts.has(b.id)) {
+        g.parts.set(b.id, partitionAttachments(b.attachments));
+      }
+    }
   }
   return groups;
 });
@@ -981,10 +1073,15 @@ watch(
   <div
     ref="root"
     class="thread"
-    :class="{
-      'thread--empty': !hasBlocks,
-      'thread--busy': hasRunningExchange,
-    }"
+    :class="[
+      `thread--style-${look}`,
+      {
+        'thread--empty': !hasBlocks,
+        'thread--busy': hasRunningExchange,
+        'thread--you-left': spec.youLeft,
+        'thread--float-acts': spec.floatActs,
+      },
+    ]"
   >
     <!-- A stored conversation whose transcript never arrived — the session's
          read came back empty-handed and nothing is still loading. Retry
@@ -1122,9 +1219,10 @@ watch(
           'exchange--paired': ex.blocks.length > 1,
         }"
       >
-      <!-- Thin elbow line: out of the request bubble's left edge, across to the avatar column, down to the reply -->
+      <!-- Thin elbow line: out of the request bubble's left edge, across to the avatar column, down to the reply.
+           The default style's alone — every other style ties the two its own way, or not at all. -->
       <ExchangeConnector
-        v-if="ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user') && ex.blocks.some((b) => b.role === 'assistant')"
+        v-if="showsElbow && ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user') && ex.blocks.some((b) => b.role === 'assistant')"
         :running="ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running')"
       />
 
@@ -1143,184 +1241,40 @@ watch(
     >
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
       <template v-if="block.role === 'user'">
-
-         <!-- Edit-and-resend: the request bubble stays the bubble — its text
-              becomes a seamless auto-growing field (Enter saves, Shift+Enter
-              newlines, Esc cancels). The actions live in the one footer below,
-              not inside the bubble. Saving ships a NEW user turn. -->
-         <div v-if="block.id === editingUser" class="body body--you edit-box">
-           <textarea
-             ref="editInput"
-             v-model="editDraft"
-             class="edit-input you-text"
-             aria-label="Edit request"
-             rows="1"
-             @input="autoGrowEdit"
-             @keydown.enter.exact.prevent="saveEditUser()"
-             @keydown.esc.prevent="cancelEditUser()"
-           ></textarea>
-         </div>
-         <div v-else-if="block.text" class="body body--you selectable" :class="{ 'body--you-expanded': expandedUserRequests[block.id] }">
-           <p class="you-text">{{ userRequestText(block) }}</p>
-           <button
-             v-if="isLongUserRequest(block)"
-             type="button"
-             class="you-expand"
-             :aria-expanded="expandedUserRequests[block.id] ? 'true' : 'false'"
-             :aria-label="expandedUserRequests[block.id] ? 'Collapse request' : 'Show full request'"
-             @click="toggleUserRequest(block)"
-           >
-             <HugeiconsIcon
-               :icon="expandedUserRequests[block.id] ? ArrowUp01Icon : ArrowDown01Icon"
-               :size="14"
-               :stroke-width="2"
-             />
-           </button>
-         </div>
-        <!-- What was attached to this turn -->
-        <div v-if="block.attachments?.length" class="you-attachments selectable">
-          <!-- Images thumbnail grid -->
-          <div
-            v-if="partitionAttachments(block.attachments).images.length"
-            class="att-grid"
-            :class="{ 'att-grid--multi': partitionAttachments(block.attachments).images.length > 1 }"
-          >
-            <button
-              v-for="img in partitionAttachments(block.attachments).images"
-              :key="img.id"
-              type="button"
-              class="att-thumb-btn"
-              :title="`Preview ${img.name}`"
-              @click="openLightbox(img, block.attachments)"
-            >
-              <img
-                :src="`attachment://${img.id}`"
-                :alt="img.name"
-                class="att-thumb-img"
-                loading="lazy"
-              />
-              <div class="att-thumb-scrim">
-                <span class="att-thumb-title">{{ img.name }}</span>
-                <span class="att-thumb-size">{{ formatFileSize(img.sizeBytes) }}</span>
-              </div>
-            </button>
-          </div>
-
-          <div
-            v-if="partitionAttachments(block.attachments).videos.length"
-            class="att-videos"
-          >
-            <div
-              v-for="vid in partitionAttachments(block.attachments).videos"
-              :key="vid.id"
-              class="att-video-card"
-            >
-              <video
-                :src="`attachment://${vid.id}`"
-                controls
-                preload="metadata"
-                class="att-video-player"
-              />
-              <div class="att-video-meta">
-                <span class="att-video-name">{{ vid.name }}</span>
-                <span class="att-video-size">{{ formatFileSize(vid.sizeBytes) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Generic files with action chips -->
-          <div
-            v-if="partitionAttachments(block.attachments).files.length"
-            class="att-files-row"
-          >
-            <div
-              v-for="file in partitionAttachments(block.attachments).files"
-              :key="file.id"
-              class="att-file-pill"
-            >
-              <FileChip
-                :path="file.name"
-                :title="`${file.name} · ${file.mimeType} (${formatFileSize(file.sizeBytes)})`"
-              />
-              <span class="att-file-pill__size">{{ formatFileSize(file.sizeBytes) }}</span>
-              <button
-                type="button"
-                class="att-action-btn"
-                title="Copy path"
-                @click="copyAttachmentPath(file.id)"
-              >
-                <HugeiconsIcon
-                  :icon="copiedPathId === file.id ? Tick02Icon : Copy01Icon"
-                  :size="12"
-                  :stroke-width="2"
-                />
-              </button>
-              <button
-                type="button"
-                class="att-action-btn"
-                title="Show in Finder / File Explorer"
-                @click="showInFolder(file.id)"
-              >
-                <HugeiconsIcon :icon="Folder01Icon" :size="12" :stroke-width="2" />
-              </button>
-            </div>
-          </div>
-        </div>
-        <div v-if="block.text" class="you-foot">
-          <!-- While editing this turn the footer is the edit's controls; otherwise
-               it's the quiet Edit / Copy / Scratchpad row. One footer, never two. -->
-          <template v-if="block.id === editingUser">
-            <button type="button" class="foot__copy" @click="cancelEditUser()">
-              <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" />
-              <span>Cancel</span>
-            </button>
-            <button
-              type="button"
-              class="foot__copy foot__copy--primary"
-              :disabled="!editDraft.trim() || busy"
-              @click="saveEditUser()"
-            >
-              <HugeiconsIcon :icon="Tick02Icon" :size="13" :stroke-width="2" />
-              <span>Save &amp; resend</span>
-            </button>
-          </template>
-          <template v-else>
-            <button
-              type="button"
-              class="foot__copy"
-              aria-label="Edit request"
-              @click="startEditUser(block)"
-            >
-              <HugeiconsIcon :icon="PencilEdit01Icon" :size="13" :stroke-width="2" />
-              <span>Edit</span>
-            </button>
-            <button
-              type="button"
-              class="foot__copy"
-              :aria-label="copied === block.id ? 'Copied' : 'Copy request'"
-              @click="copyUserRequest(block)"
-            >
-              <TextSwap :swap-key="copied === block.id ? 'Copied' : 'Copy'">
-                <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
-                <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
-              </TextSwap>
-            </button>
-            <button
-              v-if="allowScratchpad"
-              type="button"
-              class="foot__copy"
-              aria-label="Add request to scratchpad"
-              @click="addUserRequestToScratchpad(block)"
-            >
-              <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
-              <span>Scratchpad</span>
-            </button>
-          </template>
-        </div>
+        <!-- The whole request (bubble or edit field, head, corner time,
+             attachments, footer) owns its presentation and edit state in
+             UserTurn; the thread only routes what each button means. -->
+        <UserTurn
+          :block="block"
+          :receipt="ex.receipt"
+          :parts="partsFor(ex, block)"
+          :show-head="spec.youHead"
+          :head-stamp="stampFor(block.at)"
+          :bubble-stamp="spec.bubbleStamp"
+          :ticks="spec.ticks"
+          :acts="floatActs ? spec.userActs : 'foot'"
+          :copied="copied === block.id"
+          :allow-scratchpad="allowScratchpad"
+          :busy="busy"
+          :copied-path-id="copiedPathId"
+          :time="clock(block.at)"
+          @save="(text) => saveUserEdit(block, text)"
+          @copy="copyUserRequest(block)"
+          @scratchpad="addUserRequestToScratchpad(block)"
+          @preview="openLightbox"
+          @copy-path="copyAttachmentPath"
+          @show-in-folder="showInFolder"
+        />
       </template>
 
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
       <template v-else>
+        <!-- Discord's reply: which request this answers, as a line with a
+             spine running into it from the reply's face. -->
+        <ReplyRef
+          v-if="spec.replyRef && ex.requestText"
+          :text="ex.requestText"
+        />
         <div class="stack selectable">
           <AssistantTurnBody
             :block="block"
@@ -1330,11 +1284,41 @@ watch(
             :agent-seed="agentSeed"
             :house="house"
             :work-label="workLabel(block)"
+            :show-face="showFace"
+            :face-size="faceSize"
+            :stamp="replyStamp(block)"
             :now="now"
             :link-handoffs="linkHandoffs"
             @toggle="(open) => toggleTurn(block, open)"
             @open-thread="emit('open-thread', $event)"
-          />
+          >
+            <!-- The head-seated styles' actions, file restore included: it rests
+                 as one more icon and only stays up while it is asking or
+                 answering (see conversationStyles.css). -->
+            <template
+              v-if="floatActs && !spec.sideActs && (canActOn(block) || hasTurnCheckpoint(block))"
+              #actions
+            >
+              <TurnActions
+                v-if="canActOn(block)"
+                kind="kone"
+                :copied="copied === block.id"
+                :allow-scratchpad="allowScratchpad"
+                :allow-branch="allowBranch"
+                :busy="busy"
+                :can-act="true"
+                @copy="copy(block)"
+                @scratchpad="addToScratchpad(block)"
+                @fork="emit('branch-fork', block.id)"
+              />
+              <TurnCheckpointRestore
+                v-if="hasTurnCheckpoint(block) && props.threadId"
+                :thread-id="props.threadId"
+                :turn-id="block.turnId"
+                :disabled="busy"
+              />
+            </template>
+          </AssistantTurnBody>
           <!-- An appearance change the turn made is still in force whether or
                not its work is folded away, and the control that takes it back
                belongs with the reply that announced it — so it stands here in
@@ -1356,7 +1340,7 @@ watch(
           >
             <p class="body body--error">{{ block.error }}</p>
             <div class="turn-fail__actions">
-              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block)">
+              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block, ex.requestText)">
                 <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
                 <span>Retry</span>
               </button>
@@ -1367,50 +1351,38 @@ watch(
             </div>
           </div>
 
-          <!-- Turn footer — an editorial dotted-leader meta line, quiet until the
-               turn settles / you hover it. Hidden entirely while running (the live
-               header carries the status then). -->
-          <div v-if="block.state !== 'running'" class="foot">
+          <!-- The chat bubble's corner time (ticks imply the chat: the only
+               bubble-stamped style with them). -->
+          <span v-if="spec.ticks && block.state !== 'running'" class="kone-stamp" aria-hidden="true">{{
+            bubbleStamp(block)
+          }}</span>
+
+          <!-- Turn footer — kone's family only. The time and a row of icon
+               actions, quiet until the turn settles / you hover it. Hidden
+               entirely while running (the live header carries the status
+               then). Every other style seats its actions in the head line
+               instead (and its file restore in the in-flow row below), so it
+               never mounts this. -->
+          <div v-if="block.state !== 'running' && !floatActs" class="foot">
             <span class="foot__time">{{ clock(block.at) }}</span>
             <span
               v-if="block.state !== 'completed'"
               class="foot__status"
-              :class="`foot__status--${statusOf(block).tone}`"
-              >{{ statusOf(block).text }}</span
+              :class="`foot__status--${statusFor(block).tone}`"
+              >{{ statusFor(block).text }}</span
             >
-            <button
+            <TurnActions
               v-if="block.state === 'completed' && assistantText(block)"
-              type="button"
-              class="foot__copy"
-              :aria-label="copied === block.id ? 'Copied' : 'Copy reply'"
-              @click="copy(block)"
-            >
-              <TextSwap :swap-key="copied === block.id ? 'Copied' : 'Copy'">
-                <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
-                <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
-              </TextSwap>
-            </button>
-            <button
-              v-if="allowScratchpad && block.state === 'completed' && assistantText(block)"
-              type="button"
-              class="foot__copy"
-              aria-label="Add to scratchpad"
-              @click="addToScratchpad(block)"
-            >
-              <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
-              <span>Scratchpad</span>
-            </button>
-            <button
-              v-if="allowBranch && block.state === 'completed' && assistantText(block)"
-              type="button"
-              class="foot__copy"
-              :disabled="busy"
-              aria-label="Fork a new thread from this reply"
-              @click="emit('branch-fork', block.id)"
-            >
-              <HugeiconsIcon :icon="GitForkIcon" :size="13" :stroke-width="2" />
-              <span>Fork</span>
-            </button>
+              kind="kone"
+              :copied="copied === block.id"
+              :allow-scratchpad="allowScratchpad"
+              :allow-branch="allowBranch"
+              :busy="busy"
+              :can-act="true"
+              @copy="copy(block)"
+              @scratchpad="addToScratchpad(block)"
+              @fork="emit('branch-fork', block.id)"
+            />
             <TurnCheckpointRestore
               v-if="hasCheckpoint(block) && props.threadId"
               :thread-id="props.threadId"
@@ -1418,6 +1390,30 @@ watch(
               :disabled="busy"
             />
           </div>
+          <!-- The chat's seat: beside the bubble, level with its time. -->
+          <span
+            v-if="spec.sideActs && block.state !== 'running' && (canActOn(block) || hasTurnCheckpoint(block))"
+            class="side-acts"
+          >
+            <TurnActions
+              v-if="canActOn(block)"
+              kind="kone"
+              :copied="copied === block.id"
+              :allow-scratchpad="allowScratchpad"
+              :allow-branch="allowBranch"
+              :busy="busy"
+              :can-act="true"
+              @copy="copy(block)"
+              @scratchpad="addToScratchpad(block)"
+              @fork="emit('branch-fork', block.id)"
+            />
+            <TurnCheckpointRestore
+              v-if="hasTurnCheckpoint(block) && props.threadId"
+              :thread-id="props.threadId"
+              :turn-id="block.turnId"
+              :disabled="busy"
+            />
+          </span>
         </div>
       </template>
     </div>
@@ -1532,6 +1528,12 @@ watch(
 <style scoped>
 .thread {
   --rail: color-mix(in srgb, var(--ink) 12%, transparent);
+  /* The thread's reading measure — the single authority on line length. The
+     column caps itself at var(--thread-measure) below; every row inside (the
+     settled answer, the work fold, the theme receipts, the spawn marks) fills
+     the column at width:100% and carries no second cap of its own, so the
+     measure changes in exactly one place. */
+  --thread-measure: 720px;
   /* The space a settled reply's footer holds open below the answer. Declared
      rather than measured so it is a known quantity: the footer is invisible
      until the turn is hovered, and the marks between exchanges subtract it to
@@ -1551,11 +1553,12 @@ watch(
   flex-direction: column;
   gap: var(--thread-gap);
   width: 100%;
-  max-width: 720px;
+  max-width: var(--thread-measure);
   /* ── Flex containment, declared here for the whole column ─────────────────
      A flex item's automatic minimum size is its CONTENT's min-content width,
      not zero. One unbreakable thing deep in a reply — a wide table's spans, a
-     long code line — therefore pushes every ancestor wider than the 720px cap,
+     long code line — therefore pushes every ancestor wider than the
+     var(--thread-measure) cap,
      breaking the centered measure and pushing the overflow under the column's
      overflow-x:hidden, where it is clipped rather than scrolled.
      The floor has to be opted out of at EVERY flex link between here and that
@@ -1830,83 +1833,18 @@ watch(
   gap: 15px;
   align-items: flex-start;
   width: 100%;
+  /* `.selectable` carries the global prose measure (68ch, ~540px here), which
+     would stop the reply well short of the column its request is aligned to.
+     The thread's own var(--thread-measure) cap is the measure. */
+  max-width: none;
   min-width: 0;
 }
 /* ── Message body ──────────────────────────────────────────────────────────── */
-.body {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.62;
-  color: var(--ink);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-/* You — a warm, accent-tinted surface (not a flat grey chip); soft, no shadow. */
-.body--you {
-  position: relative;
-  z-index: 1;
-  text-align: left;
-  max-width: 80%;
-  padding: 10px 15px;
-  border-radius: 16px 16px 5px 16px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in oklab, var(--accent) 12%, var(--ground)) 0%,
-    color-mix(in oklab, var(--accent) 6%, var(--ground)) 100%
-  );
-  text-wrap: pretty;
-}
-.you-text {
-  margin: 0;
-  white-space: pre-wrap;
-}
-.you-expand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 20px;
-  margin: 5px -4px -5px auto;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-.you-expand:hover,
-.you-expand:focus-visible {
-  background: var(--hover);
-  color: var(--ink);
-}
-.you-expand:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
-  outline-offset: 1px;
-}
-/* Attachments that rode this turn — a right-aligned wrap of file chips under
-   the message (or standing alone on an attachment-only turn). */
-.you-attachments {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-  max-width: 80%;
-}
-.you-foot {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-  max-width: 80%;
-  /* It hangs off the right edge, so it glides in from there — see the
-     footer arrival below. */
-  --foot-in-x: 8px;
-}
-.body--error {
-  color: var(--diff-del);
-  font-size: 14px;
-  line-height: 1.55;
-}
+/* NOTE: the shared type primitives (.body, .body--error, .foot__copy) live in
+   ./conversationStyles.css — the thread's unscoped visual layer — because
+   both this file's banners and UserTurn's bubble render them, which a scoped
+   block cannot reach. The request bubble's own surface (.body--you) and
+   everything hung off a user turn live in UserTurn.vue. */
 /* Session-start / transcript-load failure banner — a soft red card with a
    hairline ring (no heavy shadow), the error text and a quiet mono action row.
    Red is earned here: something actually failed, and this is the only red card
@@ -1980,7 +1918,6 @@ watch(
   gap: 6px;
   align-items: flex-start;
   width: 100%;
-  max-width: 42rem;
 }
 .turn-fail__actions {
   display: flex;
@@ -1988,58 +1925,22 @@ watch(
   gap: 4px;
 }
 
-/* Edit-and-resend — the request bubble stays the bubble; only its text becomes
-   editable. The field is seamless: no inner box, no border, no ring, no resize
-   grabber — it inherits the bubble's type and auto-grows to its content, so the
-   whole thing reads as the same request, now editable. Controls live in the one
-   footer below (see .you-foot), never inside the bubble. */
-.edit-box {
-  /* Keep the request roomy enough to edit even when the original was one word,
-     but never wider than the bubble's own cap. */
-  min-width: min(28rem, 60vw);
-}
-.edit-input {
-  display: block;
-  width: 100%;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit; /* the bubble's own type — .body / .you-text */
-  resize: none;
-  overflow: hidden;
-  outline: none;
-}
-/* Dimmed through a factor inside a footer, whose reveal owns the opacity;
-   anywhere else (a failed turn's actions) the plain rule below applies. */
-.foot__copy:disabled {
-  --item-dim: 0.45;
-  cursor: default;
-}
-:where(.foot__copy:disabled) {
-  opacity: 0.45;
-}
-.foot__copy--primary {
-  color: var(--ink-soft);
-}
-.foot__copy--primary:hover {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--ink);
-}
+/* NOTE: the edit field (.edit-box, .edit-input) lives in UserTurn.vue, which
+   renders it; the worded action row (.foot__copy and its --primary/disabled
+   states) lives in ./conversationStyles.css, shared by this file's failure
+   actions and UserTurn's edit controls. */
 
 /* ── Turn footer (meta) — editorial dotted leader ──────────────────────────── */
 .foot {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 2px;
   margin-top: calc(-1 * var(--turn-foot-lift));
   /* Reserve, not a ceiling: the marks above subtract exactly this much, and
      content that outgrows it should push the row open rather than be clipped
      inside a footer nobody sees until they hover. */
   min-height: var(--turn-foot);
   width: 100%;
-  max-width: 42rem;
   font-family: var(--font-mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -2059,15 +1960,15 @@ watch(
 }
 
 /* ── A turn's footer showing up ────────────────────────────────────────────────
-   Both footers — a reply's and a request's — arrive as a `short-slide-right`:
-   the row glides in as one compact move from the side it hangs off, while its
-   items come up one after another through opacity only, so the move reads as
-   a single gesture rather than each button sliding on its own. The effect's
-   24px travel drops to 8px and its 92ms stagger to 45ms, since a footer holds
-   up to five items and a hover should be answered at once. Leaving is one
-   quick fade, no stagger — the row just goes. */
-.foot,
-.you-foot {
+   Both footers — a reply's and (in UserTurn.vue) a request's — arrive as a
+   `short-slide-right`: the row glides in as one compact move from the side
+   it hangs off, while its items come up one after another through opacity
+   only, so the move reads as a single gesture rather than each button
+   sliding on its own. The effect's 24px travel drops to 8px and its 92ms
+   stagger to 45ms, since a footer holds up to five items and a hover should
+   be answered at once. Leaving is one quick fade, no stagger — the row
+   just goes. */
+.foot {
   transform: translateX(var(--foot-in-x));
   transition: transform 320ms cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -2075,8 +1976,7 @@ watch(
    transition, a disabled button's dimming) must not outrank the footer's
    say over whether it is shown. The hover colours ride along in the same
    transition list for that reason. */
-.turn .foot > *,
-.turn .you-foot > * {
+.turn .foot > * {
   opacity: 0;
   transition:
     opacity 320ms cubic-bezier(0.4, 0, 0.2, 1),
@@ -2085,42 +1985,25 @@ watch(
 }
 .turn--flash .foot,
 .turn--kone.turn--settled:hover .foot,
-.foot:focus-within,
-.turn--you:hover .you-foot,
-.turn--you:focus-within .you-foot {
+.foot:focus-within {
   transform: none;
   transition: transform 520ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .turn--flash .foot > *,
 .turn--kone.turn--settled:hover .foot > *,
-.foot:focus-within > *,
-.turn--you:hover .you-foot > *,
-.turn--you:focus-within .you-foot > * {
+.foot:focus-within > * {
   opacity: calc(var(--foot-shown, 1) * var(--item-dim, 1));
   transition:
     opacity 520ms cubic-bezier(0.2, 0.8, 0.2, 1) var(--foot-delay, 0ms),
     background-color 0.15s ease,
     color 0.15s ease;
 }
-.foot > :nth-child(2),
-.you-foot > :nth-child(2) { --foot-delay: 45ms; }
-.foot > :nth-child(3),
-.you-foot > :nth-child(3) { --foot-delay: 90ms; }
-.foot > :nth-child(4),
-.you-foot > :nth-child(4) { --foot-delay: 135ms; }
-.foot > :nth-child(n + 5),
-.you-foot > :nth-child(n + 5) { --foot-delay: 180ms; }
-@media (hover: none) {
-  .you-foot {
-    transform: none;
-  }
-  .turn .you-foot > * {
-    opacity: var(--item-dim, 1);
-  }
-}
+.foot > :nth-child(2) { --foot-delay: 45ms; }
+.foot > :nth-child(3) { --foot-delay: 90ms; }
+.foot > :nth-child(4) { --foot-delay: 135ms; }
+.foot > :nth-child(n + 5) { --foot-delay: 180ms; }
 @media (prefers-reduced-motion: reduce) {
-  .foot,
-  .you-foot {
+  .foot {
     transform: none;
   }
 }
@@ -2132,24 +2015,33 @@ watch(
 .foot__status--error {
   color: var(--diff-del);
 }
-.foot__copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+.foot__time,
+.foot__status {
+  margin-right: 8px;
 }
-.foot__copy:hover {
-  background: var(--hover);
-  color: var(--ink);
+/* NOTE: the worded action row (.foot__copy with its --primary and :disabled
+   states) lives in ./conversationStyles.css, shared by the failure actions
+   here and UserTurn's edit controls. */
+
+/* The file restore sits in the same row, so its resting button takes the
+   same icon-only shape as the canonical row (see TurnActions.vue); the
+   steps after it keep their words. */
+.foot :deep(.ckpt > .ckpt__btn:not(:disabled)) {
+  width: 26px;
+  height: 26px;
+  justify-content: center;
+  padding: 0;
 }
+.foot :deep(.ckpt > .ckpt__btn:not(:disabled) > span) {
+  display: none;
+}
+
+/* ── Conversation styles ─────────────────────────────────────────────────────
+   Lives in ./conversationStyles.css (imported below): every non-kone look   
+   keyed off the root's `thread--style-*` class, plus the you-head /       
+   reply-ref / ticks fragments they compose (YouHead / ReplyRef /          
+   ReceiptTicks). Unscoped there on purpose — those fragments render in    
+   child components, which a scoped block cannot reach. */
 
 /* ── Keyframes ─────────────────────────────────────────────────────────────── */
 @keyframes bead-breathe {
@@ -2161,148 +2053,8 @@ watch(
     transform: scale(1.14);
   }
 }
-/* ── Attachment rich previews ─────────────────────────────────────────────── */
-.att-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-  max-width: 320px;
-  width: 100%;
-}
-.att-grid--multi {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  max-width: 440px;
-}
-.att-thumb-btn {
-  position: relative;
-  aspect-ratio: 4 / 3;
-  width: 100%;
-  border-radius: 9px;
-  overflow: hidden;
-  border: 1px solid var(--btn-border);
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  padding: 0;
-  margin: 0;
-  cursor: zoom-in;
-  display: block;
-}
-.att-thumb-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.att-thumb-btn:hover .att-thumb-img {
-  transform: scale(1.04);
-}
-.att-thumb-scrim {
-  position: absolute;
-  inset: auto 0 0 0;
-  padding: 16px 8px 6px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent);
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  color: #fff;
-  font-size: 11px;
-  opacity: 0;
-  transition: opacity 0.18s ease;
-  pointer-events: none;
-}
-.att-thumb-btn:hover .att-thumb-scrim {
-  opacity: 1;
-}
-.att-thumb-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-  max-width: 70%;
-}
-.att-thumb-size {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  opacity: 0.85;
-}
-
-.att-videos {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-width: 420px;
-  width: 100%;
-}
-.att-video-card {
-  border-radius: 9px;
-  overflow: hidden;
-  border: 1px solid var(--btn-border);
-  background: #000;
-}
-.att-video-player {
-  width: 100%;
-  max-height: 240px;
-  display: block;
-}
-.att-video-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 5px 8px;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  font-size: 11px;
-  color: var(--muted);
-}
-.att-video-name {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.att-video-size {
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-.att-files-row {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-  width: 100%;
-}
-.att-file-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 4px 2px 2px;
-  border-radius: 8px;
-  border: 1px solid var(--btn-border);
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-}
-.att-file-pill__size {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
-  padding-right: 2px;
-}
-.att-action-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-.att-action-btn:hover {
-  background: var(--hover);
-  color: var(--ink);
-}
+/* NOTE: attachment rich previews (.att-*) live in UserTurn.vue, which renders
+   them. */
 
 /* ── Lightbox modal ───────────────────────────────────────────────────────── */
 .lightbox-backdrop {
@@ -2424,3 +2176,5 @@ watch(
   opacity: 0;
 }
 </style>
+
+<style src="./conversationStyles.css"></style>
