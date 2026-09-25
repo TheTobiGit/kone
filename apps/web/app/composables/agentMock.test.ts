@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { useAgent } from "./useAgent";
 import type { ApprovalDecision } from "~/types/desktop";
+import { createDevBridge } from "~/lib/devBridge";
+import { installDevBridge } from "~/utils/desktopBridge";
+
+// Sends with no bridge run on the dev bridge's scripted turn runner.
+beforeAll(() => installDevBridge(createDevBridge()));
 
 let seq = 0;
 function harness() {

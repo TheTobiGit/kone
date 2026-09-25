@@ -1,12 +1,12 @@
 import { ref } from "vue";
 
 /**
- * How long the card's exit animation runs. The caller is handed back control only
- * once it has finished, so a modal is never unmounted mid-flight — which would cut
- * the animation to a hard pop. Changing this without changing the exit transition
- * to match reintroduces exactly that pop.
+ * How long a modal's exit runs. The caller is handed back control only once it
+ * has finished, so a modal is never unmounted mid-flight — which would cut the
+ * animation to a hard pop. UiModalShell times the card's and the scrim's exit
+ * from this same value, so the two can't drift apart.
  */
-const EXIT_MS = 240;
+export const EXIT_MS = 240;
 
 /**
  * Drives a modal's show/exit lifecycle: bind `shown` to the card's animated state,

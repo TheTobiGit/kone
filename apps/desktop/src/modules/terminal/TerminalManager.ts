@@ -76,10 +76,9 @@ type TerminalSession = {
   env?: Record<string, string>;
   cols: number;
   rows: number;
+  /** "closed" from the moment a close/restart starts tree-killing the PTY, so
+   *  the activity poll and re-attach skip it through the kill's grace period. */
   status: "starting" | "ready" | "exited" | "closed" | "error";
-  /** Set once a close/restart starts tree-killing the PTY; the activity poll
-   *  skips it from then on. */
-  leaving: boolean;
   /** Sanitized scrollback (queries stripped) — the replay half of `history`. */
   history: string;
   /** Tail of a control sequence split across chunks, held between onData
@@ -262,7 +261,7 @@ export class TerminalManager {
    *  is left to watch. Failed snapshots back off exponentially. */
   private schedulePoll(): void {
     if (this.pollTimer !== null || this.pollInFlight) return;
-    if (![...this.sessions.values()].some((s) => s.status === "ready" && !s.leaving)) return;
+    if (![...this.sessions.values()].some((s) => s.status === "ready")) return;
     const delay = Math.min(
       this.subprocessPollIntervalMs * 2 ** this.pollFailures,
       MAX_SUBPROCESS_POLL_INTERVAL_MS,
@@ -287,7 +286,7 @@ export class TerminalManager {
     // Sessions are read after the await, so ones closed, exited or restarted
     // while the scan ran are judged by their current state, not a stale one.
     for (const s of this.sessions.values()) {
-      if (s.status !== "ready" || s.leaving) continue;
+      if (s.status !== "ready") continue;
       const inspection = inspectSubprocessActivityInSnapshot(s.process.pid, snapshot);
       // Only trust an "idle" reading when the process snapshot actually
       // succeeded; a failed capture means absence is unproven, so keep the last
@@ -370,7 +369,6 @@ export class TerminalManager {
       cols,
       rows,
       status: "ready",
-      leaving: false,
       history: "",
       pendingControlSequence: "",
       pendingOutput: [],
@@ -496,9 +494,10 @@ export class TerminalManager {
     s.detachExit();
     s.modeTracker.dispose();
     await this.killSession(s);
-    s.status = "closed";
     if (input.deleteHistory) s.history = "";
-    this.sessions.delete(input.terminalId);
+    // An open() during the kill's grace period may already have spawned a
+    // fresh session under this id; only drop the one being closed.
+    if (this.sessions.get(input.terminalId) === s) this.sessions.delete(input.terminalId);
     this.fire(this.stamp(s, { terminalId: input.terminalId, type: "closed" }));
   }
 
@@ -510,7 +509,7 @@ export class TerminalManager {
   private async killSession(s: TerminalSession): Promise<void> {
     // Stop the shared activity poll scanning for this session through the
     // kill's grace period — it is going away either way.
-    s.leaving = true;
+    s.status = "closed";
     if (s.paused) {
       s.paused = false;
       s.process.resume();

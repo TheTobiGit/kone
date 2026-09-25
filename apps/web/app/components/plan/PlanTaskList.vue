@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
+import { cardSpring } from "~/utils/cardSpring";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon, CheckmarkCircle01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
@@ -103,7 +104,6 @@ onBeforeUnmount(() => {
   if (copyTimer) clearTimeout(copyTimer);
 });
 
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
 const fadeEase = [0.22, 1, 0.36, 1] as const;
 const checkFade = { duration: 0.16, ease: fadeEase } as const;

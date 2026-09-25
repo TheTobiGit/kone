@@ -1,341 +1,86 @@
-import type {
-  CommitMessageGenerationInput,
-  CommitMessageGenerationResult,
-  GitActionProgressEvent,
-  GitBranch,
-  GitCommit,
-  GitCommitAuthors,
-  GitCommitDetail,
-  GitCommitOptions,
-  GitContributors,
-  GitFileContent,
-  GitFileDiff,
-  GitIdentity,
-  GitLogo,
-  GitHubPrCreateOptions,
-  GitHubPrCreateResult,
-  GitHubPullRequest,
-  GitHubPullRequestDetail,
-  GitHubRepoInfo,
-  GitHubStatus,
-  GitHubUser,
-  GitProjectFile,
-  GitPullOptions,
-  GitPushOptions,
-  GitReadme,
-  GitRemote,
-  GitRepo,
-  GitRepoState,
-  GitRunStackedActionInput,
-  GitRunStackedActionResult,
-  GitWorktree,
-  CreateWorktreeOptions,
-  GitStashEntry,
-  GitStatus,
-} from "~/types/desktop";
+import type { KoneGitApi } from "~/types/desktop";
+import { desktopBridge, needsDesktop } from "~/utils/desktopBridge";
 
-// The demo world only exists under `nuxt dev`. It is loaded lazily behind
-// `import.meta.dev`, so a production build drops the module rather than
-// shipping it unreached.
-type DevMocks = typeof import("~/lib/devMocks");
-const loadMocks: (() => Promise<DevMocks>) | null = import.meta.dev
-  ? () => import("~/lib/devMocks")
-  : null;
-
-// Reads git state through the Electron bridge. Git inspection lives in the
-// main process (it needs a real filesystem + the `git` binary), so there is no
-// browser fallback for the heavier reads — in `nuxt dev` status/branches/log
-// resolve to empty/null and `available` is false. `detect`/`status`/`diff`/
-// `content` are the exception: they resolve against the shared dev-world repos
-// (see lib/devMocks) so the picker + detail view stay demoable in the browser.
+// Reads and writes git through the bridge. Git lives in the main process (it
+// needs a real filesystem and the `git` binary), so with no bridge there is no
+// repo to read: reads come back empty or null, plain writes resolve having done
+// nothing (the renderer's optimistic update is the only effect), writes that
+// promise a result reject with the reason, and `available` is false.
 export function useGit() {
-  const bridge = import.meta.client ? window.koneDesktop : undefined;
-  const git = bridge?.git;
-
-  return {
-    available: Boolean(git),
-
-    detect(dir: string): Promise<GitRepo | null> {
-      if (git) return git.detect(dir);
-      return fromMocks((m) => m.mockDetect(dir));
-    },
-    status(dir: string): Promise<GitStatus | null> {
-      if (git) return git.status(dir);
-      return fromMocks((m) => m.mockStatus(dir));
-    },
-    diff(dir: string, path: string, staged: boolean): Promise<GitFileDiff | null> {
-      if (git) return git.diff(dir, path, staged);
-      return fromMocks((m) => m.mockDiff(dir, path));
-    },
-    content(dir: string, path: string): Promise<GitFileContent | null> {
-      if (git) return git.content(dir, path);
-      return fromMocks((m) => m.mockContent(dir, path));
-    },
-    files(dir: string, query?: string): Promise<GitProjectFile[]> {
-      if (git) return git.files(dir, query);
-      return fromMocks((m) => m.mockFiles(dir, query)).then((files) => files ?? []);
-    },
-    branches(dir: string): Promise<GitBranch[]> {
-      if (git) return git.branches(dir);
-      // Browser dev: resolve against the demo-world repos so the switcher is
-      // demoable (checkout below stays a no-op — nothing on disk to move).
-      return fromMocks((m) => m.mockBranches(dir)).then((b) => b ?? []);
-    },
-    log(dir: string, limit?: number, skip?: number): Promise<GitCommit[]> {
-      if (git) return git.log(dir, limit, skip);
-      return fromMocks((m) => m.mockLog(dir, limit, skip)).then((c) => c ?? []);
-    },
-    remotes(dir: string): Promise<GitRemote[]> {
-      if (git) return git.remotes(dir);
-      return fromMocks((m) => m.mockRemotes(dir)).then((r) => r ?? []);
-    },
-    repoState(dir: string): Promise<GitRepoState | null> {
-      if (git) return git.repoState(dir);
-      return fromMocks((m) => m.mockRepoState(dir));
-    },
-    commitDetail(dir: string, hash: string): Promise<GitCommitDetail | null> {
-      if (git) return git.commitDetail(dir, hash);
-      return fromMocks((m) => m.mockCommitDetail(dir, hash));
-    },
-    commitDiff(dir: string, hash: string, path: string): Promise<GitFileDiff | null> {
-      if (git) return git.commitDiff(dir, hash, path);
-      return fromMocks((m) => m.mockCommitDiff(dir, hash, path));
-    },
-    stashes(dir: string): Promise<GitStashEntry[]> {
-      if (git) return git.stashes(dir);
-      return fromMocks((m) => m.mockStashes(dir)).then((s) => s ?? []);
-    },
-    // Worktrees need a real filesystem and a git binary, so browser dev has
-    // none to report rather than a demo-world stand-in — a mock worktree would
-    // claim a directory that does not exist.
-    worktrees(dir: string): Promise<GitWorktree[]> {
-      return git ? git.worktrees(dir) : Promise.resolve([]);
-    },
-    // Live status. Only the desktop bridge can watch a real filesystem, so in
-    // `nuxt dev` this is a no-op (the mock repos never change on disk anyway).
-    watchStatus(dir: string, cb: (status: GitStatus) => void): () => void {
-      return git ? git.watchStatus(dir, cb) : () => {};
-    },
-    // Mutations. Without the bridge (browser dev) they resolve as no-ops — the
-    // renderer's optimistic update is the only effect there.
-    stage(dir: string, paths: string[]): Promise<void> {
-      return git ? git.stage(dir, paths) : Promise.resolve();
-    },
-    unstage(dir: string, paths: string[]): Promise<void> {
-      return git ? git.unstage(dir, paths) : Promise.resolve();
-    },
-    discard(dir: string, paths: string[]): Promise<void> {
-      return git ? git.discard(dir, paths) : Promise.resolve();
-    },
-    // Switch to a local branch. Browser dev has no real repo to move, but it
-    // still waits a git-like beat so the caller's switching state gets a frame
-    // (an instant resolve would snap the picker shut with no in-progress cue).
-    checkout(dir: string, branch: string): Promise<void> {
-      if (git) return git.checkout(dir, branch);
-      return beat();
-    },
-
-    // ── Git Space mutations ──────────────────────────────────────────────────
-    // Same rule as above: real git through the bridge, a latency beat and no
-    // effect in the browser. Every one of these rejects with git's own message
-    // when it fails — useGitSpace turns that into the masthead's error line.
-    commit(dir: string, opts: GitCommitOptions): Promise<void> {
-      return git ? git.commit(dir, opts) : beat();
-    },
-    generateCommitMessage(
-      dir: string,
-      opts?: Partial<CommitMessageGenerationInput>,
-    ): Promise<CommitMessageGenerationResult> {
-      if (git) return git.generateCommitMessage(dir, opts);
-      return withLatency({
-        subject: "feat: add OAuth login flow",
-        body: "Wire up the provider handshake and persist the session token",
-      }).then((r) => r!);
-    },
-    runStackedAction(
-      dir: string,
-      input: GitRunStackedActionInput,
-    ): Promise<GitRunStackedActionResult> {
-      if (git) return git.runStackedAction(dir, input);
-      return withLatency({
-        action: input.action,
-        commitSha: "a1b9f3c9e4c0b91d7f2a3d8b8c7e6f5a4b3c2d1e",
-        subject: input.message,
-        branch: input.branchName || "main",
-        pushed: input.action.includes("push"),
-      }).then((r) => r!);
-    },
-
-    onActionProgress(cb: (event: GitActionProgressEvent) => void): () => void {
-      if (git) return git.onActionProgress(cb);
-      return () => {};
-    },
-    fetch(dir: string, remote?: string): Promise<void> {
-
-      return git ? git.fetch(dir, remote) : beat();
-    },
-    pull(dir: string, opts?: GitPullOptions): Promise<void> {
-      return git ? git.pull(dir, opts) : beat();
-    },
-    push(dir: string, opts?: GitPushOptions): Promise<void> {
-      return git ? git.push(dir, opts) : beat();
-    },
-    createBranch(
-      dir: string,
-      name: string,
-      opts?: { from?: string; checkout?: boolean },
-    ): Promise<void> {
-      return git ? git.createBranch(dir, name, opts) : beat();
-    },
-    deleteBranch(
-      dir: string,
-      name: string,
-      opts?: { force?: boolean; remote?: boolean },
-    ): Promise<void> {
-      return git ? git.deleteBranch(dir, name, opts) : beat();
-    },
-    renameBranch(dir: string, from: string, to: string): Promise<void> {
-      return git ? git.renameBranch(dir, from, to) : beat();
-    },
-    mergeBranch(dir: string, name: string, opts?: { noFf?: boolean }): Promise<void> {
-      return git ? git.mergeBranch(dir, name, opts) : beat();
-    },
-    continueOperation(dir: string): Promise<void> {
-      return git ? git.continueOperation(dir) : beat();
-    },
-    abortOperation(dir: string): Promise<void> {
-      return git ? git.abortOperation(dir) : beat();
-    },
-    stashPush(
-      dir: string,
-      opts?: { message?: string; includeUntracked?: boolean },
-    ): Promise<void> {
-      return git ? git.stashPush(dir, opts) : beat();
-    },
-    stashApply(dir: string, index: number, opts?: { pop?: boolean }): Promise<void> {
-      return git ? git.stashApply(dir, index, opts) : beat();
-    },
-    stashDrop(dir: string, index: number): Promise<void> {
-      return git ? git.stashDrop(dir, index) : beat();
-    },
-    worktreeAdd(dir: string, input: CreateWorktreeOptions): Promise<GitWorktree> {
-      if (git) return git.worktreeAdd(dir, input);
-      return Promise.reject(new Error("Worktrees need the desktop app."));
-    },
-    worktreeRemove(dir: string, input: { path: string; force?: boolean }): Promise<void> {
-      return git ? git.worktreeRemove(dir, input) : beat();
-    },
-    worktreePrune(dir: string): Promise<string[]> {
-      return git ? git.worktreePrune(dir) : Promise.resolve([]);
-    },
-
-    // ── About section ───────────────────────────────────────────────────────
-    // Same rule as the reads above: the bridge reads the real repo, browser
-    // dev resolves against the demo world.
-    readme(dir: string): Promise<GitReadme | null> {
-      if (git) return git.readme(dir);
-      return fromMocks((m) => m.mockReadme(dir));
-    },
-    identity(dir: string): Promise<GitIdentity> {
-      if (git) return git.identity(dir);
-      return fromMocks((m) => m.mockIdentity(dir)).then(
-        (id) => id ?? { name: null, email: null },
-      );
-    },
-    logo(dir: string): Promise<GitLogo | null> {
-      if (git) return git.logo(dir);
-      return fromMocks((m) => m.mockLogo(dir));
-    },
-    contributors(dir: string): Promise<GitContributors> {
-      if (git) return git.contributors(dir);
-      return fromMocks((m) => m.mockContributors(dir)).then(
-        (c) => c ?? { source: "git", people: [], total: 0 },
-      );
-    },
-
-    // ── GitHub, through the `gh` CLI ─────────────────────────────────────────
-    // Browser dev answers with an installed, signed-in GitHub so the pull-request
-    // section is demoable; its writes are no-ops.
-    github: {
-      status(): Promise<GitHubStatus> {
-        if (git) return git.github.status();
-        return fromMocks((m) => m.mockGhStatus()).then(
-          (s) => s ?? { installed: false, authenticated: false, user: null, message: null },
-        );
-      },
-      repo(dir: string): Promise<GitHubRepoInfo | null> {
-        if (git) return git.github.repo(dir);
-        return fromMocks((m) => m.mockGhRepo(dir));
-      },
-      contributors(dir: string): Promise<GitContributors | null> {
-        if (git) return git.github.contributors(dir);
-        return fromMocks((m) => m.mockGhContributors(dir));
-      },
-      commitAuthors(dir: string): Promise<GitCommitAuthors | null> {
-        if (git) return git.github.commitAuthors(dir);
-        return fromMocks((m) => m.mockCommitAuthors());
-      },
-      me(): Promise<GitHubUser | null> {
-        if (git) return git.github.me();
-        return fromMocks((m) => m.mockGhMe());
-      },
-      prs(
-        dir: string,
-        opts?: { state?: "open" | "all"; limit?: number },
-      ): Promise<GitHubPullRequest[]> {
-        if (git) return git.github.prs(dir, opts);
-        return fromMocks((m) => m.mockPrs(dir, opts?.state ?? "open")).then((p) => p ?? []);
-      },
-      prDetail(dir: string, number: number): Promise<GitHubPullRequestDetail | null> {
-        if (git) return git.github.prDetail(dir, number);
-        return fromMocks((m) => m.mockPrDetail(number));
-      },
-      prDiff(dir: string, number: number): Promise<GitFileDiff[]> {
-        if (git) return git.github.prDiff(dir, number);
-        return fromMocks((m) => m.mockPrDiff(number)).then((f) => f ?? []);
-      },
-      createPr(dir: string, opts: GitHubPrCreateOptions): Promise<GitHubPrCreateResult> {
-        if (git) return git.github.createPr(dir, opts);
-        // The dev world mints the next number so the composer's success line reads
-        // like the real thing.
-        return fromMocks((m) => {
-          const next = (m.mockPrs(dir, "all")[0]?.number ?? 0) + 1;
-          return { number: next, url: `https://github.com/kone-dev/kone/pull/${next}` };
-        }).then((r) => {
-          if (!r) throw new Error("Creating a pull request needs the desktop app.");
-          return r;
-        });
-      },
-      checkoutPr(dir: string, number: number): Promise<void> {
-        return git ? git.github.checkoutPr(dir, number) : beat();
-      },
-      open(url: string): Promise<void> {
-        if (git) return git.github.open(url);
-        window.open(url, "_blank", "noopener");
-        return Promise.resolve();
-      },
-    },
-  };
+  const git = desktopBridge()?.git;
+  return { available: Boolean(git), ...(git ?? NO_GIT) };
 }
 
-/** A browser-dev mutation: no effect, but it takes a git-like moment so the
- *  caller's in-flight state gets at least one frame on screen. */
-function beat(): Promise<void> {
-  return withLatency(true).then(() => undefined);
-}
+const none = (): Promise<null> => Promise.resolve(null);
+const empty = (): Promise<never[]> => Promise.resolve([]);
+const done = (): Promise<void> => Promise.resolve();
+const refuse = (what: string) => (): Promise<never> => Promise.reject(new Error(needsDesktop(what)));
 
-/** Browser dev's answer for a read: the demo world's value after a git-like
- *  moment. Null in a production build, where the bridge answers instead. */
-function fromMocks<T>(read: (m: DevMocks) => T | null): Promise<T | null> {
-  if (!loadMocks) return Promise.resolve(null);
-  return loadMocks().then((m) => withLatency(read(m)));
-}
+/** Git with no bridge behind it. */
+const NO_GIT: KoneGitApi = {
+  detect: none,
+  status: none,
+  diff: none,
+  content: none,
+  files: empty,
+  branches: empty,
+  log: empty,
+  remotes: empty,
+  repoState: none,
+  commitDetail: none,
+  commitDiff: none,
+  stashes: empty,
+  worktrees: empty,
+  worktreePrune: empty,
+  readme: none,
+  logo: none,
+  identity: () => Promise.resolve({ name: null, email: null }),
+  contributors: () => Promise.resolve({ source: "git", people: [], total: 0 }),
 
-// A short, slightly-staggered delay stands in for real git latency, so the dev
-// build's processing→reveal beats (the picker, the detail view's loading state)
-// are faithful and visible. A null result resolves immediately (nothing to show).
-function withLatency<T>(value: T | null): Promise<T | null> {
-  if (value === null) return Promise.resolve(null);
-  const delay = 130 + Math.random() * 240;
-  return new Promise((resolve) => setTimeout(() => resolve(value), delay));
-}
+  watchStatus: () => () => {},
+  onActionProgress: () => () => {},
+  onCloneProgress: () => () => {},
+
+  stage: done,
+  unstage: done,
+  discard: done,
+  checkout: done,
+  commit: done,
+  fetch: done,
+  pull: done,
+  push: done,
+  createBranch: done,
+  deleteBranch: done,
+  renameBranch: done,
+  mergeBranch: done,
+  continueOperation: done,
+  abortOperation: done,
+  stashPush: done,
+  stashApply: done,
+  stashDrop: done,
+  worktreeRemove: done,
+  cancelClone: done,
+
+  clone: refuse("Cloning"),
+  create: refuse("Creating a project"),
+  worktreeAdd: refuse("Worktrees"),
+  generateCommitMessage: refuse("Generating a commit message"),
+  runStackedAction: refuse("Committing"),
+
+  github: {
+    status: () => Promise.resolve({ installed: false, authenticated: false, user: null, message: null }),
+    repo: none,
+    contributors: none,
+    commitAuthors: none,
+    me: none,
+    prs: empty,
+    prDetail: none,
+    prDiff: empty,
+    createPr: refuse("Creating a pull request"),
+    checkoutPr: done,
+    open: (url) => {
+      window.open(url, "_blank", "noopener");
+      return Promise.resolve();
+    },
+  },
+};

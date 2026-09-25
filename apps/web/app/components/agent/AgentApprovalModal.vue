@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { motion } from "motion-v";
 import ApprovalPrompt from "~/components/agent/ApprovalPrompt.vue";
 import type { PendingApproval } from "~/composables/useAgent";
 import type { ApprovalDecision, ApprovalRequest } from "~/types/desktop";
@@ -138,34 +137,20 @@ onBeforeUnmount(() => {
   ro?.disconnect();
   opener?.focus();
 });
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
 </script>
 
 <template>
-  <div
-    :class="props.contained ? 'absolute' : 'fixed'"
-    class="inset-0 z-40 flex items-end justify-center overflow-hidden p-6 pb-8"
+  <UiModalShell
+    v-slot="{ card }"
+    :shown="shown"
+    scrim="inert"
+    :contained="props.contained"
+    class="z-40 items-end justify-center p-6 pb-8"
   >
-    <!-- Scrim: a soft dim + blur, matching the pickers. The turn is parked on
-         this decision, so the scrim is inert — the only way forward is to pick. -->
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" />
-
-    <motion.div
+    <div
+      v-bind="card"
       class="modal-card relative z-20 w-full max-w-lg overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       aria-label="The agent wants to run something"
@@ -180,14 +165,11 @@ const cardSpring = {
           @next="next"
         />
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 .modal-card {
   background: var(--panel);
   border-radius: 18px;

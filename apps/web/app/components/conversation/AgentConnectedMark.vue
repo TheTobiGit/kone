@@ -11,10 +11,11 @@ import AgentFace from "~/components/agent/AgentFace.vue";
 // line already in place — replaying the arrival of an agent that arrived last
 // week would claim something is happening that isn't.
 //
-// The reveal is soft-blur-in, carried per word and scaled down for a 12px line
-// (the spec's own body-text note: less blur, tighter stagger): the face settles
-// in first with a micro scale-fade, then the name and "connected" resolve out
-// of a light blur behind it.
+// The reveal is carried per word and scaled down for a 12px line — at this size
+// a heavy blur smears the letters into a smudge and a long stagger reads as
+// lag, so both are lighter than a heading's would be: the face settles in first
+// with a micro scale-fade, then the name and "connected" fade up behind it,
+// crisp the whole way.
 
 const props = defineProps<{
   /** The thread's durable id — the same seed the speaker lines use, so the
@@ -83,10 +84,10 @@ const words = computed(() => [identity.value.name, "connected"]);
 .agent-connected--enter .agent-connected__face {
   animation: agent-connected-face 600ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
-/* soft-blur-in per word: 700ms, 6px rise, 6px blur, 90ms apart, starting as
-   the face lands. */
+/* per-word-crossfade: 700ms, 6px rise, 90ms apart, starting as the face
+   lands. */
 .agent-connected--enter .agent-connected__word {
-  animation: agent-connected-word 700ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: agent-connected-word 700ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
   animation-delay: calc(120ms + var(--w) * 90ms);
 }
 @keyframes agent-connected-face {
@@ -99,7 +100,6 @@ const words = computed(() => [identity.value.name, "connected"]);
   from {
     opacity: 0;
     transform: translateY(6px);
-    filter: blur(6px);
   }
 }
 

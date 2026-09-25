@@ -48,13 +48,8 @@ const name = computed(
   () => teammate.value?.name ?? props.record.agent ?? agentIdentity(props.record.threadId).name,
 );
 
-/** "because the suite is slow" — a model that wrote its own "because" doesn't
- *  get a second one. */
-const because = computed(() => {
-  const why = props.record.why?.trim();
-  if (!why) return null;
-  return `because ${why.replace(/^because\s+/i, "").replace(/[.\s]+$/, "")}`;
-});
+/** "because the suite is slow" — the record keeps only the clause. */
+const because = computed(() => (props.record.why ? `because ${props.record.why}` : null));
 
 const where = computed(() =>
   props.record.model ? `${props.record.provider} · ${props.record.model}` : props.record.provider,
@@ -138,21 +133,26 @@ const where = computed(() =>
   color: color-mix(in oklab, var(--ink) 45%, transparent);
 }
 
-/* soft-blur-in, the same arrival the connected mark plays, one beat longer
-   since the line carries more. */
-.spawn-mark--enter {
-  animation: spawn-mark-in 700ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+/* The handoff and its reason rise in line by line on `mask-reveal-up`'s
+   timing — 760ms each, the reason 90ms behind the line it explains — without
+   its blur, so both lines read crisp as they move. The 30px rise drops to 8px
+   for copy this size, where the full travel would carry a line past the one
+   above it. */
+.spawn-mark--enter > p {
+  animation: spawn-line-in 760ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
-@keyframes spawn-mark-in {
+.spawn-mark--enter > p + p {
+  animation-delay: 90ms;
+}
+@keyframes spawn-line-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
-    filter: blur(6px);
+    transform: translateY(8px);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spawn-mark--enter {
+  .spawn-mark--enter > p {
     animation: none;
   }
 }

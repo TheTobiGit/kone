@@ -95,7 +95,8 @@ function fitSafely(): void {
 
 /** Backend PTY resizes are debounced: each one is an IPC round-trip plus a
  *  SIGWINCH + shell reflow, so a live window drag would otherwise storm the
- *  main process. 120ms matches t3code's backend resize debounce. */
+ *  main process. 120ms is below a perceptible reflow lag but coalesces a
+ *  drag's burst of frames into a handful of resizes. */
 let backendResizeTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleBackendResize(): void {
   if (!term) return;

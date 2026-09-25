@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, type CSSProperties } from "vue";
 import { onClickOutside } from "@vueuse/core";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { CheckmarkCircle01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { registerImportedThemes, themes as libraryThemes } from "~/theme/library";
@@ -215,8 +214,12 @@ function maxCardHeight(): number {
     const host = Number.parseFloat(raw);
     if (Number.isFinite(host)) return Math.max(160, host - 48);
   }
-  const stage = cardRef.value instanceof HTMLElement ? cardRef.value.parentElement : null;
-  if (stage) return stage.clientHeight;
+  // The overlay the card sits in, less its padding: the room the card has.
+  const stage = cardRef.value?.parentElement;
+  if (stage) {
+    const pad = getComputedStyle(stage);
+    return stage.clientHeight - Number.parseFloat(pad.paddingTop) - Number.parseFloat(pad.paddingBottom);
+  }
   return Math.round(window.innerHeight * 0.72);
 }
 
@@ -310,13 +313,6 @@ onBeforeUnmount(() => {
   clearSearchState();
   opener?.focus();
 });
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
 </script>
 
 <template>
@@ -324,23 +320,19 @@ const cardSpring = {
     <!-- The host is fixed to the sidebar's rect (or the viewport when the
          drawer can't be found), so the shell never covers more than the
          sidebar. -->
-    <div v-if="open" class="pointer-events-none fixed inset-0 z-50" :style="hostStyle">
-      <!-- Scrim: dim + blur ramp together on one tween, matching the pickers —
-           but only over the sidebar. -->
-      <UiModalScrim :shown="shown" class="modal-scrim pointer-events-auto absolute inset-0" @click="cancel" />
-
-      <div class="pointer-events-none absolute inset-0 flex items-end justify-end p-6">
-        <motion.div
+    <UiModalShell
+      v-if="open"
+      v-slot="{ card }"
+      :shown="shown"
+      class="z-50 items-end justify-end p-6"
+      :style="hostStyle"
+      @dismiss="cancel"
+    >
+        <div
+          v-bind="card"
           ref="cardRef"
           class="modal-card pointer-events-auto relative flex w-full max-w-md flex-col overflow-hidden"
           :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-          :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-          :animate="{
-            opacity: shown ? 1 : 0,
-            y: shown ? 0 : 12,
-            scale: shown ? 1 : 0.96,
-          }"
-          :transition="cardSpring"
           role="dialog"
           aria-modal="true"
           aria-label="Community themes"
@@ -456,17 +448,12 @@ const cardSpring = {
                note about where the results come from. -->
           <div class="picker-footer tb__footer">From Open VSX. Added themes stay on this machine.</div>
           </div>
-        </motion.div>
-      </div>
-    </div>
+        </div>
+      </UiModalShell>
   </Teleport>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
-
 .modal-card {
   background: var(--panel);
   border-radius: 18px;

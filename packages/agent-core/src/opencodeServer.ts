@@ -6,8 +6,13 @@ import { createInterface } from "node:readline";
 
 import { OPENCODE_BINARY } from "./opencodeHome.js";
 
+/** Which HTTP protocol a running server speaks, read off its own listening
+ *  line (see parseOpenCodeServerListening). */
+export type OpenCodeServerDialect = "v1" | "v2";
+
 export type OpenCodeServer = {
   baseUrl: string;
+  dialect: OpenCodeServerDialect;
   /** v2 `serve` prints `server password ...` and requires Basic auth
    *  (`opencode:<password>`) on every request. Absent on v1. */
   password?: string;
@@ -38,11 +43,24 @@ export function isRetryableOpenCodeServerFailure(detail: string): boolean {
   );
 }
 
-export function parseOpenCodeServerUrl(line: string): string | undefined {
+/** The listening line, and the protocol it implies. v1 prints
+ *  `opencode server listening on http://...`; v2 dropped the `opencode`
+ *  prefix (`server listening on http://...`) in the same release that moved
+ *  routes under `/api` and added the password line. The server's own words
+ *  are the one source for the dialect: a `--version` probe can time out or
+ *  answer for a different binary than the one that booted. */
+export function parseOpenCodeServerListening(
+  line: string,
+): { url: string; dialect: OpenCodeServerDialect } | undefined {
   const trimmed = line.trim();
-  // v1: `opencode server listening on http://...`; v2: `server listening on http://...`.
-  if (!trimmed.startsWith("opencode server listening") && !trimmed.startsWith("server listening")) return undefined;
-  return trimmed.match(/on\s+(https?:\/\/[^\s]+)/)?.[1];
+  const dialect = trimmed.startsWith("opencode server listening")
+    ? "v1"
+    : trimmed.startsWith("server listening")
+      ? "v2"
+      : undefined;
+  if (!dialect) return undefined;
+  const url = trimmed.match(/on\s+(https?:\/\/[^\s]+)/)?.[1];
+  return url ? { url, dialect } : undefined;
 }
 
 /** v2 prints `server password <token>` after the listening line. */
@@ -56,7 +74,6 @@ async function startOpenCodeServerOnce(input: {
   env: NodeJS.ProcessEnv;
   /** CLI executable to serve from; defaults to `opencode` on PATH. */
   binary?: string;
-  expectPassword?: boolean;
   /** Invoked synchronously with the child right after spawn, so a background
    *  boot can be tracked (and torn down) before it becomes ready. */
   onChild?: (child: ChildProcess) => void;
@@ -88,39 +105,29 @@ async function startOpenCodeServerOnce(input: {
     }
   };
 
-  // Only v2 prints a password line, so only an expected-v2 boot waits for
-  // one; everything else (v1, or a version probe that never answered)
-  // resolves on the listening line with no grace timer.
-  const expectPassword = input.expectPassword === true;
-  const { url, password } = await new Promise<{ url: string; password?: string }>((resolve, reject) => {
+  // v1 is ready on its listening line. v2 is ready once its password line
+  // has also arrived (either order — the two can land on different streams),
+  // because every v2 request needs it.
+  type Started = { url: string; dialect: OpenCodeServerDialect; password?: string };
+  const started = await new Promise<Started>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timed out waiting for OpenCode server start after 30000ms.")), 30_000);
-    let seenUrl: string | undefined;
+    let listening: { url: string; dialect: OpenCodeServerDialect } | undefined;
     let seenPassword: string | undefined;
-    const settle = (error?: Error, value?: { url: string; password?: string }) => {
+    const settle = (error?: Error, value?: Started) => {
       clearTimeout(timer);
       if (error) reject(error); else if (value) { ready = true; resolve(value); }
     };
     const maybeResolve = () => {
-      if (!seenUrl || ready) return;
-      if (seenPassword) {
-        settle(undefined, { url: seenUrl, password: seenPassword });
-        return;
-      }
-      if (!expectPassword) settle(undefined, { url: seenUrl });
+      if (!listening || ready) return;
+      if (listening.dialect === "v1") settle(undefined, listening);
+      else if (seenPassword) settle(undefined, { ...listening, password: seenPassword });
     };
     const onLine = (line: string, to: "stdout" | "stderr") => {
       if (to === "stdout") stdout += `${line}\n`;
       else stderr += `${line}\n`;
-      const parsedUrl = parseOpenCodeServerUrl(line);
-      if (parsedUrl && !seenUrl) {
-        seenUrl = parsedUrl;
-        maybeResolve();
-      }
-      const parsedPassword = parseOpenCodeServerPassword(line);
-      if (parsedPassword && !seenPassword) {
-        seenPassword = parsedPassword;
-        maybeResolve();
-      }
+      listening ??= parseOpenCodeServerListening(line);
+      seenPassword ??= parseOpenCodeServerPassword(line);
+      maybeResolve();
     };
     createInterface({ input: child.stdout! }).on("line", (line) => onLine(line, "stdout"));
     // Password/listening lines occasionally land on stderr; probe both.
@@ -130,7 +137,9 @@ async function startOpenCodeServerOnce(input: {
       if (!ready) settle(new Error(`OpenCode server exited before readiness (${code ?? signal ?? "unknown"}).\nstdout:\n${stdout}\nstderr:\n${stderr}`));
     });
   }).catch(async (error) => { await disposeUnready(child); throw error; });
-  return password ? { baseUrl: url, password, child, dispose } : { baseUrl: url, child, dispose };
+  const server: OpenCodeServer = { baseUrl: started.url, dialect: started.dialect, child, dispose };
+  if (started.password) server.password = started.password;
+  return server;
 }
 
 /** Tear down a server that never became ready. Unlike the graceful dispose
@@ -169,11 +178,6 @@ type LaunchInput = {
   env: NodeJS.ProcessEnv;
   /** CLI executable to serve from; defaults to `opencode` on PATH. */
   binary?: string;
-  /** True when the version probe already identified v2: the boot waits for
-   *  the `server password` line. Anything else resolves on the listening
-   *  line — v1 never prints a password, and an unanswered version probe
-   *  must not slow every v1 start by a grace window. */
-  expectPassword?: boolean;
 };
 
 /** A stable digest of the environment a server was booted with. Hashed rather

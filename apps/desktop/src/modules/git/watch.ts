@@ -9,7 +9,8 @@ import type { GitStatus } from "@kone/git-core/types.js";
 /** Linux safety-net poll for nested working-tree edits the non-recursive
  *  watchers can't see. One `git status` per watched repo per tick, so with
  *  every thread in its own worktree the cost scales with worktree count —
- *  kept well above the debounce (t3code refreshes on a 30s cadence). */
+ *  kept well above the debounce, since a missed nested edit only has to
+ *  surface eventually, not instantly. */
 const LINUX_STATUS_POLL_INTERVAL_MS = 15_000;
 
 // Keep the open project in sync with the disk: watch the repo and re-read status
@@ -42,17 +43,100 @@ function watchRelevant(filename: string | null): boolean {
   return true;
 }
 
+/** Whether two status reads describe the same repo state, compared field by
+ *  field so an unchanged poll costs no serialization. */
+function sameStatus(a: GitStatus, b: GitStatus): boolean {
+  if (
+    a.branch !== b.branch ||
+    a.detached !== b.detached ||
+    a.head !== b.head ||
+    a.upstream !== b.upstream ||
+    a.ahead !== b.ahead ||
+    a.behind !== b.behind ||
+    a.staged !== b.staged ||
+    a.unstaged !== b.unstaged ||
+    a.untracked !== b.untracked ||
+    a.changes.length !== b.changes.length
+  ) {
+    return false;
+  }
+  return a.changes.every((change, i) => {
+    const other = b.changes[i];
+    return (
+      other !== undefined &&
+      change.path === other.path &&
+      change.from === other.from &&
+      change.status === other.status &&
+      change.staged === other.staged &&
+      change.unstaged === other.unstaged &&
+      change.added === other.added &&
+      change.removed === other.removed
+    );
+  });
+}
+
+type RawWatchEvent = (_event: string, filename: string | null) => void;
+
+/** Start the platform's file watchers over `root`, returning their teardown,
+ *  or null when nothing could be watched.
+ *
+ *  Node supports recursive watching on Linux since v19/20, but it adds one
+ *  inotify watch per directory — on large trees that is hundreds of watches
+ *  for a status signal. So on Linux this fans out to cheap non-recursive
+ *  watchers (working-tree top level + `.git` for index/HEAD + `.git/refs`)
+ *  plus a low-frequency `onPoll` tick as a safety net for nested edits, which
+ *  don't raise inotify there. Everywhere else one recursive watcher covers
+ *  the whole tree. */
+function startWatchers(
+  root: string,
+  onRawEvent: (prefix: string) => RawWatchEvent,
+  onPoll: () => void,
+): (() => void) | null {
+  const watchers: FSWatcher[] = [];
+  const watch = (dirPath: string, prefix: string, recursive: boolean): boolean => {
+    try {
+      const w = fsWatch(dirPath, { recursive }, onRawEvent(prefix));
+      w.on("error", () => {});
+      watchers.push(w);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  if (process.platform === "linux") {
+    // Best-effort per scope: a missing dir (no .git/refs yet) or EMFILE just
+    // means that scope has no live sync; the poll still catches changes.
+    watch(root, "", false);
+    watch(path.join(root, ".git"), ".git", false);
+    watch(path.join(root, ".git", "refs"), ".git/refs", false);
+    pollTimer = setInterval(onPoll, LINUX_STATUS_POLL_INTERVAL_MS);
+    // setInterval keeps the Electron main loop alive; the explicit teardown is
+    // the real stop, this just avoids holding the loop for a forgotten watcher.
+    pollTimer.unref?.();
+  } else if (!watch(root, "", true)) {
+    // Recursive watch unsupported or the OS refused (too many files) —
+    // degrade to no live sync rather than crash; the initial read stands.
+    return null;
+  }
+
+  return () => {
+    if (pollTimer) clearInterval(pollTimer);
+    for (const w of watchers) {
+      try {
+        w.close();
+      } catch {
+        // Already closed — teardown is best-effort.
+      }
+    }
+  };
+}
+
 /** Watch `dir`'s repository and call `onStatus` (debounced) with a fresh status
  *  whenever it changes on disk. Resolves the repo root first; a non-repo yields a
  *  no-op stop fn and no callbacks. Returns a function that stops watching.
- *
- *  Linux note: Node supports recursive watching on Linux since v19/20, but
- *  it adds one inotify watch per directory — on large trees that is hundreds
- *  of watches for a status signal. So on Linux we fan out to cheap
- *  non-recursive watchers (root + `.git` + `.git/refs` when present) plus a
- *  low-frequency status poll as a safety net for nested working-tree edits.
- *  Everywhere else we keep one recursive watcher. Either way bursts are
- *  coalesced by the same debounce and share one in-flight `git status`. */
+ *  Bursts are coalesced by one debounce and share one in-flight `git status`. */
 export async function watchStatus(
   dir: string,
   onStatus: (status: GitStatus) => void,
@@ -67,26 +151,19 @@ export async function watchStatus(
   let dirty = false; // a change arrived while a read was in flight
   // Last status pushed to the caller, so a poll that finds nothing new stays
   // silent instead of re-sending an identical status over IPC every tick.
-  let lastSent: string | null = null;
+  let lastSent: GitStatus | null = null;
 
-  async function emit(fromPoll = false): Promise<void> {
-    if (closed || running) {
-      // A poll colliding with a read already in flight has nothing to add.
-      if (!fromPoll) dirty = dirty || !closed;
-      return;
-    }
+  function send(fresh: GitStatus): void {
+    lastSent = fresh;
+    onStatus(fresh);
+  }
+
+  /** One `git status` read, handing a fresh result to `onFresh`. */
+  async function read(onFresh: (fresh: GitStatus) => void): Promise<void> {
     running = true;
     try {
       const fresh = await status(root);
-      if (fresh && !closed) {
-        const signature = JSON.stringify(fresh);
-        if (fromPoll && signature === lastSent) return;
-        // A poll-found change came from an edit no watcher saw, so the file
-        // index may be stale too — drop it the way schedule() would have.
-        if (fromPoll) invalidateFileIndex(root);
-        lastSent = signature;
-        onStatus(fresh);
-      }
+      if (fresh && !closed) onFresh(fresh);
     } catch {
       // A transient read failure (mid-write, lock contention) is fine — the next
       // change reschedules another read.
@@ -97,6 +174,29 @@ export async function watchStatus(
         schedule();
       }
     }
+  }
+
+  /** A watcher saw a relevant change: always push what the disk says now. */
+  async function emit(): Promise<void> {
+    if (closed) return;
+    if (running) {
+      dirty = true;
+      return;
+    }
+    await read(send);
+  }
+
+  /** The safety-net tick: push only when the status actually moved. A poll-found
+   *  change came from an edit no watcher saw, so the file index may be stale
+   *  too — drop it the way schedule() would have. */
+  async function poll(): Promise<void> {
+    // A pending debounce or an in-flight read is about to report anyway.
+    if (closed || running || timer !== null) return;
+    await read((fresh) => {
+      if (lastSent && sameStatus(lastSent, fresh)) return;
+      invalidateFileIndex(root);
+      send(fresh);
+    });
   }
 
   function schedule(): void {
@@ -112,10 +212,7 @@ export async function watchStatus(
     }, 180);
   }
 
-  let watchers: FSWatcher[] = [];
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-  const onRawEvent = (prefix: string) => (_event: string, filename: string | null) => {
+  const onRawEvent = (prefix: string): RawWatchEvent => (_event, filename) => {
     if (closed) return;
     // Non-recursive watchers report names relative to their own dir; re-prefix
     // so watchRelevant sees the repo-relative path.
@@ -128,59 +225,12 @@ export async function watchStatus(
     schedule();
   };
 
-  const watchNonRecursive = (dirPath: string, prefix: string): void => {
-    try {
-      const w = fsWatch(dirPath, { recursive: false }, onRawEvent(prefix));
-      w.on("error", () => {});
-      watchers.push(w);
-    } catch {
-      // Best-effort: a missing dir (no .git/refs yet) or EMFILE just means
-      // that scope has no live sync; the poll below still catches changes.
-    }
-  };
-
-  // One inotify watch per scope that matters (working-tree top level +
-  // index/HEAD + refs) instead of one recursive watch costing a watch per
-  // directory. Nested working-tree edits below the top level don't raise
-  // inotify here, so a slow poll backs them up. The poll reads status
-  // directly rather than through schedule(): it must not drop the file index
-  // every tick, and an unchanged result is not pushed to the caller.
-  const useLinuxFallback = process.platform === "linux";
-  if (useLinuxFallback) {
-    watchNonRecursive(root, "");
-    watchNonRecursive(path.join(root, ".git"), ".git");
-    watchNonRecursive(path.join(root, ".git", "refs"), ".git/refs");
-    pollTimer = setInterval(() => {
-      // A pending debounce is about to read anyway.
-      if (!closed && timer === null) void emit(true);
-    }, LINUX_STATUS_POLL_INTERVAL_MS);
-    // setInterval keeps the Electron main loop alive; the explicit close in
-    // stop() below is the real teardown, this just avoids holding the loop
-    // for a forgotten watcher.
-    pollTimer.unref?.();
-  } else {
-    try {
-      const w = fsWatch(root, { recursive: true }, onRawEvent(""));
-      w.on("error", () => {});
-      watchers.push(w);
-    } catch {
-      // Recursive watch unsupported or the OS refused (too many files) —
-      // degrade to no live sync rather than crash; the initial read stands.
-      return () => {};
-    }
-  }
+  const stopWatchers = startWatchers(root, onRawEvent, () => void poll());
+  if (!stopWatchers) return () => {};
 
   return () => {
     closed = true;
     if (timer) clearTimeout(timer);
-    if (pollTimer) clearInterval(pollTimer);
-    for (const w of watchers) {
-      try {
-        w.close();
-      } catch {
-        // Already closed — teardown is best-effort.
-      }
-    }
-    watchers = [];
+    stopWatchers();
   };
 }

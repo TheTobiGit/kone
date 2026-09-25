@@ -168,6 +168,7 @@ const agentProviders = useAgentProviders();
 // module-scope ref (see useStripPrefs) so flipping it there steers the scroll
 // maths below live, with no prop threaded in and no reload.
 const { centerMode } = useStripPrefs();
+const { displays: responseDisplays } = useResponsePrefs();
 
 const rail = ref<HTMLElement | null>(null);
 const railWidth = ref(0);
@@ -681,6 +682,7 @@ const { isUnread } = useStripUnread({
               >
                 <template v-if="c.kind === 'thread' && c.session">
                   <ConversationThread
+                    :display="responseDisplays.studio"
                     :blocks="c.session.timelineBlocks.value"
                     :compactions="c.session.compactions.value"
                     :checkpoints="c.session.checkpoints.value"
@@ -914,11 +916,11 @@ const { isUnread } = useStripUnread({
   pointer-events: none;
   transition: opacity 0.28s ease;
 }
-/* Frameless shells: the strip only renders inside the studio plane, which
+/* Overlay chrome (Windows): the strip only renders inside the studio plane, which
    paints over the project page's titlebar band, so the dashes keep their own
    line. The plane's top edge is the window drag band (see AppStudio); every
    control on this line opts back out so it stays clickable. */
-.frameless .index__dash {
+[data-chrome="overlay"] .index__dash {
   -webkit-app-region: no-drag;
 }
 .index__dashes {

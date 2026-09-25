@@ -136,8 +136,8 @@
   --term-selection: color-mix(in oklab, var(--accent) 24%, transparent);
 }
 
-/* Window chrome, set at boot by the frameless plugin (not by the caption
-   component mounting).
+/* Window chrome, keyed off `<html data-chrome>` which the frameless plugin
+   sets at boot (not the caption component mounting).
    `--caption-inset`: width the overlay caption cluster (win32) clears from
    trailing corners. 0 by default so every surface can pad against the
    variable instead of hard-coding 138px.
@@ -152,15 +152,15 @@
   --titlebar-overlap: 0px;
   --app-h: 100vh;
 }
-.frameless {
+:root[data-chrome="overlay"] {
   --caption-inset: 138px;
 }
-.titlebar {
+:root[data-chrome="titlebar"] {
   --titlebar-h: 22px;
   --titlebar-overlap: 14px;
   --app-h: calc(100vh - var(--titlebar-h) + var(--titlebar-overlap));
 }
-.titlebar body {
+:root[data-chrome="titlebar"] body {
   padding-top: calc(var(--titlebar-h) - var(--titlebar-overlap));
 }
 

@@ -11,7 +11,7 @@
 // and AgentActivity (which turns a step group into its live activity feed), so
 // both agree on exactly what a "segment" and an "activity entry" are.
 
-import { parseSpawnRecords, type SpawnRecord } from "@kone/protocol/spawn-record";
+import { isSpawnToolName, parseSpawnRecords, type SpawnRecord } from "@kone/protocol/spawn-record";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 
@@ -58,21 +58,13 @@ export function toolCalls(seg: Segment): RuntimeItem[] {
   return seg.items.filter((i) => i.kind === "tool_call");
 }
 
-/** The tools that open threads and leave spawn records behind. */
-const SPAWN_TOOLS = new Set([
-  "kone_spawn_worker",
-  "kone_spawn_worker_preset",
-  "kone_delegate_to_teammate",
-  "kone_spawn_batch",
-]);
-
 /** The threads a settled spawn call opened — one for a spawn or delegation,
  *  each that opened for a batch — or none for any other item: a different
  *  tool, a call still running, or one that was refused and so recorded
  *  nothing. */
 export function spawnRecordsOf(item: RuntimeItem): SpawnRecord[] {
   if (item.kind !== "tool_call" || item.status !== "completed") return [];
-  if (!item.name || !SPAWN_TOOLS.has(item.name)) return [];
+  if (!item.name || !isSpawnToolName(item.name)) return [];
   return parseSpawnRecords(item.detail);
 }
 
@@ -84,6 +76,10 @@ export function spawnRecordsOf(item: RuntimeItem): SpawnRecord[] {
 // agent says it did, not a step on the way to saying something, so it reads as
 // part of the reply at the point it happened — the step feed it would otherwise
 // sit in folds away once the turn settles.
+//
+// Each segment comes out as its own steps group. Whether adjacent batches read
+// as one depends on what shows between them, so the joining is utils/turnPlan's,
+// done once the reader's choices are known.
 export type RenderGroup =
   | { kind: "steps"; key: string; segments: Segment[] }
   | { kind: "text"; seg: Segment }
@@ -94,11 +90,8 @@ export type WorkGroup = Exclude<RenderGroup, { kind: "spawn" }>;
 
 export function renderGroups(block: AssistantBlock): RenderGroup[] {
   const out: RenderGroup[] = [];
-  const pushStep = (seg: Segment): void => {
-    const last = out[out.length - 1];
-    if (last && last.kind === "steps") last.segments.push(seg);
-    else out.push({ kind: "steps", key: seg.key, segments: [seg] });
-  };
+  const spawned = new Set<string>();
+  const pushStep = (seg: Segment): void => void out.push({ kind: "steps", key: seg.key, segments: [seg] });
   for (const seg of segmentsOf(block)) {
     if (seg.kind === "text") {
       out.push({ kind: "text", seg });
@@ -128,7 +121,8 @@ export function renderGroups(block: AssistantBlock): RenderGroup[] {
       flush();
       for (const record of records) {
         // A retried call replays the same spawn; the work was handed off once.
-        if (out.some((g) => g.kind === "spawn" && g.record.threadId === record.threadId)) continue;
+        if (spawned.has(record.threadId)) continue;
+        spawned.add(record.threadId);
         out.push({ kind: "spawn", key: `${block.id}:${item.itemId}:${record.threadId}`, item, record });
       }
     }

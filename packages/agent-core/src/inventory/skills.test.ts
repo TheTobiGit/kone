@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { discoverSkills, skillRootTargets } from "./skills.js";
+import { discoverSkills } from "./skills.js";
 
 // discoverSkills reads the REAL homedir for the user-scope roots, so every
 // fixture lives in a temp project tree and each skill name derives from its
@@ -248,42 +248,5 @@ describe("discoverSkills agents", () => {
     expect(winner.description).toBe("Agents project skill");
     expect(winner.displayName).toBe("Agents Test");
     expect(winner.enabled).toBe(true);
-  });
-});
-
-describe("skillRootTargets", () => {
-  test("offers one folder per CLI, marking the ones that exist", async () => {
-    const project = makeProject();
-    mkdirSync(path.join(project, ".claude", "skills"), { recursive: true });
-
-    const targets = await skillRootTargets(project);
-    const projectTargets = targets.filter((t) => t.scope === "project");
-
-    // v1: all providers we offer — claude/codex/cursor/opencode/agents/factory
-    const origins = projectTargets.map((t) => t.origin);
-    expect(new Set(origins).size).toBe(origins.length);
-    expect(origins).toEqual(expect.arrayContaining(["claude", "codex", "cursor", "opencode", "agents", "factory"]));
-    expect(origins).toHaveLength(6);
-
-    const claude = projectTargets.find((t) => t.origin === "claude");
-    expect(claude?.dir).toBe(path.join(project, ".claude", "skills"));
-    expect(claude?.exists).toBe(true);
-    expect(projectTargets.find((t) => t.origin === "agents")?.exists).toBe(false);
-
-    // Only this project's own folders: an ancestor several levels up is not
-    // what someone adding a skill here means.
-    for (const target of projectTargets) {
-      expect(path.dirname(path.dirname(target.dir))).toBe(project);
-    }
-  });
-
-  test("user folders are offered with no project at all, and come first", async () => {
-    const targets = await skillRootTargets(null);
-    expect(targets.length).toBeGreaterThan(0);
-    expect(targets.every((t) => t.scope === "user")).toBe(true);
-    // v1: all global roots
-    const origins = targets.map((t) => t.origin);
-    expect(new Set(origins).size).toBe(origins.length);
-    expect(origins).toEqual(expect.arrayContaining(["claude", "codex", "cursor", "opencode", "agents", "factory"]));
   });
 });

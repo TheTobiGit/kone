@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
+import { cardSpring } from "~/utils/cardSpring";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon, AiBrain01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
@@ -101,7 +102,6 @@ const meta = computed(() => {
 
 const liveRun = computed(() => props.rows.find((r) => r.live));
 
-
 function measureScroll(): void {
   const el = scrollEl.value;
   if (el) canScroll.value = el.scrollHeight > el.clientHeight + 1;
@@ -169,7 +169,6 @@ onBeforeUnmount(() => {
   if (measureTimer) clearTimeout(measureTimer);
 });
 
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
 const fadeEase = [0.22, 1, 0.36, 1] as const;
 const stateFade = { duration: 0.16, ease: fadeEase } as const;

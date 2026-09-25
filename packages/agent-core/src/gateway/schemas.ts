@@ -19,6 +19,7 @@ import {
   MIN_LINE_HEIGHT_BODY,
   MIN_MEASURE,
 } from "@kone/protocol/typography";
+import { SPAWN_WHY_MAX_CHARS } from "@kone/protocol/spawn-record";
 import type { ProviderKind } from "../types.js";
 import { LSP_ACTIONS } from "../lsp/types.js";
 
@@ -188,7 +189,7 @@ export const SpawnTargetsInputSchema = z.object({});
 
 /** Why the parent is handing this off, in its own words — shown to the user
  *  in the thread where the worker was spawned. Never reaches the worker. */
-const SpawnWhySchema = z.string().min(1).max(280).optional();
+const SpawnWhySchema = z.string().min(1).max(SPAWN_WHY_MAX_CHARS).optional();
 
 export const SpawnWorkerInputSchema = z.object({
   /** The child's first turn — the brief it wakes up to. */
@@ -358,6 +359,7 @@ export const SPAWN_TARGETS_JSON_SCHEMA = {
 
 const SPAWN_WHY_JSON_SCHEMA = {
   type: "string",
+  maxLength: SPAWN_WHY_MAX_CHARS,
   description:
     "One short clause, in your own voice, on why you are handing this off rather than doing it yourself — it completes the sentence \"…because\" and the user reads it in the thread at the point you spawned the worker. e.g. \"the suite takes ten minutes and I can keep refactoring meanwhile\".",
 } satisfies GatewayRecord;

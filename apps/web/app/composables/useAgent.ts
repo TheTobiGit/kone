@@ -50,7 +50,7 @@ import {
   titleFromPrompt,
 } from "./agentPrefetch";
 
-import { createMockTurnRunner } from "./agentMock";
+import { devTurnRunner } from "~/utils/desktopBridge";
 import { getSideChatSource } from "./sideChats";
 import { useCompaction } from "./useCompaction";
 import { useTurnCheckpoints } from "./useTurnCheckpoints";
@@ -67,18 +67,6 @@ import { useSessionTurnParams } from "./session/sessionTurnParams";
 import { useSessionTranscript, PAGE_LIMIT } from "./session/sessionTranscript";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
-
-/** The mock runner a production build gets: there is always a bridge, so no
- *  mock turn ever starts and each call is a no-op. */
-const INERT_MOCK_RUNNER: ReturnType<typeof createMockTurnRunner> = {
-  stopMock: () => {},
-  mockQueueFollowUp: () => {},
-  mockTurn: () => {},
-  demo: () => {},
-  getMockTurnId: () => null,
-  hasPendingApproval: () => false,
-  respondApproval: () => false,
-};
 
 // ── one thread ────────────────────────────────────────────────────────────────
 
@@ -177,8 +165,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     threadId,
     bridge: ctx.bridge,
     send,
-    mockHasPendingApproval: (requestId) => mockHasPendingApproval(requestId),
-    mockRespondApproval: (requestId, decision) => mockRespondApproval(requestId, decision),
+    mockHasPendingApproval: (requestId) => mock?.hasPendingApproval(requestId) ?? false,
+    mockRespondApproval: (requestId, decision) => mock?.respondApproval(requestId, decision) ?? false,
   });
   const pendingUserInput = gates.pendingUserInput;
   const pendingApprovals = gates.pendingApprovals;
@@ -761,10 +749,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // row exactly like the real queue does (the mock consumes it when the
       // turn settles; see mockQueueFollowUp).
       if (busy.value) {
-        mockQueueFollowUp(blockId, "queue", trimmed, files.length ? files : undefined);
+        mock?.mockQueueFollowUp(blockId, "queue", trimmed, files.length ? files : undefined);
         return;
       }
-      mockTurn(trimmed || files[0]?.name || "Attachment");
+      mock?.mockTurn(trimmed || files[0]?.name || "Attachment");
       return;
     }
     dispatching.value = true;
@@ -825,10 +813,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // mock has no live-steer channel), exactly like the real providers
       // without one.
       if (busy.value) {
-        mockQueueFollowUp(blockId, "steer", trimmed, files.length ? files : undefined);
+        mock?.mockQueueFollowUp(blockId, "steer", trimmed, files.length ? files : undefined);
         return;
       }
-      mockTurn(trimmed || files[0]?.name || "Attachment");
+      mock?.mockTurn(trimmed || files[0]?.name || "Attachment");
       return;
     }
     dispatching.value = true;
@@ -900,7 +888,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // is the cheaper way to put a blank thread on another provider.
     if (!api?.handIn || !session.value) return "not-applicable";
     if (busy.value) await interrupt();
-    stopMock();
+    mock?.stopMock();
     touch();
     try {
       const result = await api.handIn({
@@ -1004,39 +992,29 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     };
   }
 
-  // ── browser dev mock ────────────────────────────────────────────────────────
-  // Scripted turns for `nuxt dev` (no bridge) and the play-demo shortcut. Built
-  // only under `import.meta.dev`, so a production build tree-shakes agentMock
-  // away and gets the inert runner instead.
-  const {
-    stopMock,
-    mockQueueFollowUp,
-    mockTurn,
-    demo,
-    getMockTurnId,
-    hasPendingApproval: mockHasPendingApproval,
-    respondApproval: mockRespondApproval,
-  } = import.meta.dev
-    ? createMockTurnRunner({
-        threadId,
-        provider,
-        sessionState,
-        reasoning,
-        blocks,
-        title,
-        tokenUsage,
-        queuedTurnsRaw,
-        reduce,
-        busy,
-      })
-    : INERT_MOCK_RUNNER;
+  // ── scripted turns ──────────────────────────────────────────────────────────
+  // The dev bridge's turn runner: canned replies in `nuxt dev` (no bridge) and
+  // the play-demo shortcut. A production build has no dev bridge, so there is
+  // no runner and every `mock?.` call below does nothing.
+  const mock = devTurnRunner()?.({
+    threadId,
+    provider,
+    sessionState,
+    reasoning,
+    blocks,
+    title,
+    tokenUsage,
+    queuedTurnsRaw,
+    reduce,
+    busy,
+  });
 
   /** Interrupt the running turn. */
   async function interrupt(): Promise<void> {
-    const tid = getMockTurnId();
+    const tid = mock?.getMockTurnId();
     if (tid) {
       // Running a mock turn (browser dev or ⇧⌘D demo): halt its timers and mark aborted.
-      stopMock();
+      mock?.stopMock();
       // SAFETY: the literal below spells out the whole aborted-event payload.
       reduce({
         ...base("turn.aborted"),
@@ -1049,7 +1027,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     const api = bridge();
     if (!api) {
-      stopMock();
+      mock?.stopMock();
       sessionState.value = "ready";
       return;
     }
@@ -1066,7 +1044,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // Latch first — a still-awaiting openStored() reads this the moment its
     // history load resolves and bails before adopting the id or starting.
     forgotten = true;
-    stopMock();
+    mock?.stopMock();
     const api = bridge();
     // Only stop a session we actually started — on the recent-open fast path
     // dispose() may run before any spawn, so there's nothing to tear down.
@@ -1091,7 +1069,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  ProviderSessionReaper stops idle sessions the same way; the difference is
    *  kone's pane + transcript stay live and resume is one send away). */
   async function hibernate(): Promise<void> {
-    stopMock();
+    mock?.stopMock();
     const api = bridge();
     const wasLive = Boolean(api && session.value);
     if (api && session.value) {
@@ -1272,7 +1250,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     uploadAttachment,
     getAttachmentPath,
     showAttachmentInFolder,
-    demo,
+    demo: (opts?: { fast?: boolean }) => mock?.demo(opts),
     interrupt,
     compactThread,
     stopSubagent,

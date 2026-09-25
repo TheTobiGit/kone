@@ -7,8 +7,8 @@ import {
   isRetryableOpenCodeServerFailure,
   OpenCodeServerPool,
   OPENCODE_SERVER_RETRY_DELAYS_MS,
+  parseOpenCodeServerListening,
   parseOpenCodeServerPassword,
-  parseOpenCodeServerUrl,
   type OpenCodeServer,
 } from "./opencodeServer.js";
 
@@ -45,14 +45,16 @@ describe("OPENCODE_SERVER_RETRY_DELAYS_MS", () => {
 });
 
 describe("openCode v2 serve output", () => {
-  test("parses both v1 and v2 listening lines", () => {
-    expect(parseOpenCodeServerUrl("opencode server listening on http://127.0.0.1:1234")).toBe(
-      "http://127.0.0.1:1234",
-    );
-    expect(parseOpenCodeServerUrl("server listening on http://127.0.0.1:35221")).toBe(
-      "http://127.0.0.1:35221",
-    );
-    expect(parseOpenCodeServerUrl("server password abc")).toBeUndefined();
+  test("reads the dialect off the listening line", () => {
+    expect(parseOpenCodeServerListening("opencode server listening on http://127.0.0.1:1234")).toEqual({
+      url: "http://127.0.0.1:1234",
+      dialect: "v1",
+    });
+    expect(parseOpenCodeServerListening("server listening on http://127.0.0.1:35221")).toEqual({
+      url: "http://127.0.0.1:35221",
+      dialect: "v2",
+    });
+    expect(parseOpenCodeServerListening("server password abc")).toBeUndefined();
   });
 
   test("parses the v2 server password", () => {
@@ -83,7 +85,13 @@ if (dieWhen) setInterval(() => {
 }, 25);
 const server = net.createServer();
 server.listen(0, "127.0.0.1", () => {
-  console.log(\`opencode server listening on http://127.0.0.1:\${server.address().port}\`);
+  const port = server.address().port;
+  if (process.env.KONE_FAKE_OPENCODE_V2) {
+    console.log(\`server listening on http://127.0.0.1:\${port}\`);
+    setTimeout(() => console.error("server password fake-secret"), 150);
+  } else {
+    console.log(\`opencode server listening on http://127.0.0.1:\${port}\`);
+  }
 });
 setInterval(() => {}, 1000);
 `;
@@ -131,6 +139,22 @@ setInterval(() => {}, 1000);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
+
+  test("a v1 listening line is ready on its own, with no password", async () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "kone-opencode-cwd-"));
+    const server = await pool.start(startOpts(cwd));
+    owned.push(server);
+    expect(server.dialect).toBe("v1");
+    expect(server.password).toBeUndefined();
+  });
+
+  test("a v2 listening line waits for the password line, whichever stream it lands on", async () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "kone-opencode-cwd-"));
+    const server = await pool.start(startOpts(cwd, { KONE_FAKE_OPENCODE_V2: "1" }));
+    owned.push(server);
+    expect(server.dialect).toBe("v2");
+    expect(server.password).toBe("fake-secret");
+  });
 
   test("a second start on the same directory checks out the parked spare", async () => {
     const cwd = mkdtempSync(path.join(tmpdir(), "kone-opencode-cwd-"));

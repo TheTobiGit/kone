@@ -59,7 +59,8 @@ export function isOpenCodeVersionSupported(version: string | undefined): boolean
 /** True for OpenCode v2+ (`2.x.x`). v2 removed `models --verbose`, changed
  *  `serve` output to `server listening on ...` + `server password ...`, moved
  *  HTTP routes under `/api/*` with Basic auth, and emits `{id,type,data}`
- *  SSE events. Callers use this to pick the v1 or v2 code path. */
+ *  SSE events. Only the model-inventory probes key off it; a running server's
+ *  protocol is read from its own listening line (opencodeServer.ts). */
 export function isOpenCodeV2(version: string | undefined): boolean {
   if (!version) return false;
   const major = Number(version.split(".")[0]);

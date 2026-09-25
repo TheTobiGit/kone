@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { useModalExit } from "~/composables/useModalExit";
@@ -44,7 +43,7 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
-const { shown, closing, close } = useModalExit();
+const { shown, close } = useModalExit();
 function dismiss(): void {
   close(() => emit("close"));
 }
@@ -218,28 +217,19 @@ onBeforeUnmount(() => {
   controller.dispose();
   opener?.focus();
 });
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 380,
-  damping: 32,
-  mass: 0.9,
-} as const;
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center overflow-hidden px-4 pt-[12vh]">
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="dismiss" />
-
-    <motion.div
+  <UiModalShell
+    v-slot="{ card }"
+    :shown="shown"
+    from="above"
+    class="z-50 items-start justify-center px-4 pt-[12vh]"
+    @dismiss="dismiss"
+  >
+    <div
+      v-bind="card"
       class="modal-card relative z-20 flex w-full max-w-lg flex-col overflow-hidden"
-      :initial="{ opacity: 0, y: -10, scale: 0.98 }"
-      :animate="{
-        opacity: shown && !closing ? 1 : 0,
-        y: shown && !closing ? 0 : -10,
-        scale: shown && !closing ? 1 : 0.98,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       aria-label="Search conversations"
@@ -312,14 +302,11 @@ const cardSpring = {
         <span>↵ open</span>
         <span>esc close</span>
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 .modal-card {
   background: var(--panel);
   border-radius: 16px;

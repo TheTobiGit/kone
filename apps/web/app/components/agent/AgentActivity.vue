@@ -88,7 +88,7 @@ import { thinkingOrbHue } from "~/utils/toolOrbDraw";
 // already on screen hold *perfectly* still while the new one is revealed by the
 // growing edge. That's the difference between "the list grew" and "the page moved".
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   segments: Segment[];
   running: boolean;
   /** Is this the turn's final (tail) batch? A tail batch stays active through a
@@ -101,7 +101,7 @@ const props = defineProps<{
    *  strip when done; "open" shows every step, live and after; "closed" is the
    *  strip from the first step, rows only when asked. */
   fold?: ActivityFold;
-}>();
+}>(), { fold: "auto" });
 
 const WINDOW = 5;
 const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as const;
@@ -112,26 +112,27 @@ const total = computed(() => entries.value.length);
 // The batch is active only while the turn runs and this is the live tail group.
 const active = computed(() => props.running && props.isTail === true);
 
-// The reader's choice only sets where a batch starts; the head folds and
-// unfolds it by hand from then on, live or done.
-//
-// Folding as it goes, an active batch runs its own sliding window of rows until
-// the agent moves on — or until the reader folds it by hand, which hands it to
-// `expanded` like any done batch. Kept open or kept folded, a batch never ticks:
-// it is simply unfolded (every step, as it lands) or folded (the strip beside a
-// live orb) until someone says otherwise.
-const { cue } = useSound();
-const foldedByHand = ref(false);
-const ticking = computed(() => active.value && props.fold !== "open" && props.fold !== "closed" && !foldedByHand.value);
+// How the batch shows itself — one of three views:
+//   · "ticker" — a sliding window of the latest rows, the rest as chips; only
+//     while the batch is active, so a ticker whose agent has moved on is a strip;
+//   · "rows"   — every step as a full row;
+//   · "strip"  — the chips alone, rows only when asked.
+// The reader's choice only sets where a batch starts ("auto" ticks, "open" is
+// rows, "closed" is the strip); the head folds and unfolds it by hand from then
+// on, live or done.
+type ActivityView = "ticker" | "rows" | "strip";
+const START_VIEW = { auto: "ticker", open: "rows", closed: "strip" } satisfies Record<ActivityFold, ActivityView>;
 
-const expanded = ref(props.fold === "open");
+const { cue } = useSound();
+const chosen = ref<ActivityView>(START_VIEW[props.fold]);
 watch(
   () => props.fold,
-  (fold) => {
-    foldedByHand.value = false;
-    expanded.value = fold === "open";
-  },
+  (fold) => (chosen.value = START_VIEW[fold]),
 );
+const view = computed<ActivityView>(() =>
+  chosen.value === "ticker" && !active.value ? "strip" : chosen.value,
+);
+const ticking = computed(() => view.value === "ticker");
 const canExpand = computed(() => total.value > 0);
 
 // The chip strip folds and unfolds in lockstep with the window below — same
@@ -190,16 +191,10 @@ async function unfurlStrip(): Promise<void> {
 function toggleExpanded(): void {
   if (!canExpand.value) return;
   // A ticking batch folds by hand into its strip: the rows go the way they do
-  // when the agent moves on, and the batch answers to `expanded` from here.
-  if (ticking.value) {
-    foldedByHand.value = true;
-    expanded.value = false;
-    cue("toggle");
-    return;
-  }
-  if (expanded.value) void unfurlStrip();
-  else foldStrip();
-  expanded.value = !expanded.value;
+  // when the agent moves on. Otherwise the strip and the rows trade places.
+  if (view.value === "rows") void unfurlStrip();
+  else if (view.value === "strip") foldStrip();
+  chosen.value = view.value === "strip" ? "rows" : "strip";
   cue("toggle");
 }
 
@@ -245,7 +240,7 @@ watch(
 //   Done & expanded: no chips — every step drops down into a full row.
 const archived = computed(() => {
   if (ticking.value) return entries.value.slice(0, Math.max(0, total.value - WINDOW));
-  return expanded.value ? [] : entries.value;
+  return view.value === "rows" ? [] : entries.value;
 });
 
 // ── The viewport ───────────────────────────────────────────────────────────────
@@ -253,7 +248,7 @@ const archived = computed(() => {
 // finished one. `rowsAlive` lags that by one animation: the rows stay mounted
 // through the fold-away so there's something to animate, and unmount when the
 // height transition lands on 0.
-const wantRows = computed(() => ticking.value || expanded.value);
+const wantRows = computed(() => view.value !== "strip");
 const rowsAlive = ref(wantRows.value);
 
 // While rows are folding away the entry list must not change under them, or the
@@ -744,20 +739,32 @@ function stepProps(e: ActivityEntry) {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px);
   mask-image: linear-gradient(to bottom, transparent 0, #000 26px);
 }
-/* A row fades in once as it arrives; a plain CSS animation, so nothing stays
-   alive per row once it has played. */
+/* A row reads in once as it arrives, the same fade-and-drift the reply's
+   words use (`per-word-crossfade`, applied to the row whole): 700ms, 6px up.
+   Kept short in travel so a row entering the ticker doesn't visibly climb
+   past the one above it. A plain CSS animation, so nothing stays alive per
+   row once it has played. */
 .window__row--enter {
-  animation: row-enter 260ms ease-out;
+  animation: row-enter 700ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 @keyframes row-enter {
   from {
     opacity: 0;
+    transform: translateY(6px);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .window,
   .window__inner {
     transition: none;
+  }
+  .window__row--enter {
+    animation-name: row-fade;
+  }
+}
+@keyframes row-fade {
+  from {
+    opacity: 0;
   }
 }
 </style>

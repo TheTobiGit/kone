@@ -1,25 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { formatSpawnRecord } from "@kone/protocol/spawn-record";
+import { formatSpawnResult } from "@kone/protocol/spawn-record";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
-import {
-  DEFAULT_DISPLAYS,
-  DONE_TOOL_OPTIONS,
-  LIVE_TOOL_OPTIONS,
-  TEXT_OPTIONS,
-  UPDATES_OPTIONS,
-  type ResponseDisplay,
-} from "./responseDisplay";
+import { DEFAULT_DISPLAYS, RESPONSE_OPTIONS, type ResponseDisplay } from "./responseDisplay";
 import type { RenderGroup } from "./conversationSegments";
 import { planTurn } from "./turnPlan";
 
 const STUDIO = DEFAULT_DISPLAYS.studio;
 
-function display(
-  live: Partial<ResponseDisplay["live"]> = {},
-  done: Partial<ResponseDisplay["done"]> = {},
-): ResponseDisplay {
-  return { live: { ...STUDIO.live, ...live }, done: { ...STUDIO.done, ...done } };
+function display(choices: Partial<ResponseDisplay> = {}): ResponseDisplay {
+  return { ...STUDIO, ...choices };
 }
 
 function block(items: RuntimeItem[], state: AssistantBlock["state"] = "running"): AssistantBlock {
@@ -38,7 +28,10 @@ const spawn = (id: string): RuntimeItem => ({
   status: "completed",
   name: "kone_spawn_worker",
   text: "",
-  detail: formatSpawnRecord({ threadId: `child-${id}`, title: "t", provider: "codex", why: null, summary: "s" }),
+  detail: formatSpawnResult({
+    spawns: [{ threadId: `child-${id}`, title: "t", provider: "codex", why: null }],
+    summary: "s",
+  }),
 });
 
 /** A group as a short tag: steps list their items, text its item, spawns their child. */
@@ -75,13 +68,13 @@ describe("planTurn while it works", () => {
   });
 
   test("hidden tool calls leave the updates and a status line", () => {
-    const plan = planTurn(block(WORKING), display({ tools: "hidden" }));
+    const plan = planTurn(block(WORKING), display({ liveTools: "hidden" }));
     expect(tags(plan.inline)).toEqual(["text:u1", "text:u2"]);
     expect(plan.status).toBe(true);
   });
 
   test("hidden updates leave the work, read as one batch", () => {
-    const plan = planTurn(block([...WORKING, text("reply", "in-progress")]), display({ updates: "hide" }));
+    const plan = planTurn(block([...WORKING, text("reply", "in-progress")]), display({ liveUpdates: "hide" }));
     expect(tags(plan.inline)).toEqual([]);
     expect(liveIds(plan)).toEqual(["r1", "r2"]);
   });
@@ -93,14 +86,20 @@ describe("planTurn while it works", () => {
   });
 
   test("read whole, a message still being written waits — and the orb stays up", () => {
-    const plan = planTurn(block([tool("r1"), text("u1", "in-progress")]), display({ text: "whole" }));
+    const plan = planTurn(block([tool("r1"), text("u1", "in-progress")]), display({ liveText: "whole" }));
     expect(tags(plan.inline)).toEqual([]);
     expect(liveIds(plan)).toEqual(["r1"]);
   });
 
   test("the live choice sets how batches hold", () => {
-    expect(planTurn(block(WORKING), display({ tools: "expanded" })).activity).toBe("open");
-    expect(planTurn(block(WORKING), display({ tools: "folded" })).activity).toBe("closed");
+    expect(planTurn(block(WORKING), display({ liveTools: "expanded" })).activity).toBe("open");
+    expect(planTurn(block(WORKING), display({ liveTools: "folded" })).activity).toBe("closed");
+  });
+
+  test("thinking and the tool calls after it read as one batch", () => {
+    const think: RuntimeItem = { itemId: "k1", kind: "reasoning_text", status: "completed", text: "hm" };
+    const plan = planTurn(block([think, tool("r1")]), STUDIO);
+    expect(liveIds(plan)).toEqual(["k1", "r1"]);
   });
 
   test("spawn lines show whatever else is hidden", () => {
@@ -117,35 +116,47 @@ describe("planTurn when it's done", () => {
     expect(plan.foldOpen).toBe(false);
   });
 
+  test("a turn that only spoke and spawned has no work to fold", () => {
+    const plan = planTurn(block([text("u1"), spawn("s1")], "completed"), STUDIO);
+    expect(tags(plan.inline)).toEqual(["text:u1", "spawn:child-s1"]);
+    expect(plan.toggle).toBeNull();
+  });
+
+  test("a spawn said after the reply stays in the open, after it", () => {
+    const plan = planTurn(block([...TURN, spawn("s1")], "completed"), STUDIO);
+    expect(tags(plan.inline)).toEqual(["text:reply", "spawn:child-s1"]);
+    expect(plan.toggle).toEqual({ open: false });
+  });
+
   test("a turn that ended on a tool call folds open, having no reply", () => {
     expect(planTurn(block(WORKING, "completed"), STUDIO).foldOpen).toBe(true);
   });
 
   test("shown, the turn reads as it ran — the done choice setting how batches hold", () => {
-    const plan = planTurn(block(TURN, "completed"), display({}, { tools: "folded", updates: "show" }));
+    const plan = planTurn(block(TURN, "completed"), display({ doneTools: "folded", doneUpdates: "show" }));
     expect(plan.fold).toBeNull();
     expect(tags(plan.inline)).toEqual(["text:u1", "steps:r1", "text:u2", "steps:r2", "text:reply"]);
     expect(plan.activity).toBe("closed");
   });
 
   test("work shown, updates hidden: the work and the reply", () => {
-    const plan = planTurn(block(TURN, "completed"), display({}, { tools: "expanded", updates: "hide" }));
+    const plan = planTurn(block(TURN, "completed"), display({ doneTools: "expanded", doneUpdates: "hide" }));
     expect(tags(plan.inline)).toEqual(["steps:r1,r2", "text:reply"]);
   });
 
   test("work hidden, updates shown: what it said, and the reply", () => {
-    const plan = planTurn(block(TURN, "completed"), display({}, { tools: "hidden", updates: "show" }));
+    const plan = planTurn(block(TURN, "completed"), display({ doneTools: "hidden", doneUpdates: "show" }));
     expect(tags(plan.inline)).toEqual(["text:u1", "text:u2", "text:reply"]);
   });
 
   // The one constant: however the reader has it, a finished turn shows its reply.
   test("every combination ends on the final reply", () => {
-    for (const lt of LIVE_TOOL_OPTIONS)
-      for (const lu of UPDATES_OPTIONS)
-        for (const tx of TEXT_OPTIONS)
-          for (const dt of DONE_TOOL_OPTIONS)
-            for (const du of UPDATES_OPTIONS) {
-              const d = display({ tools: lt.id, updates: lu.id, text: tx.id }, { tools: dt.id, updates: du.id });
+    for (const lt of RESPONSE_OPTIONS.liveTools)
+      for (const lu of RESPONSE_OPTIONS.liveUpdates)
+        for (const tx of RESPONSE_OPTIONS.liveText)
+          for (const dt of RESPONSE_OPTIONS.doneTools)
+            for (const du of RESPONSE_OPTIONS.doneUpdates) {
+              const d = display({ liveTools: lt.id, liveUpdates: lu.id, liveText: tx.id, doneTools: dt.id, doneUpdates: du.id });
               const plan = planTurn(block(TURN, "completed"), d);
               expect({ d, last: tags(plan.inline).at(-1) }).toEqual({ d, last: "text:reply" });
             }
@@ -154,7 +165,7 @@ describe("planTurn when it's done", () => {
 
 describe("planTurn by hand", () => {
   test("a turn showing everything folds to its reply by hand", () => {
-    const all = display({}, { tools: "expanded", updates: "show" });
+    const all = display({ doneTools: "expanded", doneUpdates: "show" });
     expect(planTurn(block(TURN, "completed"), all).toggle).toEqual({ open: true });
     const closed = planTurn(block(TURN, "completed"), all, false);
     expect(closed.toggle).toEqual({ open: false });
@@ -169,7 +180,7 @@ describe("planTurn by hand", () => {
   });
 
   test("a turn holding something back reads closed, and opens onto the whole turn", () => {
-    const some = display({}, { tools: "hidden", updates: "show" });
+    const some = display({ doneTools: "hidden", doneUpdates: "show" });
     expect(planTurn(block(TURN, "completed"), some).toggle).toEqual({ open: false });
     expect(planTurn(block(TURN, "completed"), some, true).foldOpen).toBe(true);
   });
@@ -188,6 +199,6 @@ describe("planTurn by hand", () => {
 
   test("a turn with no work has nothing to toggle", () => {
     expect(planTurn(block([text("reply")], "completed"), STUDIO).toggle).toBeNull();
-    expect(planTurn(block([text("reply")], "completed"), display({}, { tools: "expanded", updates: "show" })).toggle).toBeNull();
+    expect(planTurn(block([text("reply")], "completed"), display({ doneTools: "expanded", doneUpdates: "show" })).toggle).toBeNull();
   });
 });

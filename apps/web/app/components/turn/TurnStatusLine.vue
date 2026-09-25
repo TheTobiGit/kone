@@ -17,6 +17,7 @@
 import { computed } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
+import RollingText from "~/components/ui/RollingText.vue";
 import type { AssistantBlock } from "~/composables/useAgent";
 import { type TurnOrbState } from "~/utils/thinkingOrb";
 import { describeTurnActivity } from "~/utils/turnActivity";
@@ -60,6 +61,20 @@ const elapsed = computed(() => {
 // question.
 const CLOCK_AFTER_SECONDS = 15;
 const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
+
+// One sentence replacing another in the same slot, with no direction to the
+// change — a `fade-through`: the old label drops out quickly (260ms, 4px up),
+// the new one rises in behind it (420ms), without the effect's usual 2px blur
+// so the label stays crisp. The exit is the
+// shorter half so a turn hopping between tools never waits on the old words.
+const LABEL_ENTER_FROM = { opacity: 0, y: 6, scale: 0.99 };
+const LABEL_ENTER_TO = { opacity: 1, y: 0, scale: 1 };
+const LABEL_ENTER_TRANSITION = { duration: 0.42, ease: [0.2, 0, 0, 1] };
+const LABEL_EXIT = {
+  opacity: 0,
+  y: -4,
+  transition: { duration: 0.26, ease: [0.4, 0, 1, 1] },
+};
 </script>
 
 <template>
@@ -92,10 +107,10 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
         <motion.span
           :key="activity.label"
           class="status__label"
-          :initial="{ opacity: 0, y: 3 }"
-          :animate="{ opacity: 1, y: 0 }"
-          :exit="{ opacity: 0, y: -3 }"
-          :transition="{ duration: 0.19, ease: [0.22, 1, 0.36, 1] }"
+          :initial="LABEL_ENTER_FROM"
+          :animate="LABEL_ENTER_TO"
+          :exit="LABEL_EXIT"
+          :transition="LABEL_ENTER_TRANSITION"
         >
           {{ activity.label }}
         </motion.span>
@@ -103,7 +118,7 @@ const showClock = computed(() => seconds.value >= CLOCK_AFTER_SECONDS);
     </span>
 
     <Transition name="clock">
-      <span v-if="showClock" class="status__time">{{ elapsed }}</span>
+      <RollingText v-if="showClock" class="status__time" :text="elapsed" />
     </Transition>
   </div>
 </template>

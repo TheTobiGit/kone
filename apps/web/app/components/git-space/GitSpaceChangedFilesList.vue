@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
+import { cardSpring } from "~/utils/cardSpring";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowLeft01Icon, ArrowRight01Icon, ArrowExpand01Icon } from "@hugeicons/core-free-icons";
 import FileIcon from "~/components/file/FileIcon.vue";
@@ -206,7 +207,6 @@ onBeforeUnmount(() => {
   ro?.disconnect();
 });
 
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
 const fadeEase = [0.22, 1, 0.36, 1] as const;
 const chevSpring = { type: "spring", stiffness: 520, damping: 30, mass: 0.45 } as const;

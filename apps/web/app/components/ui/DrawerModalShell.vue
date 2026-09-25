@@ -55,7 +55,6 @@ const emit = defineEmits<{
 
 const { cue } = useSound();
 const { shown, closing, close: fadeOut } = useModalExit();
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
 // A row unfurls on the same tween the other modals' folds use.
 const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
@@ -231,19 +230,17 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <!-- The host is fixed to the drawer's rect (or the viewport when the drawer
          can't be found), so the shell never covers more than the sidebar. -->
-    <div
-      class="pointer-events-none fixed inset-0 z-50"
+    <UiModalShell
+      v-slot="{ card }"
+      :shown="shown"
+      class="z-50 items-end justify-end p-6"
       :style="hostStyle"
+      @dismiss="close"
     >
-    <UiModalScrim :shown="shown" class="dm-scrim pointer-events-auto absolute inset-0" @click="close" />
-
-    <div class="pointer-events-none absolute inset-0 flex items-end justify-end p-6">
-    <motion.div
+    <div
+      v-bind="card"
       class="dm-card pointer-events-auto relative z-20 w-full max-w-md overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{ opacity: shown ? 1 : 0, y: shown ? 0 : 12, scale: shown ? 1 : 0.96 }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       :aria-label="dialogLabel"
@@ -309,9 +306,8 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-    </motion.div>
     </div>
-    </div>
+    </UiModalShell>
   </Teleport>
 </template>
 
@@ -319,10 +315,6 @@ onBeforeUnmount(() => {
      carries the caller's scope — a scoped block would never reach it. The dm-
      prefix keeps every rule to this shell. -->
 <style>
-.dm-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
-
 /* The card: the shared shell fill, radius and hairline ring. Bottom-anchored so
    the foot stays welded to the lower edge as the height springs. */
 .dm-card {

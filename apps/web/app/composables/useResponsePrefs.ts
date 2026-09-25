@@ -1,8 +1,12 @@
 import { useStorage } from "@vueuse/core";
 import {
   DEFAULT_DISPLAYS,
+  readDisplays,
+  withChoice,
   type ConversationSurface,
-  type ResponseDisplay,
+  type ResponseDisplays,
+  type ResponsePick,
+  type StoredDisplays,
 } from "~/utils/responseDisplay";
 
 // How agent turns read, per surface — per-install feel knobs on the same shelf
@@ -11,44 +15,25 @@ import {
 // pick an option and the threads behind the drawer already obey, with no reload
 // and no props threaded across.
 //
-// Stored whole, merged over the defaults, so a surface or a choice added later
-// reads its default rather than nothing. The meaning of each choice lives in
-// `~/utils/responseDisplay`.
-const displays = useStorage<Record<ConversationSurface, ResponseDisplay>>(
-  "kone.conversation.displays",
-  DEFAULT_DISPLAYS,
-  undefined,
-  {
-    listenToStorageChanges: true,
-    mergeDefaults: (stored, defaults) => {
-      const out = { ...defaults };
-      for (const surface of Object.keys(defaults) as ConversationSurface[]) {
-        const s = stored?.[surface];
-        if (!s) continue;
-        out[surface] = {
-          live: { ...defaults[surface].live, ...s.live },
-          done: { ...defaults[surface].done, ...s.done },
-        };
-      }
-      return out;
-    },
-  },
-);
+// Stored whole and read back choice by choice (readDisplays), so a surface or a
+// choice added later reads its default rather than nothing. The meaning of each
+// choice lives in `~/utils/responseDisplay`.
+const displays = useStorage<ResponseDisplays>("kone.conversation.displays", DEFAULT_DISPLAYS, undefined, {
+  listenToStorageChanges: true,
+  mergeDefaults: (stored: StoredDisplays) => readDisplays(stored),
+});
 
-/** Change one choice on one surface. */
-function set<P extends keyof ResponseDisplay, K extends keyof ResponseDisplay[P]>(
-  surface: ConversationSurface,
-  phase: P,
-  key: K,
-  value: ResponseDisplay[P][K],
-): void {
-  const current = displays.value[surface];
-  displays.value = {
-    ...displays.value,
-    [surface]: { ...current, [phase]: { ...current[phase], [key]: value } },
-  };
+/** Change one choice on one surface. The other surfaces keep their identity,
+ *  so only threads reading this one replan. */
+function set(surface: ConversationSurface, pick: ResponsePick): void {
+  displays.value = { ...displays.value, [surface]: withChoice(displays.value[surface], pick) };
+}
+
+/** Put one surface back to how it started. */
+function reset(surface: ConversationSurface): void {
+  displays.value = { ...displays.value, [surface]: DEFAULT_DISPLAYS[surface] };
 }
 
 export function useResponsePrefs() {
-  return { displays, set };
+  return { displays, set, reset };
 }

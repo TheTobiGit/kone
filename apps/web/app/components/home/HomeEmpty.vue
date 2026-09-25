@@ -23,12 +23,9 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
   >
     <h1 class="sr-only">Start a project</h1>
 
-    <!-- Settings top-right on the page's inset row; the left slot is left empty. -->
-    <div class="empty-top relative z-10 flex items-center justify-between">
-      <div />
-      <div>
-        <SettingsButton @open="emit('settings')" />
-      </div>
+    <!-- Settings top-right on the page's inset row. -->
+    <div class="empty-top relative z-10 flex items-center justify-end">
+      <SettingsButton @open="emit('settings')" />
     </div>
 
     <!-- Hero: the start options rest dead-center in the open space. -->
@@ -69,14 +66,14 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
 </template>
 
 <style scoped>
-/* Frameless shells (win32/linux): clear the fixed caption cluster (`--caption-inset`)
+/* Overlay chrome (Windows): clear the fixed caption cluster (`--caption-inset`)
    from the settings button, and make the inset row a window drag surface —
    it is in-flow with nothing beneath, so dragging is safe. */
-.frameless .empty-top {
+[data-chrome="overlay"] .empty-top {
   padding-right: var(--caption-inset);
   -webkit-app-region: drag;
 }
-.frameless .empty-top button {
+[data-chrome="overlay"] .empty-top button {
   -webkit-app-region: no-drag;
 }
 </style>

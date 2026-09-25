@@ -21,7 +21,7 @@ defineProps<{
 </script>
 
 <template>
-  <span class="cg" :class="[`cg--${kind}`, { 'cg--on': on, 'cg--live': live }]" aria-hidden="true">
+  <SettingsGlyphTile class="cg" :accent="on" :live="live">
     <!-- Tool calls ─────────────────────────────────────────────────────────── -->
     <template v-if="kind === 'tools-expanded'">
       <span class="cg__row"><i class="cg__dot" /><i class="cg__bar cg__bar--step" style="--w: 70%" /></span>
@@ -80,17 +80,19 @@ defineProps<{
       </span>
       <i class="cg__bar cg__bar--text" style="--w: 90%" />
     </template>
-  </span>
+  </SettingsGlyphTile>
 </template>
 
 <style scoped>
-/* A small sheet of paper: the thread's ground, a hairline edge, and the marks
-   laid on it in the thread's rhythm. Everything is ink at low strength, so the
-   accent on the selected option's glyph is the only colour in the column. */
+/* The tile here is a wide strip in the thread's rhythm, a shade quieter than
+   the drawer's row tiles because a column of five sits side by side. Marks are
+   ink at low strength until the option is set, when they take the accent. */
 .cg {
+  --gt-wash: 4%;
+  --gt-edge: 7%;
+  --gt-accent-wash: 8%;
   --cg-ink: color-mix(in srgb, var(--ink) 22%, transparent);
   --cg-ink-strong: color-mix(in srgb, var(--ink) 38%, transparent);
-  --cg-ease: cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -99,18 +101,10 @@ defineProps<{
   height: 56px;
   padding: 8px 10px;
   border-radius: 10px;
-  background-color: color-mix(in srgb, var(--ink) 4%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
-  flex-shrink: 0;
   overflow: hidden;
-  transition:
-    background-color 220ms ease,
-    box-shadow 220ms ease;
 }
-.cg--on {
+.cg.gt--accent {
   --cg-ink-strong: color-mix(in srgb, var(--accent) 70%, transparent);
-  background-color: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .cg i {
@@ -198,8 +192,8 @@ defineProps<{
 
 /* ── the one motion each glyph plays while live ─────────────────────────── */
 /* Expanded / as it goes: the newest step row opens in. */
-.cg--live .cg__row--new {
-  animation: cg-row 2.4s var(--cg-ease) infinite;
+.gt--live .cg__row--new {
+  animation: cg-row 2.4s var(--gt-ease) infinite;
 }
 @keyframes cg-row {
   0%,
@@ -216,8 +210,8 @@ defineProps<{
 /* As it goes: the batch above folds into its strip as the next one opens —
    carried by the new row; the strip is already folded. Folded: the newest chip
    joins the strip. */
-.cg--live .cg__chip--new {
-  animation: cg-chip 2.4s var(--cg-ease) infinite;
+.gt--live .cg__chip--new {
+  animation: cg-chip 2.4s var(--gt-ease) infinite;
 }
 @keyframes cg-chip {
   0%,
@@ -233,12 +227,12 @@ defineProps<{
 }
 /* Updates shown: the line said along the way arrives between the batches.
    Hidden: only the reply lands, after the work. */
-.cg--live .cg__bar--said,
-.cg--live .cg__bar--reply {
-  animation: cg-land 2.4s var(--cg-ease) infinite;
+.gt--live .cg__bar--said,
+.gt--live .cg__bar--reply {
+  animation: cg-land 2.4s var(--gt-ease) infinite;
 }
 /* Hidden: the status line breathes. */
-.cg--live .cg__pulse {
+.gt--live .cg__pulse {
   animation: cg-breathe 1.6s ease-in-out infinite;
 }
 @keyframes cg-breathe {
@@ -248,10 +242,10 @@ defineProps<{
   }
 }
 /* Stream: the line grows word by word behind a caret. */
-.cg--live .cg__bar--grow {
+.gt--live .cg__bar--grow {
   animation: cg-grow 2.4s steps(6, end) infinite;
 }
-.cg--live .cg__caret {
+.gt--live .cg__caret {
   animation: cg-blink 0.8s steps(1, end) infinite;
 }
 @keyframes cg-grow {
@@ -269,8 +263,8 @@ defineProps<{
   }
 }
 /* Whole: the message lands in one piece. */
-.cg--live .cg__block {
-  animation: cg-land 2.4s var(--cg-ease) infinite;
+.gt--live .cg__block {
+  animation: cg-land 2.4s var(--gt-ease) infinite;
 }
 @keyframes cg-land {
   0%,
@@ -285,8 +279,8 @@ defineProps<{
   }
 }
 /* Done with the work hidden: it shows, then squeezes shut into its pill. */
-.cg--live .cg__folded {
-  animation: cg-fold 3s var(--cg-ease) infinite;
+.gt--live .cg__folded {
+  animation: cg-fold 3s var(--gt-ease) infinite;
 }
 @keyframes cg-fold {
   0%,
@@ -300,12 +294,6 @@ defineProps<{
     max-height: 0;
     opacity: 0;
     margin-bottom: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cg--live * {
-    animation: none !important;
   }
 }
 </style>

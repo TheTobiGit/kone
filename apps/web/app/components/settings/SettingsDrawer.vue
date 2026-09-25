@@ -20,7 +20,7 @@ const props = defineProps<{ open: boolean; surfaceTop: SurfaceId }>();
 const emit = defineEmits<{ close: [] }>();
 
 const { muted, toggleMuted, cue } = useSound();
-const { name: profileName, resolve: resolveProfile } = useProfile();
+const { resolve: resolveProfile } = useProfile();
 
 // ── thread strip (niri's center-focused-column) ─────────────────────────────────
 // The same module-scope ref ThreadStrip.vue reads, so setting it here steers the
@@ -162,16 +162,18 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
 ]);
 
 // Each row's place in the whole list, for the entrance stagger. The hero card
-// is 0, so the first row enters just behind it.
-const rowIndex = computed(() => {
+// is 0, so the first row enters just behind it, and the foot takes the beat
+// after the last row, so adding a row can't leave it entering early.
+const stagger = computed(() => {
   const at = new Map<SettingsPane, number>();
   let i = 1;
   for (const g of groups.value) {
     i += 0.5; // a beat for the group's heading
     for (const r of g.rows) at.set(r.pane, i++);
   }
-  return at;
+  return { at, foot: i };
 });
+const rowIndex = computed(() => stagger.value.at);
 
 // ── the travelling highlight ─────────────────────────────────────────────────
 // One wash for the whole list, not one per row. It slides from row to row
@@ -181,11 +183,10 @@ const hot = ref<SettingsPane | null>(null);
 const listEl = ref<HTMLElement>();
 const glow = ref({ y: 0, h: 0, shown: false, instant: true });
 
-function light(target: SettingsPane, el: EventTarget | null) {
+function light(target: SettingsPane, row: EventTarget | null) {
   hot.value = target;
-  const row = el as HTMLElement | null;
   const list = listEl.value;
-  if (!row || !list) return;
+  if (!(row instanceof HTMLElement) || !list) return;
   const top = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
   // Arriving from nowhere, it appears in place; only a move between rows slides.
   const instant = !glow.value.shown;
@@ -195,7 +196,8 @@ function light(target: SettingsPane, el: EventTarget | null) {
 
 // Focus moving row to row passes through focusout; only leaving the list counts.
 function onListFocusOut(e: FocusEvent) {
-  if (!listEl.value?.contains(e.relatedTarget as Node | null)) unlight();
+  const next = e.relatedTarget;
+  if (!(next instanceof Node) || !listEl.value?.contains(next)) unlight();
 }
 
 function unlight() {
@@ -250,14 +252,16 @@ watch(
     unlight();
   },
 );
-
 </script>
 
 <template>
   <aside
     ref="drawerScroll"
     class="settings-scroll fixed inset-y-0 left-0 z-0 flex flex-col bg-sunken"
-    :class="shellFramed ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-5 pb-7'"
+    :class="[
+      shellFramed ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-5 pb-7',
+      { 'is-asleep': !open },
+    ]"
     :style="asideStyle"
     :aria-hidden="!open"
     @scroll.passive="measure"
@@ -378,7 +382,7 @@ watch(
       v-if="pane === 'root'"
       :key="`foot-${openEpoch}`"
       class="foot enter mt-auto flex items-center justify-between gap-4 pt-6 pl-1.5"
-      style="--i: 15"
+      :style="{ '--i': stagger.foot }"
     >
       <span class="flex items-center gap-3">
         <span class="speaker" :class="{ 'speaker--muted': muted }" aria-hidden="true">
@@ -423,6 +427,14 @@ watch(
 .settings-scroll::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/* Closed, the drawer stays mounted under the stage and keeps the root list up,
+   so everything in it that loops (the hero's contours and orbit, a beacon, the
+   speaker's waves) holds still until the drawer is revealed again. */
+.settings-scroll.is-asleep :deep(*),
+.settings-scroll.is-asleep :deep(*)::after {
+  animation-play-state: paused !important;
 }
 
 /* The thread-strip options fade colour and hover-wash at the same soft pace the
@@ -552,10 +564,7 @@ watch(
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 9px;
   color: var(--ink-soft);
-  background-color: color-mix(in srgb, var(--ink) 5%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .speaker svg {
   overflow: visible;

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { motion } from "motion-v";
 import { onClickOutside } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -14,8 +13,9 @@ import {
 import { useRecentProjects, type RecentProject } from "~/composables/useRecentProjects";
 import { useProjectSummaries } from "~/composables/useProjectSummaries";
 import { useSound } from "~/composables/useSound";
+import { useModalExit } from "~/composables/useModalExit";
 
-// Project selection modal — positioned directly beneath the question button with no backdrop blur:
+// Project selection popover, positioned directly beneath the button that opens it:
 // 1. Projects list card: Single-line rows with git branch right next to project name
 // 2. New project actions card: Quick actions to create, open, or clone
 
@@ -86,20 +86,12 @@ function onSubModalCancel(): void {
 }
 
 // ── selection & dismissal ───────────────────────────────────────────────────
-const shown = ref(false);
-const closing = ref(false);
+const { shown, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 
 onClickOutside(contentEl, () => {
   if (!activeSubModal.value) onCancel();
 });
-
-function close(done: () => void): void {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 200);
-}
 
 function onCancel(): void {
   if (activeSubModal.value) return;
@@ -136,28 +128,15 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   opener?.focus();
 });
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 340,
-  damping: 24,
-  mass: 0.85,
-} as const;
 </script>
 
 <template>
-  <div class="relative z-30">
+  <UiModalShell v-slot="{ card }" :shown="shown" scrim="none" from="above" class="relative z-30">
     <!-- Single compact outer shell with narrower width positioned at button -->
-    <motion.div
+    <div
+      v-bind="card"
       ref="contentEl"
       class="modal-shell flex w-[300px] flex-col overflow-hidden text-left"
-      :initial="{ opacity: 0, y: -6, scale: 0.97 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : -6,
-        scale: shown ? 1 : 0.97,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       aria-label="Switch project"
@@ -239,7 +218,7 @@ const cardSpring = {
           </section>
         </div>
       </div>
-    </motion.div>
+    </div>
 
     <!-- Sub-modals for creation / opening / cloning teleported to body -->
     <Teleport to="body">
@@ -261,7 +240,7 @@ const cardSpring = {
         @cancel="onSubModalCancel"
       />
     </Teleport>
-  </div>
+  </UiModalShell>
 </template>
 
 <style scoped>

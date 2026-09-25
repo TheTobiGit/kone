@@ -3,6 +3,7 @@ import { tryOnScopeDispose, useStorage } from "@vueuse/core";
 import type { RuntimeEvent, StoredThreadMeta } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import { useStudioIntake } from "~/composables/useStudioIntake";
+import { desktopBridge, type DesktopAgentReach } from "~/utils/desktopBridge";
 import {
   byRecency,
   liftLegacyPins,
@@ -22,22 +23,22 @@ import {
 // here in one place.
 
 export interface SessionListSource {
-  /** Gather the raw thread metadata rows. The caller owns its own filtering and
-   *  project tagging; it resolves to the full list to render. */
-  fetch: () => Promise<Array<{ meta: StoredThreadMeta; project?: SessionProjectTag }>>;
-  /** Browser-dev stand-in list, used when there's no desktop bridge. */
-  mock: () => SessionSummary[];
+  /** Gather the raw thread metadata rows from the history bridge. The caller
+   *  owns its own filtering and project tagging; it resolves to the full list to
+   *  render. */
+  fetch: (
+    history: SessionHistory,
+  ) => Promise<Array<{ meta: StoredThreadMeta; project?: SessionProjectTag }>>;
   /** Optional reactive dependency — reload when its value changes. Only the
    *  value's identity is watched, never read, so its type is deliberately open. */
   // eslint-disable-next-line anti-slop/no-unknown-returns
   trigger?: () => unknown;
 }
 
-const historyApi = () =>
-  import.meta.client ? window.koneDesktop?.agent?.history : undefined;
+type SessionHistory = DesktopAgentReach["history"];
 
 export function useSessionList(source: SessionListSource) {
-  const api = () => historyApi();
+  const api = () => desktopBridge()?.agent.history;
   const intake = useStudioIntake();
 
   const pinnedIds = useStorage<string[]>(SESSION_PIN_KEY, []);
@@ -50,7 +51,7 @@ export function useSessionList(source: SessionListSource) {
     if (!silent) loading.value = true;
     const history = api();
     if (!history) {
-      items.value = source.mock();
+      items.value = [];
       loading.value = false;
       return;
     }
@@ -62,7 +63,7 @@ export function useSessionList(source: SessionListSource) {
         if (await liftLegacyPins(history, legacy)) pinnedIds.value = [];
       }
       const pins = new Set(pinnedIds.value);
-      const rows = await source.fetch();
+      const rows = await source.fetch(history);
       items.value = rows.map(({ meta, project }) =>
         summarizeSession(meta, meta.isPinned ?? pins.has(meta.threadId), project),
       );
@@ -74,16 +75,6 @@ export function useSessionList(source: SessionListSource) {
     }
   }
 
-  // Re-key the pinned flag reactively without a full reload — a pin toggle
-  // shouldn't re-hit the bridge. Only applies in browser-dev mode: with the
-  // bridge present the DB row is the source of truth, and re-keying from
-  // localStorage would wipe DB pins after the one-time migration clears it.
-  watch(pinnedIds, (ids) => {
-    if (api()) return;
-    const pins = new Set(ids);
-    items.value = items.value.map((s) => ({ ...s, pinned: pins.has(s.threadId) }));
-  });
-
   const pinned = computed(() => items.value.filter((s) => s.pinned).sort(byRecency));
   const recent = computed(() => items.value.filter((s) => !s.pinned).sort(byRecency));
   const hasAny = computed(() => pinned.value.length > 0 || recent.value.length > 0);
@@ -91,17 +82,10 @@ export function useSessionList(source: SessionListSource) {
   function togglePin(threadId: string): void {
     const row = items.value.find((s) => s.threadId === threadId);
     const history = api();
-    if (history) {
-      const next = !(row?.pinned ?? pinnedIds.value.includes(threadId));
-      void history.setPinned(threadId, next).catch(() => {});
-      if (row) row.pinned = next;
-      return;
-    }
-    // Browser-dev fallback: no DB to write to, keep the localStorage behaviour.
-    const set = new Set(pinnedIds.value);
-    if (set.has(threadId)) set.delete(threadId);
-    else set.add(threadId);
-    pinnedIds.value = [...set];
+    if (!history) return;
+    const next = !(row?.pinned ?? pinnedIds.value.includes(threadId));
+    void history.setPinned(threadId, next).catch(() => {});
+    if (row) row.pinned = next;
   }
 
   // Mark a thread done, or take the mark off. Unlike archive this never drops
@@ -181,15 +165,7 @@ export function useSessionList(source: SessionListSource) {
     const row = index >= 0 ? items.value[index] : undefined;
     const wasPinned = pinnedIds.value.includes(threadId);
     dropLocally(threadId);
-    const bridge = api();
-    if (!bridge) {
-      // browser-dev mock: no store behind the list, the drop is the whole story
-      if (archived && row?.projectPath) {
-        void intake.dismissThread(row.projectPath, threadId);
-      }
-      return true;
-    }
-    const result = await bridge.archive(threadId, archived).catch(() => null);
+    const result = await api()?.archive(threadId, archived).catch(() => null);
     // The panes go once the stamp has landed, never ahead of it: a refusal puts
     // the row back, and a column torn off a thread that is still there would
     // have nothing to put it back from. The archived thread's own pane is closed

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { motion } from "motion-v";
+import { cardSpring } from "~/utils/cardSpring";
 
 // One shared picker shell: a band shell with a recessed header holding inset
 // cards, split into data and actions. The project switcher and the context
@@ -20,13 +21,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ close: [] }>();
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 340,
-  damping: 24,
-  mass: 0.85,
-} as const;
 </script>
 
 <template>

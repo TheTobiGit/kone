@@ -225,9 +225,9 @@ function onOpen(threadId: string): void {
      around the row belongs to the surface beneath. */
   pointer-events: none;
 }
-/* Frameless shells: clear the fixed caption cluster (`--caption-inset`) from the corner
+/* Overlay chrome (Windows): clear the fixed caption cluster (`--caption-inset`) from the corner
    the row grows from. */
-.frameless .global-bots {
+[data-chrome="overlay"] .global-bots {
   right: calc(20px + var(--caption-inset));
 }
 

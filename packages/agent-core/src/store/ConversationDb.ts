@@ -7,9 +7,9 @@ import { readAntigravityConversationUsage, resolveAntigravityContextWindow } fro
 import { getUserDataDir } from "../userDataDir.js";
 import { REOPEN_COOLDOWN_MS, UnsupportedSchemaError, assistantBlockId, migrate } from "../conversationMigrations.js";
 
-/** Max cached prepared statements per connection (FIFO eviction). Matches the
- *  200-entry budget synara/t3code use: enough for the static query set, small
- *  enough that dynamic SQL can't grow the map without limit. */
+/** Max cached prepared statements per connection (FIFO eviction). 200 covers
+ *  the static query set with room to spare, and is small enough that dynamic
+ *  SQL can't grow the map without limit. */
 const STATEMENT_CACHE_MAX = 200;
 
 /** Host-scaled SQLite page-cache + mmap budget. Small machines stay lean;

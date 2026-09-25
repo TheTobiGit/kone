@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import { shellChrome, type ShellChrome } from "~/utils/desktopShell";
 
 // Renderer-drawn window caption for frameless shells (see utils/desktopShell;
 // macOS keeps native traffic lights, the browser keeps its own chrome).
@@ -11,7 +10,8 @@ import { shellChrome, type ShellChrome } from "~/utils/desktopShell";
 // the stage transform would otherwise re-anchor `fixed` when the settings
 // drawer slides it.
 
-const chrome = ref<ShellChrome>("native");
+// The boot-time chrome decision (plugins/frameless), not a re-derivation.
+const chrome = useNuxtApp().$shellChrome;
 const maximized = ref(false);
 let detachState: (() => void) | null = null;
 
@@ -26,10 +26,7 @@ function refresh(state: { isMaximized: boolean }): void {
 
 onMounted(() => {
   const api = bridge();
-  const platform = import.meta.client ? window.koneDesktop?.platform : undefined;
-  const mode = shellChrome(platform);
-  if (!api || mode === "native") return;
-  chrome.value = mode;
+  if (!api || chrome === "native") return;
   void api.getState().then(refresh, () => {});
   detachState = api.onState(refresh);
 });
@@ -97,10 +94,10 @@ function onClose(): void {
 </template>
 
 <style scoped>
-/* Fixed cluster, top-right of the window — never inside a surface, so no
-   surface layout has to host it; surfaces instead clear the corner (see the
-   `.frameless` rules in ProjectView, HomeHeader, HomeEmpty,
-   AttentionGlobalBots). Explicit no-drag: the band underneath may be a drag
+/* Fixed, never inside a surface, so no surface layout has to host it. Windows
+   (overlay): a cluster top-right over the content, which surfaces clear (the
+   `[data-chrome="overlay"]` rules in ProjectView, HomeHeader, HomeEmpty,
+   AttentionGlobalBots). Linux (titlebar): a full-width bar, below. Explicit no-drag: the band underneath may be a drag
    region in frameless mode, and controls must never start a move. */
 .caption {
   position: fixed;

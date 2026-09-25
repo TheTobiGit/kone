@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Directions01Icon, FlashIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { DEFAULT_PARTNER_LABEL, type Agent } from "~/utils/agents";
@@ -42,7 +41,7 @@ function choose(id: string | null) {
 }
 
 // ── modal surface & transitions ──────────────────────────────────────────────
-const { shown, closing, close } = useModalExit();
+const { shown, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 const maxCardH = ref<number | null>(null);
@@ -177,38 +176,25 @@ onBeforeUnmount(() => {
   anchorRO?.disconnect();
   opener?.focus();
 });
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
 </script>
 
 <template>
   <Teleport to="body">
-    <div
-      class="pointer-events-none fixed inset-0 z-50 overflow-hidden"
-      :class="[!cardPos.left ? 'flex items-end justify-center pb-24 p-4' : '']"
+    <UiModalShell
+      v-slot="{ card }"
+      :shown="shown"
+      class="z-50"
+      :class="{ 'items-end justify-center p-4 pb-24': !cardPos.left }"
+      @dismiss="onCancel"
     >
-      <!-- Scrim with plain dimming, no background blur -->
-      <UiModalScrim :shown="shown" class="modal-scrim pointer-events-auto absolute inset-0" @click="onCancel" />
-
-      <motion.div
+      <div
+        v-bind="card"
         class="modal-card pointer-events-auto relative z-20 w-80 overflow-hidden"
         :style="{
           height: cardHeight === null ? 'auto' : `${cardHeight}px`,
           maxHeight: maxCardH === null ? undefined : `${maxCardH}px`,
           ...(cardPos.left ? { position: 'absolute', left: cardPos.left, bottom: cardPos.bottom } : {}),
         }"
-        :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-        :animate="{
-          opacity: shown ? 1 : 0,
-          y: shown ? 0 : 12,
-          scale: shown ? 1 : 0.96,
-        }"
-        :transition="cardSpring"
         role="dialog"
         aria-modal="true"
         :aria-label="title"
@@ -295,15 +281,12 @@ const cardSpring = {
           </template>
         </div>
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
   </Teleport>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 50%, transparent);
-}
 .modal-card {
   background: var(--panel);
   border-radius: 18px;

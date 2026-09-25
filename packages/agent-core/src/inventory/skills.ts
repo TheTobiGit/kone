@@ -32,8 +32,6 @@ type SkillRoot = {
   readonly scope: "user" | "project";
 };
 
-export type SkillRootTarget = SkillRoot & { readonly exists: boolean };
-
 // The user/global roots kone scans across installed agent providers.
 // Per online docs 2026 + Synara parity:
 // - Claude Code: ~/.claude/skills (global) + plugin cache ~/.claude/plugins/cache
@@ -62,16 +60,6 @@ const PROJECT_SKILL_DIRS: ReadonlyArray<{ dirName: string; origin: SkillOrigin }
   { dirName: ".agents", origin: "agents" },
   { dirName: ".factory", origin: "factory" },
 ];
-
-/** A root that cannot be stat'd is one nothing has been written into yet, which
- *  is the same answer as absent as far as offering it goes. */
-async function directoryExists(dir: string): Promise<boolean> {
-  try {
-    return (await stat(dir)).isDirectory();
-  } catch {
-    return false;
-  }
-}
 
 function projectAncestors(projectPath: string): string[] {
   const ancestors: string[] = [];
@@ -630,6 +618,12 @@ export async function discoverPlugins(home: string, errors: InventoryError[]): P
   return out;
 }
 
+function normalizeProjectPaths(input: string | string[] | null): string[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input.filter((p) => p.length > 0).map((p) => path.resolve(p));
+  return [path.resolve(input)];
+}
+
 /** Scans every known skills root — user/global plus the project's ancestor
  *  chain, plus plugin skills — and dedupes by lowercased name.
  *
@@ -645,51 +639,6 @@ export async function discoverPlugins(home: string, errors: InventoryError[]): P
  *
  *  Every individual root's failure (missing dir, EACCES, ...) is caught into
  *  `errors` — this function never rejects. */
-
-/** Where a new skill could be written. The scan reports what exists; this
- *  reports where something could be put, which is a different question and the
- *  only one an "add a skill" flow can be answered with — a machine with no
- *  skills at all still has folders each CLI would read.
- *
- *  A root that does not exist yet is still offered, marked `exists: false`;
- *  creating it is what writing the first skill into it means. Never rejects. */
-function normalizeProjectPaths(input: string | string[] | null): string[] {
-  if (!input) return [];
-  if (Array.isArray(input)) return input.filter((p) => p.length > 0).map((p) => path.resolve(p));
-  return [path.resolve(input)];
-}
-
-export async function skillRootTargets(
-  projectPath: string | string[] | null,
-): Promise<SkillRootTarget[]> {
-  const home = homedir();
-  const targets: SkillRootTarget[] = [];
-
-  const userRoots = userSkillRoots(home);
-  // Cursor has two differently-named global dirs (skills vs skills-cursor) — offer only one
-  const cursorRoots = userRoots.filter((r) => r.origin === "cursor");
-  let cursorPick = cursorRoots[0];
-  for (const r of cursorRoots) {
-    if (await directoryExists(r.dir)) {
-      cursorPick = r;
-      break;
-    }
-  }
-  for (const root of userRoots) {
-    if (root.origin === "cursor" && root.dir !== cursorPick?.dir) continue;
-    targets.push({ ...root, exists: await directoryExists(root.dir) });
-  }
-
-  for (const proj of normalizeProjectPaths(projectPath)) {
-    for (const { dirName, origin } of PROJECT_SKILL_DIRS) {
-      const dir = path.join(proj, dirName, "skills");
-      targets.push({ dir, origin, scope: "project", exists: await directoryExists(dir) });
-    }
-  }
-
-  return targets;
-}
-
 export async function discoverSkills(
   projectPath: string | string[] | null,
 ): Promise<{

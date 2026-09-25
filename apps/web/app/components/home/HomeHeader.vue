@@ -10,17 +10,17 @@
 </template>
 
 <style scoped>
-/* Frameless shells (win32/linux): clear the fixed caption cluster (`--caption-inset`)
+/* Overlay chrome (Windows): clear the fixed caption cluster (`--caption-inset`)
    from the trailing controls, and make the empty header row a window drag
    surface — it is in-flow with nothing beneath, so dragging is safe. Inputs
    opt out so text selection never moves the window. */
-.frameless .home-header {
+[data-chrome="overlay"] .home-header {
   padding-right: var(--caption-inset);
   -webkit-app-region: drag;
 }
-.frameless .home-header button,
-.frameless .home-header input,
-.frameless .home-header label {
+[data-chrome="overlay"] .home-header button,
+[data-chrome="overlay"] .home-header input,
+[data-chrome="overlay"] .home-header label {
   -webkit-app-region: no-drag;
 }
 </style>

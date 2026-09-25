@@ -207,14 +207,6 @@ onBeforeUnmount(() => {
   opener?.focus();
 });
 
-// Springy pop for the card's entrance (mirrors the other launcher modals).
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
-
 const morphSpring = {
   type: "spring",
   stiffness: 360,
@@ -237,20 +229,11 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-end overflow-hidden p-6">
-    <!-- Scrim: dim + blur ramp together on one tween; unchanged across morphs. -->
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="cancel" />
-
-    <motion.div
+  <UiModalShell v-slot="{ card }" :shown="shown" class="z-50 items-end justify-end p-6" @dismiss="cancel">
+    <div
+      v-bind="card"
       class="modal-card relative z-20 w-full max-w-md overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       aria-label="Create a new project"
@@ -588,14 +571,11 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
           </motion.div>
         </AnimatePresence>
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 .modal-card {
   --band-bg: var(--band);
   --band-arc: 14px;

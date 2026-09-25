@@ -9,7 +9,8 @@ import {
 /** Normalize the v2 SSE vocabulary onto the v1 event shapes `handleEvent`
  *  already translates, so the translator only ever deals with one vocabulary.
  *
- *  v2 streams `{id, type, data}` (envelope unwrapped in `events()`); v1
+ *  v2 streams `{id, type, data}` (envelope unwrapped by the v2 dialect's
+ *  `decodeEvent`); v1
  *  streams `{type, properties}` with `message.part.*` / `session.idle`
  *  types. The mapping below reuses the v1 paths — including `toolKind()`
  *  (todo → plan), the task/subagent routing, `reconcileOpenCodeText`, and

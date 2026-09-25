@@ -98,8 +98,12 @@ function maxCardHeight(): number {
     const host = Number.parseFloat(raw);
     if (Number.isFinite(host)) return Math.max(160, host - 48);
   }
-  const stage = cardRef.value instanceof HTMLElement ? cardRef.value.parentElement : null;
-  if (stage) return stage.clientHeight;
+  // The overlay the card sits in, less its padding: the room the card has.
+  const stage = cardRef.value?.parentElement;
+  if (stage) {
+    const pad = getComputedStyle(stage);
+    return stage.clientHeight - Number.parseFloat(pad.paddingTop) - Number.parseFloat(pad.paddingBottom);
+  }
   return Math.round(window.innerHeight * 0.84);
 }
 
@@ -113,12 +117,6 @@ function onWindowResize() {
   anchorToDrawer();
 }
 
-const cardSpring = {
-  type: "spring",
-  stiffness: 320,
-  damping: 24,
-  mass: 0.9,
-} as const;
 
 const collapseMorph = {
   duration: 0.26,
@@ -459,22 +457,19 @@ function handleExport() {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="pointer-events-none fixed inset-0 z-50" :style="hostStyle">
-      <!-- Scrim over sidebar drawer -->
-      <UiModalScrim :shown="shown" class="ca-scrim pointer-events-auto absolute inset-0" @click="cancel" />
-
-      <div class="pointer-events-none absolute inset-0 flex items-end justify-end p-6">
-        <motion.div
+    <UiModalShell
+      v-if="open"
+      v-slot="{ card }"
+      :shown="shown"
+      class="z-50 items-end justify-end p-6"
+      :style="hostStyle"
+      @dismiss="cancel"
+    >
+        <div
+          v-bind="card"
           ref="cardRef"
           class="ca-card pointer-events-auto relative z-20 flex w-full max-w-lg flex-col overflow-hidden"
           :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-          :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-          :animate="{
-            opacity: shown ? 1 : 0,
-            y: shown ? 0 : 12,
-            scale: shown ? 1 : 0.96,
-          }"
-          :transition="cardSpring"
           role="dialog"
           aria-modal="true"
           :aria-label="isEditing ? 'Edit theme' : 'New theme'"
@@ -946,17 +941,12 @@ function handleExport() {
               </div>
             </div>
           </div>
-        </motion.div>
-      </div>
-    </div>
+        </div>
+      </UiModalShell>
   </Teleport>
 </template>
 
 <style scoped>
-.ca-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
-
 .ca-card {
   background: var(--panel);
   border-radius: 18px;

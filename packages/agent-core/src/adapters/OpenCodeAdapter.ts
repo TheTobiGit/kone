@@ -6,13 +6,12 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "@kone/
 import { probeResult } from "../spawn.js";
 import { versionProbeUsable } from "../providerHealth.js";
 import { probeDetail } from "../providerHealth.js";
-import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeV2, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
+import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import {
   dialectForServer,
   modelProbesForVersion,
   type OpenCodeDialect,
 } from "./opencodeDialect.js";
-import { normalizeV2Event } from "./opencodeV2Events.js";
 import { OpenCodeServerPool, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import {
@@ -24,12 +23,11 @@ import {
 import type { JsonValue } from "../lib-jsonValue.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { errorText } from "./errors.js";
-import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputRespondResult } from "../types.js";
+import type { AgentPersona, ApprovalDecision, BaseEvent, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputRespondResult } from "../types.js";
 import { normalizeUserInputQuestions } from "./userInputQuestions.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
-export type { OpenCodeJsonValue, RecordLike } from "./opencodeJson.js";
 import {
   jsonNumber,
   modelSlug,
@@ -42,7 +40,7 @@ import {
   type OpenCodeJsonValue,
   type RecordLike,
 } from "./opencodeJson.js";
-type OpenCodeClient = { request(method: string, route: string, body?: OpenCodeJsonValue, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
+type OpenCodeClient = { request(method: string, route: string, body?: OpenCodeJsonValue, signal?: AbortSignal): Promise<OpenCodeJsonValue>; events(signal: AbortSignal): AsyncIterable<RecordLike> };
 /** One opencode `task` tool call, recognized from its tool part. opencode runs
  *  the child as a *separate session* on the same server, so we also track the
  *  child session id (from `state.metadata.sessionId`) to route its events back
@@ -81,11 +79,6 @@ type OpenCodeSession = {
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
   pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
-  /** Which question-reply route answered last — `/question/{id}/reply`
-   *  (`root`) on current servers, `/session/{sid}/question/{id}/reply`
-   *  (`sessionScoped`) on older ones. Set only after a successful reply, so a
-   *  transient failure re-probes next time instead of pinning the fallback. */
-  questionReplyRoute?: "root" | "sessionScoped";
   /** In-flight permission approvals, keyed by the permission request's id. Each
    *  holds the ask we surfaced and the resolver that posts the reply — settled
    *  by respondToRequest (the user decided) or drained on interrupt/stop. */
@@ -123,30 +116,16 @@ function errorMessage(cause: unknown): string {
   // render those nested payloads as "[object Object]".
   return errorText(cause) || "OpenCode reported an error with no detail.";
 }
-function statusOf(cause: unknown): number | undefined {
-  // SAFETY: error payload may be a record carrying status or statusCode.
-  const r = record(cause as RecordLike | undefined);
+function statusOf(r: RecordLike): number | undefined {
   const response = record(r?.response);
-  const status = r?.status;
+  const status = r.status;
   if (jsonNumber(status)) return status;
-  const statusCode = r?.statusCode;
+  const statusCode = r.statusCode;
   if (jsonNumber(statusCode)) return statusCode;
   const resStatus = response?.status;
   if (jsonNumber(resStatus)) return resStatus;
   return undefined;
 }
-
-// `parseOpenCodeModels`, `permissionRules` and the v2 model/permission
-// helpers live in `./opencodeDialect.js` (single source). Re-exported here
-// so existing imports and tests keep working.
-export {
-  modelDescriptor,
-  parseOpenCodeModelListApi,
-  parseOpenCodeModels,
-  permissionRules,
-  permissionRulesV2,
-  v2PermissionAction,
-} from "./opencodeDialect.js";
 
 /** OpenCode deltas can be full replacement snapshots rather than incremental appends. */
 export type OpenCodeTextDelta = { text: string; delta: string };
@@ -401,11 +380,12 @@ function detailForTool(state: RecordLike): string | undefined {
   return textField(state.output) ?? textField(state.error) ?? textField(state.title);
 }
 
-function base(session: OpenCodeSession, source: RuntimeEvent["source"] = "opencode.sse.message"): Omit<RuntimeEvent, "type"> {
-  // SAFETY: the literal supplies every field Omit leaves required.
-  return { threadId: session.threadId, provider: "opencode", at: Date.now(), source, refs: { conversationId: session.openCodeSessionId } } as Omit<RuntimeEvent, "type">;
+function base(session: OpenCodeSession, source: RuntimeEvent["source"] = "opencode.sse.message"): BaseEvent {
+  return { threadId: session.threadId, provider: "opencode", at: Date.now(), source, refs: { conversationId: session.openCodeSessionId } };
 }
 
+/** The HTTP client for one server. The dialect contributes only the route
+ *  prefix; frames come back undecoded, for the dialect to read. */
 function makeClient(baseUrl: string, dialect: OpenCodeDialect, password?: string): OpenCodeClient {
   const trimBase = baseUrl.replace(/\/$/, "");
   const auth = password ? { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } : undefined;
@@ -416,7 +396,16 @@ function makeClient(baseUrl: string, dialect: OpenCodeDialect, password?: string
       const init: RequestInit = { method, signal, headers: headersFor() };
       if (body !== undefined) Object.assign(init, { headers: headersFor({ "content-type": "application/json" }), body: JSON.stringify(body) });
       const response = await fetch(url(route), init);
-      const text = await response.text(); let parsed: any; try { parsed = text ? JSON.parse(text) : undefined; } catch { parsed = text; }
+      const text = await response.text();
+      // A non-JSON body is kept as its text.
+      let parsed: OpenCodeJsonValue = text || undefined;
+      try {
+        if (text) {
+          // SAFETY: JSON.parse only ever yields JSON values; callers probe
+          // every field before trusting it.
+          parsed = JSON.parse(text) as OpenCodeJsonValue;
+        }
+      } catch { /* keep the text */ }
       if (!response.ok) { const error = new Error(`OpenCode ${method} ${route} failed with ${response.status}`); Object.assign(error, { status: response.status, body: parsed }); throw error; }
       return parsed;
     },
@@ -431,19 +420,13 @@ function makeClient(baseUrl: string, dialect: OpenCodeDialect, password?: string
           for (const frame of frames) {
             const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
             if (!data) continue;
+            let raw: RecordLike | undefined;
             try {
-              // SAFETY: JSON.parse yields unknown; the record and textField
-              // probes below validate before use, and malformed frames are skipped.
-              const raw = JSON.parse(data) as RecordLike;
-              const rawType = textField(raw.type);
-              if (rawType === undefined) continue;
-              const rawData = record(raw.data);
-              const properties = record(raw.properties) ?? (rawData ? { sessionID: textField(rawData.sessionID) ?? "", ...rawData } : {});
-              // SAFETY: rawType passed the textField probe and properties is a
-              // probed record, so this rebuilds the translator input from
-              // validated fields instead of trusting the wire shape.
-              yield { type: rawType, properties } as OpenCodeEvent;
+              // SAFETY: JSON.parse only ever yields JSON values; record() keeps
+              // objects and the dialect probes every field it reads.
+              raw = record(JSON.parse(data) as OpenCodeJsonValue);
             } catch { /* skip malformed SSE frame */ }
+            if (raw) yield raw;
           }
         }
       } finally { reader.releaseLock(); }
@@ -460,10 +443,7 @@ export function translateOpenCodeEvent(sessionId: string, event: OpenCodeEvent):
 }
 
 export function isOpenCodeTurnEnd(event: OpenCodeEvent): boolean {
-  return event.type === "session.idle"
-    || event.type === "session.execution.succeeded"
-    || event.type === "session.execution.failed"
-    || (event.type === "session.status" && record(event.properties?.status)?.type === "idle");
+  return event.type === "session.idle" || (event.type === "session.status" && record(event.properties?.status)?.type === "idle");
 }
 
 export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
@@ -529,25 +509,25 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private readonly serverPool = new OpenCodeServerPool(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   /** The CLI executable to spawn — the user's override or the `opencode` default. */
   private binary = OPENCODE_BINARY;
-  private cachedVersion: string | undefined;
-  private versionPromise: Promise<string | undefined> | null = null;
+  /** The installed CLI's version, probed once per binary. Only a version that
+   *  was actually read is kept: an unanswered probe is dropped so the next
+   *  caller asks again. */
+  private version: Promise<string | undefined> | null = null;
 
   private ensureVersion(): Promise<string | undefined> {
-    if (this.cachedVersion !== undefined) return Promise.resolve(this.cachedVersion);
-    if (!this.versionPromise) {
-      this.versionPromise = (async () => {
-        const env = await buildOpenCodeEnv();
-        const result = await probeResult(this.binary, ["--version"], env, 5_000);
-        const version = parseOpenCodeVersion(`${result.stdout}\n${result.stderr}`);
-        this.cachedVersion = version;
-        this.versionPromise = null;
+    if (this.version) return this.version;
+    const probe = (async () => {
+      const env = await buildOpenCodeEnv();
+      const result = await probeResult(this.binary, ["--version"], env, 5_000);
+      return parseOpenCodeVersion(`${result.stdout}\n${result.stderr}`);
+    })()
+      .catch(() => undefined)
+      .then((version) => {
+        if (version === undefined && this.version === probe) this.version = null;
         return version;
-      })().catch(() => {
-        this.versionPromise = null;
-        return undefined;
       });
-    }
-    return this.versionPromise;
+    this.version = probe;
+    return probe;
   }
   constructor(emit: EmitEvent) { this.emit = emit; }
 
@@ -558,7 +538,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (next === this.binary) return;
     this.binary = next;
     this.modelsCache = null;
-    this.cachedVersion = undefined;
+    this.version = null;
   }
 
   async discover(): Promise<ProviderStatus> {
@@ -569,7 +549,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // Hand the classifier the real failure: its quarantine / code-signature
     // branches can only fire on the CLI's own words.
     const version = parseOpenCodeVersion(`${result.stdout}\n${result.stderr}`);
-    this.cachedVersion = version;
+    this.version = version === undefined ? null : Promise.resolve(version);
     if (!versionProbeUsable(result, version)) return classifyOpenCodeSpawnFailure(result.error ?? new Error(probeDetail(result) ?? "OpenCode could not be started."));
     if (!isOpenCodeVersionSupported(version)) return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", version, message: `OpenCode v${version ?? "unknown"} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.` };
     try { const models = await this.listModels(); return { provider: "opencode", label: "OpenCode", available: true, authStatus: models.length ? "authenticated" : "unknown", readiness: models.length ? "ready" : "needs-login", version, message: models.length ? undefined : "OpenCode is available, but no connected providers were reported. Run `opencode auth login`." }; }
@@ -603,7 +583,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildOpenCodeEnv();
     const version = await this.ensureVersion();
-    const probes = modelProbesForVersion(version);
+    const probes = modelProbesForVersion(version).flatMap((probe) => Array.from({ length: probe.attempts }, () => probe));
     let inconclusive = false;
     for (let attempt = 0; attempt < probes.length; attempt += 1) {
       const probe = probes[attempt]!;
@@ -624,8 +604,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   async startSession(input: SessionStartInput): Promise<Session> {
     const prior = this.sessions.get(input.threadId); if (prior) await this.stopSession(input.threadId);
     const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv();
-    const version = await this.ensureVersion();
-    const server = await this.serverPool.start({ cwd: input.cwd, env, binary: this.binary, expectPassword: isOpenCodeV2(version) });
+    const server = await this.serverPool.start({ cwd: input.cwd, env, binary: this.binary });
     const dialect = dialectForServer(server);
     const client = makeClient(server.baseUrl, dialect, server.password); let sessionId: string | undefined;
     // The gateway registration needs only the client, the connection and the
@@ -644,11 +623,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (resume) {
       try {
         const found = responseData(await client.request("GET", `/session/${encodeURIComponent(resume)}`));
-        sessionId = found?.id ?? resume;
-        const foundDir = found?.directory ?? found?.location?.directory;
+        const adoptedId = textField(found?.id) ?? resume;
+        sessionId = adoptedId;
+        const foundDir = textField(found?.directory) ?? stringField(found?.location, "directory");
         const same = foundDir ? await this.sameDirectory(foundDir, input.cwd) : true;
-        const adoptedId = sessionId;
-        if (!adoptedId) throw new Error("OpenCode resume response did not include an id.");
         if (!same) sessionId = await dialect.forkInto(client, adoptedId, input.cwd, mode);
         else await dialect.applyMode(client, adoptedId, mode);
       } catch (error) { if (!isOpenCodeNotFound(error)) { await server.dispose(); throw error; } }
@@ -687,6 +665,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const session = this.require(input.threadId); const text = input.input.trim();
+    // Imported at call time: promptAttachments reaches the attachment store,
+    // which pulls in node:sqlite — a static import would make this module
+    // unloadable outside the Electron runtime.
     const { buildOpenCodeAttachmentParts, composePromptText } = await import("../promptAttachments.js");
     const files = await buildOpenCodeAttachmentParts(input.attachments);
     // The ladder is applied to the session when it opens (and on resume); a
@@ -782,8 +763,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   private async consumeEvents(session: OpenCodeSession): Promise<void> {
     try {
-      for await (const event of session.client.events(session.eventsAbort.signal)) {
+      for await (const raw of session.client.events(session.eventsAbort.signal)) {
         if (session.disposed) continue;
+        const event = session.dialect.decodeEvent(raw, session);
+        if (!event) continue;
         // opencode runs a Task tool's child as a separate session on the same
         // server, so its events arrive with the child's session id. Route them
         // into the run's transcript instead of dropping them like unrelated
@@ -847,8 +830,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     this.emitTokenUsage(session, usage);
   }
 
-  private handleEvent(session: OpenCodeSession, incoming: OpenCodeEvent): void {
-    const event = normalizeV2Event(session, incoming);
+  private handleEvent(session: OpenCodeSession, event: OpenCodeEvent): void {
     const p = event.properties ?? {}; const active = session.activeTurnId;
     switch (event.type) {
       case "message.updated": {
@@ -883,41 +865,36 @@ export class OpenCodeAdapter implements ProviderAdapter {
         break;
       }
       case "session.status": if (record(p.status)?.type === "idle") this.complete(session); break;
-       case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
-       case "permission.asked":
-       case "permission.v2.asked": void this.permissionAsked(session, p); break;
-       case "permission.replied":
-       case "permission.v2.replied": {
-         const repliedId = requestIdOf(p);
-         if (repliedId === undefined) {
-           console.warn(`[opencode] permission.replied without a request id; nothing to clear (thread ${session.threadId})`);
-           break;
-         }
-         session.pendingPermissions.delete(repliedId);
-         break;
-       }
-       case "question.asked":
-       case "question.v2.asked": this.questionAsked(session, p); break;
-        case "question.replied":
-        case "question.v2.replied": {
-          const repliedId = requestIdOf(p);
-          if (repliedId === undefined) {
-            console.warn(`[opencode] question.replied without a request id; parked question cannot be settled (thread ${session.threadId})`);
-            break;
-          }
-          this.questionResolved(session, repliedId, answerRows(p.answers));
+      case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
+      case "permission.asked": void this.permissionAsked(session, p); break;
+      case "permission.replied": {
+        const repliedId = requestIdOf(p);
+        if (repliedId === undefined) {
+          console.warn(`[opencode] permission.replied without a request id; nothing to clear (thread ${session.threadId})`);
           break;
         }
-        case "question.rejected":
-        case "question.v2.rejected": {
-          const rejectedId = requestIdOf(p);
-          if (rejectedId === undefined) {
-            console.warn(`[opencode] question.rejected without a request id; parked question cannot be settled (thread ${session.threadId})`);
-            break;
-          }
-          this.questionResolved(session, rejectedId, []);
+        session.pendingPermissions.delete(repliedId);
+        break;
+      }
+      case "question.asked": this.questionAsked(session, p); break;
+      case "question.replied": {
+        const repliedId = requestIdOf(p);
+        if (repliedId === undefined) {
+          console.warn(`[opencode] question.replied without a request id; parked question cannot be settled (thread ${session.threadId})`);
           break;
         }
+        this.questionResolved(session, repliedId, answerRows(p.answers));
+        break;
+      }
+      case "question.rejected": {
+        const rejectedId = requestIdOf(p);
+        if (rejectedId === undefined) {
+          console.warn(`[opencode] question.rejected without a request id; parked question cannot be settled (thread ${session.threadId})`);
+          break;
+        }
+        this.questionResolved(session, rejectedId, []);
+        break;
+      }
       default: break;
     }
   }
@@ -949,7 +926,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         }
         this.emitSubagent(session, run, "subagent.updated");
       }
-    } else if (String(part.tool ?? "") === "task" || String(part.tool ?? "") === "subagent") {
+    } else if (String(part.tool ?? "") === "task") {
       this.handleTaskTool(session, part, state);
     }
   }
@@ -999,8 +976,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /** Folds a child session's events into its run: roles, transcript items
    *  (scoped with the run's tool-use id), token spend. Never touches the parent
    *  turn's lifecycle — the child going idle is not the parent finishing. */
-  private handleChildEvent(session: OpenCodeSession, toolUseId: string, incoming: OpenCodeEvent): void {
-    const event = normalizeV2Event(session, incoming);
+  private handleChildEvent(session: OpenCodeSession, toolUseId: string, event: OpenCodeEvent): void {
     const p = event.properties ?? {};
     // A settled run's in-flight tail is dropped the same way the Claude adapter
     // drops one — the run is closed, and re-projecting its leftovers would
@@ -1035,8 +1011,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         break;
       }
       case "message.part.updated": this.handlePart(session, record(p.part), toolUseId); break;
-      case "permission.asked":
-      case "permission.v2.asked": void this.permissionAsked(session, p, toolUseId); break;
+      case "permission.asked": void this.permissionAsked(session, p, toolUseId); break;
       case "session.next.step.ended": {
         if (!run) break;
         const usage = normalizeOpenCodeTokenUsage(p.tokens);
@@ -1196,13 +1171,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.pendingUserInputs.set(requestId, {
       questions,
       resolve: (answers) => {
-        const payload = {
-          answers: questions.map((q) => {
-            const value = answers[q.id];
-            return Array.isArray(value) ? value : value == null ? [] : [value];
-          }),
-        };
-        this.postQuestionReply(session, requestId, payload);
+        const rows = questions.map((q) => {
+          const value = answers[q.id];
+          return Array.isArray(value) ? value : value == null ? [] : [value];
+        });
+        this.postQuestionReply(session, requestId, rows);
         this.emit({ ...base(session), type: "user-input.resolved", requestId, answers });
       },
     });
@@ -1217,55 +1190,20 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.pendingUserInputs.delete(requestId);
     this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped });
   }
-  /** POST a question answer to whichever route this server speaks. The first
-   *  answer probes the root route and, on a 404 only, falls through to the
-   *  session-scoped one; the winner is remembered so later answers go straight
-   *  there instead of paying a failed round-trip each. The route is pinned
-   *  only after a success — a transient failure leaves it unset so the next
-   *  answer re-probes. The modal already resolved optimistically, so a reply
-   *  the provider never got would look answered while the turn hangs: every
-   *  failure below surfaces as a session error plus a log, never silently. */
-  private postQuestionReply(session: OpenCodeSession, requestId: string, payload: { answers: string[][] }): void {
-    const root = `/question/${encodeURIComponent(requestId)}/reply`;
-    const scoped = `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`;
-    if (session.questionReplyRoute === "root") {
-      void session.client.request("POST", root, payload).then(
-        () => undefined,
-        (cause: unknown) => this.failQuestionReply(session, requestId, cause),
-      );
-      return;
-    }
-    if (session.questionReplyRoute === "sessionScoped") {
-      void session.client.request("POST", scoped, payload).then(
-        () => undefined,
-        (cause: unknown) => this.failQuestionReply(session, requestId, cause),
-      );
-      return;
-    }
-    void (async () => {
-      try {
-        await session.client.request("POST", root, payload);
-        session.questionReplyRoute = "root";
-      } catch (rootError) {
-        if (!isOpenCodeNotFound(rootError)) {
-          this.failQuestionReply(session, requestId, rootError);
-          return;
-        }
-        try {
-          await session.client.request("POST", scoped, payload);
-          session.questionReplyRoute = "sessionScoped";
-        } catch (scopedError) {
-          this.failQuestionReply(session, requestId, scopedError);
-        }
-      }
-    })();
+  /** POST a question answer. The modal already resolved optimistically, so a
+   *  reply the provider never got would look answered while the turn hangs:
+   *  a failure surfaces as a session error plus a log, never silently. */
+  private postQuestionReply(session: OpenCodeSession, requestId: string, answers: string[][]): void {
+    const { route, body } = session.dialect.questionReply(session.openCodeSessionId, requestId, answers);
+    void session.client.request("POST", route, body).then(
+      () => undefined,
+      (cause: unknown) => this.failQuestionReply(session, requestId, cause),
+    );
   }
   /** Surface a question reply the provider never received. The modal already
    *  resolved optimistically, so without this the answer would look sent while
-   *  the turn waits for it. Clears the pinned route so the next answer
-   *  re-probes instead of replaying a failing route. */
+   *  the turn waits for it. */
   private failQuestionReply(session: OpenCodeSession, requestId: string, cause: unknown): void {
-    session.questionReplyRoute = undefined;
     const message = `question reply ${requestId} failed: ${errorMessage(cause)} — the provider never received the answer and the turn may still be waiting`;
     console.error(`[opencode] ${message}`);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message });

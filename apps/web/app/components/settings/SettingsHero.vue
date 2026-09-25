@@ -25,13 +25,14 @@ const greeting = computed(() => {
   return "Good evening";
 });
 
-// A smooth wave twice the card's width, built from one quadratic hump and its
-// reflections (T), so it has no seams. The period divides 160, so sliding it
-// 160 left is a seamless loop; the card shows the first 160.
+// A smooth wave three times the card's width, built from one quadratic hump and
+// its reflections (T), so it has no seams. The period divides 160, so sliding it
+// 160 left is a seamless loop; the card shows the first 160. The extra width
+// covers the hover boost, which slides a further 160 on top of the drift.
 function wave(y: number, amp: number, period: number): string {
   const half = period / 2;
   let d = `M 0 ${y} Q ${half / 2} ${y - amp} ${half} ${y}`;
-  for (let x = half * 2; x <= 320; x += half) d += ` T ${x} ${y}`;
+  for (let x = half * 2; x <= 480; x += half) d += ` T ${x} ${y}`;
   return d;
 }
 const contours = [
@@ -53,7 +54,9 @@ const contours = [
   >
     <svg class="hero__art" viewBox="0 0 160 60" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
       <g v-for="(c, i) in contours" :key="i" class="lane" :class="c.cls">
-        <path :d="c.d" />
+        <g class="boost">
+          <path :d="c.d" />
+        </g>
       </g>
     </svg>
 
@@ -61,7 +64,9 @@ const contours = [
       <svg class="hero__orbit" viewBox="0 0 60 60">
         <circle class="ring" cx="30" cy="30" r="27" pathLength="100" />
         <g class="mote">
-          <circle cx="30" cy="3" r="2.4" />
+          <g class="boost">
+            <circle cx="30" cy="3" r="2.4" />
+          </g>
         </g>
       </svg>
       <span class="hero__avatar" :style="avatarStyle">
@@ -105,13 +110,12 @@ const contours = [
     0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
   transition:
     transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 260ms ease;
+    box-shadow 480ms var(--ease);
 }
 .hero:hover {
-  transform: translateY(-1px);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 8px 22px -10px color-mix(in srgb, var(--accent) 40%, transparent);
+    0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
 }
 .hero:active {
   transform: scale(0.985);
@@ -144,21 +148,27 @@ const contours = [
   stroke-width: 1.2;
 }
 .lane {
-  animation: drift var(--dur, 18s) linear infinite;
+  animation: drift var(--dur, 18s) linear infinite var(--dir, normal);
 }
 .c1 { --dur: 22s; }
-.c2 { --dur: 16s; animation-direction: reverse; }
+.c2 { --dur: 16s; --dir: reverse; }
 .c3 { --dur: 13s; }
-.c4 { --dur: 19s; animation-direction: reverse; }
+.c4 { --dur: 19s; --dir: reverse; }
 .c5 { --dur: 25s; }
 @keyframes drift {
   to {
     transform: translateX(-160px);
   }
 }
-/* Pointer on the card: the lines quicken, as if the card leaned into it. */
-.hero:hover .lane {
-  animation-duration: calc(var(--dur, 18s) * 0.45);
+/* Pointer on the card: the lines quicken, as if the card leaned into it. The
+   extra speed is a second drift layered on top that only runs while hovered.
+   Changing the base animation's duration instead would make every line jump to
+   a new position; pausing and resuming a layer keeps them where they are. */
+.lane .boost {
+  animation: drift calc(var(--dur, 18s) * 0.82) linear infinite var(--dir, normal) paused;
+}
+.hero:hover .boost {
+  animation-play-state: running;
 }
 
 /* ── avatar and its orbit ──────────────────────────────────────────────────── */
@@ -206,12 +216,13 @@ const contours = [
   transform-origin: 30px 30px;
   animation: spin 7s linear infinite;
 }
+.mote .boost {
+  transform-origin: 30px 30px;
+  animation: spin 3.2s linear infinite paused;
+}
 .mote circle {
   fill: var(--accent);
   filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 70%, transparent));
-}
-.hero:hover .mote {
-  animation-duration: 2.2s;
 }
 @keyframes spin {
   to {
@@ -270,8 +281,8 @@ const contours = [
   stroke-linecap: round;
   stroke-linejoin: round;
   transition:
-    transform 360ms cubic-bezier(0.34, 1.56, 0.64, 1),
-    stroke 200ms ease;
+    transform 420ms var(--ease),
+    stroke 320ms var(--ease);
 }
 .hero:hover .hero__go,
 .hero:focus-visible .hero__go {
