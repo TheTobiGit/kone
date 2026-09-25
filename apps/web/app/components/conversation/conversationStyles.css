@@ -1,0 +1,814 @@
+/* The thread's shared visual layer — extracted from ConversationThread.vue.  *
+ * `kone` itself (the default; `kone-quiet` is kone with the connector not   *
+ * mounted) stays scoped in that file. Everything here is either a non-kone  *
+ * look keyed off the root's `thread--style-*` class (utils/conversation-    *
+ * Style), or a primitive rendered on both sides of a component boundary     *
+ * (the shared type and worded-action rows below).                           *
+ *                                                                           *
+ * Every style selector is written `.thread.thread--…` — the second class is *
+ * load-bearing, not a typo. Unscoped, a `.thread--x .body--you` weighs the  *
+ * same as a child component's own scoped `.body--you[data-v]`, so which one *
+ * wins would come down to stylesheet order — and a style's bubble, spacing  *
+ * or colours would silently fall back to kone's. The doubled class puts     *
+ * every style rule one class above any scoped rule it overrides.            *
+ *                                                                           *
+ * Unscoped on purpose: the you-head / reply-ref / ticks fragments render in *
+ * child components (YouHead.vue, ReplyRef.vue, ReceiptTicks.vue, UserTurn.  *
+ * vue), which a scoped block cannot reach — so the `:deep()` wrappers those *
+ * selectors needed have been unwrapped below. Every selector below is       *
+ * prefixed `.thread` (or names a thread-only class verified by grep to have *
+ * no other users), so nothing leaks onto other surfaces.                    */
+
+/* ── Shared turn type ─────────────────────────────────────────────────────────
+   One primitive for every message body: the thread's banners and UserTurn's
+   bubble render it from different components, so it lives here rather than
+   in either scoped block. */
+.thread .body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.62;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.thread .body--error {
+  color: var(--diff-del);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* ── Shared worded actions ────────────────────────────────────────────────────
+   The quiet Cancel / Save / Retry / Dismiss row: the thread's failure note
+   and UserTurn's edit controls render it from different components, so it
+   lives here rather than in either scoped block. (The icon row has its own
+   single authority — see TurnActions.vue.) */
+.thread .foot__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.thread .foot__copy:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+/* Dimmed through a factor inside a footer, whose reveal owns the opacity;
+   anywhere else (a failed turn's actions) the plain rule below applies. */
+.thread .foot__copy:disabled {
+  --item-dim: 0.45;
+  cursor: default;
+}
+.thread :where(.foot__copy:disabled) {
+  opacity: 0.45;
+}
+.thread .foot__copy--primary {
+  color: var(--ink-soft);
+}
+.thread .foot__copy--primary:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--ink);
+}
+/* ── Conversation styles ──────────────────────────────────────────────────────
+   Everything above is `kone`, the default, and `kone-quiet` is kone with the
+   connector not mounted. Every other style is its own design, keyed off the
+   root's `thread--style-*` class (utils/conversationStyle): its own faces,
+   type, bubbles, spacing, and its own place for the time and the actions. The
+   parts of a turn and their order are the one thing no style changes. */
+
+/* Your face, name and time over a request, for the styles that head one. */
+.thread .you-head {
+  display: flex;
+  /* The full row even where the request hugs the left, so the actions at
+     its far end sit at the edge rather than just after the time. */
+  align-self: stretch;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  line-height: 1;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thread .you-head__face {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+.thread .you-head__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+.thread .you-head__time {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.thread .you-stamp {
+  display: none;
+}
+
+/* The request on the left, like the reply: whatever hung off the right edge
+   hangs off the left. */
+.thread.thread--you-left .turn--you {
+  align-items: flex-start;
+}
+.thread.thread--you-left .you-attachments,
+.thread.thread--you-left .att-files-row {
+  justify-content: flex-start;
+}
+.thread.thread--you-left .you-foot {
+  justify-content: flex-start;
+  --foot-in-x: -8px;
+}
+.thread.thread--you-left .turn--enter.turn--you {
+  transform-origin: 0 0;
+}
+
+/* -- Actions in the head --
+   Outside kone's family a message holds no row open for its actions: they
+   sit at the far end of the line that already heads it - the name and
+   time - as plain icons, no bar under them. Replies dock into the speaker
+   line, requests into the you-head; the prompt's request has no head, so
+   its actions sit at the end of its command line instead, and the chat's
+   request keeps its hover row under the bubble. Every seat is an explicit
+   in-flow flex item - nothing is teleported over the turn, so there are no
+   per-style offsets to keep. A file restore (idle button, confirm, error,
+   done) always stands in the flow below the reply, where its words fit. An
+   edit in progress keeps its Cancel / Save row in the flow, where it was. */
+.thread.thread--float-acts {
+  --turn-foot: 0px;
+  --turn-foot-lift: 0px;
+}
+/* A reply's head spans its row too, for the same reason as the you-head. */
+.thread.thread--float-acts .speaker {
+  align-self: stretch;
+}
+/* The far end of a head line belongs to the actions. The row owns the fade,
+   so the buttons are simply there. */
+.thread .you-head__acts,
+.thread .speaker__acts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  margin-left: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease 60ms;
+}
+/* The prompt's command line has no head, so its actions take the clock's
+   place at the end of the line on hover — laid over it rather than beside
+   it, so the hidden icons never hold width in the line and wrap the command
+   early. */
+.thread.thread--style-prompt .body--you .turn-acts {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease 60ms;
+}
+.thread.thread--style-prompt .you-stamp {
+  transition: opacity 120ms ease;
+}
+.thread.thread--style-prompt .turn--you:hover .you-stamp,
+.thread.thread--style-prompt .turn--you:focus-within .you-stamp {
+  opacity: 0;
+}
+.thread.thread--float-acts .turn:hover .you-head__acts,
+.thread.thread--float-acts .turn:hover .speaker__acts,
+.thread.thread--float-acts .turn:hover .body--you .turn-acts,
+.thread.thread--float-acts .turn:focus-within .you-head__acts,
+.thread.thread--float-acts .turn:focus-within .speaker__acts,
+.thread.thread--float-acts .turn:focus-within .body--you .turn-acts {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0ms;
+}
+@media (hover: none) {
+  .thread .you-head__acts,
+  .thread .speaker__acts,
+  .thread.thread--style-prompt .body--you .turn-acts {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+/* The chat's seat: beside the bubble, level with its time, on the side away
+   from the tail — your request's to its left, a reply's to its right. Out of
+   the flow, so the bubbles keep their own rhythm. */
+.thread.thread--style-chat .side-acts {
+  position: absolute;
+  bottom: 2px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease 60ms;
+}
+.thread.thread--style-chat .turn--you .side-acts {
+  right: calc(100% + 6px);
+}
+.thread.thread--style-chat .turn--kone .side-acts {
+  left: calc(100% + 6px);
+}
+.thread.thread--style-chat .turn:hover .side-acts,
+.thread.thread--style-chat .turn:focus-within .side-acts {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0ms;
+}
+@media (hover: none) {
+  .thread.thread--style-chat .side-acts {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+/* The file restore rests as one more icon among the actions. Once pressed it
+   asks and answers in words, and those must never hang on a hover to stay
+   visible — so while it is doing that its seat stays up. */
+.thread.thread--float-acts .ckpt > .ckpt__btn:not(:disabled) {
+  width: 24px;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+}
+.thread.thread--float-acts .ckpt > .ckpt__btn:not(:disabled) > span {
+  display: none;
+}
+.thread .speaker__acts:has(.ckpt__confirm, .ckpt__done, .ckpt__error),
+.thread .side-acts:has(.ckpt__confirm, .ckpt__done, .ckpt__error) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* A day divider drawn across the column — the styles that rule their days. */
+.thread.thread--style-thread .thread-date,
+.thread.thread--style-channel .thread-date {
+  gap: 10px;
+}
+.thread.thread--style-thread .thread-date::before,
+.thread.thread--style-thread .thread-date::after,
+.thread.thread--style-channel .thread-date::before,
+.thread.thread--style-channel .thread-date::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+/* ── Timeline — both sides on the left, on one rail ──────────────────────────
+   Faces down a left rail, each message hung beside its author's name and time.
+   A hairline runs from your face down to the reply's, so a request and its
+   answer read as one beat on the timeline; your words sit in a soft tinted
+   bubble, the reply in the open, the way kone reads it. */
+.thread.thread--style-timeline {
+  --tl-gutter: 40px;
+  --tl-face: 28px;
+  --tl-rail: color-mix(in srgb, var(--ink) 14%, transparent);
+  --thread-gap: 30px;
+}
+.thread.thread--style-timeline .exchange {
+  gap: 20px; /* the rail spans it */
+}
+.thread.thread--style-timeline .turn {
+  gap: 4px;
+}
+.thread.thread--style-timeline .turn--you,
+.thread.thread--style-timeline .turn--kone {
+  padding-left: var(--tl-gutter);
+}
+.thread.thread--style-timeline .you-head {
+  min-height: var(--tl-face);
+}
+.thread.thread--style-timeline .you-head__face,
+.thread.thread--style-timeline .turn--kone .speaker__face,
+.thread.thread--style-timeline .turn--kone .speaker__sphere {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.thread.thread--style-timeline .you-head__face {
+  width: var(--tl-face);
+  height: var(--tl-face);
+}
+.thread.thread--style-timeline .you-head__name,
+.thread.thread--style-timeline .speaker__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.thread.thread--style-timeline .you-head__time,
+.thread.thread--style-timeline .speaker__stamp {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+.thread.thread--style-timeline .body--you {
+  max-width: 100%;
+  padding: 9px 14px;
+  border-radius: 4px 14px 14px 14px;
+  background: color-mix(in oklab, var(--accent) 9%, var(--ground));
+}
+.thread.thread--style-timeline .turn--kone .speaker {
+  min-height: var(--tl-face);
+  margin-bottom: -11px;
+}
+/* The rail: out from under your face, down the request and the gap, to stop
+   just short of the reply's. */
+.thread.thread--style-timeline .turn--you:has(+ .turn--kone)::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--tl-face) + 6px);
+  bottom: -14px; /* the exchange's gap, less the standoff */
+  left: calc(var(--tl-face) / 2 - 0.75px);
+  border-left: 1.5px solid var(--tl-rail);
+  border-radius: 1px;
+  transition: border-color 0.35s ease;
+}
+.thread.thread--style-timeline .exchange--running {
+  --tl-rail: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+
+/* ── Thread — Slack ───────────────────────────────────────────────────────────
+   Flat rows under rounded-square faces, names in bold with the time after
+   them, the whole row lighting under the pointer. The reply is indented one
+   face in, and an arrow drops out from under your face and bends right into
+   the reply's. */
+.thread.thread--style-thread {
+  --sl-gutter: 46px;
+  --sl-reply: 46px;
+  --sl-face: 36px;
+  --sl-arrow: color-mix(in srgb, var(--ink) 22%, transparent);
+  --thread-gap: 22px;
+}
+.thread.thread--style-thread .exchange {
+  gap: 14px; /* the arrow's bend is measured from it */
+}
+.thread.thread--style-thread .turn {
+  gap: 2px;
+  isolation: isolate;
+}
+.thread.thread--style-thread .turn::before {
+  content: "";
+  position: absolute;
+  inset: -6px -12px;
+  z-index: -1;
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+}
+.thread.thread--style-thread .turn:hover::before {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.thread.thread--style-thread .turn--you {
+  padding-left: var(--sl-gutter);
+}
+.thread.thread--style-thread .you-head {
+  min-height: 20px;
+}
+.thread.thread--style-thread .you-head__face {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  width: var(--sl-face);
+  height: var(--sl-face);
+  border-radius: 8px;
+  font-size: 15px;
+}
+.thread.thread--style-thread .you-head__name,
+.thread.thread--style-thread .speaker__name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.thread.thread--style-thread .you-head__time,
+.thread.thread--style-thread .speaker__stamp {
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.thread.thread--style-thread .body--you {
+  max-width: 100%;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+.thread.thread--style-thread .turn--kone {
+  padding-left: calc(var(--sl-reply) + 38px);
+}
+.thread.thread--style-thread .turn--kone .speaker {
+  min-height: 20px;
+  margin-bottom: -11px;
+}
+/* The reply's face as a tile, Slack's square in place of a circle. */
+.thread.thread--style-thread .turn--kone .speaker__face,
+.thread.thread--style-thread .turn--kone .speaker__sphere {
+  position: absolute;
+  top: 0;
+  left: var(--sl-reply);
+  padding: 3px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+/* The arrow: the drop and the bend belong to your row — the bend lands at the
+   middle of the reply's 28px face, the exchange's gap below your row — and
+   the head to the reply's. */
+.thread.thread--style-thread .turn--you:has(+ .turn--kone)::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--sl-face) + 8px);
+  bottom: -28px;
+  left: calc(var(--sl-face) / 2 - 0.75px);
+  width: calc(var(--sl-reply) - var(--sl-face) / 2 - 4px);
+  border-bottom: 1.5px solid var(--sl-arrow);
+  border-left: 1.5px solid var(--sl-arrow);
+  border-bottom-left-radius: 10px;
+  transition: border-color 0.35s ease;
+}
+.thread.thread--style-thread .turn--you + .turn--kone::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: calc(var(--sl-reply) - 11px);
+  width: 6px;
+  height: 6px;
+  border-top: 1.5px solid var(--sl-arrow);
+  border-right: 1.5px solid var(--sl-arrow);
+  transform: rotate(45deg);
+  transition: border-color 0.35s ease;
+}
+.thread.thread--style-thread .exchange--running {
+  --sl-arrow: color-mix(in oklab, var(--accent) 60%, transparent);
+}
+.thread.thread--style-thread .exchange:hover {
+  --sl-arrow: color-mix(in srgb, var(--ink) 36%, transparent);
+}
+/* Slack's day: a pill riding the rule. */
+.thread.thread--style-thread .thread-date__text {
+  padding: 3px 12px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+/* ── Chat — WhatsApp ──────────────────────────────────────────────────────────
+   Two sides of a phone chat: your bubbles green on the right, the agent's
+   paper-white on the left, each with a tail folded out at its top corner and a
+   hairline of shadow under it. The time sits in the bubble's bottom corner —
+   with ticks on yours, blue once it has been answered — and the agent's name
+   heads its bubble in colour, the way a group chat names who spoke. */
+.thread.thread--style-chat {
+  --wa-out: color-mix(in oklab, var(--ok, #25d366) 16%, var(--ground));
+  --wa-in: var(--raised-high, var(--raised, var(--ground)));
+  --wa-shadow: 0 1px 0.5px color-mix(in srgb, #000 14%, transparent);
+  --wa-meta: color-mix(in srgb, var(--ink) 45%, transparent);
+  --thread-gap: 24px;
+}
+.thread.thread--style-chat .exchange {
+  gap: 14px;
+}
+.thread.thread--style-chat .turn {
+  gap: 6px;
+}
+.thread.thread--style-chat .turn--you {
+  align-self: flex-end;
+  max-width: min(78%, 560px);
+}
+.thread.thread--style-chat .body--you {
+  max-width: 100%;
+  padding: 8px 11px 9px 12px;
+  border-radius: 10px 0 10px 10px;
+  background: var(--wa-out);
+  box-shadow: var(--wa-shadow);
+  font-size: 14px;
+  line-height: 1.5;
+}
+/* WhatsApp's trick: an invisible run at the end of the last line keeps it
+   clear of the time, so a short message ends on the same line as its time
+   and a long one wraps its last word away from it. */
+.thread.thread--style-chat .you-text::after {
+  content: "";
+  display: inline-block;
+  width: 80px;
+}
+.thread.thread--style-chat .you-stamp {
+  position: absolute;
+  right: 10px;
+  bottom: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--wa-meta);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thread .you-ticks {
+  width: 16px;
+  height: 11px;
+  fill: currentColor;
+  transition: fill 0.3s ease;
+}
+.thread .you-ticks--read {
+  fill: #53bdeb;
+}
+.thread.thread--style-chat .turn--kone {
+  align-items: flex-start;
+}
+.thread.thread--style-chat .turn--kone .stack {
+  position: relative;
+  width: auto;
+  max-width: min(78%, 600px);
+  gap: 8px;
+  padding: 8px 12px 9px;
+  border-radius: 0 10px 10px 10px;
+  background: var(--wa-in);
+  box-shadow: var(--wa-shadow);
+}
+.thread.thread--style-chat .body--you::before,
+.thread.thread--style-chat .turn--kone .stack::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 13px;
+}
+.thread.thread--style-chat .body--you::before {
+  right: -8px;
+  background: var(--wa-out);
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+.thread.thread--style-chat .turn--kone .stack::before {
+  left: -8px;
+  background: var(--wa-in);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+.thread.thread--style-chat .speaker {
+  min-height: 18px;
+  margin-bottom: -6px;
+}
+.thread.thread--style-chat .speaker__name {
+  font-size: 12.8px;
+  color: var(--accent);
+}
+.thread .kone-stamp {
+  align-self: flex-end;
+  margin: -8px -2px -3px 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--wa-meta);
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* The day as the chat's own label — a quiet wash, not a card. */
+.thread.thread--style-chat .thread-date__text {
+  padding: 3px 10px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── Channel — Discord ────────────────────────────────────────────────────────
+   Every message a row: a large round face in the gutter, the name in colour
+   with "Today at 11:55 AM" beside it, the body hung under the name, the row
+   lighting on hover. A reply opens with the line it answers — a spine out of
+   its face, a small face, a name and the request, cut to one line. */
+.thread.thread--style-channel {
+  --dc-gutter: 54px;
+  --dc-face: 38px;
+  --dc-spine: color-mix(in srgb, var(--ink) 18%, transparent);
+  --thread-gap: 20px;
+}
+.thread.thread--style-channel .exchange {
+  gap: 18px;
+}
+.thread.thread--style-channel .turn {
+  gap: 3px;
+  isolation: isolate;
+}
+.thread.thread--style-channel .turn::before {
+  content: "";
+  position: absolute;
+  inset: -5px -14px;
+  z-index: -1;
+  border-radius: 6px;
+  transition: background-color 0.12s ease;
+}
+.thread.thread--style-channel .turn:hover::before {
+  background: color-mix(in srgb, var(--ink) 3.5%, transparent);
+}
+.thread.thread--style-channel .turn--you,
+.thread.thread--style-channel .turn--kone {
+  padding-left: var(--dc-gutter);
+}
+.thread.thread--style-channel .you-head {
+  min-height: 21px;
+}
+.thread.thread--style-channel .you-head__face {
+  position: absolute;
+  top: 1px;
+  left: 0;
+  width: var(--dc-face);
+  height: var(--dc-face);
+  font-size: 15px;
+}
+.thread.thread--style-channel .you-head__name,
+.thread.thread--style-channel .speaker__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.thread.thread--style-channel .speaker__name {
+  color: var(--accent);
+}
+.thread.thread--style-channel .you-head__time,
+.thread.thread--style-channel .speaker__stamp {
+  margin-left: 2px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+.thread.thread--style-channel .body--you {
+  max-width: 100%;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.thread.thread--style-channel .turn--kone .speaker {
+  min-height: 21px;
+  margin-bottom: -12px;
+}
+.thread.thread--style-channel .turn--kone .speaker__face,
+.thread.thread--style-channel .turn--kone .speaker__sphere {
+  position: absolute;
+  top: 1px;
+  left: 0;
+}
+.thread.thread--style-channel .turn--kone:has(.reply-ref) .speaker__face,
+.thread.thread--style-channel .turn--kone:has(.reply-ref) .speaker__sphere {
+  top: 24px; /* under the reply line and the row's gap */
+}
+.thread .reply-ref {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thread .reply-ref::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  left: calc(var(--dc-face) / 2 - 1px - var(--dc-gutter));
+  width: calc(var(--dc-gutter) - var(--dc-face) / 2 - 5px);
+  height: 13px;
+  border-top: 2px solid var(--dc-spine);
+  border-left: 2px solid var(--dc-spine);
+  border-top-left-radius: 6px;
+}
+.thread .reply-ref__face {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 600;
+}
+.thread .reply-ref__name {
+  flex: none;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.thread .reply-ref__text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.thread.thread--style-channel .thread-date__text {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* ── Prompt — a terminal session ──────────────────────────────────────────────
+   Everything in the monospace. Your request is a command after an accent ❯,
+   its time on the right the way a shell's right prompt keeps it; the reply is
+   its output, hung off a rule in the gutter, headed by the agent's name. The
+   actions sit at the end of the command line, next to the clock. */
+.thread.thread--style-prompt {
+  --thread-gap: 26px;
+  font-family: var(--font-mono);
+}
+.thread.thread--style-prompt .exchange {
+  gap: 12px;
+}
+.thread.thread--style-prompt .body--you {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  width: 100%;
+  max-width: 100%;
+  padding: 0 0 0 22px;
+  border-radius: 0;
+  background: none;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+.thread.thread--style-prompt .body--you::before {
+  content: "❯";
+  position: absolute;
+  top: 0;
+  left: 2px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.thread.thread--style-prompt .you-text {
+  flex: 1;
+  min-width: 0;
+}
+.thread.thread--style-prompt .you-stamp {
+  display: block;
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.thread.thread--style-prompt .turn--kone {
+  margin-left: 6px;
+  padding-left: 16px;
+  border-left: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  transition: border-color 0.35s ease;
+}
+.thread.thread--style-prompt .exchange--running .turn--kone {
+  border-left-color: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+.thread.thread--style-prompt .speaker {
+  min-height: 18px;
+  margin-bottom: -8px;
+}
+.thread.thread--style-prompt .speaker__name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+.thread.thread--style-prompt .speaker__name::before {
+  content: "●\00a0";
+}
+.thread.thread--style-prompt .answer {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread .you-head__acts,
+  .thread .speaker__acts,
+  .thread.thread--style-chat .side-acts,
+  .thread.thread--style-prompt .body--you .turn-acts,
+  .thread.thread--style-thread .turn::before,
+  .thread.thread--style-thread .turn--you::after,
+  .thread.thread--style-thread .turn--kone::after,
+  .thread.thread--style-channel .turn::before {
+    transition: none;
+  }
+}

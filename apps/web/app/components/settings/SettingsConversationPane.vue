@@ -5,7 +5,9 @@ import { BubbleChatIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import ConversationOptions from "~/components/settings/ConversationOptions.vue";
 import ConversationStage from "~/components/settings/ConversationStage.vue";
+import ConversationStylePicker from "~/components/settings/ConversationStylePicker.vue";
 import { useConversationPreview } from "~/composables/useConversationPreview";
+import { usePreviewOverride } from "~/composables/usePreviewOverride";
 import {
   DEFAULT_DISPLAYS,
   SURFACES,
@@ -13,7 +15,9 @@ import {
   withChoice,
   type ChoiceOption,
   type ConversationSurface,
+  type ResponseDisplay,
 } from "~/utils/responseDisplay";
+import type { ConversationStyle } from "~/utils/conversationStyle";
 
 // How an agent's turns read — the Conversation page.
 //
@@ -28,6 +32,11 @@ import {
 // finishes, the eye is drawn from "While it works" to "When it's done" and sees
 // which settings are acting. Point at a tile and the stage plays that choice
 // instead, before it's made, and wears the accent while it does.
+//
+// Above all of it sits the style (ConversationStylePicker) — the layout every
+// conversation is drawn in. It is one choice for every surface, so it sits
+// above the surface switch rather than under it, and it probes the stage the
+// same way a tile does.
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
@@ -42,7 +51,7 @@ const surfaceIndex = computed(() => SURFACES.findIndex((s) => s.id === surface.v
 function pickSurface(id: ConversationSurface): void {
   if (surface.value === id) return;
   surface.value = id;
-  probe.value = null;
+  displayPreview.clear();
   cue("toggle");
 }
 
@@ -59,12 +68,35 @@ function choose(opt: ChoiceOption): void {
   cue("toggle");
 }
 
-// ── the stage ─────────────────────────────────────────────────────────────────
-// What it plays: the surface's choices, or — while a tile is pointed at or
-// focused — those choices with that one swapped in.
-const probe = ref<ChoiceOption | null>(null);
-const staged = computed(() => (probe.value ? withChoice(current.value, probe.value) : current.value));
-const probing = computed(() => probe.value !== null && current.value[probe.value.choice] !== probe.value.id);
+// ── preview overrides: one mechanism for both dimensions ────────────────────
+// The display tiles below and the style picker above both probe the stage the
+// same way — point at a tile and the stage plays that choice before it's made,
+// wearing the accent while it does. Both go through `usePreviewOverride`: the
+// display stages the surface's choices with the pointed-at choice swapped in,
+// the style stages the pointed-at style outright. `probing` is the single
+// source the stage reads — true while either dimension shows a try-on rather
+// than what's set.
+const conversationStyle = useConversationStyle();
+// ChoiceOption carries label/description/glyph beyond the {choice,id} the
+// display update needs, so it stages through an explicit probe type rather
+// than letting P collapse to ResponsePick (which the options row rejects)
+// or to unknown (which collapses staged with it).
+const displayPreview = usePreviewOverride<ResponseDisplay, ChoiceOption>(
+  current,
+  withChoice,
+  (c, p) => c[p.choice] !== p.id,
+);
+const stylePreview = usePreviewOverride<ConversationStyle, ConversationStyle>(
+  conversationStyle.style,
+  (c, p) => p,
+  (c, p) => c !== p,
+);
+const probing = computed(() => displayPreview.active.value || stylePreview.active.value);
+
+function chooseStyle(next: ConversationStyle): void {
+  conversationStyle.set(next);
+  cue("toggle");
+}
 
 const preview = useConversationPreview();
 const reduced = usePreferredReducedMotion();
@@ -73,7 +105,7 @@ const playingHalf = preview.phase;
 // A changed read — a surface switched, a tile pointed at, a choice made —
 // replays the take from the top, so it's seen doing its thing rather than
 // landing mid-sentence.
-watch(staged, (next, prev) => {
+watch(displayPreview.staged, (next, prev) => {
   if (sameDisplay(next, prev)) return;
   if (preview.playing.value) preview.replay();
 });
@@ -95,6 +127,14 @@ onMounted(() => {
     @back="emit('back')"
   >
     <div class="cv">
+      <ConversationStylePicker
+        :open="open"
+        :value="conversationStyle.style.value"
+        :probe="stylePreview.probe.value"
+        @choose="chooseStyle"
+        @probe="stylePreview.probe.value = $event"
+      />
+
       <!-- Which surface is being set. A segmented control whose pill slides to
            the one that's set, so switching reads as one motion. -->
       <div class="cv__top">
@@ -132,14 +172,15 @@ onMounted(() => {
           :open="open"
           :surface="surface"
           :display="current"
-          :probe="probe"
+          :probe="displayPreview.probe.value"
           :playing="playingHalf"
           @choose="choose"
-          @probe="probe = $event"
+          @probe="displayPreview.probe.value = $event"
         />
         <ConversationStage
           :open="open"
-          :display="staged"
+          :display="displayPreview.staged.value"
+          :conversation-style="stylePreview.staged.value"
           :probing="probing"
           :blocks="preview.blocks.value"
           :now="preview.now.value"

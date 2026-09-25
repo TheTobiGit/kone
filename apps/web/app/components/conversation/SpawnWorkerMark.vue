@@ -87,7 +87,6 @@ const where = computed(() =>
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  max-width: 42rem;
   font-size: 0.86rem;
   line-height: 1.5;
   color: color-mix(in oklab, var(--ink) 50%, transparent);

@@ -39,7 +39,6 @@ defineProps<{
   align-items: center;
   gap: 6px;
   width: 100%;
-  max-width: 42rem;
   min-height: 24px;
   padding: 2px 0;
   font-size: 0.8rem;

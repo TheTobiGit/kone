@@ -28,7 +28,7 @@ import { planTurn } from "~/utils/turnPlan";
 // once text takes over (or the turn ends) it rejoins the rest and folds into its
 // horizontal strip.
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   block: AssistantBlock;
   /** How turns read where this one is. */
   display: ResponseDisplay;
@@ -42,9 +42,17 @@ const props = defineProps<{
   house?: boolean;
   /** How long the turn took, phrased by how it ended. */
   workLabel: string;
+  /** Whether the speaker's face is drawn at all — the conversation style
+   *  decides (a style that names its speaker another way draws none). */
+  showFace?: boolean;
+  /** The speaker's face, in px — the conversation style sizes it. Only read
+   *  when `showFace` is true; never gated on a magic size. */
+  faceSize?: number;
+  /** The time beside the name, for styles that head a message with one. */
+  stamp?: string;
   now: number;
   linkHandoffs?: boolean;
-}>();
+}>(), { showFace: true, faceSize: 26, stamp: undefined });
 
 const emit = defineEmits<{
   toggle: [open: boolean];
@@ -102,6 +110,13 @@ const rows = computed<Row[]>(() => {
 // per-letter spans at all. Either way the name is read aloud as one word.
 const nameChars = computed(() => (props.block.historical ? [] : Array.from(props.agentName)));
 const metaLabel = computed(() => (props.block.state === "running" ? "working" : props.workLabel));
+
+// The speaker's name is spelled once, in the head below: a live turn spells
+// it letter by letter, history draws it whole with no per-letter spans.
+function onHeadClick(): void {
+  const t = toggle.value;
+  if (t) emit("toggle", !t.open);
+}
 </script>
 
 <template>
@@ -112,23 +127,28 @@ const metaLabel = computed(() => (props.block.state === "running" ? "working" : 
        the name's head swaps between a plain line and the toggle as the plan
        changes, and a head remounted on settle must not spell the name again. -->
   <div class="speaker" :class="{ 'speaker--enter': !block.historical && block.state === 'running' }">
-    <SphereFace
-      v-if="house"
-      class="speaker__sphere"
-      :size="26"
-      :follow="false"
-      :still="block.state !== 'running'"
-    />
-    <AgentFace v-else :seed="agentSeed" :size="26" class="speaker__face" />
+    <template v-if="showFace">
+      <SphereFace
+        v-if="house"
+        class="speaker__sphere"
+        :size="faceSize"
+        :follow="false"
+        :still="block.state !== 'running'"
+      />
+      <AgentFace v-else :seed="agentSeed" :size="faceSize" class="speaker__face" />
+    </template>
     <!-- The turn's own toggle: the whole turn, or just its reply —
-         whatever the reader's choices started it as. -->
-    <button
-      v-if="toggle"
-      type="button"
-      class="speaker__head speaker__head--toggle"
-      :aria-expanded="toggle.open"
-      :aria-label="`${toggle.open ? 'Hide' : 'Show'} agent work (${workLabel})`"
-      @click="emit('toggle', !toggle.open)"
+         whatever the reader's choices started it as. One head element in
+         both cases (a button when the turn toggles, a plain line when it
+         doesn't) so the name + stamp below live in exactly one place. -->
+    <component
+      :is="toggle ? 'button' : 'div'"
+      class="speaker__head"
+      :class="{ 'speaker__head--toggle': !!toggle }"
+      :type="toggle ? 'button' : undefined"
+      :aria-expanded="toggle ? toggle.open : undefined"
+      :aria-label="toggle ? `${toggle.open ? 'Hide' : 'Show'} agent work (${workLabel})` : undefined"
+      @click="onHeadClick"
     >
       <span class="speaker__name">
         <template v-if="nameChars.length">
@@ -137,13 +157,15 @@ const metaLabel = computed(() => (props.block.state === "running" ? "working" : 
             v-for="(c, i) in nameChars"
             :key="i"
             class="speaker__char"
-            :style="{ '--i': i }"
+            :style="`--i: ${i}`"
             aria-hidden="true"
-          >{{ c }}</span>
+            >{{ c }}</span
+          >
         </template>
         <template v-else>{{ agentName }}</template>
       </span>
-      <span class="speaker__meta">
+      <span v-if="stamp" class="speaker__stamp">{{ stamp }}</span>
+      <span v-if="toggle" class="speaker__meta">
         <TextSwap class="speaker__label" :swap-key="metaLabel" />
         <HugeiconsIcon
           class="speaker__chev"
@@ -153,22 +175,8 @@ const metaLabel = computed(() => (props.block.state === "running" ? "working" : 
           :stroke-width="2"
         />
       </span>
-    </button>
-    <div v-else class="speaker__head">
-      <span class="speaker__name">
-        <template v-if="nameChars.length">
-          <span class="sr-only">{{ agentName }}</span>
-          <span
-            v-for="(c, i) in nameChars"
-            :key="i"
-            class="speaker__char"
-            :style="{ '--i': i }"
-            aria-hidden="true"
-          >{{ c }}</span>
-        </template>
-        <template v-else>{{ agentName }}</template>
-      </span>
-    </div>
+    </component>
+    <span v-if="$slots.actions" class="speaker__acts"><slot name="actions" /></span>
   </div>
 
   <!-- The turn, as the plan lays it out (utils/turnPlan). Settled and
@@ -317,6 +325,13 @@ const metaLabel = computed(() => (props.block.state === "running" ? "working" : 
 .speaker__head--toggle:hover .speaker__name {
   color: var(--ink);
 }
+.speaker__stamp {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--muted);
+}
 .speaker__meta {
   display: inline-flex;
   align-items: center;
@@ -409,11 +424,11 @@ const metaLabel = computed(() => (props.block.state === "running" ? "working" : 
   }
 }
 
-/* The settled rich answer — capped to a comfortable measure (~66ch) so long
-   replies stay readable; its internals live in MarkdownMessage. */
+/* The settled rich answer — it fills the thread column, whose
+   var(--thread-measure) cap is the reading measure; its internals live in
+   MarkdownMessage. */
 .answer {
   width: 100%;
-  max-width: 42rem;
   min-width: 0;
 }
 </style>
