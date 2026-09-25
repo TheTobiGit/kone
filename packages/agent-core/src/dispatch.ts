@@ -532,7 +532,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
     // First user turn → name the thread (fallback now, generated rename async).
     if (userTurnCount === 1) {
-      const provider = this.store.threadMeta(input.threadId)?.provider;
+      const meta = this.store.threadMeta(input.threadId);
+      const provider = meta?.provider;
       if (provider) {
         // The branch is named from whatever title the thread settles on. By
         // now the worktree already exists: startThread builds it before the
@@ -542,6 +543,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
           {
             threadId: input.threadId,
             provider,
+            model: input.model ?? meta?.model,
             // An attachment-only first turn has no prompt text — name the thread
             // after the first attached file instead of leaving it blank.
             message: input.input.trim() || input.attachments?.[0]?.name || "",
@@ -606,7 +608,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  name the worktree's branch — the placeholder a worktree is built on
    *  means nothing to anyone reading the branch list. Never rejects. */
   private async maybeNameThread(
-    input: { threadId: string; provider: ProviderKind; message: string },
+    input: { threadId: string; provider: ProviderKind; model?: string; message: string },
     options?: StartThreadTurnOptions,
   ): Promise<string> {
     if (options?.title) {
@@ -651,6 +653,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         cwd: namingDir,
         message: input.message,
         provider: input.provider,
+        model: input.model,
       });
     } catch (err) {
       console.error("[thread-title] background rename failed:", err);
