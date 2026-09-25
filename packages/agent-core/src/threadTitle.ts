@@ -182,6 +182,9 @@ export async function generateThreadTitle(input: {
   cwd: string;
   message: string;
   provider: ProviderKind;
+  /** The thread's selected model. Only OpenCode uses it, since which
+   *  models work depends on the account (see generateWithOpenCode). */
+  model?: string;
 }): Promise<string | null> {
   const prompt = buildThreadTitlePrompt(input.message);
   try {
@@ -189,7 +192,7 @@ export async function generateThreadTitle(input: {
       input.provider === "claudeAgent"
         ? await generateWithClaude({ cwd: input.cwd, prompt })
         : input.provider === "opencode"
-          ? await generateWithOpenCode({ cwd: input.cwd, prompt })
+          ? await generateWithOpenCode({ cwd: input.cwd, prompt, model: input.model })
           : input.provider === "cursor"
             ? await generateWithCursor({ cwd: input.cwd, prompt })
             : input.provider === "droid"
@@ -281,19 +284,34 @@ async function generateWithClaude(input: {
   });
 }
 
-async function generateWithOpenCode(input: { cwd: string; prompt: string }): Promise<string | null> {
+/** One-shot `opencode run`. The thread's own model goes first: an OpenCode
+ *  account reaches only the providers it pays for (a Go model answers 403
+ *  without a Go subscription, a Zen model 402 without funds), and the model
+ *  the thread is running on is the one known to work. The cheap default is
+ *  the fallback when the thread has no model recorded or its model refuses.
+ *  No `--dir`: v2 dropped the flag and rejects the whole call; the spawn's
+ *  cwd already places the run. */
+async function generateWithOpenCode(input: {
+  cwd: string;
+  prompt: string;
+  model?: string;
+}): Promise<string | null> {
   const env = await buildOpenCodeEnv();
-  return runCli({
-    command: "opencode",
-    args: ["run", "--format", "json", "-m", OPENCODE_TITLE_MODEL, "--dir", input.cwd, input.prompt],
-    cwd: input.cwd,
-    env,
-    stdin: "",
-    timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
-  }).then((raw) => {
-    if (!raw) return null;
-    return raw.split(/\r?\n/).map(extractTitle).find((value): value is string => Boolean(value)) ?? raw;
-  });
+  const models = [...new Set([input.model, OPENCODE_TITLE_MODEL].filter((m): m is string => Boolean(m)))];
+  for (const model of models) {
+    const raw = await runCli({
+      command: "opencode",
+      args: ["run", "--format", "json", "-m", model, input.prompt],
+      cwd: input.cwd,
+      env,
+      stdin: "",
+      timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+    });
+    if (!raw) continue;
+    const title = raw.split(/\r?\n/).map(extractTitle).find((value): value is string => Boolean(value));
+    if (title) return title;
+  }
+  return null;
 }
 
 /** One-shot `cursor-agent --print` with plain text. Titles run through Cursor's
