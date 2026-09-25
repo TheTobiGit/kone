@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import AgentActivity from "~/components/agent/AgentActivity.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import { segText, type WorkGroup } from "~/utils/conversationSegments";
@@ -35,20 +35,33 @@ watch(
     if (v) everOpened.value = true;
   },
 );
+
+// A live turn settling into a closed fold mounts it *open* and closes it a
+// frame later. Mounted closed, the track would already be at 0fr with nothing
+// to transition from, and the work above the reply would vanish in one frame —
+// the reply jumping up the column by the whole height of the turn.
+const settling = ref(!props.historical && !props.open);
+onMounted(() => {
+  if (!settling.value) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => (settling.value = false)));
+});
 </script>
 
 <template>
-  <div class="fold" :class="{ 'fold--open': open }">
+  <div class="fold" :class="{ 'fold--open': open || settling }">
     <div class="fold__region">
       <div class="fold__inner">
         <template v-if="everOpened">
           <template v-for="grp in groups" :key="grp.kind === 'steps' ? grp.key : grp.seg.key">
+            <!-- Everything in here is finished work, already read once as it
+                 streamed: it renders settled, so folding a live turn away
+                 doesn't replay a single row's or word's entrance. -->
             <AgentActivity
               v-if="grp.kind === 'steps'"
               :segments="grp.segments"
               :running="false"
               :is-tail="false"
-              :historical="historical"
+              :historical="true"
               :fold="fold"
             />
             <!-- The agent's between-tool narration — quieter than the reply, so it
@@ -57,7 +70,7 @@ watch(
               v-else
               class="fold__narration"
               :source="segText(grp.seg)"
-              :historical="historical"
+              :historical="true"
             />
           </template>
         </template>

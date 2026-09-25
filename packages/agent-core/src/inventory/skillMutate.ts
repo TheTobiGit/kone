@@ -1,24 +1,20 @@
 // FILE: skillMutate.ts
-// Purpose: the four write capabilities behind the Skills pane's manager phase.
-// scaffoldSkill creates a new skill folder, editSkillFrontmatter applies
-// surgical line edits to a SKILL.md, deleteSkillToTrash moves a skill folder
-// to the system Trash, and installSkillFromGit clones a plain git repo into a
-// skills root and records its source. Every function reports what it did to
-// which path. All writes share the same gates: validate before touching disk,
-// never overwrite an existing skill (a shadow copy would fork under every
-// scanner), never unlink user data, never touch a plugin-owned skill. The
-// frontmatter line-editing logic (applyFrontmatterEdits) is pure and
-// unit-testable; fs and git sit at the edge of the exported actions.
+// Purpose: the write capabilities behind the Skills pane's manager phase.
+// editSkillFrontmatter applies surgical line edits to a SKILL.md, and
+// deleteSkillToTrash moves a skill folder to the system Trash. Every function
+// reports what it did to which path. All writes share the same gates:
+// validate before touching disk, never unlink user data, never touch a
+// plugin-owned skill. The frontmatter line-editing logic
+// (applyFrontmatterEdits) is pure and unit-testable; fs sits at the edge of
+// the exported actions.
 // Exports: MutateResult, FrontmatterEdit, FrontmatterEditResult,
-// SkillSourceManifest, SOURCE_MANIFEST_FILENAME, applyFrontmatterEdits,
-// validateSkillName, validateSkillDescription, scaffoldSkill,
-// editSkillFrontmatter, deleteSkillToTrash, installSkillFromGit
+// applyFrontmatterEdits, validateSkillName, validateSkillDescription,
+// editSkillFrontmatter, deleteSkillToTrash
 
-import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { clone } from "@kone/git-core/clone.js";
 import { userDataPath } from "../userDataDir.js";
 
 import { parseFrontmatter } from "./frontmatter.js";
@@ -45,18 +41,6 @@ export type FrontmatterEdit =
 export type FrontmatterEditResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
-
-/** The dotfile kone writes into a git-installed skill so "update" and
- *  "uninstall" later stay honest: they only exist for sources kone recorded. */
-export const SOURCE_MANIFEST_FILENAME = ".kone-source.json";
-
-export type SkillSourceManifest = {
-  source: "git";
-  /** The URL (or local folder path) the skill was cloned from. */
-  url: string;
-  /** ISO timestamp of the install. */
-  installedAt: string;
-};
 
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const NAME_MAX_CHARS = 64;
@@ -237,18 +221,6 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-async function isFile(target: string): Promise<boolean> {
-  try {
-    return (await stat(target)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function isContainedIn(child: string, parent: string): boolean {
-  return child === parent || child.startsWith(parent + path.sep);
-}
-
 /** Whether a path sits inside a CLI's plugin install area — a segment named
  *  "plugins" under a hidden config root (e.g. ~/.claude/plugins/...). The
  *  plugin owns those files: edits are clobbered on update and a delete leaves
@@ -260,30 +232,6 @@ function isPluginOwnedPath(p: string): boolean {
     if (segments[i] === "plugins" && segments[i - 1]!.startsWith(".")) return true;
   }
   return false;
-}
-
-/** Resolve an allowed skills root: absolute, created if missing, realpath'd
- *  so every derived path is built on the real location. */
-async function prepareRoot(root: string): Promise<{ ok: true; real: string } | { ok: false; error: string }> {
-  if (!path.isAbsolute(root)) {
-    return { ok: false, error: "the skills root must be an absolute path." };
-  }
-  try {
-    await mkdir(root, { recursive: true });
-  } catch (error) {
-    return { ok: false, error: `${error instanceof Error ? error.message : String(error)}.` };
-  }
-  try {
-    return { ok: true, real: await realpath(root) };
-  } catch {
-    return { ok: false, error: "the skills root could not be resolved." };
-  }
-}
-
-/** Remove a folder this module created itself moments ago — rollback for a
- *  failed scaffold or install only, never a path the user had before. */
-async function removeCreated(dir: string): Promise<void> {
-  await rm(dir, { recursive: true, force: true }).catch(() => {});
 }
 
 /** The system Trash on macOS; elsewhere a kone-owned trash folder under the
@@ -305,62 +253,6 @@ async function trashTarget(trashRoot: string, name: string): Promise<string> {
     const candidate = i === 1 ? path.join(trashRoot, name) : path.join(trashRoot, `${name} ${i}`);
     if (!(await exists(candidate))) return candidate;
   }
-}
-
-/** ── Action: scaffold ───────────────────────────────────────────────────── */
-
-/** Create a new skill folder and its SKILL.md in `root`. Always writes both
- *  required frontmatter fields — a skill without a name or description is
- *  refused by some CLIs, and kone never scaffolds one it can't stand behind. */
-export async function scaffoldSkill(root: string, name: string, description: string): Promise<MutateResult> {
-  const nameError = validateSkillName(name);
-  if (nameError) {
-    return { ok: false, action: "scaffold", path: null, detail: `Could not scaffold: ${nameError}` };
-  }
-  const descriptionError = validateSkillDescription(description);
-  if (descriptionError) {
-    return { ok: false, action: "scaffold", path: null, detail: `Could not scaffold: ${descriptionError}` };
-  }
-
-  const prepared = await prepareRoot(root);
-  if (!prepared.ok) {
-    return { ok: false, action: "scaffold", path: null, detail: `Could not scaffold: ${prepared.error}` };
-  }
-
-  const dir = path.join(prepared.real, name);
-  if (await exists(dir)) {
-    return {
-      ok: false,
-      action: "scaffold",
-      path: dir,
-      detail: `Could not scaffold: ${name} already exists at ${dir} — kone never overwrites an existing skill.`,
-    };
-  }
-
-  try {
-    await mkdir(dir);
-  } catch (error) {
-    return { ok: false, action: "scaffold", path: dir, detail: `Could not scaffold: ${error instanceof Error ? error.message : String(error)}.` };
-  }
-
-  const skillMdPath = path.join(dir, "SKILL.md");
-  try {
-    await writeFile(skillMdPath, `---\nname: ${name}\ndescription: ${description.trim()}\n---\n`, "utf8");
-  } catch (error) {
-    await removeCreated(dir);
-    return { ok: false, action: "scaffold", path: skillMdPath, detail: `Could not scaffold: ${error instanceof Error ? error.message : String(error)}.` };
-  }
-
-  // Containment: the created folder must resolve back inside the root — a
-  // symlink planted at `name` between our checks would make the write land
-  // outside the skills root.
-  const dirReal = await realpath(dir).catch(() => dir);
-  if (!isContainedIn(dirReal, prepared.real)) {
-    await removeCreated(dir);
-    return { ok: false, action: "scaffold", path: skillMdPath, detail: `Could not scaffold: ${dir} resolves outside the skills root.` };
-  }
-
-  return { ok: true, action: "scaffold", path: skillMdPath, detail: `Created the skill at ${dir} with its name and description.` };
 }
 
 /** ── Action: edit frontmatter ───────────────────────────────────────────── */
@@ -530,185 +422,4 @@ export async function deleteSkillToTrash(skillDir: string, trashDir?: string): P
   }
 
   return { ok: true, action: "delete", path: skillDir, detail: `Moved the skill folder to ${target}.` };
-}
-
-/** ── Action: install from git ───────────────────────────────────────────── */
-
-/** Accepts the source forms `git clone` itself accepts — http(s), git, ssh,
- *  and scp-style URLs, plus local repository folders — and rejects anything
- *  else (a marketplace name, a zip URL, a shell-ish string). */
-function validateInstallSource(url: string): string | null {
-  if (url.length === 0) {
-    return "the source is empty.";
-  }
-  if (/\s/.test(url)) {
-    return `"${url}" is not a plain git source.`;
-  }
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
-    const protocol = url.slice(0, url.indexOf("://")).toLowerCase();
-    if (["http", "https", "git", "ssh", "file"].includes(protocol)) return null;
-    return `"${protocol}://" is not a plain git source — use https, git, or ssh, or a local folder.`;
-  }
-  if (/^[\w.-]+@[\w.-]+:[\w./~-]+$/.test(url)) return null; // scp-style git@host:path
-  if (path.isAbsolute(url)) return null; // a local repository folder
-  return `"${url}" is not a plain git source — kone installs skills from git URLs or local folders only.`;
-}
-
-/** The folder name a clone of `url` would produce — the URL's last path
-  *  segment with any trailing ".git" and query/fragment dropped. */
-function installSourceName(url: string): string {
-  const tail = (url.split(/[/:]/).pop() ?? url).split(/[?#]/)[0] ?? "";
-  const cleaned = tail.endsWith(".git") ? tail.slice(0, -4) : tail;
-  return cleaned || "skill";
-}
-
-/** Park a refused or failed install's clone in the trash (so even a rejected
- *  clone stays recoverable) instead of unlinking it. */
-async function discardClone(dir: string, trashDir?: string): Promise<void> {
-  try {
-    const target = await trashTarget(trashDir ?? defaultTrashRoot(), path.basename(dir));
-    await rename(dir, target);
-  } catch {
-    // The trash may live on another volume than the skills root; a clone this
-    // call created seconds ago is then removed rather than left half-installed.
-    await removeCreated(dir);
-  }
-}
-
-/** Clone a plain git repository into a skills root and write kone's own
- *  source manifest (a dotfile in the skill folder) so update and uninstall
- *  later stay honest. The folder is named after the SKILL.md's frontmatter
- *  name — a repo whose folder name would not match its skill name is renamed
- *  before the manifest lands. Plugin-shaped repositories (a .claude-plugin
- *  manifest) are refused and handed off to the CLI's own installer. */
-export async function installSkillFromGit(
-  url: string,
-  root: string,
-  options?: { trashDir?: string },
-): Promise<MutateResult> {
-  const urlError = validateInstallSource(url);
-  if (urlError) {
-    return { ok: false, action: "install", path: null, detail: `Could not install: ${urlError}` };
-  }
-
-  const prepared = await prepareRoot(root);
-  if (!prepared.ok) {
-    return { ok: false, action: "install", path: null, detail: `Could not install: ${prepared.error}` };
-  }
-
-  const cloneName = installSourceName(url);
-  const cloneTarget = path.join(prepared.real, cloneName);
-  if (await exists(cloneTarget)) {
-    return {
-      ok: false,
-      action: "install",
-      path: cloneTarget,
-      detail: `Could not install: ${cloneName} already exists at ${cloneTarget} — kone never overwrites an existing skill.`,
-    };
-  }
-
-  let cloned: string;
-  try {
-    const result = await clone(url, cloneTarget, () => {});
-    cloned = result.root;
-  } catch (error) {
-    return { ok: false, action: "install", path: cloneTarget, detail: `Could not install: ${error instanceof Error ? error.message : String(error)}.` };
-  }
-
-  if (await exists(path.join(cloned, ".claude-plugin"))) {
-    await discardClone(cloned, options?.trashDir);
-    return {
-      ok: false,
-      action: "install",
-      path: cloned,
-      detail: "Could not install: the repository is a plugin, not a plain skill — install it with the CLI's plugin installer so it keeps its own update loop.",
-    };
-  }
-
-  const skillMdPath = path.join(cloned, "SKILL.md");
-  if (!(await isFile(skillMdPath))) {
-    await discardClone(cloned, options?.trashDir);
-    return {
-      ok: false,
-      action: "install",
-      path: cloned,
-      detail: "Could not install: the repository has no SKILL.md at its root, so it is not a single-skill repository.",
-    };
-  }
-
-  let raw: string;
-  try {
-    raw = await readFile(skillMdPath, "utf8");
-  } catch {
-    await discardClone(cloned, options?.trashDir);
-    return { ok: false, action: "install", path: cloned, detail: "Could not install: the repository's SKILL.md could not be read." };
-  }
-
-  const parsedName = parseFrontmatter(raw).name;
-  if (!parsedName) {
-    await discardClone(cloned, options?.trashDir);
-    return {
-      ok: false,
-      action: "install",
-      path: cloned,
-      detail: "Could not install: the repository's SKILL.md has no name field, and some CLIs refuse to load a skill without one.",
-    };
-  }
-  const nameError = validateSkillName(parsedName);
-  if (nameError) {
-    await discardClone(cloned, options?.trashDir);
-    return { ok: false, action: "install", path: cloned, detail: `Could not install: ${nameError}` };
-  }
-  const name = parsedName;
-
-  let finalDir: string;
-  if (name !== cloneName) {
-    const renamedTarget = path.join(prepared.real, name);
-    if (await exists(renamedTarget)) {
-      await discardClone(cloned, options?.trashDir);
-      return {
-        ok: false,
-        action: "install",
-        path: renamedTarget,
-        detail: `Could not install: a skill named ${name} already exists at ${renamedTarget} — kone never overwrites an existing skill.`,
-      };
-    }
-    try {
-      await rename(cloned, renamedTarget);
-    } catch (error) {
-      await discardClone(cloned, options?.trashDir);
-      return { ok: false, action: "install", path: cloned, detail: `Could not install: ${error instanceof Error ? error.message : String(error)}.` };
-    }
-    finalDir = renamedTarget;
-  } else {
-    finalDir = cloned;
-  }
-
-  const finalReal = await realpath(finalDir).catch(() => finalDir);
-  if (!isContainedIn(finalReal, prepared.real)) {
-    await discardClone(finalDir, options?.trashDir);
-    return { ok: false, action: "install", path: finalDir, detail: "Could not install: the cloned folder resolves outside the skills root." };
-  }
-
-  const manifest: SkillSourceManifest = {
-    source: "git",
-    url,
-    installedAt: new Date().toISOString(),
-  };
-  try {
-    await writeFile(path.join(finalDir, SOURCE_MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  } catch (error) {
-    // Without the manifest there is no honest update or uninstall later, so
-    // the install is rolled back rather than left half-claimed.
-    await discardClone(finalDir, options?.trashDir);
-    return { ok: false, action: "install", path: finalDir, detail: `Could not install: the source manifest could not be written (${error instanceof Error ? error.message : String(error)}).` };
-  }
-
-  const renamed = name !== cloneName ? ` (renamed to ${name} to match its frontmatter name)` : "";
-  return {
-    ok: true,
-    action: "install",
-    path: finalDir,
-    detail: `Cloned the skill from ${url} into ${finalDir}${renamed} and recorded its source in ${SOURCE_MANIFEST_FILENAME}.`,
-  };
 }

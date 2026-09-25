@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatSpawnBatchRecord, formatSpawnRecord } from "@kone/protocol/spawn-record";
+import { formatSpawnResult } from "@kone/protocol/spawn-record";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 import { renderGroups } from "./conversationSegments";
@@ -23,17 +23,14 @@ function spawn(itemId: string, threadId: string, status: RuntimeItem["status"] =
     status,
     name: "kone_spawn_worker",
     text: "",
-    detail: formatSpawnRecord({
-      threadId,
-      title: "Fix tests",
-      provider: "codex",
-      why: "the suite is slow",
+    detail: formatSpawnResult({
+      spawns: [{ threadId, title: "Fix tests", provider: "codex", why: "the suite is slow" }],
       summary: `Spawned "Fix tests" on codex as ${threadId}.`,
     }),
   };
 }
 
-const shape = (items: RuntimeItem[]) =>
+const groupTags = (items: RuntimeItem[]) =>
   renderGroups(block(items)).map((g) =>
     g.kind === "steps"
       ? `steps:${g.segments.flatMap((s) => s.items.map((i) => i.itemId)).join(",")}`
@@ -44,7 +41,7 @@ const shape = (items: RuntimeItem[]) =>
 
 describe("renderGroups", () => {
   test("a spawn stands where it landed, splitting the tool run around it", () => {
-    expect(shape([text("a", "On it."), tool("r1"), spawn("s1", "child-1"), tool("r2"), text("z", "Done.")])).toEqual([
+    expect(groupTags([text("a", "On it."), tool("r1"), spawn("s1", "child-1"), tool("r2"), text("z", "Done.")])).toEqual([
       "text:a",
       "steps:r1",
       "spawn:child-1",
@@ -61,12 +58,12 @@ describe("renderGroups", () => {
 
   test("a spawn still running, or refused, stays a step", () => {
     const refused: RuntimeItem = { ...tool("s2", "kone_spawn_worker"), detail: "Spawn depth limit reached." };
-    expect(shape([spawn("s1", "child-1", "in-progress"), refused])).toEqual(["steps:s1,s2"]);
+    expect(groupTags([spawn("s1", "child-1", "in-progress"), refused])).toEqual(["steps:s1,s2"]);
   });
 
   test("a preset spawn stands the same way", () => {
     const preset: RuntimeItem = { ...spawn("s1", "child-1"), name: "kone_spawn_worker_preset" };
-    expect(shape([tool("r1"), preset, text("z", "Done.")])).toEqual(["steps:r1", "spawn:child-1", "text:z"]);
+    expect(groupTags([tool("r1"), preset, text("z", "Done.")])).toEqual(["steps:r1", "spawn:child-1", "text:z"]);
   });
 
   test("a delegation stands the same way, naming the teammate", () => {
@@ -81,16 +78,15 @@ describe("renderGroups", () => {
       title: threadId,
       provider: "codex",
       why: null,
-      summary: `Spawned ${threadId}.`,
     });
     const batch: RuntimeItem = {
       ...tool("b1", "kone_spawn_batch"),
-      detail: formatSpawnBatchRecord({
+      detail: formatSpawnResult({
         spawns: [record("child-a"), { ...record("child-b"), agent: "Ada" }],
         summary: "Spawned 2 threads.",
       }),
     };
-    expect(shape([text("a", "Splitting it up."), batch, tool("r1")])).toEqual([
+    expect(groupTags([text("a", "Splitting it up."), batch, tool("r1")])).toEqual([
       "text:a",
       "spawn:child-a",
       "spawn:child-b",
@@ -100,10 +96,10 @@ describe("renderGroups", () => {
 
   test("a batch where nothing opened stays a step", () => {
     const refused: RuntimeItem = { ...tool("b1", "kone_spawn_batch"), detail: "1 spawn failed: item 0: nope." };
-    expect(shape([refused])).toEqual(["steps:b1"]);
+    expect(groupTags([refused])).toEqual(["steps:b1"]);
   });
 
   test("a replayed spawn of the same worker is said once", () => {
-    expect(shape([spawn("s1", "child-1"), spawn("s2", "child-1")])).toEqual(["spawn:child-1"]);
+    expect(groupTags([spawn("s1", "child-1"), spawn("s2", "child-1")])).toEqual(["spawn:child-1"]);
   });
 });

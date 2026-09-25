@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef } from "vue";
 import type { AssistantBlock, ThreadBlock } from "~/composables/agentTypes";
 import type { RuntimeItem, RuntimeItemKind } from "~/types/desktop";
+import { createScriptClock, streamWords } from "~/utils/scriptedTurn";
 
 // A turn that plays itself, for the Conversation settings page.
 //
@@ -20,8 +21,7 @@ import type { RuntimeItem, RuntimeItemKind } from "~/types/desktop";
 type Step =
   | { kind: "text"; body: string }
   | { kind: "thinking"; body: string }
-  | { kind: "tool"; name: string; target: string; detail?: string; ms: number }
-  | { kind: "pause"; ms: number };
+  | { kind: "tool"; name: string; target: string; detail?: string; ms: number };
 
 const REQUEST = "Why do tool calls sometimes show up after the reply?";
 
@@ -55,40 +55,46 @@ const SCRIPT: Step[] = [
   },
 ];
 
-/** Pace of a streamed message: one word per tick. */
-const WORD_MS = 42;
 /** How long the settled turn holds before the next take. */
 export const PREVIEW_HOLD_MS = 4200;
+
+/** A script's tool call, running or settled — its output arrives as it
+ *  settles, when it has one. */
+function toolItem(
+  step: Extract<Step, { kind: "tool" }>,
+  itemId: string,
+  status: "in-progress" | "completed" = "completed",
+): RuntimeItem {
+  const item: RuntimeItem = { itemId, kind: "tool_call", status, name: step.name, text: `${step.name}: ${step.target}` };
+  if (status === "completed" && step.detail) item.detail = step.detail;
+  return item;
+}
 
 export function useConversationPreview() {
   const blocks = shallowRef<ThreadBlock[]>([]);
   const now = ref(Date.now());
   const playing = ref(true);
-  /** How far through the working half of the take — steps done over steps. */
+  /** How far through the live half of the take — steps done over steps. */
   const progress = ref(0);
   /** A new number for every take, so anything timed to the take restarts. */
   const takeId = ref(0);
 
   /** Which half of its life the turn on stage is in. */
-  const phase = computed<"working" | "done">(() => {
+  const phase = computed<"live" | "done">(() => {
     const last = blocks.value[blocks.value.length - 1];
-    return last?.role === "assistant" && last.state !== "running" ? "done" : "working";
+    return last?.role === "assistant" && last.state !== "running" ? "done" : "live";
   });
 
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  const script = createScriptClock();
   let clock: ReturnType<typeof setInterval> | null = null;
-  // The take in progress; bumping it strands any step still waiting on a timer.
+  // The take in progress; bumping it cuts off any step still in flight.
   let take = 0;
   let seq = 0;
   const uid = () => `preview-${++seq}`;
 
+  /** Wait out a step; false once the take has been replaced or paused. */
   function wait(ms: number, current: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      timer = setTimeout(() => {
-        timer = null;
-        resolve(current === take && playing.value);
-      }, ms);
-    });
+    return script.wait(ms).then(() => current === take && playing.value);
   }
 
   /** Swap the assistant turn for an updated copy — a fresh object and a fresh
@@ -110,13 +116,12 @@ export function useConversationPreview() {
 
   async function streamItem(kind: RuntimeItemKind, body: string, current: number): Promise<boolean> {
     const itemId = uid();
-    const words = body.split(/(\s+)/);
-    let text = "";
-    for (let i = 0; i < words.length; i += 2) {
-      text += (words[i] ?? "") + (words[i + 1] ?? "");
-      upsert({ itemId, kind, status: "in-progress", text });
-      if (!(await wait(WORD_MS, current))) return false;
-    }
+    const streamed = await streamWords(
+      body,
+      (text) => upsert({ itemId, kind, status: "in-progress", text }),
+      (ms) => wait(ms, current),
+    );
+    if (!streamed) return false;
     upsert({ itemId, kind, status: "completed", text: body });
     return wait(260, current);
   }
@@ -132,16 +137,14 @@ export function useConversationPreview() {
     if (!(await wait(700, current))) return;
     for (const [n, step] of SCRIPT.entries()) {
       progress.value = n / SCRIPT.length;
-      let ok = true;
-      if (step.kind === "pause") ok = await wait(step.ms, current);
-      else if (step.kind === "text") ok = await streamItem("assistant_text", step.body, current);
+      let ok: boolean;
+      if (step.kind === "text") ok = await streamItem("assistant_text", step.body, current);
       else if (step.kind === "thinking") ok = await streamItem("reasoning_text", step.body, current);
       else {
         const itemId = uid();
-        const base = { itemId, kind: "tool_call" as const, name: step.name, text: `${step.name}: ${step.target}` };
-        upsert({ ...base, status: "in-progress" });
+        upsert(toolItem(step, itemId, "in-progress"));
         if (!(await wait(step.ms, current))) return;
-        upsert({ ...base, status: "completed", ...(step.detail ? { detail: step.detail } : {}) });
+        upsert(toolItem(step, itemId));
         ok = await wait(180, current);
       }
       if (!ok) return;
@@ -153,8 +156,7 @@ export function useConversationPreview() {
   }
 
   function stopTimers(): void {
-    if (timer) clearTimeout(timer);
-    timer = null;
+    script.stop();
   }
 
   function startClock(): void {
@@ -195,22 +197,10 @@ export function useConversationPreview() {
     take += 1;
     playing.value = false;
     const at = Date.now() - 14_000;
-    const items: RuntimeItem[] = SCRIPT.flatMap((step): RuntimeItem[] => {
-      if (step.kind === "pause") return [];
-      if (step.kind === "tool") {
-        return [
-          {
-            itemId: uid(),
-            kind: "tool_call",
-            status: "completed",
-            name: step.name,
-            text: `${step.name}: ${step.target}`,
-            ...(step.detail ? { detail: step.detail } : {}),
-          },
-        ];
-      }
+    const items = SCRIPT.map((step): RuntimeItem => {
+      if (step.kind === "tool") return toolItem(step, uid());
       const kind = step.kind === "text" ? "assistant_text" : "reasoning_text";
-      return [{ itemId: uid(), kind, status: "completed", text: step.body }];
+      return { itemId: uid(), kind, status: "completed", text: step.body };
     });
     now.value = Date.now();
     progress.value = 1;

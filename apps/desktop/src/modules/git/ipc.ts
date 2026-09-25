@@ -89,9 +89,8 @@ function stopAllWatchers(id: number): void {
 
 // The one in-flight clone per renderer (webContents id → controller). Cancel
 // must be scoped to the sender's own clone: the modal's cancel button aborts
-// the clone that modal owns, not every clone in the process — a concurrent
-// skill-install clone (which calls clone() directly, with no renderer
-// controller) would be killed for no reason. One clone per renderer, so a
+// the clone that modal owns, not every clone in the process — another
+// window's clone would be killed for no reason. One clone per renderer, so a
 // repeat git:clone supersedes the previous one for the same window.
 const activeClones = new Map<number, AbortController>();
 
@@ -394,7 +393,7 @@ export function registerGitIpc(): void {
     });
   });
   // Cancel is scoped to this sender's clone, never the process-wide sweep:
-  // the modal's cancel button must not kill a concurrent skill-install clone.
+  // the modal's cancel button must not kill another window's clone.
   ipcMain.handle("git:cancel-clone", (event) => {
     activeClones.get(event.sender.id)?.abort();
   });

@@ -27,7 +27,8 @@ export function titleBarOptions(platform: NodeJS.Platform): TitleBarOptions {
     };
   }
   // Windows and Linux: frame-free so the renderer draws its own caption
-  // cluster (<WindowCaption>, fixed top-right). The application menu is
+  // (<WindowCaption>: a cluster top-right over the content on Windows, a
+  // full-width title bar above the app on Linux). The application menu is
   // removed globally via Menu.setApplicationMenu(null), so no per-window
   // hiding is needed.
   if (platform === "linux") {

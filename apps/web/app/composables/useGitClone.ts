@@ -1,12 +1,11 @@
 import { computed, ref } from "vue";
 import { collapseHome, joinPath } from "~/utils/paths";
 import { peelIpcError } from "~/utils/ipcError";
+import { desktopBridge, needsDesktop } from "~/utils/desktopBridge";
 
 // Brain for the "Clone from GitHub" flow. In the desktop app `runClone` drives a
 // real `git clone` in the Electron main process and follows its streamed
-// progress; in `nuxt dev` (no bridge) it falls back to a faithful mock that
-// walks the same phases, so the modal's morph → progress → open choreography
-// stays demoable in the browser.
+// progress; with no bridge it fails with the reason.
 //
 // State lives at module scope on purpose: while the user detours through the
 // folder picker to choose a destination, `GitHubCloneModal` unmounts — the typed
@@ -30,7 +29,6 @@ const progress = ref(0); // 0..1
 const stage = ref("");
 const cloneError = ref<string | null>(null);
 
-let raf: number | null = null;
 // Set while the user is deliberately aborting the clone in flight, so its
 // rejection reads as a cancellation (quiet return to idle) rather than a failure.
 let aborting = false;
@@ -76,9 +74,9 @@ function parseRepoRef(input: string): ParsedRepo | null {
   return { owner, name, url: `https://github.com/${owner}/${name}.git` };
 }
 
-// Caption + coarse progress a git clone reports, mapped onto the 0..1 ramp — so
-// the mock reads like the real thing (receiving is the long middle stretch).
-function stageFor(t: number): string {
+/** The caption git reports at a point along the clone's 0..1 progress
+ *  (receiving is the long middle stretch). */
+export function cloneStageAt(t: number): string {
   if (t < 0.14) return "Connecting to github.com…";
   if (t < 0.32) return "Counting objects…";
   if (t < 0.5) return "Compressing objects…";
@@ -117,43 +115,33 @@ export function useGitClone() {
     if (path) destParent.value = path;
   }
 
-  // Run the clone. On the desktop this spawns a real `git clone` and follows its
-  // streamed progress; without the bridge it falls back to the mock ramp. Either
-  // way it resolves with the created folder, or null when nothing valid is
-  // pending / one is already running (a failure sets `cloneError` + the error
-  // phase and resolves null).
-  function runClone(): Promise<CloneTarget | null> {
-    if (!repo.value || phase.value === "cloning") return Promise.resolve(null);
+  // Run the clone: spawn `git clone` and follow its streamed progress. Resolves
+  // with the created folder, or null when nothing valid is pending / one is
+  // already running (a failure sets `cloneError` + the error phase and resolves
+  // null).
+  async function runClone(): Promise<CloneTarget | null> {
+    if (!repo.value || phase.value === "cloning") return null;
+    const git = desktopBridge()?.git;
+    if (!git) {
+      cloneError.value = needsDesktop("Cloning");
+      phase.value = "error";
+      return null;
+    }
     const target = { path: destPath.value, name: repo.value.name };
-    const url = repo.value.url;
     aborting = false;
     phase.value = "cloning";
     cloneError.value = null;
     progress.value = 0;
-    stage.value = stageFor(0);
+    stage.value = cloneStageAt(0);
 
-    const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
-    if (bridge?.clone) return realClone(bridge, url, target);
-    if (import.meta.dev) return mockClone(target);
-    cloneError.value = "Cloning needs the desktop app.";
-    phase.value = "error";
-    return Promise.resolve(null);
-  }
-
-  // Real clone: subscribe to streamed progress, then await the spawned process.
-  async function realClone(
-    bridge: NonNullable<Window["koneDesktop"]>["git"],
-    url: string,
-    target: CloneTarget,
-  ): Promise<CloneTarget | null> {
-    const off = bridge.onCloneProgress((p) => {
+    const off = git.onCloneProgress((p) => {
       // Guard against a stray tick arriving after we've settled the phase.
       if (phase.value !== "cloning") return;
       progress.value = p.progress;
       stage.value = p.stage;
     });
     try {
-      const result = await bridge.clone(url, target.path);
+      const result = await git.clone(repo.value.url, target.path);
       progress.value = 1;
       stage.value = "Done";
       phase.value = "done";
@@ -174,53 +162,17 @@ export function useGitClone() {
     }
   }
 
-  // Abort the clone in flight. On the desktop this kills the git process (its
-  // promise then rejects, handled quietly above); in the dev mock it just stops
-  // the rAF ramp. No-op when nothing is cloning.
+  // Abort the clone in flight: kill the git process (its promise then rejects,
+  // handled quietly above). No-op when nothing is cloning.
   function abort(): void {
     if (phase.value !== "cloning") return;
-    const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
-    if (bridge?.cancelClone) {
-      aborting = true;
-      void bridge.cancelClone();
-      return;
-    }
-    if (raf !== null) {
-      cancelAnimationFrame(raf);
-      raf = null;
-    }
-    phase.value = "idle";
-  }
-
-  // Mock clone: ramp progress 0→1 over ~2.1s on rAF, updating the stage caption,
-  // then resolve with the folder that would have been created.
-  function mockClone(target: CloneTarget): Promise<CloneTarget | null> {
-    return new Promise((resolve) => {
-      const start = performance.now();
-      const DURATION = 2100;
-      const tick = (now: number) => {
-        const t = Math.min((now - start) / DURATION, 1);
-        progress.value = t;
-        stage.value = stageFor(t);
-        if (t < 1) {
-          raf = requestAnimationFrame(tick);
-        } else {
-          raf = null;
-          phase.value = "done";
-          window.setTimeout(() => resolve(target), 420);
-        }
-      };
-      raf = requestAnimationFrame(tick);
-    });
+    aborting = true;
+    void desktopBridge()?.git.cancelClone();
   }
 
   // Clear the form + progress. Keeps the resolved home/destination so reopening
   // the modal lands back where the user last pointed it.
   function reset(): void {
-    if (raf !== null) {
-      cancelAnimationFrame(raf);
-      raf = null;
-    }
     raw.value = "";
     phase.value = "idle";
     progress.value = 0;

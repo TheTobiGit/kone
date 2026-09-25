@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -19,18 +19,11 @@ import type {
   CompactionRecord,
   ForkContext,
   HandInRecord,
-  RuntimeItem,
   TurnCheckpointRecord,
 } from "~/types/desktop";
 import { groupCompactionMarkers } from "~/utils/compactionMarkers";
-import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
-import AgentActivity from "~/components/agent/AgentActivity.vue";
-import TurnWorkFold from "~/components/turn/TurnWorkFold.vue";
 import TurnThemeReceipts from "~/components/turn/TurnThemeReceipts.vue";
-import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
-import AgentFace from "~/components/agent/AgentFace.vue";
-import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
 import HandInMark from "~/components/conversation/HandInMark.vue";
@@ -48,11 +41,10 @@ import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointResto
 import { agentIdentity } from "~/utils/agentIdentity";
 import { useSearchLanding } from "~/composables/useSearchLanding";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
-import { segText } from "~/utils/conversationSegments";
-import SpawnWorkerMark from "~/components/conversation/SpawnWorkerMark.vue";
-import type { ConversationSurface, ResponseDisplay } from "~/utils/responseDisplay";
-import { planTurn, type TurnPlan } from "~/utils/turnPlan";
+import type { ResponseDisplay } from "~/utils/responseDisplay";
+import AssistantTurnBody from "~/components/conversation/AssistantTurnBody.vue";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
+import TextSwap from "~/components/ui/TextSwap.vue";
 
 // The live conversation — where the agent's turns become a timeline.
 //
@@ -133,13 +125,10 @@ const props = defineProps<{
   loadingOlder?: boolean;
   /** The last load-older attempt failed — the affordance shows a retry. */
   olderError?: string | null;
-  /** Where this conversation is being read — each surface reads turns the way
-   *  the reader set it (useResponsePrefs). Defaults to the studio. */
-  surface?: ConversationSurface;
-  /** How turns read here, when it isn't the reader's own setting — the
-   *  Conversation settings page previews a choice before it is made. Absent
-   *  everywhere else. */
-  display?: ResponseDisplay;
+  /** How turns read here — the reader's choices for the surface this thread is
+   *  on (useResponsePrefs), or the choice the Conversation settings page is
+   *  previewing before it is made. */
+  display: ResponseDisplay;
   /** Keep an empty thread empty — no standing art. The art is an invitation to
    *  type, so it belongs where there is a composer under it and the blankness
    *  is a beginning. Somewhere you can only read, the same blankness means the
@@ -206,96 +195,6 @@ const allowBranch = computed(() => props.allowBranch ?? false);
 // the first chunk.
 if (import.meta.client) void useMarkdown().parse("");
 
-// ── per-turn plan, built once ──────────────────────────────────────────────────
-// What the template needs to render one assistant turn, under the reader's
-// choices: what folds behind "Worked for…", what stands in the open, the live
-// batch at the tail, and whether a status line stands in for the work. The rules
-// live in utils/turnPlan, where every combination of choices is tested.
-//
-// One working orb per turn, anchored in AgentActivity from the first moment the
-// turn runs. It stays mounted (stable key) while steps stream in — orb → line →
-// thinking — instead of a stack-level orb handing off to a second one. So the
-// plan lifts the *last* batch out while it's live and hands it back as `live`;
-// once text takes over (or the turn ends) it rejoins the rest and folds into its
-// horizontal strip.
-
-// How the reader likes turns to read — see utils/responseDisplay. Shared prefs,
-// so a change in settings reshapes every thread on screen at once.
-const prefs = useResponsePrefs();
-const display = computed(() => props.display ?? prefs.displays.value[props.surface ?? "studio"]);
-
-/** Read whole, a message is only ever shown complete, so it mounts without the
- *  per-word reveal a streaming one plays. */
-const wholeText = computed(() => display.value.live.text === "whole");
-
-// Built once per turn and kept until that turn's content actually changes.
-//
-// This used to be three bare `renderGroups(block)` calls in the template, so every
-// turn on screen re-walked all its items on every re-render — and `now` ticks once
-// a second for the whole of a running turn, which made that a per-second
-// O(turns × items) sweep of the entire transcript. Worse, the rebuilt group
-// objects were new every time, so each AgentActivity saw a changed `segments`
-// prop and re-ran its own computeds. Holding identity steady is most of the win.
-//
-// The cache key is the `items` array's own identity, which is exact rather than
-// merely usually-right: useAgent's reducer reassigns `block.items` (never mutates
-// it in place) for every append, replace and subagent update, so a changed array
-// means changed content and an unchanged one means there is nothing to rebuild.
-// The tempting key — "rebuild only while state is 'running'" — reads true of the
-// adapters today, but it makes the memo silently depend on no provider ever
-// emitting a straggler item after its turn.completed, and the failure mode is a
-// turn frozen permanently mid-render rather than one late row.
-const planCache = new Map<
-  string,
-  {
-    items: RuntimeItem[];
-    state: AssistantBlock["state"];
-    display: ResponseDisplay;
-    manual: boolean | undefined;
-    plan: TurnPlan;
-  }
->();
-const planByBlock = computed(() => {
-  const out = new Map<string, TurnPlan>();
-  const shown = display.value;
-  for (const b of props.blocks) {
-    if (b.role !== "assistant") continue;
-    const hit = planCache.get(b.id);
-    const manual = openFolds[b.id];
-    // `state` too: it decides whether the tail batch is the live one, and a turn
-    // can settle without its items changing at all. `display` and the turn's own
-    // toggle because each reshapes the plan.
-    if (
-      hit &&
-      hit.items === b.items &&
-      hit.state === b.state &&
-      hit.display === shown &&
-      hit.manual === manual
-    ) {
-      out.set(b.id, hit.plan);
-      continue;
-    }
-    const plan = planTurn(b, shown, manual);
-    planCache.set(b.id, { items: b.items, state: b.state, display: shown, manual, plan });
-    out.set(b.id, plan);
-  }
-  for (const id of planCache.keys()) if (!out.has(id)) planCache.delete(id);
-  return out;
-});
-
-const EMPTY_PLAN: TurnPlan = {
-  fold: null,
-  foldOpen: false,
-  inline: [],
-  live: null,
-  status: false,
-  activity: "auto",
-  toggle: null,
-};
-function planOf(block: AssistantBlock): TurnPlan {
-  return planByBlock.value.get(block.id) ?? EMPTY_PLAN;
-}
-
 // ── timing / status ────────────────────────────────────────────────────────────
 function fmt(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -326,12 +225,12 @@ function workLabel(block: AssistantBlock): string {
   return dur;
 }
 // Each turn's own toggle, once pressed — open shows the whole turn, closed folds
-// it to the reply. Unset, the turn reads as the reader's choices start it.
+// it to the reply. Unset, the turn reads as the reader's choices start it. Held
+// here rather than in the turn's body so it survives the body remounting.
 const openFolds = reactive<Record<string, boolean>>({});
-function toggleTurn(block: AssistantBlock): void {
-  const next = !planOf(block).toggle?.open;
-  openFolds[block.id] = next;
-  cue(next ? "expand" : "collapse");
+function toggleTurn(block: AssistantBlock, open: boolean): void {
+  openFolds[block.id] = open;
+  cue(open ? "expand" : "collapse");
 }
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -820,6 +719,18 @@ function shouldShowDayDivider(index: number): boolean {
   return dayKey(currentAt) !== dayKey(prevAt);
 }
 
+/** Whether an exchange arrived while the column was open, rather than being
+ *  read back from storage — the marks above it only play their arrival then. */
+function isLive(ex: { blocks: ThreadBlock[] }): boolean {
+  return ex.blocks[0] ? !ex.blocks[0].historical : false;
+}
+/** The same question for marks trailing every exchange: they are as live as
+ *  the turn they follow. */
+const tailIsLive = computed(() => {
+  const last = props.blocks[props.blocks.length - 1];
+  return last ? !last.historical : false;
+});
+
 function dayDividerLabel(ex: { key: string; blocks: ThreadBlock[] }): string {
   const at = ex.blocks[0]?.at;
   if (!at) return "Today";
@@ -1123,13 +1034,15 @@ watch(
         :stroke-width="2"
         aria-hidden="true"
       />
-      <span>{{
-        loadingOlder
-          ? "Loading older turns…"
-          : olderError
-            ? "Older turns failed — retry"
-            : "Load older turns"
-      }}</span>
+      <TextSwap
+        :swap-key="
+          loadingOlder
+            ? 'Loading older turns…'
+            : olderError
+              ? 'Older turns failed — retry'
+              : 'Load older turns'
+        "
+      />
     </button>
     <button
       v-if="earlierCount > 0"
@@ -1143,13 +1056,21 @@ watch(
 
     <template v-for="(ex, index) in exchanges" :key="ex.key">
       <!-- Centered date divider at top of thread and between different calendar days -->
-      <div v-if="shouldShowDayDivider(index)" class="thread-mark thread-date">
+      <div
+        v-if="shouldShowDayDivider(index)"
+        class="thread-mark thread-date"
+        :class="{ 'thread-mark--enter': isLive(ex) }"
+      >
         <span class="thread-date__text">{{ dayDividerLabel(ex) }}</span>
       </div>
 
       <!-- Jev's routing decision, under the day divider at the head of the
            conversation — the thread-level receipt for who staffed it. -->
-      <JevMark v-if="index === 0 && jevMark" :route="jevMark" />
+      <JevMark
+        v-if="index === 0 && jevMark"
+        :route="jevMark"
+        :class="{ 'thread-mark--enter': isLive(ex) }"
+      />
       <!-- Otherwise the agent that picked the thread up, announced once. -->
       <AgentConnectedMark
         v-else-if="index === 0 && connectedSeed"
@@ -1162,6 +1083,7 @@ watch(
       <CompactionMarker
         v-for="(m, mi) in markersFor(ex.key)"
         :key="`compact-${ex.key}-${mi}`"
+        :class="{ 'thread-mark--enter': isLive(ex) }"
         :marker="m"
         :format-time="clock"
       />
@@ -1171,6 +1093,7 @@ watch(
       <HandoffMark
         v-for="m in handoffMarksFor(ex.key)"
         :key="`handoff-${ex.key}-${m.key}`"
+        :class="{ 'thread-mark--enter': isLive(ex) }"
         :mark="m"
         @open-thread="(id) => emit('open-thread', id)"
       />
@@ -1181,12 +1104,14 @@ watch(
       <HandInMark
         v-for="m in handInMarksFor(ex.key)"
         :key="`hand-in-${m.key}`"
+        :class="{ 'thread-mark--enter': isLive(ex) }"
         :mark="m"
         :effort="handInEffortFor(ex.key)"
       />
       <TurnSettingMark
         v-for="mark in turnSettingMarkFor(ex.key)"
         :key="`turn-setting-${ex.key}`"
+        :class="{ 'thread-mark--enter': isLive(ex) }"
         :mark="mark"
       />
 
@@ -1375,8 +1300,10 @@ watch(
               :aria-label="copied === block.id ? 'Copied' : 'Copy request'"
               @click="copyUserRequest(block)"
             >
-              <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
-              <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+              <TextSwap :swap-key="copied === block.id ? 'Copied' : 'Copy'">
+                <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
+                <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+              </TextSwap>
             </button>
             <button
               v-if="allowScratchpad"
@@ -1395,111 +1322,19 @@ watch(
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
       <template v-else>
         <div class="stack selectable">
-          <!-- Who answered. Agent turns only — giving the user's own turns a
-               face would make the transcript a group chat instead of a
-               document, and the asymmetry is what keeps it one. -->
-          <div class="speaker">
-            <SphereFace
-              v-if="house"
-              class="speaker__sphere"
-              :size="26"
-              :follow="false"
-              :still="block.state !== 'running'"
-            />
-            <AgentFace v-else :seed="agentSeed" :size="26" class="speaker__face" />
-            <!-- The turn's own toggle: the whole turn, or just its reply —
-                 whatever the reader's choices started it as. -->
-            <button
-              v-if="planOf(block).toggle"
-              type="button"
-              class="speaker__head speaker__head--toggle"
-              :aria-expanded="planOf(block).toggle!.open"
-              :aria-label="`${planOf(block).toggle!.open ? 'Hide' : 'Show'} agent work (${workLabel(block)})`"
-              @click="toggleTurn(block)"
-            >
-              <span class="speaker__name">{{ agent.name }}</span>
-              <span class="speaker__meta">
-                <span class="speaker__label">{{ block.state === "running" ? "working" : workLabel(block) }}</span>
-                <HugeiconsIcon
-                  class="speaker__chev"
-                  :class="{ 'speaker__chev--open': planOf(block).toggle!.open }"
-                  :icon="ArrowDown01Icon"
-                  :size="12"
-                  :stroke-width="2"
-                />
-              </span>
-            </button>
-            <div v-else class="speaker__head">
-              <span class="speaker__name">{{ agent.name }}</span>
-            </div>
-          </div>
-
-          <!-- The turn, as the plan lays it out (utils/turnPlan). Settled and
-               folding at the end, the work sits behind the agent-name toggler
-               and only the reply (and any spawns it said) stays open; otherwise
-               the parts stand inline in arrival order — steps, updates and spawn
-               lines, whichever the reader shows — with the live batch's orb, or
-               a status line, at the tail while it runs. One branch for every
-               state, so a turn settling doesn't remount what's on screen. -->
-          <TurnWorkFold
-            v-if="planOf(block).fold?.length"
-            :groups="planOf(block).fold!"
-            :open="planOf(block).foldOpen"
-            :historical="block.historical"
-            :fold="planOf(block).activity"
-          />
-          <template
-            v-for="grp in planOf(block).inline"
-            :key="grp.kind === 'text' ? grp.seg.key : grp.key"
-          >
-            <AgentActivity
-              v-if="grp.kind === 'steps'"
-              :segments="grp.segments"
-              :running="block.state === 'running'"
-              :is-tail="false"
-              :historical="block.historical"
-              :fold="planOf(block).activity"
-            />
-            <div
-              v-else-if="grp.kind === 'text'"
-              class="answer-wrap"
-              :data-markdown-source="segText(grp.seg)"
-            >
-              <MarkdownMessage
-                class="answer"
-                :source="segText(grp.seg)"
-                :historical="block.historical || wholeText"
-              />
-            </div>
-            <SpawnWorkerMark
-              v-else
-              :record="grp.record"
-              :linkable="linkHandoffs"
-              :animate="!block.historical"
-              @open-thread="emit('open-thread', $event)"
-            />
-          </template>
-
-          <!-- Live activity — one orb for the whole run: from send through every
-               thinking step and tool call until text takes over. -->
-          <AgentActivity
-            v-if="planOf(block).live"
-            :key="`${block.id}:live-activity`"
-            :segments="planOf(block).live!"
-            :running="true"
-            :is-tail="true"
-            :historical="block.historical"
-            :fold="planOf(block).activity"
-          />
-          <!-- With the work hidden, one sentence about it ("Reading useAgent.ts",
-               "Thinking") says the agent is still at it. -->
-          <TurnStatusLine
-            v-if="planOf(block).status"
-            :key="`${block.id}:status`"
+          <AssistantTurnBody
             :block="block"
+            :display="display"
+            :manual="openFolds[block.id]"
+            :agent-name="agent.name"
+            :agent-seed="agentSeed"
+            :house="house"
+            :work-label="workLabel(block)"
             :now="now"
+            :link-handoffs="linkHandoffs"
+            @toggle="(open) => toggleTurn(block, open)"
+            @open-thread="emit('open-thread', $event)"
           />
-
           <!-- An appearance change the turn made is still in force whether or
                not its work is folded away, and the control that takes it back
                belongs with the reply that announced it — so it stands here in
@@ -1517,6 +1352,7 @@ watch(
           <div
             v-if="block.state === 'failed' && block.error && !dismissedTurnErrors[block.id]"
             class="turn-fail"
+            :class="{ 'turn-fail--enter': !block.historical }"
           >
             <p class="body body--error">{{ block.error }}</p>
             <div class="turn-fail__actions">
@@ -1549,8 +1385,10 @@ watch(
               :aria-label="copied === block.id ? 'Copied' : 'Copy reply'"
               @click="copy(block)"
             >
-              <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
-              <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+              <TextSwap :swap-key="copied === block.id ? 'Copied' : 'Copy'">
+                <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
+                <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+              </TextSwap>
             </button>
             <button
               v-if="allowScratchpad && block.state === 'completed' && assistantText(block)"
@@ -1589,6 +1427,7 @@ watch(
     <CompactionMarker
       v-for="(m, mi) in trailingMarkers"
       :key="`compact-trailing-${mi}`"
+      :class="{ 'thread-mark--enter': tailIsLive }"
       :marker="m"
       :format-time="clock"
     />
@@ -1596,6 +1435,7 @@ watch(
     <HandoffMark
       v-for="m in trailingHandoffMarks"
       :key="`handoff-trailing-${m.key}`"
+      :class="{ 'thread-mark--enter': tailIsLive }"
       :mark="m"
       @open-thread="(id) => emit('open-thread', id)"
     />
@@ -1628,12 +1468,14 @@ watch(
                 title="Copy absolute path"
                 @click="copyAttachmentPath(lightbox.attachment.id)"
               >
-                <HugeiconsIcon
-                  :icon="copiedPathId === lightbox.attachment.id ? Tick02Icon : Copy01Icon"
-                  :size="14"
-                  :stroke-width="2"
-                />
-                <span>{{ copiedPathId === lightbox.attachment.id ? "Copied" : "Copy Path" }}</span>
+                <TextSwap :swap-key="copiedPathId === lightbox.attachment.id ? 'Copied' : 'Copy Path'">
+                  <HugeiconsIcon
+                    :icon="copiedPathId === lightbox.attachment.id ? Tick02Icon : Copy01Icon"
+                    :size="14"
+                    :stroke-width="2"
+                  />
+                  <span>{{ copiedPathId === lightbox.attachment.id ? "Copied" : "Copy Path" }}</span>
+                </TextSwap>
               </button>
               <button
                 type="button"
@@ -1871,6 +1713,33 @@ watch(
   margin-top: calc(10px - var(--thread-gap));
 }
 
+/* A mark that lands live — a day turning over, a compaction, a handoff, a
+   model switch — reads in as a `per-word-crossfade` over its parts: each word,
+   logo or leg fades up in order, 70ms apart, so "Sonnet → Opus" is read left
+   to right as the change it is. The 8px drift drops to 6px on a 12px line. A
+   mark drawn from history is already true and plays nothing. Only children
+   that animate as boxes are staggered; the delays cap at the sixth so a long
+   mark never trails. */
+.thread-mark--enter > :deep(*) {
+  animation: mark-word-in 700ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.thread-mark--enter > :deep(:nth-child(2)) { animation-delay: 70ms; }
+.thread-mark--enter > :deep(:nth-child(3)) { animation-delay: 140ms; }
+.thread-mark--enter > :deep(:nth-child(4)) { animation-delay: 210ms; }
+.thread-mark--enter > :deep(:nth-child(5)) { animation-delay: 280ms; }
+.thread-mark--enter > :deep(:nth-child(n + 6)) { animation-delay: 350ms; }
+@keyframes mark-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-mark--enter > :deep(*) {
+    animation: none;
+  }
+}
+
 /* An exchange = one request + its response, stacked with breathing room. */
 .exchange {
   position: relative;
@@ -1913,22 +1782,30 @@ watch(
 .turn--you {
   align-items: flex-end;
 }
-/* A live turn slides in once from its speaker's side. Plain CSS rather than a
-   motion component per turn: the animation ends and leaves nothing running. */
-.turn--enter {
-  animation: turn-enter 420ms cubic-bezier(0.22, 1, 0.36, 1);
-}
+/* A live request settles in once as a `micro-scale-fade`: 600ms, 0.96 → 1,
+   grown from the bubble's tail corner so it reads as leaving the composer
+   below rather than dropping in from nowhere. The words inside stay still —
+   the user just typed them, and replaying their own sentence back at them
+   would be lag, not polish. Plain CSS rather than a motion component per
+   turn: the animation ends and leaves nothing running. */
 .turn--enter.turn--you {
-  --turn-enter-x: 18px;
+  transform-origin: 100% 100%;
+  animation: turn-you-enter 600ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
-@keyframes turn-enter {
+@keyframes turn-you-enter {
   from {
     opacity: 0;
-    transform: translate(var(--turn-enter-x, -6px), 14px);
+    transform: scale(0.96);
   }
 }
+/* A live reply carries its own arrival — the speaker's face and name play it
+   in AssistantTurnBody, and each word resolves as it streams — so the turn's
+   box only fades, rather than moving under text that is already moving. */
+.turn--enter.turn--kone {
+  animation: turn-fade 320ms ease-out backwards;
+}
 @media (prefers-reduced-motion: reduce) {
-  .turn--enter {
+  .turn--enter.turn--you {
     animation-name: turn-fade;
   }
 }
@@ -1955,138 +1832,6 @@ watch(
   width: 100%;
   min-width: 0;
 }
-/* Fills the stack rather than shrink-wrapping: as a flex-start item it would
-   otherwise size to its longest unbreakable line. One link in the containment
-   chain described on `.thread`. */
-.answer-wrap {
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-}
-/* A collapsed fold costs no gap: it is still a flex child at zero height, so
-   hand one gap back discretely — no transition, collapsed-or-not is binary
-   and the fold's grid track carries the motion. */
-.stack > .fold:not(.fold--open) {
-  margin-bottom: -15px;
-}
-
-/* ── Speaker line — who answered ───────────────────────────────────────────── */
-.speaker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 26px;
-  line-height: 1;
-  /* Chrome, not content: the reply body opts into selection via .selectable, but
-     the speaker line (name + duration) shouldn't drag-highlight. */
-  -webkit-user-select: none;
-  user-select: none;
-  /* Pulled back in from the stack's 15px: the line belongs to the reply beneath
-     it, and at full gap it floats between two turns instead. */
-  margin-bottom: -6px;
-}
-.speaker__face {
-  position: relative;
-  z-index: 1;
-  border-radius: 50%;
-  background: var(--ground);
-}
-/* kone's own mark, in the slot an agent's tile would take. It is a silhouette
-   rather than a tile, so it gets the layer and the footprint without the disc
-   behind it — a circle under this face would read as a badge it is sitting in. */
-.speaker__sphere {
-  position: relative;
-  z-index: 1;
-  flex: none;
-}
-.speaker__head {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  line-height: 1;
-}
-.speaker__head--toggle {
-  padding: 3px 6px;
-  margin-left: -5px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  cursor: pointer;
-  line-height: 1;
-  transition: background-color 0.15s ease;
-}
-.speaker__head--toggle:hover {
-  background: var(--hover);
-}
-.speaker__head--toggle:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
-  outline-offset: 1px;
-}
-.speaker__name {
-  display: inline-flex;
-  align-items: center;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--ink-soft);
-  transition: color 0.15s ease;
-}
-.speaker__head--toggle:hover .speaker__name {
-  color: var(--ink);
-}
-.speaker__meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  color: var(--muted);
-  transition: color 0.15s ease, opacity 0.3s ease;
-  animation: speaker-meta-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-@keyframes speaker-meta-in {
-  from {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.speaker__head--toggle:hover .speaker__meta {
-  color: var(--ink-soft);
-}
-.speaker__label {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  line-height: 1;
-}
-.speaker__chev {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 13px;
-  height: 13px;
-  opacity: 0.75;
-  transition: transform 0.24s ease, opacity 0.15s ease;
-}
-.speaker__head--toggle:hover .speaker__chev {
-  opacity: 1;
-}
-.speaker__chev--open {
-  transform: rotate(180deg);
-}
-@media (prefers-reduced-motion: reduce) {
-  .speaker__chev {
-    transition: none;
-  }
-}
-
 /* ── Message body ──────────────────────────────────────────────────────────── */
 .body {
   margin: 0;
@@ -2153,20 +1898,9 @@ watch(
   justify-content: flex-end;
   width: 100%;
   max-width: 80%;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition: opacity 0.45s ease, transform 0.3s ease;
-}
-.turn--you:hover .you-foot,
-.turn--you:focus-within .you-foot {
-  opacity: 1;
-  transform: none;
-}
-@media (hover: none) {
-  .you-foot {
-    opacity: 1;
-    transform: none;
-  }
+  /* It hangs off the right edge, so it glides in from there — see the
+     footer arrival below. */
+  --foot-in-x: 8px;
 }
 .body--error {
   color: var(--diff-del);
@@ -2221,6 +1955,25 @@ watch(
 .turn-themes {
   margin-top: 1px;
 }
+/* A failure lands as a `scale-down-fade` — settling from a hair above its
+   size, 8px up, 520ms — firm enough to be noticed, calm enough not to alarm.
+   The load-failure card plays it too; a turn that failed in history doesn't. */
+.turn-fail--enter,
+.thread__error {
+  animation: fail-in 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+@keyframes fail-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(1.04);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-fail--enter,
+  .thread__error {
+    animation-name: turn-fade;
+  }
+}
 .turn-fail {
   display: flex;
   flex-direction: column;
@@ -2258,9 +2011,14 @@ watch(
   overflow: hidden;
   outline: none;
 }
+/* Dimmed through a factor inside a footer, whose reveal owns the opacity;
+   anywhere else (a failed turn's actions) the plain rule below applies. */
 .foot__copy:disabled {
-  opacity: 0.45;
+  --item-dim: 0.45;
   cursor: default;
+}
+:where(.foot__copy:disabled) {
+  opacity: 0.45;
 }
 .foot__copy--primary {
   color: var(--ink-soft);
@@ -2268,14 +2026,6 @@ watch(
 .foot__copy--primary:hover {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--ink);
-}
-
-/* The settled rich answer — capped to a comfortable measure (~66ch) so long
-   replies stay readable; its internals live in MarkdownMessage. */
-.answer {
-  width: 100%;
-  max-width: 42rem;
-  min-width: 0;
 }
 
 /* ── Turn footer (meta) — editorial dotted leader ──────────────────────────── */
@@ -2298,20 +2048,81 @@ watch(
      drag-highlight even though the turn body is .selectable. */
   -webkit-user-select: none;
   user-select: none;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition:
-    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  --foot-in-x: -8px;
 }
 .turn--flash .foot {
-  opacity: 0.92;
-  transform: none;
+  --foot-shown: 0.92;
 }
 .turn--kone.turn--settled:hover .foot,
 .foot:focus-within {
-  opacity: 1;
+  --foot-shown: 1;
+}
+
+/* ── A turn's footer showing up ────────────────────────────────────────────────
+   Both footers — a reply's and a request's — arrive as a `short-slide-right`:
+   the row glides in as one compact move from the side it hangs off, while its
+   items come up one after another through opacity only, so the move reads as
+   a single gesture rather than each button sliding on its own. The effect's
+   24px travel drops to 8px and its 92ms stagger to 45ms, since a footer holds
+   up to five items and a hover should be answered at once. Leaving is one
+   quick fade, no stagger — the row just goes. */
+.foot,
+.you-foot {
+  transform: translateX(var(--foot-in-x));
+  transition: transform 320ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* `.turn` in front for weight: an item's own rules (a button's hover
+   transition, a disabled button's dimming) must not outrank the footer's
+   say over whether it is shown. The hover colours ride along in the same
+   transition list for that reason. */
+.turn .foot > *,
+.turn .you-foot > * {
+  opacity: 0;
+  transition:
+    opacity 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.turn--flash .foot,
+.turn--kone.turn--settled:hover .foot,
+.foot:focus-within,
+.turn--you:hover .you-foot,
+.turn--you:focus-within .you-foot {
   transform: none;
+  transition: transform 520ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.turn--flash .foot > *,
+.turn--kone.turn--settled:hover .foot > *,
+.foot:focus-within > *,
+.turn--you:hover .you-foot > *,
+.turn--you:focus-within .you-foot > * {
+  opacity: calc(var(--foot-shown, 1) * var(--item-dim, 1));
+  transition:
+    opacity 520ms cubic-bezier(0.2, 0.8, 0.2, 1) var(--foot-delay, 0ms),
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.foot > :nth-child(2),
+.you-foot > :nth-child(2) { --foot-delay: 45ms; }
+.foot > :nth-child(3),
+.you-foot > :nth-child(3) { --foot-delay: 90ms; }
+.foot > :nth-child(4),
+.you-foot > :nth-child(4) { --foot-delay: 135ms; }
+.foot > :nth-child(n + 5),
+.you-foot > :nth-child(n + 5) { --foot-delay: 180ms; }
+@media (hover: none) {
+  .you-foot {
+    transform: none;
+  }
+  .turn .you-foot > * {
+    opacity: var(--item-dim, 1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .foot,
+  .you-foot {
+    transform: none;
+  }
 }
 /* The dotted rule that carried the eye from the timestamp to the status is
    gone — the meta row now reads as a row of quiet items, no leader line. */

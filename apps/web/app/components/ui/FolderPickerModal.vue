@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from "vue";
-import { motion } from "motion-v";
 import { useModalExit } from "~/composables/useModalExit";
 
 // Standalone "open a project" overlay: the scrim + elastic card shell around a
@@ -21,7 +20,7 @@ const emit = defineEmits<{
 }>();
 
 // Drives the modal's open/close fade + scale.
-const { shown, closing, close } = useModalExit();
+const { shown, close } = useModalExit();
 
 // ── elastic height ────────────────────────────────────────────────────────────
 // A ResizeObserver on the browser wrapper feeds its measured height into an
@@ -69,35 +68,15 @@ onBeforeUnmount(() => {
   ro?.disconnect();
   opener?.focus();
 });
-
-// Springy pop for the card's entrance (a little overshoot on the way in).
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-end overflow-hidden p-6">
-    <!-- Scrim: click to dismiss. The dim and the blur ramp together on one
-         tween so they read as a single coalescing effect (we animate the
-         backdrop blur explicitly rather than revealing a static blur through an
-         opacity fade — which snaps the blur in a beat after the dim). -->
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="onCancel" />
-
+  <UiModalShell v-slot="{ card }" :shown="shown" class="z-50 items-end justify-end p-6" @dismiss="onCancel">
     <!-- The card: sized to its content, height springs as the listing reflows. -->
-    <motion.div
+    <div
+      v-bind="card"
       class="modal-card relative z-20 w-full max-w-md overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       :aria-label="title"
@@ -110,16 +89,11 @@ const cardSpring = {
           @ready="onReady"
         />
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-/* Scrim behind the card — a soft dim over whatever's underneath. */
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
-
 /* The elastic card, anchored bottom-right. `transition: height` gives it the
    springy settle as it grows and shrinks with the listing; a hairline ring
    sits it on the scrim without a heavy drop shadow. */

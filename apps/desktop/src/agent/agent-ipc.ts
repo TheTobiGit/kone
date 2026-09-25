@@ -37,12 +37,9 @@ import {
 } from "../modules/appState/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
-import { skillRootTargets } from "@kone/agent-core/inventory/skills.js";
 import {
   deleteSkillToTrash,
   editSkillFrontmatter,
-  installSkillFromGit,
-  scaffoldSkill,
   type FrontmatterEdit,
 } from "@kone/agent-core/inventory/skillMutate.js";
 import {
@@ -915,10 +912,6 @@ export function registerAgentIpc(): void {
     (_event, projectPath: string | string[] | null) => scanAgentInventory(projectPath),
   );
   ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
-  ipcMain.handle(
-    "agent:skill-roots",
-    (_event, projectPath: string | string[] | null) => skillRootTargets(projectPath),
-  );
   ipcMain.handle("agent:skill-state-read", (_event, query: SkillStateQuery) =>
     readSkillState(stateContext(query)),
   );
@@ -945,18 +938,12 @@ export function registerAgentIpc(): void {
     (_event, pluginIdOrDir: string, enabled: boolean) =>
       setPluginInternalState(pluginIdOrDir, enabled),
   );
-  ipcMain.handle("agent:skill-scaffold", (_event, root: string, name: string, description: string) =>
-    scaffoldSkill(root, name, description),
-  );
   ipcMain.handle(
     "agent:skill-edit-frontmatter",
     (_event, skillMdPath: string, edits: FrontmatterEdit[]) =>
       editSkillFrontmatter(skillMdPath, edits),
   );
   ipcMain.handle("agent:skill-remove", (_event, skillDir: string) => deleteSkillToTrash(skillDir));
-  ipcMain.handle("agent:skill-install", (_event, url: string, destRoot: string) =>
-    installSkillFromGit(url, destRoot),
-  );
   // Archive/restore runs through the service, not the bare store: the service
   // cancels the subtree's queued turns (a hidden thread must not keep a queue
   // nobody can see) and emits thread.archived / thread.unarchived so every

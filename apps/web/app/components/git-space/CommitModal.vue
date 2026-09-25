@@ -215,7 +215,7 @@ function parseFilePath(fullPath: string) {
 }
 
 // ── Modal Shell State ────────────────────────────────────────────────────────
-const { shown, closing, close } = useModalExit();
+const { shown, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
@@ -286,13 +286,6 @@ onBeforeUnmount(() => {
   unlistenProgress?.();
 });
 
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 24,
-  mass: 0.9,
-} as const;
-
 const morphSpring = {
   type: "spring",
   stiffness: 360,
@@ -309,21 +302,12 @@ const viewMorph = {
 
 <template>
   <!-- Bottom right anchor matching CreateProjectModal & GitHubCloneModal -->
-  <div class="fixed inset-0 z-50 flex items-end justify-end overflow-hidden p-6">
-    <!-- Scrim -->
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="onCancel" />
-
+  <UiModalShell v-slot="{ card }" :shown="shown" class="z-50 items-end justify-end p-6" @dismiss="onCancel">
     <!-- Modal Card Shell -->
-    <motion.div
+    <div
+      v-bind="card"
       class="modal-card relative z-20 w-full max-w-md overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       aria-label="Commit changes"
@@ -608,15 +592,11 @@ const viewMorph = {
           </motion.div>
         </AnimatePresence>
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
-
 .modal-card {
   --band-bg: var(--band);
   --band-arc: 14px;

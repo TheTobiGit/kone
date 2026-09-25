@@ -8,11 +8,33 @@
 // handed what and why.
 //
 // Both halves live here so neither can be changed alone. The result text is a
-// JSON record (the child's handle, what it was given, why, plus the human
-// sentence the model reads), the same shape of contract the appearance tools
-// keep in themeSummary.ts.
+// JSON envelope — every thread the call opened, plus the human sentence the
+// model reads — the same shape of contract the appearance tools keep in
+// themeSummary.ts. A single spawn is an envelope of one.
 
 import { z } from "zod";
+
+/** The tools that open threads and leave a spawn result behind. The gateway
+ *  registers them under these names and the renderer reads their results by
+ *  them, so a rename lands on both sides at once. */
+export const SPAWN_TOOL_NAMES = [
+  "kone_spawn_worker",
+  "kone_spawn_worker_preset",
+  "kone_delegate_to_teammate",
+  "kone_spawn_batch",
+] as const;
+
+export type SpawnToolName = (typeof SPAWN_TOOL_NAMES)[number];
+
+const SPAWN_TOOL_NAME_SET: ReadonlySet<string> = new Set(SPAWN_TOOL_NAMES);
+
+export function isSpawnToolName(name: string): name is SpawnToolName {
+  return SPAWN_TOOL_NAME_SET.has(name);
+}
+
+/** The longest reason a dispatch accepts. The tool input refuses anything
+ *  longer, so a record never holds more. */
+export const SPAWN_WHY_MAX_CHARS = 280;
 
 const SpawnRecordSchema = z.object({
   /** The child thread's kone id — also the seed its agent's face and name are
@@ -31,59 +53,57 @@ const SpawnRecordSchema = z.object({
   /** That teammate's roster id — what the thread draws their face from, so a
    *  renamed teammate still reads as themselves. */
   agentId: z.string().min(1).optional(),
-  /** Why the parent handed this off, in its own words, when it said. */
+  /** Why the parent handed this off, as the clause that follows "because" —
+   *  already cleaned by spawnWhy, or null when it gave no reason. */
   why: z.string().min(1).nullable(),
-  /** The human sentence for this spawn, kept for the model reading the result
-   *  and the agent resuming the thread. */
-  summary: z.string().min(1),
 });
 
 export type SpawnRecord = z.infer<typeof SpawnRecordSchema>;
 
-/** Encode a spawn as the tool result text the item stores. */
-export function formatSpawnRecord(record: SpawnRecord): string {
-  return JSON.stringify(record);
+/** A dispatch's result: every thread that opened, in item order, plus the
+ *  sentence for the model — which for a batch also names the items that were
+ *  refused. */
+export type SpawnResult = {
+  spawns: SpawnRecord[];
+  summary: string;
+};
+
+/** The reason as a record keeps it: the clause after "because", so a model
+ *  that wrote its own "because" or closed on a full stop reads the same as one
+ *  that didn't. Null when nothing is left. */
+export function spawnWhy(text: string | null | undefined): string | null {
+  const clause = (text ?? "")
+    .trim()
+    .replace(/^because\s+/i, "")
+    .replace(/[.\s]+$/, "");
+  return clause || null;
 }
 
-/** A batch dispatch: every spawn that opened, in item order, plus the sentence
- *  for the whole batch — which also names the items that were refused. */
-const SpawnBatchRecordSchema = z.object({
-  spawns: z.array(SpawnRecordSchema).min(1),
-  summary: z.string().min(1),
-});
-
-export type SpawnBatchRecord = z.infer<typeof SpawnBatchRecordSchema>;
-
-/** Encode a batch as the tool result text the item stores. */
-export function formatSpawnBatchRecord(record: SpawnBatchRecord): string {
-  return JSON.stringify(record);
+/** Encode a dispatch as the tool result text the item stores. */
+export function formatSpawnResult(result: SpawnResult): string {
+  return JSON.stringify(result);
 }
 
-function parseJson(text: string | null | undefined): unknown {
-  if (!text) return undefined;
-  try {
-    // SAFETY: JSON.parse yields whatever the text held; the zod schemas are
-    // the only gate before the value is trusted.
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
-}
+// Read keyed on `spawns`. A bare record is the single-spawn text an earlier
+// build wrote before every result was an envelope — still stored in threads
+// from then, so it still reads as one spawn.
+const StoredSpawnsSchema = z.union([
+  z.object({ spawns: z.array(SpawnRecordSchema).min(1) }).transform((result) => result.spawns),
+  SpawnRecordSchema.transform((record) => [record]),
+]);
 
-/** The spawn a result text records, or null for anything that records none — a
- *  refusal, a sentence written before results carried data, or an in-progress
- *  input dump. Reads data only: the sentence inside is never interpreted. */
-export function parseSpawnRecord(text: string | null | undefined): SpawnRecord | null {
-  const result = SpawnRecordSchema.safeParse(parseJson(text));
-  return result.success ? result.data : null;
-}
-
-/** Every spawn a result text records — one for a single spawn or delegation,
- *  each that opened for a batch, none for anything else. */
+/** Every thread a result text records, in item order — none for anything that
+ *  records none: a refusal, a sentence written before results carried data, or
+ *  an in-progress input dump. Reads data only: the sentence inside is never
+ *  interpreted. */
 export function parseSpawnRecords(text: string | null | undefined): SpawnRecord[] {
-  const parsed = parseJson(text);
-  const single = SpawnRecordSchema.safeParse(parsed);
-  if (single.success) return [single.data];
-  const batch = SpawnBatchRecordSchema.safeParse(parsed);
-  return batch.success ? batch.data.spawns : [];
+  if (!text) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const parsed = StoredSpawnsSchema.safeParse(value);
+  return parsed.success ? parsed.data : [];
 }

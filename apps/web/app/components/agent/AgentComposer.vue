@@ -31,6 +31,7 @@ import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
 import { useComposerTrigger } from "~/composables/useComposerTrigger";
+import { useComposerWake } from "~/composables/useComposerWake";
 import type { MentionItem, MentionProject, SlashCommandItem } from "~/utils/composerMentions";
 import { SLASH_COMMANDS } from "~/composables/useComposerSlash";
 import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
@@ -500,16 +501,23 @@ function cycleMode() {
   });
 }
 
-// An always-open composer is born open: it never shows the orb, so it has
-// nothing to wake from.
-const open = ref(props.alwaysOpen ?? false);
-watch(open, (v) => emit("update:open", v));
 // `text` is the serialized value the composer sends: plain prose with each
 // completed mention written back as its full @path token. The editable field is
 // a contenteditable surface (below) whose DOM holds text nodes + atomic chip
 // spans; `text` is derived from it, never bound to it.
 const text = ref("");
 const field = ref<HTMLElement | null>(null);
+
+const REST = 55;
+const surfaceH = ref(REST);
+const { open, opening, instant, closing, closingHeight, wake, close } = useComposerWake({
+  alwaysOpen: props.alwaysOpen ?? false,
+  field,
+  height: surfaceH,
+  restHeight: REST,
+  resize: () => sync(),
+});
+watch(open, (v) => emit("update:open", v));
 const surface = ref<HTMLElement | null>(null);
 const dock = ref<HTMLElement | null>(null);
 
@@ -732,13 +740,6 @@ function onPaste(e: ClipboardEvent) {
   }
 }
 
-const REST = 55;
-const surfaceH = ref(REST);
-const opening = ref(false);
-// Holds every transition off for the first frame of a composer that mounts
-// open, so the card is simply there at its size rather than morphing out of
-// an orb it never was.
-const instant = ref(props.alwaysOpen ?? false);
 const springy = ref(false);
 const SPRING_MIN = 64;
 let lastCard = false;
@@ -793,46 +794,6 @@ function syncSoon() {
   window.setTimeout(sync, 380);
 }
 
-const closing = ref(false);
-const closingH = ref(REST);
-let closeTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function wake() {
-  if (closeTimer) {
-    clearTimeout(closeTimer);
-    closeTimer = null;
-  }
-  closing.value = false;
-  if (open.value) {
-    field.value?.focus();
-    return;
-  }
-  open.value = true;
-  opening.value = true;
-  await nextTick();
-  field.value?.focus();
-  // Measure and apply the full card height NOW so the orb expands straight into
-  // its final shape — width, corners and height on one move — instead of landing
-  // short and growing a beat later.
-  sync();
-  window.setTimeout(() => (opening.value = false), 340);
-}
-
-// Fade away back to the resting orb with no movement. The draft (text + chips)
-// stays in state, so waking again restores exactly what was there.
-function close() {
-  if (props.alwaysOpen) return;
-  if (!open.value) return;
-  if (closeTimer) clearTimeout(closeTimer);
-  closingH.value = surfaceH.value;
-  open.value = false;
-  closing.value = true;
-  closeTimer = setTimeout(() => {
-    closing.value = false;
-    surfaceH.value = REST;
-    closeTimer = null;
-  }, 200);
-}
 onClickOutside(
   dock,
   (event) => {
@@ -981,15 +942,8 @@ async function onQueueEdit(entry: QueuedTurnEntry) {
 onMounted(() => {
   restoreDraft();
   sync();
-  if (props.alwaysOpen) {
-    // Focus after the tick, not now: the host's own mount hook runs after ours
-    // and may read the element focused before it opened.
-    void nextTick(() => field.value?.focus());
-    requestAnimationFrame(() => requestAnimationFrame(() => (instant.value = false)));
-  }
 });
 onUnmounted(() => {
-  if (closeTimer) clearTimeout(closeTimer);
   persistDraft();
   disposeChips();
   clearAttachments();
@@ -1102,7 +1056,7 @@ defineExpose({ wake, setDraft, focus });
       ref="surface"
       class="surface"
       :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-closing': closing, 'is-springy': springy, 'is-instant': instant }"
-      :style="{ height: (open ? surfaceH : (closing ? closingH : REST)) + 'px' }"
+      :style="{ height: (open ? surfaceH : (closing ? closingHeight : REST)) + 'px' }"
       role="button"
       :aria-label="open ? undefined : 'Wake the agent'"
       @click="onSurfaceClick"

@@ -2612,16 +2612,6 @@ export type SkillSignals = {
 /** Where a skill came from — the scan knows this and the path does not. */
 export type SkillSignalsContext = { origin: string; scope: SkillEntry["scope"] };
 
-/** A folder one CLI reads skills out of. `exists` is false for a root nobody
- *  has written into yet — still a valid destination, since writing the first
- *  skill into it is what creates it. */
-export type SkillRootTarget = {
-  dir: string;
-  origin: string;
-  scope: "user" | "project";
-  exists: boolean;
-};
-
 /** One surgical frontmatter edit: set replaces the key's line, delete removes
  *  it. The body is preserved byte for byte either way. */
 export type SkillFrontmatterEdit =
@@ -2672,11 +2662,6 @@ export type KoneAgentSkillsApi = {
   /** Derive context cost and the honest signals about what a skill does.
    *  Resolves to null when the file cannot be read. */
   signals: (skillMdPath: string, context: SkillSignalsContext) => Promise<SkillSignals | null>;
-  /** Every folder a new skill could be written into, whether or not it exists
-   *  yet. The scan says what is installed; this says where something can go. */
-  roots: (projectPath: string | string[] | null) => Promise<SkillRootTarget[]>;
-  /** Create a new skill folder with a minimal SKILL.md under `root`. */
-  scaffold: (root: string, name: string, description: string) => Promise<SkillMutateResult>;
   /** Edit frontmatter keys in place, leaving the body untouched. */
   editFrontmatter: (
     skillMdPath: string,
@@ -2684,9 +2669,6 @@ export type KoneAgentSkillsApi = {
   ) => Promise<SkillMutateResult>;
   /** Move a skill folder to the Trash. Never unlinks. */
   remove: (skillDir: string) => Promise<SkillMutateResult>;
-  /** Clone a skill from a git URL into `destRoot`, confirming a SKILL.md
-   *  actually arrived before calling it installed. */
-  installFromGit: (url: string, destRoot: string) => Promise<SkillMutateResult>;
 };
 
 /** The user's per-thread picker knobs, persisted via agent:set-thread-selection
@@ -2761,7 +2743,7 @@ export type KoneAgentApi = {
    *  machine's agent CLIs can reach. */
   inventory: KoneAgentInventoryApi;
   /** Managing a skill rather than reporting one: its state, its findings, and
-   *  the writes — scaffold, edit, delete, install. */
+   *  the writes — frontmatter edits and removal. */
   skills: KoneAgentSkillsApi;
   /** Persist the user's per-thread picker selection (model/effort/serviceTier/
    *  contextWindow) so a reopened thread restores it exactly. */

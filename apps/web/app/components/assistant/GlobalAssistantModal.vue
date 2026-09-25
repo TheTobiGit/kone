@@ -66,6 +66,7 @@ const {
 } = useGlobalAssistant();
 
 const { cue } = useSound();
+const { displays: responseDisplays } = useResponsePrefs();
 
 // @ names projects here — the assistant has no project of its own, so a
 // mention is how a turn gets pointed at somewhere real. Recents lead (they
@@ -148,13 +149,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 watch(blocks, () => void nextTick(measure));
 
 // ── modal surface & transitions ─────────────────────────────────────────────
-const { shown, closing, close: playExit } = useModalExit();
-
-// Enter and exit are CSS keyframes on the card (see `.modal-card`), not a JS
-// spring: they run on the compositor, so the card keeps moving while the
-// transcript and composer mount underneath it on the same frames, and the exit
-// is a fixed length that always finishes inside useModalExit's window instead
-// of a spring that was still settling when the card unmounted.
+const { shown, close: playExit } = useModalExit();
 
 /** Every dismissal — the button, the scrim, Escape, the hotkey, the tray icon —
  *  runs the same exit. The composable owns the open flag and is toggled from
@@ -282,12 +277,15 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-center overflow-hidden p-4 sm:p-6">
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="requestClose" />
-
+  <UiModalShell
+    v-slot="{ card }"
+    :shown="shown"
+    class="z-50 items-end justify-center p-4 sm:p-6"
+    @dismiss="requestClose"
+  >
     <div
+      v-bind="card"
       class="modal-card relative z-20 w-full max-w-xl overflow-hidden"
-      :class="{ 'modal-card--out': closing }"
       role="dialog"
       aria-modal="true"
       aria-label="Assistant"
@@ -461,7 +459,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               house
               :scratchpad="false"
               :blocks="blocks"
-              surface="assistant"
+              :display="responseDisplays.assistant"
               :now="agent.now.value"
               :thread-id="session?.threadId.value"
               :load-failed="session?.transcriptLoadFailed.value"
@@ -537,46 +535,18 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
       @apply="composer.onApply"
       @cancel="composer.closePicker"
     />
-  </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 50%, transparent);
-}
 .modal-card {
   background: var(--panel);
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   display: flex;
   flex-direction: column;
-  /* Rises from the bottom edge it is anchored to. Transform + opacity only, so
-     the whole move stays on the compositor. */
+  /* Rises from the bottom edge it is anchored to. */
   transform-origin: 50% 100%;
-  animation: card-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-}
-/* The exit is quicker than the entrance and eases in, so the card gets out of
-   the way; 180ms keeps it well inside useModalExit's 240ms before unmount. */
-.modal-card--out {
-  animation: card-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
-  pointer-events: none;
-}
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.97);
-  }
-  /* Opaque well before the move ends, so the card never reads as a ghost
-     sliding into place. */
-  55% {
-    opacity: 1;
-  }
-}
-@keyframes card-out {
-  to {
-    opacity: 0;
-    transform: translateY(10px) scale(0.98);
-  }
 }
 
 /* History popover: drops from the chip, leaves faster than it came. */

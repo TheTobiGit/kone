@@ -6,6 +6,7 @@ import type {
   ProviderStatus,
 } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
+import { desktopBridge, needsDesktop } from "~/utils/desktopBridge";
 
 // The install side of the provider surface: which channel each agent CLI came
 // from, whether a newer one has been published, and running the one command that
@@ -46,105 +47,8 @@ const checkedAt = ref<number | null>(null);
 let checked = false;
 let inFlight: Promise<void> | null = null;
 
-/** Dev fallback (browser, no bridge): a plausible spread of install channels so
- *  the pane's states — behind, current, self-updating, bundled, unrecognised —
- *  are all exercised without an Electron shell. Only read under
- *  `import.meta.dev`, so production builds drop it. */
-const MOCK = {
-  codex: {
-    provider: "codex",
-    installSource: "npm",
-    binary: "codex",
-    resolvedPath: "/usr/local/bin/codex",
-    realPath: "/usr/local/lib/node_modules/@openai/codex/bin/codex.js",
-    packageName: "@openai/codex",
-    currentVersion: "0.48.0",
-    latestVersion: "0.52.1",
-    latestKnowable: true,
-    standing: "behind",
-    updateCommand: "npm install -g --prefix /usr/local @openai/codex@latest",
-    canUpdate: true,
-    checkedAt: Date.now(),
-  },
-  claudeAgent: {
-    provider: "claudeAgent",
-    installSource: "bundled",
-    binary: null,
-    resolvedPath: null,
-    realPath: null,
-    packageName: "@anthropic-ai/claude-code",
-    currentVersion: "2.1.0",
-    latestVersion: null,
-    latestKnowable: false,
-    standing: "unknown",
-    updateCommand: null,
-    canUpdate: false,
-    checkedAt: null,
-  },
-  cursor: {
-    provider: "cursor",
-    installSource: "native",
-    binary: "cursor-agent",
-    resolvedPath: "~/.local/bin/cursor-agent",
-    realPath: "~/.local/share/cursor-agent/versions/2026.07.23-e383d2b/cursor-agent",
-    packageName: null,
-    currentVersion: "1.2.0",
-    latestVersion: null,
-    latestKnowable: false,
-    standing: "unknown",
-    updateCommand: "cursor-agent update",
-    canUpdate: true,
-    checkedAt: null,
-  },
-  opencode: {
-    provider: "opencode",
-    installSource: "bun",
-    binary: "opencode",
-    resolvedPath: "~/.bun/bin/opencode",
-    realPath: "~/.bun/install/global/node_modules/opencode-ai/bin/opencode",
-    packageName: "opencode-ai",
-    currentVersion: "1.18.10",
-    latestVersion: "1.18.10",
-    latestKnowable: true,
-    standing: "current",
-    updateCommand: "opencode upgrade --method bun",
-    canUpdate: true,
-    checkedAt: Date.now(),
-  },
-  droid: {
-    provider: "droid",
-    installSource: "unknown",
-    binary: "droid",
-    resolvedPath: "~/.local/bin/droid",
-    realPath: null,
-    packageName: "@factory/cli",
-    currentVersion: null,
-    latestVersion: "0.19.4",
-    latestKnowable: true,
-    standing: "unknown",
-    updateCommand: "droid update",
-    canUpdate: true,
-    checkedAt: Date.now(),
-  },
-  antigravity: {
-    provider: "antigravity",
-    installSource: "unknown",
-    binary: "agy",
-    resolvedPath: "~/.local/bin/agy",
-    realPath: null,
-    packageName: null,
-    currentVersion: "1.0.12",
-    latestVersion: null,
-    latestKnowable: false,
-    standing: "unknown",
-    updateCommand: "agy update",
-    canUpdate: true,
-    checkedAt: Date.now(),
-  },
-} satisfies Record<ProviderKind, ProviderMaintenance>;
-
 export function useProviderMaintenance() {
-  const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+  const bridge = () => desktopBridge()?.agent;
 
   function forProvider(provider: ProviderKind): ProviderMaintenance | null {
     return maintenance.value[provider] ?? null;
@@ -178,9 +82,7 @@ export function useProviderMaintenance() {
         const api = bridge();
         const list = api
           ? await api.maintenance({ checkLatest: options?.checkLatest ?? true, force })
-          : import.meta.dev
-            ? Object.values(MOCK)
-            : [];
+          : [];
         maintenance.value = Object.fromEntries(list.map((m) => [m.provider, m]));
         checked = true;
         checkedAt.value = Date.now();
@@ -215,34 +117,12 @@ export function useProviderMaintenance() {
     runs.value = { ...runs.value, [provider]: start };
 
     const api = bridge();
-    if (!api && !import.meta.dev) {
+    if (!api) {
       const done: UpdateRun = {
         ...start,
         running: false,
         outcome: "unsupported",
-        message: "Updating needs the desktop app.",
-        finishedAt: Date.now(),
-      };
-      runs.value = { ...runs.value, [provider]: done };
-      return done;
-    }
-    if (!api) {
-      // Browser dev: pretend the installer ran, so the pane's running →
-      // succeeded transition can be seen without an Electron shell.
-      await new Promise((resolve) => setTimeout(resolve, 1_400));
-      const mock = MOCK[provider];
-      const landed: ProviderMaintenance = {
-        ...mock,
-        currentVersion: mock.latestVersion ?? mock.currentVersion,
-        standing: mock.latestKnowable ? "current" : "unknown",
-      };
-      maintenance.value = { ...maintenance.value, [provider]: landed };
-      const done: UpdateRun = {
-        provider,
-        running: false,
-        outcome: "succeeded",
-        message: null,
-        output: null,
+        message: needsDesktop("Updating"),
         finishedAt: Date.now(),
       };
       runs.value = { ...runs.value, [provider]: done };

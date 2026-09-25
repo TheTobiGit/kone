@@ -17,7 +17,6 @@ import type {
 import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
 import type { SkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import type { FrontmatterEdit, MutateResult } from "@kone/agent-core/inventory/skillMutate.js";
-import type { SkillRootTarget } from "@kone/agent-core/inventory/skills.js";
 import type {
   SkillStateQuery,
   SkillStateResult,
@@ -652,7 +651,7 @@ const api = {
       readSkill: (skillMdPath: string): Promise<SkillDetail | null> =>
         ipcRenderer.invoke("agent:skill-read", skillMdPath),
     },
-    // Managing a skill — v1: state + scaffold/install + detail read.
+    // Managing a skill: state, frontmatter edits and removal.
     skills: {
       readState: (query: SkillStateQuery): Promise<SkillStateResult> =>
         ipcRenderer.invoke("agent:skill-state-read", query),
@@ -674,16 +673,10 @@ const api = {
         enabled: boolean,
       ): Promise<InternalSkillsSettings> =>
         ipcRenderer.invoke("agent:skill-internal-set-plugin", pluginIdOrDir, enabled),
-      roots: (projectPath: string | string[] | null): Promise<SkillRootTarget[]> =>
-        ipcRenderer.invoke("agent:skill-roots", projectPath),
-      scaffold: (root: string, name: string, description: string): Promise<MutateResult> =>
-        ipcRenderer.invoke("agent:skill-scaffold", root, name, description),
       editFrontmatter: (skillMdPath: string, edits: FrontmatterEdit[]): Promise<MutateResult> =>
         ipcRenderer.invoke("agent:skill-edit-frontmatter", skillMdPath, edits),
       remove: (skillDir: string): Promise<MutateResult> =>
         ipcRenderer.invoke("agent:skill-remove", skillDir),
-      installFromGit: (url: string, destRoot: string): Promise<MutateResult> =>
-        ipcRenderer.invoke("agent:skill-install", url, destRoot),
     },
     // Persist the user's per-thread picker selection (model/effort/serviceTier/
     // contextWindow/mode) so a reopened thread restores the picker exactly.

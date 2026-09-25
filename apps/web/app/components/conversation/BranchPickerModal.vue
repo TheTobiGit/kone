@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
@@ -200,30 +199,15 @@ onBeforeUnmount(() => {
   ro?.disconnect();
   opener?.focus();
 });
-
-const cardSpring = {
-  type: "spring",
-  stiffness: 300,
-  damping: 22,
-  mass: 0.9,
-} as const;
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-start overflow-hidden p-10">
-    <UiModalScrim :shown="shown" class="modal-scrim absolute inset-0" @click="onCancel" />
-
-    <motion.div
+  <UiModalShell v-slot="{ card }" :shown="shown" class="z-50 items-end justify-start p-10" @dismiss="onCancel">
+    <div
+      v-bind="card"
       class="modal-card relative z-20 w-fit max-w-md overflow-hidden"
       :class="{ 'is-select': selecting }"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{
-        opacity: shown ? 1 : 0,
-        y: shown ? 0 : 12,
-        scale: shown ? 1 : 0.96,
-      }"
-      :transition="cardSpring"
       role="dialog"
       aria-modal="true"
       :aria-label="title"
@@ -383,14 +367,11 @@ const cardSpring = {
           <p v-if="switchError" class="branch-note branch-note--err">{{ switchError }}</p>
         </div>
       </div>
-    </motion.div>
-  </div>
+    </div>
+  </UiModalShell>
 </template>
 
 <style scoped>
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 .modal-card {
   background: var(--panel);
   border-radius: 18px;

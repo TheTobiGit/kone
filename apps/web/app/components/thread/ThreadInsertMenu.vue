@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { onKeyStroke } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
+import { cardSpring } from "~/utils/cardSpring";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { PANE_KINDS } from "~/utils/paneKinds";
@@ -34,8 +35,6 @@ onKeyStroke("Escape", (e) => {
   e.preventDefault();
   emit("close");
 });
-
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
 // The rows are the pane-kind registry, in registry order. Two rows can grey out:
 // a singleton kind already on the strip (only the scratchpad today, via

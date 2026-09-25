@@ -27,7 +27,12 @@ export function record(value: OpenCodeJsonValue | null | undefined): RecordLike 
   return value && value instanceof Object && !Array.isArray(value) ? (value as RecordLike) : undefined;
 }
 
-export function responseData(value: any): any { return value?.data ?? value; }
+/** The record a response carries — under its `{data}` envelope when it has
+ *  one, else the body itself. Non-record bodies (empty, text) read as absent. */
+export function responseData(value: OpenCodeJsonValue): RecordLike | undefined {
+  const body = record(value);
+  return record(body?.data) ?? body;
+}
 
 export function nonNegativeInteger(value: OpenCodeJsonValue | null | undefined): number | undefined {
   return jsonNumber(value) && value >= 0 && Number.isInteger(value) ? value : undefined;

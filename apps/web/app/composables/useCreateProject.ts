@@ -2,13 +2,13 @@ import { computed, ref } from "vue";
 import type { CreateProjectOptions } from "~/types/desktop";
 import { collapseHome, joinPath } from "~/utils/paths";
 import { peelIpcError } from "~/utils/ipcError";
+import { desktopBridge, needsDesktop } from "~/utils/desktopBridge";
 
 // Brain for the "Create a new project" flow — the sibling of `useGitClone`.
 // Instead of pulling a repo down, it lays a fresh folder on disk and (when
 // version control is on) turns it into a git repo. In the desktop app `create`
-// drives the real filesystem + git through the Electron bridge; in `nuxt dev`
-// (no bridge) it falls back to a faithful mock that walks the same phases, so
-// the modal's settle → open choreography stays demoable in the browser.
+// drives the real filesystem + git through the bridge; with no bridge it fails
+// with the reason.
 //
 // State lives at module scope so the modal and its parent share one instance:
 // `pages/index.vue` calls `reset()` after a create/cancel, and the values must
@@ -79,16 +79,11 @@ export function useCreateProject() {
     if (path) parentDir.value = path;
   }
 
-  // Create the project. On the desktop this makes the folder + optional git repo
-  // for real; without the bridge it falls back to a short mock beat. Either way
-  // it resolves with the created folder, or null when nothing valid is pending /
-  // one is already running (a failure sets `createError` + the error phase and
-  // resolves null).
-  function create(): Promise<CreateTarget | null> {
-    if (!valid.value || phase.value === "creating") {
-      return Promise.resolve(null);
-    }
-    const target = { path: projectPath.value, name: trimmedName.value };
+  // Create the project: the folder, plus a git repo when asked. Resolves with the
+  // created folder, or null when nothing valid is pending / one is already
+  // running (a failure sets `createError` + the error phase and resolves null).
+  async function create(): Promise<CreateTarget | null> {
+    if (!valid.value || phase.value === "creating") return null;
     // A remote repo needs a local one, so requesting a remote implies git.
     const wantGit = useGit.value || useRemote.value;
     const options: CreateProjectOptions = {
@@ -104,23 +99,16 @@ export function useCreateProject() {
       command: command.value.trim() || undefined,
     };
 
+    const git = desktopBridge()?.git;
+    if (!git) {
+      createError.value = needsDesktop("Creating a project");
+      phase.value = "error";
+      return null;
+    }
     phase.value = "creating";
     createError.value = null;
-
-    const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
-    if (bridge?.create) return realCreate(bridge, options);
-    if (import.meta.dev) return mockCreate(target);
-    createError.value = "Creating a project needs the desktop app.";
-    phase.value = "error";
-    return Promise.resolve(null);
-  }
-
-  async function realCreate(
-    bridge: NonNullable<Window["koneDesktop"]>["git"],
-    options: CreateProjectOptions,
-  ): Promise<CreateTarget | null> {
     try {
-      const result = await bridge.create(options);
+      const result = await git.create(options);
       phase.value = "done";
       // Let the finished readout settle for a beat before handing back.
       await new Promise((r) => (timer = window.setTimeout(r, 460)));
@@ -130,17 +118,6 @@ export function useCreateProject() {
       phase.value = "error";
       return null;
     }
-  }
-
-  // Mock create: a short "creating" beat, then resolve with the folder that
-  // would have been created (so the browser demo walks the same choreography).
-  function mockCreate(target: CreateTarget): Promise<CreateTarget | null> {
-    return new Promise((resolve) => {
-      timer = window.setTimeout(() => {
-        phase.value = "done";
-        timer = window.setTimeout(() => resolve(target), 460);
-      }, 900);
-    });
   }
 
   // Clear the per-project inputs (name + setup command) and phase. Keeps the

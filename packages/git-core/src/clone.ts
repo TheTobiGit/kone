@@ -79,9 +79,8 @@ export function resetCloneForTests(): void {
   killEscalationMs = DEFAULT_KILL_ESCALATION_MS;
 }
 
-/** Abort every clone in flight. App quit uses this so a skill-install clone
- *  cannot outlive the process just because the user's GitHub clone held the
- *  cancel slot. */
+/** Abort every clone in flight. App quit uses this so no clone outlives the
+ *  process, whichever window started it. */
 export function cancelAllClones(): void {
   for (const abort of liveSessions) abort();
 }

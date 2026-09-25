@@ -26,7 +26,6 @@ export {
 } from "./clone.js";
 export {
   captureProcessChildrenMapAsync,
-  inspectSubprocessActivityAsync,
   inspectSubprocessActivityInSnapshot,
   killProcessTree,
 } from "./processTree.js";

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from "vue";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { useModalExit } from "~/composables/useModalExit";
@@ -171,24 +170,20 @@ watch(
     void loadInstalled();
   },
 );
-
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 </script>
 
 <template>
-  <div
-    class="pointer-events-none fixed inset-0 z-50"
+  <UiModalShell
+    v-slot="{ card }"
+    :shown="shown"
+    class="z-50 items-end justify-end p-6"
     :style="hostStyle"
+    @dismiss="cancel"
     @keydown.esc.stop.prevent="onEsc"
   >
-    <UiModalScrim :shown="shown" class="fp-scrim pointer-events-auto absolute inset-0" @click="cancel" />
-
-    <div class="pointer-events-none absolute inset-0 flex items-end justify-end overflow-hidden p-6">
-      <motion.div
+      <div
+        v-bind="card"
         class="fp-card pointer-events-auto relative z-20 flex w-full max-w-md flex-col overflow-hidden"
-        :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-        :animate="{ opacity: shown ? 1 : 0, y: shown ? 0 : 12, scale: shown ? 1 : 0.96 }"
-        :transition="cardSpring"
         role="dialog"
         aria-modal="true"
         :aria-label="KIND_TITLE[kind]"
@@ -315,15 +310,11 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
             </button>
           </div>
         </div>
-      </motion.div>
-    </div>
-  </div>
+      </div>
+    </UiModalShell>
 </template>
 
 <style scoped>
-.fp-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 .fp-card {
   background: var(--panel);
   border-radius: 18px;

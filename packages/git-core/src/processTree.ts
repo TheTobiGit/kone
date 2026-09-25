@@ -431,7 +431,12 @@ export function captureProcessTree(rootPid: number): ProcessTreeCapture {
   return defaultProcessTreeKiller.capture(rootPid);
 }
 
-function walkSubprocessActivity(
+/** Whether anything is actually running below `rootPid`, walked from a
+ *  snapshot the caller already took so one full-system scan can serve every
+ *  terminal on a poll tick. Skips shell-like names (a nested interactive shell
+ *  counts only when IT has real children) and labels the deepest real child.
+ *  A null snapshot (failed scan) yields captureComplete: false. */
+export function inspectSubprocessActivityInSnapshot(
   rootPid: number,
   childrenByParentPid: ProcessChildrenMap | null,
 ): SubprocessActivityInspection {
@@ -499,35 +504,10 @@ export async function captureProcessChildrenMapAsync(): Promise<ProcessChildrenM
   }
 }
 
-/** Whether anything is actually running below `rootPid`, for tab busy labels
- *  and kill confirmations. Walks the tree from a fresh snapshot, skips
- *  shell-like names (a nested interactive shell counts only when IT has real
- *  children), and labels the deepest real child. */
+/** Whether anything is actually running below `rootPid`, from a fresh
+ *  snapshot, for tab busy labels and kill confirmations. */
 export function inspectSubprocessActivity(rootPid: number): SubprocessActivityInspection {
-  if (!Number.isInteger(rootPid) || rootPid <= 0) {
-    return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
-  }
-  const childrenByParentPid = captureProcessChildrenMap();
-  return walkSubprocessActivity(rootPid, childrenByParentPid);
-}
-
-/** `inspectSubprocessActivity` against a snapshot the caller already took, so
- *  one full-system scan can serve every terminal on a poll tick. A null
- *  snapshot (failed scan) yields captureComplete: false. */
-export function inspectSubprocessActivityInSnapshot(
-  rootPid: number,
-  childrenByParentPid: ProcessChildrenMap | null,
-): SubprocessActivityInspection {
-  return walkSubprocessActivity(rootPid, childrenByParentPid);
-}
-
-/** Asynchronous variant of `inspectSubprocessActivity` for the 1s poller loop. */
-export async function inspectSubprocessActivityAsync(rootPid: number): Promise<SubprocessActivityInspection> {
-  if (!Number.isInteger(rootPid) || rootPid <= 0) {
-    return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
-  }
-  const childrenByParentPid = await captureProcessChildrenMapAsync();
-  return walkSubprocessActivity(rootPid, childrenByParentPid);
+  return inspectSubprocessActivityInSnapshot(rootPid, captureProcessChildrenMap());
 }
 
 /** Kill `rootPid` and every descendant. SIGTERM captures the tree and remembers

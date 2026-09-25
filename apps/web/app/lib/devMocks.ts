@@ -5,9 +5,9 @@
 // and the project view stay consistent without a "keep these in sync" contract
 // spread across composables.
 //
-// None of this ships in a production build: useFileSystem and useGit import it
-// only behind `import.meta.dev`, so the bundler drops it. Keep it that way —
-// a plain static import would pull the whole demo world back in.
+// Only lib/devBridge reads it, and only the dev-only devBridge plugin loads
+// that — nothing here reaches a production build. Keep it that way: a static
+// import from anywhere else would pull the whole demo world back in.
 
 import type {
   DirListing,

@@ -189,16 +189,15 @@ const body = computed<Seg[]>(() => {
 });
 
 // Per-word reveal: each segment splits into words and the whitespace between
-// them. Words carry a stagger rank in reading order; whitespace stays plain
-// text so the prose
-// still wraps at word boundaries. The switcher trigger animates as one unit
-// (the name + its chevron).
-interface Part {
-  t: string;
-  /** Stagger position, or null for whitespace (not animated). */
-  rank: number | null;
-}
+// them. Words animate; whitespace stays plain text so the prose still wraps at
+// word boundaries. The switcher trigger animates as one unit (the name + its
+// chevron).
 const WORD_SPLIT = /(\S+|\s+)/g;
+const parts = computed(() =>
+  body.value.map((seg) =>
+    (seg.t.match(WORD_SPLIT) ?? []).map((t) => ({ t, word: /\S/.test(t) })),
+  ),
+);
 
 // Segments are keyed by content plus which occurrence of that content they
 // are — not by position — so a segment that survives an update keeps its
@@ -214,32 +213,31 @@ const keys = computed(() => {
   });
 });
 
-// Keys already on screen before the latest update. Empty on first render, so
-// the whole sentence reveals then.
-const shown = ref(new Set<string>());
 // Page-entrance delay applies to the first reveal only, not to later updates.
 const settled = ref(false);
-watch(keys, (_next, prev) => {
-  settled.value = true;
-  shown.value = new Set(prev);
-});
+watch(body, () => (settled.value = true), { once: true });
 
-// Stagger ranks count only the words that are new in this render, so the
-// first changed word goes immediately and the rest follow it in reading order.
-// Words in unchanged segments aren't remounted, so their rank never plays.
-const parts = computed<Part[][]>(() => {
+// The stagger counts only the words that are new in this render, so the first
+// changed word goes immediately and the rest follow it in reading order. The
+// TransitionGroup already knows which segments are new — it calls
+// `onBeforeEnter` for exactly those — so they're collected as they mount and
+// ranked together once the update's mounts are done (mount order isn't reading
+// order, hence `data-at`).
+let entering: HTMLElement[] = [];
+function onBeforeEnter(el: Element): void {
+  if (!(el instanceof HTMLElement)) return;
+  if (!entering.length) queueMicrotask(rankEntering);
+  entering.push(el);
+}
+function rankEntering(): void {
+  const batch = entering.sort((a, b) => Number(a.dataset.at) - Number(b.dataset.at));
+  entering = [];
   let rank = 0;
-  return body.value.map((seg, i) => {
-    const fresh = !shown.value.has(keys.value[i]!);
-    const next = () => (fresh ? rank++ : 0);
-    return isTrigger(i)
-      ? [{ t: seg.t, rank: next() }]
-      : (seg.t.match(WORD_SPLIT) ?? []).map((t) => ({
-          t,
-          rank: /\S/.test(t) ? next() : null,
-        }));
-  });
-});
+  for (const seg of batch) {
+    const words = seg.classList.contains("word") ? [seg] : seg.querySelectorAll<HTMLElement>(".word");
+    for (const w of words) w.style.setProperty("--w", String(rank++));
+  }
+}
 </script>
 
 <template>
@@ -273,6 +271,7 @@ const parts = computed<Part[][]>(() => {
       class="line line--body"
       :class="{ 'line--settled': settled }"
       appear
+      @before-enter="onBeforeEnter"
     >
       <component
         :is="isTrigger(i) ? 'button' : 'span'"
@@ -280,7 +279,7 @@ const parts = computed<Part[][]>(() => {
         :key="keys[i]"
         class="seg"
         :class="[`t-${seg.tone}`, { 'proj word': isTrigger(i) }]"
-        :style="isTrigger(i) ? { '--w': parts[i]?.[0]?.rank ?? 0 } : undefined"
+        :data-at="i"
         :type="isTrigger(i) ? 'button' : undefined"
         :aria-haspopup="isTrigger(i) ? 'menu' : undefined"
         @click="isTrigger(i) && emit('switch')"
@@ -296,7 +295,7 @@ const parts = computed<Part[][]>(() => {
           />
         </template>
         <template v-for="(part, j) in parts[i] ?? []" v-else :key="j">
-          <span v-if="part.rank !== null" class="word" :style="{ '--w': part.rank }">{{
+          <span v-if="part.word" class="word">{{
             part.t
           }}</span>
           <template v-else>{{ part.t }}</template>

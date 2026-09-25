@@ -56,16 +56,20 @@ import {
   isOpenCodeNotFound,
   isOpenCodeTurnEnd,
   normalizeOpenCodeTokenUsage,
+  reconcileOpenCodeText,
+  selectOpenCodeTurnId,
+  translateOpenCodeEvent,
+} from "./adapters/OpenCodeAdapter.js";
+import {
+  dialectForServer,
+  modelProbesForVersion,
   parseOpenCodeModelListApi,
   parseOpenCodeModels,
   permissionRules,
   permissionRulesV2,
-  reconcileOpenCodeText,
-  selectOpenCodeTurnId,
-  translateOpenCodeEvent,
   v2PermissionAction,
-} from "./adapters/OpenCodeAdapter.js";
-import type { RecordLike } from "./adapters/OpenCodeAdapter.js";
+} from "./adapters/opencodeDialect.js";
+import type { RecordLike } from "./adapters/opencodeJson.js";
 import type { RuntimeEvent } from "./types.js";
 
 function ofType<T extends RuntimeEvent["type"]>(events: RuntimeEvent[], type: T) {
@@ -106,11 +110,18 @@ describe("OpenCode pure translation helpers", () => {
     expect(parseOpenCodeModels("DESCRIPTION\n  List all available models\n")).toEqual([]);
   });
 
-  test("maps v1 permission keys onto v2 and fails deny closed to ask", () => {
+  test("maps v1 permission keys onto v2, keeping accept-edits' closed deny base", () => {
     const v2 = permissionRulesV2("accept-edits");
-    expect(v2[0]).toEqual({ action: "*", resource: "*", effect: "ask" });
+    expect(v2[0]).toEqual({ action: "*", resource: "*", effect: "deny" });
     expect(v2).toContainEqual({ action: "edit", resource: "*", effect: "allow" });
-    expect(v2.some((r) => r.effect === "deny")).toBe(false);
+    expect(v2).toContainEqual({ action: "shell", resource: "*", effect: "ask" });
+  });
+
+  test("v2 full access still routes shell back as the last-matching ask", () => {
+    expect(permissionRulesV2("full-access")).toEqual([
+      { action: "*", resource: "*", effect: "allow" },
+      { action: "shell", resource: "*", effect: "ask" },
+    ]);
   });
 
   test("maps renamed v1 actions to their v2 names", () => {
@@ -150,8 +161,6 @@ describe("OpenCode pure translation helpers", () => {
     expect(isOpenCodeTurnEnd({ type: "session.idle", properties: { sessionID: "ses_1" } })).toBe(true);
     expect(isOpenCodeTurnEnd({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "idle" } } })).toBe(true);
     expect(isOpenCodeTurnEnd({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "busy" } } })).toBe(false);
-    expect(isOpenCodeTurnEnd({ type: "session.execution.succeeded", properties: { sessionID: "ses_1" } })).toBe(true);
-    expect(isOpenCodeTurnEnd({ type: "session.execution.failed", properties: { sessionID: "ses_1" } })).toBe(true);
   });
 
   test("drops events from another session", () => {
@@ -237,6 +246,41 @@ describe("OpenCode pure translation helpers", () => {
   });
 });
 
+describe("OpenCode dialects", () => {
+  const v1 = dialectForServer({ dialect: "v1" });
+  const v2 = dialectForServer({ dialect: "v2" });
+  const state = () => ({ messageRoleById: new Map<string, string>(), partById: new Map<string, RecordLike>() });
+
+  test("v1 frames pass through as {type, properties}", () => {
+    expect(v1.decodeEvent({ type: "session.idle", properties: { sessionID: "ses_1" } }, state())).toEqual({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    expect(v1.decodeEvent({ properties: {} }, state())).toBeUndefined();
+  });
+
+  test("v2 frames are unwrapped and re-spelled once, onto the v1 vocabulary", () => {
+    const decoded = v2.decodeEvent({ id: "e1", type: "session.execution.succeeded", data: { sessionID: "ses_1" } }, state());
+    expect(decoded).toEqual({ type: "session.idle", properties: { sessionID: "ses_1" } });
+    const asked = v2.decodeEvent({ id: "e2", type: "session.permission.asked", data: { sessionID: "ses_1", id: "per_1" } }, state());
+    expect(asked?.type).toBe("permission.asked");
+  });
+
+  test("question replies go to one route per dialect", () => {
+    expect(v1.questionReply("ses_1", "que_1", [["Yes"]])).toEqual({ route: "/question/que_1/reply", body: { answers: [["Yes"]] } });
+    expect(v2.questionReply("ses_1", "que_1", [["Yes"]])).toEqual({
+      route: "/session/ses_1/question/que_1/reply",
+      body: { answers: [["Yes"]] },
+    });
+  });
+
+  test("model probes carry their retry as an attempt count", () => {
+    expect(modelProbesForVersion("1.18.0").map((p) => [p.args.join(" "), p.attempts])).toEqual([["models --verbose", 2]]);
+    expect(modelProbesForVersion("2.0.12").map((p) => p.args.join(" "))).toEqual(["api model.list", "models"]);
+    expect(modelProbesForVersion(undefined)).toHaveLength(3);
+  });
+});
+
 describe("OpenCode subagent run snapshots", () => {
   test("an inherited parent variant becomes the run's effort", () => {
     const snapshot = buildOpenCodeSubagentSnapshot({
@@ -268,8 +312,10 @@ describe("OpenCode subagent run snapshots", () => {
 });
 
 describe("OpenCode permission rules per mode", () => {
+  // The rule OpenCode applies: the last one matching the permission by name
+  // or by the `*` catch-all.
   const last = (permission: string, mode: "ask" | "accept-edits" | "full-access") =>
-    [...permissionRules(mode)].reverse().find((r) => r.permission === permission);
+    [...permissionRules(mode)].reverse().find((r) => r.permission === permission || r.permission === "*");
 
   test("accept-edits auto-approves file edits but keeps asking for everything else", () => {
     // OpenCode resolves against the LAST matching rule, so the edit-allow rule
@@ -327,8 +373,10 @@ const OPENCODE_ADAPTER_SOURCE = fileURLToPath(
 const OPENCODE_ADAPTER_DIR = new URL("./adapters/", import.meta.url);
 
 const OPENCODE_SERVER_STUB_SOURCE = `
+export type OpenCodeServerDialect = "v1" | "v2";
 export type OpenCodeServer = {
   baseUrl: string;
+  dialect: OpenCodeServerDialect;
   child: { once: (event: string, listener: (code: number | null) => void) => void };
   dispose: () => Promise<void>;
 };
@@ -336,6 +384,7 @@ export class OpenCodeServerPool {
   async start(): Promise<OpenCodeServer> {
     return {
       baseUrl: "http://127.0.0.1:9",
+      dialect: "v1",
       child: { once: () => {} },
       dispose: async () => {},
     };

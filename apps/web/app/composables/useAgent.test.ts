@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   clearOrphanApprovals,
   clearOrphanUserInputs,
@@ -12,6 +12,11 @@ import {
   type UserBlock,
 } from "./useAgent";
 import type { AgentBaseEvent, RuntimeEvent } from "~/types/desktop";
+import { createDevBridge } from "~/lib/devBridge";
+import { installDevBridge } from "~/utils/desktopBridge";
+
+// Sends with no bridge run on the dev bridge's scripted turn runner.
+beforeAll(() => installDevBridge(createDevBridge()));
 
 // The durable turn-queue slice (AgentService): a send while a turn runs is
 // durably enqueued and announced on the runtime stream. These tests drive the

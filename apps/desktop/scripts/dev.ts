@@ -141,8 +141,8 @@ if (!existsSync(mainEntry)) {
  * Chromium reads sandbox flags when its zygote/GPU processes spawn — an
  * in-process appendSwitch in main.ts arrives too late and leaves a
  * half-sandboxed renderer that dies allocating shared memory on first paint —
- * so this is decided here, in the launcher, and passed as real CLI argv
- * (t3code's electron-launcher.mjs does the same check). Never weakens a
+ * so this is decided here, in the launcher, and passed as real CLI argv.
+ * Never weakens a
  * correctly installed sandbox.
  */
 function resolveLinuxSandboxArgs(): string[] {

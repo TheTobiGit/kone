@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { CSSProperties } from "vue";
 import { useStorage } from "@vueuse/core";
-import { motion } from "motion-v";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon, Search01Icon, Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
@@ -756,28 +755,24 @@ onBeforeUnmount(() => {
   anchorRO?.disconnect();
   opener?.focus();
 });
-
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 </script>
 
 <template>
   <!-- One shell for both placements: a host that's either the viewport or, when
        pane-anchored, the settings drawer's rect. Everything inside — scrim,
        bottom-right anchoring, elastic card — is the same either way. -->
-  <div
-    class="pointer-events-none fixed inset-0 z-50"
+  <UiModalShell
+    v-slot="{ card }"
+    :shown="shown"
+    class="z-50 items-end justify-end p-6"
     :style="hostStyle"
+    @dismiss="cancel"
     @keydown.esc.stop.prevent="cancel"
   >
-    <UiModalScrim :shown="shown" class="mp-scrim pointer-events-auto absolute inset-0" @click="cancel" />
-
-    <div class="pointer-events-none absolute inset-0 flex items-end justify-end overflow-hidden p-6">
-      <motion.div
+      <div
+        v-bind="card"
         class="mp-card pointer-events-auto relative z-20 w-full max-w-sm overflow-hidden"
         :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-        :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-        :animate="{ opacity: shown ? 1 : 0, y: shown ? 0 : 12, scale: shown ? 1 : 0.96 }"
-        :transition="cardSpring"
         role="dialog"
         aria-modal="true"
         :aria-label="props.handoff ? 'Hand off thread to another provider' : 'Choose a model'"
@@ -1046,15 +1041,11 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
           </p>
         </div>
         </div>
-      </motion.div>
-    </div>
-  </div>
+      </div>
+    </UiModalShell>
 </template>
 
 <style scoped>
-.mp-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 /* The tray and the panel it holds are the two ends of the app's surface
    ladder: --band is the recessed strip, --panel the lifted sheet. Mixing the
    tint by hand instead pinned this card to one appearance — a theme moves every

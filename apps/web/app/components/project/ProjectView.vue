@@ -896,21 +896,21 @@ function onDiscardFile(path: string) {
   height: 3.25rem;
   pointer-events: none;
 }
-/* Frameless shells (win32/linux): the band goes solid and becomes the window
+/* Overlay chrome (Windows): the band goes solid and becomes the window
    drag region — a frameless window with no drag surface can't be moved. Every
    control opts back out to no-drag for itself; the strip index below shifts
    down (see ThreadStrip) so its dashes stay clickable. */
-.frameless .project-chrome {
+[data-chrome="overlay"] .project-chrome {
   pointer-events: auto;
   -webkit-app-region: drag;
 }
-.frameless .project-back-magnet,
-.frameless .project-nav,
-.frameless .project-avatar-slot {
+[data-chrome="overlay"] .project-back-magnet,
+[data-chrome="overlay"] .project-nav,
+[data-chrome="overlay"] .project-avatar-slot {
   -webkit-app-region: no-drag;
 }
 /* Clear the fixed caption cluster (`--caption-inset`) from the avatar corner. */
-.frameless .project-avatar-slot {
+[data-chrome="overlay"] .project-avatar-slot {
   right: calc(2rem + var(--caption-inset));
 }
 .project-back-magnet,

@@ -7,7 +7,7 @@
 // choices can be pinned down in tests, and so the real thread and the settings
 // page's preview can't disagree: both render through this.
 //
-// A turn reads by its `live` choices while it runs and by its `done` choices
+// A turn reads by its `live…` choices while it runs and by its `done…` choices
 // once it settles. The rules, in the order they bite:
 //
 //   · Read whole, a message still being written isn't shown until it's done.
@@ -35,13 +35,12 @@ import {
   type Segment,
   type WorkGroup,
 } from "~/utils/conversationSegments";
-import {
-  activityFoldFor,
-  type ActivityFold,
-  type DoneTools,
-  type LiveTools,
-  type ResponseDisplay,
-  type UpdatesDisplay,
+import type {
+  ActivityFold,
+  DoneTools,
+  LiveTools,
+  ResponseDisplay,
+  UpdatesDisplay,
 } from "~/utils/responseDisplay";
 
 export type TurnPlan = {
@@ -63,52 +62,56 @@ export type TurnPlan = {
   toggle: { open: boolean } | null;
 };
 
-type Filter = { tools: LiveTools | DoneTools; updates: UpdatesDisplay };
+type Tools = LiveTools | DoneTools;
+type Filter = { tools: Tools; updates: UpdatesDisplay };
+type Partition = { shown: RenderGroup[]; held: boolean };
 
-/** Where the reply starts: just past the turn's last batch of work. */
+/** How batches hold themselves once they show. Hidden steps only ever show
+ *  opened by hand, and then they read as they would folding as they go. */
+function activityFor(tools: Tools): ActivityFold {
+  if (tools === "expanded") return "open";
+  if (tools === "folded") return "closed";
+  return "auto";
+}
+
+/** Where the reply starts: past the turn's last batch of work. Only text is
+ *  ever reply or update — a spawn line stands in the open wherever it falls,
+ *  so which side of this it lands on changes nothing. */
 function replyStartOf(groups: RenderGroup[]): number {
-  let i = groups.length;
-  while (i > 0 && groups[i - 1]!.kind !== "steps") i--;
-  return i;
+  return groups.findLastIndex((g) => g.kind === "steps") + 1;
 }
 
-/** Adjacent batches read as one — they become adjacent when whatever stood
- *  between them isn't shown. The first batch's key holds, so the batch keeps
+/** Add a group, joining it to a batch just before it. Adjacent batches read as
+ *  one — renderGroups hands each segment over as its own, and whatever stood
+ *  between two may not be shown. The first batch's key holds, so the batch keeps
  *  its identity as later steps join it. */
-function mergeSteps<G extends RenderGroup>(groups: G[]): G[] {
-  const out: G[] = [];
-  for (const g of groups) {
-    const last = out[out.length - 1];
-    if (g.kind === "steps" && last?.kind === "steps") {
-      // SAFETY: both are steps groups, and a steps group with more segments is
-      // still a steps group.
-      out[out.length - 1] = { ...last, segments: [...last.segments, ...g.segments] } as G;
-    } else out.push(g);
-  }
-  return out;
+function append<G extends RenderGroup>(out: G[], g: G): void {
+  const last = out[out.length - 1];
+  if (g.kind === "steps" && last?.kind === "steps") {
+    // SAFETY: both are steps groups, and a steps group with more segments is
+    // still a steps group.
+    out[out.length - 1] = { ...last, segments: [...last.segments, ...g.segments] } as G;
+  } else out.push(g);
 }
 
-/** What the reader's filter leaves out of this turn — whether its toggle has
- *  anything to open onto. */
-function holdsBack(groups: RenderGroup[], replyStart: number, filter: Filter, running: boolean): boolean {
-  return groups.some((g, i) => {
-    if (g.kind === "steps") return filter.tools === "hidden";
-    if (g.kind === "text") return filter.updates === "hide" && (running || i < replyStart);
-    return false;
+/** One pass over the turn: what stands in the open, in arrival order, and
+ *  whether the filter held anything back. An update is text before the reply —
+ *  and while the turn runs, nothing is the reply yet. */
+function partition(groups: RenderGroup[], filter: Filter, running: boolean): Partition {
+  const replyStart = replyStartOf(groups);
+  const shown: RenderGroup[] = [];
+  let held = false;
+  groups.forEach((g, i) => {
+    const show =
+      g.kind === "steps"
+        ? filter.tools !== "hidden"
+        : g.kind === "text"
+          ? filter.updates === "show" || (!running && i >= replyStart)
+          : true;
+    if (show) append(shown, g);
+    else held = true;
   });
-}
-
-/** The turn in the open, in arrival order, with whatever the filter hides left
- *  out. An update is text before the reply — and while the turn runs, nothing
- *  is the reply yet. */
-function shownGroups(groups: RenderGroup[], replyStart: number, filter: Filter, running: boolean): RenderGroup[] {
-  return mergeSteps(
-    groups.filter((g, i) => {
-      if (g.kind === "steps") return filter.tools !== "hidden";
-      if (g.kind === "text") return filter.updates === "show" || (!running && i >= replyStart);
-      return true;
-    }),
-  );
+  return { shown, held };
 }
 
 export function planTurn(block: AssistantBlock, display: ResponseDisplay, manual?: boolean): TurnPlan {
@@ -117,24 +120,21 @@ export function planTurn(block: AssistantBlock, display: ResponseDisplay, manual
 
 function planLive(block: AssistantBlock, display: ResponseDisplay, manual?: boolean): TurnPlan {
   const all = renderGroups(block);
-  const { live } = display;
 
   // Read whole, the message being written waits until it's written.
   const tail = all[all.length - 1];
-  if (live.text === "whole" && tail?.kind === "text" && segStreaming(tail.seg)) all.pop();
+  if (display.liveText === "whole" && tail?.kind === "text" && segStreaming(tail.seg)) all.pop();
 
-  const replyStart = replyStartOf(all);
-  const held = holdsBack(all, replyStart, live, true);
   // Opened by hand, nothing is held back: hidden steps show as they would
   // folding as they go, and every update shows.
   const filter: Filter = manual
-    ? { tools: live.tools === "hidden" ? "fold-as-it-goes" : live.tools, updates: "show" }
-    : live;
-  const shown = shownGroups(all, replyStart, filter, true);
+    ? { tools: display.liveTools === "hidden" ? "fold-as-it-goes" : display.liveTools, updates: "show" }
+    : { tools: display.liveTools, updates: display.liveUpdates };
+  const { shown, held } = partition(all, filter, true);
   const base = {
     fold: null,
     foldOpen: false,
-    activity: activityFoldFor(filter.tools),
+    activity: activityFor(filter.tools),
     toggle: held || manual ? { open: manual === true } : null,
   };
 
@@ -149,28 +149,25 @@ function planLive(block: AssistantBlock, display: ResponseDisplay, manual?: bool
 
 function planDone(block: AssistantBlock, display: ResponseDisplay, manual?: boolean): TurnPlan {
   const all = renderGroups(block);
-  const { done } = display;
-  const replyStart = replyStartOf(all);
-  const work = all.slice(0, replyStart);
-  const reply = all.slice(replyStart);
-  const hasWork = work.some((g) => g.kind !== "spawn");
-  const activity = activityFoldFor(done.tools);
+  const filter: Filter = { tools: display.doneTools, updates: display.doneUpdates };
+  const activity = activityFor(filter.tools);
 
   // Everything hidden reads as the fold, closed, so opening it by hand unfolds
   // in place. Pressed, the fold is what the toggle opens and closes.
-  if (manual !== undefined || (done.tools === "hidden" && done.updates === "hide")) {
+  if (manual !== undefined || (filter.tools === "hidden" && filter.updates === "hide")) {
+    const replyStart = replyStartOf(all);
     const fold: WorkGroup[] = [];
-    const spawns: RenderGroup[] = [];
-    for (const g of work) {
-      if (g.kind === "spawn") spawns.push(g);
-      else fold.push(g);
-    }
+    const inline: RenderGroup[] = [];
+    all.forEach((g, i) => {
+      if (g.kind === "spawn" || i >= replyStart) inline.push(g);
+      else append(fold, g);
+    });
     // A turn with no reply to leave open shows its work rather than nothing.
-    const foldOpen = manual ?? !reply.some((g) => g.kind === "text");
+    const foldOpen = manual ?? !inline.some((g) => g.kind === "text");
     return {
-      fold: mergeSteps(fold),
+      fold,
       foldOpen,
-      inline: [...spawns, ...reply],
+      inline,
       live: null,
       status: false,
       activity,
@@ -178,11 +175,12 @@ function planDone(block: AssistantBlock, display: ResponseDisplay, manual?: bool
     };
   }
 
-  const held = holdsBack(all, replyStart, done, false);
+  const { shown, held } = partition(all, filter, false);
+  const hasWork = all.some((g) => g.kind === "steps");
   return {
     fold: null,
     foldOpen: false,
-    inline: shownGroups(all, replyStart, done, false),
+    inline: shown,
     live: null,
     status: false,
     activity,

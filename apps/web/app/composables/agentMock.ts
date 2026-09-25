@@ -13,11 +13,11 @@ import type {
   TokenUsage,
 } from "~/types/desktop";
 import {
-  formatSpawnBatchRecord,
-  formatSpawnRecord,
+  formatSpawnResult,
   type SpawnRecord,
 } from "@kone/protocol/spawn-record";
 import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
+import { createScriptClock, SCRIPTED_WORD_MS, streamWords } from "~/utils/scriptedTurn";
 import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "./agentTypes";
 import { titleFromPrompt, uid } from "./agentPrefetch";
 
@@ -46,10 +46,10 @@ export function createMockTurnRunner(deps: {
     busy,
   } = deps;
 
-  // Pending timers for the in-flight mock turn, plus a cancel latch the async
-  // script checks between steps — stopMock clears both so an interrupt or unmount
-  // halts the reply cleanly.
-  let mockTimers: Array<ReturnType<typeof setTimeout>> = [];
+  // The in-flight mock turn's clock, plus a cancel latch the async script checks
+  // between steps — stopMock stops both so an interrupt or unmount halts the
+  // reply cleanly.
+  const clock = createScriptClock();
   let mockCancel: (() => void) | null = null;
   let mockTurnId: string | null = null;
 
@@ -60,8 +60,7 @@ export function createMockTurnRunner(deps: {
   const pendingApprovalsMap = new Map<string, ApprovalResolver>();
 
   function stopMock(): void {
-    for (const t of mockTimers) clearTimeout(t);
-    mockTimers = [];
+    clock.stop();
     for (const [requestId, resolver] of pendingApprovalsMap) {
       reduce({ ...base(), type: "approval.resolved", requestId, decision: "reject-once" });
       resolver.resolve("reject-once");
@@ -155,26 +154,22 @@ export function createMockTurnRunner(deps: {
 
     const emit = (item: RuntimeItem, type: "item.started" | "item.updated" | "item.completed") =>
       reduce({ ...base(), type, turnId, item: { ...item } });
-    const wait = (ms: number) =>
-      new Promise<void>((resolve) => {
-        const adjusted = opts.fast ? Math.min(ms, 8) : ms;
-        const t = setTimeout(() => {
-          mockTimers = mockTimers.filter((x) => x !== t);
-          resolve();
-        }, adjusted);
-        mockTimers.push(t);
-      });
+    const wait = (ms: number) => clock.wait(opts.fast ? Math.min(ms, 8) : ms);
     // Stream a text-bearing item (a thought or the answer) word-by-word.
-    const stream = async (kind: RuntimeItemKind, full: string, perWord = 42): Promise<void> => {
+    const stream = async (kind: RuntimeItemKind, full: string, perWord = SCRIPTED_WORD_MS): Promise<void> => {
       const item: RuntimeItem = { itemId: uid(), kind, status: "in-progress", text: "" };
       emit(item, "item.started");
-      const wordDelay = opts.fast ? 2 : perWord;
-      for (const w of full.split(" ")) {
-        if (cancelled) return;
-        item.text += (item.text ? " " : "") + w;
-        emit(item, "item.updated");
-        await wait(wordDelay);
-      }
+      const streamed = await streamWords(
+        full,
+        (text) => {
+          item.text = text;
+          emit(item, "item.updated");
+        },
+        (ms) => wait(ms).then(() => !cancelled),
+        opts.fast ? 2 : perWord,
+      );
+      if (!streamed) return;
+      item.text = full;
       item.status = "completed";
       emit(item, "item.completed");
     };
@@ -233,7 +228,8 @@ export function createMockTurnRunner(deps: {
     const NO_CHILD: DemoChild = { finish: () => {} };
 
     // One child opening: its record, and its lifecycle on the parent's dock.
-    const openChild = (opts: DemoSpawn): { record: SpawnRecord; child: DemoChild } => {
+    type DemoOpened = { record: SpawnRecord; child: DemoChild };
+    const openChild = (opts: DemoSpawn): DemoOpened => {
       const childId = uid();
       const parentThreadId = threadId.value;
       const createdAt = Date.now();
@@ -260,9 +256,6 @@ export function createMockTurnRunner(deps: {
         provider: "claudeAgent",
         model: opts.model,
         why: opts.why,
-        summary: opts.agent
-          ? `Delegated "${opts.title}" to ${opts.agent} as ${childId}.`
-          : `Spawned "${opts.title}"${opts.preset ? ` from preset ${opts.preset}` : ""} as ${childId}.`,
       };
       if (opts.preset) record.preset = opts.preset;
       if (opts.agent) {
@@ -307,7 +300,12 @@ export function createMockTurnRunner(deps: {
       if (cancelled) return NO_CHILD;
       const { record, child } = openChild(opts);
       item.status = "completed";
-      item.detail = formatSpawnRecord(record);
+      item.detail = formatSpawnResult({
+        spawns: [record],
+        summary: opts.agent
+          ? `Delegated "${opts.title}" to ${opts.agent} as ${record.threadId}.`
+          : `Spawned "${opts.title}"${opts.preset ? ` from preset ${opts.preset}` : ""} as ${record.threadId}.`,
+      });
       emit(item, "item.completed");
       return child;
     };
@@ -327,7 +325,7 @@ export function createMockTurnRunner(deps: {
       if (cancelled) return [];
       const opened = items.map(openChild);
       item.status = "completed";
-      item.detail = formatSpawnBatchRecord({
+      item.detail = formatSpawnResult({
         spawns: opened.map((o) => o.record),
         summary: `Spawned ${opened.length} threads.`,
       });

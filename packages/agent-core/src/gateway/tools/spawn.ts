@@ -23,42 +23,15 @@
 // gateway's GatewayErrorCode values by construction, so they pass straight
 // through; anything else falls through to the registry's internal handling.
 
-import type {
-  SpawnCaller,
-  SpawnRequest,
-  SpawnTargetsReport,
-} from "../../threadSpawn.js";
-import type {
-  InteractionMode,
-  ProviderKind,
-  SpawnedThread,
-  SpawnTarget,
-  SpawnThreadResult,
-  StoredBlock,
-  StoredThread,
-} from "../../types.js";
-import type {
-  AgentModelRef,
-  AgentRecord,
-  NativeSubagentConfig,
-  SubagentPresetRecord,
-} from "../../ConversationStore.js";
+import type { SpawnTargetsReport } from "../../threadSpawn.js";
+import type { InteractionMode, SpawnedThread, SpawnTarget, StoredBlock } from "../../types.js";
+import type { AgentModelRef } from "../../ConversationStore.js";
 import {
-  formatSpawnBatchRecord,
-  formatSpawnRecord,
+  formatSpawnResult,
   type SpawnRecord,
+  type SpawnToolName,
 } from "@kone/protocol/spawn-record";
-import { resolveLegacyPresetId } from "@kone/protocol/subagent-presets";
-import { presetNameKey } from "../../rosterRecord.js";
-import { planPresetSpawn } from "../../presetSpawn.js";
-import { resolveDelegation } from "../../delegate.js";
-import type { ModelCandidate, ModelSelection, ProviderAvailability } from "../../agentModel.js";
-import type {
-  GatewayRecord,
-  GatewayToolContext,
-  GatewayToolResult,
-  ToolEntry,
-} from "../schemas.js";
+import type { GatewayRecord, GatewayToolContext, GatewayToolResult, ToolEntry } from "../schemas.js";
 import {
   ContinueThreadInputSchema,
   CONTINUE_THREAD_JSON_SCHEMA,
@@ -85,69 +58,21 @@ import {
   createDeclineChildGateTool,
 } from "./spawnChildControls.js";
 import {
-  callerOf,
-  mapSpawnError,
-  requiredEngine,
-  withActiveTurn,
-} from "./spawnToolContext.js";
+  availabilityOnce,
+  dispatchOne,
+  spawnSentence,
+  structuredDispatch,
+  type DispatchItem,
+  type Dispatched,
+  type DispatchMeta,
+  type SpawnToolStore,
+} from "./spawnDispatch.js";
+import { mapSpawnError, requiredEngine, callerOf, withActiveTurn } from "./spawnToolContext.js";
 
-/** The store surface the spawn tools need — structural, so unit tests can
- *  substitute an in-memory fake. The real ConversationStore satisfies it. */
-export interface SpawnToolStore {
-  loadThread(threadId: string): StoredThread | null;
-  /** Every preset sub-agent, so a spawn can be cut from one by name. */
-  listSubagentPresets(): SubagentPresetRecord[];
-  /** One preset by id — tried before the name scan, since an id is exact. */
-  getSubagentPreset(presetId: string): SubagentPresetRecord | null;
-  /** The native presets' user config — the enabled flags and pinned model
-   *  chains that decide which shipped definitions an agent can reach. */
-  listNativeSubagentConfigs(): NativeSubagentConfig[];
-  /** Every preset sub-agent an agent can name, stored first: the user's own
-   *  rows, then the configured natives no stored row shadows by name. */
-  listVisiblePresets(): SubagentPresetRecord[];
-  /** The project's team — the agents this project can delegate to, in roster
-   *  order. Delegation resolves its target from this list ONLY, so an agent the
-   *  user hasn't put on the team can't be handed work. */
-  listProjectAgents(projectPath: string): AgentRecord[];
-}
+export type { SpawnToolStore } from "./spawnDispatch.js";
 
 export interface SpawnToolInput {
   store: SpawnToolStore;
-}
-
-/** Find a preset by the agent's reference: an exact id first, then a
- *  punctuation-blind name match over everything visible — stored rows first,
- *  so a stored preset shadows a native of the same name. A native the user
- *  turned off reads as absent, exactly as though kone had never shipped it. A
- *  name only an earlier build shipped (Explorer, Code Reviewer) falls through
- *  to the successor native, unless a stored row claims the name. */
-function findPreset(store: SpawnToolStore, ref: string): SubagentPresetRecord | null {
-  const byId = store.getSubagentPreset(ref);
-  if (byId) return byId;
-  const wanted = presetNameKey(ref);
-  if (!wanted) return null;
-  const visible = store.listVisiblePresets();
-  const direct =
-    visible.find((p) => presetNameKey(p.presetId) === wanted) ??
-    visible.find((p) => presetNameKey(p.name) === wanted);
-  if (direct) return direct;
-  const legacy = resolveLegacyPresetId(ref);
-  if (!legacy) return null;
-  return visible.find((p) => p.presetId === legacy) ?? null;
-}
-
-/** Find a delegation target in the caller's OWN project team: an exact agent id
- *  first, then a case-insensitive name match, both scanned over
- *  `listProjectAgents(cwd)` only. Scoping to the team is the whole gate — an
- *  agent the user hasn't put on this project's team is not a name the delegating
- *  agent can reach, so it reads exactly like a nonexistent one. Names aren't
- *  unique, so the name path takes the first in team order. */
-function findTeamAgent(store: SpawnToolStore, cwd: string, ref: string): AgentRecord | null {
-  const team = store.listProjectAgents(cwd);
-  const byId = team.find((a) => a.agentId === ref);
-  if (byId) return byId;
-  const wanted = ref.trim().toLowerCase();
-  return team.find((a) => (a.name ?? "").trim().toLowerCase() === wanted) ?? null;
 }
 
 /** A one-line gist of a prose field for the discovery report — collapsed onto
@@ -205,248 +130,6 @@ export function teammateTargets(
   return out;
 }
 
-/** Flatten the engine's spawn-targets report into the snapshot the model
- *  resolver reads: one entry per installed provider with its live model ids.
- *  The report carries no per-model usage signal, so nothing is marked
- *  exhausted — an unreachable model is one its provider stopped offering. */
-function availabilityFromReport(
-  providers: SpawnTargetsReport["providers"],
-): ProviderAvailability[] {
-  return providers.map((p) => ({
-    provider: p.provider,
-    available: p.available,
-    models: p.models.map((m) => m.id),
-  }));
-}
-
-/** Fill a spawn target from the caller when the agent named no model of its
- *  own. A named provider without a model still inherits the caller's model
- *  when it is the same provider — a foreign provider without a model keeps
- *  that provider's own default, because the caller's model id is not a model
- *  on a different CLI. */
-function inheritSpawnTarget(
-  caller: SpawnCaller,
-  requested?: { provider: ProviderKind; model?: string; effort?: string },
-): SpawnTarget {
-  if (!requested) {
-    const target: SpawnTarget = { provider: caller.provider };
-    if (caller.model) target.model = caller.model;
-    return target;
-  }
-  const target: SpawnTarget = { provider: requested.provider };
-  if (requested.model) target.model = requested.model;
-  else if (caller.model && requested.provider === caller.provider) target.model = caller.model;
-  if (requested.effort) target.effort = requested.effort;
-  return target;
-}
-
-/** Attach a plan's remaining chain only when there is one — an empty list is
- *  the inherit/requested case, and sending it would make the engine walk a
- *  chain that was never assigned. */
-function withPlanFallbacks(
-  request: SpawnRequest,
-  fallbacks: readonly ModelCandidate[],
-): SpawnRequest {
-  if (fallbacks.length === 0) return request;
-  return { ...request, fallbacks };
-}
-
-type DispatchItemInput = {
-  requestId: string;
-  prompt: string;
-  title?: string;
-  /** For the thread's record only — prepareDispatch never hands it on. */
-  why?: string;
-  target?: { provider: ProviderKind; model?: string; effort?: string };
-  preset?: string;
-  agent?: string;
-  mode?: InteractionMode;
-  model?: AgentModelRef;
-};
-
-type PreparedDispatch =
-  | {
-      ok: true;
-      request: SpawnRequest;
-      meta: {
-        kind: "spawn" | "preset" | "delegation";
-        preset?: string;
-        agent?: string;
-        selection?: ModelSelection;
-      };
-    }
-  | {
-      ok: false;
-      error: GatewayToolError;
-    };
-type BatchSpawnSuccess = {
-  index: number;
-  ok: true;
-  threadId: string;
-  title: string;
-  provider: ProviderKind;
-  model?: string;
-  kind: "spawn" | "preset" | "delegation";
-  agent?: string;
-  preset?: string;
-  record: SpawnRecord;
-};
-
-type BatchItemResult =
-  | BatchSpawnSuccess
-  | { index: number; ok: false; error: string };
-
-
-async function prepareDispatch(
-  store: SpawnToolStore,
-  caller: SpawnCaller,
-  item: DispatchItemInput,
-  getAvailability: () => Promise<ProviderAvailability[]>,
-): Promise<PreparedDispatch> {
-  if (item.agent) {
-    const agent = findTeamAgent(store, caller.cwd, item.agent);
-    if (!agent) {
-      return {
-        ok: false,
-        error: new GatewayToolError("not_found", `No agent "${item.agent}" on this project's team.`),
-      };
-    }
-    const availability = await getAvailability();
-    const plan = resolveDelegation({
-      agent,
-      task: item.prompt,
-      availability,
-      caller: { provider: caller.provider, model: caller.model },
-      requestedModel: item.model,
-    });
-    if (!plan.ok) {
-      return {
-        ok: false,
-        error: new GatewayToolError(
-          plan.code === "no_identity" ? "invalid_input" : "provider_unavailable",
-          plan.reason,
-          plan.tried ? { tried: plan.tried } : undefined,
-        ),
-      };
-    }
-    return {
-      ok: true,
-      request: withPlanFallbacks(
-        {
-          requestId: item.requestId,
-          prompt: plan.prompt,
-          title: item.title,
-          target: plan.target,
-          mode: item.mode,
-          delegateToAgentId: agent.agentId,
-          persona: plan.persona,
-        },
-        plan.fallbacks,
-      ),
-      meta: {
-        kind: "delegation",
-        agent: plan.persona.name,
-        selection: plan.selection,
-      },
-    };
-  }
-
-  if (item.preset) {
-    const preset = findPreset(store, item.preset);
-    if (!preset) {
-      return {
-        ok: false,
-        error: new GatewayToolError("not_found", `No preset sub-agent "${item.preset}".`),
-      };
-    }
-    const availability = await getAvailability();
-    const plan = planPresetSpawn(
-      preset,
-      item.prompt,
-      availability,
-      { provider: caller.provider, model: caller.model },
-      item.model,
-    );
-    if (!plan.ok) {
-      return {
-        ok: false,
-        error: new GatewayToolError("provider_unavailable", plan.reason, { tried: plan.tried }),
-      };
-    }
-    return {
-      ok: true,
-      request: withPlanFallbacks(
-        {
-          requestId: item.requestId,
-          prompt: plan.prompt,
-          title: item.title,
-          target: plan.target,
-          mode: item.mode,
-        },
-        plan.fallbacks,
-      ),
-      meta: {
-        kind: "preset",
-        preset: preset.name,
-        selection: plan.selection,
-      },
-    };
-  }
-
-  return {
-    ok: true,
-    request: {
-      requestId: item.requestId,
-      prompt: item.prompt,
-      title: item.title,
-      target: inheritSpawnTarget(caller, item.target),
-      mode: item.mode,
-    },
-    meta: {
-      kind: "spawn",
-    },
-  };
-}
-/** A note about the model the child actually ended up on, when it is not the
- *  one it was planned for — the engine walked the fallback chain because the
- *  first choice was rate limited or out of quota. Empty when nothing moved, so
- *  the ordinary spawn line stays as short as it always was. An agent that reads
- *  only `content` would otherwise never learn its worker changed model. */
-function failoverNote(result: SpawnThreadResult): string {
-  const from = result.failedOverFrom;
-  if (!from) return "";
-  const named = `${from.provider}${from.model ? `/${from.model}` : ""}`;
-  return ` Fell back from ${named}, which could not take the work: ${from.reason}`;
-}
-
-/** "on codex/gpt-5" — where a child ended up running. */
-function placeOf(result: SpawnThreadResult): string {
-  return `${result.provider}${result.model ? `/${result.model}` : ""}`;
-}
-
-/** The record a dispatch leaves in the parent's transcript — what the thread
- *  reads back to say, in the reply, who was handed what and why. See
- *  @kone/protocol/spawn-record. */
-function spawnRecordFor(
-  result: SpawnThreadResult,
-  meta: { preset?: string; agent?: string; agentId?: string },
-  why: string | undefined,
-  summary: string,
-): SpawnRecord {
-  const record: SpawnRecord = {
-    threadId: result.threadId,
-    title: result.title,
-    provider: result.provider,
-    why: why?.trim() || null,
-    summary,
-  };
-  if (result.model) record.model = result.model;
-  if (meta.preset) record.preset = meta.preset;
-  if (meta.agent) record.agent = meta.agent;
-  if (meta.agentId) record.agentId = meta.agentId;
-  return record;
-}
-
 const TRUNCATION_MARKER = "\n…[truncated]";
 
 /** Truncate a message's text to `maxChars`, appending a visible marker so the
@@ -491,6 +174,68 @@ function messageText(message: { role: string; text: string }): string {
   return `[${message.role}] ${message.text.trim() || "(no text — tool calls only)"}`;
 }
 
+/** A single dispatch's tool result. The text is a record, not a sentence: the
+ *  thread that dispatched reads it back to say who was handed what, and why.
+ *  The sentence the model reads rides inside it as `summary`. */
+function singleResult(dispatched: Dispatched): GatewayToolResult {
+  if (!dispatched.ok) return gatewayToolErrorResult(dispatched.error);
+  const { result, meta, record } = dispatched;
+  return {
+    content: [
+      {
+        type: "text",
+        text: formatSpawnResult({ spawns: [record], summary: spawnSentence(result, meta) }),
+      },
+    ],
+    structuredContent: structuredDispatch(result, meta),
+  };
+}
+
+type BatchItemResult =
+  | { index: number; ok: true; kind: DispatchMeta["kind"]; record: SpawnRecord }
+  | { index: number; ok: false; error: string };
+
+type BatchSpawnSuccess = Extract<BatchItemResult, { ok: true }>;
+
+/** The sentence for a whole batch: every thread it opened, then every item it
+ *  refused, by index. */
+function batchSentence(results: BatchItemResult[]): string {
+  const succeeded = results.filter((r): r is BatchSpawnSuccess => r.ok);
+  const failed = results.filter((r): r is Extract<BatchItemResult, { ok: false }> => !r.ok);
+  const parts: string[] = [];
+  if (succeeded.length > 0) {
+    parts.push(
+      `Spawned ${succeeded.length} thread${succeeded.length === 1 ? "" : "s"}: ${succeeded
+        .map((s) => `"${s.record.title}" (${s.record.threadId})`)
+        .join(", ")}.`,
+    );
+  }
+  if (failed.length > 0) {
+    const errList = failed
+      .map((f) => `item ${f.index}: ${f.error.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
+      .join("; ");
+    parts.push(`${failed.length} spawn failed: ${errList}.`);
+  }
+  return parts.join(" ");
+}
+
+/** One batch item as the structured result lists it. */
+function batchThreadEntry(r: BatchItemResult): GatewayRecord {
+  if (!r.ok) return { index: r.index, ok: false, error: r.error };
+  const entry: GatewayRecord = {
+    index: r.index,
+    ok: true,
+    threadId: r.record.threadId,
+    title: r.record.title,
+    provider: r.record.provider,
+    model: r.record.model ?? null,
+    kind: r.kind,
+  };
+  if (r.record.agent !== undefined) entry.agent = r.record.agent;
+  if (r.record.preset !== undefined) entry.preset = r.record.preset;
+  return entry;
+}
+
 export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
   const targetsHandler = async (ctx: GatewayToolContext): Promise<GatewayToolResult> => {
     const engine = requiredEngine();
@@ -498,6 +243,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     try {
       const base = await engine.targets(caller);
       // The engine reports providers/models/limits — all it knows. Presets and
+      // teammates are the store's, so they join the report here.
       const presets = presetTargets(input.store);
       const report: SpawnTargetsReport = { ...base, presets, teammates: teammateTargets(input.store, caller.cwd) };
       const ready = report.providers.filter((p) => p.available).map((p) => p.provider);
@@ -523,157 +269,44 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     }
   };
 
-  const spawnWorkerHandler = (
-    ctx: GatewayToolContext,
-    args: {
+  /** A tool that dispatches one thing: it only maps its arguments onto an
+   *  item. */
+  const singleDispatchHandler =
+    <Args>(toItem: (args: Args) => DispatchItem) =>
+    (ctx: GatewayToolContext, args: Args): Promise<GatewayToolResult> =>
+      withActiveTurn(ctx, async (engine, caller) =>
+        singleResult(
+          await dispatchOne(input.store, engine, caller, toItem(args), availabilityOnce(engine, caller)),
+        ),
+      );
+
+  const spawnWorkerHandler = singleDispatchHandler(
+    (args: {
       prompt: string;
       requestId: string;
       title?: string;
       why?: string;
       target?: SpawnTarget;
       mode?: InteractionMode;
-    },
-  ): Promise<GatewayToolResult> => {
-    return withActiveTurn(ctx, async (engine, caller) => {
-      const { why, ...dispatch } = args;
-      const prepared = await prepareDispatch(input.store, caller, dispatch, async () => []);
-      if (!prepared.ok) {
-        return gatewayToolErrorResult(prepared.error);
-      }
-      const result = await engine.spawn(caller, prepared.request);
-      // The result is a record, not a sentence: the thread that spawned the
-      // worker reads it back to say who was handed what, and why. The sentence
-      // the model reads rides inside it as `summary`.
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatSpawnRecord(
-              spawnRecordFor(
-                result,
-                {},
-                why,
-                `Spawned "${result.title}" on ${placeOf(result)} as ${result.threadId}.${failoverNote(result)}`,
-              ),
-            ),
-          },
-        ],
-        structuredContent: { spawn: result },
-      };
-    });
+    }): DispatchItem => args,
+  );
+
+  type HandOffArgs = {
+    task: string;
+    requestId: string;
+    title?: string;
+    why?: string;
+    mode?: InteractionMode;
+    model?: AgentModelRef;
   };
 
-  const spawnWorkerPresetHandler = (
-    ctx: GatewayToolContext,
-    args: {
-      preset: string;
-      task: string;
-      requestId: string;
-      title?: string;
-      why?: string;
-      mode?: InteractionMode;
-      model?: AgentModelRef;
-    },
-  ): Promise<GatewayToolResult> => {
-    return withActiveTurn(ctx, async (engine, caller) => {
-      const getAvailability = async (): Promise<ProviderAvailability[]> => {
-        const report = await engine.targets(caller);
-        return availabilityFromReport(report.providers);
-      };
-      const prepared = await prepareDispatch(
-        input.store,
-        caller,
-        {
-          requestId: args.requestId,
-          prompt: args.task,
-          title: args.title,
-          preset: args.preset,
-          mode: args.mode,
-          model: args.model,
-        },
-        getAvailability,
-      );
-      if (!prepared.ok) {
-        return gatewayToolErrorResult(prepared.error);
-      }
-      const result = await engine.spawn(caller, prepared.request);
-      const preset = prepared.meta.preset ?? args.preset;
-      const structuredContent: GatewayRecord = { spawn: result, preset };
-      if (prepared.meta.selection) structuredContent.selection = prepared.meta.selection;
-      // A record, as kone_spawn_worker leaves — the thread reads it back to say
-      // which specialist was handed what, and why.
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatSpawnRecord(
-              spawnRecordFor(
-                result,
-                { preset },
-                args.why,
-                `Spawned "${result.title}" from preset ${preset} on ${placeOf(result)} as ${result.threadId}.${failoverNote(result)}`,
-              ),
-            ),
-          },
-        ],
-        structuredContent,
-      };
-    });
-  };
+  const spawnWorkerPresetHandler = singleDispatchHandler(
+    ({ task, ...args }: HandOffArgs & { preset: string }): DispatchItem => ({ ...args, prompt: task }),
+  );
 
-  const delegateToTeammateHandler = (
-    ctx: GatewayToolContext,
-    args: {
-      agent: string;
-      task: string;
-      requestId: string;
-      title?: string;
-      why?: string;
-      mode?: InteractionMode;
-      model?: AgentModelRef;
-    },
-  ): Promise<GatewayToolResult> => {
-    return withActiveTurn(ctx, async (engine, caller) => {
-      const prepared = await prepareDispatch(
-        input.store,
-        caller,
-        {
-          requestId: args.requestId,
-          prompt: args.task,
-          title: args.title,
-          agent: args.agent,
-          mode: args.mode,
-          model: args.model,
-        },
-        async () => availabilityFromReport((await engine.targets(caller)).providers),
-      );
-      if (!prepared.ok) {
-        return gatewayToolErrorResult(prepared.error);
-      }
-      const result = await engine.spawn(caller, prepared.request);
-      // SAFETY: an `agent` item that prepared ok is a delegation, which always
-      // names the persona it resolved to.
-      const agent = prepared.meta.agent!;
-      const structuredContent: GatewayRecord = { delegation: result, agent };
-      if (prepared.meta.selection) structuredContent.selection = prepared.meta.selection;
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatSpawnRecord(
-              spawnRecordFor(
-                result,
-                { agent, agentId: prepared.request.delegateToAgentId },
-                args.why,
-                `Delegated "${result.title}" to ${agent} on ${placeOf(result)} as ${result.threadId}.${failoverNote(result)} Collect its response with kone_wait_for_responses.`,
-              ),
-            ),
-          },
-        ],
-        structuredContent,
-      };
-    });
-  };
+  const delegateToTeammateHandler = singleDispatchHandler(
+    ({ task, ...args }: HandOffArgs & { agent: string }): DispatchItem => ({ ...args, prompt: task }),
+  );
 
   const continueThreadHandler = (
     ctx: GatewayToolContext,
@@ -708,114 +341,40 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
 
   const spawnBatchHandler = (
     ctx: GatewayToolContext,
-    args: {
-      items: Array<DispatchItemInput>;
-    },
+    args: { items: DispatchItem[] },
   ): Promise<GatewayToolResult> => {
     return withActiveTurn(ctx, async (engine, caller) => {
-      let availabilityPromise: Promise<ProviderAvailability[]> | null = null;
-      const getAvailability = (): Promise<ProviderAvailability[]> => {
-        if (!availabilityPromise) {
-          availabilityPromise = engine.targets(caller).then((r) => availabilityFromReport(r.providers));
-        }
-        return availabilityPromise;
-      };
-
-      const spawnPromises = args.items.map(async (item, index) => {
-        try {
-          const prepared = await prepareDispatch(input.store, caller, item, getAvailability);
-          if (!prepared.ok) {
-            return { index, ok: false as const, error: prepared.error.message };
+      const getAvailability = availabilityOnce(engine, caller);
+      const results = await Promise.all(
+        args.items.map(async (item, index): Promise<BatchItemResult> => {
+          try {
+            const dispatched = await dispatchOne(input.store, engine, caller, item, getAvailability);
+            if (!dispatched.ok) return { index, ok: false, error: dispatched.error.message };
+            return { index, ok: true, kind: dispatched.meta.kind, record: dispatched.record };
+          } catch (error) {
+            return { index, ok: false, error: mapSpawnError(error).message };
           }
-          const result = await engine.spawn(caller, prepared.request);
-          const { agent, preset } = prepared.meta;
-          const entry: BatchSpawnSuccess = {
-            index,
-            ok: true,
-            threadId: result.threadId,
-            title: result.title,
-            provider: result.provider,
-            model: result.model,
-            kind: prepared.meta.kind,
-            record: spawnRecordFor(
-              result,
-              { agent, agentId: prepared.request.delegateToAgentId, preset },
-              item.why,
-              agent
-                ? `Delegated "${result.title}" to ${agent} as ${result.threadId}.`
-                : `Spawned "${result.title}"${preset ? ` from preset ${preset}` : ""} as ${result.threadId}.`,
-            ),
-          };
-          if (prepared.meta.agent) entry.agent = prepared.meta.agent;
-          if (prepared.meta.preset) entry.preset = prepared.meta.preset;
-          return entry;
-        } catch (error) {
-          const mapped = mapSpawnError(error);
-          return { index, ok: false as const, error: mapped.message };
-        }
-      });
-
-      const results: BatchItemResult[] = await Promise.all(spawnPromises);
-      const succeeded = results.filter((r): r is BatchSpawnSuccess => r.ok);
-      const failed = results.filter((r): r is { index: number; ok: false; error: string } => !r.ok);
-
-      const summaryParts: string[] = [];
-      if (succeeded.length > 0) {
-        summaryParts.push(
-          `Spawned ${succeeded.length} thread${succeeded.length === 1 ? "" : "s"}: ${succeeded
-            .map((s) => `"${s.title}" (${s.threadId})`)
-            .join(", ")}.`,
-        );
-      }
-      if (failed.length > 0) {
-        const errList = failed
-          .map((f) => `item ${f.index}: ${f.error.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
-          .join("; ");
-        summaryParts.push(`${failed.length} spawn failed: ${errList}.`);
-      }
-
-      const summary = summaryParts.join(" ");
+        }),
+      );
+      const spawns = results.filter((r): r is BatchSpawnSuccess => r.ok).map((r) => r.record);
+      const summary = batchSentence(results);
       // What opened is a record, as a single spawn's is; a batch where nothing
       // opened has nothing to record and stays the plain refusal sentence.
-      const text =
-        succeeded.length > 0
-          ? formatSpawnBatchRecord({ spawns: succeeded.map((s) => s.record), summary })
-          : summary;
+      const text = spawns.length > 0 ? formatSpawnResult({ spawns, summary }) : summary;
       return {
         content: [{ type: "text", text }],
-        isError: succeeded.length === 0 && failed.length > 0,
+        isError: spawns.length === 0,
         structuredContent: {
           batch: {
             total: args.items.length,
-            succeeded: succeeded.length,
-            failed: failed.length,
-            threads: results.map((r) => {
-              if (r.ok) {
-                const entry: GatewayRecord = {
-                  index: r.index,
-                  ok: true,
-                  threadId: r.threadId,
-                  title: r.title,
-                  provider: r.provider,
-                  model: r.model ?? null,
-                  kind: r.kind,
-                };
-                if (r.agent !== undefined) entry.agent = r.agent;
-                if (r.preset !== undefined) entry.preset = r.preset;
-                return entry;
-              }
-              return {
-                index: r.index,
-                ok: false,
-                error: r.error,
-              };
-            }),
+            succeeded: spawns.length,
+            failed: args.items.length - spawns.length,
+            threads: results.map(batchThreadEntry),
           },
         },
       };
     });
   };
-
 
   const waitForResponsesHandler = async (
     ctx: GatewayToolContext,
@@ -916,7 +475,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: targetsHandler,
     },
     {
-      name: "kone_spawn_worker",
+      name: "kone_spawn_worker" satisfies SpawnToolName,
       description:
         "Spawn a worker: open a new kone thread and set an agent working in it on a task you write. This is not a nested subagent inside your turn — it is a second, first-class conversation that appears in the user's sidebar, persists, and keeps running after your turn ends. Use it to hand a self-contained unit of work to another model, or to fan several independent units out at once, when doing the work inline would crowd out your own context. Write prompt as a complete standing brief: the worker wakes up with no memory of this conversation and cannot ask you anything, so state the goal, the paths involved, the constraints, and what done looks like. Say in why, briefly and in your own voice, why you are handing this off — the user reads it in the thread at the point you spawned the worker. Omit target to run the worker on your own provider and model (and reasoning effort). Pass target.provider and target.model only when you mean a different one — a cheap fast model for mechanical work, a stronger one for work that needs judgement; call kone_spawn_targets if you need the real list. mode is what the worker may do without stopping to ask, and it can never exceed yours — request a wider one and the spawn is refused rather than quietly downgraded. Leave it unset to inherit yours. Choose it by what the worker needs to finish unattended, because nobody is sitting in its thread: a worker that stops for permission stays stopped until the user notices. full-access lets it edit files and run commands on its own. accept-edits lets it edit, but it will park the first time it needs to run a command. ask parks on nearly everything, so use it only for a worker that reads and reports. If the work needs more than your own thread is allowed, say so and let the user raise your mode — do not spawn a worker that cannot finish. Pass a stable requestId so a retry after a network hiccup returns the same worker instead of opening a second one. This returns as soon as the worker starts, not when it finishes — collect its response with kone_wait_for_responses; the result also carries the worker's first turn id, pass it back as turnIds to pin the wait to the turn you actually spawned. When you need to ask this worker something again later, continue its existing thread with kone_continue_thread — spawning again would open a second worker with no memory of the first.",
       inputSchema: SpawnWorkerInputSchema,
@@ -933,7 +492,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: spawnWorkerHandler,
     },
     {
-      name: "kone_spawn_worker_preset",
+      name: "kone_spawn_worker_preset" satisfies SpawnToolName,
       description:
         "Spawn a specialist worker from a preset — a reusable subagent template the user has saved, carrying its own standing instructions and a model chain (or none). Give the preset by name (e.g. \"Explorer\", \"Code Reviewer\") and a task describing the specific work; kone lays the task under the preset's instructions to form the worker's opening brief, so write task as a complete standing ask the way you would prompt for kone_spawn_worker — the worker cannot ask you anything. Say in why, briefly and in your own voice, why you are handing this off — the user reads it in the thread at the point you spawned the worker. You do not choose a model by default: kone runs the preset's assigned chain when it names one (falling to the next on a 429 or spent quota), or the worker runs on your own provider and model when it names none. Pass model only when the user asked for this piece of work to run somewhere specific — that override beats the preset's chain. If every named model can't run it refuses rather than substituting one you didn't ask for. mode works exactly as in kone_spawn_worker — clamped to yours, chosen for what the worker needs to finish unattended. Use this when the work matches a preset the user has set up, and kone_spawn_worker when you need to pick the provider and model yourself. Pass a stable requestId so a retry returns the same worker. Returns as soon as the worker starts — collect its response with kone_wait_for_responses. To ask this worker something again later, continue its existing thread with kone_continue_thread.",
       inputSchema: SpawnWorkerPresetInputSchema,
@@ -945,7 +504,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: spawnWorkerPresetHandler,
     },
     {
-      name: "kone_delegate_to_teammate",
+      name: "kone_delegate_to_teammate" satisfies SpawnToolName,
       description:
         "Delegate a piece of work to a teammate — a named agent on this project's team, with its own identity, standing instructions and model preference. The child thread runs AS that agent: it answers under the teammate's name and brings the teammate's own instructions, so write task as just the ask — a complete, standing brief, since the teammate wakes up with no memory of this conversation and cannot ask you anything. Name the teammate by name or id with agent; only teammates on this project's team can be reached (kone_spawn_targets lists them with their roles). You do not choose a model by default: the teammate runs its own model chain, or yours when it names none. Pass model only when the user asked for this piece of work to run somewhere specific. Say in why, briefly and in your own voice, why you are handing this to them — the user reads it in the thread at the point you delegated. mode works exactly as in kone_spawn_worker — clamped to yours, chosen for what the teammate needs to finish unattended. Use this when the work fits a teammate's role; kone_spawn_worker_preset for a reusable specialist template, kone_spawn_worker to brief an anonymous worker yourself. Pass a stable requestId so a retry returns the same thread. Returns as soon as the teammate starts — collect its response with kone_wait_for_responses, and ask it something again with kone_continue_thread.",
       inputSchema: DelegateToTeammateInputSchema,
@@ -957,7 +516,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: delegateToTeammateHandler,
     },
     {
-      name: "kone_spawn_batch",
+      name: "kone_spawn_batch" satisfies SpawnToolName,
       description:
         "Dispatch several workers concurrently in a single tool call. Each item in items is a direct provider/model worker (target), a specialist worker from a preset (preset), or a delegation to a teammate on this project's team (agent) — set exactly one. Give each item its own why, as for the single tools. Use it instead of repeated single calls when the pieces are independent and can run at once. Returns an array of the threads it opened, with threadIds ready for kone_wait_for_responses. Later follow-ups to any of those threads go through kone_continue_thread on the returned threadId.",
       inputSchema: SpawnBatchInputSchema,

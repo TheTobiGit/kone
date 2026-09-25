@@ -78,13 +78,6 @@ export function deriveTurnSettingMarks(
   return marks;
 }
 
-/** The verb that opens the line — it names the axes that actually moved, so
- *  the row never implies a change the legs don't show. */
-export function turnSettingVerb(change: TurnSettingChange): string {
-  if (change.model && change.effort) return "Model & effort";
-  return change.model ? "Model" : "Reasoning effort";
-}
-
 /** One end of the line: the model and the tier as that side ran them, each
  *  present only when its axis moved — a value that did not change is not what
  *  the line is about.
@@ -121,6 +114,9 @@ export function turnSettingChangeLabel(
     const { model, effort } = turnSettingLeg(change, side, catalog);
     return [model?.name, effort?.label].filter(Boolean).join(" · ");
   };
-  return `${turnSettingVerb(change)} ${say("from")} → ${say("to")}`;
+  // The line opens by naming the axes that actually moved, so it never implies
+  // a change the legs don't show.
+  const moved = change.model && change.effort ? "Model & effort" : change.model ? "Model" : "Reasoning effort";
+  return `${moved} ${say("from")} → ${say("to")}`;
 }
 

@@ -3,6 +3,7 @@ import { computed, defineComponent, Fragment, h, onBeforeUnmount, ref, watch } f
 import type { VNode } from "vue";
 import type Token from "markdown-it/lib/token.mjs";
 import { createStreamGate } from "~/composables/streamGate";
+import { stabilizeStreamingMarkdown } from "~/utils/streamingMarkdown";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   InformationCircleIcon,
@@ -26,9 +27,17 @@ import { expandHtmlTables, validatedSpans, type MdNode } from "~/utils/safeHtmlT
 // semantic elements styled below via `.md :deep(...)`.
 
 // `historical` marks a reply loaded from storage: it mounts already-complete, so
-// it skips the per-word spring-scale-in reveal (and the extra span-per-word
+// it skips the per-word crossfade reveal (and the extra span-per-word
 // nodes) and just renders as settled text — no animation replay on reopen.
-const props = defineProps<{ source: string; historical?: boolean }>();
+const props = defineProps<{
+  source: string;
+  historical?: boolean;
+  /** Hold the first words back this long before they start to show. For a
+   *  reply that mounts while something above it is still settling — the
+   *  batch of steps folding shut as the text takes over — so the words fade
+   *  in where they will stay instead of riding the fold up the column. */
+  revealDelay?: number;
+}>();
 
 const { parse } = useMarkdown();
 
@@ -40,9 +49,12 @@ let seq = 0;
 // stream stopping. History and the first paint bypass the gate entirely.
 const gate = createStreamGate(45);
 
+// A live reply is parsed as it will read once finished — half-typed block
+// markers held back, open inline marks closed — so it doesn't reshape under
+// the reader chunk by chunk. History is already finished and parses as-is.
 async function updateTokens(src: string): Promise<void> {
   const mine = ++seq;
-  const t = await parse(src);
+  const t = await parse(props.historical ? src : stabilizeStreamingMarkdown(src));
   if (mine === seq) tokens.value = t;
 }
 
@@ -66,17 +78,17 @@ onBeforeUnmount(() => {
 });
 
 // Every word gets its own stable key, so a streamed word mounts as a genuinely
-// new element the instant it arrives — and springs into place on mount, driven
-// by real arrival time instead of an artificial stagger: each word's
-// spring-scale-in fires exactly when it lands, one after another as the reply
-// grows. A fully-formed message (history) mounts all its words at once, so it
-// just settles together instead of a per-word cascade.
+// new element the instant it arrives — and resolves into place on mount, driven
+// by real arrival time: each word's crossfade fires when it lands, one after
+// another as the reply grows, with only the words of a single chunk spread
+// out behind each other (see the burst stagger below). A fully-formed message
+// (history) renders as plain text and plays nothing.
 //
 // The key is the word's PATH in the tree (`0.2.1w4`), not its ordinal in a
 // running counter. Live Markdown is reparsed from scratch on every chunk, and a
 // counter makes every key downstream of a structural change shift by one — so
 // the moment `**bo` closed into `**bold**`, or a `|` row snapped into a table,
-// the whole rest of the reply was torn down, remounted, and re-blurred. Words
+// the whole rest of the reply was torn down, remounted, and re-revealed. Words
 // keyed by path only churn inside the subtree that actually changed.
 
 // ── token stream → node tree ────────────────────────────────────────────────
@@ -184,19 +196,79 @@ function styleOf(node: MdNode): Record<string, string> | undefined {
 // through the very validator that wrote them (`validatedSpans`) — anything else
 // never becomes a node attr, so there is nothing else to pass on.
 
+// ── the stagger inside a streamed chunk ─────────────────────────────────────
+// A stream arrives in bursts, not a word at a time: one chunk can carry a
+// dozen words, and mounting them on the same frame makes the reply lurch
+// forward a phrase at a time. So the words that arrive together are spread
+// out behind one another, `per-word-crossfade` style. The spacing adapts to
+// the burst — a few words step at the full interval, a paragraph-sized chunk
+// shares a fixed window — so a big chunk never queues up behind itself while
+// the next one is already arriving.
+const WORD_STAGGER_MS = 22;
+const BURST_WINDOW_MS = 280;
+/** Each word's delay, kept for as long as the word keeps its key, so a reparse
+ *  of the same text hands a word the delay it already played with. */
+const wordDelays = new Map<string, number>();
+/** Style objects of the words first seen in the current render pass, filled
+ *  in once the pass knows how many there are — before the patch reads them. */
+let burst: { key: string; style: Record<string, string> }[] = [];
+
+/** When the hold ends — a moment in time rather than a delay on the first
+ *  burst, because the next chunks land well inside the hold too, and a word
+ *  from the second burst showing before one from the first reads as noise. */
+const holdUntil = import.meta.client ? performance.now() + (props.revealDelay ?? 0) : 0;
+
+function settleBurst(): void {
+  if (!burst.length) return;
+  const step = Math.min(WORD_STAGGER_MS, BURST_WINDOW_MS / burst.length);
+  const lead = import.meta.client ? Math.max(0, Math.round(holdUntil - performance.now())) : 0;
+  burst.forEach((w, i) => {
+    const delay = lead + Math.round(i * step);
+    wordDelays.set(w.key, delay);
+    w.style.transitionDelay = `${delay}ms`;
+  });
+  burst = [];
+}
+
+// ── words already on screen ─────────────────────────────────────────────────
+// A reparse can re-key words that were already showing: `**bo` closing into
+// `**bold**` splits one text run into three, a line becoming a list item moves
+// it into a new subtree. Those words are new elements to Vue but not new to the
+// reader, and fading them in again is what made a streaming reply blink. So the
+// reveal is decided by position rather than by mount: each render walks the
+// text in reading order, and only words past the furthest point any earlier
+// render reached are allowed to play. Everything before it mounts settled.
+let revealedTo = 0;
+let walked = 0;
+
+function wordStyle(key: string): Record<string, string> {
+  const known = wordDelays.get(key);
+  if (known !== undefined) return { transitionDelay: `${known}ms` };
+  const style: Record<string, string> = {};
+  burst.push({ key, style });
+  return style;
+}
+
 /** Split a text run into words wrapped in individually-keyed spans (so each
- *  one mounts as its own DOM node and can carry the spring-scale-in reveal),
+ *  one mounts as its own DOM node and can carry the crossfade reveal),
  *  with whitespace passed through untouched between them. */
 function renderWords(content: string, key: number, path: string): VNode | string {
-  // History: render the run as plain text — no per-word spans, no blur-in.
+  // History: render the run as plain text — no per-word spans, no reveal.
   if (props.historical) return content;
   const parts = content.split(/(\s+)/);
   return h(
     Fragment,
     { key },
-    parts.map((part, i) =>
-      /^\s*$/.test(part) ? part : h("span", { key: `${path}w${i}`, class: "stream-word" }, part),
-    ),
+    parts.map((part, i) => {
+      const start = walked;
+      walked += part.length;
+      if (/^\s*$/.test(part)) return part;
+      const wordKey = `${path}w${i}`;
+      if (start < revealedTo && !wordDelays.has(wordKey)) {
+        return h("span", { key: wordKey, class: "stream-word stream-word--seen" }, part);
+      }
+      return h("span", { key: wordKey, class: "stream-word", style: wordStyle(wordKey) }, part);
+    }),
   );
 }
 
@@ -323,7 +395,14 @@ function renderListItem(node: MdNode, key: number, path: string): VNode {
 
 const Rendered = defineComponent({
   name: "MarkdownRendered",
-  render: () => nodes.value.map((n, i) => renderNode(n, i, String(i))),
+  render: () => {
+    burst = [];
+    walked = 0;
+    const tree = nodes.value.map((n, i) => renderNode(n, i, String(i)));
+    settleBurst();
+    revealedTo = Math.max(revealedTo, walked);
+    return tree;
+  },
 });
 </script>
 
@@ -346,33 +425,36 @@ const Rendered = defineComponent({
   overflow-wrap: anywhere;
 }
 
-/* Each word pops into place as it mounts — the `spring-scale-in` effect: a soft
-   overshoot scale settling like a physical spring (cubic-bezier y2 = 1.56).
-   Streamed words each land at their own real moment so this reads as one word
-   springing in after another; a fully-formed message just mounts all its words
-   in the same tick and settles together. inline-block is required — transforms
-   don't apply to `display: inline`. */
+/* Each word fades up into place as it mounts — a `per-word-crossfade`: 700ms,
+   opacity with a short vertical drift. Streamed words each land at their own
+   real moment, so the stagger is the stream itself and none is added here; a
+   fully-formed message mounts its words in one tick and settles together.
+   The 8px drift drops to 2px on 14px copy: a chunk's words rise together, and
+   at any more travel the line itself reads as moving under the reader. No overshoot and no
+   blur: a spring made a paragraph bounce and a blur smeared it; the text
+   should read crisp from its first frame. inline-block is required —
+   transforms don't apply to `display: inline`. No will-change: it would pin a
+   layer per word long after the word settled. */
 .md :deep(.stream-word) {
   display: inline-block;
-  transform-origin: 50% 55%;
-  will-change: transform, opacity;
   transition:
-    opacity 360ms ease,
-    transform 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    opacity 700ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-/* An atom (file chip / inline code) hugs its child so the wrapper never
-   disturbs baseline alignment or wrapping. Atoms intentionally do not carry
+/* An atom's wrapper (file chip / inline code) has no box of its own, so the
+   line lays out exactly as it will in history, where there is no wrapper. As
+   an inline-flex box it stood taller than the 23px line — the code's own
+   padding counted — and every line an atom landed on grew by a pixel,
+   nudging the text below it. Atoms intentionally do not carry
    `.stream-word`: reparsing a live Markdown message must not replay their
    entrance animation. */
 .md :deep(.stream-atom) {
-  display: inline-flex;
-  vertical-align: baseline;
-  max-width: 100%;
+  display: contents;
 }
 @starting-style {
-  .md :deep(.stream-word) {
+  .md :deep(.stream-word:not(.stream-word--seen)) {
     opacity: 0;
-    transform: scale(0.7);
+    transform: translateY(2px);
   }
 }
 

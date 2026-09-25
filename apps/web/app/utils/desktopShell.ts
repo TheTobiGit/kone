@@ -8,8 +8,8 @@
  *    sits below it untouched — the same layout as the macOS window.
  *  - `native`: macOS (native traffic lights) and the browser (its own chrome).
  *
- *  See `ui/WindowCaption` for the buttons and `plugins/frameless.client` for
- *  the root classes each mode sets. */
+ *  `plugins/frameless` decides the mode once and sets it as
+ *  `<html data-chrome>`; `ui/WindowCaption` draws the buttons for it. */
 export type ShellChrome = "overlay" | "titlebar" | "native";
 
 export function shellChrome(platform: string | undefined): ShellChrome {

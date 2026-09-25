@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, type CSSProperties } from "vue";
-import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { PencilEdit02Icon, Camera01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { CountUp } from "~/components/ui/count-up";
@@ -9,6 +8,7 @@ import { sessionBrand, describeModelId } from "~/utils/modelCatalog";
 import type { BrandKey } from "~/utils/modelCatalog";
 import { SESSION_BRAND } from "~/types/session";
 import type { ProviderKind } from "~/types/desktop";
+import { EXIT_MS } from "~/composables/useModalExit";
 
 // The profile surface body — lifetime usage stats aggregated in SQL across every
 // project (useProfileStats) and the editable local identity (useProfile). No cloud,
@@ -212,13 +212,12 @@ const modelBars = computed(() => {
 const empty = computed(() => loaded.value && (!stats.value || stats.value.totals.prompts === 0));
 
 // ── editing ───────────────────────────────────────────────────────────────
-// The edit UI lifts into the same scrim + elastic card the app's other modals
-// enter/exit spring so a close fades out before the node unmounts.
+// The edit UI lifts into the same scrim + card the app's other modals use.
+// `editing` mounts it; `editShown` drives its entrance and exit, so a close
+// plays out before the node unmounts.
 const editing = ref(false);
 const editShown = ref(false);
 const fileEl = ref<HTMLInputElement | null>(null);
-
-const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
 const hostStyle = ref<CSSProperties>({});
 let anchorEl: HTMLElement | null = null;
@@ -273,7 +272,7 @@ function closeEdit(): void {
     teardownEditAnchor();
     editOpener?.focus();
     editOpener = null;
-  }, 240);
+  }, EXIT_MS);
 }
 function onEditKeydown(e: KeyboardEvent): void {
   if (editing.value && e.key === "Escape") {
@@ -453,24 +452,19 @@ function removePhoto(): void {
   </div>
 
   <Teleport to="body">
-    <div
+    <UiModalShell
       v-if="editing"
-      class="edit-host pointer-events-none fixed inset-0 z-50"
+      v-slot="{ card }"
+      :shown="editShown"
+      from="above"
+      class="z-50 items-start justify-end p-6"
       :style="hostStyle"
+      @dismiss="closeEdit"
     >
-      <UiModalScrim :shown="editShown" class="modal-scrim pointer-events-auto absolute inset-0" @click="closeEdit" />
-
-      <div class="pointer-events-none absolute inset-0 flex items-start justify-end p-6">
-        <motion.div
+        <div
+          v-bind="card"
           class="modal-card edit-card pointer-events-auto relative z-20 w-full max-w-md overflow-hidden"
           :style="{ transformOrigin: 'top right' }"
-          :initial="{ opacity: 0, y: -10, scale: 0.96 }"
-          :animate="{
-            opacity: editShown ? 1 : 0,
-            y: editShown ? 0 : -10,
-            scale: editShown ? 1 : 0.96,
-          }"
-          :transition="cardSpring"
           role="dialog"
           aria-modal="true"
           aria-label="Edit profile"
@@ -530,9 +524,8 @@ function removePhoto(): void {
               </button>
             </div>
           </div>
-        </motion.div>
-      </div>
-    </div>
+        </div>
+      </UiModalShell>
   </Teleport>
 </template>
 
@@ -601,10 +594,6 @@ function removePhoto(): void {
   background-color: var(--hover);
 }
 
-/* ── edit modal — the pickers' shell (scrim + card + curved bands) ──────────── */
-.modal-scrim {
-  background: color-mix(in srgb, var(--ground) 62%, transparent);
-}
 .modal-card {
   background: var(--panel);
   border-radius: 18px;

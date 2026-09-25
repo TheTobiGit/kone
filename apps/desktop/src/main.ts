@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -60,9 +61,9 @@ function configureLinuxShell(): void {
   // that call registers the app with xdg-desktop-portal, and with no
   // matching .desktop entry installed the portal leaves Chromium's
   // renderer sandbox unable to allocate shared memory (exit 133 on first
-  // paint). t3code pairs setDesktopName with installing the entry; kone
-  // has no external URL scheme to register, so WM_CLASS alone is the safe
-  // subset.
+  // paint). setDesktopName is only safe alongside installing that entry;
+  // kone has no external URL scheme to register, so WM_CLASS alone is the
+  // safe subset.
   // NOTE: `--no-sandbox` is deliberately NOT appended here — see
   // scripts/dev.ts `resolveLinuxSandboxArgs` for the rationale (in-process
   // flags arrive too late for the zygote/GPU spawn).
@@ -346,10 +347,11 @@ async function createWindow() {
     }, RENDERER_RECOVERY_RELOAD_DELAY_MS);
   });
 
-  // First reveal once every gate has fired: `ready-to-show` everywhere,
-  // plus `did-finish-load` on Linux (ready-to-show can fire before the
-  // renderer has actually painted there; hold for the load event so the
-  // first frame is real paint). Hands the window back to normal
+  // First reveal once both `ready-to-show` and the page load have fired
+  // (ready-to-show can fire before the renderer has actually painted on some
+  // compositors; holding for the load event means the first frame is real
+  // paint — a failed load still counts, so the window never stays hidden).
+  // Hands the window back to normal
   // hidden-window throttling (see backgroundThrottling above), shows it,
   // and warms the agent layer a beat after first paint — not at IPC
   // registration. Registration runs before the window exists, so firing the
@@ -361,11 +363,11 @@ async function createWindow() {
   // dedupes and never rejects, and the renderer's own warmup
   // (`agent:surface` → `agent:warm`) coalesces onto this run, so nothing
   // waits on the send path.
-  const once = (emitter: { once(event: string, cb: () => void): void }, event: string): Promise<void> =>
-    new Promise((resolve) => emitter.once(event, () => resolve()));
-  const gates: Promise<void>[] = [once(mainWindow, "ready-to-show")];
-  if (process.platform === "linux") gates.push(once(mainWindow.webContents, "did-finish-load"));
-  void Promise.all(gates).then(() => {
+  const loaded = Promise.race([
+    once(mainWindow.webContents, "did-finish-load"),
+    once(mainWindow.webContents, "did-fail-load"),
+  ]);
+  void Promise.all([once(mainWindow, "ready-to-show"), loaded]).then(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.setBackgroundThrottling(true);
     mainWindow.show();
@@ -476,9 +478,8 @@ if (gotSingleInstanceLock) {
 
   // Quit path: don't leave `git clone` processes running (each would keep a
   // half-written folder behind), and don't orphan agent CLI subprocesses or
-  // terminal PTY shells. Every in-flight clone — the user's GitHub clone and a
-  // concurrent skill-install clone alike — must be aborted, so this is the
-  // all-clones sweep, not a single slot. before-quit is the only hook that can
+  // terminal PTY shells. Every in-flight clone — one per window — must be
+  // aborted, so this is the all-clones sweep, not a single slot. before-quit is the only hook that can
   // await: preventDefault, run the teardown, then quit again. A hard timeout
   // stops the app even if a provider child refuses to die. Re-entry guard: the
   // app.quit() below fires before-quit again, which must pass straight through.

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { initSpawnEngine as realInitSpawnEngine } from "../../threadSpawn.js";
-import { parseSpawnRecord, parseSpawnRecords } from "@kone/protocol/spawn-record";
+import { parseSpawnRecords } from "@kone/protocol/spawn-record";
+import { z } from "zod";
 
 import type { AgentPersona, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
 import type {
@@ -759,15 +760,19 @@ describe("spawn gateway tools", () => {
     const res = await registry.call(ctx, "kone_spawn_worker", {
       prompt: "Fix the tests.",
       requestId: "op-1",
-      why: "  the suite is slow and I can keep refactoring meanwhile ",
+      why: "  Because the suite is slow and I can keep refactoring meanwhile. ",
     });
-    expect(parseSpawnRecord(res.content[0]?.text)).toEqual({
-      threadId: "child-1",
-      title: "Fix tests",
-      provider: "codex",
-      model: "gpt-5",
-      why: "the suite is slow and I can keep refactoring meanwhile",
-      summary: 'Spawned "Fix tests" on codex/gpt-5 as child-1.',
+    expect(spawnResultOf(res)).toEqual({
+      spawns: [
+        {
+          threadId: "child-1",
+          title: "Fix tests",
+          provider: "codex",
+          model: "gpt-5",
+          why: "the suite is slow and I can keep refactoring meanwhile",
+        },
+      ],
+      summary: 'Spawned "Fix tests" on codex/gpt-5 as child-1. Collect its response with kone_wait_for_responses.',
     });
     // The why is the thread's to show, not the child's to read.
     expect(capturedRequest).not.toHaveProperty("why");
@@ -1187,12 +1192,19 @@ describe("spawn gateway tools", () => {
 /** A targets report offering the given providers/models, all available unless
  *  overridden — the shape the preset tool flattens into an availability
  *  snapshot for the fallback resolver. */
-/** The sentence a batch result carries for the model, inside its record. */
+const SummarySchema = z.object({ summary: z.string() });
+
+/** The sentence a dispatch result carries for the model, inside its record. */
 function batchSummary(res: { content: Array<{ text?: string }> }): string | undefined {
   const text = res.content[0]?.text;
   if (!text) return undefined;
-  const parsed: unknown = JSON.parse(text);
-  return (parsed as { summary?: string }).summary;
+  const parsed = SummarySchema.safeParse(JSON.parse(text));
+  return parsed.success ? parsed.data.summary : undefined;
+}
+
+/** A dispatch result read back the way the thread and the model read it. */
+function spawnResultOf(res: { content: Array<{ text?: string }> }) {
+  return { spawns: parseSpawnRecords(res.content[0]?.text), summary: batchSummary(res) };
 }
 
 function targetsReport(
@@ -1272,14 +1284,18 @@ describe("kone_spawn_worker_preset", () => {
       why: "I need the map before I touch the middleware",
     });
     // The preset reads back by its own name, not the caller's spelling of it.
-    expect(parseSpawnRecord(res.content[0]?.text)).toEqual({
-      threadId: "child-1",
-      title: "Look around",
-      provider: "claudeAgent",
-      model: "haiku",
-      preset: "Explorer",
-      why: "I need the map before I touch the middleware",
-      summary: 'Spawned "Look around" from preset Explorer on claudeAgent/haiku as child-1.',
+    expect(spawnResultOf(res)).toEqual({
+      spawns: [
+        {
+          threadId: "child-1",
+          title: "Look around",
+          provider: "claudeAgent",
+          model: "haiku",
+          preset: "Explorer",
+          why: "I need the map before I touch the middleware",
+        },
+      ],
+      summary: 'Spawned "Look around" from preset Explorer on claudeAgent/haiku as child-1. Collect its response with kone_wait_for_responses.',
     });
     expect(capturedRequest).not.toHaveProperty("why");
   });
@@ -2017,16 +2033,19 @@ describe("kone_delegate_to_teammate", () => {
         persona: { name: "Backend", instructions: "You own the API layer." },
       },
     ]);
-    expect(parseSpawnRecord(res.content[0]?.text)).toEqual({
-      threadId: "child-op-1",
-      title: "Build /users",
-      provider: "codex",
-      model: "gpt-5",
-      agent: "Backend",
-      agentId: "agent-backend",
-      why: "the API layer is theirs",
-      summary:
-        'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Collect its response with kone_wait_for_responses.',
+    expect(spawnResultOf(res)).toEqual({
+      spawns: [
+        {
+          threadId: "child-op-1",
+          title: "Build /users",
+          provider: "codex",
+          model: "gpt-5",
+          agent: "Backend",
+          agentId: "agent-backend",
+          why: "the API layer is theirs",
+        },
+      ],
+      summary: 'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Collect its response with kone_wait_for_responses.',
     });
     expect(res.structuredContent).toMatchObject({ agent: "Backend", delegation: { threadId: "child-op-1" } });
   });

@@ -33,6 +33,7 @@ import type { SessionSummary } from "~/types/session";
 const props = defineProps<{ row: SessionSummary }>();
 
 const { cue } = useSound();
+const { displays: responseDisplays } = useResponsePrefs();
 const intake = useStudioIntake();
 // The live list's shared pipeline — the same instance the inbox rows read —
 // so a header archive drops optimistically with the same refusal-restore as a
@@ -210,7 +211,7 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
     >
       <ConversationThread
         :blocks="blocks"
-        surface="inbox"
+        :display="responseDisplays.inbox"
         :compactions="compactions"
         :now="now"
         :thread-id="row.threadId"

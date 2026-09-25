@@ -6,7 +6,6 @@ import {
   deriveTurnSettingMarks,
   turnSettingChangeLabel,
   turnSettingLeg,
-  turnSettingVerb,
 } from "./turnSettingMarkers";
 
 function user(
@@ -166,22 +165,6 @@ describe("deriveTurnSettingMarks", () => {
       exchange("b", [user("u2", { effort: "high", model: "default" })]),
     ]);
     expect(marks.get("b")).toEqual({ key: "b", effort: { from: "medium", to: "high" } });
-  });
-});
-
-describe("turnSettingVerb", () => {
-  test("it names only the axes that moved", () => {
-    expect(turnSettingVerb({ key: "a", effort: { from: "low", to: "high" } })).toBe(
-      "Reasoning effort",
-    );
-    expect(turnSettingVerb({ key: "a", model: { from: "x", to: "y" } })).toBe("Model");
-    expect(
-      turnSettingVerb({
-        key: "a",
-        effort: { from: "low", to: "high" },
-        model: { from: "x", to: "y" },
-      }),
-    ).toBe("Model & effort");
   });
 });
 
