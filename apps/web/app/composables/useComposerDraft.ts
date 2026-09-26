@@ -1,4 +1,5 @@
 import { computed } from "vue";
+import { DRAFT_KEY_PREFIX, useComposerPrefs } from "~/composables/useComposerPrefs";
 
 export function useComposerDraft(deps: {
   getProjectPath: () => string;
@@ -6,8 +7,11 @@ export function useComposerDraft(deps: {
   setEditorFromText: (val: string) => void;
 }) {
   const { getProjectPath, getText, setEditorFromText } = deps;
+  // Read live, so turning drafts off in settings stops the next save without
+  // remounting the composer. The prefs store already cleared what was on disk.
+  const { prefs } = useComposerPrefs();
 
-  const draftKey = computed(() => `kone:draft:${getProjectPath()}`);
+  const draftKey = computed(() => `${DRAFT_KEY_PREFIX}${getProjectPath()}`);
   let draftSaveTimer: number | null = null;
 
   function scheduleDraftSave(): void {
@@ -17,6 +21,7 @@ export function useComposerDraft(deps: {
 
   function persistDraft(): void {
     draftSaveTimer = null;
+    if (!prefs.value.keepDrafts) return;
     try {
       const draft = getText().trim();
       if (draft) window.localStorage.setItem(draftKey.value, draft);
@@ -27,6 +32,7 @@ export function useComposerDraft(deps: {
   }
 
   function restoreDraft(): void {
+    if (!prefs.value.keepDrafts) return;
     try {
       const saved = window.localStorage.getItem(draftKey.value);
       if (saved) setEditorFromText(saved);
