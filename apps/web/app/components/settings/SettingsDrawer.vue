@@ -117,9 +117,9 @@ function openSection(target: SettingsPane) {
 // group is deliberate —
 //   · Personalization runs from hands (keys) to eyes (strip, turns, theme, type).
 //   · Ecosystem puts the people before the machinery: which agent answers is a
-//     bigger choice than which CLI carries them. Sub-agents sit under Agents
-//     (a standing definition an agent invokes, not a CLI it runs on); Workspace
-//     sits above Providers because it's the choice you make most.
+//     bigger choice than which CLI carries them. Teams holds both the agents and
+//     the sub-agents they spawn — two ends of one hand-off, not two settings;
+//     Workspace sits above Providers because it's the choice you make most.
 type RootRow = {
   pane: SettingsPane;
   label: string;
@@ -144,8 +144,7 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
   {
     title: "Ecosystem",
     rows: [
-      { pane: "agentRoster", label: "Agents", glyph: "agents", summary: agentSummary.value },
-      { pane: "agentPresets", label: "Sub-agents", glyph: "subagents" },
+      { pane: "teams", label: "Teams", glyph: "teams", summary: agentSummary.value },
       { pane: "studio", label: "Workspace", glyph: "workspace" },
       {
         pane: "providers",
@@ -293,9 +292,7 @@ watch(
 
     <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
 
-    <SettingsAgentsPane v-if="pane === 'agentRoster'" :open="open" @back="backToRoot" />
-
-    <SettingsSubagentsPane v-if="pane === 'agentPresets'" :open="open" @back="backToRoot" />
+    <SettingsTeamsPane v-if="pane === 'teams'" :open="open" @back="backToRoot" />
 
     <!-- Root list (and Thread strip, which still mounts from here). Pages above
          take the widened aside themselves. -->

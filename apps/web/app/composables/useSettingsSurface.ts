@@ -25,8 +25,7 @@ export type SettingsPane =
   | "agentsUsage"
   | "providerLimits"
   | "agentSkills"
-  | "agentRoster"
-  | "agentPresets";
+  | "teams";
 
 /** The drawer as a list: a column beside the launcher, which stays the subject. */
 const COLUMN_WIDTH = 320;
@@ -68,8 +67,7 @@ const PANE_MEASURE = {
   agentsUsage: "page",
   providerLimits: "compact",
   agentSkills: "page",
-  agentRoster: "page",
-  agentPresets: "page",
+  teams: "page",
 } satisfies Record<SettingsPane, "column" | "page" | "compact">;
 
 const pane = ref<SettingsPane>("root");

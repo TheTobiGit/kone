@@ -315,7 +315,7 @@ watch(
   <SettingsPageShell
     v-if="agent"
     :open="open"
-    :breadcrumb="`Ecosystem / Agents / ${agent.name}`"
+    :breadcrumb="`Ecosystem / Teams / ${agent.name}`"
     :breadcrumb-icon="UserGroupIcon"
     :label="agent.name"
     @back="$emit('back')"
