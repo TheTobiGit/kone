@@ -7,6 +7,7 @@ import type { useAgentSettings } from "~/composables/useAgentSettings";
 import { isKonePluginEnabled, type useSkills } from "~/composables/useSkills";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
+import SettingsBanner from "~/components/settings/SettingsBanner.vue";
 import { ORIGIN_TO_BRAND, brandsForOrigin, originLabel } from "~/utils/detailFormat";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useEdgeFade } from "~/composables/useEdgeFade";
@@ -136,9 +137,48 @@ function isPluginEnabled(plugin: PluginEntry): boolean {
   return isKonePluginEnabled(plugin);
 }
 
+/** Up to three skill names for a plugin's deck, front first. An empty plugin
+ *  still gets one sheet, so every plugin card reads as a bundle. */
+function bundleSheets(plugin: PluginEntry): string[] {
+  const names = plugin.skills.slice(0, 3).map((sk) => sk.name);
+  return names.length ? names : ["No skills yet"];
+}
+
 async function flipPlugin(plugin: PluginEntry): Promise<void> {
   await props.skills.setPluginEnabled(plugin, !isPluginEnabled(plugin));
 }
+
+// ── banner ──────────────────────────────────────────────────────────────────
+/** Every provider something was found under, in the filter's order. */
+const origins = computed(() => {
+  const found = new Set<string>([...all.value.map((s) => s.origin), ...plugins.value.map((p) => p.origin)]);
+  const known = PROVIDER_ORDER.filter((o) => found.has(o));
+  const orderSet = new Set<string>(PROVIDER_ORDER);
+  return [...known, ...[...found].filter((o) => !orderSet.has(o))];
+});
+const onCount = computed(() => all.value.filter((s) => isEnabled(s)).length);
+
+// While the first scan runs the counts hold their places with a dash, so the
+// band doesn't change height when they land.
+const bannerStats = computed(() => {
+  if (loading.value) {
+    return [
+      { label: "Skills", value: "–" },
+      { label: "Active", value: "–" },
+    ];
+  }
+  return [
+    { label: "Skills", value: all.value.length },
+    { label: "Active", value: onCount.value },
+    ...(plugins.value.length ? [{ label: "Plugins", value: plugins.value.length }] : []),
+  ];
+});
+
+const ART_SOURCES = 4;
+const artSources = computed(() => origins.value.slice(0, ART_SOURCES));
+const artOverflow = computed(() => Math.max(0, origins.value.length - ART_SOURCES));
+/** What the sources fill: skills, plugins, and the skills a project carries. */
+const ART_KINDS = [PuzzleIcon, Package02Icon, Folder01Icon] as const;
 
 const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
@@ -146,6 +186,51 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 <template>
   <section class="sk" aria-label="Skills">
+    <div class="sk__top">
+      <SettingsBanner
+        title="Skills"
+        lede="What your agents know how to do, gathered from every provider and project, and switched on or off in one place."
+        :stats="bannerStats"
+      >
+        <template #art>
+          <!-- Providers → what they bring. Decorative: the counts beside it and
+               the filters below name every provider. -->
+          <div class="sk-art">
+            <div class="sk-art__sources">
+              <span
+                v-for="(o, i) in artSources"
+                :key="o"
+                class="sk-art__source"
+                :style="{ '--i': i }"
+              >
+                <HugeiconsIcon v-if="o === 'agents'" :icon="PuzzleIcon" :size="17" :stroke-width="1.7" />
+                <ProviderLogo v-else :brand="ORIGIN_TO_BRAND[o] ?? 'generic'" :size="18" />
+              </span>
+              <!-- Nothing scanned yet: the places a scan looks still stand in,
+                   so the current always has somewhere to start. -->
+              <span v-if="!artSources.length" class="sk-art__source" :style="{ '--i': 0 }">
+                <HugeiconsIcon :icon="Globe02Icon" :size="17" :stroke-width="1.7" />
+              </span>
+              <span v-if="artOverflow" class="sk-art__source sk-art__source--more" :style="{ '--i': ART_SOURCES }">
+                +{{ artOverflow }}
+              </span>
+            </div>
+
+            <svg class="sk-art__current" viewBox="0 0 64 40" preserveAspectRatio="none">
+              <path class="sk-art__track" d="M2 20 C 22 20, 26 6, 62 6 M2 20 H62 M2 20 C 22 20, 26 34, 62 34" />
+              <path class="sk-art__flow" d="M2 20 C 22 20, 26 6, 62 6 M2 20 H62 M2 20 C 22 20, 26 34, 62 34" />
+            </svg>
+
+            <div class="sk-art__kinds">
+              <span v-for="(k, i) in ART_KINDS" :key="i" class="sk-art__kind" :style="{ '--i': i }">
+                <HugeiconsIcon :icon="k" :size="13" :stroke-width="1.8" />
+              </span>
+            </div>
+          </div>
+        </template>
+      </SettingsBanner>
+    </div>
+
     <!-- Loading mirrors the loaded structure (filters bar + card grid) with the
       same layout classes, so resolving the scan swaps backgrounds, not boxes:
       invisible text locks the metrics, shimmer blocks stand in for glyphs and
@@ -254,10 +339,23 @@ const { measure, maskStyle } = useEdgeFade(scroller);
             :class="{ 'card--disabled': !isPluginEnabled(p) }"
             @click="emit('openPlugin', p)"
           >
-            <div class="card__top">
-              <div class="icons">
+            <div class="card__top card__top--bundle">
+              <span class="bundle__from">
                 <span v-for="b in brandsForOrigin(p.origin)" :key="b" class="icon">
-                  <ProviderLogo :brand="b" :size="18" />
+                  <ProviderLogo :brand="b" :size="14" />
+                </span>
+              </span>
+              <!-- The skills it carries, as a deck: the first on top, the next
+                   two peeking behind it. -->
+              <div class="bundle" aria-hidden="true">
+                <span
+                  v-for="(sk, j) in bundleSheets(p)"
+                  :key="j"
+                  class="bundle__sheet"
+                  :style="{ '--j': j }"
+                >
+                  <HugeiconsIcon :icon="PuzzleIcon" :size="11" :stroke-width="1.8" class="bundle__glyph" />
+                  <span class="bundle__name">{{ sk }}</span>
                 </span>
               </div>
               <div class="scopeRow">
@@ -355,6 +453,92 @@ const { measure, maskStyle } = useEdgeFade(scroller);
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+}
+
+/* The banner, fixed above the filters. The same inline padding as the rows
+   below, so the band lines up with the cards. */
+.sk__top {
+  flex-shrink: 0;
+  padding: 2px 1rem 16px;
+}
+
+/* ── banner art ── */
+.sk-art {
+  --sk-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sk-art__sources {
+  display: flex;
+  align-items: center;
+}
+.sk-art__source {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-left: -10px;
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--ink-soft);
+  box-shadow: 0 0 0 2.5px var(--sunken);
+  animation: sk-art-in 520ms var(--sk-spring) calc(var(--i) * 60ms + 120ms) backwards;
+}
+.sk-art__source:first-child {
+  margin-left: 0;
+}
+.sk-art__source--more {
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes sk-art-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.8);
+  }
+}
+.sk-art__current {
+  width: 64px;
+  height: 40px;
+  overflow: visible;
+  fill: none;
+  stroke-linecap: round;
+}
+.sk-art__track {
+  stroke: color-mix(in srgb, var(--ink) 14%, transparent);
+  stroke-width: 1.2;
+}
+.sk-art__flow {
+  stroke: var(--accent);
+  stroke-width: 1.4;
+  stroke-dasharray: 5 60;
+  animation: sk-art-flow 2.6s linear infinite;
+}
+@keyframes sk-art-flow {
+  from {
+    stroke-dashoffset: 65;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.sk-art__kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sk-art__kind {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
+  animation: sk-art-in 520ms var(--sk-spring) calc(var(--i) * 70ms + 420ms) backwards;
 }
 
 .sk__filters {
@@ -584,27 +768,83 @@ const { measure, maskStyle } = useEdgeFade(scroller);
   opacity: 0.88;
 }
 
-/* folder container — plugin is a folder of skills */
-.card--plugin {
-  border-color: color-mix(in srgb, var(--ink) 16%, transparent);
+/* A plugin is a bundle of skills, and its card shows that rather than saying
+   it: where a skill card has its provider's mark, a plugin's band holds a
+   small deck of the skills it carries, the first face up and the next two
+   peeking out behind. The band takes a trace of the accent so a plugin can be
+   picked out of a mixed grid at a glance; the provider shrinks to a corner. */
+.card--plugin .card__top--bundle {
+  background:
+    radial-gradient(90% 120% at 50% 0%, color-mix(in oklab, var(--accent) 7%, transparent), transparent 70%),
+    color-mix(in srgb, var(--panel) 94%, var(--band) 6%);
 }
-.card--plugin .card__top {
-  background: color-mix(in srgb, var(--panel) 90%, var(--band) 10%);
-  /* subtle stacked edge */
-  box-shadow: inset 0 -1px 0 var(--line-soft);
-}
-.card--plugin .card__top::before {
-  content: "";
+.bundle__from {
   position: absolute;
-  top: 6px;
-  left: 12px;
-  width: 28px;
-  height: 6px;
+  top: 9px;
+  left: 10px;
+  display: flex;
+  gap: 5px;
+  color: color-mix(in srgb, var(--ink) 70%, transparent);
+}
+.bundle {
+  position: absolute;
+  top: 34px;
+  left: 50%;
+  width: min(62%, 200px);
+  height: 23px;
+  transform: translateX(-50%);
+}
+.bundle__sheet {
+  position: absolute;
+  inset: 0;
+  z-index: calc(3 - var(--j));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 7px;
   background: var(--panel);
-  border: 1px solid var(--line-soft);
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  opacity: 0.9;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  transform-origin: 50% 0;
+  transform: translateY(calc(var(--j) * -5px)) scale(calc(1 - var(--j) * 0.06));
+  transition:
+    transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 200ms ease;
+}
+.bundle__sheet:first-child {
+  color: var(--ink-soft);
+}
+.bundle__glyph {
+  flex-shrink: 0;
+  color: var(--faint);
+}
+/* At rest only the edges of the sheets behind show; their names would be
+   half-covered scraps, so they wait for the hover that makes room for them. */
+.bundle__sheet:not(:first-child) > * {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.bundle__sheet:first-child .bundle__glyph {
+  color: var(--accent);
+}
+.bundle__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Hover lifts the sheets behind apart, far enough to read their names — the
+   card shows what's inside before you open it. */
+.card--plugin:hover .bundle__sheet {
+  transform: translateY(calc(var(--j) * -15px)) scale(calc(1 - var(--j) * 0.03));
+  color: var(--ink-soft);
+}
+.card--plugin:hover .bundle__sheet:not(:first-child) > * {
+  opacity: 1;
+  transition-delay: 80ms;
 }
 
 /* inset top — own border + radius, flat band, no gradient, no icon boxes */
@@ -744,9 +984,17 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .sk-art__source,
+  .sk-art__kind,
+  .sk-art__flow {
+    animation: none;
+  }
   .card--skel {
     animation: none;
     opacity: 0.75;
+  }
+  .bundle__sheet {
+    transition: none;
   }
 }
 </style>

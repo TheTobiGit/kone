@@ -9,7 +9,7 @@
 //   · intro — the strokes draw themselves in once, as the row enters (the drawer
 //     remounts the list on every open, so this replays per open);
 //   · live  — a loop that runs only while `live` is set.
-// The intro runs on a wrapper <g> (`.d`, `.pop`, `.rise`) and the loop on the
+// The intro runs on a wrapper <g> (`.d`, `.pop`, `.rise`, `.rise-in`) and the loop on the
 // mark inside it, so the two never share an element: when a loop ends, the mark
 // falls back to its wrapper's finished state instead of replaying the intro.
 // Stroke dashes are inherited, which is what lets a wrapper draw a path in.
@@ -23,6 +23,7 @@ export type SettingsGlyphKind =
   | "typography"
   | "agents"
   | "subagents"
+  | "teams"
   | "workspace"
   | "providers"
   | "skills"
@@ -116,6 +117,26 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         <g class="pop" style="--k: 0"><circle class="kid" cx="6" cy="18" r="1.9" /></g>
         <g class="pop" style="--k: 1"><circle class="kid" cx="12" cy="18" r="1.9" /></g>
         <g class="pop" style="--k: 2"><circle class="kid" cx="18" cy="18" r="1.9" /></g>
+      </template>
+
+      <!-- Teams: a lead steps forward, the two who work with it rise in behind. -->
+      <template v-else-if="kind === 'teams'">
+        <g class="rise-in" style="--k: 0">
+          <g class="mate mate-l">
+            <circle cx="5.5" cy="9.5" r="2" />
+            <path d="M2 18a3.5 3.5 0 0 1 7 0" />
+          </g>
+        </g>
+        <g class="rise-in" style="--k: 1">
+          <g class="mate mate-r">
+            <circle cx="18.5" cy="9.5" r="2" />
+            <path d="M15 18a3.5 3.5 0 0 1 7 0" />
+          </g>
+        </g>
+        <g class="lead">
+          <g class="d"><circle cx="12" cy="7.5" r="2.8" pathLength="1" /></g>
+          <g class="d" style="--at: 260ms"><path d="M7 19.5a5 5 0 0 1 10 0" pathLength="1" /></g>
+        </g>
       </template>
 
       <!-- Workspace: a window of panes that rebalance their widths. -->
@@ -361,6 +382,29 @@ svg * {
   100% { transform: scale(0); }
 }
 
+/* ── teams ─────────────────────────────────────────────────────────────────── */
+.mate {
+  opacity: 0.5;
+}
+.rise-in {
+  opacity: 0;
+  animation: sg-rise-in 460ms var(--gt-spring) calc(var(--row-delay, 0ms) + 520ms + var(--k) * 90ms)
+    forwards;
+}
+@keyframes sg-rise-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+.gt--live .lead {
+  animation: sg-bob 1.8s ease-in-out infinite;
+}
+.gt--live .mate-l {
+  animation: sg-bob 1.8s ease-in-out 300ms infinite;
+}
+.gt--live .mate-r {
+  animation: sg-bob 1.8s ease-in-out 600ms infinite;
+}
+
 /* ── workspace ─────────────────────────────────────────────────────────────── */
 .div {
   stroke-width: 1.4;
@@ -497,6 +541,10 @@ svg * {
   .pop,
   .rise {
     transform: none;
+  }
+  .rise-in {
+    opacity: 1;
+    animation: none;
   }
 }
 </style>
