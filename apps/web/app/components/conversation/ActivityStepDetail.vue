@@ -460,7 +460,7 @@ async function onCopy(): Promise<void> {
   margin: 0;
   padding: 8px 10px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-size-code);
   line-height: 1.55;
   color: var(--ink-soft);
   white-space: pre-wrap;

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webFrame, type IpcRendererEvent } from "electron";
 
 import type {
   AgentRecord,
@@ -411,6 +411,9 @@ const api = {
     toggleMaximize: (): Promise<{ isMaximized: boolean; isFullscreen: boolean }> =>
       ipcRenderer.invoke("window:toggle-maximize"),
     close: (): Promise<void> => ipcRenderer.invoke("window:close"),
+    // The interface scale. The renderer sizes its text in pixels, so scaling
+    // the interface means zooming the page, not moving the root font size.
+    setZoom: (factor: number): void => webFrame.setZoomFactor(factor),
     getState: (): Promise<{ isMaximized: boolean; isFullscreen: boolean }> =>
       ipcRenderer.invoke("window:get-state"),
     onState: (cb: (state: { isMaximized: boolean; isFullscreen: boolean }) => void): (() => void) => {

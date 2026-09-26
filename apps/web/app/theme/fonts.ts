@@ -7,7 +7,7 @@ import {
 
 /**
  * The faces text can wear, as a picker rather than a text field. A row names a
- *  job (interface, wordmark, code, composer); this module answers what can fill
+ *  job (interface, headings, code, composer); this module answers what can fill
  *  it: the shipped default, the platform's own face, a curated face when it's
  *  actually installed, and — through the Local Font Access API — everything
  *  else on the machine.
@@ -37,7 +37,8 @@ const CURATED_NAMES = {
 } satisfies Record<FontKind, string[]>;
 
 function defaultOption(kind: FontKind): FontOption {
-  if (kind === "serif") return { id: "", label: "Default", stack: DEFAULT_SERIF_STACK };
+  // Headings follow the interface until given a face of their own.
+  if (kind === "serif") return { id: "", label: "Same as interface", stack: DEFAULT_SANS_STACK };
   if (kind === "mono") return { id: "", label: "Default", stack: DEFAULT_MONO_STACK };
   return { id: "", label: "Default", stack: DEFAULT_SANS_STACK };
 }
@@ -64,6 +65,9 @@ export function stackFor(kind: FontKind, name: string): string {
  */
 export function curatedOptions(kind: FontKind): FontOption[] {
   const options = [defaultOption(kind), systemOption(kind)];
+  // Shipped with the app, so always offered: no probe could find it before
+  // something has asked for it and made it load.
+  if (kind === "serif") options.push({ id: "Fraunces", label: "Fraunces", stack: stackFor(kind, "Fraunces") });
   for (const name of CURATED_NAMES[kind]) {
     if (!isFontFamilyAvailable(name)) continue;
     if (options.some((o) => o.id === name)) continue;

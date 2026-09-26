@@ -24,6 +24,7 @@ export default defineNuxtPlugin(() => {
       lineHeightBody: resolved.lineHeightBody,
       measure: resolved.measure,
       smoothing: resolved.smoothing,
+      ligatures: resolved.ligatures,
     };
   };
 

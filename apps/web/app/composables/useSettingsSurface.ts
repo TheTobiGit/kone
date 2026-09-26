@@ -60,7 +60,7 @@ const PANE_MEASURE = {
   shortcuts: "page",
   motion: "page",
   appearance: "page",
-  typography: "compact",
+  typography: "page",
   conversation: "page",
   studio: "compact",
   providers: "page",

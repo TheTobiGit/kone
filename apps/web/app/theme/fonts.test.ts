@@ -13,9 +13,15 @@ describe("font picker", () => {
     for (const kind of ["sans", "serif", "mono", "composer"] as const) {
       const options = curatedOptions(kind);
       expect(options[0]?.id).toBe("");
-      expect(options[0]?.label).toBe("Default");
+      // Headings have no stack of their own to default to; they follow the
+      // interface until given one.
+      expect(options[0]?.label).toBe(kind === "serif" ? "Same as interface" : "Default");
       expect(options[1]?.label).toBe("System");
     }
+  });
+
+  it("always offers the shipped serif for headings", () => {
+    expect(curatedOptions("serif").some((o) => o.id === "Fraunces")).toBe(true);
   });
 
   it("labels empty as Default and names the rest", () => {
