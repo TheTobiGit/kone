@@ -31,6 +31,10 @@ export function useComposerTrigger<T>(opts: {
   applyItem: (item: T, trigger: ActiveTrigger) => void;
   /** Enter with no menu open — the draft's normal send. */
   onCommit?: () => void;
+  /** Whether a bare Enter commits. False leaves it to the field as a newline
+   *  and only ⌘/Ctrl+Enter commits (the composer's send-key setting). Either
+   *  way ⌘/Ctrl+Enter sends, so the chord works whichever is set. */
+  sendsOnPlainEnter?: () => boolean;
   /** Re-serialize the field after a token mutation (the editor sync). */
   onMutated?: () => void;
 }) {
@@ -145,7 +149,7 @@ export function useComposerTrigger<T>(opts: {
   }
 
   /** Returns true when the keystroke was consumed by the trigger. With no menu
-   *  open a plain Enter commits the draft — the one path both markers shared
+   *  open Enter commits the draft (or only ⌘/Ctrl+Enter, per `sendsOnPlainEnter`) — the one path both markers shared
    *  once their handlers fell through to each other. */
   function onKeydown(e: KeyboardEvent): boolean {
     if (open.value) {
@@ -174,7 +178,8 @@ export function useComposerTrigger<T>(opts: {
       }
       return false;
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    const plainSends = opts.sendsOnPlainEnter?.() ?? true;
+    if (e.key === "Enter" && !e.shiftKey && (plainSends || e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       opts.onCommit?.();
       return true;

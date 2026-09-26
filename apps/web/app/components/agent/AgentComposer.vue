@@ -18,6 +18,7 @@ import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
 import ComposerWorkspaceTray from "~/components/agent/ComposerWorkspaceTray.vue";
 import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
+import InteractionModeIcon from "~/components/icons/InteractionModeIcon.vue";
 import type { WorkspaceStepRow } from "~/utils/workspaceSteps";
 import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ComposerStatusTray from "~/components/agent/ComposerStatusTray.vue";
@@ -36,6 +37,8 @@ import type { MentionItem, MentionProject, SlashCommandItem } from "~/utils/comp
 import { SLASH_COMMANDS } from "~/composables/useComposerSlash";
 import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
 import { isWorkspacePending } from "~/utils/threadWorkspace";
+import { FALLBACK_MODE, INTERACTION_MODES } from "~/utils/interactionModes";
+import { useComposerPrefs } from "~/composables/useComposerPrefs";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
 import { isRouterId, JEV_LABEL } from "~/utils/agentRouting";
@@ -260,6 +263,8 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+// How the composer behaves under your hands — the Composer settings page.
+const { prefs: composerPrefs } = useComposerPrefs();
 
 // No active provider: the model slot wears every provider's mark greyed rather
 // than a single live one, so the empty state reads as "nothing to run on".
@@ -479,14 +484,9 @@ function cycleContextWindow() {
 // label always names the current rung so the cycle stays discoverable. (Not
 // to be confused with a provider's separate plan/build turn mode — kone
 // doesn't expose that as its own toggle yet.)
-type ModeMeta = { id: InteractionMode; label: string; title: string; hue: string };
-const MODES: ModeMeta[] = [
-  { id: "ask", label: "Ask user", title: "Ask user — reads and asks before any change", hue: "#6E8BEF" },
-  { id: "accept-edits", label: "Edits only", title: "Edits only — auto-approves file edits, asks before commands", hue: "#5EAF8C" },
-  { id: "full-access", label: "Full access", title: "Full access — runs everything without prompting", hue: "#D08466" },
-];
+const MODES = INTERACTION_MODES;
 const currentMode = computed(
-  () => MODES.find((m) => m.id === (props.mode ?? "accept-edits")) ?? MODES[1]!,
+  () => MODES.find((m) => m.id === (props.mode ?? FALLBACK_MODE)) ?? MODES[1]!,
 );
 const modeBump = ref(false);
 function cycleMode() {
@@ -569,6 +569,7 @@ const trigger = useComposerTrigger<MentionItem | SlashCommandItem>({
     active.marker === "@" ? mentionItemsFor(active.query) : slashItemsFor(active.query),
   applyItem: (item) => acceptTriggerItem(item),
   onCommit: () => submitOrQueue(),
+  sendsOnPlainEnter: () => composerPrefs.value.sendKey === "enter",
   onMutated: () => handleEditorChanged(),
 });
 
@@ -800,6 +801,8 @@ onClickOutside(
     // The picker lives outside our dock, so its clicks read as "outside" — but it
     // is our own surface, one step removed. Don't collapse while it's up.
     if (props.picking || agentPickerOpen.value) return;
+    // Folding on a click away is a setting; off, the card stays until Escape.
+    if (!composerPrefs.value.foldOnBlur) return;
     const target = event.target;
     if (target instanceof Element && target.closest("[data-agent-dock]")) {
       return;
@@ -843,6 +846,7 @@ function onSurfaceClick() {
 // a key pressed while another field is focused, or one hit while a file detail
 // is up (the composer is inert then).
 async function onGlobalKey(e: KeyboardEvent) {
+  if (!composerPrefs.value.typeToWake) return;
   if (open.value || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
   // Single printable char only — "a", "1", "?" pass; "Enter"/"Tab"/arrows don't.
   if (e.key.length !== 1) return;
@@ -1206,23 +1210,7 @@ defineExpose({ wake, setDraft, focus });
               :title="currentMode.title"
               @click.stop="cycleMode"
             >
-              <svg class="mode__icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <!-- Ask · a chat bubble with a question (the agent asks first) -->
-                <template v-if="currentMode.id === 'ask'">
-                  <path d="M3 5.2c0-.9.7-1.6 1.6-1.6h8.8c.9 0 1.6.7 1.6 1.6v4.6c0 .9-.7 1.6-1.6 1.6H8l-3 2.4V11.4H4.6c-.9 0-1.6-.7-1.6-1.6Z" />
-                  <path d="M7.6 6.7a1.4 1.4 0 1 1 1.9 1.3c-.5.3-.7.6-.7 1.1" />
-                  <path d="M8.8 10.7v.02" />
-                </template>
-                <!-- Edits · a pencil (auto-applies edits) -->
-                <template v-else-if="currentMode.id === 'accept-edits'">
-                  <path d="M11.4 3.7 14.3 6.6 6.9 14H4v-2.9Z" />
-                  <path d="M10.4 4.7 13.3 7.6" />
-                </template>
-                <!-- Full access · a shield (no limits, nothing held back) -->
-                <template v-else>
-                  <path d="M9 2.6 14 4.6V9C14 12 11.9 14 9 15.4 6.1 14 4 12 4 9V4.6Z" />
-                </template>
-              </svg>
+              <InteractionModeIcon class="mode__icon" :mode="currentMode.id" />
               <span class="mode__label">{{ currentMode.label }}</span>
             </button>
           </div>
