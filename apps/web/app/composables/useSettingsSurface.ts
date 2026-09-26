@@ -16,11 +16,14 @@ export type SettingsPane =
   | "root"
   | "profile"
   | "shortcuts"
-  | "motion"
   | "appearance"
   | "typography"
   | "conversation"
+  | "composer"
   | "studio"
+  | "inbox"
+  | "bench"
+  | "assistant"
   | "providers"
   | "agentsUsage"
   | "providerLimits"
@@ -58,11 +61,14 @@ const PANE_MEASURE = {
   root: "column",
   profile: "page",
   shortcuts: "page",
-  motion: "page",
   appearance: "page",
   typography: "page",
   conversation: "page",
+  composer: "compact",
   studio: "compact",
+  inbox: "compact",
+  bench: "compact",
+  assistant: "compact",
   providers: "page",
   agentsUsage: "page",
   providerLimits: "compact",

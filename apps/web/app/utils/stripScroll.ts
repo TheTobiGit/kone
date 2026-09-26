@@ -1,14 +1,8 @@
 // The thread strip's scroll geometry: the rule that decides where the rail lands
 // when a column takes focus, and the constants that rule is built on.
 //
-// This is a leaf module on purpose, and it exists for one reason. ThreadStrip.vue
-// calls `resolveScrollTarget` with numbers it measured off the live DOM;
-// SettingsThreadStripPane.vue calls it with numbers it models, to show you what
-// each setting will do before you pick one. Both go through this function, so the
-// settings preview cannot describe behaviour the board doesn't have. Change the
-// rule here and the preview changes with it — or fails to compile. A hand-copied
-// port would instead drift silently, and a settings page that lies about the
-// setting is worse than one that says nothing.
+// A leaf module, so the settings that name the centring modes can read them
+// without pulling in the strip component.
 
 // niri's `center-focused-column`. `never` keeps the strip anchored and only nudges
 // the focused column into view; `on-overflow` does the same but lands it centred

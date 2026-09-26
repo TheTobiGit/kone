@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { SettingsPane } from "~/composables/useSettingsSurface";
 import type { SettingsGlyphKind } from "./SettingsGlyph.vue";
-import { CENTER_MODES } from "~/utils/stripScroll";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
 // It doesn't float over the launcher — it sits pinned to the left edge, and the
@@ -12,7 +11,7 @@ import { CENTER_MODES } from "~/utils/stripScroll";
 // The panel is a small navigable drawer: a root list of section groups that
 // pushes into detail panes. Those panes are *pages* — the drawer widens and
 // hands the whole surface to SettingsProfilePane, SettingsShortcutsPane,
-// SettingsProvidersPane, SettingsThreadStripPane, and the rest. Which panes are
+// SettingsProvidersPane, and the rest. Which panes are
 // pages is declared in useSettingsSurface, since the launcher's slide is measured
 // from the same value.
 
@@ -21,18 +20,6 @@ const emit = defineEmits<{ close: [] }>();
 
 const { muted, toggleMuted, cue } = useSound();
 const { resolve: resolveProfile } = useProfile();
-
-// ── thread strip (niri's center-focused-column) ─────────────────────────────────
-// The same module-scope ref ThreadStrip.vue reads, so setting it here steers the
-// board's scroll behaviour live — no reload, no prop threaded across.
-const { centerMode } = useStripPrefs();
-
-// The active option, shown trailing the root row so the current choice reads
-// without opening the page. The labels come from CENTER_MODES rather than a copy
-// kept here, so the row and the page can't disagree about what a mode is called.
-const currentCenterOption = computed(
-  () => CENTER_MODES.find((o) => o.value === centerMode.value)?.label ?? "",
-);
 
 // ── providers ────────────────────────────────────────────────────────────────
 // The row only summarises; the surface itself is SettingsProvidersPane, which the
@@ -90,7 +77,7 @@ const { pane, isPage, revealWidth } = useSettingsSurface();
 
 // Any pane built on SettingsPageShell owns its own frame — padding, scroll smoke,
 // the lot — so the aside must not pad it a second time. That's every page. Only
-// the root list (and the strip pane) let the aside do the padding and the edge smoke.
+// the root list lets the aside do the padding and the edge smoke.
 const shellFramed = computed(() => isPage.value);
 
 // The narrow column (the root list) scrolls the aside itself. It smokes its
@@ -115,11 +102,12 @@ function openSection(target: SettingsPane) {
 // Rows as data: each names the pane it opens, the glyph that acts it out, and
 // the one fact (if any) worth reading without opening it. The order within a
 // group is deliberate —
-//   · Personalization runs from hands (keys) to eyes (strip, turns, theme, type).
+//   · Personalization runs from hands (keys, turns, the composer) to eyes
+//     (theme, type).
+//   · Workspaces are kone's four places to work, in the order they're summoned.
 //   · Ecosystem puts the people before the machinery: which agent answers is a
 //     bigger choice than which CLI carries them. Teams holds both the agents and
-//     the sub-agents they spawn — two ends of one hand-off, not two settings;
-//     Workspace sits above Providers because it's the choice you make most.
+//     the sub-agents they spawn — two ends of one hand-off, not two settings.
 type RootRow = {
   pane: SettingsPane;
   label: string;
@@ -135,17 +123,25 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
     title: "Personalization",
     rows: [
       { pane: "shortcuts", label: "Keyboard shortcuts", glyph: "shortcuts" },
-      { pane: "motion", label: "Thread strip", glyph: "strip", summary: currentCenterOption.value },
       { pane: "conversation", label: "Conversation", glyph: "conversation" },
+      { pane: "composer", label: "Composer", glyph: "composer" },
       { pane: "appearance", label: "Appearance", glyph: "appearance" },
       { pane: "typography", label: "Typography", glyph: "typography" },
+    ],
+  },
+  {
+    title: "Workspaces",
+    rows: [
+      { pane: "studio", label: "Studio", glyph: "studio" },
+      { pane: "inbox", label: "Inbox", glyph: "inbox" },
+      { pane: "bench", label: "Bench", glyph: "bench" },
+      { pane: "assistant", label: "Assistant", glyph: "assistant" },
     ],
   },
   {
     title: "Ecosystem",
     rows: [
       { pane: "teams", label: "Teams", glyph: "teams", summary: agentSummary.value },
-      { pane: "studio", label: "Workspace", glyph: "workspace" },
       {
         pane: "providers",
         label: "Providers",
@@ -280,7 +276,17 @@ watch(
 
     <SettingsTypographyPane v-if="pane === 'typography'" :open="open" @back="backToRoot" />
 
+    <SettingsComposerPane v-if="pane === 'composer'" :open="open" @back="backToRoot" />
+
     <SettingsStudioPane v-if="pane === 'studio'" :open="open" @back="backToRoot" />
+
+    <SettingsWorkspacePane
+      v-if="pane === 'inbox' || pane === 'bench' || pane === 'assistant'"
+      :key="pane"
+      :open="open"
+      :workspace="pane"
+      @back="backToRoot"
+    />
 
     <SettingsConversationPane v-if="pane === 'conversation'" :open="open" @back="backToRoot" />
 
@@ -294,16 +300,11 @@ watch(
 
     <SettingsTeamsPane v-if="pane === 'teams'" :open="open" @back="backToRoot" />
 
-    <!-- Root list (and Thread strip, which still mounts from here). Pages above
-         take the widened aside themselves. -->
-    <div
-      v-if="pane === 'root' || pane === 'motion'"
-      class="grid min-h-0 flex-1 content-start"
-    >
+    <!-- Root list. Pages above take the widened aside themselves. -->
+    <div v-if="pane === 'root'" class="grid flex-1 content-start">
       <!-- Root pane: the identity card, then the section groups. One wash
            travels between the rows instead of each row lighting its own. -->
       <section
-        v-if="pane === 'root'"
         :key="`root-${openEpoch}`"
         ref="listEl"
         class="root col-start-1 row-start-1 relative flex flex-col gap-6"
@@ -366,9 +367,6 @@ watch(
           </button>
         </div>
       </section>
-
-      <SettingsThreadStripPane v-else-if="pane === 'motion'" :open="open" @back="backToRoot" />
-
     </div>
 
     <!-- Controls sit at the foot of the panel. Sound is the first. Only the
@@ -432,15 +430,6 @@ watch(
 .settings-scroll.is-asleep :deep(*),
 .settings-scroll.is-asleep :deep(*)::after {
   animation-play-state: paused !important;
-}
-
-/* The thread-strip options fade colour and hover-wash at the same soft pace the
-   rest of the drawer's rows use — colour carries the active state (no weight to
-   lean on), so the transition is on colour and background only. */
-.center-opt {
-  transition:
-    color 0.18s ease,
-    background-color 0.18s ease;
 }
 
 /* ── entrance ───────────────────────────────────────────────────────────────
