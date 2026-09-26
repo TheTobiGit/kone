@@ -61,7 +61,8 @@ const name = computed(() => {
   border-radius: 6px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: color-mix(in srgb, var(--accent) 62%, var(--field-ink, currentColor));
-  font-size: 14.5px;
+  /* A hair over the composer's text, whatever size Typography sets it to. */
+  font-size: calc(var(--font-size-composer) + 0.5px);
   line-height: 1.15;
   white-space: nowrap;
   cursor: default;

@@ -32,6 +32,7 @@ const SAMPLE_TYPOGRAPHY: TypographyReading = {
   lineHeightBody: 1.6,
   measure: 70,
   smoothing: true,
+  ligatures: false,
 };
 
 function typographyTools(options: Partial<AppTypographyToolOptions> = {}) {
@@ -70,6 +71,7 @@ describe("appTypography tools", () => {
         lineHeightBody: number;
         measure: number;
         smoothing: boolean;
+        ligatures: boolean;
         ranges: {
           sizeInterface: { min: number; max: number };
           sizeComposer: { min: number; max: number };
@@ -86,15 +88,19 @@ describe("appTypography tools", () => {
       expect(structured.lineHeightBody).toBe(1.6);
       expect(structured.measure).toBe(70);
       expect(structured.smoothing).toBe(true);
+      expect(structured.ligatures).toBe(false);
       expect(structured.ranges.sizeInterface.min).toBe(12);
       expect(structured.ranges.sizeInterface.max).toBe(20);
 
       const text = res.content[0]?.text ?? "";
       expect(text).toContain('"Inter"');
       expect(text).toContain('"JetBrains Mono"');
-      expect(text).toContain("16px");
+      expect(text).toContain("Interface scale: 16px, 100%");
+      expect(text).toContain("Headings (serif)");
+      expect(text).not.toContain("Wordmark");
       expect(text).toContain("70ch");
-      expect(text).toContain("enabled");
+      expect(text).toContain("Subpixel smoothing: enabled");
+      expect(text).toContain("Code ligatures: disabled");
     });
   });
 
@@ -178,7 +184,7 @@ describe("appTypography tools", () => {
       }
     });
 
-    it("applies sizes, line height, measure, and smoothing", async () => {
+    it("applies sizes, line height, measure, smoothing, and ligatures", async () => {
       const emitted: RuntimeEvent[] = [];
       const registry = createRegistry(typographyTools({ emit: (e) => emitted.push(e) }));
 
@@ -189,9 +195,12 @@ describe("appTypography tools", () => {
         lineHeightBody: 1.7,
         measure: 75,
         smoothing: false,
+        ligatures: false,
       });
 
       expect(res.isError).toBeUndefined();
+      expect(res.content[0]?.text).toContain("interface scale to 18px (113%)");
+      expect(res.content[0]?.text).toContain("code ligatures disabled");
       expect(emitted.length).toBe(1);
       if (emitted[0]?.type === "app.typography_mutation") {
         expect(emitted[0].sizeInterface).toBe(18);
@@ -200,7 +209,31 @@ describe("appTypography tools", () => {
         expect(emitted[0].lineHeightBody).toBe(1.7);
         expect(emitted[0].measure).toBe(75);
         expect(emitted[0].smoothing).toBe(false);
+        expect(emitted[0].ligatures).toBe(false);
       }
+    });
+
+    it("accepts ligatures alone as a setting to change", async () => {
+      const emitted: RuntimeEvent[] = [];
+      const registry = createRegistry(typographyTools({ emit: (e) => emitted.push(e) }));
+
+      const res = await registry.call(makeCtx(), "app_set_typography", { ligatures: true });
+      expect(res.isError).toBeUndefined();
+      expect(res.content[0]?.text).toBe("Set code ligatures enabled.");
+
+      expect(emitted.length).toBe(1);
+      if (emitted[0]?.type === "app.typography_mutation") {
+        expect(emitted[0].ligatures).toBe(true);
+        expect(emitted[0].smoothing).toBeUndefined();
+      }
+    });
+
+    it("labels the serif family as the headings font", async () => {
+      const registry = createRegistry(typographyTools({ emit: () => {} }));
+
+      const res = await registry.call(makeCtx(), "app_set_typography", { serif: "Fraunces" });
+      expect(res.isError).toBeUndefined();
+      expect(res.content[0]?.text).toBe('Set headings font to "Fraunces".');
     });
 
     it("resets all preferences to defaults when reset is true", async () => {
@@ -222,6 +255,7 @@ describe("appTypography tools", () => {
         expect(emitted[0].lineHeightBody).toBe(DEFAULT_TYPOGRAPHY_PREFS.lineHeightBody);
         expect(emitted[0].measure).toBe(DEFAULT_TYPOGRAPHY_PREFS.measure);
         expect(emitted[0].smoothing).toBe(DEFAULT_TYPOGRAPHY_PREFS.smoothing);
+        expect(emitted[0].ligatures).toBe(DEFAULT_TYPOGRAPHY_PREFS.ligatures);
       }
     });
 

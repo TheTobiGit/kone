@@ -6,6 +6,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { useResizeObserver } from "@vueuse/core";
 import "@xterm/xterm/css/xterm.css";
 import { useTheme } from "~/composables/useTheme";
+import { useTypography } from "~/composables/useTypography";
 import type { TerminalSession } from "~/composables/useTerminal";
 
 const props = defineProps<{
@@ -25,6 +26,20 @@ let detachSink: (() => void) | null = null;
 let noticeShown = false;
 let visibilityObserver: IntersectionObserver | null = null;
 const { scheme, extras } = useTheme();
+const { prefs: typography } = useTypography();
+
+// The terminal is one more code surface: a point over Typography's code size,
+// in the code face. xterm takes both as options rather than CSS, so they're
+// read off the root — after the typography layer has painted it.
+function monoFamily(): string {
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() ||
+    'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+  );
+}
+function codeSize(): number {
+  return typography.value.sizeCode + 1;
+}
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 // The terminal is NOT hardcoded dark. The 16-colour ANSI set comes from the
@@ -116,18 +131,25 @@ watch(scheme, () => {
   if (term) term.options.theme = buildTheme();
 });
 
+// A face or size change reaches an open terminal too: new metrics, then a
+// refit so the grid and the shell's idea of it agree again.
+watch(
+  () => [typography.value.mono, typography.value.sizeCode] as const,
+  () => {
+    if (!term) return;
+    term.options.fontFamily = monoFamily();
+    term.options.fontSize = codeSize();
+    fitSafely();
+  },
+  { flush: "post" },
+);
+
 onMounted(() => {
   if (!container.value) return;
 
-  // The app's mono token (SF Mono on macOS), so the terminal matches kone's
-  // other monospaced surfaces.
-  const fontFamily =
-    getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() ||
-    'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
-
   term = new Terminal({
-    fontFamily,
-    fontSize: 13,
+    fontFamily: monoFamily(),
+    fontSize: codeSize(),
     lineHeight: 1.2,
     fontWeight: 400,
     fontWeightBold: 600,

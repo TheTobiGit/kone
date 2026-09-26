@@ -121,7 +121,7 @@ defineExpose({
   background: color-mix(in srgb, var(--ink) 2.5%, var(--ground));
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: calc(var(--font-size-code) - 0.5px);
   line-height: 1.6;
 }
 .tdiff__lines {

@@ -184,8 +184,10 @@ async function copy() {
   margin: 0;
   padding: 0 14px;
   font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 20px;
+  /* Code sizes follow Typography's code size, each surface keeping its
+     offset from it. The 20-on-12.5 line becomes its ratio. */
+  font-size: calc(var(--font-size-code) + 0.5px);
+  line-height: 1.6;
 }
 .cb__pre code {
   display: block;

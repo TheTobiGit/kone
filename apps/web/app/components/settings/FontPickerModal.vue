@@ -35,7 +35,7 @@ const emit = defineEmits<{
 
 const KIND_TITLE = {
   sans: "Interface typeface",
-  serif: "Wordmark typeface",
+  serif: "Headings typeface",
   mono: "Code typeface",
   composer: "Composer typeface",
 } satisfies Record<FontKind, string>;

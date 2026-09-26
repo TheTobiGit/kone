@@ -620,7 +620,7 @@ html.dark {
   border-radius: 10px;
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   font-family: var(--font-mono);
-  font-size: 13.5px;
+  font-size: calc(var(--font-size-code) + 1.5px);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

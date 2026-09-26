@@ -4,6 +4,11 @@ import { motion } from "motion-v";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import IntentMenu from "~/components/intent/IntentMenu.vue";
 import { resolveTop } from "~/utils/surfaceTop";
+import {
+  DEFAULT_TYPOGRAPHY_PREFS,
+  MAX_INTERFACE_FONT_SIZE,
+  MIN_INTERFACE_FONT_SIZE,
+} from "~/theme/typography";
 import type { SurfaceId } from "~/utils/surfaceTop";
 import { requestSearchJump } from "~/composables/useSearchJump";
 import type { SearchJumpRequest } from "~/components/conversation/ConversationSearchModal.vue";
@@ -265,6 +270,7 @@ const surfaceTop = computed<SurfaceId>(() =>
 );
 
 const { matchesShortcut } = useShortcuts();
+const { prefs: typePrefs, setSize: setTypeSize } = useTypography();
 // One listener for the four summon hotkeys, so the blocking rule is stated
 // once: while a launcher modal owns the screen the plane, the inbox, the
 // drawer and the assistant would all open underneath it, so none of them
@@ -315,6 +321,22 @@ function onSurfaceHotkey(e: KeyboardEvent) {
     e.preventDefault();
     cue("press");
     toggleAssistant();
+    return;
+  }
+  // The interface scale, on the keys every app zooms with.
+  const scale = matchesShortcut("zoom-in", e)
+    ? typePrefs.value.sizeInterface + 1
+    : matchesShortcut("zoom-out", e)
+      ? typePrefs.value.sizeInterface - 1
+      : matchesShortcut("zoom-reset", e)
+        ? DEFAULT_TYPOGRAPHY_PREFS.sizeInterface
+        : null;
+  if (scale !== null) {
+    e.preventDefault();
+    const next = Math.min(MAX_INTERFACE_FONT_SIZE, Math.max(MIN_INTERFACE_FONT_SIZE, scale));
+    if (next === typePrefs.value.sizeInterface) return;
+    setTypeSize("interface", next);
+    cue("select");
   }
 }
 onMounted(() => window.addEventListener("keydown", onSurfaceHotkey));

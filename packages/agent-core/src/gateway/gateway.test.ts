@@ -489,6 +489,7 @@ describe("gateway integration (real store + HTTP)", () => {
       lineHeightBody: 1.55,
       measure: 68,
       smoothing: true,
+      ligatures: true,
     };
     const { gateway, events } = makeGateway(store, async () => true, {
       readTypography: () => currentTypo,
@@ -523,7 +524,7 @@ describe("gateway integration (real store + HTTP)", () => {
       method: "tools/call",
       params: {
         name: "app_set_typography",
-        arguments: { mono: "JetBrains Mono", sizeCode: 14 },
+        arguments: { mono: "JetBrains Mono", sizeCode: 14, ligatures: false },
       },
     });
     expect(setRes.status).toBe(200);
@@ -531,6 +532,7 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(setResult.isError).toBeUndefined();
     expect(setResult.content?.[0]?.text).toContain('"JetBrains Mono"');
     expect(setResult.content?.[0]?.text).toContain("14px");
+    expect(setResult.content?.[0]?.text).toContain("code ligatures disabled");
 
     // 3. Verify emitted runtime event
     expect(events.length).toBe(1);
@@ -538,6 +540,7 @@ describe("gateway integration (real store + HTTP)", () => {
     if (events[0]?.type === "app.typography_mutation") {
       expect(events[0].mono).toBe("JetBrains Mono");
       expect(events[0].sizeCode).toBe(14);
+      expect(events[0].ligatures).toBe(false);
       expect(events[0].threadId).toBe("assistant-typo");
     }
 

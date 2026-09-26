@@ -1532,8 +1532,11 @@ watch(
      column caps itself at var(--thread-measure) below; every row inside (the
      settled answer, the work fold, the theme receipts, the spawn marks) fills
      the column at width:100% and carries no second cap of its own, so the
-     measure changes in exactly one place. */
-  --thread-measure: 720px;
+     measure changes in exactly one place.
+     It follows Typography's measure: 720px at the default 68ch, moving about
+     a character and a quarter of column per character of measure, so the
+     setting's range runs the column from roughly 560px to 870px. */
+  --thread-measure: calc(720px + (var(--measure) - 68ch) * 1.25);
   /* The space a settled reply's footer holds open below the answer. Declared
      rather than measured so it is a known quantity: the footer is invisible
      until the turn is hovered, and the marks between exchanges subtract it to

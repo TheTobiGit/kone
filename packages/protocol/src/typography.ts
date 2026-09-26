@@ -12,10 +12,11 @@
  * main process and the renderer import it directly.
  */
 
-/** The faces text can wear. `composer` is the input well's face. */
+/** The faces text can wear. `composer` is the input well's face; `serif` is
+ *  the headings face in replies, and when unset headings wear the interface's. */
 export type TypographyFamilyKind = "sans" | "serif" | "mono" | "composer";
 
-/** The sizes text can take. `interface` drives the root font size. */
+/** The sizes text can take. `interface` scales the whole window. */
 export type TypographySizeKind = "interface" | "composer" | "code";
 
 /** Everything the typography layer owns. Strings are custom family names the
@@ -31,6 +32,10 @@ export interface TypographyPrefs {
   lineHeightBody: number;
   measure: number;
   smoothing: boolean;
+  /** Whether faces that draw ligatures (=> as an arrow) may use them. It
+   *  reaches every face, but in practice only code faces draw ones worth
+   *  turning off. */
+  ligatures: boolean;
 }
 
 /** What storage or a steering patch may carry: any subset of the prefs, as
@@ -49,6 +54,7 @@ export const DEFAULT_TYPOGRAPHY_PREFS: Readonly<TypographyPrefs> = {
   lineHeightBody: 1.55,
   measure: 68,
   smoothing: true,
+  ligatures: true,
 };
 
 export const MIN_INTERFACE_FONT_SIZE = 12;
@@ -72,7 +78,7 @@ export const MAX_TYPOGRAPHY_FAMILY_LENGTH = 240;
  *  text that quotes it instead of orphaning it. */
 export const TYPOGRAPHY_FAMILY_FALLBACK_LABELS = {
   sans: '"Geist", system-ui, sans-serif',
-  serif: '"Fraunces", ui-serif, serif',
+  serif: "inherits Interface font",
   mono: 'ui-monospace, "SF Mono", monospace',
   composer: "inherits Interface font",
 } satisfies Record<TypographyFamilyKind, string>;
@@ -191,5 +197,6 @@ export function resolveTypographyPrefs(
     lineHeightBody: readLineHeight(input.lineHeightBody),
     measure: readMeasure(input.measure),
     smoothing: input.smoothing === false ? false : true,
+    ligatures: input.ligatures === false ? false : true,
   };
 }

@@ -1,6 +1,6 @@
 // Typography preferences as gateway tools: font families for interface (sans),
-// wordmark (serif), code (mono), and composer, plus font sizes, line height,
-// measure and subpixel smoothing.
+// reply headings (serif), code (mono), and composer, plus the interface scale,
+// font sizes, line height, measure, subpixel smoothing and code ligatures.
 //
 // The same arrangement as the theme and strip tools: the renderer holds these —
 // they are per-install feel knobs, not board state and not rows in the store —
@@ -49,7 +49,7 @@ const FAMILY_KEYS = ["sans", "serif", "mono", "composer"] as const;
 
 const FAMILY_CHANGE_LABELS = {
   sans: "interface font",
-  serif: "wordmark font",
+  serif: "headings font",
   mono: "code font",
   composer: "composer font",
 } satisfies Record<(typeof FAMILY_KEYS)[number], string>;
@@ -112,12 +112,12 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
     const lines = [
       "**Fonts:**",
       `- Interface (sans): ${familyLabel(current.sans, "sans")}`,
-      `- Wordmark (serif): ${familyLabel(current.serif, "serif")}`,
+      `- Headings (serif): ${familyLabel(current.serif, "serif")}`,
       `- Code (mono): ${familyLabel(current.mono, "mono")}`,
       `- Composer: ${familyLabel(current.composer, "composer")}`,
       "",
       "**Sizes:**",
-      `- Interface: ${current.sizeInterface}px (allowed ${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}px, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}px)`,
+      `- Interface scale: ${current.sizeInterface}px, ${Math.round((current.sizeInterface / 16) * 100)}% (allowed ${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}px, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}px)`,
       `- Composer: ${current.sizeComposer}px (allowed ${MIN_COMPOSER_FONT_SIZE}–${MAX_COMPOSER_FONT_SIZE}px, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeComposer}px)`,
       `- Code: ${current.sizeCode}px (allowed ${MIN_CODE_FONT_SIZE}–${MAX_CODE_FONT_SIZE}px, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeCode}px)`,
       "",
@@ -125,6 +125,7 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
       `- Line height: ${current.lineHeightBody.toFixed(2)} (allowed ${MIN_LINE_HEIGHT_BODY.toFixed(2)}–${MAX_LINE_HEIGHT_BODY.toFixed(2)}, default ${DEFAULT_TYPOGRAPHY_PREFS.lineHeightBody.toFixed(2)})`,
       `- Reading measure: ${current.measure}ch (allowed ${MIN_MEASURE}–${MAX_MEASURE}ch, default ${DEFAULT_TYPOGRAPHY_PREFS.measure}ch)`,
       `- Subpixel smoothing: ${current.smoothing ? "enabled" : "disabled"} (default ${DEFAULT_TYPOGRAPHY_PREFS.smoothing ? "enabled" : "disabled"})`,
+      `- Code ligatures: ${current.ligatures ? "enabled" : "disabled"} (default ${DEFAULT_TYPOGRAPHY_PREFS.ligatures ? "enabled" : "disabled"})`,
     ];
 
     return {
@@ -182,7 +183,7 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
     if (params.sizeInterface !== undefined) {
       const size = clampInterfaceFontSize(params.sizeInterface);
       patch.sizeInterface = size;
-      changes.push(`interface font size to ${size}px`);
+      changes.push(`interface scale to ${size}px (${Math.round((size / 16) * 100)}%)`);
     }
     if (params.sizeComposer !== undefined) {
       const size = clampComposerFontSize(params.sizeComposer);
@@ -207,6 +208,10 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
     if (params.smoothing !== undefined) {
       patch.smoothing = params.smoothing;
       changes.push(`subpixel smoothing ${params.smoothing ? "enabled" : "disabled"}`);
+    }
+    if (params.ligatures !== undefined) {
+      patch.ligatures = params.ligatures;
+      changes.push(`code ligatures ${params.ligatures ? "enabled" : "disabled"}`);
     }
 
     const mutation: TypographyMutation = {
@@ -236,13 +241,13 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
     {
       name: "app_get_typography",
       description:
-        "Inspect the app's typography settings: font families for interface (sans), wordmark (serif), code (mono), and composer, font sizes in pixels, line height, reading measure, and subpixel smoothing.",
+        "Inspect the app's typography settings: font families for interface (sans), reply headings (serif), code (mono), and composer, the interface scale and font sizes in pixels, line height, reading measure, subpixel smoothing, and code ligatures.",
       inputSchema: GetTypographyInputSchema,
       jsonSchema: GET_TYPOGRAPHY_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "`app_get_typography`: inspect current font families, font sizes, line height, reading measure, and font smoothing.",
+        "`app_get_typography`: inspect current font families, interface scale, font sizes, line height, reading measure, font smoothing, and code ligatures.",
       promptGuidelines: [
         "Call `app_get_typography` to check what fonts and sizes are currently active before or after adjusting typography.",
       ],
@@ -251,13 +256,13 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
     {
       name: "app_set_typography",
       description:
-        `Change the app's typography preferences: configure custom font families (interface, wordmark, code, composer), adjust font sizes in pixels (interface ${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}px, composer ${MIN_COMPOSER_FONT_SIZE}–${MAX_COMPOSER_FONT_SIZE}px, code ${MIN_CODE_FONT_SIZE}–${MAX_CODE_FONT_SIZE}px), line height (${MIN_LINE_HEIGHT_BODY}–${MAX_LINE_HEIGHT_BODY}), reading measure (${MIN_MEASURE}–${MAX_MEASURE}ch), toggle subpixel smoothing, or reset all typography back to defaults.`,
+        `Change the app's typography preferences: configure custom font families (interface, reply headings, code, composer), adjust the interface scale (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}px, where 16px is 100% and scales the whole window) and font sizes in pixels (composer ${MIN_COMPOSER_FONT_SIZE}–${MAX_COMPOSER_FONT_SIZE}px, code ${MIN_CODE_FONT_SIZE}–${MAX_CODE_FONT_SIZE}px), line height (${MIN_LINE_HEIGHT_BODY}–${MAX_LINE_HEIGHT_BODY}), reading measure (${MIN_MEASURE}–${MAX_MEASURE}ch), toggle subpixel smoothing or code ligatures, or reset all typography back to defaults.`,
       inputSchema: SetTypographyInputSchema,
       jsonSchema: SET_TYPOGRAPHY_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "`app_set_typography`: adjust font families, font sizes, line height, measure, font smoothing, or reset typography to defaults.",
+        "`app_set_typography`: adjust font families, interface scale, font sizes, line height, measure, font smoothing, code ligatures, or reset typography to defaults.",
       promptGuidelines: [
         "Use `app_set_typography` when the user asks to change fonts, font sizes, line height, or text appearance — do not edit CSS or configuration files for it.",
         "To restore shipped defaults for a font family, pass \"default\" or an empty string \"\". To restore all typography settings to defaults, pass `reset: true`.",

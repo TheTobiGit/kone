@@ -1579,7 +1579,7 @@ export const SetTypographyInputSchema = z
     serif: z
       .string()
       .optional()
-      .describe("Custom font family for wordmark / display text (e.g. 'Fraunces', 'Georgia', or 'default' / '' for the shipped default stack)."),
+      .describe("Custom font family for section headings in the agent's replies (e.g. 'Fraunces', 'Georgia', or 'default' / '' so headings wear the interface font)."),
     mono: z
       .string()
       .optional()
@@ -1594,7 +1594,7 @@ export const SetTypographyInputSchema = z
       .max(MAX_INTERFACE_FONT_SIZE)
       .optional()
       .describe(
-        `Interface root font size in pixels (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}).`,
+        `Interface scale in pixels: scales the whole window, where 16px is 100% (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}).`,
       ),
     sizeComposer: z
       .number()
@@ -1632,6 +1632,10 @@ export const SetTypographyInputSchema = z
       .boolean()
       .optional()
       .describe("Whether subpixel font smoothing is enabled (true/false, default true)."),
+    ligatures: z
+      .boolean()
+      .optional()
+      .describe("Whether code fonts that draw ligatures (e.g. => as an arrow) may use them (true/false, default true)."),
     reset: z
       .boolean()
       .optional()
@@ -1649,7 +1653,8 @@ export const SetTypographyInputSchema = z
       data.sizeCode !== undefined ||
       data.lineHeightBody !== undefined ||
       data.measure !== undefined ||
-      data.smoothing !== undefined,
+      data.smoothing !== undefined ||
+      data.ligatures !== undefined,
     { message: "Name at least one typography setting to change or pass reset: true." },
   );
 
@@ -1664,7 +1669,7 @@ export const SET_TYPOGRAPHY_JSON_SCHEMA = {
     serif: {
       type: "string",
       description:
-        "Custom font family for wordmark / display text (e.g. 'Fraunces', 'Georgia', or 'default' / '' for shipped default).",
+        "Custom font family for section headings in the agent's replies (e.g. 'Fraunces', 'Georgia', or 'default' / '' so headings wear the interface font).",
     },
     mono: {
       type: "string",
@@ -1678,7 +1683,7 @@ export const SET_TYPOGRAPHY_JSON_SCHEMA = {
     },
     sizeInterface: {
       type: "number",
-      description: `Interface root font size in pixels (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}).`,
+      description: `Interface scale in pixels: scales the whole window, where 16px is 100% (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}).`,
     },
     sizeComposer: {
       type: "number",
@@ -1699,6 +1704,11 @@ export const SET_TYPOGRAPHY_JSON_SCHEMA = {
     smoothing: {
       type: "boolean",
       description: "Whether subpixel font smoothing is enabled (true/false, default true).",
+    },
+    ligatures: {
+      type: "boolean",
+      description:
+        "Whether code fonts that draw ligatures (e.g. => as an arrow) may use them (true/false, default true).",
     },
     reset: {
       type: "boolean",

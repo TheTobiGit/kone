@@ -369,6 +369,7 @@ const TYPOGRAPHY_PATCH_KEYS = [
   "lineHeightBody",
   "measure",
   "smoothing",
+  "ligatures",
 ] as const satisfies readonly (keyof TypographyPrefs)[];
 
 type UnpatchedPref = Exclude<keyof TypographyPrefs, (typeof TYPOGRAPHY_PATCH_KEYS)[number]>;

@@ -46,6 +46,7 @@ export type {
   TypographyStoredCandidate,
 } from "@kone/protocol/typography";
 import {
+  DEFAULT_TYPOGRAPHY_PREFS,
   clampCodeFontSize,
   clampComposerFontSize,
   clampInterfaceFontSize,
@@ -100,9 +101,9 @@ export interface TypographyRoot {
 /**
  * Paint resolved prefs onto the root element. Unset families remove the
  * override so the stylesheet defaults stay in charge. Sizes are always
- * written: the interface size drives the root font size (and with it every
- * rem-based dimension), while the composer and code sizes stay in absolute
- * pixels so they do not scale twice.
+ * written. The interface size isn't among them: the app sizes its text in
+ * pixels, so a root font size would only move the few rem lengths and leave
+ * the text where it was. It scales the page instead — see interfaceZoomFactor.
  */
 export function applyTypographyVariables(root: TypographyRoot, prefs: TypographyPrefs): void {
   const resolved = resolveTypographyPrefs(prefs);
@@ -121,7 +122,6 @@ export function applyTypographyVariables(root: TypographyRoot, prefs: Typography
     }
   }
 
-  root.style.fontSize = `${clampInterfaceFontSize(resolved.sizeInterface)}px`;
   root.style.setProperty(
     "--font-size-composer",
     `${clampComposerFontSize(resolved.sizeComposer)}px`,
@@ -133,11 +133,24 @@ export function applyTypographyVariables(root: TypographyRoot, prefs: Typography
   root.style.setProperty("--line-height-body", `${clampLineHeightBody(resolved.lineHeightBody)}`);
   root.style.setProperty("--measure", `${clampMeasure(resolved.measure)}ch`);
 
-  if (resolved.smoothing) {
-    root.style.setProperty("-webkit-font-smoothing", "antialiased");
-  } else {
-    root.style.removeProperty("-webkit-font-smoothing");
-  }
+  // Headings in replies wear the headings face when one is set, and the
+  // interface's otherwise — an unset headings face changes nothing.
+  const heading = cssFontFamilies(resolved.serif);
+  if (heading === null) root.style.removeProperty("--font-heading");
+  else root.style.setProperty("--font-heading", `${heading}, ${DEFAULT_SERIF_STACK}`);
+
+  // The body reads these, so they have to be variables: a property set on
+  // <html> would lose to the body's own declaration and never reach the text.
+  root.style.setProperty("--font-smoothing", resolved.smoothing ? "antialiased" : "auto");
+  root.style.setProperty("--font-smoothing-moz", resolved.smoothing ? "grayscale" : "auto");
+  root.style.setProperty("--font-ligatures", resolved.ligatures ? "normal" : "none");
+}
+
+/** The page zoom that the interface size stands for: the shipped size is
+ *  actual size, and every step either side scales text, spacing and chrome
+ *  together so nothing outgrows the box it sits in. */
+export function interfaceZoomFactor(sizeInterface: number): number {
+  return clampInterfaceFontSize(sizeInterface) / DEFAULT_TYPOGRAPHY_PREFS.sizeInterface;
 }
 
 /** Remove every runtime-owned typography property, handing the surface back to
@@ -152,5 +165,8 @@ export function clearTypographyVariables(root: TypographyRoot): void {
   root.style.removeProperty("--diffs-font-size");
   root.style.removeProperty("--line-height-body");
   root.style.removeProperty("--measure");
-  root.style.removeProperty("-webkit-font-smoothing");
+  root.style.removeProperty("--font-smoothing");
+  root.style.removeProperty("--font-smoothing-moz");
+  root.style.removeProperty("--font-heading");
+  root.style.removeProperty("--font-ligatures");
 }

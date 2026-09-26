@@ -9,8 +9,8 @@
   --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas,
     "Liberation Mono", monospace;
-  /* Editorial display serif — deliberate contrast to Geist, used for the
-     rotating wordmark. Variable weight + optical sizing; @nuxt/fonts serves it. */
+  /* Editorial serif — deliberate contrast to Geist, offered as a headings face
+     for replies. Variable weight + optical sizing; @nuxt/fonts serves it. */
   --font-serif: "Fraunces", ui-serif, Georgia, "Times New Roman", serif;
   /* Composer input face. Falls back to the UI face so the input always reads
      as interface, never as code, until the user points it elsewhere. */
@@ -18,10 +18,10 @@
 }
 
 /* Typography preferences, painted at runtime by the typography layer onto
-   <html> as inline custom properties (which beat this block). Sizes stay in
-   absolute pixels so they do not scale twice when the interface size moves the
-   root font size; the body line-height and the reading measure are unitless
-   and character-based so they scale with the face. */
+   <html> as inline custom properties (which beat this block). Sizes are in
+   pixels; the interface size scales the whole window rather than any one of
+   them. The body line-height and the reading measure are unitless and
+   character-based so they scale with the face. */
 :root {
   --font-size-composer: 14px;
   --font-size-code: 12px;
@@ -205,8 +205,10 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   line-height: var(--line-height-body);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  /* Typography's smoothing switch writes these; antialiased is the default. */
+  -webkit-font-smoothing: var(--font-smoothing, antialiased);
+  -moz-osx-font-smoothing: var(--font-smoothing-moz, grayscale);
+  font-variant-ligatures: var(--font-ligatures, normal);
   font-synthesis: none;
 }
 

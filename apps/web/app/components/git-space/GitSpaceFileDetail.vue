@@ -624,7 +624,7 @@ function onTrapKeydown(e: KeyboardEvent) {
 
 .code {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: calc(var(--font-size-code) + 0.5px);
   line-height: 1.75;
 }
 /* The frame width is fixed, so a long line wraps instead of scrolling sideways —
@@ -672,7 +672,7 @@ function onTrapKeydown(e: KeyboardEvent) {
 /* ── unified diff ─────────────────────────────────────────────────────────── */
 .diff {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: calc(var(--font-size-code) + 0.5px);
   line-height: 1.75;
 }
 .dl {

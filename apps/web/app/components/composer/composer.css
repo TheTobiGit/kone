@@ -313,9 +313,11 @@ html.dark .dock {
   outline: 0;
   background: transparent;
   color: var(--ink);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 22px;
+  /* The composer's own face and size, from Typography. The line keeps the
+     22-on-14 proportion at any size. */
+  font-family: var(--font-composer);
+  font-size: var(--font-size-composer);
+  line-height: calc(var(--font-size-composer) * 11 / 7);
   letter-spacing: normal;
   /* The card's width is fixed, so text simply wraps and the card grows down. */
   white-space: pre-wrap;
@@ -337,9 +339,9 @@ html.dark .dock {
   /* Sit on the first line so it lines up with the top-anchored caret. */
   top: 0;
   color: var(--placeholder);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 22px;
+  font-family: var(--font-composer);
+  font-size: var(--font-size-composer);
+  line-height: calc(var(--font-size-composer) * 11 / 7);
   white-space: nowrap;
   pointer-events: none;
   user-select: none;

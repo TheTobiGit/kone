@@ -26,7 +26,9 @@
 .thread .body {
   margin: 0;
   font-size: 14px;
-  line-height: 1.62;
+  /* Every turn body's line follows Typography's leading, each style keeping
+     its own offset from it. */
+  line-height: calc(var(--line-height-body) + 0.07);
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -408,7 +410,7 @@
   border-radius: 0;
   background: none;
   font-size: 14.5px;
-  line-height: 1.5;
+  line-height: calc(var(--line-height-body) - 0.05);
 }
 .thread.thread--style-thread .turn--kone {
   padding-left: calc(var(--sl-reply) + 38px);
@@ -501,7 +503,7 @@
   background: var(--wa-out);
   box-shadow: var(--wa-shadow);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: calc(var(--line-height-body) - 0.05);
 }
 /* WhatsApp's trick: an invisible run at the end of the last line keeps it
    clear of the time, so a short message ends on the same line as its time
@@ -661,7 +663,7 @@
   border-radius: 0;
   background: none;
   font-size: 14.5px;
-  line-height: 1.45;
+  line-height: calc(var(--line-height-body) - 0.1);
 }
 .thread.thread--style-channel .turn--kone .speaker {
   min-height: 21px;
@@ -752,7 +754,7 @@
   background: none;
   font-size: 13px;
   font-weight: 500;
-  line-height: 1.6;
+  line-height: calc(var(--line-height-body) + 0.05);
 }
 .thread.thread--style-prompt .body--you::before {
   content: "❯";

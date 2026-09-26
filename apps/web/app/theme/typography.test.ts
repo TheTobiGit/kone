@@ -66,13 +66,22 @@ describe("typography foundation", () => {
       sizeInterface: 15,
       sizeCode: 13,
     });
-    expect(root.style.fontSize).toBe("15px");
+    // The interface size zooms the page; it never touches the root font size.
+    expect(root.style.fontSize).toBe("");
     expect(root.props.get("--font-sans")).toContain("Inter");
     expect(root.props.has("--font-mono")).toBe(false);
     expect(root.props.get("--font-size-code")).toBe("13px");
     expect(root.props.get("--diffs-font-size")).toBe("13px");
     expect(root.props.get("--line-height-body")).toBe("1.55");
     expect(root.props.get("--measure")).toBe("68ch");
+    expect(root.props.get("--font-smoothing")).toBe("antialiased");
+  });
+
+  it("turns smoothing off through the variable the body reads", () => {
+    const root = stubRoot();
+    applyTypographyVariables(root, { ...DEFAULT_TYPOGRAPHY_PREFS, smoothing: false });
+    expect(root.props.get("--font-smoothing")).toBe("auto");
+    expect(root.props.get("--font-smoothing-moz")).toBe("auto");
   });
 
   it("paints the wordmark serif over its own stack, unset faces to the stylesheet", () => {

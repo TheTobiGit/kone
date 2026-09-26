@@ -4,6 +4,7 @@ import {
   applyTypographyVariables,
   clearTypographyVariables,
   DEFAULT_TYPOGRAPHY_PREFS,
+  interfaceZoomFactor,
   MAX_TYPOGRAPHY_FAMILY_LENGTH,
   resolveTypographyPrefs,
   TYPOGRAPHY_STORAGE_KEY,
@@ -28,9 +29,20 @@ const stored = useStorage<TypographyPrefs>(
   { listenToStorageChanges: true, mergeDefaults: true },
 );
 
+// Unknown until the first paint: the shell may remember a zoom from last
+// session, so the first paint always sets it.
+let zoom = Number.NaN;
+
 function paint(): void {
   if (!import.meta.client) return;
-  applyTypographyVariables(document.documentElement, resolveTypographyPrefs(stored.value));
+  const prefs = resolveTypographyPrefs(stored.value);
+  applyTypographyVariables(document.documentElement, prefs);
+  // Only the shell can zoom the page; a plain browser keeps its own zoom.
+  const next = interfaceZoomFactor(prefs.sizeInterface);
+  if (next !== zoom) {
+    zoom = next;
+    window.koneDesktop?.window.setZoom(next);
+  }
 }
 
 if (import.meta.client) {
@@ -76,6 +88,10 @@ function setSmoothing(value: boolean): void {
   stored.value = { ...resolved(), smoothing: value };
 }
 
+function setLigatures(value: boolean): void {
+  stored.value = { ...resolved(), ligatures: value };
+}
+
 /** Apply a partial update. A key the update doesn't name is left alone, the
  *  same contract the strip mutation follows. */
 function patchTypography(patch: Partial<TypographyPrefs>): void {
@@ -104,6 +120,7 @@ export function useTypography() {
     setLineHeightBody,
     setMeasure,
     setSmoothing,
+    setLigatures,
     patchTypography,
     resetTypography,
   };

@@ -47,7 +47,7 @@ defineProps<{
 .idf {
   padding: 6px 0 10px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(var(--font-size-code) - 1px);
   line-height: 1.65;
   /* One entrance for the whole diff — the individual lines never animate. */
   animation: idf-in var(--gs-t-enter) var(--gs-ease) backwards;

@@ -249,7 +249,7 @@ export function registerAgentIpc(): void {
     // the main process has no way to read.
     readStripSettings: () => currentStripSettings(),
     // The typography preferences the same way: custom fonts, sizes, line height,
-    // measure and smoothing, mirrored from the renderer's app:state push.
+    // measure, smoothing and ligatures, mirrored from the renderer's app:state push.
     readTypography: () => currentTypographySettings(),
     // The projects the same way — which folders the user has opened is browser
     // storage. Only the list crosses: the branch and diff behind each one are

@@ -416,7 +416,9 @@ const Rendered = defineComponent({
 <style scoped>
 .md {
   font-size: 14px;
-  line-height: 23px;
+  /* Typography's leading, a touch open for reading: 23px on 14 at the
+     default 1.55. */
+  line-height: calc(var(--line-height-body) + 0.09);
   color: var(--ink);
 }
 .md__raw {
@@ -467,6 +469,7 @@ const Rendered = defineComponent({
 .md :deep(h3),
 .md :deep(h4) {
   margin: 18px 0 8px;
+  font-family: var(--font-heading, inherit);
   font-weight: 640;
   line-height: 1.32;
   letter-spacing: -0.012em;

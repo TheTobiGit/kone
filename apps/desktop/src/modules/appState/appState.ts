@@ -301,7 +301,9 @@ function readStripSettings(
  *  half-filled from a malformed push would have a future tool report a family
  *  next to sizes from an older one. Only the shape is checked here — every
  *  size present and finite, smoothing a real boolean; families default to the
- *  shipped stack downstream. The renderer already resolved and clamped before
+ *  shipped stack downstream. Ligatures may be absent, since a renderer built
+ *  before that pref existed never sends it and reads as ligatures on, but when
+ *  present it must be a real boolean too. The renderer already resolved and clamped before
  *  pushing, so the ranges live in exactly one place and this normalizes with
  *  the same function rather than carrying its own copy. */
 function readTypographySettings(
@@ -314,7 +316,8 @@ function readTypographySettings(
     !Number.isFinite(value.sizeCode) ||
     !Number.isFinite(value.lineHeightBody) ||
     !Number.isFinite(value.measure) ||
-    (value.smoothing !== true && value.smoothing !== false)
+    (value.smoothing !== true && value.smoothing !== false) ||
+    (value.ligatures !== undefined && value.ligatures !== true && value.ligatures !== false)
   ) {
     return null;
   }

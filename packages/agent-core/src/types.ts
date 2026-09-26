@@ -1674,6 +1674,7 @@ export type RuntimeEvent =
       lineHeightBody?: number;
       measure?: number;
       smoothing?: boolean;
+      ligatures?: boolean;
     })
   // A project's bench changed: a job was filed, claimed, settled, or swept.
   // Carries only what changed and where, never the row — the bench re-reads
