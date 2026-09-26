@@ -17,14 +17,17 @@
 
 export type SettingsGlyphKind =
   | "shortcuts"
-  | "strip"
   | "conversation"
+  | "composer"
   | "appearance"
   | "typography"
   | "agents"
   | "subagents"
   | "teams"
-  | "workspace"
+  | "studio"
+  | "inbox"
+  | "bench"
+  | "assistant"
   | "providers"
   | "skills"
   | "usage"
@@ -55,14 +58,16 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         <g class="d"><path class="space" d="M8 14.6h8" pathLength="1" /></g>
       </template>
 
-      <!-- Thread strip: three columns scroll under a fixed centre frame. -->
-      <template v-else-if="kind === 'strip'">
-        <g class="cols">
-          <rect x="-4" y="8" width="5" height="8" rx="1.4" />
-          <rect x="3" y="8" width="5" height="8" rx="1.4" />
-          <rect x="9.5" y="7" width="5" height="10" rx="1.4" />
-          <rect x="16" y="8" width="5" height="8" rx="1.4" />
-          <rect x="23" y="8" width="5" height="8" rx="1.4" />
+      <!-- Studio: the board's columns scroll under a fixed centre frame. -->
+      <template v-else-if="kind === 'studio'">
+        <g class="window">
+          <g class="cols">
+            <rect x="-4" y="8" width="5" height="8" rx="1.4" />
+            <rect x="3" y="8" width="5" height="8" rx="1.4" />
+            <rect x="9.5" y="7" width="5" height="10" rx="1.4" />
+            <rect x="16" y="8" width="5" height="8" rx="1.4" />
+            <rect x="23" y="8" width="5" height="8" rx="1.4" />
+          </g>
         </g>
         <g class="d"><path class="frame" d="M8 4.5H7a1 1 0 0 0-1 1M16 4.5h1a1 1 0 0 1 1 1M8 19.5H7a1 1 0 0 1-1-1M16 19.5h1a1 1 0 0 0 1-1" pathLength="1" /></g>
       </template>
@@ -78,6 +83,13 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         <circle class="dot" cx="8.5" cy="10.5" r="1" style="--k: 0" />
         <circle class="dot" cx="12" cy="10.5" r="1" style="--k: 1" />
         <circle class="dot" cx="15.5" cy="10.5" r="1" style="--k: 2" />
+      </template>
+
+      <!-- Composer: a field that types a word, the caret riding its end. -->
+      <template v-else-if="kind === 'composer'">
+        <g class="d"><rect x="2.5" y="7" width="19" height="10" rx="5" pathLength="1" /></g>
+        <path class="typed" d="M7 12h6.5" pathLength="1" />
+        <path class="caret" d="M15.5 9.6v4.8" />
       </template>
 
       <!-- Appearance: day turns to night. The disc rolls, the rays breathe. -->
@@ -139,12 +151,27 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         </g>
       </template>
 
-      <!-- Workspace: a window of panes that rebalance their widths. -->
-      <template v-else-if="kind === 'workspace'">
-        <g class="d"><rect x="3" y="4.5" width="18" height="15" rx="2.5" pathLength="1" /></g>
-        <path class="div div-a" d="M9 4.5v15" />
-        <path class="div div-b" d="M15 4.5v15" />
-        <rect class="pane" x="9" y="4.5" width="6" height="15" stroke="none" />
+      <!-- Inbox: a note drops into the tray and settles. -->
+      <template v-else-if="kind === 'inbox'">
+        <g class="d"><path d="M5.8 5h12.4l2.3 8.5v4.5a1.8 1.8 0 0 1-1.8 1.8H5.3A1.8 1.8 0 0 1 3.5 18v-4.5z" pathLength="1" /></g>
+        <g class="d" style="--at: 300ms"><path d="M3.5 13.5h4.6l1.4 2.4h5l1.4-2.4h4.6" pathLength="1" /></g>
+        <path class="note" d="M9 9.5h6" />
+      </template>
+
+      <!-- Bench: queued jobs, the top one running its bar across. -->
+      <template v-else-if="kind === 'bench'">
+        <g class="d"><rect x="3.5" y="5" width="17" height="4.4" rx="1.6" pathLength="1" /></g>
+        <rect class="run" x="3.5" y="5" width="17" height="4.4" rx="1.6" stroke="none" />
+        <g class="d" style="--at: 260ms"><path d="M5 13.5h12" pathLength="1" /></g>
+        <g class="d" style="--at: 380ms"><path d="M5 17.5h8" pathLength="1" /></g>
+      </template>
+
+      <!-- Assistant: a spark that turns, a smaller one winking beside it. -->
+      <template v-else-if="kind === 'assistant'">
+        <g class="star">
+          <g class="d"><path d="M11 4.5c.6 3.8 2.4 5.6 6.2 6.2-3.8.6-5.6 2.4-6.2 6.2-.6-3.8-2.4-5.6-6.2-6.2 3.8-.6 5.6-2.4 6.2-6.2z" pathLength="1" /></g>
+        </g>
+        <path class="wink" d="M18 15.5v4M16 17.5h4" />
       </template>
 
       <!-- Providers: a chip whose pins carry a signal round, core pulsing. -->
@@ -249,7 +276,12 @@ svg * {
   82% { transform: translateY(1.2px); }
 }
 
-/* ── strip ─────────────────────────────────────────────────────────────────── */
+/* ── studio ────────────────────────────────────────────────────────────────── */
+/* The columns run past both edges; the glyph's own box is the window onto them,
+   so it stays as wide as its neighbours. */
+.window {
+  clip-path: view-box inset(0);
+}
 .cols rect {
   stroke-width: 1.4;
 }
@@ -405,35 +437,76 @@ svg * {
   animation: sg-bob 1.8s ease-in-out 600ms infinite;
 }
 
-/* ── workspace ─────────────────────────────────────────────────────────────── */
-.div {
-  stroke-width: 1.4;
-  transition: transform 600ms var(--gt-spring);
+/* ── composer ────────────────────────────────────────────────────────────── */
+/* The word is typed in steps and wiped; the caret (typography's accent
+   caret) blinks at the end of it. */
+.typed {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
 }
-.pane {
-  fill: currentColor;
-  opacity: 0.16;
+.gt--live .typed {
+  animation: sg-type 1.8s steps(5, jump-none) infinite;
+}
+@keyframes sg-type {
+  0% { stroke-dashoffset: 1; }
+  70%, 100% { stroke-dashoffset: 0; }
+}
+
+/* ── inbox ─────────────────────────────────────────────────────────────────── */
+.note {
+  stroke-width: 1.8;
+}
+.gt--live .note {
+  animation: sg-drop 1.6s var(--gt-spring) infinite;
+}
+@keyframes sg-drop {
+  0% { transform: translateY(-5px); opacity: 0; }
+  35%, 80% { transform: translateY(3px); opacity: 1; }
+  100% { transform: translateY(3px); opacity: 0; }
+}
+
+/* ── bench ─────────────────────────────────────────────────────────────────── */
+.run {
+  fill: var(--accent);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: left;
+  transform: scaleX(0);
+}
+.gt--live .run {
+  opacity: 0.45;
+  animation: sg-run 1.8s var(--gt-ease) infinite;
+}
+@keyframes sg-run {
+  0% { transform: scaleX(0); }
+  75%, 100% { transform: scaleX(1); }
+}
+
+/* ── assistant ─────────────────────────────────────────────────────────────── */
+.star {
   transform-box: view-box;
-  transform-origin: 12px 12px;
-  transition: transform 600ms var(--gt-spring);
+  transform-origin: 11px 10.7px;
 }
-.gt--live .div-a { animation: sg-pane-a 2.6s var(--gt-ease) infinite; }
-.gt--live .div-b { animation: sg-pane-b 2.6s var(--gt-ease) infinite; }
-.gt--live .pane { animation: sg-pane-w 2.6s var(--gt-ease) infinite; }
-@keyframes sg-pane-a {
-  0%, 100% { transform: translateX(0); }
-  33% { transform: translateX(-3px); }
-  66% { transform: translateX(2px); }
+.wink {
+  stroke-width: 1.4;
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0.6;
 }
-@keyframes sg-pane-b {
-  0%, 100% { transform: translateX(0); }
-  33% { transform: translateX(3px); }
-  66% { transform: translateX(2.5px); }
+.gt--live .star {
+  animation: sg-turn 2.4s var(--gt-spring) infinite;
 }
-@keyframes sg-pane-w {
-  0%, 100% { transform: translateX(0) scaleX(1); }
-  33% { transform: translateX(0) scaleX(2); }
-  66% { transform: translateX(2.25px) scaleX(1.08); }
+.gt--live .wink {
+  animation: sg-wink 1.2s ease-in-out infinite;
+}
+@keyframes sg-turn {
+  0%, 20% { transform: rotate(0) scale(1); }
+  55% { transform: rotate(90deg) scale(0.88); }
+  100% { transform: rotate(90deg) scale(1); }
+}
+@keyframes sg-wink {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(0.4); opacity: 1; }
 }
 
 /* ── providers ─────────────────────────────────────────────────────────────── */

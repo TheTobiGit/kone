@@ -30,9 +30,7 @@ import { Magnet } from "~/components/ui/magnet";
 import type { Pane, StudioDestination } from "~/types/studio";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
-// The scroll rule the centring modes name, and the geometry it reads. Shared with
-// SettingsThreadStripPane so the settings preview runs the board's own maths rather
-// than a copy of it — see the header of that module.
+// The scroll rule the centring modes name, and the geometry it reads.
 import {
   JOINT_PX,
   LADDER_PX,

@@ -1,0 +1,102 @@
+/* The one-line setting rows the simple settings pages share: a group heading
+   in the eyebrow voice, then each setting's name on the left and what it's set
+   to on the right. */
+/* ── groups ────────────────────────────────────────────────────────────────── */
+.srow__group {
+  padding-block: 0.5rem 1.5rem;
+}
+.srow__group + .srow__group {
+  margin-top: 0.5rem;
+}
+/* The part of the studio a group's rows belong to, in the pane's eyebrow voice
+   so it names the group without competing with the settings under it. */
+.srow__heading {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── setting / value rows ──────────────────────────────────────────────────── */
+.srow__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin-top: 18px;
+}
+.srow__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px 40px;
+}
+/* Below the two-column measure the value drops under its label rather than
+   squeezing the copy into a ribbon. */
+@media (max-width: 620px) {
+  .srow__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.srow__value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  min-width: 0;
+}
+
+.srow__title {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+/* ── model value ───────────────────────────────────────────────────────────── */
+.srow__pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: box-shadow 140ms ease;
+}
+/* No pill: the value is text with a chevron, and the hover lands on the text
+   rather than lighting a tile. */
+.srow__pick:hover .srow__pick-name,
+.srow__pick:hover .srow__pick-chev {
+  color: var(--ink);
+}
+.srow__pick:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+.srow__pick-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+/* The value reads as the answer to the label: muted until you go for it. */
+.srow__pick-name {
+  font-size: 14px;
+  line-height: 1.2;
+  color: var(--muted);
+  transition: color 140ms ease;
+}
+.srow__pick-effort {
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.srow__pick-chev {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition:
+    color 140ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Open, the chevron points down at the picker it opened. */
+.srow__pick-chev--on {
+  transform: rotate(90deg);
+}
