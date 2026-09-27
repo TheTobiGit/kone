@@ -223,8 +223,9 @@ export function createAppProviderTools(options: AppProvidersToolOptions): ToolEn
       const ver = status.version ? `v${status.version}` : "version unknown";
       const auth = status.authLabel ? ` (${status.authLabel})` : "";
       const enabledBadge = statusEnabled(status) ? "" : " · disabled in settings";
+      const note = status.message ? ` — ${status.message}` : "";
       textLines.push(
-        `- **${status.label}** (\`${status.provider}\`): ${readyBadge} · ${availBadge} · ${ver}${auth}${enabledBadge}`,
+        `- **${status.label}** (\`${status.provider}\`): ${readyBadge} · ${availBadge} · ${ver} · auth ${status.authStatus}${auth}${enabledBadge}${note}`,
       );
 
       if (maintenance?.standing === "behind" && maintenance.latestVersion) {
@@ -232,16 +233,26 @@ export function createAppProviderTools(options: AppProvidersToolOptions): ToolEn
       }
 
       if (includeModels && models.length > 0) {
-        const modelNames = models.map((m) => {
-          const effortTag = m.reasoningEfforts && m.reasoningEfforts.length > 0
-            ? ` [effort: ${m.reasoningEfforts.join(",")}]`
-            : "";
-          const tierTag = m.serviceTiers && m.serviceTiers.length > 0
-            ? ` [tiers: ${m.serviceTiers.map((t) => t.id).join(",")}]`
-            : "";
-          return `${m.label || m.id}${effortTag}${tierTag}`;
-        });
-        textLines.push(`  - Models (${models.length}): ${modelNames.slice(0, 8).join(" · ")}${models.length > 8 ? ` +${models.length - 8} more` : ""}`);
+        // Every model, with its id: the id is what the other tools take, and
+        // the text is the only half a model reads, so a capped list here is a
+        // model the agent cannot name. A default is starred.
+        textLines.push(`  - Models (${models.length}), as label \`id\`:`);
+        for (const m of models) {
+          const tags: string[] = [];
+          if (m.contextWindows && m.contextWindows.length > 0) {
+            tags.push(`context: ${m.contextWindows.map((cw) => `${cw.id} ${formatTokens(cw.tokens)}${cw.isDefault ? "*" : ""}`).join(", ")}`);
+          } else if (m.contextWindowTokens !== undefined) {
+            tags.push(`context: ${formatTokens(m.contextWindowTokens)}`);
+          }
+          if (m.reasoningEfforts && m.reasoningEfforts.length > 0) {
+            tags.push(`effort: ${m.reasoningEfforts.map((e) => (e === m.defaultReasoningEffort ? `${e}*` : e)).join(",")}`);
+          }
+          if (m.serviceTiers && m.serviceTiers.length > 0) {
+            tags.push(`tiers: ${m.serviceTiers.map((t) => (t.id === m.defaultServiceTier ? `${t.id}*` : t.id)).join(",")}`);
+          }
+          const name = m.label && m.label !== m.id ? `${m.label} \`${m.id}\`` : `\`${m.id}\``;
+          textLines.push(`    - ${name}${tags.length > 0 ? ` [${tags.join(" · ")}]` : ""}`);
+        }
       }
     }
 
@@ -322,7 +333,7 @@ export function createAppProviderTools(options: AppProvidersToolOptions): ToolEn
       if (filteredProviders.length > 0) {
         textLines.push("\n**By Provider:**");
         for (const prov of filteredProviders) {
-          textLines.push(`- **${prov.label}**: ${formatUsd(prov.costUsd)} · ${formatTokens(prov.tokens)} tokens (${prov.prompts} prompts)`);
+          textLines.push(`- **${prov.label}** (\`${prov.key}\`): ${formatUsd(prov.costUsd)} · ${formatTokens(prov.tokens)} tokens (${prov.prompts} prompts)`);
           providerSlices.push({
             key: prov.key,
             label: prov.label,
@@ -337,7 +348,7 @@ export function createAppProviderTools(options: AppProvidersToolOptions): ToolEn
         const topModels = report.models.slice(0, 5);
         textLines.push("\n**Top Models:**");
         for (const mod of topModels) {
-          textLines.push(`- **${mod.label}**: ${formatTokens(mod.tokens)} tokens · ${formatUsd(mod.costUsd)}`);
+          textLines.push(`- **${mod.label}** (\`${mod.key}\`): ${formatTokens(mod.tokens)} tokens · ${formatUsd(mod.costUsd)}`);
           modelSlices.push({
             key: mod.key,
             label: mod.label,
@@ -360,7 +371,15 @@ export function createAppProviderTools(options: AppProvidersToolOptions): ToolEn
         for (const win of qr.windows) {
           const usedPct = win.percent === null ? "n/a" : formatPercent(win.percent);
           const resetNotice = win.resetsAt ? ` · resets at ${win.resetsAt}` : "";
-          textLines.push(`  - ${win.label}: ${usedPct} consumed${resetNotice}`);
+          const state = win.state === "active" ? "" : ` · ${win.state}`;
+          textLines.push(`  - ${win.label}: ${usedPct} consumed${state}${resetNotice}`);
+        }
+        for (const spend of qr.spend) {
+          const amount = [
+            spend.dollars !== null && spend.dollars !== undefined ? formatUsd(spend.dollars) : null,
+            spend.tokens !== null && spend.tokens !== undefined ? `${formatTokens(spend.tokens)} tokens` : null,
+          ].filter(Boolean).join(" · ");
+          textLines.push(`  - Spend, ${spend.label}: ${amount || "n/a"}${spend.estimated ? " (estimated)" : ""}`);
         }
 
         const qrRec: GatewayRecord = {

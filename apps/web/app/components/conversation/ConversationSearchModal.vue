@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { useModalExit } from "~/composables/useModalExit";
+import { useViewFacet } from "~/composables/useViewContext";
 import { useAllRecentSessions } from "~/composables/useAllRecentSessions";
 import type { ConversationSearchHit } from "~/types/desktop";
 import { timeAgo } from "~/utils/timeAgo";
@@ -56,6 +57,10 @@ const queryError = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const inputEl = ref<HTMLInputElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
+
+// The palette is only mounted while it is up, so it is on screen for exactly as
+// long as this facet is published.
+useViewFacet("search", () => ({ surface: "search", query: query.value.trim() }));
 
 const bridgeSearch = (q: string, limit: number): Promise<ConversationSearchHit[]> => {
   const api = import.meta.client ? window.koneDesktop?.agent?.history : undefined;

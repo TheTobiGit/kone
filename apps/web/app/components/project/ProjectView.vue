@@ -15,6 +15,8 @@ import type { GitFileStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import CommitModal from "~/components/git-space/CommitModal.vue";
+import { useViewFacet } from "~/composables/useViewContext";
+import type { ViewLayer } from "@kone/protocol/view-context";
 
 const props = defineProps<{
   project: Project;
@@ -350,6 +352,34 @@ const activeFile = computed<ChangeItem | null>(() => {
 // corners overlap the panel's own padding — the arc then reads against the
 // panel's sunken surface instead of the page's ground.
 const peekOpen = ref(false);
+
+// What this page shows, for the assistant: which tab, the repo's state, and the
+// diff open full-screen if there is one. Published for as long as the page is
+// mounted; the view plugin marks it covered when a portal is over it.
+useViewFacet("project", () => {
+  const file = activeFile.value;
+  const layer: ViewLayer = {
+    surface: "project",
+    project: { name: props.project.name, path: props.project.path },
+    tab: surface.value,
+    branch: g.branch.value,
+    ahead: g.ahead.value,
+    behind: g.behind.value,
+    file: file
+      ? { path: file.path, staged: file.staged, isNew: file.isNew, deleted: file.deleted }
+      : null,
+  };
+  if (g.repo.value) {
+    layer.changes = {
+      files: g.fileCount.value,
+      staged: g.stagedCount.value,
+      added: g.added.value,
+      removed: g.removed.value,
+    };
+  }
+  return layer;
+});
+
 const peekSpring = {
   type: "spring",
   stiffness: 520,

@@ -207,9 +207,17 @@ export function createAppStripTools(options: AppStripToolOptions): ToolEntry[] {
       parts.push(`a new ${kind} pane to rung ${rung}${px ? ` (${px}px)` : ""}`);
     }
     const summary = `Set ${parts.join(", ")}.`;
+    // What each touched setting was, so "put it back" is one call.
+    const was: string[] = [];
+    if (params.centering) was.push(`centering ${current.centering}`);
+    for (const kind of PANE_KINDS) {
+      if (widths[kind] === undefined) continue;
+      was.push(`${kind} rung ${current.defaultWidths[kind]}`);
+    }
+    const text = was.length > 0 ? `${summary}\nPreviously: ${was.join(", ")}.` : summary;
 
     return {
-      content: [{ type: "text", text: summary }],
+      content: [{ type: "text", text }],
       structuredContent: {
         ok: true,
         summary,

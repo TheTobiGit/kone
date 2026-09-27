@@ -29,8 +29,9 @@ import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
-import type { QueuedTurnEntry } from "~/composables/useAgent";
-import type { ChatAttachment } from "~/types/desktop";
+import ThreadInteractionOverlay from "~/components/thread/ThreadInteractionOverlay.vue";
+import { setInlineThread, type QueuedTurnEntry } from "~/composables/useAgent";
+import type { ApprovalDecision, ChatAttachment, UserInputAnswers } from "~/types/desktop";
 import {
   useGlobalAssistant,
   GLOBAL_ASSISTANT_PROJECT_PATH,
@@ -141,6 +142,39 @@ const busy = computed(() => session.value?.busy.value ?? false);
 const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const starting = computed(() => session.value?.sessionState.value === "starting");
 
+// The thread's live asks — the same two gates the inbox and the studio answer
+// in place. Without them a turn that stops to ask a question or wait on an
+// approval would park here with nothing on the card to answer it.
+const pendingUserInput = computed(() => session.value?.pendingUserInput.value ?? null);
+const pendingApproval = computed(() => session.value?.pendingApproval.value ?? null);
+
+// While an ask owns the bottom of the card the composer steps aside for it —
+// the modal sits in the composer's spot, the way it does in the inbox.
+const askOpen = computed(
+  () => Boolean(pendingUserInput.value) || Boolean(pendingApproval.value),
+);
+
+function onAnswerUserInput(requestId: string, answers: UserInputAnswers): void {
+  void session.value?.respondUserInput(requestId, answers);
+}
+// Dismiss the question — an empty answer, which the adapter treats as declined.
+function onCancelUserInput(requestId: string): void {
+  void session.value?.respondUserInput(requestId, {});
+}
+function onRespondApproval(requestId: string, decision: ApprovalDecision): void {
+  void session.value?.respondApproval(requestId, decision);
+}
+
+// Report the thread on screen, so the global bots skip it while the card is
+// up: its ask answers right here. Cleared on unmount, so closing the card with
+// an ask still parked hands it back to the bots.
+watch(
+  () => session.value?.threadId.value ?? null,
+  (threadId) => setInlineThread("assistant", threadId),
+  { immediate: true },
+);
+onBeforeUnmount(() => setInlineThread("assistant", null));
+
 // No visible scrollbar — the transcript smokes its own top/bottom edges over
 // whatever runs past the cutoff.
 const scroller = ref<HTMLElement>();
@@ -197,6 +231,10 @@ function onKeydown(event: KeyboardEvent): void {
   // anything inside the card that has already handled this one.
   if (!ownsKey(props.surfaceTop, "assistant", event)) return;
   if (event.key === "Escape") {
+    // A parked ask is answered, not walked away from: the approval takes
+    // Escape as its reject, and the question has its own Cancel. Either way
+    // the card stays put — closing it would hide the ask behind a bot.
+    if (askOpen.value) return;
     // The model picker is a modal of its own on top of this one; the first
     // Escape belongs to whichever surface is highest.
     if (composer.pickerOpen.value) {
@@ -286,6 +324,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
     <div
       v-bind="card"
       class="modal-card relative z-20 w-full max-w-xl overflow-hidden"
+      data-kone-assistant
       role="dialog"
       aria-modal="true"
       aria-label="Assistant"
@@ -476,7 +515,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
             />
           </div>
 
-          <div class="live__dock">
+          <div v-if="!askOpen" class="live__dock">
             <AgentComposer
               always-open
               hide-context-tray
@@ -516,6 +555,18 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               @recheck="composer.recheckProviders"
             />
           </div>
+
+          <!-- Mid-turn question + tool approval, over the composer's spot.
+               Contained to the thread so the scrim dims only the transcript
+               and the header stays reachable. -->
+          <ThreadInteractionOverlay
+            :user-input="pendingUserInput"
+            :approval="pendingApproval"
+            :approval-queue="session?.pendingApprovals.value"
+            @answer="onAnswerUserInput"
+            @cancel="onCancelUserInput"
+            @decide="onRespondApproval"
+          />
         </div>
       </div>
     </div>

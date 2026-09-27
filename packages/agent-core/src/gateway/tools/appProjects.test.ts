@@ -207,6 +207,15 @@ describe("app_list_projects", () => {
     expect(body).toContain("on the studio");
   });
 
+  it("says in the text everything the structured half carries", async () => {
+    const body = text(await tools().call(makeCtx(), "app_list_projects", {}));
+
+    expect(body).toContain("kone: 2 threads (1 archived), 2 scratchpads, team: Maya, Rex, on the studio, last worked on ");
+    expect(body).toContain(`\`${KONE}\`, last opened ${new Date(1_700_000_000_000).toISOString()}`);
+    // Never opened: nothing to say, rather than "last opened null".
+    expect(body).toContain(`\`${NOTES}\`\n`);
+  });
+
   it("skips the git reads when the caller asked for the list alone", async () => {
     let reads = 0;
     const registry = tools({
@@ -381,6 +390,14 @@ describe("app_get_project", () => {
     expect(body).toContain("has a row on the studio");
     expect(body).toContain("Team: Maya, Rex");
     expect(body).toContain("Wire the projects module");
+  });
+
+  it("names each recent thread's id, which the thread tools take", async () => {
+    const body = text(await tools().call(makeCtx(), "app_get_project", { project: "kone" }));
+
+    expect(body).toMatch(/- Wire the projects module — claudeAgent.*, id t1$/m);
+    expect(body).toMatch(/- Fix the strip — claudeAgent.*, id t2$/m);
+    expect(body).toContain(`Last opened: ${new Date(1_700_000_000_000).toISOString()}.`);
   });
 
   it("pages the changed-file list, and a cursor alone asks for it", async () => {

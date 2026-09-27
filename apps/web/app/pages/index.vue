@@ -11,6 +11,8 @@ import {
 } from "~/theme/typography";
 import type { SurfaceId } from "~/utils/surfaceTop";
 import { requestSearchJump } from "~/composables/useSearchJump";
+import { GLOBAL_ASSISTANT_PROJECT_PATH } from "~/composables/useGlobalAssistant";
+import { useViewFacet } from "~/composables/useViewContext";
 import type { SearchJumpRequest } from "~/components/conversation/ConversationSearchModal.vue";
 
 const project = useProject();
@@ -233,7 +235,12 @@ function onStudioOpenFile(path: string, rect: DOMRect | null) {
 // The assistant's card is mounted only while it is up, the way every other
 // modal on this page is: the shell's exit animation is played by the card
 // itself, and a card that is never unmounted has no entrance left to play.
-const { isOpen: assistantOpen, toggle: toggleAssistant } = useGlobalAssistant();
+const {
+  isOpen: assistantOpen,
+  toggle: toggleAssistant,
+  open: openAssistant,
+  selectChat: selectAssistantChat,
+} = useGlobalAssistant();
 
 // ── intent menu: the right-click layer ─────────────────────────────────────
 // One global menu instead of another surface. Signal gathering, timing and
@@ -268,6 +275,27 @@ const surfaceTop = computed<SurfaceId>(() =>
     settings: settingsOpen.value,
   }),
 );
+
+// ── what is on screen, for the assistant ────────────────────────────────────
+// The page-level surfaces describe themselves here, where their flags live:
+// the launcher dialogs, the right-click menu, and the launcher itself when no
+// project is open. Everything else publishes from its own component.
+useViewFacet("modal", () => {
+  if (pickerOpen.value) return { surface: "modal", modal: "open-folder" };
+  if (cloneOpen.value) return { surface: "modal", modal: "clone" };
+  if (createOpen.value) return { surface: "modal", modal: "create-project" };
+  return null;
+});
+useViewFacet("menu", () => (intent.isOpen.value ? { surface: "menu" } : null));
+useViewFacet("home", () => {
+  if (project.value || !mounted.value) return null;
+  if (!showRecent.value) return { surface: "home", state: "empty", projects: [] };
+  return {
+    surface: "home",
+    state: "recent",
+    projects: recents.value.map((r) => ({ name: r.name, path: r.path, pinned: r.pinned === true })),
+  };
+});
 
 const { matchesShortcut } = useShortcuts();
 const { prefs: typePrefs, setSize: setTypeSize } = useTypography();
@@ -365,6 +393,13 @@ function onAttentionOpen(projectPath: string, threadId: string) {
   cloneOpen.value = false;
   createOpen.value = false;
   pending.value = null;
+  // The assistant's threads live under a reserved path that is not a project,
+  // so there is nowhere to jump to — its asks answer on its own card.
+  if (projectPath === GLOBAL_ASSISTANT_PROJECT_PATH) {
+    if (!assistantOpen.value) openAssistant();
+    void selectAssistantChat(threadId);
+    return;
+  }
   if (assistantOpen.value) toggleAssistant();
   jumpToThread({ projectPath, threadId });
 }

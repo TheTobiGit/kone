@@ -445,6 +445,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_list_threads",
       "app_read_thread",
       "app_start_thread",
+      "app_send_to_thread",
       "app_stop_thread",
       "app_archive_thread",
       "app_delete_thread",
@@ -453,6 +454,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_get_usage_report",
       "app_set_provider_enabled",
       "app_update_provider",
+      "app_get_view",
       "kone_ast_find_calls",
       "kone_ast_preview",
     ]);
@@ -1097,7 +1099,7 @@ describe("gateway integration (real store + HTTP)", () => {
       method: "tools/call",
       params: {
         name: "app_delete_thread",
-        arguments: { threadId: "target-thread-1" },
+        arguments: { threadId: "target-thread-1", confirm: true },
       },
     });
     expect(rpcResult(deleteRes).isError).toBeFalsy();

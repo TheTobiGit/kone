@@ -1728,6 +1728,64 @@ export type ListSubagentPresetsInput = z.infer<typeof ListSubagentPresetsInputSc
 export type CreateSubagentPresetInput = z.infer<typeof CreateSubagentPresetInputSchema>;
 export type UpdateSubagentPresetInput = z.infer<typeof UpdateSubagentPresetInputSchema>;
 export type DeleteSubagentPresetInput = z.infer<typeof DeleteSubagentPresetInputSchema>;
+// ── the view ─────────────────────────────────────────────────────────────────
+
+/** Most messages `app_get_view` will read back from the focused thread. The
+ *  view is a glance; a longer read is `app_read_thread`'s job. */
+export const VIEW_THREAD_MESSAGES_MAX = 20;
+/** Most lines it will read back from the focused terminal. */
+export const VIEW_TERMINAL_LINES_MAX = 400;
+
+export const GetViewInputSchema = z
+  .object({
+    include: z
+      .array(z.enum(["thread", "terminal"]))
+      .optional()
+      .describe(
+        "Look closer at what has focus: 'thread' adds the latest messages of the thread the user is looking at, 'terminal' adds what the focused terminal is showing. Omit for the description of the screen alone.",
+      ),
+    messages: z
+      .number()
+      .int()
+      .min(1)
+      .max(VIEW_THREAD_MESSAGES_MAX)
+      .optional()
+      .describe(`With include 'thread': how many of its latest messages to read (default 6, at most ${VIEW_THREAD_MESSAGES_MAX}).`),
+    lines: z
+      .number()
+      .int()
+      .min(1)
+      .max(VIEW_TERMINAL_LINES_MAX)
+      .optional()
+      .describe(`With include 'terminal': how many of its last lines to read (default 80, at most ${VIEW_TERMINAL_LINES_MAX}).`),
+  });
+
+export const GET_VIEW_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    include: {
+      type: "array",
+      items: { type: "string", enum: ["thread", "terminal"] },
+      description:
+        "Look closer at what has focus: 'thread' adds the latest messages of the thread the user is looking at, 'terminal' adds what the focused terminal is showing. Omit for the description of the screen alone.",
+    },
+    messages: {
+      type: "integer",
+      minimum: 1,
+      maximum: VIEW_THREAD_MESSAGES_MAX,
+      description: `With include 'thread': how many of its latest messages to read (default 6, at most ${VIEW_THREAD_MESSAGES_MAX}).`,
+    },
+    lines: {
+      type: "integer",
+      minimum: 1,
+      maximum: VIEW_TERMINAL_LINES_MAX,
+      description: `With include 'terminal': how many of its last lines to read (default 80, at most ${VIEW_TERMINAL_LINES_MAX}).`,
+    },
+  },
+} satisfies GatewayRecord;
+
+export type GetViewInput = z.infer<typeof GetViewInputSchema>;
+
 export type GetStripSettingsInput = z.infer<typeof GetStripSettingsInputSchema>;
 export type SetStripSettingsInput = z.infer<typeof SetStripSettingsInputSchema>;
 export type GetTypographyInput = z.infer<typeof GetTypographyInputSchema>;
@@ -1999,6 +2057,32 @@ export const START_APP_THREAD_JSON_SCHEMA = {
   required: ["project", "prompt", "requestId"],
 } satisfies GatewayRecord;
 
+const SEND_MESSAGE_DESCRIPTION =
+  "What to say to the thread, as the user would type it. It lands in the thread's transcript as a user message and the thread's agent answers it with everything it already knows from that conversation, so write it as a follow-up, not a fresh brief.";
+const SEND_STEER_DESCRIPTION =
+  "Only matters when the thread is mid-turn. false (default): queue the message to run after the current turn, exactly like the user typing while it works. true: put it into the running turn now, for a correction the work in progress needs to hear.";
+const SEND_REQUEST_ID_DESCRIPTION =
+  "A stable idempotency key for this message. Retrying with the same one reports the message already sent instead of sending it twice.";
+
+export const SendAppThreadMessageInputSchema = z.object({
+  threadId: z.string().min(1).describe("The thread to message, as app_list_threads reports it."),
+  message: z.string().trim().min(1).describe(SEND_MESSAGE_DESCRIPTION),
+  steer: z.boolean().optional().describe(SEND_STEER_DESCRIPTION),
+  requestId: z.string().min(1).max(200).describe(SEND_REQUEST_ID_DESCRIPTION),
+});
+
+export const SEND_APP_THREAD_MESSAGE_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: { type: "string", description: "The thread to message, as app_list_threads reports it." },
+    message: { type: "string", description: SEND_MESSAGE_DESCRIPTION },
+    steer: { type: "boolean", description: SEND_STEER_DESCRIPTION },
+    requestId: { type: "string", description: SEND_REQUEST_ID_DESCRIPTION },
+  },
+  required: ["threadId", "message", "requestId"],
+} satisfies GatewayRecord;
+
+export type SendAppThreadMessageInput = z.infer<typeof SendAppThreadMessageInputSchema>;
 export type ListAppThreadsInput = z.infer<typeof ListAppThreadsInputSchema>;
 export type ReadAppThreadInput = z.infer<typeof ReadAppThreadInputSchema>;
 export type StartAppThreadInput = z.infer<typeof StartAppThreadInputSchema>;
@@ -2054,10 +2138,14 @@ export const ARCHIVE_APP_THREAD_JSON_SCHEMA = {
   },
 } satisfies GatewayRecord;
 
+const DELETE_THREAD_CONFIRM =
+  "Must be true. Set it only when the user has asked for this thread to be deleted; its messages, subagents and attachments are gone for good. To put a thread away without losing it, archive it instead.";
+
 export const DeleteAppThreadInputSchema = ThreadIdInputSchema.extend({
   threadId: threadIdField(
     "The thread to permanently delete. Irreversible: removes messages, turns, and attachments from the project.",
   ),
+  confirm: z.literal(true).describe(DELETE_THREAD_CONFIRM),
 });
 
 export const DELETE_APP_THREAD_JSON_SCHEMA = {
@@ -2066,7 +2154,9 @@ export const DELETE_APP_THREAD_JSON_SCHEMA = {
     threadId: threadIdProperty(
       "The thread to permanently delete. Irreversible: removes messages, turns, and attachments from the project.",
     ),
+    confirm: { type: "boolean", enum: [true], description: DELETE_THREAD_CONFIRM },
   },
+  required: ["threadId", "confirm"],
 } satisfies GatewayRecord;
 
 export const RenameAppThreadInputSchema = ThreadIdInputSchema.extend({
@@ -2087,6 +2177,7 @@ export const RENAME_APP_THREAD_JSON_SCHEMA = {
       description: "The new title for the thread. Leading and trailing whitespace will be trimmed.",
     },
   },
+  required: ["threadId", "title"],
 } satisfies GatewayRecord;
 
 export type StopAppThreadInput = z.infer<typeof StopAppThreadInputSchema>;

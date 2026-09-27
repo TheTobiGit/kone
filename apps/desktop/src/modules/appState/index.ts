@@ -3,6 +3,7 @@ export {
   currentProjects,
   currentStripSettings,
   currentTypographySettings,
+  currentView,
   registerAppStateIpc,
   setAppState,
 } from "./appState.js";

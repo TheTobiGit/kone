@@ -61,10 +61,18 @@ import {
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
 import type { ThreadGateKind } from "../types.js";
+import type { PendingInteraction } from "../eventSubscriptions.js";
 import {
   createAppProviderTools,
   type AppProvidersToolOptions,
 } from "./tools/appProviders.js";
+import {
+  createAppViewTools,
+  type AppViewToolOptions,
+  type TerminalScreenReading,
+} from "./tools/appView.js";
+import { createViewPreamble } from "./viewPreamble.js";
+import type { ViewSnapshot } from "@kone/protocol/view-context";
 
 export type { GatewaySessionCredential } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
@@ -85,6 +93,8 @@ export { createAppThreadTools } from "./tools/appThreads.js";
 export type { AppThreadsRunner } from "./tools/appThreads.js";
 export { createAppProviderTools } from "./tools/appProviders.js";
 export type { AppProvidersToolOptions } from "./tools/appProviders.js";
+export { createAppViewTools } from "./tools/appView.js";
+export type { AppViewToolOptions, TerminalScreenReading } from "./tools/appView.js";
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 
 /** The live-turn ledger the gateway learns by listening to the existing
@@ -102,6 +112,11 @@ export interface GatewayHandle {
   issueBootstrapToken(sessionToken: string): string | null;
   /** Revoke every credential a thread owns (AgentService.stopSession). */
   revokeThread(threadId: string): void;
+  /** The `<kone_view>` block to put ahead of a thread's next turn — the user's
+   *  screen as the renderer last described it. Null for every thread that is
+   *  not the assistant's, and before the renderer has described anything.
+   *  Called by AgentService at dispatch, so the block is as fresh as the send. */
+  viewBlockFor(threadId: string): string | null;
   /** The resolved endpoint, valid once the server is listening. */
   readonly mcpEndpointUrl: () => string;
   /** Resolves when the loopback server is accepting connections. */
@@ -134,6 +149,9 @@ export interface GatewayInput {
    *  the list's batched read. Wins over `pendingThreadGate` for lists;
    *  `pendingThreadGate` stays the single-thread read. */
   pendingGates?: () => ReadonlyMap<string, ThreadGateKind>;
+  /** Every parked ask in full, so the thread tools can say what a parked
+   *  thread is waiting on — the approval's headline, the question's text. */
+  pendingAsks?: () => readonly PendingInteraction[];
   /** The appearance the renderer last reported, for `app_get_theme_state`.
    *  Absent, the tool reports that the current theme is unknown rather than
    *  naming a default that may not be the one on screen. */
@@ -185,6 +203,12 @@ export interface GatewayInput {
    *  adds no per-field mapping of its own, so the option names stay in one
    *  place instead of drifting across two. */
   providers?: AppProvidersToolOptions;
+  /** What the renderer last said is on screen. Feeds `app_get_view` and the
+   *  block in front of every assistant turn. Absent, the tool says the screen
+   *  is unknown and no block is sent. */
+  readView?: () => ViewSnapshot | null;
+  /** Reads what a terminal is showing, for `app_get_view`'s terminal look. */
+  readTerminalScreen?: (terminalId: string, maxLines: number) => Promise<TerminalScreenReading | null>;
 }
 
 export function createGateway(input: GatewayInput): GatewayHandle {
@@ -217,6 +241,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.isThreadLive) appThreadOptions.isThreadLive = input.isThreadLive;
   if (input.pendingThreadGate) appThreadOptions.pendingGateFor = input.pendingThreadGate;
   if (input.pendingGates) appThreadOptions.pendingGates = input.pendingGates;
+  if (input.pendingAsks) appThreadOptions.pendingAsks = input.pendingAsks;
   if (input.threads) appThreadOptions.runner = input.threads;
   if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
   if (input.threadControls) Object.assign(appThreadOptions, input.threadControls);
@@ -224,6 +249,16 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // The provider tools take their options as one object, passed straight
   // through — no per-field mapping here to drift from AppProvidersToolOptions.
   const appProviderOptions: AppProvidersToolOptions = input.providers ?? {};
+
+  const appViewOptions: AppViewToolOptions = { store: input.store };
+  if (input.readView) appViewOptions.readView = input.readView;
+  if (input.readTerminalScreen) appViewOptions.readTerminalScreen = input.readTerminalScreen;
+  const readView = input.readView;
+  const viewPreamble = createViewPreamble({
+    readView: () => readView?.() ?? null,
+    isAssistantThread: (threadId) =>
+      input.store.threadProjectPath(threadId) === GLOBAL_ASSISTANT_PROJECT_PATH,
+  });
 
   const credentials = new GatewayCredentials();
   const inFlight = makeInFlightRequestRegistry();
@@ -253,6 +288,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
     ...createAppProviderTools(appProviderOptions),
+    ...createAppViewTools(appViewOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
 
   // The ast search stays target "all" (visible from worker and assistant
@@ -325,7 +361,11 @@ export function createGateway(input: GatewayInput): GatewayHandle {
       // cancel() still resolves its registration against a live session.
       inFlight.revokeSession(threadId);
       credentials.revokeThread(threadId);
+      // A session starting over describes the screen in full on its first
+      // turn, rather than pointing back at a block it may not have.
+      viewPreamble.forget(threadId);
     },
+    viewBlockFor: (threadId) => viewPreamble.blockFor(threadId),
     mcpEndpointUrl: () => credentials.mcpEndpointUrl(),
     ready: server.ready,
     shutdown: async () => {

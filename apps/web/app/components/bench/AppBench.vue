@@ -25,6 +25,8 @@ import BenchCompose from "~/components/bench/BenchCompose.vue";
 import BenchList from "~/components/bench/BenchList.vue";
 import type { PortalState } from "~/composables/usePortals";
 import { useShortcuts } from "~/composables/useShortcuts";
+import { useBench } from "~/composables/useBench";
+import { useViewFacet } from "~/composables/useViewContext";
 import type { SurfaceId } from "~/utils/surfaceTop";
 import { ownsKey } from "~/utils/surfaceKeys";
 
@@ -60,6 +62,19 @@ const composing = ref(false);
 
 const isActive = computed(() => props.state === "active");
 const isCovered = computed(() => props.state === "covered");
+
+// What the portal shows, for the assistant: the queue in the bench's own
+// groups, and whether a new job is being written. Null while it is away.
+const { groups } = useBench();
+useViewFacet("bench", () =>
+  props.state === "hidden"
+    ? null
+    : {
+        surface: "bench",
+        composing: composing.value,
+        jobs: groups.value.map((g) => ({ group: g.label, count: g.jobs.length })),
+      },
+);
 
 /* ⌘N writes a new job, on the same binding the studio makes a new thread on.
    One gesture, read against whatever is in front of you — and only ever one

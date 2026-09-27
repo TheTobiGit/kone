@@ -34,7 +34,9 @@ import {
   currentProjects,
   currentStripSettings,
   currentTypographySettings,
+  currentView,
 } from "../modules/appState/index.js";
+import { getTerminalManager } from "../modules/terminal/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import {
@@ -231,6 +233,7 @@ export function registerAgentIpc(): void {
     // single-thread read answers off a fresh snapshot per call. The
     // approval-outranks-question precedence is owned by the shared projector.
     pendingGates: () => indexThreadGates(svc.pendingInteractions()),
+    pendingAsks: () => svc.pendingInteractions(),
     pendingThreadGate: (threadId) =>
       threadGateFor(indexThreadGates(svc.pendingInteractions()), threadId),
     // The renderer owns the appearance and pushes it to the shell; reading it
@@ -255,12 +258,24 @@ export function registerAgentIpc(): void {
     // storage. Only the list crosses: the branch and diff behind each one are
     // read from git when a tool is called, so they are never a stale mirror.
     readProjects: () => currentProjects(),
+    // And what is on screen: which surfaces are open, what each holds, and what
+    // the user selected. The assistant is summoned over all of it, so this
+    // rides in front of each of its turns and backs app_get_view.
+    readView: () => currentView(),
+    // A terminal's screen is read from the PTY manager rather than the
+    // renderer: it holds the scrollback whether or not a column is attached.
+    readTerminalScreen: (terminalId, maxLines) => getTerminalManager().readScreen(terminalId, maxLines),
     // Starting a thread goes through the same dispatcher the renderer's own
     // "new thread" path forwards to, so a thread the assistant opens is an
     // ordinary thread on the project's board rather than a second kind of one.
     threads: {
       startThread: (start) => dispatcher.startThread(start),
       sendThreadTurn: (turn, options) => dispatcher.sendThreadTurn(turn, options),
+      // A message into an existing thread: steered into its running turn, or
+      // sent after its stored session is brought back — the same two paths the
+      // renderer's own composer takes.
+      steerThreadTurn: (turn) => dispatcher.steerThreadTurn(turn),
+      ensureThreadSession: (threadId, options) => dispatcher.ensureThreadSession(threadId, options),
     },
     threadControls: {
       stopThread: async (threadId) => {

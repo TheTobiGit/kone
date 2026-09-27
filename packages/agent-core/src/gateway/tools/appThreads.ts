@@ -26,6 +26,7 @@
 // announced.
 
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 
 import { truncateThreadTitle } from "../../threadTitle.js";
 import { projectThreadStatus } from "../../spawnProjection.js";
@@ -51,6 +52,7 @@ import type {
   TurnStartResult,
 } from "../../types.js";
 import type { TurnSpan } from "../../conversationStoreTypes.js";
+import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import {
   ArchiveAppThreadInputSchema,
@@ -66,12 +68,15 @@ import {
   RENAME_APP_THREAD_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
+  SendAppThreadMessageInputSchema,
+  SEND_APP_THREAD_MESSAGE_JSON_SCHEMA,
   StopAppThreadInputSchema,
   STOP_APP_THREAD_JSON_SCHEMA,
   THREAD_LIST_DEFAULT_LIMIT,
   type GatewayRecord,
   type ListAppThreadsInput,
   type ReadAppThreadInput,
+  type SendAppThreadMessageInput,
   type StartAppThreadInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
@@ -80,6 +85,7 @@ import {
   blockText,
   iso,
   threadLine,
+  THREAD_LINE_LEGEND,
   threadPayload,
   truncateTo,
   type ThreadReading,
@@ -153,6 +159,13 @@ export interface AppThreadsStore {
 export interface AppThreadsRunner {
   startThread(input: SessionStartInput): Promise<Session>;
   sendThreadTurn(input: SendTurnInput, options?: { title?: string }): Promise<TurnStartResult>;
+  /** Put a message into a thread's running turn. Absent, a steer request is
+   *  queued behind the turn instead. */
+  steerThreadTurn?(input: SendTurnInput): Promise<TurnStartResult>;
+  /** Bring back a thread's stored session so a turn can run on it — a thread
+   *  the user has not touched since a restart has none. Absent, a message to
+   *  such a thread is refused rather than sent at a session that is not there. */
+  ensureThreadSession?(threadId: string, options: { resume: boolean }): Promise<void>;
 }
 
 /** What providers and models can actually run right now. Absent, a thread runs
@@ -187,6 +200,10 @@ export interface AppThreadsToolOptions {
    *  over `pendingGateFor` for lists; `pendingGateFor` stays the fallback
    *  for single-thread reads and hosts without a supplier. */
   pendingGates?: () => ReadonlyMap<string, ThreadGateKind>;
+  /** Every parked ask in full — the approval's headline or the question's
+   *  text — so a thread's answer can say WHAT it is waiting on, not only that
+   *  it waits. Absent, a parked thread reports its gate kind alone. */
+  pendingAsks?: () => readonly PendingInteraction[];
   /** Starts threads. Absent, `app_start_thread` refuses rather than pretending:
    *  there is no dispatcher in this process to drive one. */
   runner?: AppThreadsRunner;
@@ -238,6 +255,40 @@ function fingerprintOf(parts: Array<string | undefined>): string {
     hash = (hash * 0x01000193) >>> 0;
   }
   return hash.toString(16);
+}
+
+/** The two fields a replayed op's text repeats, read off the stored payload. */
+const ReplayedOpSchema = z.object({ summary: z.string().optional(), threadId: z.string().optional() });
+
+/** What a replay says about the op it stands for. The text is all a model
+ *  reads, and a retry that does not say which thread leaves it holding none. */
+function replayWords(replayed: GatewayRecord, withThreadId: boolean): string {
+  const parsed = ReplayedOpSchema.safeParse(replayed);
+  if (!parsed.success) return "";
+  const { summary, threadId } = parsed.data;
+  return `${summary ? ` ${summary}` : ""}${withThreadId && threadId ? `\nThread id: ${threadId}.` : ""}`;
+}
+
+/** How much of a parked ask one list row carries. app_read_thread has it whole. */
+const ASK_CLIP = 100;
+
+/** What one parked ask wants from the user, in a line: the approval's kind and
+ *  headline (and the provider's reason), or the question with its choices. */
+function askLine(ask: PendingInteraction): string | null {
+  const event = ask.event;
+  if (event.type === "approval.requested") {
+    const { kind, title, detail } = event.approval;
+    return `approve ${kind} "${title}"${detail ? ` (${detail})` : ""}`;
+  }
+  if (event.type === "user-input.requested") {
+    return event.questions
+      .map((q) => {
+        const choices = q.options.map((o) => o.label).join(" | ");
+        return `answer "${q.question}"${choices ? ` [${choices}${q.multiSelect ? ", pick any" : ""}]` : " (free text)"}`;
+      })
+      .join("; ");
+  }
+  return null;
 }
 
 /** The agent a thread runs as, by name, or null. */
@@ -341,6 +392,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
    *  outranks the turn readout; a running turn without a live session reads
    *  interrupted. The span is decomposed into primitives at this boundary so
    *  the projection only ever sees plain facts, never a store row. */
+  /** What a thread is parked on, one line per ask, oldest first. */
+  const asksFor = (threadId: string): string[] =>
+    (options.pendingAsks?.() ?? [])
+      .filter((ask) => ask.threadId === threadId)
+      .map(askLine)
+      .filter((line): line is string => line !== null);
+
   const statusFor = (facts: ReadingFacts): ThreadStatus =>
     projectThreadStatus({
       gate: facts.gate,
@@ -553,7 +611,15 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     if (scoped && scope[0]) {
       payload.project = { name: scope[0].name, path: scope[0].path };
     }
-    const lines = [head, ...listed.map((reading) => threadLine(reading, !scoped))];
+    // A parked row says what it is parked on, clipped: the list is for seeing
+    // what needs the user, and "waiting-for-approval" alone does not say for what.
+    const rowFor = (reading: ThreadReading): string => {
+      const line = threadLine(reading, !scoped);
+      const [ask] = asksFor(reading.meta.threadId);
+      if (!ask) return line;
+      return `${line} · ${ask.length > ASK_CLIP ? `${ask.slice(0, ASK_CLIP - 1)}…` : ask}`;
+    };
+    const lines = [head, THREAD_LINE_LEGEND, ...listed.map(rowFor)];
     if (remaining > 0 && last) {
       payload.remaining = remaining;
       payload.nextCursor = encodeCursor(THREAD_CURSOR, {
@@ -588,6 +654,21 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     }));
 
     const title = thread.title ?? params.threadId;
+    const agent = agentNameFor(store, thread.threadId);
+    const status = statusFor({
+      span: store.threadTurnSpan?.(thread.threadId) ?? null,
+      gate: options.pendingGateFor?.(thread.threadId) ?? null,
+      live: isLive(thread.threadId),
+    });
+    const about = [
+      `Thread ${thread.threadId}`,
+      status,
+      [agent, thread.provider, thread.model].filter(Boolean).join(" / "),
+      `project ${thread.projectPath}`,
+      thread.blocks.length > messages.length ? `${thread.blocks.length} messages in all` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
     const heading =
       messages.length === 0
         ? `"${title}" has no messages yet.`
@@ -598,7 +679,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         {
           type: "text",
           text: [
-            heading,
+            [about, ...asksFor(thread.threadId).map((ask) => `Waiting on the user to ${ask}.`), heading].join("\n"),
             ...messages.map(
               (message) =>
                 `[${message.role}] ${message.text.trim() || "(no text - tool calls only)"}`,
@@ -613,12 +694,8 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           projectPath: thread.projectPath,
           provider: thread.provider,
           model: thread.model ?? null,
-          agent: agentNameFor(store, thread.threadId),
-          status: statusFor({
-            span: store.threadTurnSpan?.(thread.threadId) ?? null,
-            gate: options.pendingGateFor?.(thread.threadId) ?? null,
-            live: isLive(thread.threadId),
-          }),
+          agent,
+          status,
         }),
         messages,
         totalMessages: thread.blocks.length,
@@ -680,7 +757,9 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         content: [
           {
             type: "text",
-            text: "That thread is already open - this requestId started it, so nothing new was opened.",
+            // The replayed payload's own words: the text is all a model reads,
+            // and a retry that does not say WHICH thread leaves it holding none.
+            text: `That thread is already open - this requestId started it, so nothing new was opened.${replayWords(replayed, true)}`,
           },
         ],
         structuredContent: replayed,
@@ -788,6 +867,135 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         {
           type: "text",
           text: `${summary}\nThread id: ${threadId}. It is on the user's board now and keeps running after this turn ends - read it back with app_read_thread.`,
+        },
+      ],
+      structuredContent: payload,
+    };
+  };
+
+  // -- 4. app_send_to_thread -------------------------------------------------
+  const sendHandler = async (
+    ctx: GatewayToolContext,
+    params: SendAppThreadMessageInput,
+  ): Promise<GatewayToolResult> => {
+    const runner = options.runner;
+    if (!runner) {
+      throw new GatewayToolError(
+        "provider_unavailable",
+        "kone cannot message threads in this session - no dispatcher is running behind the gateway.",
+      );
+    }
+    const { meta, thread } = requireThread(params.threadId);
+    if (params.threadId === ctx.threadId) {
+      throw new GatewayToolError(
+        "invalid_input",
+        "That is this conversation. Answer here instead of messaging yourself.",
+      );
+    }
+    const archivedAt = meta?.archivedAt ?? thread?.archivedAt ?? null;
+    if (archivedAt !== null) {
+      throw new GatewayToolError(
+        "capability_denied",
+        `Thread "${params.threadId}" is archived. Restore it with app_archive_thread (archived: false) before messaging it.`,
+      );
+    }
+
+    const live = isLive(params.threadId);
+    const status = statusFor({
+      span: store.threadTurnSpan?.(params.threadId) ?? null,
+      gate: options.pendingGateFor?.(params.threadId) ?? null,
+      live,
+    });
+    // A parked thread is waiting on the user, not on more instructions: a
+    // message would queue behind a gate only a person can open, and read as
+    // sent while nothing moves.
+    if (status === "waiting-for-approval" || status === "waiting-for-user-input") {
+      const asks = asksFor(params.threadId);
+      throw new GatewayToolError(
+        "capability_denied",
+        `Thread "${params.threadId}" is ${status === "waiting-for-approval" ? "waiting for the user to approve something" : "waiting for the user to answer a question"}${asks.length > 0 ? `: ${asks.join("; ")}` : ""}. Nothing it is sent will run until they do, so tell them instead.`,
+      );
+    }
+    if (!live && !runner.ensureThreadSession) {
+      throw new GatewayToolError(
+        "provider_unavailable",
+        `Thread "${params.threadId}" has no running session, and this host cannot bring one back.`,
+      );
+    }
+
+    const turnId = ctx.turnId;
+    if (!turnId) {
+      throw new GatewayToolError("capability_denied", "Messaging a thread requires an active agent turn.");
+    }
+    const opKey = { threadId: ctx.threadId, turnId, requestId: params.requestId };
+    const reserve = store.reserveGatewayOp({
+      ...opKey,
+      kind: "app.send_to_thread",
+      fingerprint: fingerprintOf([params.threadId, params.message, params.steer ? "steer" : "queue"]),
+    });
+    if (reserve === null) {
+      throw new GatewayToolError("internal", "Idempotency reserve failed.");
+    }
+    if (reserve.kind === "conflict") {
+      throw new GatewayToolError(
+        "idempotency_conflict",
+        "This requestId was already used to send a different message. Use a fresh one, or repeat the original call exactly.",
+      );
+    }
+    if (reserve.kind === "replay") {
+      // SAFETY: the replayed payload is canonical JSON this store recorded from
+      // a prior GatewayToolResult, so every field is plain data.
+      const replayed = reserve.result as GatewayRecord;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Already sent - this requestId delivered it, so nothing was sent twice.${replayWords(replayed, false)}`,
+          },
+        ],
+        structuredContent: replayed,
+      };
+    }
+
+    // A thread nobody has touched since a restart has no session; resume the
+    // stored one, so the agent answers with the conversation it already had.
+    if (!live) await runner.ensureThreadSession?.(params.threadId, { resume: true });
+
+    // Only a running turn is busy. "starting" is a session that is up with no
+    // turn run yet: a send goes straight to it.
+    const busy = status === "working";
+    const turnInput: SendTurnInput = { threadId: params.threadId, input: params.message };
+    // The service queues a send that lands on a busy thread, the same durable
+    // queue a user's follow-up joins. A steer goes into the running turn — only
+    // when there is one to go into and the host can reach it.
+    const steerable = busy && params.steer === true ? runner.steerThreadTurn?.bind(runner) : undefined;
+    const steered = steerable !== undefined;
+    const turn = steerable ? await steerable(turnInput) : await runner.sendThreadTurn(turnInput);
+
+    const title = meta?.title ?? thread?.title ?? params.threadId;
+    const how = steered
+      ? "into its running turn"
+      : busy
+        ? "queued behind its running turn"
+        : live
+          ? "and woke it with a new turn"
+          : "after resuming its session, with a new turn";
+    const summary = `Sent to "${title}" (${params.threadId}), ${how}.`;
+    const payload: GatewayRecord = {
+      ok: true,
+      threadId: params.threadId,
+      turnId: turn.turnId,
+      delivery: steered ? "steered" : busy ? "queued" : "sent",
+      resumed: !live,
+      summary,
+    };
+    store.setGatewayOpResult({ ...opKey, resultJson: JSON.stringify(payload) });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${summary} It shows in that thread as a message from the user. Read the reply back with app_read_thread.`,
         },
       ],
       structuredContent: payload,
@@ -928,6 +1136,22 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       handler: startHandler,
     },
     {
+      name: "app_send_to_thread",
+      description:
+        "Send a message to an existing thread, as the user would, so its agent carries on with everything that conversation already knows. An idle thread wakes up and answers; one mid-turn gets it queued behind the running turn (or, with steer: true, put into the running turn). A thread with no running session is resumed first. Refused for a thread waiting on the user's approval or answer, an archived thread, and this conversation itself. Pass a stable requestId so a retry does not send the message twice.",
+      inputSchema: SendAppThreadMessageInputSchema,
+      jsonSchema: SEND_APP_THREAD_MESSAGE_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: true,
+      promptSnippet:
+        "`app_send_to_thread`: send a follow-up message into an existing thread, which answers it with the context it already has.",
+      promptGuidelines: [
+        "When the user wants something added to work a thread is already doing, message that thread with `app_send_to_thread` instead of starting a new one - a new thread starts with none of that context.",
+        "The message appears in the thread as if the user typed it, so write it the way they would, and tell the user what you sent and where.",
+      ],
+      handler: sendHandler,
+    },
+    {
       name: "app_stop_thread",
       description:
         "Halt any active turn, cancel queued follow-ups, and tear down the running provider session for a thread. Use when the user asks to stop, abort, or cancel work happening in a conversation.",
@@ -960,13 +1184,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_delete_thread",
       description:
-        "Permanently delete a conversation, its messages, subagents, and attachments from the project. Irreversible.",
+        "Permanently delete a conversation, its messages, subagents, and attachments from the project. Irreversible. Requires confirm: true.",
       inputSchema: DeleteAppThreadInputSchema,
       jsonSchema: DELETE_APP_THREAD_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "`app_delete_thread`: permanently delete a conversation and its attachments.",
+        "`app_delete_thread`: permanently delete a conversation and its attachments (confirm: true required).",
       promptGuidelines: [
         "Deleting a thread is permanent and cannot be undone. Confirm with the user before deleting unless explicitly instructed.",
       ],

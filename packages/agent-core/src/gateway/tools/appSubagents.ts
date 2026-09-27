@@ -94,8 +94,10 @@ function presetPayload(preset: SubagentPresetRecord): GatewayRecord {
 
 /** One line of the listing. The instructions are summarised rather than quoted
  *  in full: the list is for choosing between presets, and four sets of standing
- *  orders at full length crowd out the choice. */
-function presetLine(preset: SubagentPresetRecord): string {
+ *  orders at full length crowd out the choice. A list narrowed to one preset
+ *  quotes them whole, which is how a model reads them before an edit — the text
+ *  is the only half it is handed. */
+function presetLine(preset: SubagentPresetRecord, full: boolean): string {
   const gist = preset.instructions?.trim().replace(/\s+/g, " ") ?? "";
   const shortened = gist.length > 140 ? `${gist.slice(0, 139)}…` : gist;
   const chain = preset.model
@@ -107,7 +109,13 @@ function presetLine(preset: SubagentPresetRecord): string {
     isBuiltin(preset) ? "built-in, read-only" : "editable",
     `model: ${chain}`,
   ];
-  return `- **${preset.name}** (\`${preset.presetId}\`) [${bits.join(", ")}]${shortened ? `: ${shortened}` : ""}`;
+  const head = `- **${preset.name}** (\`${preset.presetId}\`) [${bits.join(", ")}]`;
+  if (full) {
+    const instructions = preset.instructions?.trim() ?? "";
+    return instructions ? `${head}\n  Instructions:\n${instructions.replace(/^/gm, "    ")}` : `${head}\n  Instructions: (none)`;
+  }
+  const clipped = gist.length > shortened.length || shortened.endsWith("…") ? " (query this preset by name for all of it)" : "";
+  return `${head}${shortened ? `: ${shortened}${clipped}` : ""}`;
 }
 
 export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEntry[] {
@@ -200,7 +208,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
             presets.length === 0
               ? "No preset sub-agents match. Use app_create_subagent_preset to define one."
               : `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"}, in the order a spawn resolves a name:\n` +
-                presets.map((preset) => presetLine(preset)).join("\n") +
+                presets.map((preset) => presetLine(preset, presets.length === 1)).join("\n") +
                 "\nStart a worker from one with kone_spawn_worker_preset.",
         },
       ],

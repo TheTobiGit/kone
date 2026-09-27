@@ -56,6 +56,7 @@ import { subagentWakePrompt } from "./subagentWake.js";
 // bind to. Same lazy-lookup contract the gateway tools use.
 import { getThreadDispatcher } from "./dispatch.js";
 import type { GatewayHandle } from "./gateway/index.js";
+import { withViewBlock } from "./gateway/viewPreamble.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -812,7 +813,7 @@ export class AgentService {
     // anything reaches an adapter (adapters don't know the queue exists).
     const { dispatchMode, ...base } = input;
     const next = sidechatInput ? { ...base, input: sidechatInput } : base;
-    if (!provider) return this.adapterForThread(input.threadId).sendTurn(next);
+    if (!provider) return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(next));
     const model = this.validModelFor(provider, next.model);
     const effort = this.validEffortFor(provider, model, next.effort);
     const routed = { ...next, model, effort };
@@ -915,10 +916,22 @@ export class AgentService {
     return result;
   }
 
+  /** The turn as the provider should receive it. For the assistant's threads
+   *  that is the user's words behind a `<kone_view>` block describing their
+   *  screen (gateway/viewPreamble.ts); every other turn passes through as is.
+   *  Applied at the last step before an adapter, so a queued follow-up is
+   *  described as the screen stands when it runs rather than when it was typed,
+   *  and so the block never reaches the queue row or the transcript. */
+  private withViewBlock(input: SendTurnInput): SendTurnInput {
+    const block = this.gateway?.viewBlockFor(input.threadId) ?? null;
+    return block ? { ...input, input: withViewBlock(input.input, block) } : input;
+  }
+
   private async dispatchToAdapter(
     threadId: string,
-    input: SendTurnInput,
+    turn: SendTurnInput,
   ): Promise<TurnStartResult> {
+    const input = this.withViewBlock(turn);
     if (input.fallbacks && input.fallbacks.length > 0) {
       this.threadFallbacks.set(threadId, input.fallbacks);
     }
@@ -2075,7 +2088,7 @@ export class AgentService {
     provider: ProviderKind,
   ): Promise<TurnStartResult> {
     const store = this.queueStore;
-    if (!store) return this.adapterForThread(input.threadId).sendTurn(input);
+    if (!store) return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
     const queueId = randomUUID();
     const userBlockId = input.userBlockId ?? this.latestUserBlockId(input.threadId) ?? randomUUID();
     const now = Date.now();
@@ -2111,7 +2124,7 @@ export class AgentService {
       }
     } catch (err) {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
-      return this.adapterForThread(input.threadId).sendTurn(input);
+      return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
     const queued: Extract<RuntimeEvent, { type: "turn.queued" }> = {
