@@ -225,14 +225,21 @@ export function createAppTypographyTools(options: AppTypographyToolOptions): Too
     emit(mutation);
 
     const summary = `Set ${changes.join(", ")}.`;
+    const previous = typographyPayload(current);
+    // What each touched setting was before, keyed by the argument that sets it,
+    // so "put it back" is one call with these values.
+    const was = Object.entries(previous)
+      .filter(([key]) => key in patch)
+      .map(([key, value]) => `${key}: ${JSON.stringify(value ?? null)}`);
+    const text = was.length > 0 ? `${summary}\nPreviously: ${was.join(", ")}.` : summary;
 
     return {
-      content: [{ type: "text", text: summary }],
+      content: [{ type: "text", text }],
       structuredContent: {
         ok: true,
         summary,
         applied: { ...patch },
-        previous: { ...typographyPayload(current) },
+        previous: { ...previous },
       },
     };
   };

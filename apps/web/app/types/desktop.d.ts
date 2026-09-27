@@ -3649,6 +3649,8 @@ export type KoneDesktopApi = {
     strip?: KoneStripSettings;
     typography?: KoneTypographySettings;
     projects?: KoneProjectEntry[];
+    /** What is on screen — see `@kone/protocol/view-context`. */
+    view?: import("@kone/protocol/view-context").ViewSnapshot;
   }) => Promise<void>;
   fs: KoneFsApi;
   git: KoneGitApi;

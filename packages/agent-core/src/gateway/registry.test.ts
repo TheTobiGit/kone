@@ -345,3 +345,39 @@ describe("registry AbortError passthrough", () => {
     expect(result.structuredContent?.error.message).toContain("disk full");
   });
 });
+
+describe("registry: what an assistant tool hands the provider", () => {
+  function tool(name: string, target: "assistant" | "worker", fail = false) {
+    return {
+      name,
+      description: name,
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object" },
+      permission: "allow" as const,
+      requiresActiveTurn: false,
+      target,
+      handler: async () => {
+        if (fail) throw new Error("disk full");
+        return { content: [{ type: "text" as const, text: "the answer" }], structuredContent: { answer: 1 } };
+      },
+    };
+  }
+
+  test("an assistant tool's result is its text alone, errors included", async () => {
+    const registry = createRegistry([tool("app_x", "assistant"), tool("app_boom", "assistant", true)]);
+    const ok = await registry.call(ctx(), "app_x", {}, "assistant");
+    expect(ok.content[0]?.text).toBe("the answer");
+    expect(ok.structuredContent).toBeUndefined();
+
+    const failed = await registry.call(ctx(), "app_boom", {}, "assistant");
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0]?.text).toBe('internal: Tool "app_boom" failed: disk full');
+    expect(failed.structuredContent).toBeUndefined();
+  });
+
+  test("a worker tool keeps its structured half", async () => {
+    const registry = createRegistry([tool("kone_x", "worker")]);
+    const result = await registry.call(ctx(), "kone_x", {}, "worker");
+    expect(result.structuredContent).toEqual({ answer: 1 });
+  });
+});

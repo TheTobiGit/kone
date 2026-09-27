@@ -20,6 +20,7 @@
 // end never does.
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { readStudioRowPanes, useViewFacet } from "~/composables/useViewContext";
 import {
   planeDestinations,
   recordsStanding,
@@ -172,6 +173,32 @@ watch(
   { immediate: true },
 );
 onBeforeUnmount(() => rowRegistry.publishFocusedRow(null));
+
+// What the plane shows, for the assistant: the row the camera is on and its
+// columns (each row publishes its own), or the overview. Null while the plane
+// is away — it is never unmounted, only hidden.
+useViewFacet("studio", () => {
+  if (props.state === "hidden") return null;
+  const paneCounts = new Map(plane.rows.value.map((r) => [r.projectPath, r.paneCount]));
+  const rows = renderRows.value.map((r) => ({
+    name: r.name,
+    path: r.projectPath,
+    panes: paneCounts.get(r.projectPath) ?? 0,
+    focused: r.projectPath === focusedPath.value,
+  }));
+  const focused = rows.find((r) => r.focused);
+  return {
+    surface: "studio",
+    mode: studioOverview.value ? "overview" : "row",
+    rows,
+    row: focused
+      ? {
+          project: { name: focused.name, path: focused.path },
+          panes: readStudioRowPanes(focused.path),
+        }
+      : null,
+  };
+});
 
 const cameraIndex = computed(() => {
   const at = renderRows.value.findIndex((r) => r.projectPath === focusedPath.value);

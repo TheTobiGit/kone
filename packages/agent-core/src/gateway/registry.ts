@@ -43,6 +43,27 @@ export function gatewayToolErrorResult(error: GatewayToolError): GatewayToolResu
   };
 }
 
+/**
+ * The result an assistant-scoped tool hands the provider: its text alone.
+ *
+ * A provider CLI decides which half of a result its model reads, and they do
+ * not agree. Claude Code reads `structuredContent` whenever it is present and
+ * drops the text entirely; others read the text. Sending both meant one model
+ * read the prose each tool writes for it while another read a JSON copy three
+ * to four times the size, and anything the two halves disagreed on depended on
+ * the provider. The app tools' text is written to carry everything their
+ * structured half does, so the structured half stays in kone: every provider
+ * reads the same answer, at the size it was written to be.
+ *
+ * Worker tools keep both halves for now — their text has not been audited
+ * against their structured results.
+ */
+export function textOnlyResult(result: GatewayToolResult): GatewayToolResult {
+  if (result.structuredContent === undefined) return result;
+  const { structuredContent: _dropped, ...rest } = result;
+  return rest;
+}
+
 /** One pending approval for a `permission: "ask"` tool call. */
 export interface GatewayApprovalRequest {
   threadId: string;
@@ -119,6 +140,16 @@ export function createRegistry(
   }
 
   async function call(
+    ctx: GatewayToolContext,
+    name: string,
+    args: GatewayValue | undefined,
+    scope?: GatewayToolScope,
+  ): Promise<GatewayToolResult> {
+    const result = await dispatch(ctx, name, args, scope);
+    return toolsByName.get(name)?.target === "assistant" ? textOnlyResult(result) : result;
+  }
+
+  async function dispatch(
     ctx: GatewayToolContext,
     name: string,
     args: GatewayValue | undefined,

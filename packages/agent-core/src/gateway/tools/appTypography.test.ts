@@ -219,7 +219,7 @@ describe("appTypography tools", () => {
 
       const res = await registry.call(makeCtx(), "app_set_typography", { ligatures: true });
       expect(res.isError).toBeUndefined();
-      expect(res.content[0]?.text).toBe("Set code ligatures enabled.");
+      expect(res.content[0]?.text).toBe("Set code ligatures enabled.\nPreviously: ligatures: false.");
 
       expect(emitted.length).toBe(1);
       if (emitted[0]?.type === "app.typography_mutation") {
@@ -233,7 +233,7 @@ describe("appTypography tools", () => {
 
       const res = await registry.call(makeCtx(), "app_set_typography", { serif: "Fraunces" });
       expect(res.isError).toBeUndefined();
-      expect(res.content[0]?.text).toBe('Set headings font to "Fraunces".');
+      expect(res.content[0]?.text).toBe('Set headings font to "Fraunces".\nPreviously: serif: "".');
     });
 
     it("resets all preferences to defaults when reset is true", async () => {

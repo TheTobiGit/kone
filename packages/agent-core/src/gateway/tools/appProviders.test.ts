@@ -10,7 +10,6 @@ import type {
 import type { QuotaProviderReport } from "../../quota/types.js";
 import type { AgentUsageReport } from "../../usage/report.js";
 import { createRegistry, type GatewayToolContext } from "../registry.js";
-import type { GatewayRecord } from "../schemas.js";
 import { createAppProviderTools, type AppProvidersToolOptions } from "./appProviders.js";
 import type { ProjectRosterEntry } from "./appProjects.js";
 
@@ -252,20 +251,14 @@ describe("app_get_provider_status", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    // SAFETY: structuredContent is GatewayRecord containing providers array.
-    const providers = result.structuredContent?.providers as GatewayRecord[];
-    expect(providers).toHaveLength(3);
-
-    const codex = providers.find((p) => p.provider === "codex");
-    expect(codex?.label).toBe("Codex");
-    expect(codex?.available).toBe(true);
-    expect(codex?.version).toBe("0.8.0");
-    // SAFETY: models is an array of GatewayRecord.
-    const models = codex?.models as GatewayRecord[];
-    expect(models).toHaveLength(2);
-    expect(models[0]?.id).toBe("gpt-5");
-    expect(models[0]?.reasoningEfforts).toEqual(["low", "medium", "high"]);
-    expect(models[0]?.defaultReasoningEffort).toBe("medium");
+    // The text is all the model is handed, so it names every provider, every
+    // model by the id the other tools take, and which effort is the default.
+    const text = result.content[0]?.text ?? "";
+    expect(result.structuredContent).toBeUndefined();
+    expect(text.match(/^- \*\*/gm)).toHaveLength(3);
+    expect(text).toContain("- **Codex** (`codex`): ready · installed · v0.8.0");
+    expect(text).toContain("Models (2), as label `id`:");
+    expect(text).toMatch(/- GPT-5 `gpt-5` \[.*effort: low,medium\*,high/);
 
     expect(result.content[0]?.text).toContain("Codex");
     expect(result.content[0]?.text).toContain("Claude Code");
@@ -290,10 +283,7 @@ describe("app_get_provider_status", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    // SAFETY: structuredContent contains providers array.
-    const providers = result.structuredContent?.providers as GatewayRecord[];
-    expect(providers).toHaveLength(1);
-    expect(providers[0]?.provider).toBe("claudeAgent");
+    expect(result.content[0]?.text).toContain("(`claudeAgent`)");
     expect(result.content[0]?.text).toContain("Claude Code");
     expect(result.content[0]?.text).not.toContain("Codex");
   });
@@ -316,9 +306,7 @@ describe("app_get_provider_status", () => {
       "assistant",
     );
 
-    // SAFETY: structuredContent contains providers array.
-    const providers = result.structuredContent?.providers as GatewayRecord[];
-    expect(providers[0]?.models).toBeUndefined();
+    expect(result.content[0]?.text).not.toContain("Models (");
   });
 
   it("includes maintenance information when checkLatest is requested", async () => {
@@ -340,14 +328,6 @@ describe("app_get_provider_status", () => {
       "assistant",
     );
 
-    // SAFETY: structuredContent contains providers array.
-    const providers = result.structuredContent?.providers as GatewayRecord[];
-    const codex = providers.find((p) => p.provider === "codex");
-    // SAFETY: maintenance is GatewayRecord on provider record.
-    const maint = codex?.maintenance as GatewayRecord;
-    expect(maint.standing).toBe("behind");
-    expect(maint.canUpdate).toBe(true);
-    expect(maint.latestVersion).toBe("0.9.1");
     expect(result.content[0]?.text).toContain("Update available: v0.9.1");
   });
 
@@ -375,10 +355,9 @@ describe("app_get_provider_status", () => {
     );
 
     expect(discovered).toBe(true);
-    // SAFETY: structuredContent contains providers array.
-    const providers = result.structuredContent?.providers as GatewayRecord[];
-    expect(providers).toHaveLength(1);
-    expect(providers[0]?.provider).toBe("codex");
+    const text = result.content[0]?.text ?? "";
+    expect(text.match(/^- \*\*/gm)).toHaveLength(1);
+    expect(text).toContain("(`codex`)");
   });
 });
 
@@ -410,19 +389,8 @@ describe("app_get_usage_report", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    // SAFETY: structuredContent contains totals record.
-    const totals = result.structuredContent?.totals as GatewayRecord;
-    expect(totals.tokens).toBe(1500000);
-    expect(totals.costUsd).toBe(12.5);
-    expect(totals.prompts).toBe(42);
-
-    // SAFETY: quotas is an array of GatewayRecord.
-    const quotas = result.structuredContent?.quotas as GatewayRecord[];
-    expect(quotas).toHaveLength(1);
-    expect(quotas[0]?.provider).toBe("claudeAgent");
-    expect(quotas[0]?.planLabel).toBe("Max 20x");
-
-    // Text formatting
+    expect(result.content[0]?.text).toContain("across 42 prompts");
+    expect(result.content[0]?.text).toContain("- **claudeAgent** (Max 20x)");
     expect(result.content[0]?.text).toContain("$12.50");
     expect(result.content[0]?.text).toContain("1.50M tokens");
     expect(result.content[0]?.text).toContain("5-hour rolling: 45.0% consumed");
@@ -447,8 +415,8 @@ describe("app_get_usage_report", () => {
     );
 
     expect(queriedProject).toBe("/Users/dev/Developer/kone");
-    expect(result.structuredContent?.projectPath).toBe("/Users/dev/Developer/kone");
-    expect(result.structuredContent?.quotas).toBeUndefined();
+    expect(result.content[0]?.text).toContain("· /Users/dev/Developer/kone)");
+    expect(result.content[0]?.text).not.toContain("Subscription Quotas");
   });
 
   it("filters metrics to a single provider", async () => {
@@ -468,10 +436,9 @@ describe("app_get_usage_report", () => {
       "assistant",
     );
 
-    // SAFETY: providers is an array of GatewayRecord.
-    const providers = result.structuredContent?.providers as GatewayRecord[];
-    expect(providers).toHaveLength(1);
-    expect(providers[0]?.key).toBe("claudeAgent");
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain("(`claudeAgent`)");
+    expect(text).not.toContain("(`codex`)");
   });
 });
 
@@ -498,9 +465,6 @@ describe("app_set_provider_enabled", () => {
     expect(result.isError).toBeFalsy();
     expect(recordedProvider).toBe("codex");
     expect(recordedEnabled).toBe(false);
-    expect(result.structuredContent?.provider).toBe("codex");
-    expect(result.structuredContent?.enabled).toBe(false);
-    expect(result.structuredContent?.action).toBe("disabled");
     expect(result.content[0]?.text).toContain("Provider `codex` has been disabled across the app.");
   });
 
@@ -523,8 +487,6 @@ describe("app_set_provider_enabled", () => {
 
     expect(result.isError).toBeFalsy();
     expect(recordedEnabled).toBe(true);
-    expect(result.structuredContent?.enabled).toBe(true);
-    expect(result.structuredContent?.action).toBe("enabled");
     expect(result.content[0]?.text).toContain("Provider `codex` has been enabled across the app.");
   });
 
@@ -571,8 +533,6 @@ describe("app_update_provider", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent?.outcome).toBe("succeeded");
-    expect(result.structuredContent?.currentVersion).toBe("0.9.1");
     expect(result.content[0]?.text).toContain("Successfully updated **codex** to v0.9.1.");
     expect(result.content[0]?.text).toContain("npm notice ... updated 1 package in 2.1s");
   });
@@ -629,7 +589,6 @@ describe("app_update_provider", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent?.outcome).toBe("failed");
     expect(result.content[0]?.text).toContain("Update failed for **codex**");
     expect(result.content[0]?.text).toContain("permission denied");
   });

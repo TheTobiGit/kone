@@ -88,16 +88,28 @@ export function threadPayload(reading: ThreadReading, withProject: boolean): Gat
  *  second line was costing more than everything it carried. The status rides
  *  along only when it asks something of the reader — working, waiting, failed,
  *  interrupted, starting — while `idle` stays unsaid: fifteen rows saying so
- *  is fifteen rows of nothing, and the structured row carries it anyway. */
+ *  is fifteen rows of nothing. The list's heading says so once (see
+ *  THREAD_LINE_LEGEND), since the text is the only half a model reads. */
 export function threadLine(reading: ThreadReading, withProject: boolean): string {
   const meta = reading.meta;
+  const lastActivityAt = meta.lastActivityAt ?? meta.updatedAt;
+  // The same comparisons threadPayload makes, so the line and the row agree.
+  const unread = (meta.lastVisitedAt ?? 0) < lastActivityAt;
+  const done = meta.doneAt !== null && (meta.doneAt ?? 0) >= lastActivityAt;
   const marks = [
     meta.threadId,
     reading.agentName,
     meta.model ?? meta.provider,
     withProject ? (reading.project?.name ?? meta.projectPath) : null,
-    ago(meta.lastActivityAt ?? meta.updatedAt),
+    meta.branch ? `on ${meta.branch}` : null,
+    ago(lastActivityAt),
     reading.status !== "idle" ? reading.status : null,
+    unread ? "unread" : null,
+    done ? "done" : null,
+    meta.archivedAt !== null ? "archived" : null,
   ].filter((mark): mark is string => mark !== null);
   return `- ${meta.title ?? "(untitled)"} — ${marks.join(" · ")}`;
 }
+
+/** Said once, under a list's heading, so the unsaid `idle` is not a guess. */
+export const THREAD_LINE_LEGEND = "Each row: title — id · agent · model · branch · last active · status (none shown means idle).";

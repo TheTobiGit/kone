@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { useStudioRowView } from "~/composables/useViewContext";
+import { describePane } from "~/utils/viewPanes";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -1682,6 +1684,11 @@ defineExpose(rowApi);
 
 rowRegistry.register(registryPath, rowApi);
 onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
+
+// This row's columns, left to right, for the assistant's view of the plane.
+useStudioRowView(registryPath, () =>
+  studio.panes.value.map((pane) => describePane(pane, studio.focusedId.value)),
+);
 </script>
 
 <template>

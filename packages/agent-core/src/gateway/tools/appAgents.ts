@@ -139,8 +139,14 @@ function entryPayload(agent: AgentRosterEntry, settings: InternalSkillsSettings)
   return payload;
 }
 
-/** One roster line, for the text half of a result. */
-function entryLine(agent: AgentRosterEntry, settings: InternalSkillsSettings): string {
+/** How much of an agent's standing instructions a many-agent list shows. A
+ *  list narrowed to one agent shows them whole — that is the path to reading
+ *  them in full before an edit. */
+const LIST_INSTRUCTIONS_CLIP = 240;
+
+/** One roster line, for the text half of a result — the only half a model
+ *  reads, so it carries what entryPayload does. */
+function entryLine(agent: AgentRosterEntry, settings: InternalSkillsSettings, full: boolean): string {
   const activeSkills = agent.skills.filter((name) => isSkillInternallyEnabled({ name }, settings));
   const chain = agent.model
     ? [agent.model, ...(agent.modelFallbacks ?? [])]
@@ -153,11 +159,26 @@ function entryLine(agent: AgentRosterEntry, settings: InternalSkillsSettings): s
   ];
   if (agent.bot) bits.push(`bot: ${agent.bot.color} ${agent.bot.form} (${agent.bot.expression})`);
   else bits.push("bot: none");
-  if (agent.avatar) bits.push(`picture: ${agent.avatar.source}`);
+  if (agent.avatar) {
+    // The src only when it is a short reference: an uploaded picture can be
+    // inline image data, which would be most of the answer and tell nothing.
+    const src = agent.avatar.src;
+    const readable = src.length <= 200 && !src.startsWith("data:");
+    bits.push(`picture: ${agent.avatar.source}${readable ? ` ${src}` : ""}`);
+  }
   if (activeSkills.length > 0) bits.push(`skills: ${activeSkills.join(", ")}`);
-  if (agent.teams.length > 0) bits.push(`teams: ${agent.teams.length}`);
+  bits.push(`face: body ${agent.face.body}, ink ${agent.face.ink}`);
+  if (agent.teams.length > 0) bits.push(`teams: ${agent.teams.join(", ")}`);
   if (agent.active) bits.push("takes the next turn");
-  return `- **${agent.name}** (\`${agent.id}\`)${agent.role ? ` — ${agent.role}` : ""} [${bits.join(", ")}]`;
+  const head = `- **${agent.name}** (\`${agent.id}\`)${agent.role ? ` — ${agent.role}` : ""} [${bits.join(", ")}]`;
+  const instructions = agent.instructions.trim();
+  if (!instructions) return `${head}\n  Instructions: (none)`;
+  if (full || instructions.length <= LIST_INSTRUCTIONS_CLIP) {
+    return `${head}\n  Instructions:\n${instructions.replace(/^/gm, "    ")}`;
+  }
+  return `${head}\n  Instructions (first ${LIST_INSTRUCTIONS_CLIP} of ${instructions.length} chars; list with query naming this agent for all of it): ${instructions
+    .slice(0, LIST_INSTRUCTIONS_CLIP)
+    .replace(/\s+/g, " ")}…`;
 }
 
 export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
@@ -254,7 +275,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
           type: "text",
           text:
             `${matches.length} agent${matches.length === 1 ? "" : "s"} in kone's roster:\n` +
-            matches.map((agent) => entryLine(agent, skillSettings)).join("\n") +
+            matches.map((agent) => entryLine(agent, skillSettings, matches.length === 1)).join("\n") +
             `\n\nThe next turn is handed to ${active ? `**${active.name}**` : "a guest (nobody in particular), which is the shipped default"}.`,
         },
       ],

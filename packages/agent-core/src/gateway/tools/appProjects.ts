@@ -346,6 +346,18 @@ function threadPayload(thread: StoredThreadMeta): GatewayRecord {
   };
 }
 
+/** A recent thread in one line. Carries the id: it is what app_read_thread and
+ *  the other thread tools take, and a title alone leaves a model that reads the
+ *  text half one list call short of acting on it. */
+function threadLine(thread: StoredThreadMeta): string {
+  const runsOn = [thread.provider, thread.model].filter(Boolean).join(" / ");
+  const parts = [`- ${thread.title ?? "(untitled)"} — ${runsOn}`];
+  if (thread.branch) parts.push(`on ${thread.branch}`);
+  if (thread.lastActivityAt) parts.push(`last active ${iso(thread.lastActivityAt)}`);
+  parts.push(`id ${thread.threadId}`);
+  return parts.join(", ");
+}
+
 export function createAppProjectTools(options: AppProjectsToolOptions): ToolEntry[] {
   const git: AppProjectsGit = options.git ?? { detect: detectRepo, status: readRepoStatus };
 
@@ -417,12 +429,21 @@ export function createAppProjectTools(options: AppProjectsToolOptions): ToolEntr
       const marks = [project.active ? "active" : null, project.pinned ? "pinned" : null]
         .filter((mark): mark is string => mark !== null)
         .join(", ");
-      const head = `- **${project.name}**${marks ? ` (${marks})` : ""} — \`${project.path}\``;
+      const opened = project.lastOpenedAt === null ? "" : `, last opened ${iso(project.lastOpenedAt)}`;
+      const head = `- **${project.name}**${marks ? ` (${marks})` : ""} — \`${project.path}\`${opened}`;
       const gitPart = reading ? `\n  git: ${repoLine(reading)}` : "";
-      const konePart = `\n  kone: ${kone.threads} thread${kone.threads === 1 ? "" : "s"}${
-        kone.team.length > 0 ? `, team: ${kone.team.join(", ")}` : ""
-      }${kone.onStudio ? ", on the studio" : ""}`;
-      return `${head}${gitPart}${konePart}`;
+      // Everything konePayload sends, so the text and the structured half say
+      // the same thing whichever of the two a provider hands its model.
+      const koneParts = [
+        `${kone.threads} thread${kone.threads === 1 ? "" : "s"}${
+          kone.archivedThreads > 0 ? ` (${kone.archivedThreads} archived)` : ""
+        }`,
+      ];
+      if (kone.scratchpads > 0) koneParts.push(`${kone.scratchpads} scratchpad${kone.scratchpads === 1 ? "" : "s"}`);
+      if (kone.team.length > 0) koneParts.push(`team: ${kone.team.join(", ")}`);
+      if (kone.onStudio) koneParts.push("on the studio");
+      if (kone.lastActivityAt !== null) koneParts.push(`last worked on ${iso(kone.lastActivityAt)}`);
+      return `${head}${gitPart}\n  kone: ${koneParts.join(", ")}`;
     });
 
     const active = projects.find((project) => project.active);
@@ -526,6 +547,12 @@ export function createAppProjectTools(options: AppProjectsToolOptions): ToolEntr
     ];
     if (kone.team.length > 0) lines.push(`Team: ${kone.team.join(", ")}.`);
     if (kone.lastActivityAt !== null) lines.push(`Last worked on: ${iso(kone.lastActivityAt)}.`);
+    if (project.lastOpenedAt !== null) lines.push(`Last opened: ${iso(project.lastOpenedAt)}.`);
+    if (status) {
+      lines.push(
+        `HEAD ${status.head ?? "(none)"}, upstream ${status.upstream ?? "(none)"}; ${status.staged} staged, ${status.unstaged} unstaged, ${status.untracked} untracked.`,
+      );
+    }
     if (listed.length > 0) {
       lines.push(
         "",
@@ -544,7 +571,7 @@ export function createAppProjectTools(options: AppProjectsToolOptions): ToolEntr
       lines.push(
         "",
         "Recent threads:",
-        ...threads.map((thread) => `- ${thread.title ?? "(untitled)"} — ${thread.provider}`),
+        ...threads.map(threadLine),
       );
     }
 

@@ -692,6 +692,49 @@ describe("AgentService durable turn queue + steering", () => {
     expect(promoted).toMatchObject({ queueId, turnId: sent?.turnId });
   });
 
+  test("the assistant's view block reaches the provider, never the queue row", async () => {
+    // A gateway that describes the screen for one thread only — every other
+    // test's turns pass through it untouched.
+    let screen = "screen one";
+    const gateway = {
+      ready: Promise.resolve(),
+      connectionForThread: () => ({}),
+      issueBootstrapToken: () => null,
+      revokeThread: () => {},
+      mcpEndpointUrl: () => "",
+      shutdown: async () => {},
+      viewBlockFor: (threadId: string) =>
+        threadId === "t-view" ? `<kone_view>${screen}</kone_view>` : null,
+    };
+    // SAFETY: the service reads only the members stubbed above.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    service.attachGateway(gateway as unknown as Parameters<typeof service.attachGateway>[0]);
+
+    fakeStore.seedUserBlocks("t-view", ["b1", "b2"]);
+    await service.startSession({ threadId: "t-view", provider: "codex", cwd: "/tmp", mode: "ask" });
+    await service.sendTurn({ threadId: "t-view", input: "what is this?" });
+    expect(FakeAdapter.sentTurns.at(-1)?.input.input).toBe(
+      "<kone_view>screen one</kone_view>\n\nwhat is this?",
+    );
+
+    // A follow-up typed while that turn runs is queued as typed, and described
+    // as the screen stands when it finally runs.
+    codexEmit({ ...codexBase, threadId: "t-view", type: "turn.started", turnId: "live-v" });
+    await service.sendTurn({ threadId: "t-view", input: "and now?" });
+    expect(fakeStore.rows.find((r) => r.threadId === "t-view")?.input).toBe("and now?");
+    screen = "screen two";
+    codexEmit({ ...codexBase, threadId: "t-view", type: "turn.completed", turnId: "live-v" });
+    await flush();
+    expect(FakeAdapter.sentTurns.at(-1)?.input.input).toBe(
+      "<kone_view>screen two</kone_view>\n\nand now?",
+    );
+
+    // Any other thread's turn goes out exactly as sent.
+    await service.startSession({ threadId: "t-not-view", provider: "codex", cwd: "/tmp", mode: "ask" });
+    await service.sendTurn({ threadId: "t-not-view", input: "plain" });
+    expect(FakeAdapter.sentTurns.at(-1)?.input.input).toBe("plain");
+  });
+
   test("stopSession cancels queued rows and no promotion fires", async () => {
     const thread = "t-q-stop";
     await startBusyThread(thread, "live-1");

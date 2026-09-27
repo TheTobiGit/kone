@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentRecord } from "../../ConversationStore.js";
 import type { ProviderAvailability } from "../../agentModel.js";
 import type { TurnSpan } from "../../conversationStoreTypes.js";
+import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { ThreadGateKind } from "../../types.js";
 import type {
   EmitEvent,
@@ -267,6 +268,7 @@ function tools(
     spans?: Record<string, TurnSpan | null>;
     gates?: Record<string, ThreadGateKind>;
     pendingGates?: () => ReadonlyMap<string, ThreadGateKind>;
+    asks?: PendingInteraction[];
     availability?: ProviderAvailability[];
     threadId?: string;
     emit?: EmitEvent;
@@ -301,6 +303,10 @@ function tools(
     newThreadId: () => options.threadId ?? "thread-new",
   };
   if (options.pendingGates) toolOptions.pendingGates = options.pendingGates;
+  if (options.asks) {
+    const asks = options.asks;
+    toolOptions.pendingAsks = () => asks;
+  }
   if (options.emit) toolOptions.emit = options.emit;
   if (options.stopThread) toolOptions.stopThread = options.stopThread;
   if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
@@ -847,6 +853,9 @@ describe("app_start_thread", () => {
     expect(calls.started).toHaveLength(1);
     expect(second.isError).toBeUndefined();
     expect(text(second)).toContain("already open");
+    // The retry names the thread in its text: that is the only half a model
+    // is handed, and a replay that leaves it out leaves the model holding none.
+    expect(text(second)).toContain("Thread id: thread-new.");
     expect(second.structuredContent?.threadId).toBe(first.structuredContent?.threadId);
   });
 
@@ -896,19 +905,20 @@ describe("app_start_thread", () => {
 });
 
 describe("the thread tools as the gateway serves them", () => {
-  it("reads turn-lessly and gates only the start on a live turn", () => {
+  it("reads turn-lessly and gates only the start and the send on a live turn", () => {
     const entries = createAppThreadTools({ store: makeStore() });
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
 
     expect(byName.get("app_list_threads")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_read_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_start_thread")?.requiresActiveTurn).toBe(true);
+    expect(byName.get("app_send_to_thread")?.requiresActiveTurn).toBe(true);
     expect(byName.get("app_stop_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_archive_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_delete_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_rename_thread")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(7);
+    expect(entries).toHaveLength(8);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
@@ -1016,11 +1026,232 @@ describe("app_archive_thread", () => {
   });
 });
 
+describe("what a parked thread is waiting on", () => {
+  const APPROVAL: PendingInteraction = {
+    threadId: "t-newest",
+    requestId: "req-a",
+    event: {
+      type: "approval.requested",
+      threadId: "t-newest",
+      provider: "claudeAgent",
+      at: 1,
+      source: "claude.sdk.message",
+      requestId: "req-a",
+      approval: { kind: "command", title: "rm -rf dist", detail: "clean the build" },
+    },
+  };
+  const QUESTION: PendingInteraction = {
+    threadId: "t-newest",
+    requestId: "req-q",
+    event: {
+      type: "user-input.requested",
+      threadId: "t-newest",
+      provider: "claudeAgent",
+      at: 1,
+      source: "claude.sdk.message",
+      requestId: "req-q",
+      questions: [
+        { id: "Which DB?", header: "DB", question: "Which DB?", options: [{ label: "Postgres" }, { label: "SQLite" }] },
+      ],
+    },
+  };
+
+  it("reads a parked approval in full", async () => {
+    const result = await tools({ gates: { "t-newest": "approval" }, asks: [APPROVAL], live: ["t-newest"] }).call(
+      makeCtx(),
+      "app_read_thread",
+      { threadId: "t-newest" },
+    );
+    expect(text(result)).toContain('Waiting on the user to approve command "rm -rf dist" (clean the build).');
+  });
+
+  it("reads a parked question with its choices", async () => {
+    const result = await tools({ gates: { "t-newest": "user-input" }, asks: [QUESTION], live: ["t-newest"] }).call(
+      makeCtx(),
+      "app_read_thread",
+      { threadId: "t-newest" },
+    );
+    expect(text(result)).toContain('Waiting on the user to answer "Which DB?" [Postgres | SQLite].');
+  });
+
+  it("names the ask on the parked row of a list, and nowhere else", async () => {
+    const body = text(
+      await tools({ gates: { "t-newest": "approval" }, asks: [APPROVAL], live: ["t-newest"] }).call(
+        makeCtx(),
+        "app_list_threads",
+        { project: "kone" },
+      ),
+    );
+    expect(body).toMatch(/- Wire the projects module — .*waiting-for-approval.* · approve command "rm -rf dist"/);
+    expect(body).toMatch(/- Fix the strip — [^\n]*done$/m);
+  });
+
+  it("says what the thread waits on when refusing to message it", async () => {
+    const result = await tools({ gates: { "t-newest": "approval" }, asks: [APPROVAL], live: ["t-newest"] }).call(
+      makeCtx(),
+      "app_send_to_thread",
+      { threadId: "t-newest", message: "hi", requestId: "s1" },
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('waiting for the user to approve something: approve command "rm -rf dist"');
+  });
+});
+
+describe("app_send_to_thread", () => {
+  const SEND = { threadId: "t-newest", message: "Also run the tests", requestId: "s1" };
+  const BUSY = { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" } as const;
+
+  interface SendCalls extends RunnerCalls {
+    steered: SendTurnInput[];
+    resumed: Array<{ threadId: string; resume: boolean }>;
+  }
+  function sendRunner(calls: SendCalls, withResume = true): AppThreadsRunner {
+    const runner: AppThreadsRunner = {
+      ...makeRunner(calls),
+      steerThreadTurn: async (input) => {
+        calls.steered.push(input);
+        return { threadId: input.threadId, turnId: "turn-steer" };
+      },
+    };
+    if (withResume) {
+      runner.ensureThreadSession = async (threadId, options) => {
+        calls.resumed.push({ threadId, resume: options.resume });
+      };
+    }
+    return runner;
+  }
+  const newCalls = (): SendCalls => ({ started: [], turns: [], steered: [], resumed: [] });
+
+  it("wakes an idle live thread with the message as a new turn", async () => {
+    const calls = newCalls();
+    const result = await tools({ runner: sendRunner(calls), live: ["t-newest"] }).call(
+      makeCtx(),
+      "app_send_to_thread",
+      SEND,
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(calls.turns[0]?.input).toEqual({ threadId: "t-newest", input: "Also run the tests" });
+    expect(calls.resumed).toHaveLength(0);
+    expect(text(result)).toContain('Sent to "Wire the projects module" (t-newest), and woke it with a new turn.');
+  });
+
+  it("resumes a thread with no running session before sending", async () => {
+    const calls = newCalls();
+    const result = await tools({ runner: sendRunner(calls) }).call(makeCtx(), "app_send_to_thread", SEND);
+
+    expect(calls.resumed).toEqual([{ threadId: "t-newest", resume: true }]);
+    expect(calls.turns).toHaveLength(1);
+    expect(text(result)).toContain("after resuming its session");
+  });
+
+  it("refuses a sessionless thread when the host cannot resume one", async () => {
+    const calls = newCalls();
+    const result = await tools({ runner: sendRunner(calls, false) }).call(makeCtx(), "app_send_to_thread", SEND);
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("cannot bring one back");
+    expect(calls.turns).toHaveLength(0);
+  });
+
+  it("queues behind a running turn by default, and steers into it on request", async () => {
+    const queuedCalls = newCalls();
+    const queued = await tools({
+      runner: sendRunner(queuedCalls),
+      live: ["t-newest"],
+      spans: { "t-newest": BUSY },
+    }).call(makeCtx(), "app_send_to_thread", SEND);
+    expect(queuedCalls.turns).toHaveLength(1);
+    expect(queuedCalls.steered).toHaveLength(0);
+    expect(text(queued)).toContain("queued behind its running turn");
+
+    const steerCalls = newCalls();
+    const steered = await tools({
+      runner: sendRunner(steerCalls),
+      live: ["t-newest"],
+      spans: { "t-newest": BUSY },
+    }).call(makeCtx(), "app_send_to_thread", { ...SEND, steer: true });
+    expect(steerCalls.steered).toHaveLength(1);
+    expect(steerCalls.turns).toHaveLength(0);
+    expect(text(steered)).toContain("into its running turn");
+  });
+
+  it("refuses a thread parked on the user, and sends nothing", async () => {
+    const calls = newCalls();
+    const result = await tools({
+      runner: sendRunner(calls),
+      live: ["t-newest"],
+      gates: { "t-newest": "approval" },
+    }).call(makeCtx(), "app_send_to_thread", SEND);
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("waiting for the user to approve something");
+    expect(calls.turns).toHaveLength(0);
+  });
+
+  it("refuses an archived thread and this conversation itself", async () => {
+    const calls = newCalls();
+    const archivedStore = makeStore({
+      threadMeta: (threadId) =>
+        threadId === "t-newest" ? { ...KONE_THREADS[0]!, archivedAt: 9 } : null,
+    });
+    const archived = await tools({ runner: sendRunner(calls), store: archivedStore }).call(
+      makeCtx(),
+      "app_send_to_thread",
+      SEND,
+    );
+    expect(archived.isError).toBe(true);
+    expect(text(archived)).toContain("is archived");
+
+    const self = await tools({ runner: sendRunner(calls) }).call(
+      makeCtx({ threadId: "t-newest" }),
+      "app_send_to_thread",
+      SEND,
+    );
+    expect(self.isError).toBe(true);
+    expect(text(self)).toContain("That is this conversation");
+    expect(calls.turns).toHaveLength(0);
+  });
+
+  it("sends a retried message once, and refuses a different one under the same key", async () => {
+    const calls = newCalls();
+    const registry = tools({ runner: sendRunner(calls), store: makeStore(), live: ["t-newest"] });
+    await registry.call(makeCtx(), "app_send_to_thread", SEND);
+    const retry = await registry.call(makeCtx(), "app_send_to_thread", SEND);
+    expect(calls.turns).toHaveLength(1);
+    expect(text(retry)).toContain("Already sent");
+    expect(text(retry)).toContain("(t-newest)");
+
+    const clash = await registry.call(makeCtx(), "app_send_to_thread", { ...SEND, message: "Something else" });
+    expect(clash.isError).toBe(true);
+    expect(text(clash)).toContain("idempotency_conflict");
+  });
+
+  it("refuses an unknown thread", async () => {
+    const result = await tools({ runner: sendRunner(newCalls()) }).call(makeCtx(), "app_send_to_thread", {
+      ...SEND,
+      threadId: "ghost",
+    });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
+  });
+});
+
 describe("app_delete_thread", () => {
+  it("refuses without confirm: true, and deletes nothing", async () => {
+    const store = makeStore();
+    const result = await tools({ store }).call(makeCtx(), "app_delete_thread", { threadId: "t-newest" });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("invalid_input");
+    expect(store.calls.deleted).not.toContain("t-newest");
+  });
+
   it("deletes a thread when safe", async () => {
     const store = makeStore();
     const result = await tools({ store }).call(makeCtx(), "app_delete_thread", {
       threadId: "t-newest",
+      confirm: true,
     });
 
     expect(result.isError).toBeUndefined();
@@ -1040,6 +1271,7 @@ describe("app_delete_thread", () => {
     store.cancelQueuedTurnsForThread = undefined;
     const result = await tools({ store }).call(makeCtx(), "app_delete_thread", {
       threadId: "t-newest",
+      confirm: true,
     });
 
     expect(result.isError).toBeUndefined();
@@ -1052,6 +1284,7 @@ describe("app_delete_thread", () => {
     });
     const result = await tools({ store }).call(makeCtx(), "app_delete_thread", {
       threadId: "t-newest",
+      confirm: true,
     });
 
     expect(result.isError).toBe(true);
@@ -1061,6 +1294,7 @@ describe("app_delete_thread", () => {
   it("refuses deleting when thread does not exist", async () => {
     const result = await tools().call(makeCtx(), "app_delete_thread", {
       threadId: "nonexistent",
+      confirm: true,
     });
 
     expect(result.isError).toBe(true);

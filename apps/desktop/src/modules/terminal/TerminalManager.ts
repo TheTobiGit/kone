@@ -24,6 +24,7 @@ import {
 } from "@kone/git-core/processTree.js";
 import { createModeReplayTracker, type ModeReplayTracker } from "./modeReplay.js";
 import { sanitizeTerminalHistoryChunk } from "./sanitize.js";
+import { renderScreenText } from "./screenText.js";
 import { spawnPty, type PtyProcess } from "./Pty.js";
 import type {
   EmitTerminalEvent,
@@ -254,6 +255,33 @@ export class TerminalManager {
       }
       this.armForceResume(s);
     }
+  }
+
+  /** What a terminal is showing, as plain text: its last `maxLines` lines,
+   *  output still waiting on the flush timer included. Null for a terminal this
+   *  manager doesn't hold. Read-only — nothing is flushed or acked, so the
+   *  renderer's stream is untouched by someone looking over its shoulder. */
+  async readScreen(
+    terminalId: string,
+    maxLines: number,
+  ): Promise<{
+    cwd: string;
+    status: TerminalSession["status"];
+    running: string | null;
+    exitCode: number | null;
+    lines: string[];
+  } | null> {
+    const s = this.sessions.get(terminalId);
+    if (!s) return null;
+    const pending = s.pendingOutput.map((chunk) => chunk.sanitized).join("");
+    const lines = await renderScreenText(s.history + pending, s.cols, s.rows, maxLines);
+    return {
+      cwd: s.cwd,
+      status: s.status,
+      running: s.hasRunningSubprocess ? s.childCommandLabel : null,
+      exitCode: s.exitCode,
+      lines,
+    };
   }
 
   // ── Subprocess-activity polling ───────────────────────────────────────────

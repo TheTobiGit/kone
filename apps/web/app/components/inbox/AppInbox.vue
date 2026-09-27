@@ -18,6 +18,8 @@
 // an edge that is already there.
 
 import { computed, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
+import { useViewFacet } from "~/composables/useViewContext";
+import type { ViewThreadRef } from "@kone/protocol/view-context";
 import { useElementSize, useEventListener, useStorage } from "@vueuse/core";
 import {
   DEFAULT_LIST_WIDTH,
@@ -93,6 +95,18 @@ const view = ref<InboxViewId>("inbox");
 const paneState = reactive(createInboxReadingPaneState());
 
 const pane = computed(() => resolveInboxReadingPane(paneState));
+
+// What the portal shows, for the assistant: which list, and the thread being
+// read if one is. Null while the portal is away — it is never unmounted.
+useViewFacet("inbox", () => {
+  if (props.state === "hidden") return null;
+  const current = pane.value;
+  const list = view.value === "inbox" ? "Inbox" : view.value === "done" ? "Done" : "Archived";
+  if (current.kind !== "reader") return { surface: "inbox", list, pane: current.kind };
+  const thread: ViewThreadRef = { threadId: current.row.threadId, title: current.row.title };
+  if (current.row.projectPath) thread.projectPath = current.row.projectPath;
+  return { surface: "inbox", list, pane: "reader", thread };
+});
 
 // No thread is on screen: the composer is up, or nothing has been picked, or
 // the portal has never been entered. Read-marking and the bots' skip both key

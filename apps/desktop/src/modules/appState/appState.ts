@@ -17,6 +17,11 @@
  *   and which are pinned. Also browser storage. Only the *list* is mirrored:
  *   the branch and the diff behind each project are read from git at the moment
  *   an agent asks, because a mirror of those would be wrong within seconds.
+ * - the **view** — what is on screen right now: which surfaces are open, what
+ *   each one holds, and what the user last selected. The assistant is summoned
+ *   over all of it, and "this thread" means nothing without it. Unlike the
+ *   others this changes constantly, so the renderer pushes it on its own,
+ *   debounced, and only when the description actually changed.
  *
  * Nothing here is authoritative: the renderer pushes, this remembers the last
  * push, and a write from an agent goes back the other way as a runtime event the
@@ -30,6 +35,7 @@ import {
   resolveTypographyPrefs,
   type TypographyPrefs,
 } from "@kone/protocol/typography";
+import { parseViewSnapshot, type ViewSnapshot } from "@kone/protocol/view-context";
 
 /** One agent in the renderer's roster, resolved: every field is what the roster
  *  actually shows rather than a row's half-answer. Flatter than the renderer's
@@ -105,6 +111,7 @@ export type AppStatePush = {
   strip?: StripSettingsState;
   typography?: TypographySettingsState;
   projects?: ProjectEntry[];
+  view?: ViewSnapshot;
 };
 
 const CENTERINGS = new Set<StripCentering>(["never", "on-overflow", "always"]);
@@ -114,6 +121,7 @@ let agentRoster: AgentRosterEntry[] | null = null;
 let stripSettings: StripSettingsState | null = null;
 let typographySettings: TypographySettingsState | null = null;
 let projects: ProjectEntry[] | null = null;
+let view: ViewSnapshot | null = null;
 
 /** The agent roster the renderer last reported, or null before its first push.
  *  Read by the agent gateway so `app_list_agents` names the agents this install
@@ -143,6 +151,13 @@ export function currentTypographySettings(): TypographySettingsState | null {
  *  reporting the one they just dropped would be the wrong kind of stale. */
 export function currentProjects(): readonly ProjectEntry[] | null {
   return projects;
+}
+
+/** What the renderer last said is on screen, or null before its first push.
+ *  Read by the agent gateway: in front of every assistant turn, and in full by
+ *  `app_get_view`. */
+export function currentView(): ViewSnapshot | null {
+  return view;
 }
 
 /** A present, non-blank string, or undefined. The push crosses IPC, so an empty
@@ -349,6 +364,10 @@ export function setAppState(state: AppStatePush | undefined): void {
       .map(readProjectEntry)
       .filter((entry): entry is ProjectEntry => entry !== null);
   }
+  // A malformed view keeps the last good one, like the roster: a slightly old
+  // description of the screen is closer to the truth than none.
+  const nextView = parseViewSnapshot(state.view);
+  if (nextView) view = nextView;
 }
 
 /** Register the app:state handler. Call once, before creating the window. */

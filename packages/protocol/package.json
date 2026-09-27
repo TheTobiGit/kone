@@ -39,6 +39,10 @@
     "./usage-format": {
       "types": "./src/usageFormat.ts",
       "default": "./src/usageFormat.ts"
+    },
+    "./view-context": {
+      "types": "./src/viewContext.ts",
+      "default": "./src/viewContext.ts"
     }
   },
   "dependencies": {
