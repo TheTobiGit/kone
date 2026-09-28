@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
-import { SESSION_BRAND } from "~/types/session";
-import type { UsageRange } from "~/types/desktop";
+import type { SpaceUsage } from "~/composables/useSpaceUsage";
 import { formatCount, formatDayShort, formatTokens, formatUsd } from "~/utils/usageFormat";
-import { PROVIDER_COLOR, PROVIDER_LABEL, isProviderKind } from "~/utils/usageProviders";
+import { knownProviderRows } from "~/utils/usageProviders";
+import { LONGER_USAGE_RANGES } from "~/utils/usageRanges";
 
 // Spend, at a glance: today up front, the longer windows beside it, and the
 // last 30 days as a strip of daily bars over a split by agent. The full story
@@ -15,46 +15,23 @@ import { PROVIDER_COLOR, PROVIDER_LABEL, isProviderKind } from "~/utils/usagePro
 // local usage report, scoped to this project — an estimate, never a bill.
 
 const props = defineProps<{
-  projectPath: string;
-  /** The Space tab is the one on screen. Re-reads wait until it is. */
-  visible: boolean;
+  usage: SpaceUsage;
 }>();
 
-const space = useAgentSettings(() => props.projectPath);
 const { openDrawer } = useSettingsSurface();
 const { cue } = useSound();
+const providerColors = useProviderColors();
+// Pulled out of `usage` because a template unwraps a ref only at the top level:
+// `usage.settled` would read as the ref itself, and always be truthy.
+const { settled, usageFor } = props.usage;
 
-// Four windows sit side by side, so a stale one reads as a wrong number (7 days
-// below today). Each arrival re-reads today and then the other three; the
-// backend's scan cache keeps a return trip cheap, and the gap stops a quick tab
-// flip from paying for it twice.
-const REVISIT_MS = 30_000;
-let lastRead = 0;
-/** The first full pass is done — a window still without a report past this
- *  point has nothing to read (no desktop bridge), so it stops shimmering. */
-const settled = ref(false);
-async function read(): Promise<void> {
-  lastRead = Date.now();
-  await space.loadUsage();
-  await space.revalidateRanges();
-  settled.value = true;
-}
-onMounted(() => void read());
-watch(
-  () => props.visible,
-  (on) => {
-    if (on && Date.now() - lastRead > REVISIT_MS) void read();
-  },
+const today = computed(() => usageFor("1d")?.totals ?? null);
+const month = computed(() => usageFor("30d"));
+
+/** Each longer window's totals, read once per render rather than per use. */
+const windows = computed(() =>
+  LONGER_USAGE_RANGES.map((w) => ({ id: w.id, label: w.label, totals: usageFor(w.id)?.totals ?? null })),
 );
-
-const today = computed(() => space.usageFor("1d")?.totals ?? null);
-const month = computed(() => space.usageFor("30d"));
-
-const WINDOWS: { id: UsageRange; label: string }[] = [
-  { id: "7d", label: "7 days" },
-  { id: "30d", label: "30 days" },
-  { id: "all", label: "All time" },
-];
 
 const bars = computed(() => {
   const days = month.value?.days ?? [];
@@ -72,21 +49,14 @@ const bars = computed(() => {
 // priced" when some model no catalog knows was left out of the total.
 const split = computed(() => {
   const total = month.value?.totals.costUsd ?? 0;
-  return (month.value?.providers ?? [])
-    .filter((p) => isProviderKind(p.key) && p.tokens > 0)
-    .map((p) => {
-      // SAFETY: the filter above kept only keys that pass isProviderKind.
-      const provider = p.key as keyof typeof PROVIDER_LABEL;
-      return {
-        provider,
-        label: PROVIDER_LABEL[provider],
-        brand: SESSION_BRAND[provider],
-        color: PROVIDER_COLOR[provider],
-        costUsd: p.costUsd,
-        unpriced: (p.unpricedRecords ?? 0) > 0,
-        share: total > 0 ? p.costUsd / total : 0,
-      };
-    })
+  return knownProviderRows(month.value?.providers ?? [], providerColors.value)
+    .filter(({ row }) => row.tokens > 0)
+    .map(({ row, identity }) => ({
+      ...identity,
+      costUsd: row.costUsd,
+      unpriced: (row.unpricedRecords ?? 0) > 0,
+      share: total > 0 ? row.costUsd / total : 0,
+    }))
     .sort((a, b) => b.costUsd - a.costUsd);
 });
 
@@ -97,14 +67,13 @@ function openUsage(): void {
 </script>
 
 <template>
-  <section class="spend" aria-label="Spend">
-    <header class="spend__head">
-      <h2 class="spend__title">Spend</h2>
+  <SpaceCard title="Spend">
+    <template #aside>
       <button type="button" class="spend__more" @click="openUsage">
         Full usage
         <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
       </button>
-    </header>
+    </template>
 
     <div class="spend__top">
       <div class="spend__today">
@@ -126,11 +95,11 @@ function openUsage(): void {
       </div>
 
       <dl class="spend__windows">
-        <div v-for="w in WINDOWS" :key="w.id" class="spend__window">
+        <div v-for="w in windows" :key="w.id" class="spend__window">
           <dt class="spend__label">{{ w.label }}</dt>
-          <dd v-if="space.usageFor(w.id)" class="spend__window-val">
-            {{ formatUsd(space.usageFor(w.id)!.totals.costUsd) }}
-            <span class="spend__window-tokens">{{ formatTokens(space.usageFor(w.id)!.totals.tokens) }}</span>
+          <dd v-if="w.totals" class="spend__window-val">
+            {{ formatUsd(w.totals.costUsd) }}
+            <span class="spend__window-tokens">{{ formatTokens(w.totals.tokens) }}</span>
           </dd>
           <dd v-else-if="!settled" class="spend__window-val">
             <span class="spend__skel spend__skel--window" aria-hidden="true" />
@@ -174,30 +143,10 @@ function openUsage(): void {
     </div>
 
     <p class="spend__note">Estimated at published API rates, not billed amounts.</p>
-  </section>
+  </SpaceCard>
 </template>
 
 <style scoped>
-.spend {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 16px 18px 14px;
-  border-radius: 16px;
-  background-color: color-mix(in srgb, var(--ink) 3.5%, transparent);
-}
-
-.spend__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.spend__title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}
 .spend__more {
   display: inline-flex;
   align-items: center;

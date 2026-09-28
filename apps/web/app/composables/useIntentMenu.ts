@@ -16,14 +16,10 @@
 // but it is a pure model — every export is a total function of its arguments,
 // safe to import from tests and non-component modules.
 
-export type IntentView =
-  | "launcher"
-  | "project-overview"
-  | "project-git"
-  | "project-files"
-  | "project-space"
-  | "studio"
-  | "inbox";
+import { PROJECT_SURFACES, type ProjectSurface } from "~/utils/projectSurfaces";
+
+/** A project view is one of the project page's spaces: `project-` and its name. */
+export type IntentView = "launcher" | "studio" | "inbox" | `project-${ProjectSurface}`;
 
 export type IntentIcon =
   | "studio"
@@ -50,7 +46,7 @@ export type IntentIcon =
   | "handoff";
 
 export type IntentAction =
-  | { kind: "goto"; view: "studio" | "inbox" | "launcher" | "overview" | "git" | "files" | "space" }
+  | { kind: "goto"; view: "studio" | "inbox" | "launcher" | ProjectSurface }
   | { kind: "open-project"; path: string; name: string }
   | { kind: "open-session"; path: string; name: string; threadId: string }
   | { kind: "pin-project"; path: string }
@@ -227,6 +223,28 @@ export function resolveIntentTitle(
 }
 
 // ── go-tos: always first, always view-relative ──────────────────────────────
+const SURFACE_GOTO = {
+  overview: { label: "Back to Overview", icon: "overview" },
+  space: { label: "Go to Space", icon: "space" },
+  files: { label: "Go to Files", icon: "files" },
+  git: { label: "Go to Git space", icon: "git" },
+} satisfies Record<ProjectSurface, { label: string; icon: IntentIcon }>;
+
+/** The space a project view is on, or null off the project page. */
+function surfaceOf(view: IntentView): ProjectSurface | null {
+  return PROJECT_SURFACES.find((surface) => view === `project-${surface}`) ?? null;
+}
+
+/** The project page's other spaces, in nav order. Git waits for a snapshot that
+ *  says there is a repository (unknown, before the project page publishes, hides
+ *  it too): offering it earlier means landing on a space with nothing to show. */
+function surfaceGotoItems(ctx: IntentContext): IntentItem[] {
+  const here = surfaceOf(ctx.view);
+  return PROJECT_SURFACES.filter((s) => s !== here && (s !== "git" || ctx.git?.repo === true)).map(
+    (s): IntentItem => ({ id: `goto-${s}`, ...SURFACE_GOTO[s], action: { kind: "goto", view: s } }),
+  );
+}
+
 // Each view names where you can go from it — never where you already are — so
 // the top card reads as "from here" rather than a fixed nav dump.
 function gotoItems(ctx: IntentContext): IntentItem[] {
@@ -292,51 +310,14 @@ function gotoItems(ctx: IntentContext): IntentItem[] {
       items.push({ id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } });
       break;
     }
-    case "project-git":
-      items = [
-        { id: "goto-overview", label: "Back to Overview", icon: "overview", action: { kind: "goto", view: "overview" } },
-        { id: "goto-files", label: "Go to Files", icon: "files", action: { kind: "goto", view: "files" } },
-        { id: "goto-space", label: "Go to Space", icon: "space", action: { kind: "goto", view: "space" } },
-        { id: "goto-studio", label: "Go to Studio", icon: "studio", action: { kind: "goto", view: "studio" } },
-        { id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } },
-        { id: "goto-launcher", label: "All projects", icon: "launcher", action: { kind: "goto", view: "launcher" } },
-      ];
-      break;
-    case "project-files":
-    case "project-space":
-      items = [
-        { id: "goto-overview", label: "Back to Overview", icon: "overview", action: { kind: "goto", view: "overview" } },
-      ];
-      if (ctx.git?.repo === true) {
-        items.push({ id: "goto-git", label: "Go to Git space", icon: "git", action: { kind: "goto", view: "git" } });
-      }
-      // Each of the two offers the other.
-      if (ctx.view === "project-files") {
-        items.push({ id: "goto-space", label: "Go to Space", icon: "space", action: { kind: "goto", view: "space" } });
-      } else {
-        items.push({ id: "goto-files", label: "Go to Files", icon: "files", action: { kind: "goto", view: "files" } });
-      }
-      items.push(
-        { id: "goto-studio", label: "Go to Studio", icon: "studio", action: { kind: "goto", view: "studio" } },
-        { id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } },
-        { id: "goto-launcher", label: "All projects", icon: "launcher", action: { kind: "goto", view: "launcher" } },
-      );
-      break;
-    case "project-overview":
     default: {
-      items = [];
-      // Unknown (no snapshot yet) hides the Git go-to: offering it before the
-      // project page publishes means landing on a space with nothing to show.
-      if (ctx.git?.repo === true) {
-        items.push({ id: "goto-git", label: "Go to Git space", icon: "git", action: { kind: "goto", view: "git" } });
-      }
-      items.push(
-        { id: "goto-files", label: "Go to Files", icon: "files", action: { kind: "goto", view: "files" } },
-        { id: "goto-space", label: "Go to Space", icon: "space", action: { kind: "goto", view: "space" } },
+      // A project view: its other spaces, then the rest of the app.
+      items = [
+        ...surfaceGotoItems(ctx),
         { id: "goto-studio", label: "Go to Studio", icon: "studio", action: { kind: "goto", view: "studio" } },
         { id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } },
         { id: "goto-launcher", label: "All projects", icon: "launcher", action: { kind: "goto", view: "launcher" } },
-      );
+      ];
       break;
     }
   }
@@ -455,14 +436,7 @@ function threadItems(ctx: IntentContext): IntentItem[] {
 // a review shortcut on project views; portals are covered by the go-to card's
 // back row, so they add nothing here.
 function nowItems(ctx: IntentContext): IntentItem[] {
-  if (
-    ctx.view !== "project-overview" &&
-    ctx.view !== "project-git" &&
-    ctx.view !== "project-files" &&
-    ctx.view !== "project-space"
-  ) {
-    return [];
-  }
+  if (!surfaceOf(ctx.view)) return [];
   const git = ctx.git;
   if (!git || git.repo === false) return [];
   if (git.dirtyFiles <= 0) return [];

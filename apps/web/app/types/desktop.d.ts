@@ -2271,11 +2271,16 @@ export type UsageDay = {
 export type UsageBySlice = {
   key: string;
   label: string;
+  /** The kone provider behind a model or a provider row; a project row has
+   *  none. A provider row from a main process older than the field lacks it. */
   provider?: string;
   tokens: number;
+  /** Absent from a main process older than the field. */
+  outputTokens?: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   reasoningTokens: number;
+  /** Model responses (one per record). On a model, how often it answered. */
   prompts: number;
   costUsd: number;
   /** Records no pricing source could price, left out of `costUsd`. Zero with

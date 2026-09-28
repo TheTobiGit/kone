@@ -3,20 +3,28 @@ import type { Project } from "~/composables/useProject";
 
 // The project's fourth tab: a place to see (and later configure) what the agents
 // are doing here. A board of compact cards, each answering one question at a
-// glance and linking out for the full story. Spend is the first; setup
-// (instructions, skills, MCP), activity and live sessions will join it.
+// glance and linking out for the full story. Setup (instructions, skills, MCP)
+// and live sessions will join activity, spend and models.
 
-defineProps<{
+const props = defineProps<{
   project: Project;
   /** This tab is the one on screen. Re-reads wait until it is. */
   visible: boolean;
 }>();
+
+// One set of usage reads for the whole board — every card draws from it.
+const usage = useSpaceUsage(
+  () => props.project.path,
+  () => props.visible,
+);
 </script>
 
 <template>
   <div class="sp">
     <div class="sp__board">
-      <SpaceSpendCard :project-path="project.path" :visible="visible" />
+      <SpaceActivityCard class="sp__card--wide" :usage="usage" />
+      <SpaceSpendCard :usage="usage" />
+      <SpaceModelsCard :usage="usage" />
     </div>
   </div>
 </template>
@@ -37,13 +45,17 @@ defineProps<{
     transform: translateY(6px);
   }
 }
-/* Two columns of cards on a wide window, one on a narrow one. */
+/* Two columns of cards on a wide window, one on a narrow one; a wide card
+   takes the whole row. */
 .sp__board {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 12px;
   max-width: 1040px;
   margin: 0 auto;
+}
+.sp__board > .sp__card--wide {
+  grid-column: 1 / -1;
 }
 @media (prefers-reduced-motion: reduce) {
   .sp {

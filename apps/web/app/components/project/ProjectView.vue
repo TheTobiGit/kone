@@ -16,6 +16,7 @@ import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import CommitModal from "~/components/git-space/CommitModal.vue";
 import { useViewFacet } from "~/composables/useViewContext";
+import { PROJECT_SURFACES, PROJECT_SURFACE_LABEL, type ProjectSurface } from "~/utils/projectSurfaces";
 import type { ViewLayer } from "@kone/protocol/view-context";
 
 const props = defineProps<{
@@ -65,11 +66,11 @@ const {
 const rowRegistry = useStudioRowRegistry();
 const row = () => rowRegistry.rowFor(props.project.path);
 
-// Four views over the same page: the working tree ("overview"), the repository
-// ("git"), the project's files, read-only ("files"), and what the agents have
-// done here ("space"). The studio is not one of them — it is a layer over every
+// Four views over the same page: the working tree ("overview"), what the agents
+// have done here ("space"), the project's files, read-only ("files"), and the
+// repository ("git"). The studio is not one of them — it is a layer over every
 // page, summoned rather than switched to.
-const surface = ref<"overview" | "git" | "files" | "space">("overview");
+const surface = ref<ProjectSurface>("overview");
 
 // What the intent menu (hosted above this page) reads: where this project is
 // and what is live in it. This page owns both, so it publishes them through
@@ -198,14 +199,9 @@ const spaceMounted = ref(false);
 // a name per space this project has — its working tree, and the repository
 // underneath. It rides the same fixed top line and steps out of the way (like
 // the back arrow) whenever a sub-surface draws its own chrome.
-const NAV = [
-  { id: "overview", label: "Overview" },
-  { id: "git", label: "Git" },
-  { id: "files", label: "Files" },
-  { id: "space", label: "Space" },
-] as const;
+const NAV = PROJECT_SURFACES.map((id) => ({ id, label: PROJECT_SURFACE_LABEL[id] }));
 const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
-function goSurface(target: (typeof NAV)[number]["id"]) {
+function goSurface(target: ProjectSurface) {
   if (target === surface.value) return;
   if (target === "git") {
     openGitSpace();

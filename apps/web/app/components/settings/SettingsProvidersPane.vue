@@ -105,7 +105,10 @@ const PROVIDER_META = {
     label: "OpenCode",
     vendor: "OpenCode",
     brand: "opencode",
-    grad: "linear-gradient(152deg, #8b7cf6 0%, #5942d6 100%)",
+    // Monochrome like the brand itself: warm charcoal into the brand ink
+    // (#201D1D on cream — the brand ships no saturated accent, so the old
+    // indigo wash had to go).
+    grad: "linear-gradient(152deg, #4a4642 0%, #201d1d 100%)",
     blurb: "A house of providers — one gateway onto many model vendors.",
     binary: "opencode",
     signIn: "opencode auth login",
@@ -115,7 +118,9 @@ const PROVIDER_META = {
     label: "Factory Droid",
     vendor: "Factory",
     brand: "droid",
-    grad: "linear-gradient(152deg, #f3a259 0%, #e2653f 100%)",
+    // Factory's brand is near-black monochrome (#020202) with no chromatic
+    // accent, so the card wears graphite rather than the old invented orange.
+    grad: "linear-gradient(152deg, #52525b 0%, #27272a 100%)",
     blurb: "Factory's Droid CLI, driven over ACP.",
     binary: "droid",
     // Droid pairs a device on first run rather than taking a login subcommand.

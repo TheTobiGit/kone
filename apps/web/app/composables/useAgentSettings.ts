@@ -6,6 +6,7 @@ import type {
   QuotaProviderReport,
   UsageRange,
 } from "~/types/desktop";
+import { USAGE_RANGE_IDS } from "~/utils/usageRanges";
 
 // The Agents space reads three independent sources, each behind its own bridge
 // call and its own loading flag, so a slow inventory scan never holds up the
@@ -66,12 +67,10 @@ const CONNECTED_KEY = "kone:quota:connected";
 // project's Space) redraws as the warmer fills them in.
 const usageReportCache = shallowReactive(new Map<string, AgentUsageReport>());
 const inventoryCache = new Map<string, AgentInventory>();
-/** Every range the pane offers — the warmer walks this to pre-fill the ones the
- *  user hasn't clicked yet. */
-const USAGE_RANGES: readonly UsageRange[] = ["1d", "7d", "30d", "all"];
-/** Scopes whose sibling ranges have already been warmed, so the background pull
- *  fires once per scope rather than on every load. Module-level to survive a
- *  pane reopen; a forced refresh clears the relevant tag to re-arm it. */
+/** Scopes whose ranges have already been filled in behind the selected one, so
+ *  the background pull fires once per scope rather than on every load.
+ *  Module-level to survive a pane reopen; a forced refresh clears the relevant
+ *  tag to re-arm it. */
 const warmedScopes = new Set<string>();
 const credentialProbeCache: Partial<Record<QuotaProvider, boolean>> = {};
 const quotaReportCache: Partial<Record<QuotaProvider, QuotaProviderReport>> = {};
@@ -159,35 +158,50 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
       usageLoading.value = false;
       usageLoaded.value = true;
     }
-    // With the visible range settled, quietly pull the other three so their
-    // first click paints from cache instead of paying a cold scan. Kept off the
+    // With the visible range settled, quietly pull the others so their first
+    // click paints from cache instead of paying a cold scan. Kept off the
     // critical path and to one pass per scope, so flipping ranges feels instant
     // without turning every open into four disk walks.
-    void warmOtherRanges();
+    const scopeTag = scopeTagFor(range.value);
+    if (!warmedScopes.has(scopeTag)) {
+      warmedScopes.add(scopeTag);
+      void ensureRanges(USAGE_RANGE_IDS);
+    }
   }
 
-  /** Prime the sibling ranges' caches in the background. Best-effort and serial
-   *  — it reuses the same per-file scan cache the visible read just warmed, so
-   *  each sibling is mostly aggregation, and a failure only costs that range its
-   *  head start. Runs once per scope; a forced refresh re-arms it. */
-  async function warmOtherRanges(): Promise<void> {
+  /** The cache key with the range left out — what one scope's ranges share. */
+  function scopeTagFor(forRange: UsageRange): string {
+    return keyFor(forRange).replace(`:${forRange}:`, "::");
+  }
+
+  /** Read `ranges` into the cache, one after another in the order given, so a
+   *  view can show them without having selected them. By default a range that is
+   *  already cached is left alone; `revalidate` reads it again, for a view that
+   *  shows several side by side — there a stale one would put last hour's 7-day
+   *  total next to this minute's today.
+   *
+   *  Serial on purpose: the backend caches per transcript file, and a file is
+   *  cached only once its parse has finished. Ranges asked for together each
+   *  parse the files they share, where one after another (shortest window first,
+   *  as USAGE_RANGE_IDS is ordered) each reuses the last one's. Best-effort: a
+   *  range that fails keeps its last-good copy, or none. */
+  async function ensureRanges(
+    ranges: readonly UsageRange[],
+    options?: { revalidate?: boolean },
+  ): Promise<void> {
     const api = bridge()?.usage;
     if (!api?.report) return;
-    const scopeTag = keyFor(range.value).replace(`:${range.value}:`, "::");
-    if (warmedScopes.has(scopeTag)) return;
-    warmedScopes.add(scopeTag);
-    for (const sibling of USAGE_RANGES) {
-      if (sibling === range.value) continue;
-      const key = keyFor(sibling);
-      if (usageReportCache.has(key)) continue;
+    for (const next of ranges) {
+      const key = keyFor(next);
+      if (!options?.revalidate && usageReportCache.has(key)) continue;
       try {
         const report = await api.report({
-          range: sibling,
+          range: next,
           projectPath: usageScope.value === "project" ? firstPath() : null,
         });
         usageReportCache.set(key, report);
       } catch {
-        // A warm miss just means that range pays its own scan when first opened.
+        // The last-good copy stays; the next pass tries again.
       }
     }
   }
@@ -197,9 +211,8 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
     // A manual refresh nukes the backend scan caches, so every range's last-good
     // copy is now stale — drop the sibling entries and re-arm warming so they
     // reprime from fresh data rather than serving the pre-refresh numbers.
-    const scopeTag = keyFor(range.value).replace(`:${range.value}:`, "::");
-    warmedScopes.delete(scopeTag);
-    for (const sibling of USAGE_RANGES) {
+    warmedScopes.delete(scopeTagFor(range.value));
+    for (const sibling of USAGE_RANGE_IDS) {
       if (sibling !== range.value) usageReportCache.delete(keyFor(sibling));
     }
     await loadUsage({ forceRefresh: true });
@@ -209,28 +222,6 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
    *  it is the one selected — null until it has been read at least once. */
   function usageFor(forRange: UsageRange): AgentUsageReport | null {
     return usageReportCache.get(keyFor(forRange)) ?? null;
-  }
-
-  /** Re-read every range other than the selected one, even those already
-   *  cached — for a view that shows them side by side, where a stale sibling
-   *  would put last hour's 7-day total next to this minute's today. Serial and
-   *  best-effort, like the warmer; the selected range is loadUsage's job. */
-  async function revalidateRanges(): Promise<void> {
-    const api = bridge()?.usage;
-    if (!api?.report) return;
-    for (const sibling of USAGE_RANGES) {
-      if (sibling === range.value) continue;
-      const key = keyFor(sibling);
-      try {
-        const report = await api.report({
-          range: sibling,
-          projectPath: usageScope.value === "project" ? firstPath() : null,
-        });
-        usageReportCache.set(key, report);
-      } catch {
-        // Keeps the last-good copy; the next pass tries again.
-      }
-    }
   }
 
   function setRange(next: UsageRange): void {
@@ -409,7 +400,7 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
     loadUsage,
     refreshUsage,
     usageFor,
-    revalidateRanges,
+    ensureRanges,
     // limits
     limitsProviders,
     isReadable,

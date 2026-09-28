@@ -5,8 +5,7 @@ import { RefreshIcon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import UsageProviderChart from "~/components/usage/UsageProviderChart.vue";
 import { describeModelId } from "~/utils/modelCatalog";
-import { SESSION_BRAND } from "~/types/session";
-import type { ProviderKind, UsageDay, UsageRange } from "~/types/desktop";
+import type { ProviderKind, UsageDay } from "~/types/desktop";
 import type { useAgentSettings } from "~/composables/useAgentSettings";
 import {
   formatCount,
@@ -15,12 +14,8 @@ import {
   formatTokens,
   formatUsd,
 } from "~/utils/usageFormat";
-import {
-  PROVIDER_COLOR,
-  PROVIDER_LABEL,
-  PROVIDER_ORDER,
-  isProviderKind,
-} from "~/utils/usageProviders";
+import { PROVIDER_LABEL, PROVIDER_ORDER, knownProviderRows } from "~/utils/usageProviders";
+import { USAGE_RANGES } from "~/utils/usageRanges";
 
 const props = withDefaults(
   defineProps<{
@@ -33,15 +28,9 @@ const props = withDefaults(
 
 const report = computed(() => props.space.usage.value);
 
-const RANGES: { id: UsageRange; label: string }[] = [
-  { id: "1d", label: "Today" },
-  { id: "7d", label: "7 days" },
-  { id: "30d", label: "30 days" },
-  { id: "all", label: "All time" },
-];
-
 const metric = ref<"tokens" | "cost">("cost");
 const breakdown = ref<"model" | "day">("model");
+const providerColors = useProviderColors();
 
 // Clicking an agent in the legend focuses it — the share bar and the chart fade
 // every other agent so the chosen one reads alone. Clicking it again, or picking
@@ -65,27 +54,17 @@ const windowLabel = computed(() => {
 const totals = computed(() => report.value?.totals);
 
 const orderedProviders = computed(() => {
-  const list = report.value?.providers ?? [];
-  const mapped = list
-    .filter((p) => isProviderKind(p.key))
-    .map((p) => {
-      // SAFETY: the filter above kept only entries whose key passes isProviderKind.
-      const provider = p.key as ProviderKind;
-      const totalTokens = totals.value?.tokens ?? 1;
-      const totalCost = totals.value?.costUsd ?? 1;
-      return {
-        provider,
-        label: PROVIDER_LABEL[provider] ?? p.label,
-        brand: SESSION_BRAND[provider],
-        tokens: p.tokens,
-        costUsd: p.costUsd,
-        tokenShare: totalTokens > 0 ? p.tokens / totalTokens : 0,
-        costShare: totalCost > 0 ? p.costUsd / totalCost : 0,
-      };
-    });
-  return mapped.sort((a, b) =>
-    metric.value === "cost" ? b.costUsd - a.costUsd : b.tokens - a.tokens,
-  );
+  const totalTokens = totals.value?.tokens ?? 1;
+  const totalCost = totals.value?.costUsd ?? 1;
+  return knownProviderRows(report.value?.providers ?? [], providerColors.value)
+    .map(({ row, identity }) => ({
+      ...identity,
+      tokens: row.tokens,
+      costUsd: row.costUsd,
+      tokenShare: totalTokens > 0 ? row.tokens / totalTokens : 0,
+      costShare: totalCost > 0 ? row.costUsd / totalCost : 0,
+    }))
+    .sort((a, b) => (metric.value === "cost" ? b.costUsd - a.costUsd : b.tokens - a.tokens));
 });
 
 const activeDays = computed(
@@ -111,13 +90,12 @@ const uncachedInput = computed(() => {
 
 const modelRows = computed(() => {
   const totalCost = totals.value?.costUsd ?? 1;
-  // SAFETY: buildUsageReport fills slice.provider from TRANSCRIPT_PROVIDERS/cursor, always a ProviderKind;
-  // a stray value would only miss SESSION_BRAND and fall back to "generic".
-  return (report.value?.models ?? []).map((model) => ({
-    ...model,
-    name: describeModelId(model.label).name || model.label,
-    brand: SESSION_BRAND[(model.provider as ProviderKind) ?? "codex"] ?? "generic",
-    costShare: totalCost > 0 ? model.costUsd / totalCost : 0,
+  return knownProviderRows(report.value?.models ?? [], providerColors.value).map(({ row, identity }) => ({
+    ...row,
+    name: describeModelId(row.label).name || row.label,
+    brand: identity.brand,
+    color: identity.color,
+    costShare: totalCost > 0 ? row.costUsd / totalCost : 0,
   }));
 });
 
@@ -166,7 +144,7 @@ const SKELETON_METRICS = [
         <p v-if="windowLabel" class="usage__window">{{ windowLabel }}</p>
         <div class="usage__seg" role="group" aria-label="Range">
           <button
-            v-for="r in RANGES"
+            v-for="r in USAGE_RANGES"
             :key="r.id"
             type="button"
             class="usage__seg-btn"
@@ -289,7 +267,7 @@ const SKELETON_METRICS = [
             }"
             :style="{
               flexGrow: metric === 'cost' ? provider.costShare : provider.tokenShare,
-              backgroundColor: PROVIDER_COLOR[provider.provider],
+              backgroundColor: provider.color,
             }"
             :title="`${provider.label} · ${formatPercent(metric === 'cost' ? provider.costShare : provider.tokenShare)}`"
           />
@@ -313,7 +291,7 @@ const SKELETON_METRICS = [
             <span class="usage__leg-name">
               <span
                 class="usage__leg-dot"
-                :style="{ backgroundColor: PROVIDER_COLOR[provider.provider] }"
+                :style="{ backgroundColor: provider.color }"
               />
               <ProviderLogo :brand="provider.brand" :size="14" class="usage__leg-mark" />
               <span class="usage__leg-label">{{ provider.label }}</span>
@@ -430,7 +408,7 @@ const SKELETON_METRICS = [
                       class="usage__share-fill"
                       :style="{
                         width: `${Math.max(model.costShare * 100, model.costShare > 0 ? 3 : 0)}%`,
-                        backgroundColor: PROVIDER_COLOR[(model.provider as ProviderKind) ?? 'codex'],
+                        backgroundColor: model.color,
                       }"
                     />
                   </span>
@@ -467,7 +445,7 @@ const SKELETON_METRICS = [
                     class="usage__daybar-seg"
                     :style="{
                       flexGrow: providerDayCost(day, provider),
-                      backgroundColor: PROVIDER_COLOR[provider],
+                      backgroundColor: providerColors[provider],
                     }"
                   />
                 </span>
