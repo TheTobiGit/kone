@@ -4,6 +4,7 @@
 
 import type { DatabaseSync } from "../sqlite.js";
 
+import { canonicalAntigravityModelId } from "./local/antigravityScan.js";
 import { priceModel, currentPricingSnapshot } from "./pricing/index.js";
 import { rangeStart, type UsageRange } from "./report.js";
 
@@ -19,6 +20,8 @@ export type StoreUsageRow = {
   reasoning_tokens: number;
   turns: number;
   cost_usd: number;
+  /** `turns` when no pricing source knows the model (cost_usd is then 0). */
+  unpriced_turns: number;
 };
 
 export type StoreUsageDayRow = {
@@ -53,12 +56,17 @@ const EMPTY: StoreUsageReport = {
  *  reads and writes into `input_tokens`, so the uncached remainder is priced
  *  at the input rate and each cache bucket at its own — passing the whole
  *  input column as plain input would bill every cached token twice, once at
- *  the full input rate. */
+ *  the full input rate.
+ *
+ *  Antigravity's CLI names its models by display label, so its threads record
+ *  "Gemini 3.8 Flash" where every catalog keys "gemini-3.8-flash"; the label is
+ *  mapped to that slug first, or every Antigravity turn would price at nothing. */
 export function priceTurnUsage(
   model: string | null | undefined,
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number },
 ): number | undefined {
-  const outcome = priceModel(currentPricingSnapshot(), model, {
+  const id = model ? canonicalAntigravityModelId(model, model) : model;
+  const outcome = priceModel(currentPricingSnapshot(), id, {
     input: Math.max(0, tokens.input - tokens.cacheRead - tokens.cacheWrite),
     output: tokens.output,
     cacheRead: tokens.cacheRead,
@@ -145,18 +153,17 @@ export function usageReportFromStore(
          ${startMs !== null ? "AND u.at >= ?" : ""}
          GROUP BY t.model, t.provider, t.project_path`,
       )
-      .all(...usageArgs) as Array<Omit<StoreUsageRow, "cost_usd">>;
+      .all(...usageArgs) as Array<Omit<StoreUsageRow, "cost_usd" | "unpriced_turns">>;
 
-    const usageRows: StoreUsageRow[] = rawUsageRows.map((row) => ({
-      ...row,
-      cost_usd: rowCost(
-        row.model,
-        row.input_tokens,
-        row.output_tokens,
-        row.cache_read_tokens,
-        row.cache_creation_tokens,
-      ),
-    }));
+    const usageRows: StoreUsageRow[] = rawUsageRows.map((row) => {
+      const cost = priceTurnUsage(row.model, {
+        input: row.input_tokens,
+        output: row.output_tokens,
+        cacheRead: row.cache_read_tokens,
+        cacheWrite: row.cache_creation_tokens,
+      });
+      return { ...row, cost_usd: cost ?? 0, unpriced_turns: cost === undefined ? row.turns : 0 };
+    });
 
     // SAFETY: every selected column is aliased to the matching field of this
     // row type; strftime yields the date string, SUM is COALESCEd to 0.

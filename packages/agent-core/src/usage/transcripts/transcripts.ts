@@ -16,6 +16,11 @@ export interface UsageRecord {
   readonly totals: UsageTokenTotals;
   readonly reportedCostUsd: number | null;
   /**
+   * The working directory the session ran in, when the log records one — what
+   * a project-scoped report matches on. Absent for logs that don't say.
+   */
+  readonly cwd?: string;
+  /**
    * Key for cross-file de-duplication, or `null` when the record is inherently
    * unique and needs no dedup.
    */
@@ -154,6 +159,7 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     messageId === null && requestId === null ? null : `${messageId ?? ""}:${requestId ?? ""}`;
 
   const cost = record["costUSD"];
+  const cwd = transcriptText(record["cwd"]);
 
   return {
     provider: "claude",
@@ -169,6 +175,7 @@ export function parseClaudeLine(line: string): UsageRecord | null {
       reasoningTokens: 0,
     },
     reportedCostUsd: isTranscriptNumber(cost) ? cost : null,
+    ...(cwd ? { cwd } : {}),
     dedupeKey,
   };
 }
@@ -187,6 +194,8 @@ export function parseClaudeLine(line: string): UsageRecord | null {
 export interface CodexScanState {
   model: string;
   sessionId: string;
+  /** Working directory from session_meta, updated by each turn_context. */
+  cwd: string;
   lastUsageSignature: string | null;
   sawSessionMeta: boolean;
   /** While true, leading usage events are re-stamped copies of parent history. */
@@ -198,6 +207,7 @@ export function initialCodexScanState(): CodexScanState {
   return {
     model: "",
     sessionId: "",
+    cwd: "",
     lastUsageSignature: null,
     sawSessionMeta: false,
     suppressingForkCopies: false,
@@ -255,6 +265,8 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     state.sawSessionMeta = true;
     const id = transcriptText(payloadRecord["id"]) ?? transcriptText(payloadRecord["session_id"]);
     if (id !== null) state.sessionId = id;
+    const cwd = transcriptText(payloadRecord["cwd"]);
+    if (cwd !== null) state.cwd = cwd;
     const metaTimestampMs = parseTimestampMs(record["timestamp"]);
     if (metaTimestampMs !== null && isForkedSessionMeta(payloadRecord)) {
       state.suppressingForkCopies = true;
@@ -266,6 +278,8 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
   if (transcriptText(record["type"]) === "turn_context") {
     const model = transcriptText(payloadRecord["model"]);
     if (model !== null) state.model = model;
+    const cwd = transcriptText(payloadRecord["cwd"]);
+    if (cwd !== null) state.cwd = cwd;
     return null;
   }
 
@@ -325,6 +339,7 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     totals,
     // Codex does not report cost in the rollout.
     reportedCostUsd: null,
+    ...(state.cwd ? { cwd: state.cwd } : {}),
     // Events surviving the fork-copy suppression above are unique to this
     // rollout, so they need no global dedup.
     dedupeKey: null,

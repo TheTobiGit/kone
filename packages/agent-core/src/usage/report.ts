@@ -84,6 +84,9 @@ export type UsageBySlice = {
   reasoningTokens: number;
   prompts: number;
   costUsd: number;
+  /** Records no pricing source could price, so `costUsd` leaves them out.
+   *  Zero with a zero cost means the usage was genuinely free. */
+  unpricedRecords: number;
 };
 
 export type AgentUsageReport = {

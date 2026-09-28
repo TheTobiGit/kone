@@ -35,6 +35,11 @@ function claudeLine(overrides: {
 }
 
 describe("parseClaudeLine", () => {
+  it("keeps the line's working directory for project scoping", () => {
+    const record = parseClaudeLine(claudeLine({ messageId: "msg_cwd", contentType: "text" }));
+    expect(record?.cwd).toBe("/home/theo/project");
+  });
+
   it("extracts token totals and a dedupe key", () => {
     const record = parseClaudeLine(claudeLine({ messageId: "msg_1", contentType: "text" }));
 
@@ -109,6 +114,30 @@ describe("parseCodexLine", () => {
     expect(record?.totals.uncachedInputTokens).toBe(19239 - 11008);
     expect(record?.totals.cachedInputTokens).toBe(11008);
     expect(record?.totals.reasoningTokens).toBe(116);
+  });
+
+  it("carries the session's working directory, following turn_context moves", () => {
+    const state = initialCodexScanState();
+    parseCodexLine(
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-08-01T05:17:41.289Z",
+        payload: { type: "session_meta", id: "s-cwd", cwd: "/work/app" },
+      }),
+      state,
+    );
+    parseCodexLine(turnContext, state);
+    expect(parseCodexLine(tokenCount(100, 0, 10, 0), state)?.cwd).toBe("/work/app");
+
+    parseCodexLine(
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: "2026-08-01T05:18:00.000Z",
+        payload: { type: "turn_context", model: "gpt-5.6-sol", cwd: "/work/app/packages/core" },
+      }),
+      state,
+    );
+    expect(parseCodexLine(tokenCount(200, 0, 20, 0), state)?.cwd).toBe("/work/app/packages/core");
   });
 
   it("skips a repeated token_count so deltas are not double counted", () => {

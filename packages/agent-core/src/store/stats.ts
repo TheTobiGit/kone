@@ -161,6 +161,27 @@ export class StatsRepo {
     }
   }
 
+  /** The provider conversation id of every thread in a project — the key that
+   *  ties a machine-wide usage log (Codex rollouts, OpenCode, Droid and
+   *  Antigravity stores) back to the project kone ran it in. */
+  conversationIdsForProject(projectPath: string): Set<string> {
+    const db = this.dbh.handle();
+    if (!db) return new Set();
+    try {
+      // SAFETY: the projection names exactly this one non-null column.
+      const rows = db
+        .prepare(
+          `SELECT conversation_id FROM threads
+            WHERE project_path = ? AND conversation_id IS NOT NULL AND conversation_id != ''`,
+        )
+        .all(projectPath) as Array<{ conversation_id: string }>;
+      return new Set(rows.map((r) => r.conversation_id));
+    } catch (err) {
+      console.error("[conversation-store] conversationIdsForProject failed:", err);
+      return new Set();
+    }
+  }
+
   /** Store-backed usage rows — supplement for providers without CLI transcript
    *  scanning. Called from buildAgentUsageReport, not the IPC surface directly. */
   readStoreUsageReport(options: {

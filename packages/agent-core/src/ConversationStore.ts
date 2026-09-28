@@ -425,6 +425,11 @@ export class ConversationStore implements CheckpointStore {
   }
 
   /** @see StatsRepo */
+  conversationIdsForProject(projectPath: string): Set<string> {
+    return this.stats.conversationIdsForProject(projectPath);
+  }
+
+  /** @see StatsRepo */
   readStoreUsageReport(options: {
     range: UsageRange;
     projectPath?: string | null;

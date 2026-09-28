@@ -2,6 +2,7 @@ import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "../sqlite.js";
+import { detectOpenCodeLayout } from "../usage/local/opencodeSchema.js";
 
 import { sanitizeError } from "./security.js";
 import { dollars, emptyReport } from "./types.js";
@@ -70,6 +71,27 @@ const EARLIEST_HOSTED_USAGE_SQL = `
     AND json_extract(data,'$.role') = 'assistant'
     AND json_extract(data,'$.providerID') IN (${HOSTED_PROVIDER_FILTER})
     AND json_type(data,'$.cost') IN ('integer','real')
+`;
+
+// The same two reads against the v2 log (`session_message`, see
+// usage/local/opencodeSchema.ts): the role is a column, the provider sits
+// under `model`, and a message's token total is no longer written — it is the
+// sum of its parts.
+const V2_TOKENS = `COALESCE(json_extract(data,'$.tokens.total'),
+    COALESCE(json_extract(data,'$.tokens.input'),0) + COALESCE(json_extract(data,'$.tokens.output'),0) +
+    COALESCE(json_extract(data,'$.tokens.reasoning'),0) + COALESCE(json_extract(data,'$.tokens.cache.read'),0) +
+    COALESCE(json_extract(data,'$.tokens.cache.write'),0))`;
+const V2_HOSTED_FILTER = `type = 'assistant'
+    AND json_valid(data)
+    AND json_extract(data,'$.model.providerID') IN (${HOSTED_PROVIDER_FILTER})
+    AND json_type(data,'$.cost') IN ('integer','real')`;
+const HOSTED_ROWS_V2_SQL = `
+  SELECT time_created AS timeCreated, json_extract(data,'$.cost') AS cost, ${V2_TOKENS} AS tokens
+  FROM session_message
+  WHERE time_created >= ? AND ${V2_HOSTED_FILTER}
+`;
+const EARLIEST_HOSTED_USAGE_V2_SQL = `
+  SELECT MIN(time_created) AS anchor FROM session_message WHERE ${V2_HOSTED_FILTER}
 `;
 
 type UsageRow = {
@@ -153,22 +175,38 @@ type HostedUsageRead = {
 function readDatabase(dbPath: string, cutoffMs: number): HostedUsageRead {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    // SAFETY: the row shape is fixed by HOSTED_ROWS_SQL's selected columns;
-    // numeric coercion below tolerates sqlite's number|bigint|null cells.
-    const rawRows = db.prepare(HOSTED_ROWS_SQL).all(cutoffMs) as Array<{
-      timeCreated: number | bigint;
-      cost: number | bigint | null;
-      tokens: number | bigint | null;
-    }>;
-    const rows: UsageRow[] = rawRows.map((row) => ({
-      timeCreated: Number(row.timeCreated),
-      cost: Number(row.cost ?? 0),
-      tokens: Number(row.tokens ?? 0),
-    }));
-    // SAFETY: the anchor column comes from EARLIEST_HOSTED_USAGE_SQL's single
-    // aggregate; null means "no rows", handled by the caller.
-    const earliestRow = db.prepare(EARLIEST_HOSTED_USAGE_SQL).get() as { anchor: number | bigint | null } | undefined;
-    const earliestMs = earliestRow?.anchor != null ? Number(earliestRow.anchor) : null;
+    // A migrated database can hold both layouts; each contributes its own rows
+    // and the earlier of the two anchors wins.
+    const layout = detectOpenCodeLayout(db);
+    const reads: Array<[rowsSql: string, earliestSql: string]> = [];
+    if (layout.legacy) reads.push([HOSTED_ROWS_SQL, EARLIEST_HOSTED_USAGE_SQL]);
+    if (layout.v2) reads.push([HOSTED_ROWS_V2_SQL, EARLIEST_HOSTED_USAGE_V2_SQL]);
+
+    const rows: UsageRow[] = [];
+    let earliestMs: number | null = null;
+    for (const [rowsSql, earliestSql] of reads) {
+      // SAFETY: the row shape is fixed by the selected columns; numeric
+      // coercion below tolerates sqlite's number|bigint|null cells.
+      const rawRows = db.prepare(rowsSql).all(cutoffMs) as Array<{
+        timeCreated: number | bigint;
+        cost: number | bigint | null;
+        tokens: number | bigint | null;
+      }>;
+      for (const row of rawRows) {
+        rows.push({
+          timeCreated: Number(row.timeCreated),
+          cost: Number(row.cost ?? 0),
+          tokens: Number(row.tokens ?? 0),
+        });
+      }
+      // SAFETY: the anchor column comes from the single aggregate; null means
+      // "no rows", handled by the caller.
+      const earliestRow = db.prepare(earliestSql).get() as { anchor: number | bigint | null } | undefined;
+      if (earliestRow?.anchor != null) {
+        const anchor = Number(earliestRow.anchor);
+        earliestMs = earliestMs === null ? anchor : Math.min(earliestMs, anchor);
+      }
+    }
     return { rows, earliestMs };
   } finally {
     db.close();

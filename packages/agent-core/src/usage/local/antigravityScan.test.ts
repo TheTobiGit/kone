@@ -32,6 +32,7 @@ mock.module("../../sqlite.js", () => ({ DatabaseSync: DatabaseSyncShim }));
 const {
   canonicalAntigravityModelId,
   parseAntigravityGenMetadataRow,
+  parseAntigravityWorkspace,
   scanAntigravityUsage,
   readAntigravityConversationUsage,
   resolveAntigravityContextWindow,
@@ -111,6 +112,25 @@ function chatMessage(
 function genMetadataRow(chat: number[][]): Uint8Array {
   return encodeMessage([fieldBytes(1, encodeMessage(chat))]);
 }
+
+describe("parseAntigravityWorkspace", () => {
+  const text = (value: string) => new TextEncoder().encode(value);
+
+  test("reads the workspace folder from field #7", () => {
+    const blob = encodeMessage([
+      fieldBytes(1, encodeMessage([fieldBytes(1, text("file:///elsewhere"))])),
+      fieldBytes(7, text("file:///work/my%20app")),
+    ]);
+    expect(parseAntigravityWorkspace(blob)).toBe("/work/my app");
+  });
+
+  test("falls back to the first workspace entry, and refuses anything but a file URI", () => {
+    const nested = encodeMessage([fieldBytes(1, encodeMessage([fieldBytes(1, text("file:///work/app"))]))]);
+    expect(parseAntigravityWorkspace(nested)).toBe("/work/app");
+    expect(parseAntigravityWorkspace(encodeMessage([fieldBytes(7, text("https://example.com"))]))).toBeNull();
+    expect(parseAntigravityWorkspace(new Uint8Array())).toBeNull();
+  });
+});
 
 describe("antigravity conversation scan", () => {
   test("conversation roots live under ~/.gemini with the .db extensions", () => {
@@ -210,6 +230,11 @@ describe("antigravity conversation scan", () => {
     expect(canonicalAntigravityModelId("x", "Gemini 3.5 Flash (Low)")).toBe("gemini-3.5-flash-low");
     expect(canonicalAntigravityModelId("x", "Gemini 3.1 Pro (High)")).toBe("gemini-3.1-pro-high");
     expect(canonicalAntigravityModelId("x", "Gemini 3.1 Pro (Low)")).toBe("gemini-3.1-pro-low");
+    expect(canonicalAntigravityModelId("x", "Gemini 3.1 Flash Image")).toBe("gemini-3.1-flash-image");
+    expect(canonicalAntigravityModelId("x", "Gemini 3 Flash")).toBe("gemini-3-flash");
+    // A version newer than any this code names still maps by the label's shape.
+    expect(canonicalAntigravityModelId("MODEL_PLACEHOLDER_M42", "Gemini 3.8 Flash")).toBe("gemini-3.8-flash");
+    expect(canonicalAntigravityModelId("MODEL_PLACEHOLDER_M42", undefined)).toBe("unknown");
     expect(canonicalAntigravityModelId("x", "Claude Sonnet 4.6")).toBe("x");
     expect(canonicalAntigravityModelId("claude-sonnet-4-6", undefined)).toBe("claude-sonnet-4-6");
   });

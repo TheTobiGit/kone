@@ -46,7 +46,7 @@ function stubStore(
 ): ConversationStore {
   // SAFETY: buildAgentUsageReport's store surface reduces to this one method
   // for these tests; every filter decision it makes is captured and asserted.
-  return { readStoreUsageReport } as never;
+  return { readStoreUsageReport, conversationIdsForProject: () => new Set<string>() } as never;
 }
 
 describe("buildAgentUsageReport store-provider filter", () => {
@@ -54,7 +54,7 @@ describe("buildAgentUsageReport store-provider filter", () => {
     mock.restore();
   });
 
-  test("project-scoped reports keep OpenCode in the store slice", async () => {
+  test("project-scoped reports take scanned providers from the scan, not the store", async () => {
     const { buildAgentUsageReport } = await import("./buildUsageReport.js");
     let captured: CapturedFilter | undefined;
     const store = stubStore((opts) => {
@@ -65,11 +65,13 @@ describe("buildAgentUsageReport store-provider filter", () => {
     await buildAgentUsageReport(store, { range: "1d", projectPath: "/some/project", forceRefresh: true });
 
     expect(captured).toBeDefined();
-    // OpenCode emits per-turn usage that is recorded against the thread's
-    // project, and its transcript scan is machine-wide (skipped for a project),
-    // so the store is its only project-scoped source — excluding it here would
-    // drop OpenCode spend from every project report.
-    expect(captured!.excludeProviders).not.toContain("opencode");
+    // The scan narrows itself to the project's sessions, so it stays the source
+    // for these; their turn_usage rows are running totals and would overcount.
+    for (const provider of ["claudeAgent", "codex", "opencode", "droid", "antigravity"]) {
+      expect(captured!.excludeProviders).toContain(provider);
+    }
+    // A project can't scope the Cursor dashboard, so Cursor is all the store adds.
+    expect(captured!.onlyProviders).toEqual(["cursor"]);
   });
 
   test("global reports still exclude OpenCode (it comes from the transcript scan)", async () => {

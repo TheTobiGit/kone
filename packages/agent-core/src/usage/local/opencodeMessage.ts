@@ -10,6 +10,11 @@ const OpenCodeMessagePayloadSchema = z.object({
   sessionID: z.string().optional(),
   modelID: z.string().optional(),
   providerID: z.string().optional(),
+  // The v2 log (session_message) nests both under `model`.
+  model: z.object({
+    id: z.string().optional(),
+    providerID: z.string().optional(),
+  }).passthrough().optional(),
   cost: z.number().finite().optional(),
   tokens: z.object({
     input: z.number().finite().optional(),
@@ -113,7 +118,7 @@ function totalsFromPayload(tokens: OpenCodeMessagePayload["tokens"]): UsageToken
 
 export function parseOpenCodeMessageJson(
   raw: string,
-  ids?: { messageId?: string; sessionId?: string },
+  ids?: { messageId?: string; sessionId?: string; cwd?: string | null },
 ): UsageRecord | null {
   let value: unknown;
   try {
@@ -127,8 +132,8 @@ export function parseOpenCodeMessageJson(
   const totals = totalsFromPayload(payload.tokens);
   if (!totals) return null;
 
-  const modelRaw = payload.modelID?.trim() ?? "";
-  const providerRaw = payload.providerID?.trim() ?? "";
+  const modelRaw = (payload.modelID ?? payload.model?.id)?.trim() ?? "";
+  const providerRaw = (payload.providerID ?? payload.model?.providerID)?.trim() ?? "";
   if (!modelRaw) return null;
 
   const timestampMs =
@@ -149,6 +154,7 @@ export function parseOpenCodeMessageJson(
     sessionId,
     totals,
     reportedCostUsd,
+    ...(ids?.cwd ? { cwd: ids.cwd } : {}),
     dedupeKey: messageId.length > 0 ? `opencode:${messageId}` : null,
   };
 }

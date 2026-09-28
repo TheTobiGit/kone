@@ -104,8 +104,24 @@ function lookup(snapshot: PricingSnapshot, name: string): ModelRates | null {
   const secondaryExact = findExact(snapshot.secondary, key);
   if (secondaryExact) return secondaryExact.rates;
 
+  // A free tier by name (OpenCode's `…-free` models, OpenRouter's `…:free`)
+  // that no catalog lists: priced at nothing rather than left unpriced, so the
+  // report can say "free" instead of "we don't know". Only reached after every
+  // catalog missed, so a listed model with real rates still gets them.
+  if (FREE_TIER.test(key)) return FREE_RATES;
+
   return null;
 }
+
+const FREE_TIER = /[-:]free$/;
+const FREE_RATES: ModelRates = {
+  inputPerMillion: 0,
+  outputPerMillion: 0,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0,
+  cacheReadIsExplicit: true,
+  fastMultiplier: 1,
+};
 
 /** Prices a `<base>-fast` slug from its base entry, scaled by whatever fast
  *  multiplier is known for it. Returns null when no multiplier is known —
