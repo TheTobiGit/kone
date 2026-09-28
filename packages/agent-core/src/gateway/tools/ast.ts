@@ -1,7 +1,7 @@
 // Structural call search + rewrite previews gateway tools.
 //
-// kone_ast_find_calls finds call expressions to a plain identifier across the
-// project through the shared ast engine. kone_ast_preview shows what a fixed
+// code_find_calls finds call expressions to a plain identifier across the
+// project through the shared ast engine. code_preview_rewrite shows what a fixed
 // rewrite (rename the callee, add one argument) would change, as text the
 // caller applies with its own edit tools. Like the lsp read both are
 // permission "allow" with no active turn required — every run only reads. The
@@ -75,7 +75,7 @@ export interface AstToolOptions {
 }
 
 // ── rewrite previews ─────────────────────────────────────────────────────
-// kone_ast_preview shows what a fixed call rewrite would change, as text the
+// code_preview_rewrite shows what a fixed call rewrite would change, as text the
 // caller applies with its own edit tools. It never writes: the handler only
 // reads, the pure previews only splice strings, and every call is stateless —
 // no proposals are staged, so a preview goes stale the moment a file changes.
@@ -165,8 +165,8 @@ const AST_PREVIEW_PROMPT_SNIPPET =
   "Preview renaming a call or adding an argument across the project: pass the op and names, get back before→after lines to apply yourself; kone never writes.";
 
 /**
- * Creates the structural call-search gateway tools: `kone_ast_find_calls`
- * plus the preview-only `kone_ast_preview`.
+ * Creates the structural call-search gateway tools: `code_find_calls`
+ * plus the preview-only `code_preview_rewrite`.
  */
 export function createAstTools(options: AstToolOptions = {}): ToolEntry[] {
   const engine = options.engine ?? new AstEngine();
@@ -213,23 +213,25 @@ export function createAstTools(options: AstToolOptions = {}): ToolEntry[] {
 
   return [
     {
-      name: "kone_ast_find_calls",
+      name: "code_find_calls",
       description: AST_DESCRIPTION,
       inputSchema: AstFindCallsInputSchema,
       jsonSchema: AST_FIND_CALLS_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      onDemand: true,
       target: "all",
       promptSnippet: AST_PROMPT_SNIPPET,
       handler,
     },
     {
-      name: "kone_ast_preview",
+      name: "code_preview_rewrite",
       description: AST_PREVIEW_DESCRIPTION,
       inputSchema: AstPreviewInputSchema,
       jsonSchema: AST_PREVIEW_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      onDemand: true,
       target: "all",
       promptSnippet: AST_PREVIEW_PROMPT_SNIPPET,
       handler: previewHandler,

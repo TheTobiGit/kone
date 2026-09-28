@@ -517,7 +517,7 @@ const { isUnread } = useStripUnread({
                     type="button"
                     class="col__tool"
                     aria-label="Open a side chat"
-                    title="Open a side chat"
+                    data-tip="Open a side chat"
                     @click.stop="emit('side-chat', c.id)"
                   >
                     <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="13" :stroke-width="2" aria-hidden="true" />
@@ -532,7 +532,7 @@ const { isUnread } = useStripUnread({
                     type="button"
                     class="col__tool"
                     aria-label="Hand off to another provider"
-                    title="Hand off to another provider"
+                    data-tip="Hand off to another provider"
                     @click.stop="emit('handoff', c.id)"
                   >
                     <HugeiconsIcon :icon="Exchange01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
@@ -542,7 +542,7 @@ const { isUnread } = useStripUnread({
                     type="button"
                     class="col__tool"
                     aria-label="Archive conversation"
-                    title="Archive conversation"
+                    data-tip="Archive conversation"
                     @click.stop="onArchive(c)"
                   >
                     <HugeiconsIcon :icon="Archive02Icon" :size="13" :stroke-width="2" aria-hidden="true" />
@@ -629,7 +629,7 @@ const { isUnread } = useStripUnread({
                     class="col__tool col__tool--width"
                     :disabled="isZen(c.id)"
                     :aria-label="isZen(c.id) ? 'Width — maximized' : `Cycle width (currently ${presetFor(c.id).px}px)`"
-                    :title="isZen(c.id) ? 'Maximized' : `Width: ${presetFor(c.id).px}px`"
+                    :data-tip="isZen(c.id) ? 'Maximized' : `Width: ${presetFor(c.id).px}px`"
                     @click.stop="cycleWidth(c.id)"
                   >
                     {{ presetFor(c.id).label }}
@@ -639,7 +639,7 @@ const { isUnread } = useStripUnread({
                     type="button"
                     class="col__tool"
                     aria-label="Restart terminal"
-                    title="Restart terminal"
+                    data-tip="Restart terminal"
                     @click.stop="onTerminalRestart(c)"
                   >
                     <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" aria-hidden="true" />
@@ -649,7 +649,7 @@ const { isUnread } = useStripUnread({
                     type="button"
                     class="col__tool"
                     :aria-label="isZen(c.id) ? 'Restore column' : 'Maximize column'"
-                    :title="isZen(c.id) ? 'Restore column' : 'Maximize column'"
+                    :data-tip="isZen(c.id) ? 'Restore column' : 'Maximize column'"
                     @click.stop="toggleZen()"
                   >
                     <HugeiconsIcon
@@ -664,7 +664,7 @@ const { isUnread } = useStripUnread({
                     type="button"
                     class="col__tool"
                     aria-label="Close column"
-                    title="Close column"
+                    data-tip="Close column"
                     @click.stop="onClose(c.id)"
                   >
                     <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
@@ -1459,6 +1459,58 @@ const { isUnread } = useStripUnread({
 .col__tool:hover {
   background: var(--hover);
   color: var(--ink);
+}
+/* Same hover label as the turn actions in the thread: the buttons are bare
+   icons, and the native title tooltip is too slow and too plain beside them.
+   It rises into the column's top padding, so nothing above clips it. The
+   outermost button of each group anchors its label to the column edge instead
+   of centring, so the leftmost column's label never runs off the rail. */
+.col__tool[data-tip] {
+  position: relative;
+}
+.col__tool[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 6;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--ground);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: normal;
+  line-height: 1.3;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.col__tool[data-tip]:hover::after,
+.col__tool[data-tip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition-delay: 0.3s;
+}
+.col__fork > .col__tool:first-child::after {
+  left: 0;
+  transform: translate(0, 2px);
+}
+.col__fork > .col__tool:first-child:hover::after,
+.col__fork > .col__tool:first-child:focus-visible::after {
+  transform: translate(0, 0);
+}
+.col__tools > .col__tool:last-child::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 2px);
+}
+.col__tools > .col__tool:last-child:hover::after,
+.col__tools > .col__tool:last-child:focus-visible::after {
+  transform: translate(0, 0);
 }
 /* In zen the width rung is meaningless (the column is filling the rail), so the
    width tool sits disabled showing `max` rather than a pixel figure. Dim it and

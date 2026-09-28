@@ -245,21 +245,21 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
 
   return [
     {
-      name: "kone_scratchpad_read",
+      name: "scratchpad_read",
       description:
-        "Read this project's scratchpad — a notes board the user sees live on kone's project page, and the durable memory you share with the user across sessions. Read it before acting when the user references their notes, or to ground yourself in prior plans and decisions; it is the one place your context outlives the conversation. Omit scratchpadId to read the project's current pad (single-pad model).",
+        "Read this project's scratchpad: the notes board the user sees live on the project page, and the memory you share with them across sessions. Read it when the user refers to their notes, or to pick up earlier plans and decisions. Omit scratchpadId for the project's current pad.",
       inputSchema: ScratchpadReadInputSchema,
       jsonSchema: SCRATCHPAD_READ_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "Read the project scratchpad — the notes board the user sees live on kone's project page, and your durable memory across sessions.",
+        "Read the project scratchpad: the notes board the user sees live, and your memory across sessions.",
       handler: readHandler,
     },
     {
-      name: "kone_scratchpad_write",
+      name: "scratchpad_write",
       description:
-        "Update this project's scratchpad — the notes board the user sees live on kone's project page, which re-renders as you write. Use it to record plans, decisions, and durable notes the user will keep reading after this conversation; the pad persists and is your shared memory with the user, not a temporary file. append: true adds new notes with a server-side merge (safe without a prior read); omitting it replaces the whole pad. expectedRevision makes the write race-safe against the user's own edits in the web editor (omit to overwrite unconditionally). clientRequestId makes retries replay-safe. Writes are attributed to this agent session.",
+        "Update this project's scratchpad, which re-renders on the user's page as you write. Use it for plans, decisions and notes the user will keep reading after this conversation. append: true merges new notes in (safe without a read first); omitting it replaces the whole pad. expectedRevision makes the write fail rather than overwrite the user's own edits; clientRequestId makes a retry safe. Writes are attributed to this session.",
       inputSchema: ScratchpadWriteInputSchema,
       jsonSchema: SCRATCHPAD_WRITE_JSON_SCHEMA,
       permission: "allow",

@@ -69,13 +69,13 @@ const CONNECTION = {
   // these, so a fixture without them describes a gateway that serves nothing.
   tools: [
     {
-      name: "kone_scratchpad_read",
+      name: "scratchpad_read",
       snippet: "Read the project scratchpad.",
       guidelines: [],
       needsApproval: false,
     },
     {
-      name: "kone_scratchpad_write",
+      name: "scratchpad_write",
       snippet: "Write that board.",
       guidelines: ["Read before overwriting."],
       needsApproval: false,
@@ -102,7 +102,7 @@ describe("Claude gateway injection", () => {
 
     expect(captured.options?.mcpServers?.kone).toEqual({
       type: "http",
-      url: CONNECTION.url,
+      url: `${CONNECTION.url}?tools=core`,
       headers: { Authorization: `Bearer ${CONNECTION.bearerToken}` },
       alwaysLoad: true,
     });
@@ -111,8 +111,8 @@ describe("Claude gateway injection", () => {
     const append = captured.options?.systemPrompt?.append ?? "";
     expect(append).toContain(CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND);
     expect(append).toContain(KONE_HOST_CONTEXT_MARKER);
-    expect(append).toContain("kone_scratchpad_read");
-    expect(append).toContain("kone_scratchpad_write");
+    expect(append).toContain("scratchpad_read");
+    expect(append).toContain("scratchpad_write");
   });
 
   test("resumed session: same gateway config reaches the resumed conversation", async () => {
@@ -125,13 +125,13 @@ describe("Claude gateway injection", () => {
     // Same mcpServers + append as a fresh session: no gateway-less resume path.
     expect(captured.options?.mcpServers?.kone).toEqual({
       type: "http",
-      url: CONNECTION.url,
+      url: `${CONNECTION.url}?tools=core`,
       headers: { Authorization: `Bearer ${CONNECTION.bearerToken}` },
       alwaysLoad: true,
     });
     const append = captured.options?.systemPrompt?.append ?? "";
     expect(append).toContain(KONE_HOST_CONTEXT_MARKER);
-    expect(append).toContain("kone_scratchpad_write");
+    expect(append).toContain("scratchpad_write");
   });
 
   test("no gateway connection: no mcpServers, no kone block (agent is never promised tools it lacks)", async () => {

@@ -7,7 +7,7 @@ import { GatewayToolError } from "../schemas.js";
 /** Supervised processes are namespaced per project root; tests share one. */
 const SCOPE = process.cwd();
 
-/** kone_launch is `permission: "ask"`; most cases here exercise what happens
+/** process_control is `permission: "ask"`; most cases here exercise what happens
  *  after a human has cleared it. */
 const approveAll = async () => true;
 
@@ -241,7 +241,7 @@ describe("Launch gateway tool", () => {
     const tools = createLaunchTools({ supervisor });
     const registry = createRegistry(tools, { approve: approveAll });
 
-    const startResult = await registry.call(makeCtx(), "kone_launch", {
+    const startResult = await registry.call(makeCtx(), "process_control", {
       op: "start",
       name: "test-node",
       command: "node",
@@ -252,19 +252,19 @@ describe("Launch gateway tool", () => {
     expect(startResult.isError).toBeFalsy();
     expect(startResult.content[0].text).toContain("Started process");
 
-    const statusResult = await registry.call(makeCtx({ turnId: null }), "kone_launch", {
+    const statusResult = await registry.call(makeCtx({ turnId: null }), "process_control", {
       op: "status",
       name: "test-node",
     });
     expect(statusResult.isError).toBeFalsy();
     expect(statusResult.content[0].text).toContain("status=");
 
-    const listResult = await registry.call(makeCtx({ turnId: null }), "kone_launch", {
+    const listResult = await registry.call(makeCtx({ turnId: null }), "process_control", {
       op: "list",
     });
     expect(listResult.isError).toBeFalsy();
 
-    const stopResult = await registry.call(makeCtx(), "kone_launch", {
+    const stopResult = await registry.call(makeCtx(), "process_control", {
       op: "stop",
       name: "test-node",
     });
@@ -276,7 +276,7 @@ describe("Launch gateway tool", () => {
     const tools = createLaunchTools({ supervisor });
     const registry = createRegistry(tools, { approve: approveAll });
 
-    const result = await registry.call(makeCtx({ turnId: null }), "kone_launch", {
+    const result = await registry.call(makeCtx({ turnId: null }), "process_control", {
       op: "start",
       command: "node",
     });
@@ -291,7 +291,7 @@ describe("Launch gateway tool", () => {
     const tools = createLaunchTools({ supervisor });
     const registry = createRegistry(tools, { approve: approveAll });
 
-    const result = await registry.call(makeCtx({ cwd: "/tmp/project" }), "kone_launch", {
+    const result = await registry.call(makeCtx({ cwd: "/tmp/project" }), "process_control", {
       op: "start",
       command: "node",
       cwd: "../../etc",
@@ -304,17 +304,17 @@ describe("Launch gateway tool", () => {
   });
 });
 
-describe("kone_launch approval gate", () => {
+describe("process_control approval gate", () => {
   const tools = createLaunchTools({ supervisor: new ProcessSupervisor() });
   const startArgs = { op: "start", command: "node", args: ["-e", "0"], name: "gated" };
 
   it("is advertised as requiring approval", () => {
-    expect(tools.find((t) => t.name === "kone_launch")?.permission).toBe("ask");
+    expect(tools.find((t) => t.name === "process_control")?.permission).toBe("ask");
   });
 
   it("refuses to run when the session has no approval channel", async () => {
     const registry = createRegistry(tools);
-    const result = await registry.call(makeCtx(), "kone_launch", startArgs);
+    const result = await registry.call(makeCtx(), "process_control", startArgs);
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("permission_denied");
@@ -322,7 +322,7 @@ describe("kone_launch approval gate", () => {
 
   it("refuses to run when the user declines", async () => {
     const registry = createRegistry(tools, { approve: async () => false });
-    const result = await registry.call(makeCtx(), "kone_launch", startArgs);
+    const result = await registry.call(makeCtx(), "process_control", startArgs);
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("not approved");
@@ -336,13 +336,13 @@ describe("kone_launch approval gate", () => {
         return false;
       },
     });
-    await registry.call(makeCtx({ threadId: "thread-9" }), "kone_launch", startArgs);
+    await registry.call(makeCtx({ threadId: "thread-9" }), "process_control", startArgs);
 
     expect(seen.length).toBe(1);
     // SAFETY: Approval callback pushes approval request object with known shape
     const req = seen[0] as { threadId: string; toolName: string; args: GatewayRecord };
     expect(req.threadId).toBe("thread-9");
-    expect(req.toolName).toBe("kone_launch");
+    expect(req.toolName).toBe("process_control");
     expect(req.args.command).toBe("node");
   });
 
@@ -351,7 +351,7 @@ describe("kone_launch approval gate", () => {
     const registry = createRegistry(createLaunchTools({ supervisor }), {
       approve: async () => false,
     });
-    await registry.call(makeCtx(), "kone_launch", startArgs);
+    await registry.call(makeCtx(), "process_control", startArgs);
 
     expect(supervisor.list(process.cwd()).length).toBe(0);
   });

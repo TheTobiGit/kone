@@ -122,6 +122,14 @@ export interface ToolEntry {
    * description already in front of the model.
    */
   promptGuidelines?: readonly string[];
+  /**
+   * Rarely needed, so a client that can defer tools behind a search keeps this
+   * one out of the prompt until the agent asks for it: its whole description
+   * and schema would otherwise ride along on every model call. Served from the
+   * on-demand set (see GatewayToolSet); a client that lists the full set sees
+   * no difference.
+   */
+  onDemand?: boolean;
   handler(ctx: GatewayToolContext, input: GatewayRecord): Promise<GatewayToolResult>;
 }
 
@@ -315,7 +323,7 @@ export const ReadResponseInputSchema = z.object({
 });
 
 export const ContinueThreadInputSchema = z.object({
-  /** The child thread to post the follow-up into — one kone_continue_thread
+  /** The child thread to post the follow-up into — one worker_continue
    *  returned earlier. Must be in the caller's own spawned subtree. */
   threadId: z.string().min(1),
   /** The follow-up: a complete, self-contained ask that continues the thread's
@@ -361,7 +369,7 @@ const SPAWN_WHY_JSON_SCHEMA = {
   type: "string",
   maxLength: SPAWN_WHY_MAX_CHARS,
   description:
-    "One short clause, in your own voice, on why you are handing this off rather than doing it yourself — it completes the sentence \"…because\" and the user reads it in the thread at the point you spawned the worker. e.g. \"the suite takes ten minutes and I can keep refactoring meanwhile\".",
+    "One short clause finishing \"…because\", in your own voice; the user reads it where you handed the work off. e.g. \"the suite takes ten minutes and I can keep refactoring meanwhile\".",
 } satisfies GatewayRecord;
 
 export const SPAWN_WORKER_JSON_SCHEMA = {
@@ -391,7 +399,7 @@ export const SPAWN_WORKER_PRESET_JSON_SCHEMA = {
     preset: {
       type: "string",
       description:
-        "The preset sub-agent to spawn, by name (e.g. \"Explorer\") or id. Call kone_spawn_targets for the presets that actually exist and what each is for; a name that matches none is refused rather than guessed at.",
+        "Preset name or id, as worker_targets lists it; a name that matches none is refused.",
     },
     task: { type: "string" },
     requestId: { type: "string" },
@@ -417,7 +425,7 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
     agent: {
       type: "string",
       description:
-        "The teammate to hand the work to, by name or id. It must be on THIS project's team — call kone_spawn_targets for who is, and their roles; a name that is not on the team is refused exactly like a nonexistent one.",
+        "Teammate name or id on this project's team, as worker_targets lists it; anyone else is refused.",
     },
     task: { type: "string" },
     requestId: { type: "string" },
@@ -463,17 +471,17 @@ export const CONTINUE_THREAD_JSON_SCHEMA = {
     threadId: {
       type: "string",
       description:
-        "The spawned child thread to post the follow-up into — a threadId an earlier spawn, delegation or batch returned. It must be in your own spawned subtree.",
+        "A threadId an earlier spawn, delegation or batch returned; it must be in your own subtree.",
     },
     message: {
       type: "string",
       description:
-        "The follow-up: a complete, self-contained ask. It continues the thread's existing conversation — the child still has everything it did.",
+        "The follow-up ask, complete on its own.",
     },
     requestId: {
       type: "string",
       description:
-        "Stable idempotency key for this follow-up, so a retry returns the same result instead of running the child twice.",
+        "Stable key so a retry does not run the child twice.",
     },
   },
   required: ["threadId", "message"],
@@ -1392,7 +1400,7 @@ export const CreateSubagentPresetInputSchema = z.object({
     .string()
     .min(1)
     .max(64)
-    .describe("What the preset is called. This is also how kone_spawn_worker_preset refers to it."),
+    .describe("What the preset is called. This is also how worker_spawn_preset refers to it."),
   instructions: z
     .string()
     .max(4000)
@@ -1412,7 +1420,7 @@ export const CREATE_SUBAGENT_PRESET_JSON_SCHEMA = {
     name: {
       type: "string",
       description:
-        "What the preset is called. This is also how kone_spawn_worker_preset refers to it.",
+        "What the preset is called. This is also how worker_spawn_preset refers to it.",
     },
     instructions: {
       type: "string",
@@ -2344,7 +2352,7 @@ export type SetAppProviderEnabledInput = z.infer<typeof SetAppProviderEnabledInp
 export type UpdateAppProviderInput = z.infer<typeof UpdateAppProviderInputSchema>;
 
 // ── language-server (lsp) tool inputs ────────────────────────────────────────
-// One tool, `kone_lsp`, fronts the six read-only actions: the zod
+// One tool, `code_lsp`, fronts the six read-only actions: the zod
 // `inputSchema` validates args and the hand-written JSON schema is what
 // tools/list advertises, so both read the action names off LSP_ACTIONS — the
 // client never sees zod. Positions are path + 1-indexed line + symbol

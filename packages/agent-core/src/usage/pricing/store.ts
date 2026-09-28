@@ -13,11 +13,12 @@
 // keeps serving until the next attempt.
 
 import fs from "node:fs";
+import { z } from "zod";
 import { writeFileAtomicSync } from "@kone/agent-core/lib-atomicWrite.js";
 
 import litellmSnapshot from "./snapshots/litellm.snapshot.json" with { type: "json" };
 import modelsDevSnapshot from "./snapshots/models-dev.snapshot.json" with { type: "json" };
-import { decodeCompact, encodeCompact, type CompactFile } from "./compact.js";
+import { decodeCompact, encodeCompact, parseCompactJson, type CompactFile } from "./compact.js";
 import { parseLiteLLM } from "./litellmCodec.js";
 import { parseModelsDev } from "./modelsDevCodec.js";
 import { mergeTables } from "./catalog.js";
@@ -86,7 +87,7 @@ function readJsonFile<T>(path: string | undefined): T | undefined {
 
 import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 
-function writeJsonFile(path: string | undefined, data: JsonValue | Record<string, SourceState> | Record<SourceId, SourceState>): void {
+function writeJsonFile(path: string | undefined, data: JsonValue | CompactFile | Record<string, SourceState> | Record<SourceId, SourceState>): void {
   if (path === undefined) return;
   try {
     writeFileAtomicSync(path, JSON.stringify(data));
@@ -101,19 +102,30 @@ let snapshot: PricingSnapshot = { primary: { entries: {} }, secondary: { entries
 let sourceStates: Record<SourceId, SourceState> = { litellm: {}, modelsDev: {} };
 let refreshInFlight: Promise<void> | null = null;
 
+/** The cached feed for `source`, or undefined when there is none or it won't
+ *  decode. Earlier builds wrote it stringified twice — a JSON string holding
+ *  the JSON — and a 304 never rewrites it, so that form is unwrapped here
+ *  rather than read as empty until the feed itself changes. */
+function readCachedTable(source: SourceId): PricingTable | undefined {
+  const file = cacheFile(source);
+  if (file === undefined) return undefined;
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const wrapped = z.string().safeParse(JSON.parse(raw));
+    return parseCompactJson(wrapped.success ? wrapped.data : raw);
+  } catch {
+    return undefined;
+  }
+}
+
 function loadTable(source: SourceId): PricingTable {
   // SAFETY: both snapshot imports are encodeCompact output checked into the
   // repo, so they match the CompactFile shape decodeCompact consumes.
   const bundled = decodeCompact((source === "litellm" ? litellmSnapshot : modelsDevSnapshot) as CompactFile);
   let table = bundled;
-  const cached = readJsonFile<CompactFile>(cacheFile(source));
-  if (cached && cached.models instanceof Object) {
-    try {
-      table = mergeTables(bundled, decodeCompact(cached));
-    } catch {
-      // Corrupt cache file — keep serving the bundled snapshot.
-    }
-  }
+  // A missing or corrupt cache file keeps serving the bundled snapshot.
+  const cached = readCachedTable(source);
+  if (cached) table = mergeTables(bundled, cached);
   return table;
 }
 
@@ -195,7 +207,7 @@ async function fetchSource(source: SourceId, deps: StoreDeps): Promise<boolean> 
     const parsed = JSON.parse(await response.text());
     const table = source === "litellm" ? parseLiteLLM(parsed, todayIso(deps)) : parseModelsDev(parsed, todayIso(deps));
     const compact = encodeCompact(table, SOURCE_URLS[source]);
-    writeJsonFile(cacheFile(source), JSON.stringify(compact));
+    writeJsonFile(cacheFile(source), compact);
     sourceStates[source] = {
       etag: response.headers.get("etag") ?? undefined,
       fetchedAtMs: deps.now(),

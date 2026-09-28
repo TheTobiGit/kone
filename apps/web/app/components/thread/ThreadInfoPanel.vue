@@ -210,11 +210,16 @@ const tokenRows = computed(() => {
     // matches the token-row shape the non-empty branch below builds.
     return [] as { label: string; value: string }[];
   const out: { label: string; value: string }[] = [];
+  // What the window holds now, apart from what the thread has billed: the
+  // input below counts every re-send of the prompt, so it runs far past the
+  // window on any turn that calls tools.
   if (ctxUsed.value !== undefined && ctxWindow.value !== undefined) {
-    const remaining = ctxWindow.value - ctxUsed.value;
-    if (remaining > 0) out.push({ label: "Remaining", value: fmt(remaining) });
+    out.push({ label: "In context", value: `${fmt(ctxUsed.value)} / ${fmt(ctxWindow.value)}` });
   }
   if (u.input !== undefined && u.input !== null && Number.isFinite(u.input)) out.push({ label: "Input", value: fmt(u.input) });
+  if (u.cacheReadTokens !== undefined && Number.isFinite(u.cacheReadTokens) && u.cacheReadTokens > 0) {
+    out.push({ label: "Cache reads", value: fmt(u.cacheReadTokens) });
+  }
   if (u.output !== undefined && u.output !== null && Number.isFinite(u.output)) out.push({ label: "Output", value: fmt(u.output) });
   if (u.total !== undefined && u.total !== null && Number.isFinite(u.total)) out.push({ label: "Total", value: fmt(u.total) });
   return out;
@@ -360,7 +365,7 @@ onBeforeUnmount(() => {
             :env-mode="envMode"
           />
 
-          <p class="tip__section">Context</p>
+          <p class="tip__section">Usage</p>
           <template v-if="hasTokens">
             <div v-for="r in tokenRows" :key="r.label" class="tip__row">
               <dt>{{ r.label }}</dt>

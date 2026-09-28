@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import type { GatewayConnection } from "../types.js";
+import { AGENT_GATEWAY_TOOL_SET_PARAM } from "./httpServer.js";
 
 /** The ACP MCP server name both entry shapes ship under. */
 export const KONE_MCP_SERVER_NAME = "kone";
@@ -102,21 +103,47 @@ export function acpMcpServers(
   ];
 }
 
+/** The server a deferring client reaches the on-demand tool set through. Its
+ *  own name, because a client keys deferral by server — the tools on it keep
+ *  their `kone_` names, so only the MCP prefix differs. */
+export const KONE_ON_DEMAND_MCP_SERVER_NAME = "kone_extra";
+
+/** The gateway URL narrowed to one tool set. */
+function toolSetUrl(url: string, set: "core" | "on-demand"): string {
+  const next = new URL(url);
+  next.searchParams.set(AGENT_GATEWAY_TOOL_SET_PARAM, set);
+  return next.toString();
+}
+
 /** The Claude SDK's HTTP MCP server config, injected into
- *  startFreshSession's options. */
+ *  startFreshSession's options.
+ *
+ *  Claude defers MCP tools behind its tool search and connects servers without
+ *  blocking, so the gateway goes in as up to two servers. `kone` carries the
+ *  core tools with alwaysLoad, which forces them into the prompt and blocks
+ *  startup until the gateway answers (5s cap), so a session either has them or
+ *  fails loudly — never silently without them. `kone_extra` carries the tools
+ *  marked on-demand and is left to defer: their names are announced, their
+ *  schemas load only when the agent searches for one. alwaysLoad is per server
+ *  here rather than per tool because only the server flag makes startup wait. */
 export function claudeMcpServers(connection: GatewayConnection): Record<string, McpServerConfig> {
-  return {
-    kone: {
+  const headers = { Authorization: `Bearer ${connection.bearerToken}` };
+  const servers: Record<string, McpServerConfig> = {
+    [KONE_MCP_SERVER_NAME]: {
       type: "http",
-      url: connection.url,
-      headers: { Authorization: `Bearer ${connection.bearerToken}` },
-      // MCP tools are deferred behind tool search and servers connect
-      // non-blocking by default; alwaysLoad forces the tools into the prompt
-      // and blocks startup until the gateway answers (5s cap), so a session
-      // either has the tools or fails loudly — never silently without them.
+      url: toolSetUrl(connection.url, "core"),
+      headers,
       alwaysLoad: true,
     },
   };
+  if (connection.tools.some((tool) => tool.onDemand)) {
+    servers[KONE_ON_DEMAND_MCP_SERVER_NAME] = {
+      type: "http",
+      url: toolSetUrl(connection.url, "on-demand"),
+      headers,
+    };
+  }
+  return servers;
 }
 
 /** One entry of opencode's remote-MCP config: where the server is, how to

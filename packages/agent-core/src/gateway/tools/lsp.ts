@@ -1,6 +1,6 @@
 // Read-only language-server gateway tool (fronted as MCP).
 //
-// One tool, `kone_lsp`, fronts the pooled language servers: go-to-definition,
+// One tool, `code_lsp`, fronts the pooled language servers: go-to-definition,
 // references, hover, document and workspace symbols, diagnostics, and rename
 // previews. Like the scratchpad read it is permission "allow" with no active
 // turn required — every action only reads, and rename only previews the edit
@@ -105,7 +105,7 @@ function actionResult(action: LspActionResult): GatewayToolResult {
 }
 
 /**
- * Creates the read-only language-server gateway tool, `kone_lsp`.
+ * Creates the read-only language-server gateway tool, `code_lsp`.
  */
 export function createLspTools(options: LspToolOptions = {}): ToolEntry[] {
   const manager = options.manager ?? new LspManager();
@@ -207,12 +207,13 @@ export function createLspTools(options: LspToolOptions = {}): ToolEntry[] {
 
   return [
     {
-      name: "kone_lsp",
+      name: "code_lsp",
       description: LSP_DESCRIPTION,
       inputSchema: LspToolInputSchema,
       jsonSchema: LSP_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      onDemand: true,
       promptSnippet: LSP_PROMPT_SNIPPET,
       handler,
     },

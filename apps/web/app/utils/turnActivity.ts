@@ -12,6 +12,8 @@ import type { RuntimeItem } from "~/types/desktop";
 import { activeHues, type ToolOrbFamily, type TurnOrbState } from "~/utils/toolOrbDraw";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
 import { toolTargetRaw } from "~/utils/toolPresentation";
+import { koneToolPresentation } from "~/utils/koneToolPresentation";
+import { canonicalToolName } from "~/utils/toolName";
 
 export type TurnActivity = {
   /** Which orb/glyph the pill shows at its left. `done` is a settled turn held
@@ -57,6 +59,8 @@ function toolActivity(item: RuntimeItem): TurnActivity {
   const t = shorten(raw);
   // grep summaries arrive as "query · N matches"; the query is what's live.
   const query = shorten(raw.split("·")[0]?.trim() || raw);
+  const koneTool = koneToolPresentation(canonicalToolName(name));
+  if (koneTool) return tool(koneTool.family, koneTool.running);
 
   switch (name) {
     case "read_file":

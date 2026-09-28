@@ -107,7 +107,7 @@ function presetTargets(store: SpawnToolStore): NonNullable<SpawnTargetsReport["p
 
 /** The teammates an agent can delegate to on its own project's roster, shaped
  *  for the report and in roster order. A nameless agent drops out:
- *  `kone_delegate_to_teammate` resolves by name, so listing one with no name
+ *  `worker_delegate` resolves by name, so listing one with no name
  *  would only offer a target the agent could never actually reach. */
 export function teammateTargets(
   store: SpawnToolStore,
@@ -166,7 +166,7 @@ function waitThreadText(thread: SpawnedThread): string {
   const head = `[${thread.title}] ${thread.status}${took} (${thread.threadId})${parkedGateId}:`;
   const body = thread.summary?.trim() || thread.detail?.trim();
   if (body) return `${head}\n${body}`;
-  return `${head}\n(no reply text — read the full transcript with kone_read_response)`;
+  return `${head}\n(no reply text — read the full transcript with worker_read)`;
 }
 
 /** One transcript message as prose, for the same reason. */
@@ -254,13 +254,13 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       ];
       if (presets.length > 0) {
         parts.push(
-          `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"} (${presets.map((p) => p.name).join(", ")}) available to kone_spawn_worker_preset.`,
+          `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"} (${presets.map((p) => p.name).join(", ")}) available to worker_spawn_preset.`,
         );
       }
       const teammates = report.teammates ?? [];
       if (teammates.length > 0) {
         parts.push(
-          `${teammates.length} teammate${teammates.length === 1 ? "" : "s"} on this project (${teammates.map((t) => (t.role ? `${t.name}, ${t.role}` : t.name)).join("; ")}) available to kone_delegate_to_teammate.`,
+          `${teammates.length} teammate${teammates.length === 1 ? "" : "s"} on this project (${teammates.map((t) => (t.role ? `${t.name}, ${t.role}` : t.name)).join("; ")}) available to worker_delegate.`,
         );
       }
       return { content: [{ type: "text", text: parts.join(" ") }], structuredContent: { report } };
@@ -331,7 +331,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         content: [
           {
             type: "text",
-            text: `Follow-up sent to ${result.threadId} as turn ${result.turnId}${resumed}. Collect the response with kone_wait_for_responses, passing threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"] to pin it to this turn.`,
+            text: `Follow-up sent to ${result.threadId} as turn ${result.turnId}${resumed}. Collect the response with worker_wait, passing threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"] to pin it to this turn.`,
           },
         ],
         structuredContent: { continuation: result },
@@ -463,9 +463,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
 
   return [
     {
-      name: "kone_spawn_targets",
+      name: "worker_targets",
       description:
-        "List the providers/models and preset specialist subagents you can spawn right now. Providers: the installed providers and their real model ids, which is what kone_spawn_worker names when you pick a model yourself. Presets: the saved subagent templates you can start a specialist worker from by name with kone_spawn_worker_preset, each with a one-line gist of what it is for and its preferred models. Teammates: the named agents on this project's team you can hand work to with kone_delegate_to_teammate, with their roles. Call this before you spawn when you are not certain what is available. The report also tells you which model you are yourself running on, how many more workers you may open, and how deep in the spawn tree you already are.",
+        "List what you can spawn: installed providers with their real model ids (for worker_spawn), saved presets with what each is for (worker_spawn_preset), and this project's teammates with their roles (worker_delegate). Also reports the model you run on, how many more workers you may open, and how deep in the spawn tree you are.",
       inputSchema: SpawnTargetsInputSchema,
       jsonSchema: SPAWN_TARGETS_JSON_SCHEMA,
       permission: "allow",
@@ -475,9 +475,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: targetsHandler,
     },
     {
-      name: "kone_spawn_worker" satisfies SpawnToolName,
+      name: "worker_spawn" satisfies SpawnToolName,
       description:
-        "Spawn a worker: open a new kone thread and set an agent working in it on a task you write. This is not a nested subagent inside your turn — it is a second, first-class conversation that appears in the user's sidebar, persists, and keeps running after your turn ends. Use it to hand a self-contained unit of work to another model, or to fan several independent units out at once, when doing the work inline would crowd out your own context. Write prompt as a complete standing brief: the worker wakes up with no memory of this conversation and cannot ask you anything, so state the goal, the paths involved, the constraints, and what done looks like. Say in why, briefly and in your own voice, why you are handing this off — the user reads it in the thread at the point you spawned the worker. Omit target to run the worker on your own provider and model (and reasoning effort). Pass target.provider and target.model only when you mean a different one — a cheap fast model for mechanical work, a stronger one for work that needs judgement; call kone_spawn_targets if you need the real list. mode is what the worker may do without stopping to ask, and it can never exceed yours — request a wider one and the spawn is refused rather than quietly downgraded. Leave it unset to inherit yours. Choose it by what the worker needs to finish unattended, because nobody is sitting in its thread: a worker that stops for permission stays stopped until the user notices. full-access lets it edit files and run commands on its own. accept-edits lets it edit, but it will park the first time it needs to run a command. ask parks on nearly everything, so use it only for a worker that reads and reports. If the work needs more than your own thread is allowed, say so and let the user raise your mode — do not spawn a worker that cannot finish. Pass a stable requestId so a retry after a network hiccup returns the same worker instead of opening a second one. This returns as soon as the worker starts, not when it finishes — collect its response with kone_wait_for_responses; the result also carries the worker's first turn id, pass it back as turnIds to pin the wait to the turn you actually spawned. When you need to ask this worker something again later, continue its existing thread with kone_continue_thread — spawning again would open a second worker with no memory of the first.",
+        "Open a new kone thread with an agent working on a task you write: a first-class conversation in the user's sidebar that keeps running after your turn, not a nested subagent. The worker starts with no memory of this conversation and cannot ask you anything, so write prompt as a complete brief: the goal, the paths, the constraints, and what done looks like. why is one short clause, in your own voice, that the user reads where you spawned it. Omit target to run on your own provider, model and effort; set it for a cheaper or stronger model (worker_targets lists them). mode is what the worker may do unattended and is clamped to yours (a wider request is refused, not downgraded): full-access edits and runs commands, accept-edits parks on its first command, ask parks on nearly everything. Pass a stable requestId so a retry returns the same worker. Returns once the worker starts, with its first turn id: collect the result with worker_wait (pass that id as turnIds), and ask it again with worker_continue, never a second spawn.",
       inputSchema: SpawnWorkerInputSchema,
       jsonSchema: SPAWN_WORKER_JSON_SCHEMA,
       permission: "allow",
@@ -486,15 +486,15 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         "Spawn a worker on any installed provider — a second conversation the user watches in the sidebar, not a nested subagent inside your turn.",
       promptGuidelines: [
         "Reach for a worker when a piece of work is self-contained and large enough that doing it inline would crowd out your context, or when several independent pieces can run at once.",
-        "A worker's mode can never exceed yours, and asking for a wider one refuses the spawn rather than quietly downgrading it. Nobody sits in a worker's thread: a worker that stops for permission stays stopped until the user notices. If the work needs more than your own thread is allowed, ask the user to raise your mode instead of spawning a worker that cannot finish.",
+        "Nobody sits in a worker's thread: one that stops for permission stays stopped until the user notices. If the work needs a wider mode than yours, ask the user to raise your mode instead of spawning a worker that cannot finish.",
         "Spawned work is the user's work too — they see these threads run. Give every worker a brief you would be willing to have read back to you, and keep the number of workers proportionate to the task.",
       ],
       handler: spawnWorkerHandler,
     },
     {
-      name: "kone_spawn_worker_preset" satisfies SpawnToolName,
+      name: "worker_spawn_preset" satisfies SpawnToolName,
       description:
-        "Spawn a specialist worker from a preset — a reusable subagent template the user has saved, carrying its own standing instructions and a model chain (or none). Give the preset by name (e.g. \"Explorer\", \"Code Reviewer\") and a task describing the specific work; kone lays the task under the preset's instructions to form the worker's opening brief, so write task as a complete standing ask the way you would prompt for kone_spawn_worker — the worker cannot ask you anything. Say in why, briefly and in your own voice, why you are handing this off — the user reads it in the thread at the point you spawned the worker. You do not choose a model by default: kone runs the preset's assigned chain when it names one (falling to the next on a 429 or spent quota), or the worker runs on your own provider and model when it names none. Pass model only when the user asked for this piece of work to run somewhere specific — that override beats the preset's chain. If every named model can't run it refuses rather than substituting one you didn't ask for. mode works exactly as in kone_spawn_worker — clamped to yours, chosen for what the worker needs to finish unattended. Use this when the work matches a preset the user has set up, and kone_spawn_worker when you need to pick the provider and model yourself. Pass a stable requestId so a retry returns the same worker. Returns as soon as the worker starts — collect its response with kone_wait_for_responses. To ask this worker something again later, continue its existing thread with kone_continue_thread.",
+        "Spawn a worker from a preset: a template the user saved, with its own standing instructions and model chain. Name the preset (e.g. \"Code Reviewer\") and write task as a complete brief; kone lays it under the preset's instructions. The preset's chain picks the model, falling through on a 429 or spent quota, or yours when it names none. Pass model only when the user asked for a specific one; if nothing named can run, the spawn is refused rather than substituted. why, mode and requestId work as in worker_spawn. Collect the result with worker_wait; follow up with worker_continue.",
       inputSchema: SpawnWorkerPresetInputSchema,
       jsonSchema: SPAWN_WORKER_PRESET_JSON_SCHEMA,
       permission: "allow",
@@ -504,9 +504,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: spawnWorkerPresetHandler,
     },
     {
-      name: "kone_delegate_to_teammate" satisfies SpawnToolName,
+      name: "worker_delegate" satisfies SpawnToolName,
       description:
-        "Delegate a piece of work to a teammate — a named agent on this project's team, with its own identity, standing instructions and model preference. The child thread runs AS that agent: it answers under the teammate's name and brings the teammate's own instructions, so write task as just the ask — a complete, standing brief, since the teammate wakes up with no memory of this conversation and cannot ask you anything. Name the teammate by name or id with agent; only teammates on this project's team can be reached (kone_spawn_targets lists them with their roles). You do not choose a model by default: the teammate runs its own model chain, or yours when it names none. Pass model only when the user asked for this piece of work to run somewhere specific. Say in why, briefly and in your own voice, why you are handing this to them — the user reads it in the thread at the point you delegated. mode works exactly as in kone_spawn_worker — clamped to yours, chosen for what the teammate needs to finish unattended. Use this when the work fits a teammate's role; kone_spawn_worker_preset for a reusable specialist template, kone_spawn_worker to brief an anonymous worker yourself. Pass a stable requestId so a retry returns the same thread. Returns as soon as the teammate starts — collect its response with kone_wait_for_responses, and ask it something again with kone_continue_thread.",
+        "Hand work to a teammate: a named agent on this project's team (worker_targets lists them with their roles). The thread runs as that agent, under its name, instructions and model chain (yours when it names none), so write task as just the ask, complete, since the teammate starts with no memory of this conversation. Pass model only when the user asked for a specific one. why, mode and requestId work as in worker_spawn. Collect the result with worker_wait; follow up with worker_continue.",
       inputSchema: DelegateToTeammateInputSchema,
       jsonSchema: DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
       permission: "allow",
@@ -516,9 +516,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: delegateToTeammateHandler,
     },
     {
-      name: "kone_spawn_batch" satisfies SpawnToolName,
+      name: "worker_spawn_batch" satisfies SpawnToolName,
       description:
-        "Dispatch several workers concurrently in a single tool call. Each item in items is a direct provider/model worker (target), a specialist worker from a preset (preset), or a delegation to a teammate on this project's team (agent) — set exactly one. Give each item its own why, as for the single tools. Use it instead of repeated single calls when the pieces are independent and can run at once. Returns an array of the threads it opened, with threadIds ready for kone_wait_for_responses. Later follow-ups to any of those threads go through kone_continue_thread on the returned threadId.",
+        "Dispatch several independent workers in one call. Each item sets exactly one of target (a direct worker), preset, or agent (a teammate), plus its own why. Returns the opened threads' ids for worker_wait; follow up on any of them with worker_continue.",
       inputSchema: SpawnBatchInputSchema,
       jsonSchema: SPAWN_BATCH_JSON_SCHEMA,
       permission: "allow",
@@ -528,9 +528,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: spawnBatchHandler,
     },
     {
-      name: "kone_continue_thread",
+      name: "worker_continue",
       description:
-        "Send a follow-up turn to a thread you (or a descendant of yours) already spawned — the second question to a worker — without opening a new thread. This is the only way to add a turn to an existing child: kone_spawn_worker, kone_spawn_worker_preset and kone_spawn_batch always open a NEW thread, so reaching for them to ask a spawned thread something again fragments the work across two conversations. Name the thread with threadId — an id an earlier spawn or batch returned — and write message as a complete, self-contained ask that continues that thread's existing conversation: the child still has everything it did, so reference its prior work instead of restating it. The follow-up runs on the child's own provider and mode; you do not pick either. A child that is mid-turn runs the follow-up right after its current turn; a child that already settled is brought back up with its full context before the follow-up dispatches. Pass a stable requestId so a retry returns the same result instead of running the child twice. Returns the new turn id — collect the response with kone_wait_for_responses, passing threadIds [threadId] and turnIds [that turn id] to pin the wait to this exact turn, and kone_read_response to read the thread's full transcript when the summary is not enough.",
+        "Send a follow-up turn into a thread you (or one of your descendants) spawned. This is the only way to ask a spawned thread again: every spawn tool opens a new thread. The child keeps its full context, so reference its earlier work rather than restating it; it runs on its own provider and mode. A busy child takes the follow-up after its current turn; a settled one is brought back up first. Pass a stable requestId so a retry does not run it twice. Returns the new turn id: pass it with the threadId to worker_wait.",
       inputSchema: ContinueThreadInputSchema,
       jsonSchema: CONTINUE_THREAD_JSON_SCHEMA,
       permission: "allow",
@@ -538,7 +538,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       promptSnippet:
         "Post a follow-up turn into a thread you already spawned, continuing that same conversation instead of opening a new one.",
       promptGuidelines: [
-        "When the user asks you to ask a worker something again, use kone_continue_thread on the thread you already opened for them — a second spawn is a second stranger, not a follow-up.",
+        "When the user asks you to ask a worker something again, use worker_continue on the thread you already opened for them — a second spawn is a second stranger, not a follow-up.",
       ],
       handler: continueThreadHandler,
     },
@@ -546,28 +546,26 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     createDeclineChildGateTool(),
     createAnswerChildInputTool(),
     {
-      name: "kone_wait_for_responses",
+      name: "worker_wait",
       description:
-        "Wait for the workers you dispatched and collect each one's response. Returns as soon as every named thread has settled, or as soon as any one of them parks on a question or an approval that needs a human — a blocked worker is surfaced immediately rather than silently eating your timeout, because nothing moves until someone answers it. A timeout reports progress and nothing else: it never cancels, retries or re-spawns anything, so calling again simply keeps waiting. Each response carries that thread's final message, capped; its reasoning, tool calls and intermediate output stay in its own thread. Use kone_read_response when the summary is not enough to act on. Pass turnIds (the turn id kone_spawn_worker returned) positionally paired with threadIds to pin the wait to that exact turn — otherwise a newer turn in the thread can swap which response you collect; the result echoes the turnIds it resolved to, so re-pass them to keep waiting on the same turn.",
+        "Wait for threads you dispatched and collect each one's final message (capped). Returns when every named thread has settled, or as soon as one parks on a question or approval that needs a human. A timeout only reports progress and cancels nothing; call again to keep waiting. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. worker_read opens the full transcript when the summary is not enough.",
       inputSchema: WaitForResponsesInputSchema,
       jsonSchema: WAIT_FOR_RESPONSES_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
         "Collect the responses from the workers you dispatched, and surface any that have parked on a question.",
-      promptGuidelines: [
-        "Pin a wait to the exact turn you spawned by passing the worker's first turn id as turnIds, so a newer turn in that thread cannot swap which response you collect.",
-      ],
       handler: waitForResponsesHandler,
     },
     {
-      name: "kone_read_response",
+      name: "worker_read",
       description:
         "Read the full transcript behind a response — every message in a worker's thread, or one it spawned in turn, in order, newest last. Use it when a response summary is too thin to act on, when the work failed and you need to see where, or when you need the details it worked out rather than its conclusion. Scoped to your own subtree: threads you did not dispatch are not readable, and neither are the user's other conversations.",
       inputSchema: ReadResponseInputSchema,
       jsonSchema: READ_RESPONSE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      onDemand: true,
       promptSnippet:
         "Open the full transcript behind a worker response when its summary is not enough.",
       handler: readResponseHandler,

@@ -287,6 +287,80 @@ describe("Claude result handler", () => {
   });
 });
 
+describe("Claude context fill", () => {
+  /** A settled main-conversation assistant message carrying one call's usage. */
+  function assistantCall(uuid: string, usage: Record<string, number>): void {
+    state.feed!.push({
+      type: "assistant",
+      uuid,
+      parent_tool_use_id: null,
+      message: { role: "assistant", content: [], usage },
+    });
+  }
+
+  test("the meter reads the turn's last call, not the result's summed spend", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    // Two tool-calling round trips, each re-reading the cached prompt.
+    assistantCall("a-1", { input_tokens: 5, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 2_000, output_tokens: 300 });
+    assistantCall("a-2", { input_tokens: 5, cache_read_input_tokens: 42_000, cache_creation_input_tokens: 1_000, output_tokens: 200 });
+    // The result sums both calls — billed spend, not window fill.
+    state.feed!.push({
+      type: "result",
+      subtype: "success",
+      num_turns: 2,
+      is_error: false,
+      usage: { input_tokens: 10, cache_read_input_tokens: 82_000, cache_creation_input_tokens: 3_000, output_tokens: 500 },
+    });
+    await flush();
+
+    const usage = ofType(events, "thread.token-usage.updated");
+    expect(usage).toHaveLength(1);
+    expect(usage[0].usage.total).toBe(85_510);
+    expect(usage[0].usage.contextUsed).toBe(43_205);
+  });
+
+  test("a streamed call's output settles on message_delta, not the placeholder", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    const stream = (event: ClaudeJsonObject): void => {
+      state.feed!.push({ type: "stream_event", parent_tool_use_id: null, uuid: "s", session_id: "x", event });
+    };
+    stream({
+      type: "message_start",
+      message: { usage: { input_tokens: 2, cache_read_input_tokens: 31_616, cache_creation_input_tokens: 130, output_tokens: 2 } },
+    });
+    // The settled message rides the start's usage — its output is still the placeholder.
+    assistantCall("a-1", { input_tokens: 2, cache_read_input_tokens: 31_616, cache_creation_input_tokens: 130, output_tokens: 2 });
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 458 } });
+    stream({ type: "message_stop" });
+    state.feed!.push({
+      type: "result",
+      subtype: "success",
+      num_turns: 1,
+      is_error: false,
+      usage: { input_tokens: 2, cache_read_input_tokens: 31_616, cache_creation_input_tokens: 130, output_tokens: 458 },
+    });
+    await flush();
+
+    expect(ofType(events, "thread.token-usage.updated")[0].usage.contextUsed).toBe(32_206);
+  });
+
+  test("a turn that made no call leaves the fill unreported", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    state.feed!.push({ type: "result", subtype: "success", num_turns: 0, is_error: false, usage: { input_tokens: 10, output_tokens: 5 } });
+    await flush();
+
+    const usage = ofType(events, "thread.token-usage.updated");
+    expect(usage).toHaveLength(1);
+    expect(usage[0].usage.contextUsed).toBeUndefined();
+  });
+});
+
 describe("Claude background subagents", () => {
   /** Background a live run the way the SDK does: a task_updated patch. */
   async function background(): Promise<void> {

@@ -597,30 +597,30 @@ describe("createIrcTools gateway registration and execution", () => {
   test("Tools export proper schemas, names, and permissions", () => {
     const tools = createIrcTools();
     expect(tools.map((t) => t.name)).toEqual([
-      "kone_irc_send",
-      "kone_irc_list",
-      "kone_irc_inbox",
+      "peer_send",
+      "peer_list",
+      "peer_inbox",
     ]);
 
     const [msgTool, listTool, inboxTool] = tools;
-    expect(msgTool!.name).toBe("kone_irc_send");
+    expect(msgTool!.name).toBe("peer_send");
     expect(msgTool!.permission).toBe("allow");
     expect(msgTool!.requiresActiveTurn).toBe(true);
     expect(msgTool!.jsonSchema).toBe(IRC_SEND_JSON_SCHEMA);
 
     // Reading the roster is not speaking, so it does not need a turn — an agent
     // has to be able to see who exists before it decides to interrupt anyone.
-    expect(listTool!.name).toBe("kone_irc_list");
+    expect(listTool!.name).toBe("peer_list");
     expect(listTool!.permission).toBe("allow");
     expect(listTool!.requiresActiveTurn).toBe(false);
 
-    expect(inboxTool!.name).toBe("kone_irc_inbox");
+    expect(inboxTool!.name).toBe("peer_inbox");
     expect(inboxTool!.permission).toBe("allow");
     expect(inboxTool!.requiresActiveTurn).toBe(false);
     expect(inboxTool!.jsonSchema).toBe(IRC_INBOX_JSON_SCHEMA);
   });
 
-  test("kone_irc_send tells the agent that idle peers are reachable", () => {
+  test("peer_send tells the agent that idle peers are reachable", () => {
     const tools = createIrcTools();
     // SAFETY: the previous test pins the tool order; the send tool is first.
     const send = tools[0]!;
@@ -639,13 +639,13 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(guidelines.some((g) => /idle peer is not a closed one/.test(g))).toBe(true);
   });
 
-  test("kone_irc_send requires an active turn", async () => {
+  test("peer_send requires an active turn", async () => {
     const registry = createRegistry(createIrcTools());
     const ctxNoTurn = makeCtx({ turnId: null });
 
     const result = await registry.call(
       ctxNoTurn,
-      "kone_irc_send",
+      "peer_send",
       { to: "thread-target", message: "Turnless attempt" },
     );
 
@@ -655,32 +655,32 @@ describe("createIrcTools gateway registration and execution", () => {
     });
   });
 
-  test("kone_irc_inbox does NOT require an active turn", async () => {
+  test("peer_inbox does NOT require an active turn", async () => {
     const registry = createRegistry(createIrcTools());
     const ctxNoTurn = makeCtx({ threadId: "thread-reader", turnId: null });
 
-    const result = await registry.call(ctxNoTurn, "kone_irc_inbox", {});
+    const result = await registry.call(ctxNoTurn, "peer_inbox", {});
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent?.count).toBe(0);
     expect(result.content[0]!.text).toBe("Inbox is empty (0 unread messages).");
   });
 
-  test("Calling kone_irc_send with invalid inputs returns invalid_input", async () => {
+  test("Calling peer_send with invalid inputs returns invalid_input", async () => {
     const registry = createRegistry(createIrcTools());
     const ctx = makeCtx();
 
-    const result = await registry.call(ctx, "kone_irc_send", { to: "" });
+    const result = await registry.call(ctx, "peer_send", { to: "" });
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error).toMatchObject({
       code: "invalid_input",
     });
   });
 
-  test("Calling kone_irc_inbox with invalid inputs returns invalid_input", async () => {
+  test("Calling peer_inbox with invalid inputs returns invalid_input", async () => {
     const registry = createRegistry(createIrcTools());
     const ctx = makeCtx();
 
-    const result = await registry.call(ctx, "kone_irc_inbox", { limit: -5 });
+    const result = await registry.call(ctx, "peer_inbox", { limit: -5 });
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error).toMatchObject({
       code: "invalid_input",
@@ -700,7 +700,7 @@ describe("createIrcTools gateway registration and execution", () => {
     // Alice sends message to Bob
     const sendResult1 = await registry.call(
       aliceCtx,
-      "kone_irc_send",
+      "peer_send",
       { to: "agent-bob", message: "Could you check the logs for errors?" },
     );
 
@@ -712,7 +712,7 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(aliceMsgId).toMatch(/^msg_/);
 
     // Bob peeks inbox (does not consume)
-    const bobPeek = await registry.call(bobCtx, "kone_irc_inbox", { peek: true });
+    const bobPeek = await registry.call(bobCtx, "peer_inbox", { peek: true });
     expect(bobPeek.isError).toBeUndefined();
     expect(bobPeek.structuredContent?.count).toBe(1);
     expect(bobPeek.structuredContent?.unreadRemaining).toBe(1);
@@ -720,14 +720,14 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(bobPeek.content[0]!.text).toContain("From: agent-alice");
 
     // Bob drains inbox (consumes)
-    const bobDrain = await registry.call(bobCtx, "kone_irc_inbox", {});
+    const bobDrain = await registry.call(bobCtx, "peer_inbox", {});
     expect(bobDrain.structuredContent?.count).toBe(1);
     expect(bobDrain.structuredContent?.unreadRemaining).toBe(0);
 
     // Bob replies to Alice with replyTo
     const sendResult2 = await registry.call(
       bobCtx,
-      "kone_irc_send",
+      "peer_send",
       {
         to: "agent-alice",
         message: "Found 2 timeout errors in worker.ts",
@@ -739,7 +739,7 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(sendResult2.structuredContent?.replyTo).toBe(aliceMsgId);
 
     // Alice reads Bob's reply
-    const aliceDrain = await registry.call(aliceCtx, "kone_irc_inbox", {});
+    const aliceDrain = await registry.call(aliceCtx, "peer_inbox", {});
     expect(aliceDrain.structuredContent?.count).toBe(1);
     const messagesList = Array.isArray(aliceDrain.structuredContent?.messages)
       ? aliceDrain.structuredContent.messages
@@ -760,7 +760,7 @@ describe("createIrcTools gateway registration and execution", () => {
 
     const result = await registry.call(
       localCtx,
-      "kone_irc_send",
+      "peer_send",
       { to: "agent-foreign", message: "Unauthorized message" },
     );
 
@@ -777,7 +777,7 @@ describe("createIrcTools gateway registration and execution", () => {
 
     const ctxA = makeCtx({ threadId: "agent-1", turnId: "turn-1" });
 
-    await registry.call(ctxA, "kone_irc_send", { to: "agent-2", message: "Isolated message" });
+    await registry.call(ctxA, "peer_send", { to: "agent-2", message: "Isolated message" });
 
     // Message is present in customMailbox
     expect(customMailbox.getUnreadCount("agent-2")).toBe(1);
@@ -797,7 +797,7 @@ describe("createIrcTools gateway registration and execution", () => {
     const registry = createRegistry(createIrcTools({ mailbox: customMailbox }));
     const ctxA = makeCtx({ threadId: "agent-1", turnId: "turn-1" });
 
-    await registry.call(ctxA, "kone_irc_send", {
+    await registry.call(ctxA, "peer_send", {
       to: "agent-2",
       message: "Abort current approach and switch to plan B",
     });
@@ -807,7 +807,7 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(interrupted[0].message).toBe("Abort current approach and switch to plan B");
 
     unsubscribe();
-    await registry.call(ctxA, "kone_irc_send", {
+    await registry.call(ctxA, "peer_send", {
       to: "agent-2",
       message: "Second message after unsubscribe",
     });

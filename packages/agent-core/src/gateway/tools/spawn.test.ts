@@ -258,17 +258,17 @@ describe("spawn gateway tools", () => {
       tools.map((t) => [t.name, { permission: t.permission, requiresActiveTurn: t.requiresActiveTurn }]),
     );
     expect(flags).toEqual({
-      kone_spawn_targets: { permission: "allow", requiresActiveTurn: false },
-      kone_spawn_worker: { permission: "allow", requiresActiveTurn: true },
-      kone_spawn_worker_preset: { permission: "allow", requiresActiveTurn: true },
-      kone_delegate_to_teammate: { permission: "allow", requiresActiveTurn: true },
-      kone_spawn_batch: { permission: "allow", requiresActiveTurn: true },
-      kone_continue_thread: { permission: "allow", requiresActiveTurn: true },
-      kone_cancel_worker: { permission: "allow", requiresActiveTurn: true },
-      kone_decline_child_gate: { permission: "allow", requiresActiveTurn: true },
-      kone_answer_child_input: { permission: "allow", requiresActiveTurn: true },
-      kone_wait_for_responses: { permission: "allow", requiresActiveTurn: false },
-      kone_read_response: { permission: "allow", requiresActiveTurn: false },
+      worker_targets: { permission: "allow", requiresActiveTurn: false },
+      worker_spawn: { permission: "allow", requiresActiveTurn: true },
+      worker_spawn_preset: { permission: "allow", requiresActiveTurn: true },
+      worker_delegate: { permission: "allow", requiresActiveTurn: true },
+      worker_spawn_batch: { permission: "allow", requiresActiveTurn: true },
+      worker_continue: { permission: "allow", requiresActiveTurn: true },
+      worker_cancel: { permission: "allow", requiresActiveTurn: true },
+      worker_decline: { permission: "allow", requiresActiveTurn: true },
+      worker_answer: { permission: "allow", requiresActiveTurn: true },
+      worker_wait: { permission: "allow", requiresActiveTurn: false },
+      worker_read: { permission: "allow", requiresActiveTurn: false },
     });
   });
 
@@ -276,35 +276,35 @@ describe("spawn gateway tools", () => {
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
     const byName = Object.fromEntries(registry.listTools().map((t) => [t.name, t.inputSchema]));
     expect(Object.keys(byName)).toEqual([
-      "kone_spawn_targets",
-      "kone_spawn_worker",
-      "kone_spawn_worker_preset",
-      "kone_delegate_to_teammate",
-      "kone_spawn_batch",
-      "kone_continue_thread",
-      "kone_cancel_worker",
-      "kone_decline_child_gate",
-      "kone_answer_child_input",
-      "kone_wait_for_responses",
-      "kone_read_response",
+      "worker_targets",
+      "worker_spawn",
+      "worker_spawn_preset",
+      "worker_delegate",
+      "worker_spawn_batch",
+      "worker_continue",
+      "worker_cancel",
+      "worker_decline",
+      "worker_answer",
+      "worker_wait",
+      "worker_read",
     ]);
-    expect(byName["kone_spawn_targets"]).toEqual(SPAWN_TARGETS_JSON_SCHEMA);
-    expect(byName["kone_spawn_worker"]).toEqual(SPAWN_WORKER_JSON_SCHEMA);
-    expect(byName["kone_spawn_worker_preset"]).toEqual(SPAWN_WORKER_PRESET_JSON_SCHEMA);
-    expect(byName["kone_delegate_to_teammate"]).toEqual(DELEGATE_TO_TEAMMATE_JSON_SCHEMA);
-    expect(byName["kone_spawn_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(byName["kone_continue_thread"]).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
-    expect(byName["kone_cancel_worker"]).toEqual(CANCEL_WORKER_JSON_SCHEMA);
-    expect(byName["kone_decline_child_gate"]).toEqual(DECLINE_CHILD_GATE_JSON_SCHEMA);
-    expect(byName["kone_answer_child_input"]).toEqual(ANSWER_CHILD_INPUT_JSON_SCHEMA);
-    expect(byName["kone_wait_for_responses"]).toEqual(WAIT_FOR_RESPONSES_JSON_SCHEMA);
-    expect(byName["kone_read_response"]).toEqual(READ_RESPONSE_JSON_SCHEMA);
+    expect(byName["worker_targets"]).toEqual(SPAWN_TARGETS_JSON_SCHEMA);
+    expect(byName["worker_spawn"]).toEqual(SPAWN_WORKER_JSON_SCHEMA);
+    expect(byName["worker_spawn_preset"]).toEqual(SPAWN_WORKER_PRESET_JSON_SCHEMA);
+    expect(byName["worker_delegate"]).toEqual(DELEGATE_TO_TEAMMATE_JSON_SCHEMA);
+    expect(byName["worker_spawn_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(byName["worker_continue"]).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(byName["worker_cancel"]).toEqual(CANCEL_WORKER_JSON_SCHEMA);
+    expect(byName["worker_decline"]).toEqual(DECLINE_CHILD_GATE_JSON_SCHEMA);
+    expect(byName["worker_answer"]).toEqual(ANSWER_CHILD_INPUT_JSON_SCHEMA);
+    expect(byName["worker_wait"]).toEqual(WAIT_FOR_RESPONSES_JSON_SCHEMA);
+    expect(byName["worker_read"]).toEqual(READ_RESPONSE_JSON_SCHEMA);
   });
 
   test("a missing engine returns internal", async () => {
     currentEngine = null;
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_worker", {
+    const res = await registry.call(ctx, "worker_spawn", {
       prompt: "Do the thing.",
       requestId: "op-1",
       target: { provider: "codex" },
@@ -313,10 +313,10 @@ describe("spawn gateway tools", () => {
     expect(res.structuredContent?.error).toMatchObject({ code: "internal" });
   });
 
-  test("the registry refuses kone_spawn_worker without a live turn", async () => {
+  test("the registry refuses worker_spawn without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_spawn_worker", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_spawn", {
       prompt: "Do the thing.",
       requestId: "op-1",
       target: { provider: "codex" },
@@ -334,7 +334,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_worker", {
+    const res = await registry.call(ctx, "worker_spawn", {
       prompt: "Do the thing.",
       requestId: "op-1",
       target: { provider: "codex" },
@@ -347,7 +347,7 @@ describe("spawn gateway tools", () => {
     });
   });
 
-  test("kone_continue_thread forwards the caller and request, returns the continuation", async () => {
+  test("worker_continue forwards the caller and request, returns the continuation", async () => {
     let capturedCaller: FakeCaller | null = null;
     let capturedRequest: {
       threadId: string;
@@ -367,7 +367,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_continue_thread", {
+    const res = await registry.call(ctx, "worker_continue", {
       threadId: "child-1",
       message: "Also update the README.",
       requestId: "fu-1",
@@ -394,10 +394,10 @@ describe("spawn gateway tools", () => {
     expect(text).toContain("brought back up");
   });
 
-  test("the registry refuses kone_continue_thread without a live turn", async () => {
+  test("the registry refuses worker_continue without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_continue_thread", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_continue", {
       threadId: "child-1",
       message: "Also update the README.",
     });
@@ -416,7 +416,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_continue_thread", {
+    const res = await registry.call(ctx, "worker_continue", {
       threadId: "child-x",
       message: "Also update the README.",
     });
@@ -424,7 +424,7 @@ describe("spawn gateway tools", () => {
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 
-  test("kone_cancel_worker forwards the caller and threadId, returns the cancellation", async () => {
+  test("worker_cancel forwards the caller and threadId, returns the cancellation", async () => {
     let capturedCaller: FakeCaller | null = null;
     let capturedThreadId: string | null = null;
     currentEngine = makeEngine({
@@ -439,7 +439,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_cancel_worker", {
+    const res = await registry.call(ctx, "worker_cancel", {
       threadId: "child-1",
     });
 
@@ -454,13 +454,13 @@ describe("spawn gateway tools", () => {
     // One line naming the stopped worker, pointing at the transcript.
     const text = res.content.map((part) => (part.type === "text" ? part.text : "")).join("");
     expect(text).toContain("child-1");
-    expect(text).toContain("kone_read_response");
+    expect(text).toContain("worker_read");
   });
 
-  test("the registry refuses kone_cancel_worker without a live turn", async () => {
+  test("the registry refuses worker_cancel without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_cancel_worker", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_cancel", {
       threadId: "child-1",
     });
     expect(res.isError).toBe(true);
@@ -478,14 +478,14 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_cancel_worker", {
+    const res = await registry.call(ctx, "worker_cancel", {
       threadId: "child-x",
     });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 
-  test("kone_decline_child_gate forwards the caller and request, returns the decline", async () => {
+  test("worker_decline forwards the caller and request, returns the decline", async () => {
     let capturedCaller: FakeCaller | null = null;
     let capturedRequest: { threadId: string; requestId: string } | null = null;
     currentEngine = makeEngine({
@@ -500,7 +500,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_decline_child_gate", {
+    const res = await registry.call(ctx, "worker_decline", {
       threadId: "child-1",
       requestId: "gate-1",
     });
@@ -520,13 +520,13 @@ describe("spawn gateway tools", () => {
     const text = res.content.map((part) => (part.type === "text" ? part.text : "")).join("");
     expect(text).toContain("child-1");
     expect(text).toContain("gate-1");
-    expect(text).toContain("kone_wait_for_responses");
+    expect(text).toContain("worker_wait");
   });
 
-  test("the registry refuses kone_decline_child_gate without a live turn", async () => {
+  test("the registry refuses worker_decline without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_decline_child_gate", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_decline", {
       threadId: "child-1",
       requestId: "gate-1",
     });
@@ -545,7 +545,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_decline_child_gate", {
+    const res = await registry.call(ctx, "worker_decline", {
       threadId: "child-x",
       requestId: "gate-1",
     });
@@ -553,7 +553,7 @@ describe("spawn gateway tools", () => {
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 
-  test("kone_answer_child_input forwards the caller and request, returns the answer", async () => {
+  test("worker_answer forwards the caller and request, returns the answer", async () => {
     let capturedCaller: FakeCaller | null = null;
     let capturedRequest: {
       threadId: string;
@@ -572,7 +572,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_answer_child_input", {
+    const res = await registry.call(ctx, "worker_answer", {
       threadId: "child-1",
       requestId: "q-1",
       answers: { "q-1": "Use Postgres.", skipped: null, picks: ["a", "b"] },
@@ -594,13 +594,13 @@ describe("spawn gateway tools", () => {
     const text = res.content.map((part) => (part.type === "text" ? part.text : "")).join("");
     expect(text).toContain("child-1");
     expect(text).toContain("q-1");
-    expect(text).toContain("kone_wait_for_responses");
+    expect(text).toContain("worker_wait");
   });
 
-  test("the registry refuses kone_answer_child_input without a live turn", async () => {
+  test("the registry refuses worker_answer without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_answer_child_input", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_answer", {
       threadId: "child-1",
       requestId: "q-1",
       answers: { "q-1": "Use Postgres." },
@@ -620,7 +620,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_answer_child_input", {
+    const res = await registry.call(ctx, "worker_answer", {
       threadId: "child-x",
       requestId: "q-1",
       answers: { "q-1": "Use Postgres." },
@@ -643,7 +643,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_cancel_worker", {
+    const res = await registry.call(ctx, "worker_cancel", {
       threadId: "parent-1",
     });
     expect(res.isError).toBe(true);
@@ -664,7 +664,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_decline_child_gate", {
+    const res = await registry.call(ctx, "worker_decline", {
       threadId: "parent-1",
       requestId: "gate-1",
     });
@@ -686,7 +686,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_answer_child_input", {
+    const res = await registry.call(ctx, "worker_answer", {
       threadId: "parent-1",
       requestId: "q-1",
       answers: { "q-1": "Use Postgres." },
@@ -695,7 +695,7 @@ describe("spawn gateway tools", () => {
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 
-  test("kone_spawn_worker forwards the caller and request, returns the spawn", async () => {
+  test("worker_spawn forwards the caller and request, returns the spawn", async () => {
     let capturedCaller: FakeCaller | null = null;
     let capturedRequest: FakeSpawnRequest | null = null;
     currentEngine = makeEngine({
@@ -715,7 +715,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_worker", {
+    const res = await registry.call(ctx, "worker_spawn", {
       prompt: "Fix the tests.",
       requestId: "op-1",
       title: "Fix tests",
@@ -739,7 +739,7 @@ describe("spawn gateway tools", () => {
     });
   });
 
-  test("kone_spawn_worker records the spawn and its why for the thread to read back", async () => {
+  test("worker_spawn records the spawn and its why for the thread to read back", async () => {
     let capturedRequest: FakeSpawnRequest | null = null;
     currentEngine = makeEngine({
       spawn: async (caller, request) => {
@@ -757,7 +757,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_worker", {
+    const res = await registry.call(ctx, "worker_spawn", {
       prompt: "Fix the tests.",
       requestId: "op-1",
       why: "  Because the suite is slow and I can keep refactoring meanwhile. ",
@@ -772,13 +772,13 @@ describe("spawn gateway tools", () => {
           why: "the suite is slow and I can keep refactoring meanwhile",
         },
       ],
-      summary: 'Spawned "Fix tests" on codex/gpt-5 as child-1. Collect its response with kone_wait_for_responses.',
+      summary: 'Spawned "Fix tests" on codex/gpt-5 as child-1. Collect its response with worker_wait.',
     });
     // The why is the thread's to show, not the child's to read.
     expect(capturedRequest).not.toHaveProperty("why");
   });
 
-  test("kone_spawn_worker with no target inherits the caller's provider and model", async () => {
+  test("worker_spawn with no target inherits the caller's provider and model", async () => {
     let capturedRequest: FakeSpawnRequest | null = null;
     currentEngine = makeEngine({
       spawn: async (caller, request) => {
@@ -796,7 +796,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_worker", {
+    const res = await registry.call(ctx, "worker_spawn", {
       prompt: "Fix the tests.",
       requestId: "op-inherit",
     });
@@ -804,7 +804,7 @@ describe("spawn gateway tools", () => {
     expect(capturedRequest?.target).toEqual({ provider: "codex", model: "gpt-5" });
   });
 
-  test("kone_spawn_targets returns the report", async () => {
+  test("worker_targets returns the report", async () => {
     currentEngine = makeEngine({
       targets: async () => ({
         providers: [
@@ -852,7 +852,7 @@ describe("spawn gateway tools", () => {
         ]),
       }),
     );
-    const res = await registry.call(ctx, "kone_spawn_targets", {});
+    const res = await registry.call(ctx, "worker_targets", {});
     expect(res.isError).toBeUndefined();
     expect(res.structuredContent?.report).toMatchObject({
       providers: [
@@ -891,7 +891,7 @@ describe("spawn gateway tools", () => {
     expect(text).toContain("Explorer");
   });
 
-  test("kone_wait_for_responses forwards ids, turnIds, timeout and scope, shapes the outcome", async () => {
+  test("worker_wait forwards ids, turnIds, timeout and scope, shapes the outcome", async () => {
     let captured: FakeWaitInput | null = null;
     currentEngine = makeEngine({
       waitFor: async (input) => {
@@ -908,7 +908,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_wait_for_responses", {
+    const res = await registry.call(ctx, "worker_wait", {
       threadIds: ["child-1", "child-2"],
       turnIds: ["turn-1", "turn-9"],
       timeoutMs: 5000,
@@ -927,7 +927,7 @@ describe("spawn gateway tools", () => {
     });
   });
 
-  test("kone_wait_for_responses puts each child's reply in the text content", async () => {
+  test("worker_wait puts each child's reply in the text content", async () => {
     currentEngine = makeEngine({
       waitFor: async () => ({
         threads: [
@@ -953,7 +953,7 @@ describe("spawn gateway tools", () => {
       }),
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_wait_for_responses", {
+    const res = await registry.call(ctx, "worker_wait", {
       threadIds: ["child-1", "child-2"],
     });
     const text = res.content[0]?.text ?? "";
@@ -965,7 +965,7 @@ describe("spawn gateway tools", () => {
     expect(text).toContain("The provider refused the model.");
   });
 
-  test("kone_wait_for_responses says so when a settled child left no reply text", async () => {
+  test("worker_wait says so when a settled child left no reply text", async () => {
     currentEngine = makeEngine({
       waitFor: async () => ({
         threads: [spawnedThread({ status: "completed", terminal: true })],
@@ -975,11 +975,11 @@ describe("spawn gateway tools", () => {
       }),
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_wait_for_responses", { threadIds: ["child-1"] });
+    const res = await registry.call(ctx, "worker_wait", { threadIds: ["child-1"] });
     expect(res.content[0]?.text ?? "").toContain("(no reply text — read the full transcript");
   });
 
-  test("kone_wait_for_responses forwards ctx.signal into engine.waitFor", async () => {
+  test("worker_wait forwards ctx.signal into engine.waitFor", async () => {
     const controller = new AbortController();
     let captured: FakeWaitInput | null = null;
     currentEngine = makeEngine({
@@ -989,7 +989,7 @@ describe("spawn gateway tools", () => {
       },
     });
     const tools = createSpawnTools({ store: makeStore() });
-    const waitTool = tools.find((t) => t.name === "kone_wait_for_responses")!;
+    const waitTool = tools.find((t) => t.name === "worker_wait")!;
     const res = await waitTool.handler({ ...ctx, signal: controller.signal }, {
       threadIds: ["child-1"],
     });
@@ -1005,29 +1005,29 @@ describe("spawn gateway tools", () => {
       },
     });
     const tools = createSpawnTools({ store: makeStore() });
-    const waitTool = tools.find((t) => t.name === "kone_wait_for_responses")!;
+    const waitTool = tools.find((t) => t.name === "worker_wait")!;
     await expect(
       waitTool.handler(ctx, { threadIds: ["child-1"] }),
     ).rejects.toEqual(expect.objectContaining({ name: "AbortError" }));
   });
 
-  test("kone_read_response on an out-of-subtree id returns not_found", async () => {
+  test("worker_read on an out-of-subtree id returns not_found", async () => {
     currentEngine = makeEngine({ isInSubtree: () => false });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_read_response", { threadId: "foreign-1" });
+    const res = await registry.call(ctx, "worker_read", { threadId: "foreign-1" });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 
-  test("kone_read_response on a subtree thread with no stored transcript returns not_found", async () => {
+  test("worker_read on a subtree thread with no stored transcript returns not_found", async () => {
     currentEngine = makeEngine({ isInSubtree: () => true });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_read_response", { threadId: "ghost-1" });
+    const res = await registry.call(ctx, "worker_read", { threadId: "ghost-1" });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 
-  test("kone_read_response returns newest-last blocks, truncated, without tool payloads", async () => {
+  test("worker_read returns newest-last blocks, truncated, without tool payloads", async () => {
     currentEngine = makeEngine({ isInSubtree: () => true });
     const longAnswer =
       "A very long answer that certainly exceeds the two-hundred-character cap by a comfortable margin. ".repeat(4).trim();
@@ -1070,7 +1070,7 @@ describe("spawn gateway tools", () => {
       ],
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "kone_read_response", {
+    const res = await registry.call(ctx, "worker_read", {
       threadId: "child-1",
       limit: 2,
       maxTextChars: 200,
@@ -1091,7 +1091,7 @@ describe("spawn gateway tools", () => {
     expect(JSON.stringify(res.structuredContent)).not.toContain("SECRET_PAYLOAD_DO_NOT_LEAK");
   });
 
-  test("kone_read_response defaults to the last 20 blocks", async () => {
+  test("worker_read defaults to the last 20 blocks", async () => {
     currentEngine = makeEngine({ isInSubtree: () => true });
     const blocks = Array.from({ length: 25 }, (_, i) => ({
       id: `b${i}`,
@@ -1109,7 +1109,7 @@ describe("spawn gateway tools", () => {
       blocks,
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "kone_read_response", { threadId: "child-1" });
+    const res = await registry.call(ctx, "worker_read", { threadId: "child-1" });
     const sc = res.structuredContent;
     const messages =
       sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
@@ -1120,7 +1120,7 @@ describe("spawn gateway tools", () => {
     expect(messages[19]).toEqual({ role: "user", text: "message 24" });
   });
 
-  test("kone_read_response puts the transcript in the text content", async () => {
+  test("worker_read puts the transcript in the text content", async () => {
     currentEngine = makeEngine({ isInSubtree: () => true });
     const thread: StoredThread = {
       threadId: "child-1",
@@ -1161,7 +1161,7 @@ describe("spawn gateway tools", () => {
       ],
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "kone_read_response", { threadId: "child-1" });
+    const res = await registry.call(ctx, "worker_read", { threadId: "child-1" });
     const text = res.content[0]?.text ?? "";
     expect(text).toContain('Read 3 messages from "Ask Maya about teammates", oldest first:');
     expect(text).toContain("[user] what teammates do you have?");
@@ -1172,7 +1172,7 @@ describe("spawn gateway tools", () => {
     expect(text).not.toContain("SECRET_PAYLOAD_DO_NOT_LEAK");
   });
 
-  test("kone_read_response reports an empty transcript as empty", async () => {
+  test("worker_read reports an empty transcript as empty", async () => {
     currentEngine = makeEngine({ isInSubtree: () => true });
     const thread: StoredThread = {
       threadId: "child-1",
@@ -1184,7 +1184,7 @@ describe("spawn gateway tools", () => {
       blocks: [],
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "kone_read_response", { threadId: "child-1" });
+    const res = await registry.call(ctx, "worker_read", { threadId: "child-1" });
     expect(res.content[0]?.text).toBe('"Child one" has no messages yet.');
   });
 });
@@ -1222,7 +1222,7 @@ function targetsReport(
   };
 }
 
-describe("kone_spawn_worker_preset", () => {
+describe("worker_spawn_preset", () => {
   test("resolves a preset by name, lays instructions over the task, spawns the resolved model", async () => {
     let capturedRequest: FakeSpawnRequest | null = null;
     currentEngine = makeEngine({
@@ -1242,7 +1242,7 @@ describe("kone_spawn_worker_preset", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [makePreset()]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Map the auth flow.",
       requestId: "op-1",
@@ -1277,7 +1277,7 @@ describe("kone_spawn_worker_preset", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [makePreset()]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "explorer",
       task: "Map the auth flow.",
       requestId: "op-1",
@@ -1295,7 +1295,7 @@ describe("kone_spawn_worker_preset", () => {
           why: "I need the map before I touch the middleware",
         },
       ],
-      summary: 'Spawned "Look around" from preset Explorer on claudeAgent/haiku as child-1. Collect its response with kone_wait_for_responses.',
+      summary: 'Spawned "Look around" from preset Explorer on claudeAgent/haiku as child-1. Collect its response with worker_wait.',
     });
     expect(capturedRequest).not.toHaveProperty("why");
   });
@@ -1317,7 +1317,7 @@ describe("kone_spawn_worker_preset", () => {
     const registry = createRegistry(
       createSpawnTools({ store: makeStore([], [makePreset({ presetId: "preset-explorer" })]) }),
     );
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "preset-explorer",
       task: "Go.",
       requestId: "op-1",
@@ -1329,7 +1329,7 @@ describe("kone_spawn_worker_preset", () => {
   test("an unknown preset returns not_found", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [makePreset()]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Nobody",
       task: "Go.",
       requestId: "op-1",
@@ -1341,7 +1341,7 @@ describe("kone_spawn_worker_preset", () => {
   test("refuses without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [makePreset()]) }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_spawn_worker_preset", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Go.",
       requestId: "op-1",
@@ -1359,7 +1359,7 @@ describe("kone_spawn_worker_preset", () => {
     });
     const preset = makePreset({ model: { provider: "cursor", model: "auto" } });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [preset]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Go.",
       requestId: "op-1",
@@ -1391,7 +1391,7 @@ describe("kone_spawn_worker_preset", () => {
     });
     const preset = makePreset({ model: null });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [preset]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Go.",
       requestId: "op-1",
@@ -1421,7 +1421,7 @@ describe("kone_spawn_worker_preset", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [makePreset()]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Go.",
       requestId: "op-1",
@@ -1460,7 +1460,7 @@ describe("kone_spawn_worker_preset", () => {
       modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [preset]) }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Go.",
       requestId: "op-1",
@@ -1511,7 +1511,7 @@ describe("kone_spawn_worker_preset", () => {
         ),
       }),
     );
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Scout",
       task: "Map the auth flow.",
       requestId: "op-1",
@@ -1544,7 +1544,7 @@ describe("kone_spawn_worker_preset", () => {
         ),
       }),
     );
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Librarian",
       task: "Go.",
       requestId: "op-1",
@@ -1578,7 +1578,7 @@ describe("kone_spawn_worker_preset", () => {
     // No stored rows at all: "Explorer" is a name only an earlier build
     // shipped, and the Scout native answers for it.
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+    const res = await registry.call(ctx, "worker_spawn_preset", {
       preset: "Explorer",
       task: "Map the auth flow.",
       requestId: "op-1",
@@ -1591,11 +1591,11 @@ describe("kone_spawn_worker_preset", () => {
 
 
 
-describe("kone_spawn_batch", () => {
+describe("worker_spawn_batch", () => {
   test("refuses without a live turn", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call({ ...ctx, turnId: null }, "kone_spawn_batch", {
+    const res = await registry.call({ ...ctx, turnId: null }, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-1",
@@ -1626,7 +1626,7 @@ describe("kone_spawn_batch", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-1",
@@ -1715,7 +1715,7 @@ describe("kone_spawn_batch", () => {
       model: { provider: "claudeAgent", model: "haiku" },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [explorerPreset]) }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-preset-1",
@@ -1781,7 +1781,7 @@ describe("kone_spawn_batch", () => {
       model: { provider: "codex", model: "gpt-5" },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backendAgent]) }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-delegate-1",
@@ -1841,7 +1841,7 @@ describe("kone_spawn_batch", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-1",
@@ -1888,7 +1888,7 @@ describe("kone_spawn_batch", () => {
   test("marks batch as error when all items fail", async () => {
     currentEngine = makeEngine();
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-1",
@@ -1946,7 +1946,7 @@ describe("kone_spawn_batch", () => {
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         {
           requestId: "op-ok",
@@ -1991,7 +1991,7 @@ describe("kone_spawn_batch", () => {
   });
 });
 
-describe("kone_delegate_to_teammate", () => {
+describe("worker_delegate", () => {
   const delegatingEngine = (captured: FakeSpawnRequest[]) =>
     makeEngine({
       targets: async () => targetsReport([{ provider: "codex", models: ["gpt-5"] }]),
@@ -2015,7 +2015,7 @@ describe("kone_delegate_to_teammate", () => {
     const captured: FakeSpawnRequest[] = [];
     currentEngine = delegatingEngine(captured);
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
-    const res = await registry.call(ctx, "kone_delegate_to_teammate", {
+    const res = await registry.call(ctx, "worker_delegate", {
       agent: "backend",
       task: "Build the /users endpoint.",
       requestId: "op-1",
@@ -2045,7 +2045,7 @@ describe("kone_delegate_to_teammate", () => {
           why: "the API layer is theirs",
         },
       ],
-      summary: 'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Collect its response with kone_wait_for_responses.',
+      summary: 'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Collect its response with worker_wait.',
     });
     expect(res.structuredContent).toMatchObject({ agent: "Backend", delegation: { threadId: "child-op-1" } });
   });
@@ -2054,7 +2054,7 @@ describe("kone_delegate_to_teammate", () => {
     const captured: FakeSpawnRequest[] = [];
     currentEngine = delegatingEngine(captured);
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
-    const res = await registry.call(ctx, "kone_delegate_to_teammate", {
+    const res = await registry.call(ctx, "worker_delegate", {
       agent: "Frontend",
       task: "Build the page.",
       requestId: "op-1",
@@ -2068,7 +2068,7 @@ describe("kone_delegate_to_teammate", () => {
     const captured: FakeSpawnRequest[] = [];
     currentEngine = delegatingEngine(captured);
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
-    const res = await registry.call(ctx, "kone_spawn_batch", {
+    const res = await registry.call(ctx, "worker_spawn_batch", {
       items: [
         { requestId: "a", prompt: "Write the tests.", title: "Tests", why: "it's mechanical" },
         { requestId: "b", prompt: "Build it.", title: "Build", agent: "Backend", why: "it's their layer" },

@@ -21,6 +21,7 @@ import type { RuntimeEvent } from "../types.js";
 import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import type { ConversationStore } from "../ConversationStore.js";
 import type { createGateway as createGatewayType } from "./index.js";
+import { KONE_WORKER_TOOL_NAMES } from "@kone/protocol/kone-tools";
 import type { initSpawnEngine as initSpawnEngineType } from "../threadSpawn.js";
 import type { GatewayRecord, GatewayValue } from "./schemas.js";
 import {
@@ -121,6 +122,7 @@ type RpcStructuredContent = {
 
 type RpcResultPayload = {
   tools?: RpcToolItem[];
+  instructions?: string;
   content?: Array<{ type: string; text: string }>;
   isError?: boolean;
   structuredContent?: RpcStructuredContent;
@@ -308,39 +310,76 @@ describe("gateway integration (real store + HTTP)", () => {
     // on a user's repo could repaint the app.
     let res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     const names = (rpcResult(res).tools ?? []).map((t) => t.name);
+    // The renderer names these tools from the shared list, so it must match.
+    expect([...names].sort()).toEqual([...KONE_WORKER_TOOL_NAMES].sort());
     expect(names).toEqual([
-      "kone_scratchpad_read",
-      "kone_scratchpad_write",
-      "kone_spawn_targets",
-      "kone_spawn_worker",
-      "kone_spawn_worker_preset",
-      "kone_delegate_to_teammate",
-      "kone_spawn_batch",
-      "kone_continue_thread",
-      "kone_cancel_worker",
-      "kone_decline_child_gate",
-      "kone_answer_child_input",
-      "kone_wait_for_responses",
-      "kone_read_response",
-      "kone_irc_send",
-      "kone_irc_list",
-      "kone_irc_inbox",
-      "kone_launch",
-      "kone_lsp",
-      "kone_ast_find_calls",
-      "kone_ast_preview",
+      "scratchpad_read",
+      "scratchpad_write",
+      "worker_targets",
+      "worker_spawn",
+      "worker_spawn_preset",
+      "worker_delegate",
+      "worker_spawn_batch",
+      "worker_continue",
+      "worker_cancel",
+      "worker_decline",
+      "worker_answer",
+      "worker_wait",
+      "worker_read",
+      "peer_send",
+      "peer_list",
+      "peer_inbox",
+      "process_control",
+      "code_lsp",
+      "code_find_calls",
+      "code_preview_rewrite",
     ]);
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
+    // A deferring client reaches the same endpoint as two servers: the core
+    // set loaded up front, and the rarely needed rest behind its tool search.
+    // Between them they list every tool exactly once.
+    const listSet = async (set: string) => {
+      const r = await mcpPost(`${url}?tools=${set}`, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      return (rpcResult(r).tools ?? []).map((t) => t.name);
+    };
+    const core = await listSet("core");
+    const onDemand = await listSet("on-demand");
+    expect(onDemand).toEqual([
+      "worker_cancel",
+      "worker_decline",
+      "worker_answer",
+      "worker_read",
+      "peer_inbox",
+      "process_control",
+      "code_lsp",
+      "code_find_calls",
+      "code_preview_rewrite",
+    ]);
+    expect([...core, ...onDemand].sort()).toEqual([...names].sort());
+    expect(await listSet("bogus")).toEqual(names);
+    // The second server is the same gateway again; its client already has the
+    // instructions from the first, so only the core set repeats them.
+    const instructionsFor = async (set: string) => {
+      const r = await mcpPost(`${url}?tools=${set}`, conn.bearerToken, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-03-26" },
+      });
+      return rpcResult(r).instructions;
+    };
+    expect(await instructionsFor("core")).toContain("kone gateway");
+    expect(await instructionsFor("on-demand")).toBeUndefined();
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "scratchpad_read", arguments: {} } });
     expect(rpcResult(res).isError).toBe(true);
     expect(rpcResult(res).structuredContent.error.code).toBe("not_found");
 
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "turnless write" } } });
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "turnless write" } } });
     expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
 
     // Turn starts → write binds authority.
     turn({ type: "turn.started", threadId: "thread-1", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" });
 
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one" } } });
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one" } } });
     expect(rpcResult(res).isError).toBeUndefined();
     expect(rpcResult(res).structuredContent).toMatchObject({
       revision: 1,
@@ -361,12 +400,12 @@ describe("gateway integration (real store + HTTP)", () => {
     // The pad persisted in the real store.
     expect(store.getScratchpad(event.scratchpadId)!.body).toBe("agent note one");
 
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note two", append: true } } });
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "agent note two", append: true } } });
     expect(rpcResult(res).structuredContent).toMatchObject({ revision: 2 });
     expect(rpcResult(res).structuredContent.pad.body).toBe("agent note one\n\nagent note two");
 
     // Stale expectedRevision → revision_conflict with current revision.
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "stale", expectedRevision: 1 } } });
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "stale", expectedRevision: 1 } } });
     expect(rpcResult(res).structuredContent.error).toMatchObject({
       code: "revision_conflict",
       details: { currentRevision: 2 },
@@ -374,17 +413,17 @@ describe("gateway integration (real store + HTTP)", () => {
 
     // Idempotency: first op-1 write saves (revision 3); the identical retry
     // replays the stored post-write result instead of re-applying.
-    const first = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one", clientRequestId: "op-1" } } });
+    const first = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one", clientRequestId: "op-1" } } });
     expect(rpcResult(first).structuredContent).toMatchObject({ revision: 3 });
-    const replay = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one", clientRequestId: "op-1" } } });
+    const replay = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one", clientRequestId: "op-1" } } });
     expect(rpcResult(replay).content[0].text).toContain("Replayed");
     expect(rpcResult(replay).structuredContent).toEqual(rpcResult(first).structuredContent);
 
     // Turn completes → write authority retired; writes denied again, reads fine.
     turn({ type: "turn.completed", threadId: "thread-1", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1" });
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "after turn" } } });
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "after turn" } } });
     expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
-    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
+    res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "scratchpad_read", arguments: {} } });
     // The op-1 write was a full replacement — the pad holds its content.
     expect(rpcResult(res).structuredContent.pad.body).toBe("agent note one");
     expect(rpcResult(res).structuredContent.pad.revision).toBe(3);
@@ -455,8 +494,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_set_provider_enabled",
       "app_update_provider",
       "app_get_view",
-      "kone_ast_find_calls",
-      "kone_ast_preview",
+      "code_find_calls",
+      "code_preview_rewrite",
     ]);
 
     // Every tool it was handed is one the host-context block will name — the
@@ -470,7 +509,7 @@ describe("gateway integration (real store + HTTP)", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "kone_scratchpad_read", arguments: {} },
+      params: { name: "scratchpad_read", arguments: {} },
     });
     expect(rpcResult(denied).isError).toBe(true);
     expect(rpcResult(denied).structuredContent.error.code).toBe("permission_denied");
@@ -564,13 +603,13 @@ describe("gateway integration (real store + HTTP)", () => {
 
     // A running turn binds write authority.
     turn({ type: "turn.started", threadId: "thread-abort", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" });
-    let res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "in turn" } } });
+    let res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "in turn" } } });
     expect(rpcResult(res).structuredContent).toMatchObject({ revision: 1 });
 
     // The abort terminal event retires the exact turn, so the next write is
     // refused — the same branch that sweeps the turn's in-flight work.
     turn({ type: "turn.aborted", threadId: "thread-abort", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1", reason: "interrupted" });
-    res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "after abort" } } });
+    res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "scratchpad_write", arguments: { title: "Scratchpad", body: "after abort" } } });
     expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
 
     await gateway.shutdown();
@@ -606,14 +645,14 @@ describe("gateway integration (real store + HTTP)", () => {
     });
     const toolList = rpcResult(listRes).tools ?? [];
     const toolNames = toolList.map((t) => t.name);
-    expect(toolNames).toContain("kone_spawn_batch");
-    expect(toolNames).toContain("kone_continue_thread");
-    expect(toolNames).toContain("kone_read_response");
+    expect(toolNames).toContain("worker_spawn_batch");
+    expect(toolNames).toContain("worker_continue");
+    expect(toolNames).toContain("worker_read");
 
     const toolMap = new Map(toolList.map((t) => [t.name, t]));
-    expect(toolMap.get("kone_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(toolMap.get("kone_continue_thread")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
-    expect(toolMap.get("kone_read_response")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
+    expect(toolMap.get("worker_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(toolMap.get("worker_continue")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(toolMap.get("worker_read")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
 
     initSpawnEngine({
       store,
@@ -681,7 +720,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 2,
       method: "tools/call",
       params: {
-        name: "kone_spawn_batch",
+        name: "worker_spawn_batch",
         arguments: {
           items: [
             {
@@ -701,19 +740,19 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 3,
       method: "tools/call",
       params: {
-        name: "kone_continue_thread",
+        name: "worker_continue",
         arguments: { threadId: "child-of-alice", message: "Turnless follow-up" },
       },
     });
     expect(rpcResult(turnlessContinue).isError).toBe(true);
     expect(rpcResult(turnlessContinue).structuredContent.error.code).toBe("capability_denied");
 
-    // 3. Turnless read: kone_read_response works without an active turn
+    // 3. Turnless read: worker_read works without an active turn
     const aliceReadsOwnChild = await mcpPost(url, connAlice.bearerToken, {
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "kone_read_response", arguments: { threadId: "child-of-alice" } },
+      params: { name: "worker_read", arguments: { threadId: "child-of-alice" } },
     });
     expect(rpcResult(aliceReadsOwnChild).isError).toBeUndefined();
 
@@ -722,7 +761,7 @@ describe("gateway integration (real store + HTTP)", () => {
       jsonrpc: "2.0",
       id: 5,
       method: "tools/call",
-      params: { name: "kone_read_response", arguments: { threadId: "child-of-alice" } },
+      params: { name: "worker_read", arguments: { threadId: "child-of-alice" } },
     });
     expect(rpcResult(bobReadsAliceChild).isError).toBe(true);
     expect(rpcResult(bobReadsAliceChild).structuredContent.error.code).toBe("not_found");
@@ -741,7 +780,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 6,
       method: "tools/call",
       params: {
-        name: "kone_continue_thread",
+        name: "worker_continue",
         arguments: {
           threadId: "child-of-alice",
           message: "Unauthorized follow-up from Bob",
@@ -767,7 +806,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 7,
       method: "tools/call",
       params: {
-        name: "kone_continue_thread",
+        name: "worker_continue",
         arguments: {
           threadId: "child-of-bob",
           message: "Post-turn follow-up attempt",
@@ -797,7 +836,7 @@ describe("gateway integration (real store + HTTP)", () => {
     await gateway.shutdown();
   });
 
-  test("kone_spawn_batch end-to-end execution, active turn gating, and validation over HTTP gateway", async () => {
+  test("worker_spawn_batch end-to-end execution, active turn gating, and validation over HTTP gateway", async () => {
     const store = freshStore();
     const { gateway, turn } = makeGateway(store);
     await gateway.ready;
@@ -861,7 +900,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 1,
       method: "tools/call",
       params: {
-        name: "kone_spawn_batch",
+        name: "worker_spawn_batch",
         arguments: {
           items: [
             {
@@ -891,7 +930,7 @@ describe("gateway integration (real store + HTTP)", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "kone_spawn_batch", arguments: { items: [] } },
+      params: { name: "worker_spawn_batch", arguments: { items: [] } },
     });
     expect(rpcResult(emptyItemsRes).isError).toBe(true);
     expect(rpcResult(emptyItemsRes).structuredContent?.error?.code).toBe("invalid_input");
@@ -901,7 +940,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 3,
       method: "tools/call",
       params: {
-        name: "kone_spawn_batch",
+        name: "worker_spawn_batch",
         arguments: { items: [{ requestId: "req-1" }] },
       },
     });
@@ -914,7 +953,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 4,
       method: "tools/call",
       params: {
-        name: "kone_spawn_batch",
+        name: "worker_spawn_batch",
         arguments: {
           items: [
             {
@@ -956,7 +995,7 @@ describe("gateway integration (real store + HTTP)", () => {
     await gateway.shutdown();
   });
 
-  test("kone_launch execution and process cleanup on gateway shutdown", async () => {
+  test("process_control execution and process cleanup on gateway shutdown", async () => {
     const store = freshStore();
     store.ensureThread({
       threadId: "thread-launch-caller",
@@ -984,7 +1023,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 1,
       method: "tools/call",
       params: {
-        name: "kone_launch",
+        name: "process_control",
         arguments: {
           op: "start",
           name: "gw-proc",

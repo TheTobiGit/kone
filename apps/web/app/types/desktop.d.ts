@@ -1328,6 +1328,10 @@ export type TokenUsage = {
   contextWindow?: number;
   /** Whether the provider automatically compacts this context when needed. */
   compactsAutomatically?: boolean;
+  /** How much of `input` was re-read from the provider's prompt cache. An
+   *  agentic turn re-sends its whole prompt on every tool call, so this is
+   *  usually most of the input — and bills at a fraction of the input rate. */
+  cacheReadTokens?: number;
 };
 
 export type ProviderRefs = {
@@ -1463,7 +1467,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (kone_spawn_worker), and every subsequent
+  // An agent spawned a child thread (worker_spawn), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value — apply by replacing,
@@ -1473,7 +1477,7 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "thread.spawned"; spawned: SpawnedThread })
   | (AgentBaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
   // An agent gateway write landed on a project's scratchpad
-  // (kone_scratchpad_write). `projectPath` scopes it to the project the pad
+  // (scratchpad_write). `projectPath` scopes it to the project the pad
   // belongs to (a studio row is project-scoped, not thread-scoped); `writer` is
   // the agent session that wrote, null for user edits. Consumers apply it
   // only when `revision` is newer than their own.
@@ -1547,7 +1551,7 @@ export type RuntimeEvent =
       removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `kone_spawn_worker_preset` cuts a spawn from. Unlike the
+  // standing definitions `worker_spawn_preset` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (AgentBaseEvent & {
@@ -1741,6 +1745,9 @@ export type StoredThreadMeta = {
   /** Tokens spent on the thread — cumulative for providers that report a running
    *  total (Codex), summed across turns for per-turn reporters (Claude). */
   tokens?: number;
+  /** What the thread has cost in USD, priced per token bucket from its turn
+   *  usage. Absent when no pricing source knows the model. */
+  costUsd?: number;
   /** The user's chosen per-thread knobs, persisted so a reopened thread restores
    *  the picker exactly where the user left it. Each knob is a ModelDescriptor
    *  axis id — the same values SendTurnInput carries. */
@@ -3004,7 +3011,7 @@ export type ScratchpadSaveResult =
   | { conflict: number }
   | null;
 
-/** Which agent session wrote a pad — carried by kone_scratchpad_write results
+/** Which agent session wrote a pad — carried by scratchpad_write results
  *  and scratchpad.updated events so the studio can attribute agent edits.
  *  User edits (the web editor) carry no writer. */
 export type ScratchpadWriter = {

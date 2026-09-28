@@ -209,7 +209,7 @@ export function createMockTurnRunner(deps: {
       emit(item, "item.completed");
     };
 
-    // A worker spawn — `kone_spawn_worker` settling with the record the gateway
+    // A worker spawn — `worker_spawn` settling with the record the gateway
     // writes, then the child's own lifecycle arriving as the parent's session
     // would see it. The reply's spawn line reads the record; its status reads
     // the child. Returns the child's settle, so the script can land it before
@@ -218,9 +218,9 @@ export function createMockTurnRunner(deps: {
       title: string;
       why: string;
       model: string;
-      /** The preset the worker is cut from — a `kone_spawn_worker_preset` call. */
+      /** The preset the worker is cut from — a `worker_spawn_preset` call. */
       preset?: string;
-      /** The teammate the work is delegated to — a `kone_delegate_to_teammate`
+      /** The teammate the work is delegated to — a `worker_delegate`
        *  call. Not on any real roster, so the line draws it by name. */
       agent?: string;
     };
@@ -289,10 +289,10 @@ export function createMockTurnRunner(deps: {
         kind: "tool_call",
         status: "in-progress",
         name: opts.agent
-          ? "kone_delegate_to_teammate"
+          ? "worker_delegate"
           : opts.preset
-            ? "kone_spawn_worker_preset"
-            : "kone_spawn_worker",
+            ? "worker_spawn_preset"
+            : "worker_spawn",
         text: opts.title,
       };
       emit(item, "item.started");
@@ -310,14 +310,14 @@ export function createMockTurnRunner(deps: {
       return child;
     };
 
-    // A `kone_spawn_batch` call: every item opens at once, and the reply says
+    // A `worker_spawn_batch` call: every item opens at once, and the reply says
     // each one on its own line.
     const spawnBatch = async (items: DemoSpawn[], ms = 900): Promise<DemoChild[]> => {
       const item: RuntimeItem = {
         itemId: uid(),
         kind: "tool_call",
         status: "in-progress",
-        name: "kone_spawn_batch",
+        name: "worker_spawn_batch",
         text: `${items.length} threads`,
       };
       emit(item, "item.started");

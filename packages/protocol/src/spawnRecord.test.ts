@@ -36,7 +36,7 @@ describe("spawnWhy", () => {
 
 describe("isSpawnToolName", () => {
   it("names only the tools that open threads", () => {
-    expect(isSpawnToolName("kone_spawn_batch")).toBe(true);
-    expect(isSpawnToolName("kone_continue_thread")).toBe(false);
+    expect(isSpawnToolName("worker_spawn_batch")).toBe(true);
+    expect(isSpawnToolName("worker_continue")).toBe(false);
   });
 });

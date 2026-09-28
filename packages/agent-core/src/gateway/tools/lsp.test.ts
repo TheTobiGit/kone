@@ -1,4 +1,4 @@
-// kone_lsp gateway tool tests: the registry surface plus every action driven
+// code_lsp gateway tool tests: the registry surface plus every action driven
 // through real fake-server processes over real pipes — no real language
 // server binary anywhere in this file.
 
@@ -82,24 +82,24 @@ async function callText(
   overrides: Partial<GatewayToolContext> = {},
 ): Promise<string> {
   const registry = createRegistry(createLspTools({ manager }));
-  const result = await registry.call(makeCtx(cwd, overrides), "kone_lsp", args);
+  const result = await registry.call(makeCtx(cwd, overrides), "code_lsp", args);
   expect(result.isError).toBeUndefined();
   return result.content[0]!.text;
 }
 
-describe("kone_lsp registration", () => {
+describe("code_lsp registration", () => {
   test("lists one turn-less allow tool with the action enum in its JSON schema", async () => {
     const { log } = freshProject();
     const manager = fakeManager(log, "basic");
     try {
       const tools = createLspTools({ manager });
-      expect(tools.map((tool) => tool.name)).toEqual(["kone_lsp"]);
+      expect(tools.map((tool) => tool.name)).toEqual(["code_lsp"]);
       expect(tools[0]!.permission).toBe("allow");
       expect(tools[0]!.requiresActiveTurn).toBe(false);
       expect(tools[0]!.promptSnippet).not.toContain("\n");
 
       const registry = createRegistry(tools);
-      const listed = registry.listTools().find((tool) => tool.name === "kone_lsp")!;
+      const listed = registry.listTools().find((tool) => tool.name === "code_lsp")!;
       expect(listed.inputSchema.required).toEqual(["action"]);
       const properties = asRecord(listed.inputSchema.properties);
       const action = properties === null ? null : asRecord(properties.action);
@@ -147,13 +147,13 @@ describe("kone_lsp registration", () => {
   });
 });
 
-describe("kone_lsp position actions", () => {
+describe("code_lsp position actions", () => {
   test("definition resolves to the server's location", async () => {
     const { dir, log } = freshProject();
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "definition",
         path: "a.fakets",
         line: 3,
@@ -196,7 +196,7 @@ describe("kone_lsp position actions", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const cold = await registry.call(makeCtx(dir), "kone_lsp", {
+      const cold = await registry.call(makeCtx(dir), "code_lsp", {
         action: "diagnostics",
         path: "a.fakets",
       });
@@ -204,7 +204,7 @@ describe("kone_lsp position actions", () => {
       expect(cold.content[0]!.text).toBe("No diagnostics found.");
 
       const warm = await waitForText(async () => {
-        const result = await registry.call(makeCtx(dir), "kone_lsp", {
+        const result = await registry.call(makeCtx(dir), "code_lsp", {
           action: "diagnostics",
           path: "a.fakets",
         });
@@ -223,7 +223,7 @@ describe("kone_lsp position actions", () => {
     const before = readFileSync(filePath, "utf8");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "rename",
         path: "a.fakets",
         line: 1,
@@ -242,13 +242,13 @@ describe("kone_lsp position actions", () => {
   });
 });
 
-describe("kone_lsp references", () => {
+describe("code_lsp references", () => {
   test("budgets a long answer with a collapse divider and file context", async () => {
     const { dir, log } = freshProject();
     const manager = fakeManager(log, "manyRefs");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "references",
         path: "a.fakets",
         line: 3,
@@ -265,14 +265,14 @@ describe("kone_lsp references", () => {
   });
 });
 
-describe("kone_lsp refusals", () => {
+describe("code_lsp refusals", () => {
   test("a path escaping the project is refused before any server starts", async () => {
     const { dir, log } = freshProject();
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
       for (const escaped of ["../outside.fakets", "/definitely-outside-proj/x.fakets"]) {
-        const result = await registry.call(makeCtx(dir), "kone_lsp", {
+        const result = await registry.call(makeCtx(dir), "code_lsp", {
           action: "hover",
           path: escaped,
           line: 1,
@@ -293,7 +293,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "hover",
         path: "a.fakets",
         line: 1,
@@ -311,7 +311,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "hover",
         path: "a.fakets",
         symbol: "item",
@@ -328,7 +328,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "hover",
         line: 1,
         symbol: "item",
@@ -346,7 +346,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "rename",
         path: "a.fakets",
         line: 1,
@@ -364,7 +364,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "hover",
         path: "a.fakets",
         line: 1,
@@ -383,7 +383,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "hover",
         path: "missing.fakets",
         line: 1,
@@ -402,7 +402,7 @@ describe("kone_lsp refusals", () => {
     const manager = fakeManager(log, "basic");
     try {
       const registry = createRegistry(createLspTools({ manager }));
-      const result = await registry.call(makeCtx(dir), "kone_lsp", {
+      const result = await registry.call(makeCtx(dir), "code_lsp", {
         action: "teleport",
         path: "a.fakets",
       });
@@ -414,7 +414,7 @@ describe("kone_lsp refusals", () => {
   });
 });
 
-describe("kone_lsp abort", () => {
+describe("code_lsp abort", () => {
   test("an aborted call rejects with AbortError instead of a tool error", async () => {
     const { dir, log } = freshProject();
     const manager = fakeManager(log, "basic");
@@ -425,7 +425,7 @@ describe("kone_lsp abort", () => {
       await expect(
         registry.call(
           makeCtx(dir, { signal: controller.signal }),
-          "kone_lsp",
+          "code_lsp",
           { action: "hover", path: "a.fakets", line: 1, symbol: "item" },
         ),
       ).rejects.toMatchObject({ name: "AbortError" });
@@ -444,7 +444,7 @@ describe("kone_lsp abort", () => {
       await expect(
         registry.call(
           makeCtx(dir, { signal: controller.signal }),
-          "kone_lsp",
+          "code_lsp",
           { action: "references", path: "a.fakets", line: 3, symbol: "item" },
         ),
       ).rejects.toMatchObject({ name: "AbortError" });

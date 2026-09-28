@@ -16,6 +16,7 @@ import type {
   ToolEntry,
 } from "./schemas.js";
 import { GatewayToolError } from "./schemas.js";
+import { currentKoneToolName } from "@kone/protocol/kone-tools";
 import type { GatewayToolPrompt } from "../types.js";
 
 export type { GatewayToolContext, GatewayToolResult, ToolEntry } from "./schemas.js";
@@ -83,6 +84,16 @@ export type GatewayApprove = (request: GatewayApprovalRequest) => Promise<boolea
 
 export type GatewayToolScope = "worker" | "assistant";
 
+/** Which slice of a scope's tools one tools/list serves. A client that can
+ *  defer tools reaches the gateway as two servers — `core` loaded up front and
+ *  `on-demand` behind its tool search — while every other client lists `all`. */
+export type GatewayToolSet = "all" | "core" | "on-demand";
+
+function matchesSet(tool: ToolEntry, set: GatewayToolSet): boolean {
+  if (set === "all") return true;
+  return (tool.onDemand === true) === (set === "on-demand");
+}
+
 function matchesScope(tool: ToolEntry, scope?: GatewayToolScope): boolean {
   if (!scope) return true;
   const target = tool.target ?? "all";
@@ -92,7 +103,10 @@ function matchesScope(tool: ToolEntry, scope?: GatewayToolScope): boolean {
 export interface GatewayRegistry {
   /** The tool definitions tools/list advertises (denied tools omitted). Each
    *  inputSchema is the tool's hand-written JSON Schema object. */
-  listTools(scope?: GatewayToolScope): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
+  listTools(
+    scope?: GatewayToolScope,
+    set?: GatewayToolSet,
+  ): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
   /** What the host-context block says about the tools this gateway actually
    *  serves — the same `deny` filter tools/list applies, so the prose and the
    *  advertised surface cannot disagree. */
@@ -113,9 +127,9 @@ export function createRegistry(
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const servable = tools.filter((tool) => tool.permission !== "deny");
 
-  function listTools(scope?: GatewayToolScope) {
+  function listTools(scope?: GatewayToolScope, set: GatewayToolSet = "all") {
     return servable
-      .filter((tool) => matchesScope(tool, scope))
+      .filter((tool) => matchesScope(tool, scope) && matchesSet(tool, set))
       .map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -134,6 +148,7 @@ export function createRegistry(
         snippet,
         guidelines: tool.promptGuidelines ?? [],
         needsApproval: tool.permission === "ask",
+        onDemand: tool.onDemand === true,
       });
     }
     return list;
@@ -145,8 +160,10 @@ export function createRegistry(
     args: GatewayValue | undefined,
     scope?: GatewayToolScope,
   ): Promise<GatewayToolResult> {
-    const result = await dispatch(ctx, name, args, scope);
-    return toolsByName.get(name)?.target === "assistant" ? textOnlyResult(result) : result;
+    // A thread started before a rename still shows its agent the old names.
+    const resolved = toolsByName.has(name) ? name : currentKoneToolName(name);
+    const result = await dispatch(ctx, resolved, args, scope);
+    return toolsByName.get(resolved)?.target === "assistant" ? textOnlyResult(result) : result;
   }
 
   async function dispatch(

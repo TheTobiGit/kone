@@ -317,7 +317,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
 
   /**
    * Live updates from the agent gateway (docs/mcp-gateway-design.md §6): a
-   * kone_scratchpad_write lands as `scratchpad.updated` on the shared
+   * scratchpad_write lands as `scratchpad.updated` on the shared
    * agent:event stream. Applied only when the incoming revision is newer than
    * what this pane last knew. An open editor with unsaved edits keeps its
    * draft — the stored state still moves forward so the draft's next save

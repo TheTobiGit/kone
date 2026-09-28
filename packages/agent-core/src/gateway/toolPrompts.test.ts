@@ -79,7 +79,7 @@ describe("gateway tool prompts", () => {
 
   test("the approval rung is reported, so a plan can allow for the wait", () => {
     const registry = createRegistry(TOOLS);
-    const launch = registry.listToolPrompts().find((t) => t.name === "kone_launch");
+    const launch = registry.listToolPrompts().find((t) => t.name === "process_control");
     expect(launch?.needsApproval).toBe(true);
     expect(renderKoneHostContext(registry.listToolPrompts())).toContain(
       "(stops for the user's approval)",
@@ -88,7 +88,7 @@ describe("gateway tool prompts", () => {
 
   test("worker scope returns only worker tools and omits app-steering tools", () => {
     const workerTool: ToolEntry = {
-      name: "kone_scratchpad_read",
+      name: "scratchpad_read",
       description: "Read scratchpad",
       inputSchema: z.object({}),
       jsonSchema: { type: "object" },
@@ -111,7 +111,7 @@ describe("gateway tool prompts", () => {
     };
     const reg = createRegistry([workerTool, assistantTool]);
     const workerTools = reg.listTools("worker");
-    expect(workerTools.map((t) => t.name)).toEqual(["kone_scratchpad_read"]);
+    expect(workerTools.map((t) => t.name)).toEqual(["scratchpad_read"]);
 
     const assistantTools = reg.listTools("assistant");
     expect(assistantTools.map((t) => t.name)).toEqual(["app_apply_theme"]);

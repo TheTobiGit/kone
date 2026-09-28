@@ -18,7 +18,7 @@ import type { ProviderKind } from "../types.js";
 import type { GatewayCredentials } from "./credentials.js";
 import type { InFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
-import type { GatewayRegistry } from "./registry.js";
+import type { GatewayRegistry, GatewayToolSet } from "./registry.js";
 import type { GatewayRecord, GatewayValue } from "./schemas.js";
 
 /** The store surface the transport needs — structural, so unit tests can
@@ -136,7 +136,7 @@ export function buildMcpInitializeResult(input: {
   serverVersion: string;
   instructions: string;
 }): GatewayRecord {
-  return {
+  const result: GatewayRecord = {
     protocolVersion: negotiateMcpProtocolVersion(input.requestedProtocolVersion),
     capabilities: {
       tools: { listChanged: false },
@@ -146,8 +146,9 @@ export function buildMcpInitializeResult(input: {
       title: "Kone App Control",
       version: input.serverVersion,
     },
-    instructions: input.instructions,
   };
+  if (input.instructions) result.instructions = input.instructions;
+  return result;
 }
 
 /** Parse an HTTP bearer credential without interpreting its opaque value. */
@@ -182,6 +183,8 @@ export interface McpTransport {
   handlePost(input: {
     authorizationHeader: string | undefined;
     body: GatewayValue;
+    /** Which slice of the tools tools/list serves; calls reach every tool. */
+    toolSet?: GatewayToolSet;
   }): Promise<GatewayMcpResponse>;
 }
 
@@ -198,6 +201,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       turnId: string | null;
       signal?: AbortSignal;
       isAssistant?: boolean;
+      toolSet?: GatewayToolSet;
     },
   ): Promise<GatewayRecord> {
     switch (request.method) {
@@ -207,7 +211,10 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
           buildMcpInitializeResult({
             requestedProtocolVersion: request.params.protocolVersion,
             serverVersion: input.serverVersion,
-            instructions: input.instructions,
+            // The on-demand set is the same gateway reached a second time; its
+            // client already read the instructions from the core server, and a
+            // second copy would ride along on every model call for nothing.
+            instructions: ctx.toolSet === "on-demand" ? "" : input.instructions,
           }),
         );
       case "ping":
@@ -219,7 +226,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         // declarations arrive from many modules; here it crosses into the
         // JSON-RPC envelope that is serialized verbatim, where the concrete
         // gateway value type applies.
-        const tools = input.registry.listTools(scope) as ReadonlyArray<{
+        const tools = input.registry.listTools(scope, ctx.toolSet) as ReadonlyArray<{
           name: string;
           description: string;
           inputSchema: GatewayRecord;
@@ -254,7 +261,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
   }
 
   return {
-    async handlePost({ authorizationHeader, body }): Promise<GatewayMcpResponse> {
+    async handlePost({ authorizationHeader, body, toolSet }): Promise<GatewayMcpResponse> {
       const token = extractBearerToken(authorizationHeader);
       const identity = token ? input.credentials.verifySessionToken(token) : null;
       if (!token || !identity) {
@@ -382,7 +389,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
             try {
               const result = await handleRequest(
                 message.request,
-                { threadId, provider, model, cwd, turnId, signal: controller.signal, isAssistant },
+                { threadId, provider, model, cwd, turnId, signal: controller.signal, isAssistant, toolSet },
               );
               response = controller.signal.aborted ? null : result;
             } catch {

@@ -561,29 +561,15 @@ export function resetIrcMailbox(): void {
 // reflex to acknowledge, which manufactures the next message from the other side.
 
 const IRC_SEND_DESCRIPTION = [
-  "Send a short text message to another agent working on this project — whether that peer is running right now or idle. Both are reachable: a running peer has your message steered into its active turn, and an idle peer is woken with a new turn on its existing thread, keeping whatever it was doing. There is no such thing as a peer that has gone unreachable by settling — idle means waiting, not closed.",
+  "Message another agent on this project, whether it is running right now or idle: a running peer has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). Every message costs the reader a turn, and `to: \"all\"` charges every peer at once.",
   "",
-  "A message is not free. It interrupts a peer that is running, or wakes one that is idle, and costs it a whole turn to read. `to: \"all\"` charges that to every peer at once. Call `kone_irc_list` first to see who exists and whether they are running; address peers by their exact id and never invent one.",
+  "`to` takes a peer's exact id from peer_list (never invent one), or `parent` (whoever spawned you), `main` (your tree's root) or `all`. Set `replyTo` when answering. Plain prose: lead with the answer, and reference files by path rather than pasting them.",
   "",
-  "`to` also takes `parent` (the thread that spawned you), `main` (the root of your tree), or `all`. Set `replyTo` when you are answering, so the sender can correlate it. Lead with the answer; never quote the question back. Plain prose only — no JSON status objects, no pasted file contents, reference files by path instead.",
-  "",
-  "Send when the message changes what somebody DOES:",
-  "- You are about to edit a file another agent may be holding, or you need one they hold. Say so before editing, not after.",
-  "- You hit a decision that is not yours, or a state that contradicts your brief. Name the decision to whoever spawned you.",
-  "- You found something that makes a peer's current work wrong, so they can stop rather than finish it.",
-  "- A peer asked you something they cannot proceed without.",
-  "",
-  "Never send:",
-  "- A bare acknowledgement. \"Got it\", \"will do\", \"thanks\", \"noted\" cost the reader a turn and tell them nothing, and each one looks like traffic that deserves a reply — which is what a two-agent loop is made of. Silence is the acknowledgement.",
-  "- A progress report, a plan, or an announcement that you are starting. Whoever spawned you reads your result when you finish.",
-  "- Anything a tool would answer for you: a grep, a build, a file read, or what a peer is currently doing.",
-  "- The next line of a back-and-forth. Two agents that only answer each other never converge. The bus refuses the message once a pair has traded 16 with nobody else involved — long before that, decide with what you have or escalate the exact decision.",
+  "Send only what changes what somebody does: claiming a file before you edit it, a decision that is not yours, a finding that makes a peer's work wrong, or an answer a peer is blocked on. Never send an acknowledgement, a progress report or plan, anything a tool could answer, or the next line of a back-and-forth. The bus refuses a pair that has traded 16 messages with nobody else involved; long before that, decide with what you have or escalate the exact decision.",
 ].join("\n");
 
 const IRC_LIST_DESCRIPTION = [
-  "List the agents you can message on this project: their ids, whether each is running right now, and how many messages each has unread.",
-  "",
-  "Read it before sending. A peer that is running will be interrupted; one that is away will not see you until it returns; one with a pile of unread messages is not reading, and adding to the pile will not change that.",
+  "List the agents you can message on this project: their ids, whether each is running, and how many unread messages each has. A running peer will be interrupted, an away one won't see you until it returns, and one with a pile of unread messages is not reading.",
 ].join("\n");
 
 const IRC_INBOX_DESCRIPTION = [
@@ -593,8 +579,8 @@ const IRC_INBOX_DESCRIPTION = [
 ].join("\n");
 
 /**
- * Creates the IRC gateway tools: `kone_irc_send`, `kone_irc_list` and
- * `kone_irc_inbox`.
+ * Creates the IRC gateway tools: `peer_send`, `peer_list` and
+ * `peer_inbox`.
  */
 export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
   const mailbox = input.mailbox ?? getIrcMailbox();
@@ -725,23 +711,23 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
 
   return [
     {
-      name: "kone_irc_send",
+      name: "peer_send",
       description: IRC_SEND_DESCRIPTION,
       inputSchema: IrcSendInputSchema,
       jsonSchema: IRC_SEND_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "Reach another agent working this project — running or idle, both are reachable: a running peer is steered mid-turn, an idle one wakes with a new turn on its existing thread. Waiting only collects outcomes at the end; messaging changes what somebody does.",
+        "Message another agent on this project, running or idle: a running peer is steered mid-turn, an idle one wakes with a new turn.",
+      // When to send is the description's; this is the one rule that sits
+      // between tools, since it is the spawn tools it steers an agent away from.
       promptGuidelines: [
-        "Use a message to claim a file before you edit it, to name a decision that is not yours, or to stop a peer whose work you have just made pointless.",
-        "A message costs the agent that receives it a full turn, so send only what changes what somebody does. Never send an acknowledgement, a progress report, or a plan: silence is the acknowledgement, and two agents answering only each other is a loop that bills the user for both sides.",
         "An idle peer is not a closed one — it is woken with a new turn on its own thread. Do not re-spawn or re-delegate to reach someone who has merely settled.",
       ],
       handler: sendHandler,
     },
     {
-      name: "kone_irc_list",
+      name: "peer_list",
       description: IRC_LIST_DESCRIPTION,
       inputSchema: IrcListInputSchema,
       jsonSchema: IRC_LIST_JSON_SCHEMA,
@@ -752,14 +738,15 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       handler: listHandler,
     },
     {
-      name: "kone_irc_inbox",
+      name: "peer_inbox",
       description: IRC_INBOX_DESCRIPTION,
       inputSchema: IrcInboxInputSchema,
       jsonSchema: IRC_INBOX_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      onDemand: true,
       promptSnippet:
-        "Catch up on messages that arrived while you were away — you never need to poll it, because a message delivered to you arrives in your turn on its own.",
+        "Catch up on messages that arrived while you were away; delivered messages reach your turn on their own, so never poll it.",
       handler: inboxHandler,
     },
   ];

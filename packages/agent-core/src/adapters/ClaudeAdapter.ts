@@ -1095,6 +1095,9 @@ export class ClaudeAdapter implements ProviderAdapter {
         if (message.uuid && message.uuid.length > 0) {
           session.lastAssistantUuid = message.uuid;
         }
+        // Without partial messages there is no message_start to read the
+        // call's usage from — the settled message is the only source then.
+        if (!session.main.sawStreamEvent) this.noteCallPrompt(session, asRecord(asRecord(message.message)?.usage));
         return;
       default:
         // status/tool_progress/etc. — for the main conversation the stream_event
@@ -1153,6 +1156,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (type === "message_start") {
       scope.msgOrdinal += 1;
       scope.blocks.clear();
+      if (scope === session.main) this.noteCallPrompt(session, asRecord(asRecord(event.message)?.usage));
+      return;
+    }
+
+    if (type === "message_delta") {
+      if (scope === session.main) this.noteCallOutput(session, asRecord(event.usage));
       return;
     }
 
@@ -1456,6 +1465,30 @@ export class ClaudeAdapter implements ProviderAdapter {
     return {};
   }
 
+  /** Record the context fill one main-conversation model call left behind.
+   *  The result's usage can't answer this: it sums every call in the turn, so
+   *  a turn of fifteen tool calls counts the same cached prompt fifteen times
+   *  and would pin the meter at full. Each call's own usage opens with its
+   *  prompt on `message_start`; the output count there is a placeholder that
+   *  `message_delta` settles (see noteCallOutput). */
+  private noteCallPrompt(session: ClaudeSession, usage: ClaudeJsonObject | undefined): void {
+    const freshInput = readNumber(usage, "input_tokens");
+    const cacheRead = readNumber(usage, "cache_read_input_tokens");
+    const cacheCreation = readNumber(usage, "cache_creation_input_tokens");
+    if (freshInput === undefined && cacheRead === undefined && cacheCreation === undefined) return;
+    session.lastCall = {
+      prompt: (freshInput ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0),
+      output: readNumber(usage, "output_tokens") ?? 0,
+    };
+  }
+
+  /** `message_delta` carries the call's settled output count. */
+  private noteCallOutput(session: ClaudeSession, usage: ClaudeJsonObject | undefined): void {
+    const output = readNumber(usage, "output_tokens");
+    if (output === undefined || !session.lastCall) return;
+    session.lastCall.output = Math.max(session.lastCall.output, output);
+  }
+
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
     const usage = message.usage;
     if (usage) {
@@ -1478,10 +1511,15 @@ export class ClaudeAdapter implements ProviderAdapter {
         : undefined;
       const total = hasInput || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined;
       const contextWindow = session.autoCompactWindow ?? DEFAULT_CLAUDE_CONTEXT_WINDOW;
+      // Window fill comes from the turn's last call, not the summed spend
+      // above (see noteCallPrompt). A turn that made no call leaves it
+      // unreported, so the meter keeps its last real reading.
+      const lastCall = session.lastCall ? session.lastCall.prompt + session.lastCall.output : undefined;
+      session.lastCall = undefined;
       const contextUsed =
-        total !== undefined && contextWindow !== undefined
-          ? Math.min(total, contextWindow)
-          : total;
+        lastCall !== undefined && contextWindow !== undefined
+          ? Math.min(lastCall, contextWindow)
+          : lastCall;
       // The cache split computed above for `input` used to be discarded the
       // moment it was folded in — pass it through instead so the store's
       // per-turn audit trail (turn_usage) keeps the real cache-read vs.
