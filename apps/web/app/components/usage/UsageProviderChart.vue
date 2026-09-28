@@ -5,7 +5,6 @@ import { SESSION_BRAND } from "~/types/session";
 import type { UsageDay } from "~/types/desktop";
 import { formatDayShort, formatTokens, formatUsd } from "~/utils/usageFormat";
 import {
-  PROVIDER_COLOR,
   PROVIDER_LABEL,
   PROVIDER_ORDER,
 } from "~/utils/usageProviders";
@@ -160,6 +159,8 @@ function niceScale(peak: number, count: number): NiceScale {
 
 const byDay = computed(() => new Map(props.daily.map((entry) => [entry.date, entry])));
 
+const providerColors = useProviderColors();
+
 const hoverIndex = ref<number | null>(null);
 const plotRef = ref<HTMLDivElement | null>(null);
 
@@ -302,8 +303,8 @@ const hoverRows = computed(() => {
               x2="0"
               y2="1"
             >
-              <stop offset="0%" :stop-color="PROVIDER_COLOR[provider]" stop-opacity="0.2" />
-              <stop offset="100%" :stop-color="PROVIDER_COLOR[provider]" stop-opacity="0" />
+              <stop offset="0%" :stop-color="providerColors[provider]" stop-opacity="0.2" />
+              <stop offset="100%" :stop-color="providerColors[provider]" stop-opacity="0" />
             </linearGradient>
           </defs>
 
@@ -332,7 +333,7 @@ const hoverRows = computed(() => {
             :key="`line-${provider}`"
             :d="line"
             fill="none"
-            :stroke="PROVIDER_COLOR[provider]"
+            :stroke="providerColors[provider]"
             :stroke-width="focus === provider ? 2.5 : 2"
             vector-effect="non-scaling-stroke"
             class="upc__line"
@@ -372,7 +373,7 @@ const hoverRows = computed(() => {
               <span class="upc__tip-label">
                 <span
                   class="upc__tip-dot"
-                  :style="{ backgroundColor: PROVIDER_COLOR[row.provider] }"
+                  :style="{ backgroundColor: providerColors[row.provider] }"
                 />
                 <ProviderLogo
                   :brand="SESSION_BRAND[row.provider]"

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildIntentMenu, resolveIntentTitle } from "./useIntentMenu";
 import type { IntentContext } from "./useIntentMenu";
+import { PROJECT_SURFACES } from "~/utils/projectSurfaces";
 
 function ctx(over: Partial<IntentContext> = {}): IntentContext {
   return {
@@ -58,6 +59,22 @@ describe("buildIntentMenu", () => {
     expect(list).not.toContain("goto-space");
     expect(ids("project-files")).toContain("goto-space");
     expect(ids("project-overview")).toContain("goto-space");
+  });
+
+  test("every project view offers the other spaces in nav order, git only for a repository", () => {
+    const repo = { git: { repo: true, dirtyFiles: 0, branch: "main" } };
+    const surfaces = new Set<string>(PROJECT_SURFACES);
+    const spaces = (view: IntentContext["view"], over: Partial<IntentContext> = {}) =>
+      ids(view, over)
+        .filter((id) => id.startsWith("goto-"))
+        .map((id) => id.slice("goto-".length))
+        .filter((id) => surfaces.has(id));
+
+    for (const here of PROJECT_SURFACES) {
+      const inOrder = PROJECT_SURFACES.filter((s) => s !== here);
+      expect(spaces(`project-${here}`, repo)).toEqual(inOrder);
+      expect(spaces(`project-${here}`)).toEqual(inOrder.filter((s) => s !== "git"));
+    }
   });
 
   test("the studio names its row's page, unless that page is the one underneath", () => {

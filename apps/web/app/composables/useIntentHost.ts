@@ -167,10 +167,7 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
     if (activePortal.value === "studio") return "studio";
     if (activePortal.value === "inbox") return "inbox";
     if (!project.value) return "launcher";
-    if (intentSurface.value === "git") return "project-git";
-    if (intentSurface.value === "files") return "project-files";
-    if (intentSurface.value === "space") return "project-space";
-    return "project-overview";
+    return `project-${intentSurface.value}`;
   });
 
   // While a launcher modal owns the screen the plane, the inbox, the drawer
@@ -327,16 +324,13 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
             cue("collapse");
             project.value = null;
             return;
-          case "overview":
-          case "git":
-          case "files":
-          case "space": {
+          default: {
+            // Every other go-to is one of the project page's spaces.
             cue("press");
             goIntentSurface(action.view);
             return;
           }
         }
-        return;
       }
       case "open-settings":
         runWhenFree(() => {
