@@ -12,6 +12,10 @@
       "types": "./src/ipcError.ts",
       "default": "./src/ipcError.ts"
     },
+    "./kone-tools": {
+      "types": "./src/koneTools.ts",
+      "default": "./src/koneTools.ts"
+    },
     "./plan-tasks": {
       "types": "./src/planTasks.ts",
       "default": "./src/planTasks.ts"

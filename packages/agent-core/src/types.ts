@@ -624,6 +624,10 @@ export type StoredThreadMeta = {
   /** Tokens spent on the thread — cumulative for providers that report a running
    *  total (Codex), summed across turns for per-turn reporters (Claude). */
   tokens?: number;
+  /** What the thread has cost in USD, priced per token bucket (fresh input,
+   *  cache read, cache write, output) from its turn usage. Absent when no
+   *  pricing source knows the model. */
+  costUsd?: number;
   /** The user's chosen per-thread knobs, persisted so a reopened thread restores
    *  the picker exactly where the user left it (a thread whose last turn ran at
    *  max effort / fast tier reopens with those selections instead of boot
@@ -1067,7 +1071,7 @@ export const MAX_LIVE_SPAWNED_THREADS = 32;
  *  parent's when the parent is on the same provider. */
 export type SpawnTarget = {
   provider: ProviderKind;
-  /** ModelDescriptor.id from `kone_spawn_targets`. A model that is not in the
+  /** ModelDescriptor.id from `worker_targets`. A model that is not in the
    *  provider's discovered catalog is rejected (with the catalog), never
    *  silently swapped — the model is a deliberate choice. */
   model?: string;
@@ -1111,8 +1115,8 @@ export type SpawnAdjustment = {
 
 export type SpawnThreadResult = {
   requestId: string;
-  /** The child thread's kone id — the handle for `kone_wait_for_responses` and
-   *  `kone_read_response`. Minted in the main process; agents never choose ids. */
+  /** The child thread's kone id — the handle for `worker_wait` and
+   *  `worker_read`. Minted in the main process; agents never choose ids. */
   threadId: string;
   parentThreadId: string;
   title: string;
@@ -1125,7 +1129,7 @@ export type SpawnThreadResult = {
    *  the dispatching agent can see that `provider`/`model` above are not what it
    *  asked for and why. */
   failedOverFrom?: { provider: ProviderKind; model?: string; reason: string };
-  /** The child's FIRST turn id — the turnId to pin kone_wait_for_responses to, so
+  /** The child's FIRST turn id — the turnId to pin worker_wait to, so
    *  the parent waits on the turn it spawned rather than whatever the child's
    *  latest turn happens to be when the wait runs. */
   firstTurnId?: string;
@@ -1195,7 +1199,7 @@ export type SpawnedThread = {
   /** The child's final assistant text, capped. THE ONLY thing that crosses
    *  back into the parent's context — tool calls, reasoning and intermediate
    *  output stay isolated in the child thread and are read on demand via
-   *  `kone_read_response`. */
+   *  `worker_read`. */
   summary?: string;
   /** Set when the child failed, or when it is parked: the question/approval
    *  the child is blocked on, so the parent can tell the user what to do. */
@@ -1365,7 +1369,7 @@ export type ProviderRefs = {
   resumeSessionAt?: string;
 };
 
-/** Which agent session wrote a pad — carried by kone_scratchpad_write results
+/** Which agent session wrote a pad — carried by scratchpad_write results
  *  and scratchpad.updated events so the board can attribute agent edits.
  *  User edits (the web editor) carry no writer. */
 export type ScratchpadWriter = {
@@ -1386,6 +1390,9 @@ export type GatewayToolPrompt = {
   /** `permission: "ask"` — worth saying, because an agent that does not know a
    *  call stops for a human will plan around a wait it never expected. */
   needsApproval: boolean;
+  /** Served from the on-demand tool set, which a client with tool search keeps
+   *  out of the prompt until the agent loads it (see ToolEntry.onDemand). */
+  onDemand?: boolean;
 };
 
 /** Loopback MCP gateway connection for one provider session
@@ -1558,7 +1565,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (kone_spawn_worker), and every subsequent
+  // An agent spawned a child thread (worker_spawn), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value (the same
@@ -1569,7 +1576,7 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "thread.spawned"; spawned: SpawnedThread })
   | (BaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
   // An agent gateway write landed on a project's scratchpad
-  // (kone_scratchpad_write). `projectPath` scopes it to the project the pad
+  // (scratchpad_write). `projectPath` scopes it to the project the pad
   // belongs to (the board is project-scoped, not thread-scoped); `writer` is
   // the agent session that wrote, null/absent for user edits. Consumers apply
   // it only when `revision` is newer than their own.
@@ -1643,7 +1650,7 @@ export type RuntimeEvent =
       removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `kone_spawn_worker_preset` cuts a spawn from. Unlike the
+  // standing definitions `worker_spawn_preset` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (BaseEvent & {

@@ -177,6 +177,11 @@ export type ClaudeSession = {
   fastMode: boolean;
   /** The auto-compact window (in tokens) currently applied to this session. */
   autoCompactWindow?: number;
+  /** The main conversation's latest model call, for the context meter: its
+   *  whole prompt (fresh + both cache buckets) and its output so far, which
+   *  the next call re-sends. Cleared once a result reports it, so a turn that
+   *  made no call never reports the previous one's fill. */
+  lastCall?: { prompt: number; output: number };
   /** Claude Code TaskCreate/TaskUpdate checklist for the active turn. */
   trackedTasks: Map<string, ClaudeTrackedTask>;
   /** Whether a synthesized `${turnId}:plan` item has been started this turn. */

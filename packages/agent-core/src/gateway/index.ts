@@ -264,7 +264,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const inFlight = makeInFlightRequestRegistry();
   const turnState = new Map<string, TurnState>();
   const launchSupervisor = new ProcessSupervisor();
-  // One language-server pool for the gateway's lifetime: every kone_lsp call
+  // One language-server pool for the gateway's lifetime: every code_lsp call
   // shares it, and shutdown below reaps every server it started.
   const lspManager = new LspManager();
   const workerTools = [

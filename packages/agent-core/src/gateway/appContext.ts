@@ -28,6 +28,7 @@
 
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
 import type { AgentPersona, GatewayConnection, GatewayToolPrompt } from "../types.js";
+import { KONE_ON_DEMAND_MCP_SERVER_NAME } from "./injection.js";
 
 /**
  * Everything the blocks are built from. One struct, threaded to every channel,
@@ -42,15 +43,19 @@ export interface KoneContextOptions {
   agent?: AgentPersona;
   /** Session role: worker agent on a codebase or global app assistant. */
   scope?: "worker" | "assistant";
+  /** The client defers the on-demand tools behind its own tool search (Claude
+   *  does, via the second server claudeMcpServers adds). The index then says
+   *  which tools are not loaded yet and how to load one. */
+  toolSearch?: boolean;
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-09-26.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-09-28.2";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
 const WORKER_HOST_CONTEXT_PREAMBLE = [
   "You are running inside kone, a desktop app for AI-assisted development. kone hosts this agent session and renders your work on the user's project board.",
-  "The `kone` MCP server is kone's app gateway: your connection to the workspace. App tools are part of your job — when one fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
+  "The `kone` MCP server is kone's app gateway: your connection to the workspace. App tools are part of your job — when one fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__scratchpad_read`); the semantics are the same.",
 ];
 
 const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
@@ -65,6 +70,11 @@ const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
   "You are summoned over whatever the user is doing in kone, so kone attaches a short <kone_view> description of their screen to every message they send. It is there on every message by design, not because the message is about the screen. Use it only when the message needs it: when they say \"this\", \"here\" or \"that error\", they mean what is on screen, so resolve it from the view instead of asking which one, and call app_get_view when you need more than the view says. Otherwise leave it alone. A greeting gets a greeting, a question gets an answer to that question, and neither gets a remark about what is on their screen.",
   "You can also open a real thread in one of their projects and set it working, or send a follow-up into a thread that already exists. Those are their threads on their repos, not a scratch space: act when they have asked for work to happen, prefer messaging the thread already doing the work over starting a new one, and tell them what you started or sent and where.",
 ];
+
+/** How a deferring client's agent reaches an on-demand tool. Its schema is
+ *  not in the prompt, so without this the agent would read the index, see the
+ *  tool missing from its tool list, and conclude it was never granted. */
+const TOOL_SEARCH_NOTE = `Tools marked (on demand) are served by the \`${KONE_ON_DEMAND_MCP_SERVER_NAME}\` MCP server and are not loaded yet. When you need one, load it with ToolSearch (query \`select:mcp__${KONE_ON_DEMAND_MCP_SERVER_NAME}__<tool name>\`), then call it like any other tool.`;
 
 /**
  * The host-context block for a session holding `tools`.
@@ -81,12 +91,15 @@ const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
 export function renderKoneHostContext(
   tools: readonly GatewayToolPrompt[],
   scope: "worker" | "assistant" = "worker",
+  options: { toolSearch?: boolean } = {},
 ): string {
   if (!tools?.length) return "";
   const preamble = scope === "assistant" ? ASSISTANT_HOST_CONTEXT_PREAMBLE : WORKER_HOST_CONTEXT_PREAMBLE;
+  const deferred = options.toolSearch === true && tools.some((tool) => tool.onDemand);
   const index = tools.map((tool) => {
     const approval = tool.needsApproval ? " (stops for the user's approval)" : "";
-    return `- \`${tool.name}\`: ${tool.snippet}${approval}`;
+    const onDemand = deferred && tool.onDemand ? " (on demand)" : "";
+    return `- \`${tool.name}\`: ${tool.snippet}${approval}${onDemand}`;
   });
   const guidelines: string[] = [];
   const seen = new Set<string>();
@@ -103,6 +116,7 @@ export function renderKoneHostContext(
     "",
     "Tools kone gives you in this session:",
     ...index,
+    ...(deferred ? ["", TOOL_SEARCH_NOTE] : []),
     ...(guidelines.length ? ["", ...guidelines] : []),
   ].join("\n");
 }
@@ -216,7 +230,7 @@ export function buildKoneContext(options: KoneContextOptions): KoneContextBlocks
   const scope = options.scope ?? options.gateway?.scope ?? "worker";
   return {
     hostContext: options.gateway
-      ? renderKoneHostContext(options.gateway.tools, scope)
+      ? renderKoneHostContext(options.gateway.tools, scope, { toolSearch: options.toolSearch })
       : "",
     identity: renderAgentIdentity(options.agent),
   };
@@ -227,7 +241,7 @@ export function buildKoneContext(options: KoneContextOptions): KoneContextBlocks
  *  instructions"). Empty when there is nothing to say — no gateway and no named
  *  agent — and the adapter then appends nothing, keeping the preset pristine. */
 export function claudeSystemPromptAppend(options: KoneContextOptions): string {
-  const { hostContext, identity } = buildKoneContext(options);
+  const { hostContext, identity } = buildKoneContext({ ...options, toolSearch: true });
   return [hostContext, identity].filter(Boolean).join("\n");
 }
 

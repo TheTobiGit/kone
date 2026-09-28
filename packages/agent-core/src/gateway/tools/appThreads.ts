@@ -8,7 +8,7 @@
 //
 // - The reads go straight to the store. A thread's transcript is already there
 //   and nothing about it is the renderer's to know, so no mirror is involved.
-//   Unlike the worker tools' `kone_read_response`, these are NOT scoped to a
+//   Unlike the worker tools' `worker_read`, these are NOT scoped to a
 //   caller's spawn subtree: the assistant is the user's co-pilot across the
 //   whole app, and a co-pilot that can only read the threads it opened itself
 //   could not answer "what happened in that refactor thread yesterday".

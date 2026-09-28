@@ -14,7 +14,6 @@ import {
   File01Icon,
   FileEditIcon,
   ListViewIcon,
-  PaintBoardIcon,
   Delete02Icon,
   Search01Icon,
   SourceCodeIcon,
@@ -29,6 +28,8 @@ import type { RuntimeItem } from "~/types/desktop";
 import { activeHues, type ToolOrbFamily } from "~/utils/toolOrbDraw";
 import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 import { canonicalToolName } from "~/utils/toolName";
+import { koneToolPresentation } from "~/utils/koneToolPresentation";
+import { isKoneToolName } from "@kone/protocol/kone-tools";
 
 // Icons are Hugeicons SVG data objects (the `:icon` prop of <HugeiconsIcon>), not
 // Vue components — same shape as File01Icon et al.
@@ -100,13 +101,6 @@ const TOOL_TABLE: Record<string, ToolMetaInput> = {
   manage_subagents: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
   generate_image: { icon: Rocket01Icon, label: "Generate image", family: "run" },
   ask_question: { icon: WorkflowSquare01Icon, label: "Question", family: "agent" },
-  // app steering — kone's own appearance tools, which act on the window rather
-  // than on the project
-  app_get_theme_state: { icon: PaintBoardIcon, label: "Appearance", family: "agent" },
-  app_list_available_themes: { icon: PaintBoardIcon, label: "Themes", family: "agent" },
-  app_set_theme: { icon: PaintBoardIcon, label: "Theme", family: "agent" },
-  app_preview_theme_override: { icon: PaintBoardIcon, label: "Theme preview", family: "agent" },
-  app_create_custom_theme: { icon: PaintBoardIcon, label: "New theme", family: "agent" },
   send_message: { icon: WorkflowSquare01Icon, label: "Message", family: "agent" },
 };
 
@@ -118,6 +112,11 @@ export function toolMeta(name: string | undefined): ToolMeta {
   // too, so this is belt for the braces — and idempotent either way.
   const key = canonicalToolName(name);
   if (!key) return { icon: ToolsIcon, label: "Tool", hue: families.neutral!, family: "neutral" };
+  const koneTool = koneToolPresentation(key);
+  if (koneTool) {
+    const { icon, label, family } = koneTool;
+    return { icon, label, family, hue: families[family]! };
+  }
   if (TOOL_TABLE[key]) {
     const meta = TOOL_TABLE[key]!;
     return { ...meta, hue: families[meta.family]! };
@@ -160,7 +159,7 @@ function peelStamp(raw: string, name: string): string {
   const head = raw.slice(0, colon).trim();
   if (!head || /\s/.test(head)) return raw;
   const stampsTool = canonicalToolName(head) === canonicalToolName(name);
-  const stampsServer = head.toLowerCase() === "kone" && name.startsWith("kone_");
+  const stampsServer = head.toLowerCase() === "kone" && isKoneToolName(canonicalToolName(name));
   return stampsTool || stampsServer ? raw.slice(colon + 1).trim() : raw;
 }
 
@@ -176,7 +175,7 @@ function toolTargetText(t: RuntimeItem): string {
 
 /** A serialized argument object is an args dump, not a one-line target: it has
  *  no readable head, so every row that carried one read as a wall of JSON. Rows
- *  fall back to their targetless phrasing ("Running kone spawn batch"); the blob
+ *  fall back to their targetless phrasing ("Running github fetch pr"); the blob
  *  itself stays reachable through `toolDetailFull`. */
 function isArgumentBlob(text: string): boolean {
   if (text.length < 2) return false;
@@ -273,6 +272,11 @@ export function toolPhrase(t: RuntimeItem): ToolPhrase {
   const detail = toolTarget(t);
   const full = toolTargetRaw(t);
   const name = (t.name ?? "").trim();
+
+  // kone's own tools act on the app, not on a path or a command — each says
+  // what it did in its own words.
+  const koneTool = koneToolPresentation(canonicalToolName(name));
+  if (koneTool) return plain(ing ? koneTool.running : fail ? koneTool.failed : koneTool.done);
 
   // grep-style "query · N matches"
   const matchSplit = full.match(/^(.+?)\s*·\s*(\d+)\s+matches?$/i);

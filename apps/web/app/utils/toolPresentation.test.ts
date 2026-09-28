@@ -61,8 +61,8 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "kone_spawn_batch",
-        text: 'mcp__kone__kone_spawn_batch: {"path": "src/foo.ts"}',
+        name: "worker_spawn_batch",
+        text: 'mcp__kone__worker_spawn_batch: {"path": "src/foo.ts"}',
       };
       expect(toolDetailFull(item)).toBe('{"path": "src/foo.ts"}');
     });
@@ -72,8 +72,8 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "kone_spawn_batch",
-        text: 'kone_spawn_batch: {"items": []}',
+        name: "worker_spawn_batch",
+        text: 'worker_spawn_batch: {"items": []}',
       };
       expect(toolTargetRaw(item)).toBe("");
       expect(toolDetailFull(item)).toBe('{"items": []}');
@@ -84,7 +84,7 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "kone_spawn_batch",
+        name: "worker_spawn_batch",
         text: "kone: dispatching 3 workers",
       };
       expect(toolTargetRaw(item)).toBe("dispatching 3 workers");
@@ -95,8 +95,8 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "kone_spawn_batch",
-        text: "kone spawn batch",
+        name: "fetch_pr",
+        text: "fetch pr",
       };
       expect(toolTargetRaw(item)).toBe("");
     });
@@ -104,11 +104,11 @@ describe("toolPresentation", () => {
 
   describe("canonicalToolName", () => {
     test("unwraps kone server qualification to the bare tool", () => {
-      expect(canonicalToolName("kone_spawn_batch")).toBe("kone_spawn_batch");
-      expect(canonicalToolName("kone__kone_spawn_batch")).toBe("kone_spawn_batch");
-      expect(canonicalToolName("mcp__kone__kone_spawn_batch")).toBe("kone_spawn_batch");
-      expect(canonicalToolName("kone_kone_spawn_batch")).toBe("kone_spawn_batch");
-      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("kone_spawn_batch");
+      expect(canonicalToolName("worker_spawn_batch")).toBe("worker_spawn_batch");
+      expect(canonicalToolName("kone__worker_spawn_batch")).toBe("worker_spawn_batch");
+      expect(canonicalToolName("mcp__kone__worker_spawn_batch")).toBe("worker_spawn_batch");
+      expect(canonicalToolName("kone_worker_spawn_batch")).toBe("worker_spawn_batch");
+      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("worker_spawn_batch");
     });
 
     test("leaves plain and foreign-MCP names alone", () => {
@@ -244,31 +244,42 @@ describe("toolPresentation", () => {
       });
     });
 
-    test("phrases kone_spawn_batch once, never kone kone", () => {
-      const texts = ["", 'kone_spawn_batch: {"items": []}', 'mcp__kone__kone_spawn_batch: []'];
+    test("phrases worker_spawn_batch once, never kone kone", () => {
+      const texts = ["", 'worker_spawn_batch: {"items": []}', 'mcp__kone__worker_spawn_batch: []'];
       for (const text of texts) {
         const item: RuntimeItem = {
           itemId: "item-1",
           kind: "tool_call",
           status: "in-progress",
-          name: canonicalToolName("mcp__kone__kone_spawn_batch"),
+          name: canonicalToolName("mcp__kone__worker_spawn_batch"),
           text,
         };
-        expect(toolPhrase(item)).toEqual({ before: "Running kone spawn batch" });
+        expect(toolPhrase(item)).toEqual({ before: "Starting workers" });
       }
     });
 
-    test("phrases a kone:-stamped spawn batch detail without repeating kone", () => {
+    test("says what a kone tool did in each state, not the tool's name", () => {
+      const item = (status: RuntimeItem["status"]): RuntimeItem => ({
+        itemId: "item-1",
+        kind: "tool_call",
+        status,
+        name: "scratchpad_write",
+        text: "kone: scratchpad_write",
+      });
+      expect(toolPhrase(item("in-progress"))).toEqual({ before: "Updating the scratchpad" });
+      expect(toolPhrase(item("completed"))).toEqual({ before: "Updated the scratchpad" });
+      expect(toolPhrase(item("failed"))).toEqual({ before: "Couldn't update the scratchpad" });
+    });
+
+    test("phrases a call stored under a name from before the rename", () => {
       const item: RuntimeItem = {
         itemId: "item-1",
         kind: "tool_call",
-        status: "in-progress",
-        name: "kone_spawn_batch",
-        text: "kone: dispatching 3 workers",
+        status: "completed",
+        name: "mcp__kone__kone_wait_for_responses",
+        text: "mcp__kone__kone_wait_for_responses",
       };
-      expect(toolPhrase(item)).toEqual({
-        before: "Running kone spawn batch on dispatching 3 workers",
-      });
+      expect(toolPhrase(item)).toEqual({ before: "Collected worker replies" });
     });
   });
 
@@ -285,10 +296,9 @@ describe("toolPresentation", () => {
     });
 
     test("labels a canonical kone tool once, and keeps foreign MCP labels", () => {
-      expect(toolMeta(canonicalToolName("kone__kone_spawn_batch")).label).toBe("Kone Spawn Batch");
-      expect(toolMeta(canonicalToolName("mcp__kone__kone_spawn_batch")).label).toBe(
-        "Kone Spawn Batch",
-      );
+      expect(toolMeta(canonicalToolName("kone__worker_spawn_batch")).label).toBe("Workers");
+      expect(toolMeta(canonicalToolName("mcp__kone__worker_spawn_batch")).label).toBe("Workers");
+      expect(toolMeta("kone_kone_scratchpad_read").label).toBe("Scratchpad");
       expect(toolMeta("mcp__github__fetch_pr").label).toBe("Fetch Pr");
     });
   });

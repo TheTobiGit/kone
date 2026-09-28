@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import type { StoredThread } from "../types.js";
-import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
+import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import { decodeChunkArray, decodeStoredText, itemChunkArraySql } from "./itemTextChunks.js";
 
@@ -14,10 +14,10 @@ export class TranscriptRepo {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
-      // schema creates.
+      // SAFETY: `t.*` plus the usage sums is exactly ThreadRow — the columns
+      // this schema creates and THREAD_USAGE_COLUMNS.
       const threadRow = db
-        .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
+        .prepare(`SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t WHERE t.thread_id = ?`)
         .get(threadId) as ThreadRow | undefined;
       if (!threadRow) return null;
 
@@ -105,10 +105,10 @@ export class TranscriptRepo {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
-      // schema creates.
+      // SAFETY: `t.*` plus the usage sums is exactly ThreadRow — the columns
+      // this schema creates and THREAD_USAGE_COLUMNS.
       const threadRow = db
-        .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
+        .prepare(`SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t WHERE t.thread_id = ?`)
         .get(threadId) as ThreadRow | undefined;
       if (!threadRow) return null;
 
@@ -326,7 +326,7 @@ export class TranscriptRepo {
    *  items concatenated in arrival order, trimmed. This is what becomes the
    *  child's summary, so it is the narrative only: reasoning, plan and tool
    *  calls are excluded (they stay in the child's transcript, readable on
-   *  demand via kone_read_response). Null when the thread has never produced
+   *  demand via worker_read). Null when the thread has never produced
    *  assistant text. */
   latestAssistantText(threadId: string): string | null {
     const db = this.dbh.handle();

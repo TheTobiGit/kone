@@ -4,7 +4,7 @@ import { DatabaseSync } from "../sqlite.js";
 import type { ContinuationLink, ForkContext, ForkImportedBlock, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadEnvMode, ThreadLineage } from "../types.js";
 import { isBranchForkContext, isContinuationForkContext } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
-import { parseJsonObject, rowToMeta, type ThreadRow } from "../conversationStoreTypes.js";
+import { parseJsonObject, rowToMeta, THREAD_USAGE_COLUMNS, type ThreadRow } from "../conversationStoreTypes.js";
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
@@ -931,13 +931,13 @@ export class LineageRepo {
     const db = this.dbh.handle();
     if (!db) return [];
     try {
-      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
-      // schema creates.
+      // SAFETY: `t.*` plus the usage sums is exactly ThreadRow — the columns
+      // this schema creates and THREAD_USAGE_COLUMNS.
       const rows = db
         .prepare(
-          `SELECT * FROM threads
-            WHERE parent_thread_id = ?
-            ORDER BY created_at ASC`,
+          `SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t
+            WHERE t.parent_thread_id = ?
+            ORDER BY t.created_at ASC`,
         )
         .all(parentThreadId) as ThreadRow[];
       return rows.map(rowToMeta);

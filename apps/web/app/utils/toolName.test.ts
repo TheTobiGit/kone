@@ -8,8 +8,8 @@ function toolCall(name: string, extra: Partial<RuntimeItem> = {}): RuntimeItem {
 
 describe("canonicalizeItem", () => {
   test("restamps a qualified tool_call with its canonical name", () => {
-    expect(canonicalizeItem(toolCall("mcp__kone__kone_spawn_batch")).name).toBe("kone_spawn_batch");
-    expect(canonicalizeItem(toolCall("kone__kone_spawn_batch")).name).toBe("kone_spawn_batch");
+    expect(canonicalizeItem(toolCall("mcp__kone__worker_spawn_batch")).name).toBe("worker_spawn_batch");
+    expect(canonicalizeItem(toolCall("kone__worker_spawn_batch")).name).toBe("worker_spawn_batch");
   });
 
   test("returns an already-canonical item by identity", () => {
@@ -24,7 +24,7 @@ describe("canonicalizeItem", () => {
       itemId: "item-2",
       kind: "assistant_text",
       status: "completed",
-      text: "kone__kone_spawn_batch",
+      text: "kone__worker_spawn_batch",
     };
     expect(canonicalizeItem(text)).toBe(text);
   });
@@ -35,32 +35,43 @@ describe("canonicalizeItem", () => {
         toolUseId: "use-1",
         startedAt: 0,
         status: "running",
-        items: [toolCall("kone__kone_spawn_batch", { itemId: "child-1" })],
+        items: [toolCall("kone__worker_spawn_batch", { itemId: "child-1" })],
       },
     });
     const out = canonicalizeItem(parent);
-    expect(out.subagent?.items[0]?.name).toBe("kone_spawn_batch");
+    expect(out.subagent?.items[0]?.name).toBe("worker_spawn_batch");
     // The parent's own name needed no change, but the rebuild must not lose it.
     expect(out.name).toBe("task");
   });
 });
 
 describe("canonicalToolName", () => {
-  test("folds a doubly-stamped head", () => {
-    expect(canonicalToolName("kone_kone_spawn_batch")).toBe("kone_spawn_batch");
-  });
-
-  // Providers that join server and tool with one underscore leave the app tools
-  // — the only family whose names do not already start with the server's —
-  // spelled `kone_app_*`. The `app_` head is what makes that unambiguous.
-  test("unwraps the server from a singly-stamped app tool", () => {
+  test("unwraps each way a provider stamps the server", () => {
+    expect(canonicalToolName("mcp__kone__scratchpad_read")).toBe("scratchpad_read");
+    expect(canonicalToolName("kone__scratchpad_read")).toBe("scratchpad_read");
+    expect(canonicalToolName("kone_scratchpad_read")).toBe("scratchpad_read");
     expect(canonicalToolName("kone_app_set_theme")).toBe("app_set_theme");
     expect(canonicalToolName("mcp__kone__app_set_theme")).toBe("app_set_theme");
-    expect(canonicalToolName("app_set_theme")).toBe("app_set_theme");
   });
 
-  test("leaves a tool that really is named for the server alone", () => {
-    expect(canonicalToolName("kone_spawn_worker")).toBe("kone_spawn_worker");
-    expect(canonicalToolName("kone_scratchpad_write")).toBe("kone_scratchpad_write");
+  // A provider that defers tools reaches the on-demand ones through a second
+  // server; they are still kone's own tools.
+  test("unwraps the on-demand server the same as the main one", () => {
+    expect(canonicalToolName("mcp__kone_extra__code_lsp")).toBe("code_lsp");
+    expect(canonicalToolName("kone_extra__code_lsp")).toBe("code_lsp");
+    expect(canonicalToolName("mcp__kone_extras__code_lsp")).toBe("mcp__kone_extras__code_lsp");
+  });
+
+  // Stored threads keep the names their calls were made under.
+  test("brings a name from before the rename up to date, however it was stamped", () => {
+    expect(canonicalToolName("kone_spawn_worker")).toBe("worker_spawn");
+    expect(canonicalToolName("mcp__kone__kone_wait_for_responses")).toBe("worker_wait");
+    expect(canonicalToolName("kone_kone_scratchpad_write")).toBe("scratchpad_write");
+    expect(canonicalToolName("mcp__kone_extra__kone_lsp")).toBe("code_lsp");
+  });
+
+  test("leaves a foreign tool that merely starts with kone alone", () => {
+    expect(canonicalToolName("kone_something_else")).toBe("kone_something_else");
+    expect(canonicalToolName("read_file")).toBe("read_file");
   });
 });

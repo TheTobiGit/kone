@@ -1,4 +1,4 @@
-// kone_ast_find_calls + kone_ast_preview gateway tool tests: registry surface
+// code_find_calls + code_preview_rewrite gateway tool tests: registry surface
 // plus tool runs against tmpdir projects — no real user checkout anywhere.
 
 import { describe, expect, test } from "bun:test";
@@ -37,10 +37,10 @@ function fixtureProject(): string {
   return dir;
 }
 
-describe("kone_ast_find_calls registration", () => {
+describe("code_find_calls registration", () => {
   test("lists both turn-less allow tools for all targets with names required", () => {
     const tools = createAstTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["kone_ast_find_calls", "kone_ast_preview"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["code_find_calls", "code_preview_rewrite"]);
     for (const tool of tools) {
       expect(tool.permission).toBe("allow");
       expect(tool.requiresActiveTurn).toBe(false);
@@ -49,11 +49,11 @@ describe("kone_ast_find_calls registration", () => {
     }
 
     const registry = createRegistry(tools);
-    const listed = registry.listTools().find((tool) => tool.name === "kone_ast_find_calls");
+    const listed = registry.listTools().find((tool) => tool.name === "code_find_calls");
     expect(listed?.inputSchema).toEqual(AST_FIND_CALLS_JSON_SCHEMA);
     const required = listed?.inputSchema.required;
     expect(Array.isArray(required) ? required : null).toEqual(["name"]);
-    const preview = registry.listTools().find((tool) => tool.name === "kone_ast_preview");
+    const preview = registry.listTools().find((tool) => tool.name === "code_preview_rewrite");
     expect(preview?.inputSchema).toEqual(AST_PREVIEW_JSON_SCHEMA);
     const previewRequired = preview?.inputSchema.required;
     expect(Array.isArray(previewRequired) ? previewRequired : null).toEqual(["op"]);
@@ -75,12 +75,12 @@ describe("kone_ast_find_calls registration", () => {
   });
 });
 
-describe("kone_ast_find_calls runs", () => {
+describe("code_find_calls runs", () => {
   test("a turn-less call finds matches with anchors and counts", async () => {
     const dir = fixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_find_calls", { name: "foo" });
+      const result = await registry.call(makeCtx(dir), "code_find_calls", { name: "foo" });
       expect(result.isError).toBeUndefined();
       expect(result.content[0]?.text).toContain("src/a.ts:1");
       expect(result.content[0]?.text).toContain("[2 args]");
@@ -96,7 +96,7 @@ describe("kone_ast_find_calls runs", () => {
     const dir = fixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_find_calls", {
+      const result = await registry.call(makeCtx(dir), "code_find_calls", {
         name: "foo",
         path: "src/b.ts",
       });
@@ -111,7 +111,7 @@ describe("kone_ast_find_calls runs", () => {
     const dir = fixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_find_calls", { name: "zzz" });
+      const result = await registry.call(makeCtx(dir), "code_find_calls", { name: "zzz" });
       expect(result.isError).toBeUndefined();
       expect(result.content[0]?.text).toContain('No calls to "zzz" found.');
     } finally {
@@ -123,7 +123,7 @@ describe("kone_ast_find_calls runs", () => {
     const dir = fixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_find_calls", {
+      const result = await registry.call(makeCtx(dir), "code_find_calls", {
         name: "foo($$$ARGS)",
       });
       expect(result.isError).toBe(true);
@@ -137,7 +137,7 @@ describe("kone_ast_find_calls runs", () => {
     const dir = fixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_find_calls", {
+      const result = await registry.call(makeCtx(dir), "code_find_calls", {
         name: "foo",
         path: "../outside",
       });
@@ -152,7 +152,7 @@ describe("kone_ast_find_calls runs", () => {
     const dir = fixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_find_calls", {
+      const result = await registry.call(makeCtx(dir), "code_find_calls", {
         name: "foo",
         path: "nope/missing.ts",
       });
@@ -164,7 +164,7 @@ describe("kone_ast_find_calls runs", () => {
   });
 });
 
-describe("kone_ast_preview registration", () => {
+describe("code_preview_rewrite registration", () => {
   test("the description states preview-only, caller applies, and re-verification", () => {
     const description = createAstTools()[1]?.description ?? "";
     expect(description).toMatch(/preview only/i);
@@ -249,13 +249,13 @@ function snapshotFiles(dir: string): Map<string, string> {  const hashes = new M
   return hashes;
 }
 
-describe("kone_ast_preview runs", () => {
+describe("code_preview_rewrite runs", () => {
   test("a turn-less rename previews before→after rows with counts, leaving disk alone", async () => {
     const dir = previewFixtureProject();
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "foo",
         to: "bar",
@@ -283,7 +283,7 @@ describe("kone_ast_preview runs", () => {
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "foo",
         to: "bar",
@@ -303,7 +303,7 @@ describe("kone_ast_preview runs", () => {
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const last = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const last = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "add-argument",
         name: "foo",
         argText: "ctx",
@@ -312,7 +312,7 @@ describe("kone_ast_preview runs", () => {
       expect(last.isError).toBeUndefined();
       expect(last.content[0]?.text).toContain("src/a.ts:1 - foo(1, 2); → foo(1, 2, ctx);");
       expect(last.structuredContent?.["position"]).toBe("last");
-      const first = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const first = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "add-argument",
         name: "foo",
         argText: "ctx",
@@ -332,7 +332,7 @@ describe("kone_ast_preview runs", () => {
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "add-argument",
         name: "foo",
         argText: '"b"',
@@ -351,7 +351,7 @@ describe("kone_ast_preview runs", () => {
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "zzz",
         to: "yyy",
@@ -383,7 +383,7 @@ describe("kone_ast_preview runs", () => {
         { op: "add-argument", argText: "ctx" },
       ];
       for (const args of cases) {
-        const result = await registry.call(makeCtx(dir), "kone_ast_preview", args);
+        const result = await registry.call(makeCtx(dir), "code_preview_rewrite", args);
         expect(result.isError).toBe(true);
         expect(result.content[0]?.text).toMatch(/invalid_input/);
       }
@@ -398,7 +398,7 @@ describe("kone_ast_preview runs", () => {
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "foo",
         to: "bar",
@@ -418,7 +418,7 @@ describe("kone_ast_preview runs", () => {
     const before = snapshotFiles(dir);
     try {
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "foo",
         to: "bar",
@@ -438,7 +438,7 @@ describe("kone_ast_preview runs", () => {
     const dir = previewFixtureProject();
     try {
       const registry = createRegistry(createAstTools());
-      const escaped = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const escaped = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "foo",
         to: "bar",
@@ -446,7 +446,7 @@ describe("kone_ast_preview runs", () => {
       });
       expect(escaped.isError).toBe(true);
       expect(escaped.content[0]?.text).toMatch(/invalid_input/);
-      const unknown = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const unknown = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "add-argument",
         name: "foo",
         argText: "ctx",
@@ -469,7 +469,7 @@ describe("kone_ast_preview runs", () => {
       writeFileSync(path.join(dir, "big.ts"), `${lines.join("\n")}\n`);
       const before = snapshotFiles(dir);
       const registry = createRegistry(createAstTools());
-      const result = await registry.call(makeCtx(dir), "kone_ast_preview", {
+      const result = await registry.call(makeCtx(dir), "code_preview_rewrite", {
         op: "rename-call",
         from: "foo",
         to: "bar",

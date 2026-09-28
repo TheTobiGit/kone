@@ -118,8 +118,8 @@ describe("registry", () => {
   test("tools/list advertises both scratchpad tools with JSON schemas", () => {
     const { registry } = makeTools();
     const names = registry.listTools().map((tool) => tool.name);
-    expect(names).toEqual(["kone_scratchpad_read", "kone_scratchpad_write"]);
-    const write = registry.listTools().find((t) => t.name === "kone_scratchpad_write")!;
+    expect(names).toEqual(["scratchpad_read", "scratchpad_write"]);
+    const write = registry.listTools().find((t) => t.name === "scratchpad_write")!;
     expect(write.inputSchema.required).toEqual(["title", "body"]);
   });
 
@@ -128,8 +128,8 @@ describe("registry", () => {
     const denied = createScratchpadTools({ store, emit: () => {} });
     denied[0]!.permission = "deny";
     const registry = createRegistry(denied);
-    expect(registry.listTools().map((t) => t.name)).toEqual(["kone_scratchpad_write"]);
-    const result = await registry.call(ctx(), "kone_scratchpad_read", {});
+    expect(registry.listTools().map((t) => t.name)).toEqual(["scratchpad_write"]);
+    const result = await registry.call(ctx(), "scratchpad_read", {});
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error.code).toBe("permission_denied");
   });
@@ -145,7 +145,7 @@ describe("registry", () => {
     const { registry } = makeTools();
     const result = await registry.call(
       ctx({ turnId: null }),
-      "kone_scratchpad_write",
+      "scratchpad_write",
       { title: "Scratchpad", body: "hi" },
     );
     expect(result.isError).toBe(true);
@@ -154,24 +154,31 @@ describe("registry", () => {
 
   test("read works without a turn", async () => {
     const { registry } = makeTools();
-    const result = await registry.call(ctx({ turnId: null }), "kone_scratchpad_read", {});
+    const result = await registry.call(ctx({ turnId: null }), "scratchpad_read", {});
     expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error.code).toBe("not_found");
+  });
+
+  // A thread from before the rename still shows its agent the old names.
+  test("a tool's former name reaches the tool", async () => {
+    const { registry } = makeTools();
+    const result = await registry.call(ctx({ turnId: null }), "kone_scratchpad_read", {});
     expect(result.structuredContent?.error.code).toBe("not_found");
   });
 
   test("invalid arguments → invalid_input with issues", async () => {
     const { registry } = makeTools();
-    const result = await registry.call(ctx(), "kone_scratchpad_write", { body: "no title" });
+    const result = await registry.call(ctx(), "scratchpad_write", { body: "no title" });
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error.code).toBe("invalid_input");
     expect(result.structuredContent?.error.details.issues.length).toBeGreaterThan(0);
   });
 });
 
-describe("kone_scratchpad_read", () => {
+describe("scratchpad_read", () => {
   test("no pad yet → not_found", async () => {
     const { registry } = makeTools();
-    const result = await registry.call(ctx(), "kone_scratchpad_read", {});
+    const result = await registry.call(ctx(), "scratchpad_read", {});
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error.code).toBe("not_found");
   });
@@ -180,7 +187,7 @@ describe("kone_scratchpad_read", () => {
     const { registry, store } = makeTools();
     store.saveScratchpad({ padId: "old", projectPath: PROJECT, title: "Scratchpad", body: "old" });
     store.saveScratchpad({ padId: "new", projectPath: PROJECT, title: "Scratchpad", body: "new body" });
-    const result = await registry.call(ctx(), "kone_scratchpad_read", {});
+    const result = await registry.call(ctx(), "scratchpad_read", {});
     expect(result.isError).toBeUndefined();
     expect(result.content[0]!.text).toBe("new body");
     expect(result.structuredContent?.pad).toMatchObject({ id: "new", body: "new body", revision: 1 });
@@ -189,15 +196,15 @@ describe("kone_scratchpad_read", () => {
   test("reads by explicit scratchpadId", async () => {
     const { registry, store } = makeTools();
     store.saveScratchpad({ padId: "p1", projectPath: PROJECT, title: "Scratchpad", body: "one" });
-    const result = await registry.call(ctx(), "kone_scratchpad_read", { scratchpadId: "p1" });
+    const result = await registry.call(ctx(), "scratchpad_read", { scratchpadId: "p1" });
     expect(result.structuredContent?.pad.id).toBe("p1");
   });
 });
 
-describe("kone_scratchpad_write", () => {
+describe("scratchpad_write", () => {
   test("creates the pad on first write and attributes the writer", async () => {
     const { registry, events } = makeTools();
-    const result = await registry.call(ctx(), "kone_scratchpad_write", {
+    const result = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "hello agent",
     });
@@ -219,11 +226,11 @@ describe("kone_scratchpad_write", () => {
 
   test("append merges server-side with a blank line and bumps revision", async () => {
     const { registry } = makeTools();
-    await registry.call(ctx(), "kone_scratchpad_write", {
+    await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "first",
     });
-    const result = await registry.call(ctx(), "kone_scratchpad_write", {
+    const result = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "second",
       append: true,
@@ -234,10 +241,10 @@ describe("kone_scratchpad_write", () => {
 
   test("stale expectedRevision → revision_conflict carrying the current revision", async () => {
     const { registry } = makeTools();
-    await registry.call(ctx(), "kone_scratchpad_write", { title: "Scratchpad", body: "v1" });
+    await registry.call(ctx(), "scratchpad_write", { title: "Scratchpad", body: "v1" });
     // An intermediate write moves the revision to 2, so a write based on 1 is stale.
-    await registry.call(ctx(), "kone_scratchpad_write", { title: "Scratchpad", body: "v1.5" });
-    const result = await registry.call(ctx(), "kone_scratchpad_write", {
+    await registry.call(ctx(), "scratchpad_write", { title: "Scratchpad", body: "v1.5" });
+    const result = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "v2",
       expectedRevision: 1,
@@ -249,8 +256,8 @@ describe("kone_scratchpad_write", () => {
 
   test("omitting expectedRevision overwrites unconditionally", async () => {
     const { registry } = makeTools();
-    await registry.call(ctx(), "kone_scratchpad_write", { title: "Scratchpad", body: "v1" });
-    const result = await registry.call(ctx(), "kone_scratchpad_write", {
+    await registry.call(ctx(), "scratchpad_write", { title: "Scratchpad", body: "v1" });
+    const result = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "v2",
     });
@@ -260,12 +267,12 @@ describe("kone_scratchpad_write", () => {
 
   test("idempotency: same clientRequestId + same content replays the stored result", async () => {
     const { registry } = makeTools();
-    const first = await registry.call(ctx(), "kone_scratchpad_write", {
+    const first = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "once",
       clientRequestId: "op-1",
     });
-    const replay = await registry.call(ctx(), "kone_scratchpad_write", {
+    const replay = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "once",
       clientRequestId: "op-1",
@@ -276,12 +283,12 @@ describe("kone_scratchpad_write", () => {
 
   test("idempotency: same clientRequestId + different content → idempotency_conflict", async () => {
     const { registry } = makeTools();
-    await registry.call(ctx(), "kone_scratchpad_write", {
+    await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "once",
       clientRequestId: "op-1",
     });
-    const second = await registry.call(ctx(), "kone_scratchpad_write", {
+    const second = await registry.call(ctx(), "scratchpad_write", {
       title: "Scratchpad",
       body: "twice",
       clientRequestId: "op-1",
@@ -292,12 +299,12 @@ describe("kone_scratchpad_write", () => {
 
   test("idempotency keys are turn-scoped (different turn = fresh op)", async () => {
     const { registry } = makeTools();
-    await registry.call(ctx({ turnId: "turn-1" }), "kone_scratchpad_write", {
+    await registry.call(ctx({ turnId: "turn-1" }), "scratchpad_write", {
       title: "Scratchpad",
       body: "first turn",
       clientRequestId: "op-1",
     });
-    const secondTurn = await registry.call(ctx({ turnId: "turn-2" }), "kone_scratchpad_write", {
+    const secondTurn = await registry.call(ctx({ turnId: "turn-2" }), "scratchpad_write", {
       title: "Scratchpad",
       body: "second turn",
       clientRequestId: "op-1",
@@ -373,6 +380,21 @@ describe("registry: what an assistant tool hands the provider", () => {
     expect(failed.isError).toBe(true);
     expect(failed.content[0]?.text).toBe('internal: Tool "app_boom" failed: disk full');
     expect(failed.structuredContent).toBeUndefined();
+  });
+
+  test("tools/list serves the core and on-demand sets apart, and all of them by default", () => {
+    const registry = createRegistry([tool("kone_core", "worker"), { ...tool("kone_rare", "worker"), onDemand: true }]);
+    const names = (set?: "all" | "core" | "on-demand") => registry.listTools("worker", set).map((t) => t.name);
+    expect(names()).toEqual(["kone_core", "kone_rare"]);
+    expect(names("core")).toEqual(["kone_core"]);
+    expect(names("on-demand")).toEqual(["kone_rare"]);
+    expect(registry.listToolPrompts("worker")).toEqual([]);
+  });
+
+  test("an on-demand tool is still callable from any set", async () => {
+    const registry = createRegistry([{ ...tool("kone_rare", "worker"), onDemand: true }]);
+    const result = await registry.call(ctx(), "kone_rare", {}, "worker");
+    expect(result.content[0]?.text).toBe("the answer");
   });
 
   test("a worker tool keeps its structured half", async () => {

@@ -252,6 +252,7 @@ export function summarizeSession(
     added: meta.added,
     removed: meta.removed,
     tokens: meta.tokens,
+    costUsd: meta.costUsd,
     // Recency key: last conversation activity — a background rename must not
     // reshuffle the list (updatedAt also moves for title/archive bookkeeping).
     updatedAt: meta.lastActivityAt ?? meta.updatedAt,

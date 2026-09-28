@@ -19,19 +19,19 @@ import type { GatewayToolPrompt } from "../types.js";
 
 const TOOLS: GatewayToolPrompt[] = [
   {
-    name: "kone_scratchpad_read",
+    name: "scratchpad_read",
     snippet: "Read the project scratchpad.",
     guidelines: [],
     needsApproval: false,
   },
   {
-    name: "kone_scratchpad_write",
+    name: "scratchpad_write",
     snippet: "Write that board.",
     guidelines: ["Read before overwriting."],
     needsApproval: false,
   },
   {
-    name: "kone_launch",
+    name: "process_control",
     snippet: "Run background processes.",
     guidelines: [],
     needsApproval: true,
@@ -50,7 +50,7 @@ describe("kone host context (app-context injection)", () => {
   test("announces exactly the tools it was handed, one line each", () => {
     const block = renderKoneHostContext(TOOLS);
     expect(block).toContain("You are running inside kone");
-    expect(block).toContain("mcp__kone__kone_scratchpad_read");
+    expect(block).toContain("mcp__kone__scratchpad_read");
     expect(block).toContain("part of your job");
     for (const tool of TOOLS) {
       expect(block).toContain(`\`${tool.name}\`: ${tool.snippet}`);
@@ -61,15 +61,15 @@ describe("kone host context (app-context injection)", () => {
   // session did not get can never be described to it.
   test("never names a tool it was not handed", () => {
     const block = renderKoneHostContext([TOOLS[0]!]);
-    expect(block).toContain("kone_scratchpad_read");
-    expect(block).not.toContain("kone_scratchpad_write");
-    expect(block).not.toContain("kone_launch");
+    expect(block).toContain("scratchpad_read");
+    expect(block).not.toContain("scratchpad_write");
+    expect(block).not.toContain("process_control");
   });
 
   test("says when a tool will stop for the user, so a plan can allow for the wait", () => {
     const block = renderKoneHostContext(TOOLS);
-    expect(block).toContain("`kone_launch`: Run background processes. (stops for the user's approval)");
-    expect(block).not.toContain("`kone_scratchpad_read`: Read the project scratchpad. (stops");
+    expect(block).toContain("`process_control`: Run background processes. (stops for the user's approval)");
+    expect(block).not.toContain("`scratchpad_read`: Read the project scratchpad. (stops");
   });
 
   test("carries each tool's standing rules once, however many tools ask for them", () => {
@@ -88,6 +88,23 @@ describe("kone host context (app-context injection)", () => {
 
   test("no gateway means no host block at all", () => {
     expect(buildKoneContext({}).hostContext).toBe("");
+  });
+
+  test("tells a deferring client which tools load on demand, and how", () => {
+    const tools: GatewayToolPrompt[] = [TOOLS[0]!, { ...TOOLS[2]!, onDemand: true }];
+    const block = renderKoneHostContext(tools, "worker", { toolSearch: true });
+    expect(block).toContain("`process_control`: Run background processes. (stops for the user's approval) (on demand)");
+    expect(block).not.toContain("`scratchpad_read`: Read the project scratchpad. (on demand)");
+    expect(block).toContain("select:mcp__kone_extra__<tool name>");
+    // The Claude channel is the one that defers; every other channel lists the
+    // full set, so it must not send an agent looking for a search it lacks.
+    expect(claudeSystemPromptAppend({ gateway: grant(tools) })).toBe(block);
+    expect(renderKoneHostContext(tools)).not.toContain("on demand");
+    expect(codexDeveloperInstructions({ gateway: grant(tools) })).not.toContain("on demand");
+  });
+
+  test("says nothing about tool search when nothing is deferred", () => {
+    expect(renderKoneHostContext(TOOLS, "worker", { toolSearch: true })).not.toContain("ToolSearch");
   });
 
   test("claude channel: block when connected, empty append when not", () => {
@@ -111,7 +128,7 @@ describe("kone host context (app-context injection)", () => {
     // Take the LAST closing tag: the block's prose quotes the tags literally.
     const appContext = block!.split("</collaboration_mode>").pop() ?? "";
     expect(appContext).toContain(KONE_HOST_CONTEXT_MARKER);
-    expect(appContext).toContain("kone_scratchpad_read");
+    expect(appContext).toContain("scratchpad_read");
     expect(codexDeveloperInstructions({})).toBeUndefined();
   });
 

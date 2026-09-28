@@ -118,13 +118,13 @@ const CONNECTION = {
   // these, so a fixture without them describes a gateway that serves nothing.
   tools: [
     {
-      name: "kone_scratchpad_read",
+      name: "scratchpad_read",
       snippet: "Read the project scratchpad.",
       guidelines: [],
       needsApproval: false,
     },
     {
-      name: "kone_scratchpad_write",
+      name: "scratchpad_write",
       snippet: "Write that board.",
       guidelines: ["Read before overwriting."],
       needsApproval: false,
@@ -220,7 +220,7 @@ describe("Cursor gateway injection", () => {
     const first = sessionRpc!.calls.find((c) => c.method === "session/prompt");
     const firstText = promptParts(first?.params);
     expect(firstText[0].text).toContain(KONE_HOST_CONTEXT_MARKER);
-    expect(firstText[0].text).toContain("kone_scratchpad_read");
+    expect(firstText[0].text).toContain("scratchpad_read");
     expect(firstText[0].text).toContain("hello world");
 
     await adapter.sendTurn({ threadId: "thread-2", input: "again" });

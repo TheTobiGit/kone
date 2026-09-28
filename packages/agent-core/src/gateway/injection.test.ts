@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import {
   acpAgentSupportsHttp,
   acpMcpServers,
+  claudeMcpServers,
   CODEX_MANAGED_REGION_BEGIN,
   CODEX_MANAGED_REGION_END,
   codexGatewayConfigToml,
@@ -19,12 +20,37 @@ import {
   KONE_GATEWAY_TOKEN_ENV,
   KONE_GATEWAY_URL_ENV,
   KONE_MCP_SERVER_NAME,
+  KONE_ON_DEMAND_MCP_SERVER_NAME,
   removeKoneMcpTables,
   STDIO_PROXY_PATH,
   stripCodexManagedRegion,
 } from "./injection.js";
 
 const CONNECTION = { url: "http://127.0.0.1:41231/mcp", bearerToken: "kone_gw_token-1" };
+
+describe("claudeMcpServers", () => {
+  const prompt = (name: string, onDemand = false) => ({ name, snippet: name, guidelines: [], needsApproval: false, onDemand });
+
+  test("core tools load up front; on-demand ones get a deferred server of their own", () => {
+    const servers = claudeMcpServers({ ...CONNECTION, tools: [prompt("kone_a"), prompt("kone_b", true)] });
+    expect(servers[KONE_MCP_SERVER_NAME]).toEqual({
+      type: "http",
+      url: "http://127.0.0.1:41231/mcp?tools=core",
+      headers: { Authorization: "Bearer kone_gw_token-1" },
+      alwaysLoad: true,
+    });
+    expect(servers[KONE_ON_DEMAND_MCP_SERVER_NAME]).toEqual({
+      type: "http",
+      url: "http://127.0.0.1:41231/mcp?tools=on-demand",
+      headers: { Authorization: "Bearer kone_gw_token-1" },
+    });
+  });
+
+  test("no on-demand tools, no second server", () => {
+    const servers = claudeMcpServers({ ...CONNECTION, tools: [prompt("kone_a")] });
+    expect(Object.keys(servers)).toEqual([KONE_MCP_SERVER_NAME]);
+  });
+});
 
 describe("acpAgentSupportsHttp", () => {
   test("true only when agentCapabilities.mcpCapabilities.http is exactly true", () => {

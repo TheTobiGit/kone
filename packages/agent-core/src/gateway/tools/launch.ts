@@ -648,7 +648,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
 
   return [
     {
-      name: "kone_launch",
+      name: "process_control",
       description:
         "Supervise and control long-running background processes, watchers, or dev servers. " +
         "Supports operations: start, stop, restart, logs, send, status, list.",
@@ -659,6 +659,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
       // bookkeeping.
       permission: "ask",
       requiresActiveTurn: false,
+      onDemand: true,
       promptSnippet:
         "Start, stop, inspect and talk to long-running background processes — dev servers, watchers, builds.",
       handler: async (ctx: GatewayToolContext, rawInput: GatewayRecord): Promise<GatewayToolResult> => {

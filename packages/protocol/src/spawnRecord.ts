@@ -18,10 +18,10 @@ import { z } from "zod";
  *  registers them under these names and the renderer reads their results by
  *  them, so a rename lands on both sides at once. */
 export const SPAWN_TOOL_NAMES = [
-  "kone_spawn_worker",
-  "kone_spawn_worker_preset",
-  "kone_delegate_to_teammate",
-  "kone_spawn_batch",
+  "worker_spawn",
+  "worker_spawn_preset",
+  "worker_delegate",
+  "worker_spawn_batch",
 ] as const;
 
 export type SpawnToolName = (typeof SPAWN_TOOL_NAMES)[number];

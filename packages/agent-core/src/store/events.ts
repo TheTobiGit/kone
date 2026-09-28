@@ -6,6 +6,7 @@ import type { TokenUsageSplits } from "../usage/report.js";
 import { assistantBlockId, withTransaction } from "../conversationMigrations.js";
 import { indexItemRow, indexTurnRows, parentBlockIdForTurn } from "./search.js";
 import { decodeStoredText, encodeTextFallback, rawTextForStorage } from "./itemTextChunks.js";
+import { RUNNING_TOTAL_PROVIDERS } from "../conversationStoreTypes.js";
 
 /** Cap on remembered per-item stream cursors (see `itemCursors`). Completed
  *  items drop their entry, so the map only grows with never-settling items;
@@ -354,11 +355,7 @@ export class EventIngestRepo {
             if (total !== undefined && total !== null && Number.isFinite(total)) {
               // Codex, OpenCode, Cursor and Antigravity report running thread totals
               // (keep the max); Claude reports per-turn spend (accumulate).
-              const isRunningTotal =
-                event.provider === "codex" ||
-                event.provider === "opencode" ||
-                event.provider === "cursor" ||
-                event.provider === "antigravity";
+              const isRunningTotal = RUNNING_TOTAL_PROVIDERS.includes(event.provider);
               const sql = isRunningTotal
                   ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`
                   : `UPDATE threads SET tokens = COALESCE(tokens, 0) + ? WHERE thread_id = ?`;

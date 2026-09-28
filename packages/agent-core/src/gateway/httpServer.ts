@@ -13,10 +13,20 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { JSON_RPC_INVALID_REQUEST, JSON_RPC_PARSE_ERROR, type McpTransport } from "./mcpTransport.js";
 import { extractBearerToken } from "./mcpTransport.js";
 import type { GatewayCredentials } from "./credentials.js";
+import type { GatewayToolSet } from "./registry.js";
 import type { GatewayRecord, GatewayValue } from "./schemas.js";
 
 export const AGENT_GATEWAY_MCP_PATH = "/mcp";
 export const AGENT_GATEWAY_BOOTSTRAP_PATH = "/bootstrap";
+/** Query parameter naming which tool set a client's tools/list serves — how
+ *  one endpoint reaches a deferring client as two servers. */
+export const AGENT_GATEWAY_TOOL_SET_PARAM = "tools";
+
+/** The tool set a query names; anything unrecognised lists every tool, so a
+ *  malformed URL can never hide a tool from the session that owns it. */
+function toolSetFromQuery(value: string | null): GatewayToolSet {
+  return value === "core" || value === "on-demand" ? value : "all";
+}
 const MCP_MAX_BODY_BYTES = 1024 * 1024;
 
 export interface GatewayHttpServer {
@@ -183,6 +193,7 @@ async function handleRequest(
     const result = await transport.handlePost({
       authorizationHeader: req.headers.authorization,
       body: body.body,
+      toolSet: toolSetFromQuery(url.searchParams.get(AGENT_GATEWAY_TOOL_SET_PARAM)),
     });
     if (result.body === undefined) {
       res.writeHead(result.status);

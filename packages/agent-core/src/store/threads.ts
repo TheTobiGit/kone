@@ -2,7 +2,7 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, InteractionMode, ProviderKind, StoredThreadMeta, TurnStamp } from "../types.js";
-import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
+import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
 
 import { itemFullTextSql } from "./itemTextChunks.js";
@@ -331,10 +331,10 @@ export class ThreadRepo {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
-      // schema creates.
+      // SAFETY: `t.*` plus the usage sums is exactly ThreadRow — the columns
+      // this schema creates and THREAD_USAGE_COLUMNS.
       const row = db
-        .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
+        .prepare(`SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t WHERE t.thread_id = ?`)
         .get(threadId) as ThreadRow | undefined;
       return row ? rowToMeta(row) : null;
     } catch (err) {
@@ -351,12 +351,13 @@ export class ThreadRepo {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
-      // schema creates.
+      // SAFETY: `t.*` plus the usage sums is exactly ThreadRow — the columns
+      // this schema creates and THREAD_USAGE_COLUMNS.
       const row = db
         .prepare(
-          `SELECT * FROM threads WHERE project_path = ? AND archived_at IS NULL
-           ORDER BY last_activity_at DESC LIMIT 1`,
+          `SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t
+           WHERE t.project_path = ? AND t.archived_at IS NULL
+           ORDER BY t.last_activity_at DESC LIMIT 1`,
         )
         .get(projectPath) as ThreadRow | undefined;
       return row ? rowToMeta(row) : null;
@@ -402,10 +403,10 @@ export class ThreadRepo {
       // plus any still-streaming chunks), so a list rendered mid-stream shows
       // the same partial text the transcript shows — not the stale base.
       const snippetSql = itemFullTextSql("i");
-      // SAFETY: `t.*` plus the computed snippet is exactly ThreadRow.
+      // SAFETY: `t.*` plus the usage sums and the computed snippet is exactly ThreadRow.
       const rows = db
         .prepare(
-          `SELECT t.*,
+          `SELECT t.*, ${THREAD_USAGE_COLUMNS},
             (SELECT ${snippetSql} FROM items i WHERE i.thread_id = t.thread_id AND i.kind = 'assistant_text' AND TRIM(${snippetSql}) != '' ORDER BY i.seq DESC LIMIT 1) AS snippet
           FROM threads t
             WHERE t.project_path = ?

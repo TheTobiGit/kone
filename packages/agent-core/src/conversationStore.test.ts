@@ -1217,6 +1217,53 @@ describe("live capture contracts", () => {
     raw.close();
   });
 
+  test("a Claude thread is priced per bucket, cache reads at the cache rate", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent", model: "claude-opus-5" });
+    store.recordUserBlock({ threadId: "t-1", text: "go", at: 5 });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    // One agentic turn: most of the input is the cached prompt re-read on
+    // every tool call. `input` already counts both cache buckets.
+    store.applyEvent(
+      tokenUsage(
+        "t-1",
+        15,
+        { input: 612_000, output: 4_200, total: 616_200, cacheReadTokens: 560_000, cacheCreationTokens: 50_000 },
+        "claudeAgent",
+      ),
+    );
+    store.applyEvent(turnStarted("t-1", "turn-2", 20));
+    store.applyEvent(
+      tokenUsage("t-1", 25, { input: 100_000, output: 1_000, total: 101_000, cacheReadTokens: 100_000 }, "claudeAgent"),
+    );
+    // Opus 5: $5 in, $25 out, $6.25 cache write, $0.50 cache read per million.
+    // Turns sum: 2k fresh, 5.2k out, 50k written, 660k read.
+    const expected = (2_000 * 5 + 5_200 * 25 + 50_000 * 6.25 + 660_000 * 0.5) / 1_000_000;
+    expect(store.threadMeta("t-1")?.costUsd).toBeCloseTo(expected, 6);
+    expect(store.listThreads("/p")[0]?.costUsd).toBeCloseTo(expected, 6);
+  });
+
+  test("a running-total provider is priced from its latest usage row, not a sum", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex", model: "claude-opus-5" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent(tokenUsage("t-1", 15, { input: 1_000_000, output: 0, total: 1_000_000 }, "codex"));
+    store.applyEvent(turnStarted("t-1", "turn-2", 20));
+    // The thread's running total — it already includes turn-1's million.
+    store.applyEvent(tokenUsage("t-1", 25, { input: 2_000_000, output: 0, total: 2_000_000 }, "codex"));
+    expect(store.threadMeta("t-1")?.costUsd).toBeCloseTo(10, 6);
+  });
+
+  test("a thread with no usage, or an unpriceable model, carries no cost", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent", model: "claude-opus-5" });
+    expect(store.threadMeta("t-1")?.costUsd).toBeUndefined();
+    store.ensureThread({ threadId: "t-2", projectPath: "/p", provider: "claudeAgent", model: "no-such-model-xyz" });
+    store.applyEvent(turnStarted("t-2", "turn-1", 10));
+    store.applyEvent(tokenUsage("t-2", 15, { input: 1_000, output: 10, total: 1_010 }, "claudeAgent"));
+    expect(store.threadMeta("t-2")?.costUsd).toBeUndefined();
+  });
+
   test("an explicit compactsAutomatically: false survives the store round-trip", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });

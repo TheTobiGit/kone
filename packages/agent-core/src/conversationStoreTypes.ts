@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 import { copyTurnStamp } from "./types.js";
 import { threadEnvMode } from "./threadWorkspace.js";
+import { priceTurnUsage } from "./usage/storeUsage.js";
 import type { ThreadEnvMode, ThreadWorkspace } from "./threadWorkspace.js";
 
 /** The value `done_at` carries when you explicitly un-marked a thread, as
@@ -129,7 +130,52 @@ export type ThreadRow = {
    *  the request was persisted, and cleared once the worktree materializes. */
   requested_branch?: string | null;
   snippet?: string | null;
+  /** The thread's `turn_usage` sums, present when the read joined them in
+   *  with THREAD_USAGE_COLUMNS — what `costUsd` is priced from. */
+  usage_input?: number | null;
+  usage_output?: number | null;
+  usage_cache_read?: number | null;
+  usage_cache_write?: number | null;
 };
+
+/** Providers whose usage reports are running thread totals rather than one
+ *  turn's spend: every `turn_usage` row they write already holds the whole
+ *  thread so far, so the thread's usage is its latest row, never a sum. */
+export const RUNNING_TOTAL_PROVIDERS: readonly string[] = ["codex", "opencode", "cursor", "antigravity"];
+
+const runningTotalList = RUNNING_TOTAL_PROVIDERS.map((p) => `'${p}'`).join(", ");
+
+function threadUsageColumn(column: string, alias: string): string {
+  return `CASE WHEN t.provider IN (${runningTotalList})
+    THEN (SELECT u.${column} FROM turn_usage u WHERE u.thread_id = t.thread_id ORDER BY u.at DESC LIMIT 1)
+    ELSE (SELECT SUM(u.${column}) FROM turn_usage u WHERE u.thread_id = t.thread_id)
+  END AS ${alias}`;
+}
+
+/** Select-list fragment carrying a thread's `turn_usage` totals onto its row,
+ *  for a query that aliases `threads` as `t`. Kept beside ThreadRow so every
+ *  read that wants a priced thread spells the columns the same way. */
+export const THREAD_USAGE_COLUMNS = [
+  threadUsageColumn("input_tokens", "usage_input"),
+  threadUsageColumn("output_tokens", "usage_output"),
+  threadUsageColumn("cache_read_tokens", "usage_cache_read"),
+  threadUsageColumn("cache_creation_tokens", "usage_cache_write"),
+].join(",\n");
+
+/** What a thread has cost, priced per bucket from its `turn_usage` sums.
+ *  Undefined when the read carried no sums, the thread has none yet, or no
+ *  pricing source knows its model — the caller estimates then instead. */
+function threadCostUsd(row: ThreadRow): number | undefined {
+  const input = row.usage_input ?? null;
+  const output = row.usage_output ?? null;
+  if (input === null && output === null) return undefined;
+  return priceTurnUsage(row.model, {
+    input: input ?? 0,
+    output: output ?? 0,
+    cacheRead: row.usage_cache_read ?? 0,
+    cacheWrite: row.usage_cache_write ?? 0,
+  });
+}
 
 export type BlockRow = {
   /** Arrival order within the thread — the row id. Ordering key for the
@@ -453,6 +499,7 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
     added: row.added ?? undefined,
     removed: row.removed ?? undefined,
     tokens: row.tokens ?? undefined,
+    costUsd: threadCostUsd(row),
     contextUsed: row.context_used ?? undefined,
     contextWindow: row.context_window ?? undefined,
     compactsAutomatically:

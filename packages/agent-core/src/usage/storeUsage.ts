@@ -48,6 +48,25 @@ const EMPTY: StoreUsageReport = {
   promptsByDayRows: [],
 };
 
+/** Dollar cost of summed `turn_usage` counts for one model, or `undefined`
+ *  when no pricing source knows the model. Every adapter folds its cache
+ *  reads and writes into `input_tokens`, so the uncached remainder is priced
+ *  at the input rate and each cache bucket at its own — passing the whole
+ *  input column as plain input would bill every cached token twice, once at
+ *  the full input rate. */
+export function priceTurnUsage(
+  model: string | null | undefined,
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number },
+): number | undefined {
+  const outcome = priceModel(currentPricingSnapshot(), model, {
+    input: Math.max(0, tokens.input - tokens.cacheRead - tokens.cacheWrite),
+    output: tokens.output,
+    cacheRead: tokens.cacheRead,
+    cacheWrite: tokens.cacheWrite,
+  });
+  return outcome.priced ? outcome.dollars : undefined;
+}
+
 function rowCost(
   model: string,
   input_tokens: number,
@@ -55,13 +74,14 @@ function rowCost(
   cache_read_tokens: number,
   cache_creation_tokens: number,
 ): number {
-  const outcome = priceModel(currentPricingSnapshot(), model, {
-    input: input_tokens,
-    output: output_tokens,
-    cacheRead: cache_read_tokens,
-    cacheWrite: cache_creation_tokens,
-  });
-  return outcome.priced ? outcome.dollars : 0;
+  return (
+    priceTurnUsage(model, {
+      input: input_tokens,
+      output: output_tokens,
+      cacheRead: cache_read_tokens,
+      cacheWrite: cache_creation_tokens,
+    }) ?? 0
+  );
 }
 
 export function usageReportFromStore(
