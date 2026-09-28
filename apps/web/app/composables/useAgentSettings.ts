@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, ref, shallowReactive } from "vue";
 import type {
   AgentInventory,
   AgentUsageReport,
@@ -62,7 +62,9 @@ const CONNECTED_KEY = "kone:quota:connected";
 // background, so the skeleton is only ever paid once, on the very first cold
 // read. Keyed finely enough that project vs. global and 7d vs. 30d never bleed
 // into each other. Cleared implicitly by a forceRefresh, which always refetches.
-const usageReportCache = new Map<string, AgentUsageReport>();
+// The usage map is reactive so a view that shows several ranges at once (the
+// project's Space) redraws as the warmer fills them in.
+const usageReportCache = shallowReactive(new Map<string, AgentUsageReport>());
 const inventoryCache = new Map<string, AgentInventory>();
 /** Every range the pane offers — the warmer walks this to pre-fill the ones the
  *  user hasn't clicked yet. */
@@ -201,6 +203,34 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
       if (sibling !== range.value) usageReportCache.delete(keyFor(sibling));
     }
     await loadUsage({ forceRefresh: true });
+  }
+
+  /** The last-good report for any range under the current scope, whether or not
+   *  it is the one selected — null until it has been read at least once. */
+  function usageFor(forRange: UsageRange): AgentUsageReport | null {
+    return usageReportCache.get(keyFor(forRange)) ?? null;
+  }
+
+  /** Re-read every range other than the selected one, even those already
+   *  cached — for a view that shows them side by side, where a stale sibling
+   *  would put last hour's 7-day total next to this minute's today. Serial and
+   *  best-effort, like the warmer; the selected range is loadUsage's job. */
+  async function revalidateRanges(): Promise<void> {
+    const api = bridge()?.usage;
+    if (!api?.report) return;
+    for (const sibling of USAGE_RANGES) {
+      if (sibling === range.value) continue;
+      const key = keyFor(sibling);
+      try {
+        const report = await api.report({
+          range: sibling,
+          projectPath: usageScope.value === "project" ? firstPath() : null,
+        });
+        usageReportCache.set(key, report);
+      } catch {
+        // Keeps the last-good copy; the next pass tries again.
+      }
+    }
   }
 
   function setRange(next: UsageRange): void {
@@ -376,7 +406,10 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
     usageScope: usageScope,
     setRange,
     setUsageScope,
+    loadUsage,
     refreshUsage,
+    usageFor,
+    revalidateRanges,
     // limits
     limitsProviders,
     isReadable,

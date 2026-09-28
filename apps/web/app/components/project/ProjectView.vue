@@ -65,10 +65,11 @@ const {
 const rowRegistry = useStudioRowRegistry();
 const row = () => rowRegistry.rowFor(props.project.path);
 
-// Three views over the same page: the working tree ("overview"), the repository
-// ("git"), and the project's files, read-only ("files"). The studio is not one
-// of them — it is a layer over every page, summoned rather than switched to.
-const surface = ref<"overview" | "git" | "files">("overview");
+// Four views over the same page: the working tree ("overview"), the repository
+// ("git"), the project's files, read-only ("files"), and what the agents have
+// done here ("space"). The studio is not one of them — it is a layer over every
+// page, summoned rather than switched to.
+const surface = ref<"overview" | "git" | "files" | "space">("overview");
 
 // What the intent menu (hosted above this page) reads: where this project is
 // and what is live in it. This page owns both, so it publishes them through
@@ -187,6 +188,11 @@ const filesMounted = ref(false);
 /** The file the Files tab's viewer shows, for the assistant's view context. */
 const viewingFile = ref<string | null>(null);
 
+// ── the space surface ─────────────────────────────────────────────────────────
+// Mounted on first entry and kept: its usage reads are worth holding across a
+// trip to another tab, but none of them belong on project open.
+const spaceMounted = ref(false);
+
 // ── the centre nav ──────────────────────────────────────────────────────────
 // The one row the back arrow and the profile chip already bookend gains a middle:
 // a name per space this project has — its working tree, and the repository
@@ -196,6 +202,7 @@ const NAV = [
   { id: "overview", label: "Overview" },
   { id: "git", label: "Git" },
   { id: "files", label: "Files" },
+  { id: "space", label: "Space" },
 ] as const;
 const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
 function goSurface(target: (typeof NAV)[number]["id"]) {
@@ -206,6 +213,7 @@ function goSurface(target: (typeof NAV)[number]["id"]) {
   }
   cue("press");
   if (target === "files") filesMounted.value = true;
+  if (target === "space") spaceMounted.value = true;
   surface.value = target;
 }
 
@@ -804,6 +812,18 @@ function onDiscardFile(path: string) {
       />
     </div>
 
+    <!-- SPACE · what the agents have done in this project. Mounted on first
+         entry and kept, like the two above. -->
+    <div
+      v-if="spaceMounted"
+      class="surface-layer surface-layer--space"
+      :class="{ 'surface-layer--hidden': surface !== 'space' }"
+      :inert="surface !== 'space' || Boolean(activeFile)"
+      :aria-hidden="surface !== 'space' ? 'true' : undefined"
+    >
+      <SpaceView :project="project" :visible="surface === 'space'" />
+    </div>
+
     <!-- The folder settles into the corner last — rising into place with a soft
          spring, the physical grace note after the greeting, changes, and
          sessions have landed. (Home only — it steps aside once the conversation
@@ -1151,7 +1171,7 @@ function onDiscardFile(path: string) {
 }
 
 /* ── Surfaces ─────────────────────────────────────────────────────────────── */
-/* The surfaces (overview, git, files) are layers, not pages: each stays mounted for
+/* The surfaces (overview, git, files, space) are layers, not pages: each stays mounted for
    the project's lifetime and only one is visible at a time. Hiding is
    `visibility` (never display:none / v-if) so every layout box stays measurable
    while hidden. */
@@ -1229,7 +1249,8 @@ function onDiscardFile(path: string) {
 /* The repository owns its own inner padding and scroll regions, so the layer
    just hands it the viewport. */
 .surface-layer--git,
-.surface-layer--files {
+.surface-layer--files,
+.surface-layer--space {
   align-items: stretch;
 }
 .surface-layer--overview {

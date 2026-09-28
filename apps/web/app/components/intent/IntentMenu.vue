@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { onClickOutside } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
+  Analytics01Icon,
   AppleFinderIcon,
   Archive02Icon,
   ArrowRight01Icon,
@@ -55,6 +56,7 @@ const icons = {
   overview: Home01Icon,
   git: GitBranchIcon,
   files: FolderCodeIcon,
+  space: Analytics01Icon,
   launcher: GridViewIcon,
   back: ArrowTurnBackwardIcon,
   review: GitCommitIcon,

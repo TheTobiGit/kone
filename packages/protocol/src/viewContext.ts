@@ -151,9 +151,9 @@ const ViewLayerSchema = z.discriminatedUnion("surface", [
     surface: z.literal("project"),
     ...LayerBase,
     project: ViewProjectRefSchema,
-    /** The page's tabs: the working-tree overview, the git space, and the
-     *  read-only file browser. */
-    tab: z.enum(["overview", "git", "files"]),
+    /** The page's tabs: the working-tree overview, the git space, the
+     *  read-only file browser, and the agents' space (spend and usage). */
+    tab: z.enum(["overview", "git", "files", "space"]),
     /** The file shown in the Files tab's viewer, if one is. */
     viewing: Text.nullable().optional(),
     branch: Text.nullable(),
@@ -445,7 +445,9 @@ function layerLines(layer: ViewLayer, brief: boolean): string[] {
           ? "git tab (branches, history, commits)"
           : layer.tab === "files"
             ? "files tab (a read-only browser of the project's files)"
-            : "overview tab (the working tree's changes)";
+            : layer.tab === "space"
+              ? "space tab (what the agents have spent and used in this project)"
+              : "overview tab (the working tree's changes)";
       const lines = [`The project page for ${projectName(layer.project)}, on its ${tab}.`];
       if (layer.tab === "files" && layer.viewing) lines.push(`  Viewing: ${layer.viewing}.`);
       const repo: string[] = [];

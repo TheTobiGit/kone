@@ -50,6 +50,16 @@ describe("buildIntentMenu", () => {
     expect(list).not.toContain("goto-git");
   });
 
+  test("project space offers the way back and Files, never itself", () => {
+    const list = ids("project-space", { git: { repo: true, dirtyFiles: 0, branch: "main" } });
+    expect(list).toContain("goto-overview");
+    expect(list).toContain("goto-git");
+    expect(list).toContain("goto-files");
+    expect(list).not.toContain("goto-space");
+    expect(ids("project-files")).toContain("goto-space");
+    expect(ids("project-overview")).toContain("goto-space");
+  });
+
   test("the studio names its row's page, unless that page is the one underneath", () => {
     const studioRow = { projectPath: "/p/1", name: "one" };
     expect(ids("studio", { studioRow })).toEqual([
@@ -211,7 +221,7 @@ describe("buildIntentMenu", () => {
   });
 
   test("every goto card closes with Settings — unless it is already open", () => {
-    for (const view of ["launcher", "project-overview", "project-git", "studio", "inbox"] as const) {
+    for (const view of ["launcher", "project-overview", "project-git", "project-space", "studio", "inbox"] as const) {
       const sections = buildIntentMenu(ctx({ view }));
       const goto = sections.find((s) => s.key === "goto");
       expect(goto?.items[goto.items.length - 1]?.id).toBe("open-settings");

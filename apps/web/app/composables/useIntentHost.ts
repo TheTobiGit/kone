@@ -169,6 +169,7 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
     if (!project.value) return "launcher";
     if (intentSurface.value === "git") return "project-git";
     if (intentSurface.value === "files") return "project-files";
+    if (intentSurface.value === "space") return "project-space";
     return "project-overview";
   });
 
@@ -328,7 +329,8 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
             return;
           case "overview":
           case "git":
-          case "files": {
+          case "files":
+          case "space": {
             cue("press");
             goIntentSurface(action.view);
             return;
