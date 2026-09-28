@@ -324,6 +324,7 @@ function mergeUsageReport(input: {
       label,
       provider,
       tokens: 0,
+      outputTokens: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
       reasoningTokens: 0,
@@ -332,6 +333,7 @@ function mergeUsageReport(input: {
       unpricedRecords: 0,
     };
     slice.tokens += row.tokens;
+    slice.outputTokens += row.outputTokens;
     slice.cacheReadTokens += row.cacheRead;
     slice.cacheCreationTokens += row.cacheCreation;
     slice.reasoningTokens += row.reasoning;
@@ -364,7 +366,7 @@ function mergeUsageReport(input: {
       cost: bucket.costUsd,
       unpriced: bucket.unpricedRecords,
     });
-    foldSlice(providersMap, bucket.koneProvider, bucket.koneProvider, undefined, {
+    foldSlice(providersMap, bucket.koneProvider, bucket.koneProvider, bucket.koneProvider, {
       tokens: total,
       inputTokens,
       outputTokens: output,
@@ -399,7 +401,7 @@ function mergeUsageReport(input: {
         unpriced: row.unpriced_turns,
       });
     }
-    foldSlice(providersMap, row.provider, row.provider, undefined, {
+    foldSlice(providersMap, row.provider, row.provider, row.provider, {
       tokens: row.total_tokens,
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,

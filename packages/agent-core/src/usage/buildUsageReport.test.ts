@@ -113,3 +113,38 @@ describe("buildAgentUsageReport store-provider filter", () => {
     expect(captured!.onlyProviders).toEqual(["cursor"]);
   });
 });
+
+describe("buildAgentUsageReport slice provider", () => {
+  afterEach(() => {
+    mock.restore();
+  });
+
+  test("model and provider rows both name their provider; a project row has none", async () => {
+    const { buildAgentUsageReport } = await import("./buildUsageReport.js");
+    const store = stubStore(() => ({
+      ...EMPTY,
+      usageRows: [
+        {
+          model: "gpt-5",
+          provider: "codex",
+          project_path: "/some/project",
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          turns: 2,
+          cost_usd: 0.5,
+          unpriced_turns: 0,
+        },
+      ],
+    }));
+
+    const report = await buildAgentUsageReport(store, { range: "1d", projectPath: null, forceRefresh: true });
+
+    expect(report.models.map((m) => m.provider)).toEqual(["codex"]);
+    expect(report.providers.map((p) => [p.key, p.provider])).toEqual([["codex", "codex"]]);
+    expect(report.projects.map((p) => p.provider)).toEqual([undefined]);
+  });
+});
