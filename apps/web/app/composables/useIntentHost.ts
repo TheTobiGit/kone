@@ -167,7 +167,9 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
     if (activePortal.value === "studio") return "studio";
     if (activePortal.value === "inbox") return "inbox";
     if (!project.value) return "launcher";
-    return intentSurface.value === "git" ? "project-git" : "project-overview";
+    if (intentSurface.value === "git") return "project-git";
+    if (intentSurface.value === "files") return "project-files";
+    return "project-overview";
   });
 
   // While a launcher modal owns the screen the plane, the inbox, the drawer
@@ -325,9 +327,10 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
             project.value = null;
             return;
           case "overview":
-          case "git": {
+          case "git":
+          case "files": {
             cue("press");
-            goIntentSurface(action.view === "git" ? "git" : "overview");
+            goIntentSurface(action.view);
             return;
           }
         }

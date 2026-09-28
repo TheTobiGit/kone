@@ -29,6 +29,8 @@ export function createDevBridge(): DevBridge {
     fs: {
       home: () => Promise.resolve(world.MOCK_HOME),
       listDir: (dir) => Promise.resolve(world.mockListDir(dir)),
+      listProjectDir: (root, dir) => later(world.mockProjectDir(root, dir)),
+      readProjectFile: (root, path) => later(world.mockProjectFile(root, path)),
     },
     git: createDevGit(),
     agent: createDevAgent(),

@@ -65,10 +65,10 @@ const {
 const rowRegistry = useStudioRowRegistry();
 const row = () => rowRegistry.rowFor(props.project.path);
 
-// Two views over the same page: the working tree ("overview") and the repository
-// ("git"). The studio is no longer one of them — it is a layer over every page,
-// summoned rather than switched to.
-const surface = ref<"overview" | "git">("overview");
+// Three views over the same page: the working tree ("overview"), the repository
+// ("git"), and the project's files, read-only ("files"). The studio is not one
+// of them — it is a layer over every page, summoned rather than switched to.
+const surface = ref<"overview" | "git" | "files">("overview");
 
 // What the intent menu (hosted above this page) reads: where this project is
 // and what is live in it. This page owns both, so it publishes them through
@@ -156,7 +156,7 @@ function toLauncher() {
 // return glyph — the file detail, a commit, a pull request — so it never has to
 // answer for a layer it can't see.
 function onBack() {
-  if (surface.value === "git") {
+  if (surface.value !== "overview") {
     surface.value = "overview";
     return;
   }
@@ -180,6 +180,13 @@ function openGitSpace() {
   void space.load();
 }
 
+// ── the files surface ─────────────────────────────────────────────────────────
+// Mounted on first entry and kept, like the repository: its open tabs and the
+// folders expanded in its tree should survive a trip to another tab.
+const filesMounted = ref(false);
+/** The file the Files tab's viewer shows, for the assistant's view context. */
+const viewingFile = ref<string | null>(null);
+
 // ── the centre nav ──────────────────────────────────────────────────────────
 // The one row the back arrow and the profile chip already bookend gains a middle:
 // a name per space this project has — its working tree, and the repository
@@ -188,6 +195,7 @@ function openGitSpace() {
 const NAV = [
   { id: "overview", label: "Overview" },
   { id: "git", label: "Git" },
+  { id: "files", label: "Files" },
 ] as const;
 const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
 function goSurface(target: (typeof NAV)[number]["id"]) {
@@ -197,6 +205,7 @@ function goSurface(target: (typeof NAV)[number]["id"]) {
     return;
   }
   cue("press");
+  if (target === "files") filesMounted.value = true;
   surface.value = target;
 }
 
@@ -362,6 +371,7 @@ useViewFacet("project", () => {
     surface: "project",
     project: { name: props.project.name, path: props.project.path },
     tab: surface.value,
+    viewing: surface.value === "files" ? viewingFile.value : null,
     branch: g.branch.value,
     ahead: g.ahead.value,
     behind: g.behind.value,
@@ -563,7 +573,7 @@ function onDiscardFile(path: string) {
           type="button"
           class="project-back"
           :inert="backIsAway"
-          :aria-label="surface === 'git' ? 'Back to project' : 'Back to projects'"
+          :aria-label="surface !== 'overview' ? 'Back to project' : 'Back to projects'"
           :initial="{ opacity: 0, x: -6 }"
           :animate="gitDepth > 0 ? { opacity: 0, x: -6 } : { opacity: 1, x: 0 }"
           :transition="{ duration: 0.3 }"
@@ -774,6 +784,23 @@ function onDiscardFile(path: string) {
         :visible="surface === 'git'"
         @open-file="onOpenFileFromGit"
         @detail-depth="gitDepth = $event"
+      />
+    </div>
+
+    <!-- FILES · the project's files, read-only. Mounted on first entry and kept,
+         for the same reason as the repository above. -->
+    <div
+      v-if="filesMounted"
+      class="surface-layer surface-layer--files"
+      :class="{ 'surface-layer--hidden': surface !== 'files' }"
+      :inert="surface !== 'files' || Boolean(activeFile)"
+      :aria-hidden="surface !== 'files' ? 'true' : undefined"
+    >
+      <FilesSpace
+        :project="project"
+        :git="g"
+        :visible="surface === 'files'"
+        @viewing="viewingFile = $event"
       />
     </div>
 
@@ -1124,7 +1151,7 @@ function onDiscardFile(path: string) {
 }
 
 /* ── Surfaces ─────────────────────────────────────────────────────────────── */
-/* The two surfaces (overview + git) are layers, not pages: both stay mounted for
+/* The surfaces (overview, git, files) are layers, not pages: each stays mounted for
    the project's lifetime and only one is visible at a time. Hiding is
    `visibility` (never display:none / v-if) so every layout box stays measurable
    while hidden. */
@@ -1201,7 +1228,8 @@ function onDiscardFile(path: string) {
 }
 /* The repository owns its own inner padding and scroll regions, so the layer
    just hands it the viewport. */
-.surface-layer--git {
+.surface-layer--git,
+.surface-layer--files {
   align-items: stretch;
 }
 .surface-layer--overview {

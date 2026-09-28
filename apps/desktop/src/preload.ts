@@ -121,7 +121,7 @@ import type {
   PresetUpdateInput,
 } from "./modules/presets/index.js";
 import type { AvatarFetchInput, AvatarFetchResult } from "./modules/avatars/index.js";
-import type { DirListing } from "./modules/fs/fs.js";
+import type { DirListing, ProjectDirListing, ProjectFileText } from "./modules/fs/fs.js";
 import type { AppearancePush, ThemeMode } from "./modules/system/system.js";
 import type { AppStatePush } from "./modules/appState/index.js";
 import type {
@@ -195,6 +195,10 @@ const api = {
     home: (): Promise<string> => ipcRenderer.invoke("fs:home"),
     listDir: (dir: string): Promise<DirListing> =>
       ipcRenderer.invoke("fs:list-dir", dir),
+    listProjectDir: (root: string, dir: string): Promise<ProjectDirListing> =>
+      ipcRenderer.invoke("fs:project-list", root, dir),
+    readProjectFile: (root: string, path: string): Promise<ProjectFileText> =>
+      ipcRenderer.invoke("fs:project-read", root, path),
   },
   git: {
     detect: (dir: string): Promise<GitRepo | null> =>

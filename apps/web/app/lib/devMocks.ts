@@ -38,6 +38,9 @@ import type {
   GitRepoState,
   GitStashEntry,
   GitStatus,
+  ProjectDirListing,
+  ProjectEntry,
+  ProjectFileText,
 } from "~/types/desktop";
 
 // ── the demo home directory ─────────────────────────────────────────────────
@@ -816,6 +819,43 @@ const MOCK_PRS: Record<string, GitHubPullRequest[]> = {
 export function mockPrs(dir: string, state: "open" | "all" = "open"): GitHubPullRequest[] {
   const all = MOCK_PRS[dir] ?? [];
   return state === "all" ? all : all.filter((pr) => pr.state === "open");
+}
+
+/** Every file the demo project holds: the canned project list plus whatever
+ *  its changes touch, so the Files tab and the changes panel agree. */
+function mockProjectPaths(root: string): string[] {
+  const paths = new Set(MOCK_PROJECT_FILES[root] ?? []);
+  for (const change of MOCK_CHANGES[root] ?? []) {
+    if (change.status !== "deleted") paths.add(change.path);
+  }
+  return [...paths];
+}
+
+export function mockProjectDir(root: string, dir: string): ProjectDirListing {
+  const prefix = dir ? `${dir}/` : "";
+  const dirs = new Set<string>();
+  const files = new Set<string>();
+  for (const p of mockProjectPaths(root)) {
+    if (!p.startsWith(prefix)) continue;
+    const rest = p.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    if (slash === -1) files.add(rest);
+    else dirs.add(rest.slice(0, slash));
+  }
+  const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+  const entries: ProjectEntry[] = [
+    ...[...dirs].sort(byName).map((name) => ({ name, path: prefix + name, kind: "dir" as const })),
+    ...[...files].sort(byName).map((name) => ({ name, path: prefix + name, kind: "file" as const })),
+  ];
+  return { dir, entries, truncated: false };
+}
+
+export function mockProjectFile(root: string, relPath: string): ProjectFileText {
+  const pool = linePool(relPath);
+  const lines: string[] = [];
+  for (let i = 0; i < 48; i++) lines.push(pool[i % pool.length]!);
+  const text = lines.join("\n");
+  return { text, binary: false, truncated: false, size: text.length };
 }
 
 export function mockFiles(dir: string, query = ""): GitProjectFile[] {
