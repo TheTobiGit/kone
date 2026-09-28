@@ -26,7 +26,12 @@ mock.module("./sqlite.js", () => ({ DatabaseSync: DatabaseSyncShim }));
 import { setUserDataDir } from "./userDataDir.js";
 import type { RuntimeEvent } from "./types.js";
 
-import { acceptProviderThreadTitle, truncateThreadTitle } from "./threadTitle.js";
+import {
+  acceptProviderThreadTitle,
+  extractTitle,
+  sanitizeGeneratedThreadTitle,
+  truncateThreadTitle,
+} from "./threadTitle.js";
 
 let tmpDir: string;
 
@@ -248,5 +253,61 @@ describe("provider titles on forked threads", () => {
         proposedTitle: "Kone Host Context",
       }),
     ).toBeNull();
+  });
+});
+
+describe("extractTitle", () => {
+  test("extracts title from direct JSON string", () => {
+    expect(extractTitle('{"title": "Inspect memory usage"}')).toBe("Inspect memory usage");
+  });
+
+  test("extracts title when wrapped in markdown code fences", () => {
+    expect(extractTitle('```json\n{"title": "Inspect memory usage"}\n```')).toBe(
+      "Inspect memory usage",
+    );
+    expect(extractTitle('```\n{"title": "Inspect memory usage"}\n```')).toBe(
+      "Inspect memory usage",
+    );
+  });
+
+  test("extracts title when surrounded by conversational prose", () => {
+    const raw =
+      'Here is a title for the thread:\n```json\n{"title": "Fix Antigravity title generation"}\n```\nHope that helps!';
+    expect(extractTitle(raw)).toBe("Fix Antigravity title generation");
+  });
+
+  test("extracts title from Claude structured_output wrapper", () => {
+    expect(
+      extractTitle('{"structured_output": {"title": "Fix Antigravity title generation"}}'),
+    ).toBe("Fix Antigravity title generation");
+  });
+
+  test("extracts title from part text envelope", () => {
+    expect(
+      extractTitle('{"part": {"type": "text", "text": "{\\"title\\": \\"Part text title\\"}"}}'),
+    ).toBe("Part text title");
+  });
+
+  test("falls back to raw text for non-JSON response", () => {
+    expect(extractTitle("A simple plain text title")).toBe("A simple plain text title");
+  });
+
+  test("returns null for empty or whitespace-only response", () => {
+    expect(extractTitle("")).toBeNull();
+    expect(extractTitle("   \n\t  ")).toBeNull();
+  });
+});
+
+describe("sanitizeGeneratedThreadTitle", () => {
+  test("caps title at 6 words and strips quotes", () => {
+    expect(
+      sanitizeGeneratedThreadTitle('"One two three four five six seven eight"'),
+    ).toBe("One two three four five six");
+  });
+
+  test("handles unwrapped fences cleanly", () => {
+    const title = extractTitle('```json\n{"title": "Clean thread title"}\n```');
+    expect(title).toBe("Clean thread title");
+    expect(sanitizeGeneratedThreadTitle(title!)).toBe("Clean thread title");
   });
 });
