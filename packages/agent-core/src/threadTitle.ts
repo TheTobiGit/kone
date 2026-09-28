@@ -143,13 +143,17 @@ function buildThreadTitlePrompt(message: string): string {
   ].join("\n");
 }
 
-function extractTitle(raw: string): string | null {
+export function extractTitle(raw: string): string | null {
   const text = raw.trim();
   if (!text) return null;
+
+  // Unwrap markdown code fences (e.g. ```json ... ```) that models often wrap JSON in.
+  const unwrapped = text.replace(/^```(?:json)?\s*|\s*```$/gi, "").trim();
+
   try {
     // SAFETY: each CLI's JSON envelope differs; all fields are optional and
     // every read below re-checks its value before use.
-    const parsed = JSON.parse(text) as Partial<TitleCliOutput>;
+    const parsed = JSON.parse(unwrapped) as Partial<TitleCliOutput>;
     if (parsed.part?.type === "text" && parsed.part.text && !(parsed.part.text instanceof Object)) {
       return extractTitle(String(parsed.part.text));
     }
@@ -168,6 +172,15 @@ function extractTitle(raw: string): string | null {
     }
     if (parsed.title && !(parsed.title instanceof Object)) return String(parsed.title);
   } catch {
+    // If JSON is embedded in surrounding prose or soft-failed to parse, attempt extracting "title": "..."
+    const match = text.match(/\{[\s\S]*?"title"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"[\s\S]*?\}/);
+    if (match?.[1]) {
+      try {
+        return JSON.parse(`"${match[1]}"`);
+      } catch {
+        return match[1];
+      }
+    }
     // Bare text when schema decode is soft — treat the whole payload as the
     // title candidate.
     return text;
@@ -365,11 +378,12 @@ async function generateWithAntigravity(input: {
   return runCli({
     command: ANTGRAVITY_BINARY,
     args: [
-      "-p",
       "--dangerously-skip-permissions",
       "--new-project",
+      "--disable-slash-commands",
       "--print-timeout",
-      "5m",
+      "45s",
+      "-p",
       input.prompt,
     ],
     cwd: input.cwd,
