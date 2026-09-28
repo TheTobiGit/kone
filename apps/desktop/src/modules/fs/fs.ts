@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { open, readdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -157,6 +157,151 @@ export function homeDir(): string {
   return os.homedir();
 }
 
+// ── project files (the Files tab) ─────────────────────────────────────────────
+// A read-only look inside one project: its tree one directory at a time, and a
+// file's text. Unlike the folder picker above, these are scoped to a project
+// root — every path is root-relative and a path that resolves outside the root
+// (`..`, an absolute path, a symlink pointing away) is refused.
+
+/** One row of a project directory: a file or a folder. */
+export type ProjectEntry = {
+  name: string;
+  /** Root-relative, `/`-separated. */
+  path: string;
+  kind: "dir" | "file";
+};
+
+export type ProjectDirListing = {
+  /** Root-relative directory that was listed ("" for the root). */
+  dir: string;
+  /** Folders first, then files, each sorted case-insensitively. */
+  entries: ProjectEntry[];
+  /** True when the directory held more than MAX_DIR_ENTRIES rows. */
+  truncated: boolean;
+};
+
+export type ProjectFileText = {
+  /** The file's text, or null when it is binary or unreadable. */
+  text: string | null;
+  binary: boolean;
+  /** True when only the first FILE_TEXT_CAP bytes were read. */
+  truncated: boolean;
+  /** Size on disk, in bytes. */
+  size: number;
+};
+
+/** Names never shown in the tree: git's own store, installed packages, and the
+ *  caches frameworks regenerate. Other dotfiles (.github, .env, .gitignore)
+ *  stay — they are part of the project. */
+const TREE_HIDDEN = new Set([
+  ".git",
+  "node_modules",
+  ".DS_Store",
+  ".nuxt",
+  ".next",
+  ".output",
+  ".turbo",
+  ".cache",
+  ".svelte-kit",
+  ".parcel-cache",
+]);
+
+export const MAX_DIR_ENTRIES = 2_000;
+export const FILE_TEXT_CAP = 512 * 1024;
+/** How much of the head is probed for a NUL byte to call a file binary. */
+const BINARY_PROBE = 8 * 1024;
+
+/** Resolve a root-relative path to an absolute one inside `root`, following
+ *  symlinks, or null when it lands outside. The root itself is canonicalised
+ *  too, so a project opened through a symlinked path still contains its own
+ *  files. */
+async function resolveInside(root: string, rel: string): Promise<string | null> {
+  if (!root || !path.isAbsolute(root)) return null;
+  if (path.isAbsolute(rel)) return null;
+  let realRoot: string;
+  let target: string;
+  try {
+    realRoot = await realpath(root);
+    target = await realpath(path.resolve(realRoot, rel));
+  } catch {
+    return null;
+  }
+  const inside = target === realRoot || target.startsWith(realRoot + path.sep);
+  return inside ? target : null;
+}
+
+/** A root-relative directory in the renderer's form: `/`-separated, no leading
+ *  `./` or slashes, "" for the root. */
+function normalizeRel(rel: string): string {
+  const out = rel.replaceAll("\\", "/").replace(/^(\.\/)+/, "").replace(/^\/+|\/+$/g, "");
+  return out === "." ? "" : out;
+}
+
+/** List one directory of a project: its folders and files, minus TREE_HIDDEN. */
+export async function listProjectDir(root: string, rel: string): Promise<ProjectDirListing> {
+  const dir = normalizeRel(rel);
+  const abs = await resolveInside(root, dir || ".");
+  if (!abs) throw new Error("Path is outside the project.");
+  const dirents = await readdir(abs, { withFileTypes: true });
+
+  const entries: ProjectEntry[] = [];
+  for (const dirent of dirents) {
+    if (TREE_HIDDEN.has(dirent.name)) continue;
+    let kind: ProjectEntry["kind"] | null = dirent.isDirectory()
+      ? "dir"
+      : dirent.isFile()
+        ? "file"
+        : null;
+    if (!kind && dirent.isSymbolicLink()) {
+      try {
+        const s = await stat(path.join(abs, dirent.name));
+        kind = s.isDirectory() ? "dir" : s.isFile() ? "file" : null;
+      } catch {
+        continue; // dangling link
+      }
+    }
+    if (!kind) continue;
+    entries.push({ name: dirent.name, path: dir ? `${dir}/${dirent.name}` : dirent.name, kind });
+  }
+
+  entries.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+  });
+  const truncated = entries.length > MAX_DIR_ENTRIES;
+  return {
+    dir,
+    entries: truncated ? entries.slice(0, MAX_DIR_ENTRIES) : entries,
+    truncated,
+  };
+}
+
+/** Read one project file's text, capped at FILE_TEXT_CAP. Only the capped head
+ *  is ever read, so opening a multi-gigabyte log costs the same as a small one. */
+export async function readProjectFile(root: string, rel: string): Promise<ProjectFileText> {
+  const abs = await resolveInside(root, rel);
+  if (!abs) throw new Error("Path is outside the project.");
+  const s = await stat(abs);
+  if (!s.isFile()) throw new Error(`Not a file: ${rel}`);
+
+  const handle = await open(abs, "r");
+  try {
+    const length = Math.min(s.size, FILE_TEXT_CAP);
+    const buf = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buf, 0, length, 0);
+    const head = buf.subarray(0, bytesRead);
+    const binary = head.subarray(0, BINARY_PROBE).includes(0);
+    return {
+      text: binary ? null : head.toString("utf8"),
+      binary,
+      truncated: !binary && s.size > FILE_TEXT_CAP,
+      size: s.size,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
 // The folder listing is bounded by one deadline: a wedged readdir on a network
@@ -170,6 +315,18 @@ export function registerFsIpc(): void {
   ipcMain.handle("fs:list-dir", (_event, dir: string) =>
     withTimeout((signal) => listDir(dir, signal), {
       channel: "fs:list-dir",
+      timeoutMs: FS_LIST_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("fs:project-list", (_event, root: string, rel: string) =>
+    withTimeout(() => listProjectDir(root, rel), {
+      channel: "fs:project-list",
+      timeoutMs: FS_LIST_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("fs:project-read", (_event, root: string, rel: string) =>
+    withTimeout(() => readProjectFile(root, rel), {
+      channel: "fs:project-read",
       timeoutMs: FS_LIST_TIMEOUT_MS,
     }),
   );

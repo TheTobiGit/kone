@@ -13,7 +13,7 @@
 import { ref } from "vue";
 import type { IntentGitNow } from "./useIntentMenu";
 
-export type IntentSurface = "overview" | "git";
+export type IntentSurface = "overview" | "git" | "files";
 
 // Holds ProjectView's surface switcher while it is mounted. Module scope so
 // the menu host (two layers up, with no component ref to the page) can reach

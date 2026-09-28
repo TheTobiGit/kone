@@ -18,9 +18,38 @@ export type DirListing = {
   entries: DirEntry[];
 };
 
+/** One row of a project directory (the Files tab). Mirrors
+ *  apps/desktop/src/modules/fs/fs.ts. */
+export type ProjectEntry = {
+  name: string;
+  /** Root-relative, `/`-separated. */
+  path: string;
+  kind: "dir" | "file";
+};
+
+export type ProjectDirListing = {
+  /** Root-relative directory that was listed ("" for the root). */
+  dir: string;
+  /** Folders first, then files. */
+  entries: ProjectEntry[];
+  truncated: boolean;
+};
+
+export type ProjectFileText = {
+  text: string | null;
+  binary: boolean;
+  truncated: boolean;
+  /** Size on disk, in bytes. */
+  size: number;
+};
+
 export type KoneFsApi = {
   home: () => Promise<string>;
   listDir: (dir: string) => Promise<DirListing>;
+  /** One directory of a project, root-relative. Rejects a path outside it. */
+  listProjectDir: (root: string, dir: string) => Promise<ProjectDirListing>;
+  /** A project file's text (capped). Rejects a path outside the project. */
+  readProjectFile: (root: string, path: string) => Promise<ProjectFileText>;
 };
 
 export type GitFileStatus =

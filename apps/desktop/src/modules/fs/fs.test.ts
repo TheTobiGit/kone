@@ -20,7 +20,7 @@ mock.module("electron", () => ({
   },
 }));
 
-const { listDir } = await import("./fs.js");
+const { FILE_TEXT_CAP, listDir, listProjectDir, readProjectFile } = await import("./fs.js");
 
 let tempDir: string;
 let repoDir: string;
@@ -126,5 +126,83 @@ describe("listDir", () => {
     await expect(listDir(tempDir, signal)).rejects.toMatchObject({
       name: "AbortError",
     });
+  });
+});
+
+describe("project files", () => {
+  let project: string;
+  let outside: string;
+
+  beforeAll(() => {
+    project = mkdtempSync(path.join(os.tmpdir(), "kone-project-test-"));
+    outside = mkdtempSync(path.join(os.tmpdir(), "kone-outside-test-"));
+    mkdirSync(path.join(project, "src", "lib"), { recursive: true });
+    mkdirSync(path.join(project, "node_modules", "pkg"), { recursive: true });
+    mkdirSync(path.join(project, ".git"));
+    mkdirSync(path.join(project, ".github"));
+    writeFileSync(path.join(project, "README.md"), "# hi\n");
+    writeFileSync(path.join(project, "b.ts"), "export {};\n");
+    writeFileSync(path.join(project, "src", "index.ts"), "console.log(1);\n");
+    writeFileSync(path.join(project, "logo.png"), Buffer.from([0x89, 0x50, 0x00, 0x01]));
+    writeFileSync(path.join(project, "big.txt"), "x".repeat(FILE_TEXT_CAP + 10));
+    writeFileSync(path.join(outside, "secret.txt"), "nope");
+    symlinkSync(path.join(outside, "secret.txt"), path.join(project, "escape.txt"));
+  });
+
+  afterAll(() => {
+    rmSync(project, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("lists folders first, hides git and packages, keeps other dotfiles", async () => {
+    const listing = await listProjectDir(project, "");
+    expect(listing.dir).toBe("");
+    expect(listing.entries.map((e) => `${e.kind}:${e.name}`)).toEqual([
+      "dir:.github",
+      "dir:src",
+      "file:b.ts",
+      "file:big.txt",
+      "file:escape.txt",
+      "file:logo.png",
+      "file:README.md",
+    ]);
+    expect(listing.truncated).toBe(false);
+  });
+
+  test("returns root-relative paths for nested folders", async () => {
+    const listing = await listProjectDir(project, "./src/");
+    expect(listing.dir).toBe("src");
+    expect(listing.entries).toEqual([
+      { name: "lib", path: "src/lib", kind: "dir" },
+      { name: "index.ts", path: "src/index.ts", kind: "file" },
+    ]);
+  });
+
+  test("refuses to list or read outside the project", async () => {
+    await expect(listProjectDir(project, "..")).rejects.toThrow(/outside/);
+    await expect(listProjectDir(project, outside)).rejects.toThrow(/outside/);
+    await expect(readProjectFile(project, "../x")).rejects.toThrow(/outside/);
+    // A symlink inside the project that points away is still outside.
+    await expect(readProjectFile(project, "escape.txt")).rejects.toThrow(/outside/);
+  });
+
+  test("reads text, flags binary, and caps large files", async () => {
+    expect(await readProjectFile(project, "src/index.ts")).toEqual({
+      text: "console.log(1);\n",
+      binary: false,
+      truncated: false,
+      size: 16,
+    });
+    const png = await readProjectFile(project, "logo.png");
+    expect(png.binary).toBe(true);
+    expect(png.text).toBeNull();
+    const big = await readProjectFile(project, "big.txt");
+    expect(big.truncated).toBe(true);
+    expect(big.text?.length).toBe(FILE_TEXT_CAP);
+    expect(big.size).toBe(FILE_TEXT_CAP + 10);
+  });
+
+  test("refuses to read a directory", async () => {
+    await expect(readProjectFile(project, "src")).rejects.toThrow(/not a file/i);
   });
 });
