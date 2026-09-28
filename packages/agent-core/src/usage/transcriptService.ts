@@ -27,11 +27,8 @@ import {
 import { scanDroidUsage } from "./local/droidScan.js";
 import { scanOpenCodeUsage } from "./local/opencodeScan.js";
 import { scanAntigravityUsage } from "./local/antigravityScan.js";
-import {
-  listTranscriptFiles,
-  readTranscriptRecords,
-  type TranscriptFile,
-} from "./transcripts/reader.js";
+import { isWithinProject } from "./projectScope.js";
+import { listTranscriptFiles, readTranscriptRecords } from "./transcripts/reader.js";
 import type { TranscriptProviderKind } from "./transcripts/types.js";
 
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
@@ -42,11 +39,6 @@ const SCAN_CACHE_PATH = () => userDataPath("usage", "scan-cache.json");
 /** Claude Code transcript root for the active config dir. */
 function resolveClaudeTranscriptDir(configDir: string): string {
   return path.join(configDir, "projects");
-}
-
-/** How Claude Code encodes a workspace path into `projects/<slug>/`. */
-export function encodeClaudeProjectSlug(projectPath: string): string {
-  return projectPath.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 function resolveTimeZone(): string {
@@ -161,21 +153,32 @@ async function readFileRecords(
   return records;
 }
 
-function filterFilesForProject(files: readonly TranscriptFile[], projectPath: string | null): TranscriptFile[] {
-  if (!projectPath) return [...files];
-  const slug = encodeClaudeProjectSlug(projectPath);
-  return files.filter((f) => f.path.includes(slug));
-}
-
-/** Scan provider CLI transcripts for the requested range. */
+/** Scan provider CLI transcripts for the requested range.
+ *
+ *  Scoped to a project, every log is read whole (the per-file cache makes that
+ *  the same cost as the global report) and each record is kept when either
+ *  - it names a working directory (`cwd`) inside the project — which counts
+ *    sessions run outside kone too, and a Claude session that moved into the
+ *    project after starting elsewhere — or
+ *  - its session is one of `projectSessionIds`, the conversation ids of the
+ *    project's kone threads — which catches a kone thread run from a worktree
+ *    outside the folder, and logs that record no directory at all.
+ *  The numbers are then the same ones the global report shows, just fewer. */
 export async function scanTranscriptUsage(options: {
   range: UsageRange;
   projectPath?: string | null;
+  projectSessionIds?: ReadonlySet<string> | null;
 }): Promise<TranscriptScanResult> {
   const startedAt = Date.now();
   const { sinceDay, untilDay, timeZone } = windowForRange(options.range);
   const windowStartMs = sinceMsForWindow(sinceDay);
   const projectPath = options.projectPath ?? null;
+  const projectSessions = options.projectSessionIds ?? new Set<string>();
+  /** Whether a machine-wide log's record belongs in this report. */
+  const inScope = (record: { sessionId: string; cwd?: string }): boolean =>
+    projectPath === null ||
+    projectSessions.has(record.sessionId) ||
+    (record.cwd !== undefined && isWithinProject(record.cwd, projectPath));
 
   await ensureScanCacheLoaded();
 
@@ -184,8 +187,7 @@ export async function scanTranscriptUsage(options: {
 
   const dirs: { provider: TranscriptProviderKind; dir: string }[] = [
     { provider: "claude", dir: claudeDir },
-    // Codex sessions are machine-wide; skip when scoping to one project.
-    ...(projectPath ? [] : [{ provider: "codex" as const, dir: codexDir }]),
+    { provider: "codex", dir: codexDir },
   ];
 
   const aggregator = new TranscriptAggregator({ timeZone, sinceDay, untilDay });
@@ -215,9 +217,7 @@ export async function scanTranscriptUsage(options: {
     }
 
     walkedRoots.push(dir);
-    const allFiles = await listTranscriptFiles(dir, windowStartMs);
-    const files =
-      provider === "claude" ? filterFilesForProject(allFiles, projectPath) : allFiles;
+    const files = await listTranscriptFiles(dir, windowStartMs);
 
     let scannedFiles = 0;
     let skippedFiles = 0;
@@ -232,6 +232,7 @@ export async function scanTranscriptUsage(options: {
       }
       scannedFiles += 1;
       for (const record of records) {
+        if (!inScope(record)) continue;
         if (aggregator.add(record) && record.sessionId.length > 0) {
           sessionIds.add(record.sessionId);
         }
@@ -248,56 +249,54 @@ export async function scanTranscriptUsage(options: {
     });
   }
 
-  // OpenCode + Droid + Antigravity are machine-wide local logs (like Codex) —
-  // skip for project scope.
-  if (!projectPath) {
-    const sinceMs = sinceMsForWindow(sinceDay);
-    const untilMs = untilMsForWindow(untilDay);
+  // OpenCode + Droid + Antigravity are machine-wide local logs (like Codex),
+  // narrowed to the project when scoped (see inScope).
+  const sinceMs = sinceMsForWindow(sinceDay);
+  const untilMs = untilMsForWindow(untilDay);
 
-    const opencode = await scanOpenCodeUsage({ sinceMs, untilMs });
-    for (const source of opencode.sources) {
-      sources.push({
-        provider: "opencode",
-        dir: source.dir,
-        status: source.status,
-        scannedFiles: source.messagesFromDb + source.messagesFromFiles,
-        skippedFiles: 0,
-        distinctSessions: source.distinctSessions,
-      });
-    }
-    for (const record of opencode.records) {
-      aggregator.add(record);
-    }
+  const opencode = await scanOpenCodeUsage({ sinceMs, untilMs });
+  for (const source of opencode.sources) {
+    sources.push({
+      provider: "opencode",
+      dir: source.dir,
+      status: source.status,
+      scannedFiles: source.messagesFromDb + source.messagesFromFiles,
+      skippedFiles: 0,
+      distinctSessions: source.distinctSessions,
+    });
+  }
+  for (const record of opencode.records) {
+    if (inScope(record)) aggregator.add(record);
+  }
 
-    const droid = await scanDroidUsage({ sinceMs, untilMs });
-    for (const source of droid.sources) {
-      sources.push({
-        provider: "droid",
-        dir: source.dir,
-        status: source.status,
-        scannedFiles: source.filesScanned,
-        skippedFiles: 0,
-        distinctSessions: source.sessions,
-      });
-    }
-    for (const record of droid.records) {
-      aggregator.add(record);
-    }
+  const droid = await scanDroidUsage({ sinceMs, untilMs });
+  for (const source of droid.sources) {
+    sources.push({
+      provider: "droid",
+      dir: source.dir,
+      status: source.status,
+      scannedFiles: source.filesScanned,
+      skippedFiles: 0,
+      distinctSessions: source.sessions,
+    });
+  }
+  for (const record of droid.records) {
+    if (inScope(record)) aggregator.add(record);
+  }
 
-    const antigravity = await scanAntigravityUsage({ sinceMs, untilMs });
-    for (const source of antigravity.sources) {
-      sources.push({
-        provider: "antigravity",
-        dir: source.dir,
-        status: source.status,
-        scannedFiles: source.filesScanned,
-        skippedFiles: 0,
-        distinctSessions: source.conversations,
-      });
-    }
-    for (const record of antigravity.records) {
-      aggregator.add(record);
-    }
+  const antigravity = await scanAntigravityUsage({ sinceMs, untilMs });
+  for (const source of antigravity.sources) {
+    sources.push({
+      provider: "antigravity",
+      dir: source.dir,
+      status: source.status,
+      scannedFiles: source.filesScanned,
+      skippedFiles: 0,
+      distinctSessions: source.conversations,
+    });
+  }
+  for (const record of antigravity.records) {
+    if (inScope(record)) aggregator.add(record);
   }
 
   const pruned = pruneScanCache(fileCache, {

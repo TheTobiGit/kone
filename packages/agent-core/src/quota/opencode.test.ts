@@ -3,10 +3,22 @@ import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
 
 // opencode.ts imports node:sqlite (an Electron-runtime built-in this bun can't
-// load) — stand it in for bun:sqlite. The functions under test never open a
-// database, so the stand-in only needs to exist for the import to resolve.
+// load) — stand it in for bun:sqlite, translating node's `{ readOnly }`
+// constructor option to bun's `{ readonly }` for the tests that open one.
+class DatabaseSyncShim {
+  private readonly db: Database;
+  constructor(filePath: string, options?: { readOnly?: boolean }) {
+    this.db = options?.readOnly ? new Database(filePath, { readonly: true }) : new Database(filePath);
+  }
+  prepare(sql: string) {
+    return this.db.prepare(sql);
+  }
+  close() {
+    this.db.close();
+  }
+}
 mock.module("../sqlite.js", () => ({
-  DatabaseSync: Database,
+  DatabaseSync: DatabaseSyncShim,
 }));
 
 type OpenCodeQuota = typeof import("./opencode.js");
@@ -86,5 +98,36 @@ describe("computeTrend day labels", () => {
       const labels = points.map((p) => p.date);
       expect(new Set(labels).size).toBe(labels.length);
     });
+  });
+});
+
+describe("fetchOpenCodeQuota on the v2 log", () => {
+  test("sums hosted spend from session_message, where the provider sits under model", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-opencode-quota-"));
+    const db = new Database(path.join(dir, "opencode.db"));
+    db.exec(
+      `CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER, data TEXT)`,
+    );
+    const now = Date.now();
+    const insert = db.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?)");
+    const message = (providerID: string, cost: number) =>
+      JSON.stringify({ model: { id: "m", providerID }, cost, tokens: { input: 10, output: 5 } });
+    insert.run("a", "s", "assistant", now - 1000, message("opencode", 0.25));
+    insert.run("b", "s", "assistant", now - 1000, message("opencode-go", 0.5));
+    // Bring-your-own-key spend never reaches OpenCode's caps.
+    insert.run("c", "s", "assistant", now - 1000, message("openai", 9));
+    db.close();
+
+    process.env.OPENCODE_DATA_DIR = dir;
+    try {
+      const { report } = await quota.fetchOpenCodeQuota();
+      expect(report.spend?.[0]?.dollars).toBe(0.75);
+    } finally {
+      delete process.env.OPENCODE_DATA_DIR;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -16,6 +16,7 @@ import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "../../sqlite.js";
 
 import type { UsageRecord } from "../transcripts/transcripts.js";
@@ -203,32 +204,20 @@ function metadataAttributes(rowData: Uint8Array): Map<string, string> {
   return attributes;
 }
 
-/** Map a display label to the canonical slug the pricing catalog understands
-  *  (Gemini 3.5 Flash (High) → gemini-3.5-flash-high). */
+/** Map a Gemini display label to the canonical slug the pricing catalog
+  *  understands (Gemini 3.5 Flash (High) → gemini-3.5-flash-high). Read off the
+  *  label's shape rather than a list of known versions, so a model newer than
+  *  this code (3.8 Flash) still gets a real id instead of Antigravity's
+  *  placeholder. Other vendors' labels keep the raw model id. */
 export function canonicalAntigravityModelId(
   rawModel: string,
   displayName: string | undefined,
 ): string {
-  const lower = displayName?.toLowerCase() ?? "";
-  if (lower) {
-    if (lower.includes("3.5 flash")) {
-      if (lower.includes("high")) return "gemini-3.5-flash-high";
-      if (lower.includes("medium")) return "gemini-3.5-flash-medium";
-      if (lower.includes("low")) return "gemini-3.5-flash-low";
-      return "gemini-3.5-flash";
-    }
-    if (lower.includes("3.1 pro")) {
-      if (lower.includes("high")) return "gemini-3.1-pro-high";
-      if (lower.includes("low")) return "gemini-3.1-pro-low";
-      return "gemini-3.1-pro";
-    }
-    if (lower.includes("3.1 flash")) {
-      if (lower.includes("image")) return "gemini-3.1-flash-image";
-      if (lower.includes("lite")) return "gemini-3.1-flash-lite";
-      return "gemini-3.1-flash";
-    }
-    if (lower.includes("3 flash")) return "gemini-3-flash";
-    if (lower.includes("3 pro")) return "gemini-3-pro";
+  const label = displayName?.trim() ?? "";
+  if (/^gemini\s/i.test(label)) {
+    const [, base = label, variant] = /^(.*?)\s*(?:\(([^)]*)\))?$/.exec(label) ?? [];
+    const slug = (text: string) => text.trim().toLowerCase().replace(/\s+/g, "-");
+    return variant ? `${slug(base)}-${slug(variant)}` : slug(base);
   }
   // Antigravity's model map sometimes hasn't caught up with a new model and
   // carries a placeholder id — never leak it as a model name.
@@ -307,6 +296,38 @@ export function antigravityCascadeIdFromPath(filePath: string): string {
 
 type GenMetadataRow = { idx: number; data: Uint8Array | string };
 
+/** The workspace folder a conversation ran in, from the `main` row of its
+ *  `trajectory_metadata_blob` table: a `file://` URI at field #7, repeated as
+ *  #1.1 of the first workspace entry (layout read off real CLI conversations).
+ *  Null when the table, the row or the field is missing, or it isn't a file
+ *  URI — a conversation without one just can't be claimed by folder. */
+export function parseAntigravityWorkspace(blob: Uint8Array): string | null {
+  const fields = parseProtoFields(blob);
+  const firstWorkspace = firstProtoField(fields, 1);
+  const uri =
+    protoFieldText(firstProtoField(fields, 7)) ??
+    (firstWorkspace?.bytes ? protoFieldText(firstProtoField(parseProtoFields(firstWorkspace.bytes), 1)) : undefined);
+  if (!uri?.startsWith("file://")) return null;
+  try {
+    return fileURLToPath(uri);
+  } catch {
+    return null;
+  }
+}
+
+function readWorkspace(db: DatabaseSync): string | null {
+  try {
+    // SAFETY: the projection names exactly one column.
+    const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'").get() as
+      | { data: Uint8Array | string | null }
+      | undefined;
+    return row?.data instanceof Uint8Array ? parseAntigravityWorkspace(row.data) : null;
+  } catch {
+    // Older conversation files have no such table.
+    return null;
+  }
+}
+
 function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): UsageRecord[] {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
@@ -315,6 +336,7 @@ function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): Usag
     const rows = db.prepare("SELECT idx, data FROM gen_metadata ORDER BY idx").all() as GenMetadataRow[];
     const records: UsageRecord[] = [];
     const seenResponseIds = new Set<string>();
+    const cwd = readWorkspace(db);
     for (const row of rows) {
       const data = row.data instanceof Uint8Array ? row.data : new TextEncoder().encode(String(row.data));
       const parsed = parseAntigravityGenMetadataRow(data, row.idx);
@@ -337,6 +359,7 @@ function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): Usag
           reasoningTokens: parsed.thinkingTokens,
         },
         reportedCostUsd: null,
+        ...(cwd ? { cwd } : {}),
         dedupeKey,
       });
     }

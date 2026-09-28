@@ -1,4 +1,6 @@
 // Scans OpenCode's local SQLite message log and legacy JSON message files.
+// Each record carries its session's working directory where OpenCode kept
+// one, so a project report can claim the sessions run in its folder.
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -9,6 +11,7 @@ import {
   extractMessageTimestampMs,
   parseOpenCodeMessageJson,
 } from "./opencodeMessage.js";
+import { detectOpenCodeLayout } from "./opencodeSchema.js";
 import type { UsageRecord } from "../transcripts/transcripts.js";
 
 const MIN_MILLIS_SCALE = 100_000_000_000;
@@ -60,6 +63,16 @@ function timeCreatedLooksLikeMillis(db: DatabaseSync): boolean {
   }
 }
 
+type MessageRow = {
+  id: string;
+  session_id: string;
+  data: string;
+  directory: string | null;
+};
+
+/** Every assistant message in the window, from whichever layouts the database
+ *  holds (see opencodeSchema.ts), each with its session's working directory
+ *  when the session table records one. */
 function readMessagesFromDatabase(
   dbPath: string,
   sinceMs: number,
@@ -68,34 +81,49 @@ function readMessagesFromDatabase(
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const records: UsageRecord[] = [];
   try {
-    const useTimeFilter = timeCreatedLooksLikeMillis(db);
-    const sql = useTimeFilter
-      ? "SELECT id, session_id, data FROM message WHERE id IN (SELECT id FROM message WHERE time_created >= ? AND time_created < ?)"
-      : "SELECT id, session_id, data FROM message";
-    const stmt = db.prepare(sql);
-    // SAFETY: the SELECT names exactly id, session_id and data, so every row
-    // carries those three columns; node:sqlite types each row unknown.
-    const rows = (useTimeFilter ? stmt.all(sinceMs, untilMs) : stmt.all()) as Array<{
-      id: string;
-      session_id: string;
-      data: string;
-    }>;
+    const layout = detectOpenCodeLayout(db);
+    const rows: MessageRow[] = [];
+
+    if (layout.v2) {
+      const directory = layout.v2Sessions ? "s.directory" : "NULL";
+      const join = layout.v2Sessions ? "LEFT JOIN session_v2 s ON s.id = m.session_id" : "";
+      // SAFETY: the SELECT aliases exactly the four MessageRow columns;
+      // node:sqlite types each row unknown.
+      rows.push(
+        ...(db
+          .prepare(
+            `SELECT m.id AS id, m.session_id AS session_id, m.data AS data, ${directory} AS directory
+               FROM session_message m ${join}
+              WHERE m.type = 'assistant' AND m.time_created >= ? AND m.time_created < ?`,
+          )
+          .all(sinceMs, untilMs) as MessageRow[]),
+      );
+    }
+
+    if (layout.legacy) {
+      const useTimeFilter = timeCreatedLooksLikeMillis(db);
+      const directory = layout.legacySessionDirectory ? "s.directory" : "NULL";
+      const join = layout.legacySessionDirectory ? "LEFT JOIN session s ON s.id = m.session_id" : "";
+      const sql = `SELECT m.id AS id, m.session_id AS session_id, m.data AS data, ${directory} AS directory
+                     FROM message m ${join}
+                   ${useTimeFilter ? "WHERE m.time_created >= ? AND m.time_created < ?" : ""}`;
+      const stmt = db.prepare(sql);
+      // SAFETY: the SELECT aliases exactly the four MessageRow columns;
+      // node:sqlite types each row unknown.
+      rows.push(...((useTimeFilter ? stmt.all(sinceMs, untilMs) : stmt.all()) as MessageRow[]));
+    }
 
     for (const row of rows) {
-      // String() passes a real string through untouched, so this matches the
-      // old branch split while also flattening any stray BLOB or null cell.
+      // String() passes a real string through untouched, while also flattening
+      // any stray BLOB or null cell.
       const data = String(row.data ?? "");
       if (!data.includes('"tokens"')) continue;
-      if (useTimeFilter) {
-        const ts = extractMessageTimestampMs(data);
-        if (ts !== null && (ts < sinceMs || ts >= untilMs)) continue;
-      } else {
-        const ts = extractMessageTimestampMs(data);
-        if (ts !== null && (ts < sinceMs || ts >= untilMs)) continue;
-      }
+      const ts = extractMessageTimestampMs(data);
+      if (ts !== null && (ts < sinceMs || ts >= untilMs)) continue;
       const record = parseOpenCodeMessageJson(data, {
         messageId: row.id,
         sessionId: row.session_id,
+        cwd: row.directory,
       });
       if (record) records.push(record);
     }
@@ -103,6 +131,28 @@ function readMessagesFromDatabase(
     db.close();
   }
   return records;
+}
+
+/** Session id → working directory from the legacy JSON store
+ *  (`storage/session/<project>/<session>.json`), for message files whose
+ *  session the database doesn't know. Unreadable files are skipped. */
+async function readLegacySessionDirectories(dir: string): Promise<Map<string, string>> {
+  const directories = new Map<string, string>();
+  for (const file of await collectJsonFiles(path.join(dir, "storage", "session"))) {
+    try {
+      const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+      if (typeof value !== "object" || value === null) continue;
+      // SAFETY: narrowed to a non-null object above; both reads are
+      // type-checked before use.
+      const { id, directory } = value as { id?: unknown; directory?: unknown };
+      if (typeof id === "string" && typeof directory === "string" && directory) {
+        directories.set(id, directory);
+      }
+    } catch {
+      // A torn or foreign file costs that session its directory, nothing more.
+    }
+  }
+  return directories;
 }
 
 export async function scanOpenCodeUsage(options: {
@@ -158,6 +208,8 @@ export async function scanOpenCodeUsage(options: {
       const stem = path.basename(file, ".json");
       return stem.length > 0 && !seenMessageIds.has(`opencode:${stem}`);
     });
+    const legacyDirectories =
+      filesToRead.length > 0 ? await readLegacySessionDirectories(dir) : new Map<string, string>();
 
     for (const filePath of filesToRead) {
       try {
@@ -165,8 +217,10 @@ export async function scanOpenCodeUsage(options: {
         if (!raw.includes('"tokens"')) continue;
         const ts = extractMessageTimestampMs(raw);
         if (ts !== null && (ts < options.sinceMs || ts >= options.untilMs)) continue;
-        const record = parseOpenCodeMessageJson(raw);
-        if (!record) continue;
+        const parsed = parseOpenCodeMessageJson(raw);
+        if (!parsed) continue;
+        const cwd = legacyDirectories.get(parsed.sessionId);
+        const record = cwd ? { ...parsed, cwd } : parsed;
         if (record.dedupeKey && seenMessageIds.has(record.dedupeKey)) continue;
         if (record.dedupeKey) seenMessageIds.add(record.dedupeKey);
         if (record.sessionId) sessionIds.add(record.sessionId);

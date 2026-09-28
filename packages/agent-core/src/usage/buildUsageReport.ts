@@ -100,6 +100,7 @@ async function buildFreshReport(
   const transcript = await scanTranscriptUsage({
     range: options.range,
     projectPath,
+    projectSessionIds: projectPath === null ? null : store.conversationIdsForProject(projectPath),
   });
 
   const cursorDashboard =
@@ -115,7 +116,7 @@ async function buildFreshReport(
     cursorDashboard.status === "no-credential" ||
     cursorDashboard.status === "fetch-failed";
 
-  const filter = resolveStoreProviderFilter(projectPath, useCursorStore);
+  const filter = resolveStoreProviderFilter(useCursorStore);
 
   const sql = store.readStoreUsageReport({
     range: options.range,
@@ -145,32 +146,19 @@ export type StoreProviderFilter = {
   onlyProviders?: string[];
 };
 
-/** Which providers the store slice may contribute, per report scope. The store
- *  (turn_usage) is never the primary source: the transcript scan and the Cursor
- *  dashboard are authoritative for the providers they cover, and those are
- *  excluded here so the store doesn't double-count them.
+/** Which providers the store slice may contribute. The store (turn_usage) is
+ *  never the primary source: the transcript scan and the Cursor dashboard are
+ *  authoritative for the providers they cover, and those are excluded here so
+ *  the store doesn't double-count them.
  *
- *  Global scope covers every provider from its transcript/dashboard source, so
- *  the store contributes only Cursor — and only when the dashboard export isn't
- *  available to stand in for it.
- *
- *  Project scope is narrower: the transcript scan is Claude-only there (every
- *  other provider's local log is machine-wide, so it can't be scoped to a
- *  project), which makes the store the sole project-scoped source for everything
- *  else. Only claudeAgent is excluded — codex, opencode and cursor all record
- *  their per-turn usage against the thread's project, and dropping opencode from
- *  that list (as it once was) would silently erase OpenCode spend from every
- *  project report while its transcript, being machine-wide, had nowhere else to
- *  come from. Droid and Antigravity emit no per-turn usage kone can read, so
- *  leaving them in the store slice costs nothing today and becomes correct the
- *  day they do. */
-export function resolveStoreProviderFilter(
-  projectPath: string | null,
-  useCursorStore: boolean,
-): StoreProviderFilter {
-  if (projectPath !== null) {
-    return { excludeProviders: ["claudeAgent"] };
-  }
+ *  The same rule holds for a project as for every project: the scan narrows
+ *  itself to the project's sessions (see scanTranscriptUsage), so it stays the
+ *  source there too. That matters beyond consistency — Codex, OpenCode and
+ *  Antigravity report running thread totals, so their turn_usage rows each
+ *  repeat every earlier turn and summing them overstates the spend several
+ *  times over. The store contributes only Cursor, and only when the dashboard
+ *  export can't stand in for it (never for a project, which it can't scope). */
+export function resolveStoreProviderFilter(useCursorStore: boolean): StoreProviderFilter {
   const excludeProviders = [
     "claudeAgent",
     "codex",
@@ -191,6 +179,7 @@ type UsageBucket = {
   totals: UsageTokenTotals;
   costUsd: number;
   records: number;
+  unpricedRecords: number;
   sessions: number;
 };
 
@@ -212,6 +201,7 @@ function mergeUsageReport(input: {
       totals: bucket.totals,
       costUsd: bucket.costUsd,
       records: bucket.records,
+      unpricedRecords: bucket.unpricedRecords,
       sessions: bucket.sessions,
     })),
     ...cursorDashboard.buckets.map((bucket) => cursorBucketToUsage(bucket)),
@@ -326,6 +316,7 @@ function mergeUsageReport(input: {
       reasoning: number;
       prompts: number;
       cost: number;
+      unpriced: number;
     },
   ) => {
     const slice = map.get(key) ?? {
@@ -338,6 +329,7 @@ function mergeUsageReport(input: {
       reasoningTokens: 0,
       prompts: 0,
       costUsd: 0,
+      unpricedRecords: 0,
     };
     slice.tokens += row.tokens;
     slice.cacheReadTokens += row.cacheRead;
@@ -345,6 +337,7 @@ function mergeUsageReport(input: {
     slice.reasoningTokens += row.reasoning;
     slice.prompts += row.prompts;
     slice.costUsd += row.cost;
+    slice.unpricedRecords += row.unpriced;
     map.set(key, slice);
   };
 
@@ -369,6 +362,7 @@ function mergeUsageReport(input: {
       reasoning: bucket.totals.reasoningTokens,
       prompts: bucket.records,
       cost: bucket.costUsd,
+      unpriced: bucket.unpricedRecords,
     });
     foldSlice(providersMap, bucket.koneProvider, bucket.koneProvider, undefined, {
       tokens: total,
@@ -379,6 +373,7 @@ function mergeUsageReport(input: {
       reasoning: bucket.totals.reasoningTokens,
       prompts: bucket.records,
       cost: bucket.costUsd,
+      unpriced: bucket.unpricedRecords,
     });
   }
 
@@ -401,6 +396,7 @@ function mergeUsageReport(input: {
         reasoning: row.reasoning_tokens,
         prompts: row.turns,
         cost: row.cost_usd,
+        unpriced: row.unpriced_turns,
       });
     }
     foldSlice(providersMap, row.provider, row.provider, undefined, {
@@ -412,6 +408,7 @@ function mergeUsageReport(input: {
       reasoning: row.reasoning_tokens,
       prompts: row.turns,
       cost: row.cost_usd,
+      unpriced: row.unpriced_turns,
     });
     if (row.project_path) {
       const label = basenameProject(row.project_path);
@@ -424,6 +421,7 @@ function mergeUsageReport(input: {
         reasoning: row.reasoning_tokens,
         prompts: row.turns,
         cost: row.cost_usd,
+        unpriced: row.unpriced_turns,
       });
     }
   }
@@ -463,6 +461,8 @@ function cursorBucketToUsage(bucket: CursorDashboardBucket): UsageBucket {
     totals: bucket.totals,
     costUsd: bucket.costUsd,
     records: bucket.records,
+    // The dashboard export carries Cursor's own charge for every row.
+    unpricedRecords: 0,
     sessions: 0,
   };
 }

@@ -20,7 +20,9 @@ import type { UsageRecord } from "./transcripts.js";
 
 // v2: Codex fork-copy suppression changed what a file parses to, so v1
 // entries would keep serving double-counted records forever.
-export const USAGE_SCAN_CACHE_VERSION = 2 as const;
+// v3: records carry their working directory (project scoping); v2 entries have
+// none and would drop out of every project report until their file changed.
+export const USAGE_SCAN_CACHE_VERSION = 3 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -47,6 +49,7 @@ type SerializedRecord = readonly [
   reasoningTokens: number,
   dedupeKey: string | null,
   reportedCostUsd: number | null,
+  cwdIndex: number | null,
 ];
 
 interface SerializedFile {
@@ -60,15 +63,19 @@ interface SerializedCache {
   readonly version: number;
   readonly models: readonly string[];
   readonly sessions: readonly string[];
+  readonly cwds: readonly string[];
   readonly files: Readonly<Record<string, SerializedFile>>;
 }
 
-/** Serialises the cache, interning the repeated model and session strings. */
+/** Serialises the cache, interning the repeated model, session and directory
+ *  strings. */
 export function encodeScanCache(cache: ScanCache): SerializedCache {
   const models: string[] = [];
   const sessions: string[] = [];
+  const cwds: string[] = [];
   const modelIndex = new Map<string, number>();
   const sessionIndex = new Map<string, number>();
+  const cwdIndex = new Map<string, number>();
 
   const intern = (table: string[], index: Map<string, number>, value: string): number => {
     const existing = index.get(value);
@@ -96,11 +103,12 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
         record.totals.reasoningTokens,
         record.dedupeKey,
         record.reportedCostUsd,
+        record.cwd ? intern(cwds, cwdIndex, record.cwd) : null,
       ]),
     };
   }
 
-  return { version: USAGE_SCAN_CACHE_VERSION, models, sessions, files };
+  return { version: USAGE_SCAN_CACHE_VERSION, models, sessions, cwds, files };
 }
 
 import { z } from "zod";
@@ -117,6 +125,7 @@ const SerializedRecordSchema = z.tuple([
   z.number().finite(),
   z.string().nullable(),
   z.number().finite().nullable(),
+  z.number().int().nonnegative().nullable(),
 ]);
 
 const SerializedFileSchema = z.object({
@@ -130,6 +139,7 @@ const SerializedCacheSchema = z.object({
   version: z.literal(USAGE_SCAN_CACHE_VERSION),
   models: z.array(z.string()),
   sessions: z.array(z.string()),
+  cwds: z.array(z.string()),
   files: z.record(z.string(), SerializedFileSchema),
 });
 
@@ -143,7 +153,7 @@ export function decodeScanCache(document: JsonValue | null | undefined): ScanCac
   const cache: ScanCache = new Map();
   const parsed = SerializedCacheSchema.safeParse(document);
   if (!parsed.success) return cache;
-  const { models, sessions, files } = parsed.data;
+  const { models, sessions, cwds, files } = parsed.data;
 
   for (const [path, entry] of Object.entries(files)) {
     const provider = entry.p;
@@ -162,6 +172,7 @@ export function decodeScanCache(document: JsonValue | null | undefined): ScanCac
         reasoning,
         dedupeKey,
         reportedCostUsd,
+        cwdIndex,
       ] = row;
 
       const model = models[modelIndex];
@@ -183,6 +194,7 @@ export function decodeScanCache(document: JsonValue | null | undefined): ScanCac
           reasoningTokens: reasoning,
         },
         reportedCostUsd,
+        ...(cwdIndex !== null && cwds[cwdIndex] !== undefined ? { cwd: cwds[cwdIndex] } : {}),
         dedupeKey,
       });
     }
