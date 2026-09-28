@@ -77,8 +77,11 @@ export type UsageDay = {
 export type UsageBySlice = {
   key: string;
   label: string;
+  /** The kone provider behind a model or a provider row; a project row has
+   *  none. */
   provider?: string;
   tokens: number;
+  outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   reasoningTokens: number;

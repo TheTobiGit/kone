@@ -589,8 +589,13 @@ function asArray(value: CodexJsonValue | null | undefined): CodexJsonValue[] {
 }
 
 function parseModelListResponse(response: CodexJsonObject | undefined): ModelDescriptor[] {
-  const list =
-    asArray(response?.items) || asArray(response?.data) || asArray(response?.models) || [];
+  // `asArray` returns `[]` (truthy) for a missing field, so `||` would stop at
+  // the first key — and real responses put the list under `data`, not `items`.
+  let list: CodexJsonValue[] = [];
+  for (const key of ["items", "data", "models"] as const) {
+    list = asArray(response?.[key]);
+    if (list.length) break;
+  }
   const seen = new Set<string>();
   const models: ModelDescriptor[] = [];
   for (const entry of list) {
