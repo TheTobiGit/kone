@@ -26,5 +26,9 @@ export function useFileSystem() {
       if (fs) return fs.readProjectFile(root, path);
       return Promise.reject(new Error(needsDesktop("Reading files")));
     },
+    writeProjectFile(root: string, path: string, content: string): Promise<void> {
+      if (fs) return fs.writeProjectFile(root, path, content);
+      return Promise.reject(new Error(needsDesktop("Writing files")));
+    },
   };
 }

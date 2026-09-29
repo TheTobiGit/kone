@@ -199,6 +199,8 @@ const api = {
       ipcRenderer.invoke("fs:project-list", root, dir),
     readProjectFile: (root: string, path: string): Promise<ProjectFileText> =>
       ipcRenderer.invoke("fs:project-read", root, path),
+    writeProjectFile: (root: string, path: string, content: string): Promise<void> =>
+      ipcRenderer.invoke("fs:project-write", root, path, content),
   },
   git: {
     detect: (dir: string): Promise<GitRepo | null> =>

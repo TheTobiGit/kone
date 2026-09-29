@@ -20,7 +20,7 @@ mock.module("electron", () => ({
   },
 }));
 
-const { FILE_TEXT_CAP, listDir, listProjectDir, readProjectFile } = await import("./fs.js");
+const { FILE_TEXT_CAP, listDir, listProjectDir, readProjectFile, writeProjectFile } = await import("./fs.js");
 
 let tempDir: string;
 let repoDir: string;
@@ -204,5 +204,13 @@ describe("project files", () => {
 
   test("refuses to read a directory", async () => {
     await expect(readProjectFile(project, "src")).rejects.toThrow(/not a file/i);
+  });
+
+  test("writes project files safely and refuses writing outside", async () => {
+    await writeProjectFile(project, "created.md", "# Hello");
+    const read = await readProjectFile(project, "created.md");
+    expect(read.text).toBe("# Hello");
+
+    await expect(writeProjectFile(project, "../outside.txt", "nope")).rejects.toThrow(/outside/);
   });
 });
