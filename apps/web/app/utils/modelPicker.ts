@@ -53,6 +53,7 @@ export const PROVIDER_VENDOR = {
   opencode: "OpenCode",
   droid: "Factory",
   antigravity: "Google",
+  cline: "Cline",
 } satisfies Record<ProviderKind, string>;
 
 function getStorage(): Storage | null {
@@ -523,4 +524,5 @@ export const PROVIDER_BRAND = {
   opencode: "opencode",
   droid: "droid",
   antigravity: "antigravity",
+  cline: "cline",
 } satisfies Record<ProviderKind, BrandKey>;

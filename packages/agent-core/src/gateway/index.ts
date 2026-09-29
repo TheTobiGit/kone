@@ -304,14 +304,15 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     serverVersion: GATEWAY_SERVER_VERSION,
     inFlight,
     instructions:
-      "kone gateway: tools that read and write the project scratchpad, that " +
-      "open, follow and read worker threads, that report the projects the app " +
-      "holds with their live git state and the conversations inside them, and " +
-      "that steer the app appearance and settings. Scratchpad writes are attributed to the calling agent and " +
-      "guarded by a revision shared with the web editor; spawned worker threads " +
-      "are first-class conversations the user can see in the sidebar. " +
-      "The app-steering tools act on the window the user is looking at, so use " +
-      "them instead of editing files or running shell commands to configure kone.",
+      "kone gateway: tools for the kone desktop app. They start, ask, message " +
+      "and read kone agents (real conversations the user can see and open, " +
+      "which outlive the turn that started them); read the project " +
+      "scratchpad, and edit it when the user asks (the user's own notes, not " +
+      "a place for agents' plans); report the projects kone holds with their " +
+      "live git state and the conversations inside them; and steer the app's " +
+      "appearance and settings. The app-steering tools act on the window the " +
+      "user is looking at, so use them instead of editing files or running " +
+      "shell commands to configure kone.",
   });
   const server = startGatewayHttpServer({ credentials, transport });
 

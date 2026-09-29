@@ -22,6 +22,7 @@ import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
+import { ClineAdapter } from "./adapters/ClineAdapter.js";
 import { DroidAdapter } from "./adapters/DroidAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
 import {
@@ -364,6 +365,7 @@ export class AgentService {
       this.register(new OpenCodeAdapter(emit));
       this.register(new CursorAdapter(emit));
       this.register(new DroidAdapter(emit));
+      this.register(new ClineAdapter(emit));
       // Antigravity's plugin MCP path needs one-shot gateway bootstraps (its
       // plugin config must stay secret-free on disk) — minted from the session
       // credential through the gateway handle once it's attached.

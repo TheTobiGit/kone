@@ -17,7 +17,7 @@ import { userDataPath } from "./userDataDir.js";
 // window-state.json, and read/written with the same plain, best-effort file I/O
 // (no electron-store dependency, matching the rest of the desktop main process).
 
-const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"];
+const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cursor", "droid", "cline", "antigravity"];
 
 const ProviderConfigWire = z.object({
   binaryPath: z.string().trim().min(1).optional(),

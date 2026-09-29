@@ -58,12 +58,15 @@ export const CLAUDE_EXTENDED_EFFORTS: string[] = ["low", "medium", "high", "max"
 export const CLAUDE_BASIC_EFFORTS: string[] = ["low", "medium", "high"];
 
 export const CURATED_CLAUDE_MODELS: ModelDescriptor[] = [
+  { id: "claude-fable-5-1", label: "Claude Fable 5.1", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-fable-5", label: "Claude Fable 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "medium", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6", reasoningEfforts: CLAUDE_EXTENDED_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-opus-4-5", label: "Claude Opus 4.5", reasoningEfforts: CLAUDE_BASIC_EFFORTS, defaultReasoningEffort: "high" },
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", reasoningEfforts: CLAUDE_EXTENDED_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },

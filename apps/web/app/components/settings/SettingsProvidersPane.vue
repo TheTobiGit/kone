@@ -137,9 +137,20 @@ const PROVIDER_META = {
     signIn: "agy login",
     docs: { href: "https://antigravity.google", label: "Antigravity" },
   },
+  cline: {
+    label: "Cline",
+    vendor: "Cline",
+    brand: "cline",
+    // Teal stand-in wash until Cline's official brand lands (see ProviderLogo).
+    grad: "linear-gradient(152deg, #2dd4bf 0%, #0d9488 100%)",
+    blurb: "Cline's coding agent CLI, driven over ACP.",
+    binary: "cline",
+    signIn: "cline auth",
+    docs: { href: "https://cline.bot", label: "Cline docs" },
+  },
 } satisfies Record<ProviderKind, ProviderMeta>;
 
-const ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity"];
+const ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity", "cline"];
 
 // ── the deck ────────────────────────────────────────────────────────────────
 
@@ -179,7 +190,7 @@ const rows = computed<Row[]>(() =>
   }),
 );
 
-// SAFETY: ORDER above is a fixed six-entry literal, so rows always has a
+// SAFETY: ORDER above is a fixed seven-entry literal, so rows always has a
 // first element for the ?? fallback to land on.
 const current = computed<Row>(
   () => rows.value.find((r) => r.provider === selected.value) ?? (rows.value[0] as Row),

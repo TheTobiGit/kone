@@ -1,6 +1,6 @@
-// One dispatch, however it was asked for. worker_spawn,
-// worker_spawn_preset, worker_delegate and each item of
-// worker_spawn_batch all come down to the same steps — resolve what the item
+// One dispatch, however it was asked for. agent_spawn,
+// agent_spawn_preset, agent_delegate and each item of
+// agent_spawn_batch all come down to the same steps — resolve what the item
 // names into an engine request, open the thread, and record it — so those steps
 // live here once and each tool only maps its own arguments onto an item.
 
@@ -335,7 +335,7 @@ export function spawnSentence(result: SpawnThreadResult, meta: DispatchMeta): st
         ? `Spawned "${result.title}" from preset ${meta.preset}`
         : `Spawned "${result.title}"`;
   const place = `${result.provider}${result.model ? `/${result.model}` : ""}`;
-  return `${handed} on ${place} as ${result.threadId}.${failoverNote(result)} Collect its response with worker_wait.`;
+  return `${handed} on ${place} as ${result.threadId}.${failoverNote(result)} Collect its response with agent_wait.`;
 }
 
 /** The single tools' structured result: the thread, plus the preset or teammate

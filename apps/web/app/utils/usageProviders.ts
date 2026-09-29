@@ -11,6 +11,7 @@ export const PROVIDER_ORDER: readonly ProviderKind[] = [
   "cursor",
   "droid",
   "antigravity",
+  "cline",
 ];
 
 export const PROVIDER_LABEL = {
@@ -20,11 +21,12 @@ export const PROVIDER_LABEL = {
   cursor: "Cursor",
   droid: "Factory Droid",
   antigravity: "Antigravity",
+  cline: "Cline",
 } satisfies Record<ProviderKind, string>;
 
 /** Brand colours for chart bands and progress bars, per appearance.
  *
- *  Four of the six vendors are monochrome in real life (OpenAI, OpenCode,
+ *  Four of the seven vendors are monochrome in real life (OpenAI, OpenCode,
  *  Cursor, Factory are all near-black on off-white), so fully brand-faithful
  *  colours would be four indistinguishable dark lines. Each entry below is
  *  anchored in the vendor's real brand token, tuned to stay legible on kone's
@@ -41,7 +43,10 @@ export const PROVIDER_LABEL = {
  *  - droid: Factory's monochrome ladder — graphite in light, cool mid gray in
  *    dark (brand `#020202` on `#F5F5F5`; the old green had no brand basis).
  *  - antigravity: Google blue `#4285F4` (≈ Antigravity royal `#3186FF`),
- *    both schemes. */
+ *    both schemes.
+  *  - cline: a teal stand-in (`#0d9488` in light, `#2dd4bf` in dark) until
+  *    Cline's official mark lands in ProviderLogo — separable from every brand
+  *    above on both grounds. */
 export const PROVIDER_COLORS = {
   light: {
     codex: "#1b1b1e",
@@ -50,6 +55,7 @@ export const PROVIDER_COLORS = {
     cursor: "#f54e00",
     droid: "#3f3f46",
     antigravity: "#4285f4",
+    cline: "#0d9488",
   },
   dark: {
     codex: "#e6e6e6",
@@ -58,6 +64,7 @@ export const PROVIDER_COLORS = {
     cursor: "#f54e00",
     droid: "#71717a",
     antigravity: "#4285f4",
+    cline: "#2dd4bf",
   },
 } satisfies Record<ThemeScheme, Record<ProviderKind, string>>;
 

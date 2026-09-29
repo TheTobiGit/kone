@@ -87,6 +87,7 @@ const PROVIDER_BRAND = {
   cursor: "cursor",
   droid: "droid",
   antigravity: "antigravity",
+  cline: "cline",
 } satisfies Record<ProviderKind, BrandKey>;
 
 const providerKind = computed(() => s.provider?.value);

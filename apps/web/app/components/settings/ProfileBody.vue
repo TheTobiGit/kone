@@ -32,6 +32,7 @@ const PROVIDER_LABEL = {
   cursor: "Cursor",
   droid: "Factory Droid",
   antigravity: "Antigravity",
+  cline: "Cline",
 } satisfies Record<ProviderKind, string>;
 const providerLabel = (p: ProviderKind) => PROVIDER_LABEL[p] ?? p;
 

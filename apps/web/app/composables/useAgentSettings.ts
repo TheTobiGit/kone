@@ -29,9 +29,9 @@ const QUOTA_CAPABLE: QuotaProvider[] = ["opencode", "claudeAgent", "codex", "cur
  *  kone cannot read a single number from them. A card with the honest "nothing
  *  to read" note beats no card at all — the absence of a meter should be
  *  explained, not silent. Never added to QUOTA_CAPABLE: the quota bridge
- *  accepts exactly that list, and these must not reach it. (Empty today — every
- *  provider kone offers has a quota path.) */
-const UNREADABLE: ProviderKind[] = [];
+ *  accepts exactly that list, and these must not reach it. (Cline only — every
+ *  other provider kone offers has a quota path.) */
+const UNREADABLE: ProviderKind[] = ["cline"];
 const READABLE: ReadonlySet<string> = new Set(QUOTA_CAPABLE);
 
 /** Every provider the Limits section can render a card for. */
@@ -246,7 +246,7 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
   const quotas = ref<Partial<Record<QuotaProvider, QuotaProviderReport>>>({ ...quotaReportCache });
   const quotaLoading = ref<Partial<Record<QuotaProvider, boolean>>>({});
   /** The card list: quota-capable providers plus the "nothing to read" ones
-   *  (droid, antigravity) the Limits section still explains. */
+   *  (cline) the Limits section still explains. */
   const limitsProviders = computed(() => LIMITS_PROVIDERS);
   /** True when the quota bridge actually answers for this provider — gates
    *  every quota call and the card states that depend on them. */

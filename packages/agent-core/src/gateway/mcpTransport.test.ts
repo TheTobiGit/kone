@@ -522,7 +522,7 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
   });
 });
 
-describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)", () => {
+describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox)", () => {
   function newToolsFixture() {
     const credentials = new GatewayCredentials();
     const store: GatewayTransportStore = {
@@ -626,7 +626,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
     return { credentials, store, mailbox, registry, turnState, inFlight, transport, auth1, auth2 };
   }
 
-  test("tools/list returns worker_spawn_batch, peer_send, peer_inbox with valid JSON Schemas", async () => {
+  test("tools/list returns agent_spawn_batch, agent_notify, agent_inbox with valid JSON Schemas", async () => {
     const { transport, auth1 } = newToolsFixture();
     const res = await post(transport, auth1, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(res.status).toBe(200);
@@ -636,29 +636,29 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
     const tools = body?.result?.tools ?? [];
     const toolMap = new Map(tools.map((t) => [t.name, t]));
 
-    expect(toolMap.has("worker_spawn_batch")).toBe(true);
-    expect(toolMap.has("peer_send")).toBe(true);
-    expect(toolMap.has("peer_inbox")).toBe(true);
+    expect(toolMap.has("agent_spawn_batch")).toBe(true);
+    expect(toolMap.has("agent_notify")).toBe(true);
+    expect(toolMap.has("agent_inbox")).toBe(true);
 
-    expect(toolMap.get("worker_spawn_batch")!.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(toolMap.get("peer_send")!.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
-    expect(toolMap.get("peer_inbox")!.inputSchema).toEqual(IRC_INBOX_JSON_SCHEMA);
+    expect(toolMap.get("agent_spawn_batch")!.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(toolMap.get("agent_notify")!.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
+    expect(toolMap.get("agent_inbox")!.inputSchema).toEqual(IRC_INBOX_JSON_SCHEMA);
 
-    const batchSchema = toolMap.get("worker_spawn_batch")!.inputSchema;
+    const batchSchema = toolMap.get("agent_spawn_batch")!.inputSchema;
     expect(batchSchema.type).toBe("object");
     expect(batchSchema.required).toEqual(["items"]);
     // SAFETY: JSON Schema object has properties record.
     expect((batchSchema.properties as GatewayRecord).items).toBeDefined();
 
-    const ircSendSchema = toolMap.get("peer_send")!.inputSchema;
+    const ircSendSchema = toolMap.get("agent_notify")!.inputSchema;
     expect(ircSendSchema.type).toBe("object");
     expect(ircSendSchema.required).toEqual(["to", "message"]);
 
-    const ircInboxSchema = toolMap.get("peer_inbox")!.inputSchema;
+    const ircInboxSchema = toolMap.get("agent_inbox")!.inputSchema;
     expect(ircInboxSchema.type).toBe("object");
   });
 
-  test("peer_send and peer_inbox execution and active turn security", async () => {
+  test("agent_notify and agent_inbox execution and active turn security", async () => {
     const { transport, auth1, auth2, turnState } = newToolsFixture();
 
     // Turnless send fails with capability_denied
@@ -666,7 +666,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "peer_send", arguments: { to: "thread-2", message: "Turnless msg" } },
+      params: { name: "agent_notify", arguments: { to: "thread-2", message: "Turnless msg" } },
     });
     expect(sendTurnless.status).toBe(200);
     // SAFETY: Turnless call returns JSON-RPC result with error envelope.
@@ -679,7 +679,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
-      params: { name: "peer_inbox", arguments: {} },
+      params: { name: "agent_inbox", arguments: {} },
     });
     expect(inboxTurnless.status).toBe(200);
     // SAFETY: Turnless inbox returns JSON-RPC result with structured count.
@@ -693,7 +693,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "peer_send", arguments: { to: "", message: "" } },
+      params: { name: "agent_notify", arguments: { to: "", message: "" } },
     });
     expect(invalidSend.status).toBe(200);
     // SAFETY: Schema validation failure returns JSON-RPC isError result.
@@ -706,7 +706,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 5,
       method: "tools/call",
-      params: { name: "peer_inbox", arguments: { limit: 0 } },
+      params: { name: "agent_inbox", arguments: { limit: 0 } },
     });
     expect(invalidInbox.status).toBe(200);
     // SAFETY: Invalid inbox arguments return JSON-RPC isError result.
@@ -719,7 +719,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 6,
       method: "tools/call",
-      params: { name: "peer_send", arguments: { to: "thread-2", message: "Hello peer 2" } },
+      params: { name: "agent_notify", arguments: { to: "thread-2", message: "Hello peer 2" } },
     });
     expect(sendRes.status).toBe(200);
     // SAFETY: Successful IRC send returns delivery receipt payload.
@@ -748,7 +748,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 7,
       method: "tools/call",
-      params: { name: "peer_inbox", arguments: { peek: true } },
+      params: { name: "agent_inbox", arguments: { peek: true } },
     });
     expect(peekRes.status).toBe(200);
     // SAFETY: Peek inbox returns message list and unread count.
@@ -771,7 +771,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 8,
       method: "tools/call",
-      params: { name: "peer_inbox", arguments: {} },
+      params: { name: "agent_inbox", arguments: {} },
     });
     // SAFETY: Drain inbox returns consumed message count.
     const drainBody = drainRes.body as {
@@ -785,7 +785,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 9,
       method: "tools/call",
-      params: { name: "peer_inbox", arguments: {} },
+      params: { name: "agent_inbox", arguments: {} },
     });
     // SAFETY: Empty inbox returns 0 counts.
     const emptyBody = emptyRes.body as {
@@ -801,7 +801,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       id: 10,
       method: "tools/call",
       params: {
-        name: "peer_send",
+        name: "agent_notify",
         arguments: { to: "thread-1", message: "Acknowledged peer 1", replyTo: msgId },
       },
     });
@@ -817,7 +817,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 11,
       method: "tools/call",
-      params: { name: "peer_inbox", arguments: {} },
+      params: { name: "agent_inbox", arguments: {} },
     });
     // SAFETY: Inbox retrieval returns message array.
     const t1InboxBody = t1InboxRes.body as {
@@ -833,7 +833,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
     expect(t1InboxBody.result.structuredContent.messages[0]?.replyTo).toBe(msgId);
   });
 
-  test("worker_spawn_batch execution, active turn security, and validation", async () => {
+  test("agent_spawn_batch execution, active turn security, and validation", async () => {
     const { transport, auth1, turnState } = newToolsFixture();
 
     // Turnless spawn batch fails with capability_denied
@@ -842,7 +842,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       id: 20,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: {
           items: [
             {
@@ -870,7 +870,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       jsonrpc: "2.0",
       id: 21,
       method: "tools/call",
-      params: { name: "worker_spawn_batch", arguments: { items: [] } },
+      params: { name: "agent_spawn_batch", arguments: { items: [] } },
     });
     expect(emptyItemsRes.status).toBe(200);
     // SAFETY: Empty batch items input returns invalid_input result.
@@ -886,7 +886,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       id: 22,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: { items: [{ requestId: "req-1" }] },
       },
     });
@@ -904,7 +904,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
       id: 23,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: {
           items: [
             {
@@ -968,7 +968,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
         id: 51,
         method: "tools/call",
         params: {
-          name: "peer_send",
+          name: "agent_notify",
           arguments: { to: "thread-2", message: "Batch item 1" },
         },
       },
@@ -977,7 +977,7 @@ describe("mcp transport: new tools (worker_spawn_batch, peer_send, peer_inbox)",
         id: 52,
         method: "tools/call",
         params: {
-          name: "peer_inbox",
+          name: "agent_inbox",
           arguments: { peek: true },
         },
       },

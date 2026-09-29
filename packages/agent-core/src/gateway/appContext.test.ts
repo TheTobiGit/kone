@@ -50,8 +50,8 @@ describe("kone host context (app-context injection)", () => {
   test("announces exactly the tools it was handed, one line each", () => {
     const block = renderKoneHostContext(TOOLS);
     expect(block).toContain("You are running inside kone");
-    expect(block).toContain("mcp__kone__scratchpad_read");
-    expect(block).toContain("part of your job");
+    expect(block).toContain("mcp__kone__agent_spawn");
+    expect(block).toContain("This session is a kone agent");
     for (const tool of TOOLS) {
       expect(block).toContain(`\`${tool.name}\`: ${tool.snippet}`);
     }

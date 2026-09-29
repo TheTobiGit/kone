@@ -25,30 +25,30 @@ function runningBlock(providerName: string, text: string): AssistantBlock {
 }
 
 describe("turnActivity", () => {
-  describe("worker_spawn_batch", () => {
+  describe("agent_spawn_batch", () => {
     test("labels the bare tool once", () => {
-      expect(describeTurnActivity(runningBlock("worker_spawn_batch", ""))?.label).toBe(
-        "Starting workers",
+      expect(describeTurnActivity(runningBlock("agent_spawn_batch", ""))?.label).toBe(
+        "Starting agents",
       );
-      expect(describeTurnActivity(runningBlock("worker_spawn_batch", "worker_spawn_batch"))?.label).toBe(
-        "Starting workers",
+      expect(describeTurnActivity(runningBlock("agent_spawn_batch", "agent_spawn_batch"))?.label).toBe(
+        "Starting agents",
       );
     });
 
     test("labels server-qualified names once, never kone kone", () => {
       const cases: Array<[string, string]> = [
         ["kone__worker_spawn_batch", ""],
-        ["kone__worker_spawn_batch", 'worker_spawn_batch: {"items": []}'],
+        ["kone__worker_spawn_batch", 'agent_spawn_batch: {"items": []}'],
         ["mcp__kone__worker_spawn_batch", ""],
-        ["mcp__kone__worker_spawn_batch", 'worker_spawn_batch: {"items": []}'],
-        ["worker_spawn_batch", "kone: dispatching 3 workers"],
+        ["mcp__kone__worker_spawn_batch", 'agent_spawn_batch: {"items": []}'],
+        ["agent_spawn_batch", "kone: dispatching 3 workers"],
         ["kone__worker_spawn_batch", "kone: dispatching 3 workers"],
         ["mcp__kone__kone_spawn_batch", ""],
         ["kone_kone_spawn_batch", ""],
       ];
       for (const [name, text] of cases) {
         const label = describeTurnActivity(runningBlock(name, text))?.label ?? "";
-        expect(label).toBe("Starting workers");
+        expect(label).toBe("Starting agents");
         expect(label.toLowerCase().includes("kone kone")).toBe(false);
       }
     });

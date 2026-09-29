@@ -42,6 +42,7 @@ export type BrandKey =
   | "zai"
   | "droid"
   | "antigravity"
+  | "cline"
   | "generic";
 
 /** Provider kinds that are *harnesses* — a house of upstream providers, so one

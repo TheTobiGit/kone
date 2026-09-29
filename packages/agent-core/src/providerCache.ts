@@ -64,6 +64,7 @@ const PROVIDERS = {
   opencode: "opencode",
   cursor: "cursor",
   droid: "droid",
+  cline: "cline",
   antigravity: "antigravity",
 } as const satisfies Record<ProviderKind, ProviderKind>;
 

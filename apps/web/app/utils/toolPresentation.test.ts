@@ -61,7 +61,7 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         text: 'mcp__kone__worker_spawn_batch: {"path": "src/foo.ts"}',
       };
       expect(toolDetailFull(item)).toBe('{"path": "src/foo.ts"}');
@@ -72,8 +72,8 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "worker_spawn_batch",
-        text: 'worker_spawn_batch: {"items": []}',
+        name: "agent_spawn_batch",
+        text: 'agent_spawn_batch: {"items": []}',
       };
       expect(toolTargetRaw(item)).toBe("");
       expect(toolDetailFull(item)).toBe('{"items": []}');
@@ -84,7 +84,7 @@ describe("toolPresentation", () => {
         itemId: "item-1",
         kind: "tool_call",
         status: "in-progress",
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         text: "kone: dispatching 3 workers",
       };
       expect(toolTargetRaw(item)).toBe("dispatching 3 workers");
@@ -104,11 +104,11 @@ describe("toolPresentation", () => {
 
   describe("canonicalToolName", () => {
     test("unwraps kone server qualification to the bare tool", () => {
-      expect(canonicalToolName("worker_spawn_batch")).toBe("worker_spawn_batch");
-      expect(canonicalToolName("kone__worker_spawn_batch")).toBe("worker_spawn_batch");
-      expect(canonicalToolName("mcp__kone__worker_spawn_batch")).toBe("worker_spawn_batch");
-      expect(canonicalToolName("kone_worker_spawn_batch")).toBe("worker_spawn_batch");
-      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("worker_spawn_batch");
+      expect(canonicalToolName("agent_spawn_batch")).toBe("agent_spawn_batch");
+      expect(canonicalToolName("kone__worker_spawn_batch")).toBe("agent_spawn_batch");
+      expect(canonicalToolName("mcp__kone__worker_spawn_batch")).toBe("agent_spawn_batch");
+      expect(canonicalToolName("kone_worker_spawn_batch")).toBe("agent_spawn_batch");
+      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("agent_spawn_batch");
     });
 
     test("leaves plain and foreign-MCP names alone", () => {
@@ -244,8 +244,8 @@ describe("toolPresentation", () => {
       });
     });
 
-    test("phrases worker_spawn_batch once, never kone kone", () => {
-      const texts = ["", 'worker_spawn_batch: {"items": []}', 'mcp__kone__worker_spawn_batch: []'];
+    test("phrases agent_spawn_batch once, never kone kone", () => {
+      const texts = ["", 'agent_spawn_batch: {"items": []}', 'mcp__kone__worker_spawn_batch: []'];
       for (const text of texts) {
         const item: RuntimeItem = {
           itemId: "item-1",
@@ -254,7 +254,7 @@ describe("toolPresentation", () => {
           name: canonicalToolName("mcp__kone__worker_spawn_batch"),
           text,
         };
-        expect(toolPhrase(item)).toEqual({ before: "Starting workers" });
+        expect(toolPhrase(item)).toEqual({ before: "Starting agents" });
       }
     });
 
@@ -279,7 +279,7 @@ describe("toolPresentation", () => {
         name: "mcp__kone__kone_wait_for_responses",
         text: "mcp__kone__kone_wait_for_responses",
       };
-      expect(toolPhrase(item)).toEqual({ before: "Collected worker replies" });
+      expect(toolPhrase(item)).toEqual({ before: "Collected agent replies" });
     });
   });
 
@@ -296,8 +296,8 @@ describe("toolPresentation", () => {
     });
 
     test("labels a canonical kone tool once, and keeps foreign MCP labels", () => {
-      expect(toolMeta(canonicalToolName("kone__worker_spawn_batch")).label).toBe("Workers");
-      expect(toolMeta(canonicalToolName("mcp__kone__worker_spawn_batch")).label).toBe("Workers");
+      expect(toolMeta(canonicalToolName("kone__worker_spawn_batch")).label).toBe("Agents");
+      expect(toolMeta(canonicalToolName("mcp__kone__worker_spawn_batch")).label).toBe("Agents");
       expect(toolMeta("kone_kone_scratchpad_read").label).toBe("Scratchpad");
       expect(toolMeta("mcp__github__fetch_pr").label).toBe("Fetch Pr");
     });

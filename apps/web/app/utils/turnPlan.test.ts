@@ -26,7 +26,7 @@ const spawn = (id: string): RuntimeItem => ({
   itemId: id,
   kind: "tool_call",
   status: "completed",
-  name: "worker_spawn",
+  name: "agent_spawn",
   text: "",
   detail: formatSpawnResult({
     spawns: [{ threadId: `child-${id}`, title: "t", provider: "codex", why: null }],

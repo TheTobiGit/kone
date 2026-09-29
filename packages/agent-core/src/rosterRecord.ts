@@ -394,6 +394,7 @@ function isProviderKind(value: string): value is ProviderKind {
     value === "opencode" ||
     value === "cursor" ||
     value === "droid" ||
+    value === "cline" ||
     value === "antigravity"
   );
 }

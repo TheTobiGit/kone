@@ -129,7 +129,7 @@ export function spawnRefusalDepth(parentDepth: number): string {
 /** Spawn refused — this parent already has too many children in flight. The
  *  fix is to wait on what it has, not to pile on more. */
 export function spawnRefusalParentBreadth(live: number, limit: number): string {
-  return `You already have ${live} children running (limit ${limit}). Call worker_wait on the ones you have before spawning more.`;
+  return `You already have ${live} children running (limit ${limit}). Call agent_wait on the ones you have before spawning more.`;
 }
 
 /** Spawn refused — the app-wide spawn cap (MAX_LIVE_SPAWNED_THREADS) is

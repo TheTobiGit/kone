@@ -71,6 +71,7 @@ electron/DOM/node builtins so both sides can consume it directly.
 - `bun run dev:desktop`: Start Nuxt + Electron for desktop dev
 - `bun run build:desktop`: Build static Nuxt renderer and Electron main process
 - `bun run package:desktop`: Create unpackaged desktop artifacts via electron-builder
+- `bun run install:desktop`: Package and install locally (macOS → `/Applications`, Linux → `~/.local/share/Kone` + `~/.local/bin/kone`)
 - `bun run check-types`: Check TypeScript types across all apps
 
 ## Desktop build and packaging

@@ -2,7 +2,7 @@
 // sentence a step row says while the call runs, once it lands, and if it fails.
 //
 // kone's tools act on the app rather than on the project — the scratchpad, the
-// workers a thread opened, the other agents on the project, the window — so
+// agents a thread opened, the other agents on the project, the window — so
 // there is no file or command to show next to them. The generic fallback made
 // that read as "Ran worker wait"; each tool says what it did instead. Their
 // arguments and results stay one click away in the row's detail.
@@ -63,75 +63,74 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Couldn't update the scratchpad",
   ]),
 
-  // workers
-  worker_targets: kone(UserGroupIcon, "Workers", "agent", [
+  // agents
+  agent_targets: kone(UserGroupIcon, "Agents", "agent", [
     "Checking who can take work",
     "Checked who can take work",
     "Couldn't check who can take work",
   ]),
-  worker_spawn: kone(WorkflowSquare01Icon, "Worker", "agent", [
-    "Starting a worker",
-    "Started a worker",
-    "Couldn't start a worker",
+  agent_spawn: kone(WorkflowSquare01Icon, "Agent", "agent", [
+    "Starting an agent",
+    "Started an agent",
+    "Couldn't start an agent",
   ]),
-  worker_spawn_preset: kone(WorkflowSquare01Icon, "Worker", "agent", [
+  agent_spawn_preset: kone(WorkflowSquare01Icon, "Agent", "agent", [
     "Starting a specialist",
     "Started a specialist",
     "Couldn't start a specialist",
   ]),
-  worker_spawn_batch: kone(WorkflowSquare01Icon, "Workers", "agent", [
-    "Starting workers",
-    "Started workers",
-    "Couldn't start workers",
+  agent_spawn_batch: kone(WorkflowSquare01Icon, "Agents", "agent", [
+    "Starting agents",
+    "Started agents",
+    "Couldn't start agents",
   ]),
-  worker_delegate: kone(UserMultiple02Icon, "Teammate", "agent", [
+  agent_delegate: kone(UserMultiple02Icon, "Teammate", "agent", [
     "Handing work to a teammate",
     "Handed work to a teammate",
     "Couldn't hand work to a teammate",
   ]),
-  worker_continue: kone(BubbleChatIcon, "Follow-up", "agent", [
-    "Following up with a worker",
-    "Followed up with a worker",
-    "Couldn't follow up with a worker",
+  agent_ask: kone(BubbleChatIcon, "Ask", "agent", [
+    "Asking an agent",
+    "Asked an agent",
+    "Couldn't ask an agent",
   ]),
-  worker_wait: kone(HourglassIcon, "Waiting", "agent", [
-    "Waiting on workers",
-    "Collected worker replies",
-    "Stopped waiting on workers",
+  agent_wait: kone(HourglassIcon, "Waiting", "agent", [
+    "Waiting on agents",
+    "Collected agent replies",
+    "Stopped waiting on agents",
   ]),
-  worker_read: kone(Note01Icon, "Worker thread", "read", [
-    "Reading a worker's thread",
-    "Read a worker's thread",
-    "Couldn't read a worker's thread",
+  agent_read: kone(Note01Icon, "Agent transcript", "read", [
+    "Reading an agent's transcript",
+    "Read an agent's transcript",
+    "Couldn't read an agent's transcript",
   ]),
-  worker_cancel: kone(Cancel01Icon, "Stop worker", "del", [
-    "Stopping a worker",
-    "Stopped a worker",
-    "Couldn't stop a worker",
+  agent_cancel: kone(Cancel01Icon, "Stop agent", "del", [
+    "Stopping an agent",
+    "Stopped an agent",
+    "Couldn't stop an agent",
   ]),
-  worker_decline: kone(Cancel01Icon, "Decline", "agent", [
-    "Declining a worker's request",
-    "Declined a worker's request",
-    "Couldn't decline a worker's request",
+  agent_decline: kone(Cancel01Icon, "Decline", "agent", [
+    "Declining an agent's request",
+    "Declined an agent's request",
+    "Couldn't decline an agent's request",
   ]),
-  worker_answer: kone(BubbleChatIcon, "Answer", "agent", [
-    "Answering a worker's question",
-    "Answered a worker's question",
-    "Couldn't answer a worker's question",
+  agent_answer: kone(BubbleChatIcon, "Answer", "agent", [
+    "Answering an agent's question",
+    "Answered an agent's question",
+    "Couldn't answer an agent's question",
   ]),
 
-  // peers
-  peer_send: kone(BubbleChatIcon, "Message", "agent", [
-    "Messaging another agent",
-    "Messaged another agent",
-    "Couldn't message another agent",
+  agent_notify: kone(BubbleChatIcon, "Notify", "agent", [
+    "Notifying another agent",
+    "Notified another agent",
+    "Couldn't notify another agent",
   ]),
-  peer_list: kone(UserGroupIcon, "Agents", "agent", [
+  agent_list: kone(UserGroupIcon, "Agents", "agent", [
     "Checking who else is working",
     "Checked who else is working",
     "Couldn't check who else is working",
   ]),
-  peer_inbox: kone(InboxIcon, "Inbox", "agent", [
+  agent_inbox: kone(InboxIcon, "Inbox", "agent", [
     "Reading messages",
     "Read messages",
     "Couldn't read messages",

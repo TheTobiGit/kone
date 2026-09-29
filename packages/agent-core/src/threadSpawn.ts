@@ -247,7 +247,7 @@ export type SpawnTargetsReport = {
     remainingChildren: number;
     remainingAppWide: number;
   };
-  /** The preset sub-agents `worker_spawn_preset` can invoke by name, in the
+  /** The preset sub-agents `agent_spawn_preset` can invoke by name, in the
    *  order the user keeps them. Filled by the gateway tool, not the engine —
    *  presets live outside the engine's store — so it is optional: absent means
    *  the report was built without them (the engine's own `targets`), and `[]`
@@ -260,7 +260,7 @@ export type SpawnTargetsReport = {
      *  runtime picks. */
     model?: { provider: ProviderKind; model: string };
   }>;
-  /** The teammates `worker_delegate` can hand work to on the caller's
+  /** The teammates `agent_delegate` can hand work to on the caller's
    *  own project, in roster order. Same provenance as `presets`. A nameless agent
    *  is left out — delegation resolves by name, so one with no name cannot be
    *  reached. */
@@ -300,7 +300,7 @@ export type ContinueThreadResult = {
   threadId: string;
   parentThreadId: string;
   /** The follow-up turn's id — pass it back as turnIds to pin
-   *  worker_wait to this exact turn. */
+   *  agent_wait to this exact turn. */
   turnId: string;
   /** True when the child's provider session had settled and this follow-up
    *  brought it back up before dispatching. */

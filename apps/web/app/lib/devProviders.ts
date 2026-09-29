@@ -59,6 +59,14 @@ export const MOCK_STATUSES: ProviderStatus[] = [
     version: "1.0.12",
     authLabel: "Google Sign-In",
   },
+  {
+    provider: "cline",
+    label: "Cline",
+    available: true,
+    authStatus: "authenticated",
+    readiness: "ready",
+    authLabel: "Cline account",
+  },
 ];
 
 // Real ids + display names + reasoning efforts, captured live from
@@ -278,6 +286,16 @@ export const MOCK_MODELS = {
       defaultReasoningEffort: "thinking",
     },
   ],
+  // Cline is NOT a fixed catalog either: its model list is fetched at runtime,
+  // same as every other CLI-backed provider — see `models()`. The one entry
+  // below is a browser-dev stand-in ONLY (no bridge → no runtime fetch) and
+  // carries no effort axis until the live catalog says otherwise.
+  cline: [
+    {
+      id: "default",
+      label: "Cline default",
+    },
+  ],
 } satisfies Record<ProviderKind, ModelDescriptor[]>;
 
 /** A plausible spread of install channels, so the maintenance pane's states —
@@ -370,6 +388,21 @@ export const MOCK_MAINTENANCE = {
     latestKnowable: false,
     standing: "unknown",
     updateCommand: "agy update",
+    canUpdate: true,
+    checkedAt: Date.now(),
+  },
+  cline: {
+    provider: "cline",
+    installSource: "npm",
+    binary: "cline",
+    resolvedPath: "/usr/local/bin/cline",
+    realPath: "/usr/local/lib/node_modules/cline/bin/cline.js",
+    packageName: "cline",
+    currentVersion: "1.0.0",
+    latestVersion: "1.0.0",
+    latestKnowable: true,
+    standing: "current",
+    updateCommand: "npm install -g cline@latest",
     canUpdate: true,
     checkedAt: Date.now(),
   },

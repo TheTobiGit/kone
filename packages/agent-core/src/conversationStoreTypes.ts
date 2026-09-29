@@ -1019,6 +1019,7 @@ const PROVIDER_KINDS = {
   opencode: null,
   cursor: null,
   droid: null,
+  cline: null,
   antigravity: null,
 } satisfies Record<ProviderKind, null>;
 

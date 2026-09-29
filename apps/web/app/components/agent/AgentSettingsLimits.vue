@@ -37,6 +37,7 @@ const PROVIDER_LABEL = {
   cursor: "Cursor",
   droid: "Factory Droid",
   antigravity: "Antigravity",
+  cline: "Cline",
 } satisfies Record<ProviderKind, string>;
 const providerLabel = (p: ProviderKind) => PROVIDER_LABEL[p] ?? p;
 const providerBrand = (p: ProviderKind) => SESSION_BRAND[p] ?? "generic";
@@ -55,8 +56,13 @@ const CONNECT_COPY = {
 
 /** Why there is no meter at all — per provider, in its own terms. The point is
  *  to explain the *absence* honestly, so a user who expects a Limits card here
- *  learns the CLI simply keeps no readable figures, not that kone forgot them. */
-const UNREADABLE_COPY: Partial<Record<ProviderKind, string>> = {};
+ *  learns the CLI simply keeps no readable figures, not that kone forgot them.
+ *  "" names no reason, so a future unreadable provider degrades to a bare row
+ *  rather than a missing key. */
+function unreadableCopyFor(p: ProviderKind): string {
+  if (p === "cline") return "Cline keeps no usage figures kone can read, so there are no limits to report.";
+  return "";
+}
 
 // ── per-card state ───────────────────────────────────────────────────────────
 // One provider resolves to exactly one of these — the template picks its body
@@ -100,7 +106,7 @@ const cards = computed(() =>
       label: providerLabel(p),
       brand: providerBrand(p),
       connectCopy: props.space.isReadable(p) ? CONNECT_COPY[p] : undefined,
-      unreadableCopy: state.kind === "unreadable" ? UNREADABLE_COPY[p] ?? "" : undefined,
+      unreadableCopy: state.kind === "unreadable" ? unreadableCopyFor(p) : undefined,
       state,
       planLabel: state.kind === "connected" || state.kind === "error" ? state.report.planLabel : null,
     };
@@ -108,7 +114,7 @@ const cards = computed(() =>
 );
 
 // ── two tiers ────────────────────────────────────────────────────────────────
-// Six providers in one flat column meant scrolling past four paragraphs of "no
+// Seven providers in one flat column meant scrolling past five paragraphs of "no
 // sign-in found" to reach the two meters you opened the page for. So the page
 // splits by whether a provider is *reporting a number* at all: the ones that are
 // keep the full card (meters, spend, trend) and sit two-up in a grid; the ones
