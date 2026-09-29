@@ -48,7 +48,7 @@ export function installDevBridge(bridge: DevBridge | null): void {
 
 /** The desktop bridge, or the dev stand-in, or nothing. */
 export function desktopBridge(): DesktopReach | undefined {
-  if (!import.meta.client) return undefined;
+  if (!import.meta.client) return standIn ?? undefined;
   return window.koneDesktop ?? standIn ?? undefined;
 }
 

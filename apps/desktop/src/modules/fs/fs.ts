@@ -1,4 +1,4 @@
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { open, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -302,6 +302,16 @@ export async function readProjectFile(root: string, rel: string): Promise<Projec
   }
 }
 
+/** Write a project file's text. Rejects a path outside the project. */
+export async function writeProjectFile(root: string, rel: string, content: string): Promise<void> {
+  const dir = normalizeRel(path.dirname(rel));
+  const absDir = await resolveInside(root, dir || ".");
+  if (!absDir) throw new Error("Path is outside the project.");
+  const filename = path.basename(rel);
+  const target = path.join(absDir, filename);
+  await writeFile(target, content, "utf8");
+}
+
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
 // The folder listing is bounded by one deadline: a wedged readdir on a network
@@ -327,6 +337,12 @@ export function registerFsIpc(): void {
   ipcMain.handle("fs:project-read", (_event, root: string, rel: string) =>
     withTimeout(() => readProjectFile(root, rel), {
       channel: "fs:project-read",
+      timeoutMs: FS_LIST_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("fs:project-write", (_event, root: string, rel: string, content: string) =>
+    withTimeout(() => writeProjectFile(root, rel, content), {
+      channel: "fs:project-write",
       timeoutMs: FS_LIST_TIMEOUT_MS,
     }),
   );

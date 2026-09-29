@@ -50,6 +50,8 @@ export type KoneFsApi = {
   listProjectDir: (root: string, dir: string) => Promise<ProjectDirListing>;
   /** A project file's text (capped). Rejects a path outside the project. */
   readProjectFile: (root: string, path: string) => Promise<ProjectFileText>;
+  /** Write a project file's text. Rejects a path outside the project. */
+  writeProjectFile: (root: string, path: string, content: string) => Promise<void>;
 };
 
 export type GitFileStatus =
