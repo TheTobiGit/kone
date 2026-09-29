@@ -30,7 +30,10 @@ watch(
   async (text) => {
     if (text) {
       const stripped = stripRedundantHeading(text, props.info.path);
-      renderedHtml.value = await renderMd(stripped);
+      const html = await renderMd(stripped);
+      // The code blocks are the markup's own, so the shared scrollbar class goes
+      // on them here rather than in a rule of this card's.
+      renderedHtml.value = html?.replaceAll("<pre", '<pre class="quiet-scroll"') ?? null;
     } else {
       renderedHtml.value = null;
     }
@@ -77,18 +80,14 @@ watch(
   flex-direction: column;
   gap: 14px;
   min-width: 0;
-  flex: 1;
-  min-height: 0;
   padding: 18px 20px;
   border-radius: 16px;
   background-color: color-mix(in srgb, var(--ink) 3.5%, transparent);
 }
 
+/* The column scrolls the file, so the card is as tall as the text. */
 .inst__body-wrap {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 6px;
+  min-width: 0;
 }
 .inst__body {
   font-size: 13px;

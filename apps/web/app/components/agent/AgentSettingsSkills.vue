@@ -6,9 +6,10 @@ import type { PluginEntry, SkillEntry } from "~/types/desktop";
 import type { useAgentSettings } from "~/composables/useAgentSettings";
 import { isKonePluginEnabled, type useSkills } from "~/composables/useSkills";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
+import SkillOriginIcon from "~/components/skill/SkillOriginIcon.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
 import SettingsBanner from "~/components/settings/SettingsBanner.vue";
-import { ORIGIN_TO_BRAND, brandsForOrigin, originLabel } from "~/utils/detailFormat";
+import { ORIGIN_ORDER, brandsForOrigin, originLabel } from "~/utils/detailFormat";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 
@@ -53,8 +54,6 @@ const query = ref("");
 const typeFilter = ref<"all" | "skill" | "plugin">("all");
 const providerFilter = ref<string | null>(null);
 
-const PROVIDER_ORDER = ["agents", "claude", "codex", "cursor", "opencode", "factory"] as const;
-
 const providerOptions = computed(() => {
   const counts = new Map<string, number>();
   const includeSkills = typeFilter.value !== "plugin";
@@ -65,9 +64,9 @@ const providerOptions = computed(() => {
   if (includePlugins) {
     for (const p of plugins.value) counts.set(p.origin, (counts.get(p.origin) ?? 0) + 1);
   }
-  const orderSet = new Set<string>(PROVIDER_ORDER);
+  const orderSet = new Set<string>(ORIGIN_ORDER);
   const extras = [...counts.keys()].filter((k) => !orderSet.has(k));
-  const order: string[] = [...PROVIDER_ORDER, ...extras];
+  const order: string[] = [...ORIGIN_ORDER, ...extras];
   return order
     .filter((o) => (counts.get(o) ?? 0) > 0 || o === providerFilter.value)
     .map((origin) => ({ origin, label: originLabel(origin), count: counts.get(origin) ?? 0 }));
@@ -152,8 +151,8 @@ async function flipPlugin(plugin: PluginEntry): Promise<void> {
 /** Every provider something was found under, in the filter's order. */
 const origins = computed(() => {
   const found = new Set<string>([...all.value.map((s) => s.origin), ...plugins.value.map((p) => p.origin)]);
-  const known = PROVIDER_ORDER.filter((o) => found.has(o));
-  const orderSet = new Set<string>(PROVIDER_ORDER);
+  const known = ORIGIN_ORDER.filter((o) => found.has(o));
+  const orderSet = new Set<string>(ORIGIN_ORDER);
   return [...known, ...[...found].filter((o) => !orderSet.has(o))];
 });
 const onCount = computed(() => all.value.filter((s) => isEnabled(s)).length);
@@ -203,8 +202,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
                 class="sk-art__source"
                 :style="{ '--i': i }"
               >
-                <HugeiconsIcon v-if="o === 'agents'" :icon="PuzzleIcon" :size="17" :stroke-width="1.7" />
-                <ProviderLogo v-else :brand="ORIGIN_TO_BRAND[o] ?? 'generic'" :size="18" />
+                <SkillOriginIcon :origin="o" :size="18" />
               </span>
               <!-- Nothing scanned yet: the places a scan looks still stand in,
                    so the current always has somewhere to start. -->
@@ -312,8 +310,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
             @click="providerFilter = providerFilter === opt.origin ? null : opt.origin"
           >
             <span class="chip__logo" aria-hidden="true">
-              <HugeiconsIcon v-if="opt.origin === 'agents'" :icon="PuzzleIcon" :size="12" :stroke-width="1.8" />
-              <ProviderLogo v-else :brand="ORIGIN_TO_BRAND[opt.origin] ?? 'generic'" :size="13" />
+              <SkillOriginIcon :origin="opt.origin" :size="13" />
             </span>
             {{ opt.label }}
             <span class="chip__count">{{ opt.count }}</span>

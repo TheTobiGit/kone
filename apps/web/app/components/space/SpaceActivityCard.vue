@@ -159,7 +159,7 @@ const shown = computed(() => {
     </template>
 
     <div ref="main" class="act__main" :class="{ 'is-stacked': !side }">
-      <div ref="wrap" class="act__wrap" :class="{ 'is-loading': loading }" @mouseleave="hovered = null">
+      <div ref="wrap" class="act__wrap quiet-scroll" :class="{ 'is-loading': loading }" @mouseleave="hovered = null">
         <div class="act__months" aria-hidden="true">
           <span v-for="m in months" :key="m.label" class="act__month" :style="{ left: `${m.left}px` }">
             {{ m.label }}
@@ -405,7 +405,6 @@ const shown = computed(() => {
 .act__main.is-stacked > .act__wrap {
   overflow-x: auto;
   padding: 0 2px 3px 0;
-  scrollbar-width: thin;
 }
 .act__cell {
   cursor: pointer;
