@@ -52,7 +52,7 @@ function responses(n: number): string {
 </script>
 
 <template>
-  <SpaceCard title="Models" label="Most used models" :count="ranked.count">
+  <SpaceCard title="Most used" label="Most used models" :count="ranked.count">
     <template #aside>
       <div class="models__seg" role="group" aria-label="Window">
         <button

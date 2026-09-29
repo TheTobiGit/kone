@@ -1,8 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { nextTick, ref } from "vue";
+import { createSSRApp, nextTick, ref } from "vue";
+import { renderToString } from "vue/server-renderer";
 import { createDevBridge } from "~/lib/devBridge";
 import { installDevBridge } from "~/utils/desktopBridge";
 import { useSpaceInstructions } from "./useSpaceInstructions";
+
+/** The composable schedules its reads with lifecycle hooks, which need a
+ *  component's setup to hang on; a server render runs one without a DOM. */
+function inSetup<T>(fn: () => T): Promise<T> {
+  return new Promise((resolve, reject) => {
+    renderToString(
+      createSSRApp({
+        setup() {
+          resolve(fn());
+          return () => null;
+        },
+      }),
+    ).catch(reject);
+  });
+}
 
 describe("useSpaceInstructions", () => {
   test("detects AGENTS.md and CLAUDE.md when present", async () => {
@@ -38,7 +54,7 @@ describe("useSpaceInstructions", () => {
     const path = ref("/my-project");
     const visible = ref(true);
 
-    const inst = useSpaceInstructions(path, visible);
+    const inst = await inSetup(() => useSpaceInstructions(path, visible));
 
     // Initial load happens on watcher tick
     await inst.refresh();
@@ -84,7 +100,7 @@ describe("useSpaceInstructions", () => {
     const path = ref("/empty-project");
     const visible = ref(true);
 
-    const inst = useSpaceInstructions(path, visible);
+    const inst = await inSetup(() => useSpaceInstructions(path, visible));
 
     await inst.refresh();
     await nextTick();
@@ -93,14 +109,14 @@ describe("useSpaceInstructions", () => {
     expect(inst.claude.value.detected).toBe(false);
 
     // Create AGENTS.md
-    await inst.createAgentsMd();
+    await inst.create("agents");
     await nextTick();
 
     expect(inst.agents.value.detected).toBe(true);
     expect(inst.agents.value.path).toBe("AGENTS.md");
 
     // Create CLAUDE.md
-    await inst.createClaudeMd();
+    await inst.create("claude");
     await nextTick();
 
     expect(inst.claude.value.detected).toBe(true);

@@ -1,13 +1,16 @@
-import { computed, isRef, ref, watch, type Ref } from "vue";
+import { computed, isRef, ref, type Ref } from "vue";
 import { useFileSystem } from "~/composables/useFileSystem";
+import { useSpaceRefresh } from "~/composables/useSpaceRefresh";
 
 export type InstructionSection = {
   title: string;
   level: number;
 };
 
+export type InstructionKind = "agents" | "claude";
+
 export type InstructionFileInfo = {
-  kind: "agents" | "claude";
+  kind: InstructionKind;
   path: string;
   detected: boolean;
   text: string | null;
@@ -23,12 +26,46 @@ export type SpaceInstructions = {
   claude: Ref<InstructionFileInfo>;
   refresh: () => Promise<void>;
   reveal: (relPath: string) => Promise<void>;
-  createAgentsMd: () => Promise<void>;
-  createClaudeMd: () => Promise<void>;
+  create: (kind: InstructionKind) => Promise<void>;
 };
 
 const AGENTS_CANDIDATES = ["AGENTS.md", ".agents.md", ".agents/AGENTS.md", "agents.md"];
 const CLAUDE_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "claude.md"];
+
+/** What a new file starts as, and where it goes. */
+const TEMPLATES = {
+  agents: {
+    file: "AGENTS.md",
+    text: `# AGENTS.md
+
+## Overview
+Guidelines and instructions for autonomous coding agents working in this repository.
+
+## Repo Layout
+- Describe the key packages, applications, or folders here.
+
+## Working Rules
+- Build & verify before completing changes.
+- Respect existing code conventions and types.
+`,
+  },
+  claude: {
+    file: "CLAUDE.md",
+    text: `# CLAUDE.md
+
+Guidelines and commands for Claude Code in this repository.
+
+## Commands
+- Build: \`bun run build\`
+- Test: \`bun test\`
+- Lint: \`bun run lint\`
+
+## Architecture & Conventions
+- Maintain strict TypeScript types.
+- Follow existing patterns in the codebase.
+`,
+  },
+} satisfies Record<InstructionKind, { file: string; text: string }>;
 
 function parseSections(text: string): InstructionSection[] {
   const sections: InstructionSection[] = [];
@@ -115,7 +152,7 @@ export function useSpaceInstructions(
   async function probeCandidates(
     root: string,
     candidates: string[],
-    kind: "agents" | "claude",
+    kind: InstructionKind,
   ): Promise<InstructionFileInfo> {
     for (const rel of candidates) {
       try {
@@ -176,54 +213,16 @@ export function useSpaceInstructions(
     }
   }
 
-  async function createAgentsMd(): Promise<void> {
+  async function create(kind: InstructionKind): Promise<void> {
     const root = getPath();
     if (!root) return;
-    const template = `# AGENTS.md
-
-## Overview
-Guidelines and instructions for autonomous coding agents working in this repository.
-
-## Repo Layout
-- Describe the key packages, applications, or folders here.
-
-## Working Rules
-- Build & verify before completing changes.
-- Respect existing code conventions and types.
-`;
-    await fs.writeProjectFile(root, "AGENTS.md", template);
+    await fs.writeProjectFile(root, TEMPLATES[kind].file, TEMPLATES[kind].text);
     await refresh();
   }
 
-  async function createClaudeMd(): Promise<void> {
-    const root = getPath();
-    if (!root) return;
-    const template = `# CLAUDE.md
-
-Guidelines and commands for Claude Code in this repository.
-
-## Commands
-- Build: \`bun run build\`
-- Test: \`bun test\`
-- Lint: \`bun run lint\`
-
-## Architecture & Conventions
-- Maintain strict TypeScript types.
-- Follow existing patterns in the codebase.
-`;
-    await fs.writeProjectFile(root, "CLAUDE.md", template);
-    await refresh();
-  }
-
-  watch(
-    [() => getPath(), () => getVisible()],
-    ([root, isVis]) => {
-      if (root && isVis) {
-        void refresh();
-      }
-    },
-    { immediate: true },
-  );
+  // Files are cheap to read and edited by hand between visits, so every arrival
+  // re-reads them rather than waiting out the gap the slower reads keep.
+  useSpaceRefresh(getPath, getVisible, refresh, { revisitMs: 0 });
 
   return {
     loading: computed(() => loading.value),
@@ -231,7 +230,6 @@ Guidelines and commands for Claude Code in this repository.
     claude: computed(() => claude.value),
     refresh,
     reveal,
-    createAgentsMd,
-    createClaudeMd,
+    create,
   };
 }

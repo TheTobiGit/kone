@@ -57,10 +57,13 @@ export const ORIGIN_TO_BRAND: Record<string, BrandKey> = {
 
 export const AGENTS_BRANDS: BrandKey[] = ["codex", "cursor", "opencode", "droid", "antigravity"];
 
+/** The one mark for a single provider's origin; the dot for one without a mark. */
+export function brandForOrigin(origin: string): BrandKey {
+  return ORIGIN_TO_BRAND[origin] ?? "generic";
+}
+
 export function brandsForOrigin(origin: string): BrandKey[] {
-  if (origin === "agents") return AGENTS_BRANDS;
-  const brand = ORIGIN_TO_BRAND[origin];
-  return brand ? [brand] : ["generic"];
+  return origin === "agents" ? AGENTS_BRANDS : [brandForOrigin(origin)];
 }
 
 export const ORIGIN_LABEL: Record<string, string> = {
@@ -71,6 +74,11 @@ export const ORIGIN_LABEL: Record<string, string> = {
   factory: "Factory",
   agents: "Shared",
 };
+
+// The order skills are grouped in wherever they are grouped by origin: the
+// shared root first (it reaches the most harnesses), then each CLI. An origin
+// not named here sorts after these.
+export const ORIGIN_ORDER: readonly string[] = ["agents", "claude", "codex", "cursor", "opencode", "factory"];
 
 // Display name for a skill origin. Unknown origins read back as themselves —
 // the scan types `origin` as a plain string so a new CLI root can't break the
