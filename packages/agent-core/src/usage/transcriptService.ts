@@ -30,9 +30,9 @@ import { scanAntigravityUsage } from "./local/antigravityScan.js";
 import { isWithinProject } from "./projectScope.js";
 import { listTranscriptFiles, readTranscriptRecords } from "./transcripts/reader.js";
 import type { TranscriptProviderKind } from "./transcripts/types.js";
+import type { UsageRecord } from "./transcripts/transcripts.js";
 
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
-const CACHE_RETENTION_DAYS = 90;
 
 const SCAN_CACHE_PATH = () => userDataPath("usage", "scan-cache.json");
 
@@ -123,9 +123,60 @@ async function persistScanCache(): Promise<void> {
   }
 }
 
+// The machine-wide local logs have no per-file cache: every scan opens each
+// OpenCode and Antigravity database and reads each Droid settings file whole,
+// whatever the window — hundreds of milliseconds, synchronous for the SQLite
+// part. A board that shows four windows at once asks for four reports in a row,
+// so the logs are read once at the widest window and every report within
+// LOCAL_LOG_TTL_MS filters that copy. Keyed on the window's end so a read
+// across midnight starts over.
+const LOCAL_LOG_TTL_MS = 30_000;
+
+type LocalLogRead = {
+  records: readonly UsageRecord[];
+  sources: readonly Pick<ScanSource, "provider" | "dir" | "status" | "skippedFiles">[];
+};
+
+let localLogMemo: { at: number; untilMs: number; read: Promise<LocalLogRead> } | null = null;
+
+function readLocalLogs(untilMs: number): Promise<LocalLogRead> {
+  const memo = localLogMemo;
+  if (memo && memo.untilMs === untilMs && Date.now() - memo.at < LOCAL_LOG_TTL_MS) return memo.read;
+  const read = scanLocalLogs(sinceMsForWindow(windowForRange("all").sinceDay), untilMs);
+  const entry = { at: Date.now(), untilMs, read };
+  localLogMemo = entry;
+  // A failed read must not be served to the next report.
+  read.catch(() => {
+    if (localLogMemo === entry) localLogMemo = null;
+  });
+  return read;
+}
+
+async function scanLocalLogs(sinceMs: number, untilMs: number): Promise<LocalLogRead> {
+  const records: UsageRecord[] = [];
+  const sources: LocalLogRead["sources"][number][] = [];
+  const opencode = await scanOpenCodeUsage({ sinceMs, untilMs });
+  const droid = await scanDroidUsage({ sinceMs, untilMs });
+  const antigravity = await scanAntigravityUsage({ sinceMs, untilMs });
+  const scans = [
+    { provider: "opencode", scan: opencode },
+    { provider: "droid", scan: droid },
+    { provider: "antigravity", scan: antigravity },
+  ] as const;
+  // One source per provider, not per directory: the per-report counts are
+  // taken from the records, which don't say which directory they came from.
+  for (const { provider, scan } of scans) {
+    records.push(...scan.records);
+    const found = scan.sources.find((source) => source.status === "ok") ?? scan.sources[0];
+    if (found) sources.push({ provider, dir: found.dir, status: found.status, skippedFiles: 0 });
+  }
+  return { records, sources };
+}
+
 /** Clears transcript scan memoization (in-memory + on-disk). */
 export async function clearUsageScanCaches(): Promise<void> {
   fileCache = new Map();
+  localLogMemo = null;
   cacheLoaded = true;
   cacheDirty = false;
   try {
@@ -140,7 +191,7 @@ async function readFileRecords(
   size: number,
   mtimeMs: number,
   provider: TranscriptProviderKind,
-): Promise<readonly import("./transcripts/transcripts.js").UsageRecord[]> {
+): Promise<readonly UsageRecord[]> {
   const cached = fileCache.get(filePath);
   if (cached && cached.size === size && cached.mtimeMs === mtimeMs && cached.provider === provider) {
     return cached.records;
@@ -250,60 +301,38 @@ export async function scanTranscriptUsage(options: {
   }
 
   // OpenCode + Droid + Antigravity are machine-wide local logs (like Codex),
-  // narrowed to the project when scoped (see inScope).
+  // narrowed to the window and then to the project when scoped (see inScope).
   const sinceMs = sinceMsForWindow(sinceDay);
   const untilMs = untilMsForWindow(untilDay);
-
-  const opencode = await scanOpenCodeUsage({ sinceMs, untilMs });
-  for (const source of opencode.sources) {
+  const localSessions = new Map<TranscriptProviderKind, Set<string>>();
+  const localRecords = new Map<TranscriptProviderKind, number>();
+  const localLogs = await readLocalLogs(untilMs);
+  for (const record of localLogs.records) {
+    if (record.timestampMs < sinceMs || record.timestampMs >= untilMs) continue;
+    if (!inScope(record)) continue;
+    if (!aggregator.add(record)) continue;
+    localRecords.set(record.provider, (localRecords.get(record.provider) ?? 0) + 1);
+    if (record.sessionId.length === 0) continue;
+    const sessions = localSessions.get(record.provider) ?? new Set<string>();
+    sessions.add(record.sessionId);
+    localSessions.set(record.provider, sessions);
+  }
+  for (const source of localLogs.sources) {
     sources.push({
-      provider: "opencode",
-      dir: source.dir,
-      status: source.status,
-      scannedFiles: source.messagesFromDb + source.messagesFromFiles,
-      skippedFiles: 0,
-      distinctSessions: source.distinctSessions,
+      ...source,
+      scannedFiles: localRecords.get(source.provider) ?? 0,
+      distinctSessions: localSessions.get(source.provider)?.size ?? 0,
     });
-  }
-  for (const record of opencode.records) {
-    if (inScope(record)) aggregator.add(record);
-  }
-
-  const droid = await scanDroidUsage({ sinceMs, untilMs });
-  for (const source of droid.sources) {
-    sources.push({
-      provider: "droid",
-      dir: source.dir,
-      status: source.status,
-      scannedFiles: source.filesScanned,
-      skippedFiles: 0,
-      distinctSessions: source.sessions,
-    });
-  }
-  for (const record of droid.records) {
-    if (inScope(record)) aggregator.add(record);
-  }
-
-  const antigravity = await scanAntigravityUsage({ sinceMs, untilMs });
-  for (const source of antigravity.sources) {
-    sources.push({
-      provider: "antigravity",
-      dir: source.dir,
-      status: source.status,
-      scannedFiles: source.filesScanned,
-      skippedFiles: 0,
-      distinctSessions: source.conversations,
-    });
-  }
-  for (const record of antigravity.records) {
-    if (inScope(record)) aggregator.add(record);
   }
 
   const pruned = pruneScanCache(fileCache, {
     livePaths,
     walkedRoots,
     windowStartMs,
-    retentionCutoffMs: startedAt - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    // Kept as long as the widest window reads them: any shorter and the "all"
+    // report re-parses every older transcript, caches it, and prunes it again
+    // on every read.
+    retentionCutoffMs: sinceMsForWindow(windowForRange("all").sinceDay),
   });
   if (pruned > 0) cacheDirty = true;
   await persistScanCache();
