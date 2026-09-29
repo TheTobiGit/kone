@@ -1261,24 +1261,27 @@ function onDiscardFile(path: string) {
   opacity: 0;
   pointer-events: none;
 }
-/* The repository is the studio's peer on the centre nav, so it arrives the same
-   way — the whole space easing up into place on entry, snapping back on leave
+/* Sub-surfaces ease up into place on entry, snapping back on leave
    (same hidden state carries no transition). */
-.surface-layer--git:not(.surface-layer--hidden) {
+.surface-layer--git:not(.surface-layer--hidden),
+.surface-layer--space:not(.surface-layer--hidden) {
   transition:
     opacity 0.42s ease,
     transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
   transform-origin: 50% 22%;
   will-change: opacity, transform;
 }
-.surface-layer--git.surface-layer--hidden {
+.surface-layer--git.surface-layer--hidden,
+.surface-layer--space.surface-layer--hidden {
   transform: translateY(10px) scale(0.985);
 }
 @media (prefers-reduced-motion: reduce) {
-  .surface-layer--git:not(.surface-layer--hidden) {
+  .surface-layer--git:not(.surface-layer--hidden),
+  .surface-layer--space:not(.surface-layer--hidden) {
     transition-duration: 0.01s;
   }
-  .surface-layer--git.surface-layer--hidden {
+  .surface-layer--git.surface-layer--hidden,
+  .surface-layer--space.surface-layer--hidden {
     transform: none;
   }
 }

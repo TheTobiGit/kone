@@ -111,11 +111,11 @@ function openUsage(): void {
 
     <div v-if="bars.length" class="spend__strip" aria-label="Daily cost, last 30 days">
       <span
-        v-for="b in bars"
+        v-for="(b, i) in bars"
         :key="b.date"
         class="spend__bar"
         :class="{ 'is-zero': b.cost <= 0 }"
-        :style="{ height: `${b.height}%` }"
+        :style="{ height: `${b.height}%`, '--bi': i }"
         :title="`${formatDayShort(b.date)} · ${formatUsd(b.cost)}`"
       />
     </div>
@@ -246,7 +246,20 @@ function openUsage(): void {
   min-width: 0;
   border-radius: 2px;
   background-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  transform-origin: bottom;
+  animation: spend-bar-in 0.36s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(140ms + var(--bi, 0) * 5ms);
   transition: background-color 0.15s ease;
+}
+@keyframes spend-bar-in {
+  from {
+    opacity: 0.25;
+    transform: scaleY(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
 }
 .spend__bar:hover {
   background-color: var(--accent);
@@ -268,6 +281,18 @@ function openUsage(): void {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
+  animation: spend-split-in 0.38s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: 200ms;
+}
+@keyframes spend-split-in {
+  from {
+    opacity: 0;
+    clip-path: inset(0 100% 0 0 round 999px);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0 round 999px);
+  }
 }
 .spend__split-seg {
   min-width: 3px;
@@ -279,6 +304,18 @@ function openUsage(): void {
   margin: 0;
   padding: 0;
   list-style: none;
+  animation: spend-fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: 240ms;
+}
+@keyframes spend-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .spend__leg {
   display: inline-flex;
@@ -337,7 +374,10 @@ function openUsage(): void {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .spend__skel {
+  .spend__skel,
+  .spend__bar,
+  .spend__split-bar,
+  .spend__legend {
     animation: none;
   }
 }
