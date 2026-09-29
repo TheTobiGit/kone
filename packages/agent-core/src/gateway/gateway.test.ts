@@ -315,20 +315,20 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(names).toEqual([
       "scratchpad_read",
       "scratchpad_write",
-      "worker_targets",
-      "worker_spawn",
-      "worker_spawn_preset",
-      "worker_delegate",
-      "worker_spawn_batch",
-      "worker_continue",
-      "worker_cancel",
-      "worker_decline",
-      "worker_answer",
-      "worker_wait",
-      "worker_read",
-      "peer_send",
-      "peer_list",
-      "peer_inbox",
+      "agent_targets",
+      "agent_spawn",
+      "agent_spawn_preset",
+      "agent_delegate",
+      "agent_spawn_batch",
+      "agent_ask",
+      "agent_cancel",
+      "agent_decline",
+      "agent_answer",
+      "agent_wait",
+      "agent_read",
+      "agent_notify",
+      "agent_list",
+      "agent_inbox",
       "process_control",
       "code_lsp",
       "code_find_calls",
@@ -344,11 +344,11 @@ describe("gateway integration (real store + HTTP)", () => {
     const core = await listSet("core");
     const onDemand = await listSet("on-demand");
     expect(onDemand).toEqual([
-      "worker_cancel",
-      "worker_decline",
-      "worker_answer",
-      "worker_read",
-      "peer_inbox",
+      "agent_cancel",
+      "agent_decline",
+      "agent_answer",
+      "agent_read",
+      "agent_inbox",
       "process_control",
       "code_lsp",
       "code_find_calls",
@@ -645,14 +645,14 @@ describe("gateway integration (real store + HTTP)", () => {
     });
     const toolList = rpcResult(listRes).tools ?? [];
     const toolNames = toolList.map((t) => t.name);
-    expect(toolNames).toContain("worker_spawn_batch");
-    expect(toolNames).toContain("worker_continue");
-    expect(toolNames).toContain("worker_read");
+    expect(toolNames).toContain("agent_spawn_batch");
+    expect(toolNames).toContain("agent_ask");
+    expect(toolNames).toContain("agent_read");
 
     const toolMap = new Map(toolList.map((t) => [t.name, t]));
-    expect(toolMap.get("worker_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(toolMap.get("worker_continue")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
-    expect(toolMap.get("worker_read")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
+    expect(toolMap.get("agent_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(toolMap.get("agent_ask")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(toolMap.get("agent_read")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
 
     initSpawnEngine({
       store,
@@ -720,7 +720,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 2,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: {
           items: [
             {
@@ -740,19 +740,19 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 3,
       method: "tools/call",
       params: {
-        name: "worker_continue",
+        name: "agent_ask",
         arguments: { threadId: "child-of-alice", message: "Turnless follow-up" },
       },
     });
     expect(rpcResult(turnlessContinue).isError).toBe(true);
     expect(rpcResult(turnlessContinue).structuredContent.error.code).toBe("capability_denied");
 
-    // 3. Turnless read: worker_read works without an active turn
+    // 3. Turnless read: agent_read works without an active turn
     const aliceReadsOwnChild = await mcpPost(url, connAlice.bearerToken, {
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "worker_read", arguments: { threadId: "child-of-alice" } },
+      params: { name: "agent_read", arguments: { threadId: "child-of-alice" } },
     });
     expect(rpcResult(aliceReadsOwnChild).isError).toBeUndefined();
 
@@ -761,7 +761,7 @@ describe("gateway integration (real store + HTTP)", () => {
       jsonrpc: "2.0",
       id: 5,
       method: "tools/call",
-      params: { name: "worker_read", arguments: { threadId: "child-of-alice" } },
+      params: { name: "agent_read", arguments: { threadId: "child-of-alice" } },
     });
     expect(rpcResult(bobReadsAliceChild).isError).toBe(true);
     expect(rpcResult(bobReadsAliceChild).structuredContent.error.code).toBe("not_found");
@@ -780,7 +780,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 6,
       method: "tools/call",
       params: {
-        name: "worker_continue",
+        name: "agent_ask",
         arguments: {
           threadId: "child-of-alice",
           message: "Unauthorized follow-up from Bob",
@@ -806,7 +806,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 7,
       method: "tools/call",
       params: {
-        name: "worker_continue",
+        name: "agent_ask",
         arguments: {
           threadId: "child-of-bob",
           message: "Post-turn follow-up attempt",
@@ -836,7 +836,7 @@ describe("gateway integration (real store + HTTP)", () => {
     await gateway.shutdown();
   });
 
-  test("worker_spawn_batch end-to-end execution, active turn gating, and validation over HTTP gateway", async () => {
+  test("agent_spawn_batch end-to-end execution, active turn gating, and validation over HTTP gateway", async () => {
     const store = freshStore();
     const { gateway, turn } = makeGateway(store);
     await gateway.ready;
@@ -900,7 +900,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 1,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: {
           items: [
             {
@@ -930,7 +930,7 @@ describe("gateway integration (real store + HTTP)", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "worker_spawn_batch", arguments: { items: [] } },
+      params: { name: "agent_spawn_batch", arguments: { items: [] } },
     });
     expect(rpcResult(emptyItemsRes).isError).toBe(true);
     expect(rpcResult(emptyItemsRes).structuredContent?.error?.code).toBe("invalid_input");
@@ -940,7 +940,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 3,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: { items: [{ requestId: "req-1" }] },
       },
     });
@@ -953,7 +953,7 @@ describe("gateway integration (real store + HTTP)", () => {
       id: 4,
       method: "tools/call",
       params: {
-        name: "worker_spawn_batch",
+        name: "agent_spawn_batch",
         arguments: {
           items: [
             {

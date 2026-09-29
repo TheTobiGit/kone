@@ -42,6 +42,7 @@ const PROVIDER_BRAND = {
   cursor: "cursor",
   droid: "droid",
   antigravity: "antigravity",
+  cline: "cline",
 } satisfies Record<ProviderKind, BrandKey>;
 
 // The catalog is shared module state, so a warm app already has it; a cold one

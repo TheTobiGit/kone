@@ -326,7 +326,7 @@ export class TranscriptRepo {
    *  items concatenated in arrival order, trimmed. This is what becomes the
    *  child's summary, so it is the narrative only: reasoning, plan and tool
    *  calls are excluded (they stay in the child's transcript, readable on
-   *  demand via worker_read). Null when the thread has never produced
+   *  demand via agent_read). Null when the thread has never produced
    *  assistant text. */
   latestAssistantText(threadId: string): string | null {
     const db = this.dbh.handle();

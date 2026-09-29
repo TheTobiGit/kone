@@ -45,6 +45,7 @@ const PROVIDERS = new Set<ProviderKind>([
   "opencode",
   "droid",
   "antigravity",
+  "cline",
 ]);
 
 /** A model ref off the wire, or null if it names no model this build can run.

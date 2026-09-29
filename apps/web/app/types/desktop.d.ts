@@ -718,7 +718,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode" | "droid" | "antigravity";
+export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode" | "droid" | "antigravity" | "cline";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error" | "disabled";
 
@@ -1394,6 +1394,10 @@ export type RuntimeEventSource =
   | "droid.acp.notification"
   | "droid.acp.stderr"
   | "droid.acp.lifecycle"
+  // Cline ACP (`cline --acp`): notification + lifecycle only — its stderr is
+  // log noise and deliberately not wired (see ClineAdapter).
+  | "cline.acp.notification"
+  | "cline.acp.lifecycle"
   // Antigravity `agy -p` print mode: `event` = transcript/hook-derived turn
   // events, `stderr` = the CLI's stderr line, `lifecycle` = session start/exit.
   | "antigravity.cli.event"
@@ -1498,7 +1502,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (worker_spawn), and every subsequent
+  // An agent spawned a child thread (agent_spawn), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value — apply by replacing,
@@ -1582,7 +1586,7 @@ export type RuntimeEvent =
       removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `worker_spawn_preset` cuts a spawn from. Unlike the
+  // standing definitions `agent_spawn_preset` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (AgentBaseEvent & {

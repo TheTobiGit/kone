@@ -1,7 +1,8 @@
 // Scratchpad gateway tools (docs/mcp-gateway-design.md §6).
 //
-// The first "agent steers the app" capability: agents read and write the
-// project scratchpad the web board already renders. v1 speaks the current
+// The scratchpad is the user's own notes for a project, a pane in the studio.
+// Agents read it when the user points them at it and write it when the user
+// asks; it is not agent memory and not a channel between agents. v1 speaks the current
 // single-pad model — read without a scratchpadId resolves the project's
 // most-recently-updated pad; write targets that pad (creating it when the
 // project has none). The list-read stays for future multi-pad.
@@ -17,7 +18,7 @@
 //   post-write result; with different content it's an `idempotency_conflict`.
 // - Attribution: every write result and every `scratchpad.updated` event
 //   carries `writer: { model, provider }` from the calling session, so the
-//   board can render "written by <model> via kone".
+//   pane can render "written by <model> via kone".
 
 import { randomUUID } from "node:crypto";
 
@@ -247,28 +248,28 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
     {
       name: "scratchpad_read",
       description:
-        "Read this project's scratchpad: the notes board the user sees live on the project page, and the memory you share with them across sessions. Read it when the user refers to their notes, or to pick up earlier plans and decisions. Omit scratchpadId for the project's current pad.",
+        "Read this project's scratchpad: the user's own notes for the project, kept in a studio pane. Read it when the user points you at their notes. It is not a store for your own plans or state, and not a channel between agents. Omit scratchpadId for the project's current pad.",
       inputSchema: ScratchpadReadInputSchema,
       jsonSchema: SCRATCHPAD_READ_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "Read the project scratchpad: the notes board the user sees live, and your memory across sessions.",
+        "Read the user's notes for this project, when they point you at them.",
+      promptGuidelines: [
+        "The scratchpad belongs to the user: their notes for the project, not a place for your own plans, progress or handoffs, and not a channel between agents. Read it when the user points you at it and write to it only when they ask. When you do write, prefer append, and on a revision conflict re-read rather than overwrite their edits.",
+      ],
       handler: readHandler,
     },
     {
       name: "scratchpad_write",
       description:
-        "Update this project's scratchpad, which re-renders on the user's page as you write. Use it for plans, decisions and notes the user will keep reading after this conversation. append: true merges new notes in (safe without a read first); omitting it replaces the whole pad. expectedRevision makes the write fail rather than overwrite the user's own edits; clientRequestId makes a retry safe. Writes are attributed to this session.",
+        "Write to this project's scratchpad, the user's own notes for the project. Use it only when the user asks you to add to or edit their notes, never for your own plans, progress or handoffs. append: true adds to the end (safe without a read first); omitting it replaces the whole pad. expectedRevision makes the write fail rather than overwrite the user's own edits; clientRequestId makes a retry safe. The pad updates live for the user, and writes are attributed to this session.",
       inputSchema: ScratchpadWriteInputSchema,
       jsonSchema: SCRATCHPAD_WRITE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "Write that board; it re-renders on the user's page as you write.",
-      promptGuidelines: [
-        "The scratchpad is the one place your work and the user's own edits meet: read before overwriting, prefer append for additions, and treat a revision conflict as the user's word.",
-      ],
+        "Add to or edit the user's project notes, when they ask you to.",
       handler: writeHandler,
     },
   ];

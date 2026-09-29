@@ -1,5 +1,5 @@
 // The preset sub-agents, as gateway tools: the standing definitions
-// `worker_spawn_preset` cuts a spawn from, now authored from the same side
+// `agent_spawn_preset` cuts a spawn from, now authored from the same side
 // that spawns them.
 //
 // Unlike the roster next door, these need no help from the renderer. A preset is
@@ -124,7 +124,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
 
   /** Every preset an agent can name: the user's own first, then the shipped
    *  ones a user preset hasn't taken the name of. The same precedence
-   *  `worker_spawn_preset` resolves by, so what is listed here is what a
+   *  `agent_spawn_preset` resolves by, so what is listed here is what a
    *  spawn from that name would actually use. Read straight from the store so
    *  the two tools can never disagree about which names collide. */
   const allPresets = (): SubagentPresetRecord[] => store.listVisiblePresets();
@@ -209,7 +209,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
               ? "No preset sub-agents match. Use app_create_subagent_preset to define one."
               : `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"}, in the order a spawn resolves a name:\n` +
                 presets.map((preset) => presetLine(preset, presets.length === 1)).join("\n") +
-                "\nStart a worker from one with worker_spawn_preset.",
+                "\nStart a worker from one with agent_spawn_preset.",
         },
       ],
       structuredContent: {
@@ -256,7 +256,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
       content: [
         {
           type: "text",
-          text: `${summary} Start a worker from it by name with worker_spawn_preset.`,
+          text: `${summary} Start a worker from it by name with agent_spawn_preset.`,
         },
       ],
       structuredContent: { ok: true, summary, preset: presetPayload(created) },
@@ -368,7 +368,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     {
       name: "app_list_subagent_presets",
       description:
-        "List the preset sub-agents in kone — the reusable definitions (name, standing instructions, model) that worker_spawn_preset starts a specialist worker from. Includes the presets kone ships, marked read-only.",
+        "List the preset sub-agents in kone — the reusable definitions (name, standing instructions, model) that agent_spawn_preset starts a specialist worker from. Includes the presets kone ships, marked read-only.",
       inputSchema: ListSubagentPresetsInputSchema,
       jsonSchema: LIST_SUBAGENT_PRESETS_JSON_SCHEMA,
       permission: "allow",
@@ -391,7 +391,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
       promptSnippet:
         "`app_create_subagent_preset`: define a reusable sub-agent (name, instructions, model).",
       promptGuidelines: [
-        "Use `app_create_subagent_preset` for a sub-agent the user wants to reuse; for a single task, spawn a one-off worker with `worker_spawn` instead of leaving a preset behind.",
+        "Use `app_create_subagent_preset` for a sub-agent the user wants to reuse; for a single task, spawn a one-off worker with `agent_spawn` instead of leaving a preset behind.",
       ],
       handler: createHandler,
     },

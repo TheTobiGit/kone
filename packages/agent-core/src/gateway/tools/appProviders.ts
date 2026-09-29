@@ -595,7 +595,7 @@ export function createAppProviderTools(options: AppProvidersToolOptions): ToolEn
       target: "assistant",
       promptSnippet: "Inspect available AI providers, CLI versions, and model capabilities with reasoning tiers.",
       promptGuidelines: [
-        "Call app_get_provider_status to see which providers (Codex, Claude, Cursor, OpenCode, Droid, Antigravity) are installed and authenticated.",
+        "Call app_get_provider_status to see which providers (Codex, Claude, Cursor, OpenCode, Droid, Cline, Antigravity) are installed and authenticated.",
         "Set checkLatest: true only when the user explicitly asks about CLI updates or maintenance, as it performs network checks.",
       ],
       handler: statusHandler,

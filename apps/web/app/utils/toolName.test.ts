@@ -8,8 +8,8 @@ function toolCall(name: string, extra: Partial<RuntimeItem> = {}): RuntimeItem {
 
 describe("canonicalizeItem", () => {
   test("restamps a qualified tool_call with its canonical name", () => {
-    expect(canonicalizeItem(toolCall("mcp__kone__worker_spawn_batch")).name).toBe("worker_spawn_batch");
-    expect(canonicalizeItem(toolCall("kone__worker_spawn_batch")).name).toBe("worker_spawn_batch");
+    expect(canonicalizeItem(toolCall("mcp__kone__worker_spawn_batch")).name).toBe("agent_spawn_batch");
+    expect(canonicalizeItem(toolCall("kone__worker_spawn_batch")).name).toBe("agent_spawn_batch");
   });
 
   test("returns an already-canonical item by identity", () => {
@@ -39,7 +39,7 @@ describe("canonicalizeItem", () => {
       },
     });
     const out = canonicalizeItem(parent);
-    expect(out.subagent?.items[0]?.name).toBe("worker_spawn_batch");
+    expect(out.subagent?.items[0]?.name).toBe("agent_spawn_batch");
     // The parent's own name needed no change, but the rebuild must not lose it.
     expect(out.name).toBe("task");
   });
@@ -64,10 +64,16 @@ describe("canonicalToolName", () => {
 
   // Stored threads keep the names their calls were made under.
   test("brings a name from before the rename up to date, however it was stamped", () => {
-    expect(canonicalToolName("kone_spawn_worker")).toBe("worker_spawn");
-    expect(canonicalToolName("mcp__kone__kone_wait_for_responses")).toBe("worker_wait");
+    expect(canonicalToolName("kone_spawn_worker")).toBe("agent_spawn");
+    expect(canonicalToolName("mcp__kone__kone_wait_for_responses")).toBe("agent_wait");
     expect(canonicalToolName("kone_kone_scratchpad_write")).toBe("scratchpad_write");
     expect(canonicalToolName("mcp__kone_extra__kone_lsp")).toBe("code_lsp");
+  });
+
+  test("brings a worker or peer name up to its agent tool", () => {
+    expect(canonicalToolName("mcp__kone__worker_continue")).toBe("agent_ask");
+    expect(canonicalToolName("kone__peer_send")).toBe("agent_notify");
+    expect(canonicalToolName("worker_spawn_batch")).toBe("agent_spawn_batch");
   });
 
   test("leaves a foreign tool that merely starts with kone alone", () => {

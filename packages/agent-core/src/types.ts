@@ -12,10 +12,10 @@
 /** A supported agent provider. `claudeAgent` drives Claude Code through the
  *  `@anthropic-ai/claude-agent-sdk` (which runs the user's own Claude login);
  *  `codex` drives `codex app-server`; `cursor` drives `cursor-agent acp`;
- *  `droid` drives Factory's `droid exec --output-format acp`; `antigravity`
- *  drives Google's `agy` CLI in print mode (transcript + capture-hook polling).
- *  Grows as adapters land. */
-export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "droid" | "antigravity";
+ *  `droid` drives Factory's `droid exec --output-format acp`; `cline` drives
+ *  `cline --acp`; `antigravity` drives Google's `agy` CLI in print mode
+ *  (transcript + capture-hook polling). Grows as adapters land. */
+export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "droid" | "cline" | "antigravity";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -1071,7 +1071,7 @@ export const MAX_LIVE_SPAWNED_THREADS = 32;
  *  parent's when the parent is on the same provider. */
 export type SpawnTarget = {
   provider: ProviderKind;
-  /** ModelDescriptor.id from `worker_targets`. A model that is not in the
+  /** ModelDescriptor.id from `agent_targets`. A model that is not in the
    *  provider's discovered catalog is rejected (with the catalog), never
    *  silently swapped — the model is a deliberate choice. */
   model?: string;
@@ -1115,8 +1115,8 @@ export type SpawnAdjustment = {
 
 export type SpawnThreadResult = {
   requestId: string;
-  /** The child thread's kone id — the handle for `worker_wait` and
-   *  `worker_read`. Minted in the main process; agents never choose ids. */
+  /** The child thread's kone id — the handle for `agent_wait` and
+   *  `agent_read`. Minted in the main process; agents never choose ids. */
   threadId: string;
   parentThreadId: string;
   title: string;
@@ -1129,7 +1129,7 @@ export type SpawnThreadResult = {
    *  the dispatching agent can see that `provider`/`model` above are not what it
    *  asked for and why. */
   failedOverFrom?: { provider: ProviderKind; model?: string; reason: string };
-  /** The child's FIRST turn id — the turnId to pin worker_wait to, so
+  /** The child's FIRST turn id — the turnId to pin agent_wait to, so
    *  the parent waits on the turn it spawned rather than whatever the child's
    *  latest turn happens to be when the wait runs. */
   firstTurnId?: string;
@@ -1199,7 +1199,7 @@ export type SpawnedThread = {
   /** The child's final assistant text, capped. THE ONLY thing that crosses
    *  back into the parent's context — tool calls, reasoning and intermediate
    *  output stay isolated in the child thread and are read on demand via
-   *  `worker_read`. */
+   *  `agent_read`. */
   summary?: string;
   /** Set when the child failed, or when it is parked: the question/approval
    *  the child is blocked on, so the parent can tell the user what to do. */
@@ -1437,6 +1437,11 @@ export type RuntimeEventSource =
   | "droid.acp.notification"
   | "droid.acp.stderr"
   | "droid.acp.lifecycle"
+  // Cline speaks ACP over `cline --acp`'s stdio. Its stderr is log noise (an
+  // `Error handling request {…}` dump per failed call), so only the
+  // notification and lifecycle sources are carried.
+  | "cline.acp.notification"
+  | "cline.acp.lifecycle"
   // Antigravity drives `agy -p` print mode: `event` = transcript/hook-derived
   // turn events, `stderr` = the CLI's stderr line, `lifecycle` = session
   // start/exit.
@@ -1565,7 +1570,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (worker_spawn), and every subsequent
+  // An agent spawned a child thread (agent_spawn), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value (the same
@@ -1650,7 +1655,7 @@ export type RuntimeEvent =
       removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `worker_spawn_preset` cuts a spawn from. Unlike the
+  // standing definitions `agent_spawn_preset` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (BaseEvent & {

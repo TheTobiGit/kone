@@ -186,9 +186,9 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA = {
 // validates args; the hand-written JSON schemas are what tools/list advertises,
 // so the enum literals are repeated there — the client never sees zod.
 
-/** The six provider kinds as a literal tuple — ProviderKind is a plain union,
+/** The seven provider kinds as a literal tuple — ProviderKind is a plain union,
  *  and zod needs a runtime value for its enum. */
-const PROVIDER_KINDS = ["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"] as const;
+const PROVIDER_KINDS = ["codex", "claudeAgent", "opencode", "cursor", "droid", "cline", "antigravity"] as const;
 
 /** The three interaction modes, same deal. */
 const INTERACTION_MODES = ["ask", "accept-edits", "full-access"] as const;
@@ -323,7 +323,7 @@ export const ReadResponseInputSchema = z.object({
 });
 
 export const ContinueThreadInputSchema = z.object({
-  /** The child thread to post the follow-up into — one worker_continue
+  /** The child thread to post the follow-up into — one agent_ask
    *  returned earlier. Must be in the caller's own spawned subtree. */
   threadId: z.string().min(1),
   /** The follow-up: a complete, self-contained ask that continues the thread's
@@ -399,7 +399,7 @@ export const SPAWN_WORKER_PRESET_JSON_SCHEMA = {
     preset: {
       type: "string",
       description:
-        "Preset name or id, as worker_targets lists it; a name that matches none is refused.",
+        "Preset name or id, as agent_targets lists it; a name that matches none is refused.",
     },
     task: { type: "string" },
     requestId: { type: "string" },
@@ -425,7 +425,7 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
     agent: {
       type: "string",
       description:
-        "Teammate name or id on this project's team, as worker_targets lists it; anyone else is refused.",
+        "Teammate name or id on this project's team, as agent_targets lists it; anyone else is refused.",
     },
     task: { type: "string" },
     requestId: { type: "string" },
@@ -1005,7 +1005,7 @@ export type CreateCustomThemeInput = z.infer<typeof CreateCustomThemeInputSchema
  *  the way the app's own model refs carry one. */
 export const AgentModelRefSchema = z.object({
   provider: z
-    .enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"])
+    .enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "cline", "antigravity"])
     .describe("The provider CLI the model belongs to."),
   model: z.string().min(1).max(200).describe("The model id within that provider."),
   label: z.string().min(1).max(200).optional().describe("Optional display label for the model."),
@@ -1016,7 +1016,7 @@ const AGENT_MODEL_REF_JSON_SCHEMA = {
   properties: {
     provider: {
       type: "string",
-      enum: ["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"],
+      enum: ["codex", "claudeAgent", "opencode", "cursor", "droid", "cline", "antigravity"],
       description: "The provider CLI the model belongs to.",
     },
     model: { type: "string", description: "The model id within that provider." },
@@ -1400,7 +1400,7 @@ export const CreateSubagentPresetInputSchema = z.object({
     .string()
     .min(1)
     .max(64)
-    .describe("What the preset is called. This is also how worker_spawn_preset refers to it."),
+    .describe("What the preset is called. This is also how agent_spawn_preset refers to it."),
   instructions: z
     .string()
     .max(4000)
@@ -1420,7 +1420,7 @@ export const CREATE_SUBAGENT_PRESET_JSON_SCHEMA = {
     name: {
       type: "string",
       description:
-        "What the preset is called. This is also how worker_spawn_preset refers to it.",
+        "What the preset is called. This is also how agent_spawn_preset refers to it.",
     },
     instructions: {
       type: "string",

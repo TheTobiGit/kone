@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -139,6 +139,11 @@ export interface MigrationEntry {
   readonly id: number;
   readonly name: string;
   readonly run: (db: DatabaseSync, dbFile: string) => void;
+  /** `"off"` runs the rung with `PRAGMA foreign_keys` off. SQLite only honours
+   *  that pragma outside a transaction, so `migrate` flips it around the rung
+   *  rather than the rung doing it. Needed by a table rebuild, where dropping
+   *  the old table would otherwise fire ON DELETE CASCADE into every child. */
+  readonly foreignKeys?: "off";
 }
 
 function migration0001Baseline(db: DatabaseSync): void {
@@ -882,6 +887,76 @@ function migration0013ThreadHandIns(db: DatabaseSync): void {
   `);
 }
 
+/** The provider CHECK's list, as `threads` (v1) and `jobs` (v9) spell it. */
+const PROVIDER_CHECK = /(provider\s+IN\s*\()([^)]*)(\))/i;
+
+/**
+ * Cline joins the provider list (v14).
+ *
+ * `threads.provider` and `jobs.provider` carry a CHECK naming every provider,
+ * and SQLite cannot alter a constraint — so a `cline` thread would fail its
+ * first INSERT. This is the one rung that rebuilds tables instead of adding to
+ * them, by SQLite's documented recipe: create the new table from the stored
+ * DDL with the list widened, copy every row, drop the old one, rename, and
+ * recreate its indexes. `migrate` runs it with foreign keys off (see
+ * `MigrationEntry.foreignKeys`) because dropping `threads` with them on would
+ * cascade-delete every child row; the rung ends by proving with
+ * `foreign_key_check` that no reference was orphaned, and throws — rolling the
+ * whole rung back — if one was.
+ *
+ * The DDL is read back from sqlite_master rather than restated, so every column
+ * later rungs appended (env_mode, requested_branch, …) survives without this
+ * function having to know about them, and rows keep their rowids. Idempotent:
+ * a table whose CHECK already lists cline, or that has none, is left alone.
+ */
+function migration0014ClineProvider(db: DatabaseSync): void {
+  for (const table of ["threads", "jobs"]) widenProviderCheck(db, table);
+  // SAFETY: foreign_key_check rows describe each violating child row.
+  const orphans = db.prepare("PRAGMA foreign_key_check").all();
+  if (orphans.length > 0) {
+    throw new Error(
+      `[conversation-store] rebuilding provider constraints left ${orphans.length} orphaned rows; rolling back.`,
+    );
+  }
+}
+
+function widenProviderCheck(db: DatabaseSync, table: string): void {
+  // SAFETY: sqlite_master rows carry the object's DDL in `sql`.
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) as { sql: string } | undefined;
+  // A rung must never assume an earlier rung's tables exist (see 0006).
+  if (!row) return;
+  // Nothing to widen: no provider constraint (a hand-built legacy table), or
+  // one that already lists cline.
+  const check = row.sql.match(PROVIDER_CHECK);
+  if (!check || check[2]?.includes("'cline'")) return;
+  // Indexes are dropped with the table and have to be recreated afterwards.
+  // SAFETY: sqlite_master rows carry the object's DDL in `sql`.
+  const indexes = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = ? AND sql IS NOT NULL",
+    )
+    .all(table) as Array<{ sql: string }>;
+
+  const scratch = `${table}__cline_rebuild`;
+  const widened = row.sql
+    .replace(PROVIDER_CHECK, (_whole, open: string, list: string, close: string) => `${open}${list}, 'cline'${close}`)
+    .replace(/^CREATE TABLE\s+["`]?\w+["`]?/i, `CREATE TABLE ${scratch}`);
+  db.exec(`DROP TABLE IF EXISTS ${scratch}`);
+  db.exec(widened);
+  // Copied with rowids, which the jobs queue reads as its final tiebreak
+  // (store/jobs.ts) — an unnamed `SELECT *` would renumber them.
+  // SAFETY: table_info rows name every column of the table in `name`.
+  const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+    .map((column) => `"${column.name}"`)
+    .join(", ");
+  db.exec(`INSERT INTO ${scratch} (rowid, ${columns}) SELECT rowid, ${columns} FROM ${table}`);
+  db.exec(`DROP TABLE ${table}`);
+  db.exec(`ALTER TABLE ${scratch} RENAME TO ${table}`);
+  for (const index of indexes) db.exec(index.sql);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -896,10 +971,22 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 11, name: "ThreadAgentRoute", run: migration0011ThreadAgentRoute },
   { id: 12, name: "BlockTurnStamps", run: migration0012BlockTurnStamps },
   { id: 13, name: "ThreadHandIns", run: migration0013ThreadHandIns },
+  { id: 14, name: "ClineProvider", run: migration0014ClineProvider, foreignKeys: "off" },
 ];
 
 export interface MigrationOptions {
   toMigrationInclusive?: number;
+}
+
+/** Turn `PRAGMA foreign_keys` off and return the function that puts it back as
+ *  it was. Must be called outside a transaction — SQLite ignores the pragma
+ *  inside one, which is why a rung asks for this through its manifest entry
+ *  instead of issuing it itself. */
+function suspendForeignKeys(db: DatabaseSync): () => void {
+  // SAFETY: the foreign_keys pragma answers one row with one integer column.
+  const row = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number } | undefined;
+  db.exec("PRAGMA foreign_keys = OFF");
+  return () => db.exec(`PRAGMA foreign_keys = ${row?.foreign_keys ? "ON" : "OFF"}`);
 }
 
 /** Run the migration ladder against `db`, bringing it up to `SCHEMA_VERSION`. */
@@ -959,6 +1046,7 @@ export function migrate(
       if (hasAnyThread(db)) {
         backupBeforeStep(db, dbFile);
       }
+      const restoreForeignKeys = entry.foreignKeys === "off" ? suspendForeignKeys(db) : undefined;
       beginStep(db);
       try {
         entry.run(db, dbFile);
@@ -970,6 +1058,8 @@ export function migrate(
           /* noop */
         }
         throw err;
+      } finally {
+        restoreForeignKeys?.();
       }
     }
   }

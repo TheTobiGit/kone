@@ -59,12 +59,13 @@ describe("formatModelChain", () => {
 
 describe("brandsForOrigin", () => {
   test("shared skills wear every harness mark", () => {
-    expect(brandsForOrigin("agents")).toEqual(["codex", "cursor", "opencode", "droid", "antigravity"]);
+    expect(brandsForOrigin("agents")).toEqual(["codex", "cursor", "opencode", "droid", "antigravity", "cline"]);
   });
 
   test("known origins resolve to one mark", () => {
     expect(brandsForOrigin("claude")).toEqual(["claude"]);
     expect(brandsForOrigin("factory")).toEqual(["droid"]);
+    expect(brandsForOrigin("cline")).toEqual(["cline"]);
   });
 
   test("unknown origins fall through to the dot", () => {

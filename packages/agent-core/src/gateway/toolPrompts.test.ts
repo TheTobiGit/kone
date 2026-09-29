@@ -5,7 +5,9 @@ import { renderKoneHostContext } from "./appContext.js";
 import { createRegistry } from "./registry.js";
 import type { ToolEntry } from "./schemas.js";
 import { createIrcTools } from "./tools/irc.js";
+import { createAstTools } from "./tools/ast.js";
 import { createLaunchTools } from "./tools/launch.js";
+import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
 
@@ -31,6 +33,8 @@ const TOOLS: ToolEntry[] = [
   ...createSpawnTools({ store: spawnStore }),
   ...createIrcTools({}),
   ...createLaunchTools(),
+  ...createLspTools(),
+  ...createAstTools(),
 ];
 
 /** Every tool the gateway would actually serve. */
@@ -74,6 +78,25 @@ describe("gateway tool prompts", () => {
     for (const tool of TOOLS) {
       if (!tool.promptSnippet) continue;
       expect(tool.promptSnippet).not.toContain("\n");
+    }
+  });
+
+  // The renderer already prints "- `name`: " ahead of every snippet, so a
+  // snippet that opens with its own name reads it twice.
+  test("no snippet starts with its own tool name", () => {
+    for (const tool of TOOLS) {
+      if (!tool.promptSnippet) continue;
+      const opening = tool.promptSnippet.replace(/^[`'"]+/, "").toLowerCase();
+      expect(opening.startsWith(tool.name.toLowerCase())).toBe(false);
+    }
+  });
+
+  // The scratchpad is the user's notes, and agents treated it as their own
+  // memory when the prose said it was. No vocabulary from before kone agents.
+  test("the rendered context uses kone-agent vocabulary", () => {
+    const block = renderKoneHostContext(createRegistry(TOOLS).listToolPrompts());
+    for (const stale of [/\bworkers?\b/i, /\bpeers?\b/i, /sidebar/i, /\bboard\b/i, /memory/i]) {
+      expect(block).not.toMatch(stale);
     }
   });
 

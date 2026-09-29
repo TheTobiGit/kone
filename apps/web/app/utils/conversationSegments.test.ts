@@ -21,7 +21,7 @@ function spawn(itemId: string, threadId: string, status: RuntimeItem["status"] =
     itemId,
     kind: "tool_call",
     status,
-    name: "worker_spawn",
+    name: "agent_spawn",
     text: "",
     detail: formatSpawnResult({
       spawns: [{ threadId, title: "Fix tests", provider: "codex", why: "the suite is slow" }],
@@ -57,17 +57,17 @@ describe("renderGroups", () => {
   });
 
   test("a spawn still running, or refused, stays a step", () => {
-    const refused: RuntimeItem = { ...tool("s2", "worker_spawn"), detail: "Spawn depth limit reached." };
+    const refused: RuntimeItem = { ...tool("s2", "agent_spawn"), detail: "Spawn depth limit reached." };
     expect(groupTags([spawn("s1", "child-1", "in-progress"), refused])).toEqual(["steps:s1,s2"]);
   });
 
   test("a preset spawn stands the same way", () => {
-    const preset: RuntimeItem = { ...spawn("s1", "child-1"), name: "worker_spawn_preset" };
+    const preset: RuntimeItem = { ...spawn("s1", "child-1"), name: "agent_spawn_preset" };
     expect(groupTags([tool("r1"), preset, text("z", "Done.")])).toEqual(["steps:r1", "spawn:child-1", "text:z"]);
   });
 
   test("a delegation stands the same way, naming the teammate", () => {
-    const delegated: RuntimeItem = { ...spawn("s1", "child-1"), name: "worker_delegate" };
+    const delegated: RuntimeItem = { ...spawn("s1", "child-1"), name: "agent_delegate" };
     const groups = renderGroups(block([delegated]));
     expect(groups.map((g) => g.kind)).toEqual(["spawn"]);
   });
@@ -80,7 +80,7 @@ describe("renderGroups", () => {
       why: null,
     });
     const batch: RuntimeItem = {
-      ...tool("b1", "worker_spawn_batch"),
+      ...tool("b1", "agent_spawn_batch"),
       detail: formatSpawnResult({
         spawns: [record("child-a"), { ...record("child-b"), agent: "Ada" }],
         summary: "Spawned 2 threads.",
@@ -95,7 +95,7 @@ describe("renderGroups", () => {
   });
 
   test("a batch where nothing opened stays a step", () => {
-    const refused: RuntimeItem = { ...tool("b1", "worker_spawn_batch"), detail: "1 spawn failed: item 0: nope." };
+    const refused: RuntimeItem = { ...tool("b1", "agent_spawn_batch"), detail: "1 spawn failed: item 0: nope." };
     expect(groupTags([refused])).toEqual(["steps:b1"]);
   });
 

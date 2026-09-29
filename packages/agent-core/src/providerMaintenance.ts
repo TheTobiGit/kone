@@ -154,6 +154,16 @@ const DEFINITIONS = {
     homebrew: null,
     native: { args: () => ["update"], strategy: "always" },
   },
+  cline: {
+    provider: "cline",
+    binary: "cline",
+    // Published to npm (`npm i -g cline`), which is the only channel kone
+    // updates through. `cline --update` exists but its behaviour across install
+    // channels was never verified, so it is not wired as a native updater.
+    npmPackage: "cline",
+    homebrew: null,
+    native: null,
+  },
   antigravity: {
     provider: "antigravity",
     binary: "agy",

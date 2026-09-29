@@ -50,12 +50,13 @@ export interface KoneContextOptions {
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-09-28.2";
+export const KONE_HOST_CONTEXT_VERSION = "2026-09-29.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
 const WORKER_HOST_CONTEXT_PREAMBLE = [
-  "You are running inside kone, a desktop app for AI-assisted development. kone hosts this agent session and renders your work on the user's project board.",
-  "The `kone` MCP server is kone's app gateway: your connection to the workspace. App tools are part of your job — when one fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__scratchpad_read`); the semantics are the same.",
+  "You are running inside kone, a desktop app where the user works with coding agents across their projects. The studio is where the work happens: each project is a row of panes (agent conversations, terminals, the project's scratchpad). The inbox lists every conversation by what it needs from the user, and the bench, still to come, queues jobs the user put down to run one at a time.",
+  "This session is a kone agent: a real conversation the user can see and open, which outlives the turn that started it, and which the user and other agents can message. The agents you start, the presets the user saved, the teammates on a project's team and the user's own conversations are all kone agents. A provider's built-in subagent (Claude Code's `Agent` tool, for one) is not: it runs hidden inside your own turn.",
+  "The `kone` MCP server is kone's app gateway. When one of its tools fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__agent_spawn`); the semantics are the same.",
 ];
 
 const ASSISTANT_HOST_CONTEXT_PREAMBLE = [

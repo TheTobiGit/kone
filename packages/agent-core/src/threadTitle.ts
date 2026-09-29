@@ -210,9 +210,14 @@ export async function generateThreadTitle(input: {
             ? await generateWithCursor({ cwd: input.cwd, prompt })
             : input.provider === "droid"
               ? await generateWithDroid({ cwd: input.cwd, prompt })
-              : input.provider === "antigravity"
-                ? await generateWithAntigravity({ cwd: input.cwd, prompt })
-                : await generateWithCodex({ cwd: input.cwd, prompt });
+              : input.provider === "cline"
+                ? // No one-shot surface worth spawning: `cline` prompt mode runs a
+                  // full agent session on the user's account, so a title is not
+                  // worth a turn. The thread keeps its message-derived title.
+                  null
+                : input.provider === "antigravity"
+                  ? await generateWithAntigravity({ cwd: input.cwd, prompt })
+                  : await generateWithCodex({ cwd: input.cwd, prompt });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;

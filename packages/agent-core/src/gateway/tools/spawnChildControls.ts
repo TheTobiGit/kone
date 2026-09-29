@@ -17,16 +17,16 @@ import { withActiveTurn } from "./spawnToolContext.js";
 
 export function createCancelWorkerTool(): ToolEntry {
   return {
-    name: "worker_cancel",
+    name: "agent_cancel",
     description:
-      "Cancel a worker you (or a descendant of yours) already spawned — stop its running turn and release its session, without opening anything new. Name the thread with threadId — an id an earlier spawn, delegation or batch returned. Use it when the work is no longer needed, is going wrong, or a newer ask supersedes it; the child's transcript stays readable with worker_read. This never approves or answers anything parked on the child — it stops the work as-is.",
+      "Cancel a kone agent in your subtree (one you started, or one started under it): stop its running turn and release its session, without starting anything new. Name it with threadId, as an earlier spawn, delegation or batch returned it. Use it when the work is no longer needed, is going wrong, or a newer ask supersedes it; its transcript stays readable with agent_read. This never approves or answers anything parked on the agent; it stops the work as-is.",
     inputSchema: CancelWorkerInputSchema,
     jsonSchema: CANCEL_WORKER_JSON_SCHEMA,
     permission: "allow",
     requiresActiveTurn: true,
     onDemand: true,
     promptSnippet:
-      "Stop a worker you already spawned when its work is no longer needed, instead of leaving it running.",
+      "Stop a kone agent you started whose work is no longer needed.",
     handler: async (
       ctx: GatewayToolContext,
       args: {
@@ -39,7 +39,7 @@ export function createCancelWorkerTool(): ToolEntry {
           content: [
             {
               type: "text",
-              text: `Cancelled worker ${result.threadId}. Its transcript stays readable with worker_read.`,
+              text: `Cancelled agent ${result.threadId}. Its transcript stays readable with agent_read.`,
             },
           ],
           structuredContent: { cancellation: result },
@@ -51,16 +51,16 @@ export function createCancelWorkerTool(): ToolEntry {
 
 export function createDeclineChildGateTool(): ToolEntry {
   return {
-    name: "worker_decline",
+    name: "agent_decline",
     description:
-      "Decline a parked approval on a worker you (or a descendant of yours) already spawned — answer the child's approval request with a rejection, so it unparks and tries an alternative. Name the thread with threadId and the parked approval with requestId, as the child's approval.requested event reported it. This only declines, never approves: there is no path through this tool to grant the child a capability, and the child stays running unless you stop it separately with worker_cancel.",
+      "Decline a parked approval on a kone agent in your subtree (one you started, or one started under it): answer its approval request with a rejection, so it unparks and tries an alternative. Name the agent with threadId and the parked approval with requestId, as its approval.requested event reported it. This only declines, never approves: there is no path through this tool to grant the agent a capability, and it stays running unless you stop it separately with agent_cancel.",
     inputSchema: DeclineChildGateInputSchema,
     jsonSchema: DECLINE_CHILD_GATE_JSON_SCHEMA,
     permission: "allow",
     requiresActiveTurn: true,
     onDemand: true,
     promptSnippet:
-      "Decline a worker's parked approval so it tries an alternative, when its proposed action is wrong.",
+      "Decline a parked approval on a kone agent you started, so it tries another way.",
     handler: async (
       ctx: GatewayToolContext,
       args: {
@@ -77,7 +77,7 @@ export function createDeclineChildGateTool(): ToolEntry {
           content: [
             {
               type: "text",
-              text: `Declined the parked approval ${result.requestId} on worker ${result.threadId}. The child stays running and tries an alternative — collect its next response with worker_wait.`,
+              text: `Declined the parked approval ${result.requestId} on agent ${result.threadId}. It stays running and tries an alternative — collect its next response with agent_wait.`,
             },
           ],
           structuredContent: { decline: result },
@@ -89,16 +89,16 @@ export function createDeclineChildGateTool(): ToolEntry {
 
 export function createAnswerChildInputTool(): ToolEntry {
   return {
-    name: "worker_answer",
+    name: "agent_answer",
     description:
-      "Answer a parked question on a worker you (or a descendant of yours) already spawned — supply the domain clarification its user-input request asked for, so its turn continues. Name the thread with threadId and the parked question with requestId, with answers keyed by question id (a string, a string array, or null to skip). This supplies information only, never capability: it cannot approve an action or widen what the child may do.",
+      "Answer a parked question on a kone agent in your subtree (one you started, or one started under it): supply the domain clarification its user-input request asked for, so its turn continues. Name the agent with threadId and the parked question with requestId, with answers keyed by question id (a string, a string array, or null to skip). This supplies information only, never capability: it cannot approve an action or widen what the agent may do.",
     inputSchema: AnswerChildInputSchema,
     jsonSchema: ANSWER_CHILD_INPUT_JSON_SCHEMA,
     permission: "allow",
     requiresActiveTurn: true,
     onDemand: true,
     promptSnippet:
-      "Answer a worker's parked question with the domain detail it asked for, so its turn continues.",
+      "Answer a parked question from a kone agent you started, so its turn continues.",
     handler: async (
       ctx: GatewayToolContext,
       args: {
@@ -113,7 +113,7 @@ export function createAnswerChildInputTool(): ToolEntry {
           requestId: args.requestId,
           answers: args.answers,
         });
-        const baseText = `Answered the parked question ${result.requestId} on worker ${result.threadId}. The child's turn continues — collect its response with worker_wait.`;
+        const baseText = `Answered the parked question ${result.requestId} on agent ${result.threadId}. Its turn continues — collect its response with agent_wait.`;
         const text =
           result.followUp !== undefined ? `${baseText}\nFollow-up: ${result.followUp}` : baseText;
         return {

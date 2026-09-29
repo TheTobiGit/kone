@@ -269,7 +269,7 @@ const { prefs: composerPrefs } = useComposerPrefs();
 // No active provider: the model slot wears every provider's mark greyed rather
 // than a single live one, so the empty state reads as "nothing to run on".
 const noProvider = computed(() => !props.healthStatus);
-const providerMarks = ["codex", "claude", "cursor", "opencode", "droid", "antigravity"] as const;
+const providerMarks = ["codex", "claude", "cursor", "opencode", "droid", "antigravity", "cline"] as const;
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 

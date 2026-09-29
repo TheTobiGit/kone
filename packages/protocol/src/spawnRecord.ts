@@ -18,10 +18,10 @@ import { z } from "zod";
  *  registers them under these names and the renderer reads their results by
  *  them, so a rename lands on both sides at once. */
 export const SPAWN_TOOL_NAMES = [
-  "worker_spawn",
-  "worker_spawn_preset",
-  "worker_delegate",
-  "worker_spawn_batch",
+  "agent_spawn",
+  "agent_spawn_preset",
+  "agent_delegate",
+  "agent_spawn_batch",
 ] as const;
 
 export type SpawnToolName = (typeof SPAWN_TOOL_NAMES)[number];

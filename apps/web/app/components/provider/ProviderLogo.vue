@@ -170,6 +170,16 @@ const mono = computed(() => props.tone === "mono");
       />
     </svg>
 
+    <!-- ── Cline — placeholder C arc (no official asset inlined yet) ─────── -->
+    <path
+      v-else-if="brand === 'cline'"
+      :stroke="mono ? '#ffffff' : 'currentColor'"
+      stroke-width="2.4"
+      stroke-linecap="round"
+      fill="none"
+      d="M17.2 8.2A7.4 7.4 0 1 0 17.2 15.8"
+    />
+
     <!-- ── Antigravity — the four-point starburst glyph (official mark) ──── -->
     <svg
       v-else-if="brand === 'antigravity'"

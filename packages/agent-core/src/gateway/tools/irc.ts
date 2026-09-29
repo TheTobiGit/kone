@@ -561,15 +561,15 @@ export function resetIrcMailbox(): void {
 // reflex to acknowledge, which manufactures the next message from the other side.
 
 const IRC_SEND_DESCRIPTION = [
-  "Message another agent on this project, whether it is running right now or idle: a running peer has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). Every message costs the reader a turn, and `to: \"all\"` charges every peer at once.",
+  "Message any kone agent on this project, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). There is no reply built in; to ask an agent you started and wait for its answer, use agent_ask. Every message costs the reader a turn, and `to: \"all\"` charges every agent at once.",
   "",
-  "`to` takes a peer's exact id from peer_list (never invent one), or `parent` (whoever spawned you), `main` (your tree's root) or `all`. Set `replyTo` when answering. Plain prose: lead with the answer, and reference files by path rather than pasting them.",
+  "`to` takes an agent's exact id from agent_list (never invent one), or `parent` (whoever spawned you), `main` (your tree's root) or `all`. Set `replyTo` when answering. Plain prose: lead with the answer, and reference files by path rather than pasting them.",
   "",
-  "Send only what changes what somebody does: claiming a file before you edit it, a decision that is not yours, a finding that makes a peer's work wrong, or an answer a peer is blocked on. Never send an acknowledgement, a progress report or plan, anything a tool could answer, or the next line of a back-and-forth. The bus refuses a pair that has traded 16 messages with nobody else involved; long before that, decide with what you have or escalate the exact decision.",
+  "Send only what changes what somebody does: claiming a file before you edit it, a decision that is not yours, a finding that makes another agent's work wrong, or an answer an agent is blocked on. Never send an acknowledgement, a progress report or plan, anything a tool could answer, or the next line of a back-and-forth. The bus refuses a pair that has traded 16 messages with nobody else involved; long before that, decide with what you have or escalate the exact decision.",
 ].join("\n");
 
 const IRC_LIST_DESCRIPTION = [
-  "List the agents you can message on this project: their ids, whether each is running, and how many unread messages each has. A running peer will be interrupted, an away one won't see you until it returns, and one with a pile of unread messages is not reading.",
+  "List the kone agents you can message on this project: their ids, whether each is running, and how many unread messages each has. A running agent will be interrupted, an away one won't see you until it returns, and one with a pile of unread messages is not reading.",
 ].join("\n");
 
 const IRC_INBOX_DESCRIPTION = [
@@ -579,8 +579,8 @@ const IRC_INBOX_DESCRIPTION = [
 ].join("\n");
 
 /**
- * Creates the IRC gateway tools: `peer_send`, `peer_list` and
- * `peer_inbox`.
+ * Creates the IRC gateway tools: `agent_notify`, `agent_list` and
+ * `agent_inbox`.
  */
 export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
   const mailbox = input.mailbox ?? getIrcMailbox();
@@ -711,34 +711,34 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
 
   return [
     {
-      name: "peer_send",
+      name: "agent_notify",
       description: IRC_SEND_DESCRIPTION,
       inputSchema: IrcSendInputSchema,
       jsonSchema: IRC_SEND_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "Message another agent on this project, running or idle: a running peer is steered mid-turn, an idle one wakes with a new turn.",
+        "Message any kone agent on this project, running or idle, with no reply built in: a running one is steered mid-turn, an idle one wakes with a new turn.",
       // When to send is the description's; this is the one rule that sits
       // between tools, since it is the spawn tools it steers an agent away from.
       promptGuidelines: [
-        "An idle peer is not a closed one — it is woken with a new turn on its own thread. Do not re-spawn or re-delegate to reach someone who has merely settled.",
+        "An idle kone agent is not a closed one: agent_ask or agent_notify wakes it with a new turn. Never re-spawn or re-delegate to reach an agent that has merely settled.",
       ],
       handler: sendHandler,
     },
     {
-      name: "peer_list",
+      name: "agent_list",
       description: IRC_LIST_DESCRIPTION,
       inputSchema: IrcListInputSchema,
       jsonSchema: IRC_LIST_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "See who else exists on this project and who is running.",
+        "See the kone agents on this project you can message, and which are running.",
       handler: listHandler,
     },
     {
-      name: "peer_inbox",
+      name: "agent_inbox",
       description: IRC_INBOX_DESCRIPTION,
       inputSchema: IrcInboxInputSchema,
       jsonSchema: IRC_INBOX_JSON_SCHEMA,
@@ -746,7 +746,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       requiresActiveTurn: false,
       onDemand: true,
       promptSnippet:
-        "Catch up on messages that arrived while you were away; delivered messages reach your turn on their own, so never poll it.",
+        "Catch up on messages other agents sent you; delivered ones already reach your turn, so never poll it.",
       handler: inboxHandler,
     },
   ];

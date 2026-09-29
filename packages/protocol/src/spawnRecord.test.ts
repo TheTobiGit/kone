@@ -36,7 +36,7 @@ describe("spawnWhy", () => {
 
 describe("isSpawnToolName", () => {
   it("names only the tools that open threads", () => {
-    expect(isSpawnToolName("worker_spawn_batch")).toBe(true);
-    expect(isSpawnToolName("worker_continue")).toBe(false);
+    expect(isSpawnToolName("agent_spawn_batch")).toBe(true);
+    expect(isSpawnToolName("agent_ask")).toBe(false);
   });
 });
