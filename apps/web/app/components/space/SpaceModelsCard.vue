@@ -85,7 +85,7 @@ function responses(n: number): string {
               fill: s.color,
               stroke: s.color,
               transformOrigin: RING_ORIGIN,
-              animationDelay: `${i * 45}ms`,
+              animationDelay: `calc(160ms + ${i * 35}ms)`,
             }"
             @pointerenter="hovered = s.key"
           />
@@ -235,6 +235,18 @@ function responses(n: number): string {
   transform: translateX(-50%);
   text-align: center;
   pointer-events: none;
+  animation: models-center-in 0.36s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: 220ms;
+}
+@keyframes models-center-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 .models__total {
   font-size: 22px;
@@ -383,6 +395,16 @@ function responses(n: number): string {
   height: 100%;
   border-radius: 999px;
   transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: models-fill-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: 240ms;
+}
+@keyframes models-fill-in {
+  from {
+    clip-path: inset(0 100% 0 0 round 999px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 999px);
+  }
 }
 
 /* ── the long tail ───────────────────────────────────────────────────────── */
@@ -436,7 +458,9 @@ function responses(n: number): string {
   .models__fill {
     transition: none;
   }
-  .models__slice {
+  .models__slice,
+  .models__center,
+  .models__fill {
     animation: none;
   }
   .models__slice.is-focus {

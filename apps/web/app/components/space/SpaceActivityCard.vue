@@ -388,6 +388,8 @@ const shown = computed(() => {
   align-items: stretch;
   gap: 28px;
   min-width: 0;
+  animation: act-content-in 0.36s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: 50ms;
 }
 .act__main.is-stacked {
   flex-direction: column;
@@ -570,6 +572,18 @@ const shown = computed(() => {
   flex-wrap: wrap;
   gap: 10px 24px;
   margin: 0;
+  animation: act-content-in 0.36s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: 90ms;
+}
+@keyframes act-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .act__stat {
   display: flex;
@@ -625,7 +639,9 @@ const shown = computed(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .act__wrap.is-loading .act__cell,
-  .act__skel {
+  .act__skel,
+  .act__main,
+  .act__stats {
     animation: none;
   }
   .act__day-fill {
