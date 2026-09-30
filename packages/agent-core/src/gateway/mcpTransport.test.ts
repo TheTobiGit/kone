@@ -522,7 +522,7 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
   });
 });
 
-describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox)", () => {
+describe("mcp transport: new tools (agent_spawn_batch, agent_message, agent_inbox)", () => {
   function newToolsFixture() {
     const credentials = new GatewayCredentials();
     const store: GatewayTransportStore = {
@@ -626,7 +626,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
     return { credentials, store, mailbox, registry, turnState, inFlight, transport, auth1, auth2 };
   }
 
-  test("tools/list returns worker_start_batch, agent_notify, agent_inbox with valid JSON Schemas", async () => {
+  test("tools/list returns worker_start_batch, agent_message, agent_inbox with valid JSON Schemas", async () => {
     const { transport, auth1 } = newToolsFixture();
     const res = await post(transport, auth1, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(res.status).toBe(200);
@@ -637,11 +637,11 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
     const toolMap = new Map(tools.map((t) => [t.name, t]));
 
     expect(toolMap.has("worker_start_batch")).toBe(true);
-    expect(toolMap.has("agent_notify")).toBe(true);
+    expect(toolMap.has("agent_message")).toBe(true);
     expect(toolMap.has("agent_inbox")).toBe(true);
 
     expect(toolMap.get("worker_start_batch")!.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(toolMap.get("agent_notify")!.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
+    expect(toolMap.get("agent_message")!.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
     expect(toolMap.get("agent_inbox")!.inputSchema).toEqual(IRC_INBOX_JSON_SCHEMA);
 
     const batchSchema = toolMap.get("worker_start_batch")!.inputSchema;
@@ -650,7 +650,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
     // SAFETY: JSON Schema object has properties record.
     expect((batchSchema.properties as GatewayRecord).items).toBeDefined();
 
-    const ircSendSchema = toolMap.get("agent_notify")!.inputSchema;
+    const ircSendSchema = toolMap.get("agent_message")!.inputSchema;
     expect(ircSendSchema.type).toBe("object");
     expect(ircSendSchema.required).toEqual(["to", "message"]);
 
@@ -658,7 +658,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
     expect(ircInboxSchema.type).toBe("object");
   });
 
-  test("agent_notify and agent_inbox execution and active turn security", async () => {
+  test("agent_message and agent_inbox execution and active turn security", async () => {
     const { transport, auth1, auth2, turnState } = newToolsFixture();
 
     // Turnless send fails with capability_denied
@@ -666,7 +666,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "agent_notify", arguments: { to: "thread-2", message: "Turnless msg" } },
+      params: { name: "agent_message", arguments: { to: "thread-2", message: "Turnless msg" } },
     });
     expect(sendTurnless.status).toBe(200);
     // SAFETY: Turnless call returns JSON-RPC result with error envelope.
@@ -693,7 +693,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "agent_notify", arguments: { to: "", message: "" } },
+      params: { name: "agent_message", arguments: { to: "", message: "" } },
     });
     expect(invalidSend.status).toBe(200);
     // SAFETY: Schema validation failure returns JSON-RPC isError result.
@@ -719,7 +719,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
       jsonrpc: "2.0",
       id: 6,
       method: "tools/call",
-      params: { name: "agent_notify", arguments: { to: "thread-2", message: "Hello peer 2" } },
+      params: { name: "agent_message", arguments: { to: "thread-2", message: "Hello peer 2" } },
     });
     expect(sendRes.status).toBe(200);
     // SAFETY: Successful IRC send returns delivery receipt payload.
@@ -801,7 +801,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
       id: 10,
       method: "tools/call",
       params: {
-        name: "agent_notify",
+        name: "agent_message",
         arguments: { to: "thread-1", message: "Acknowledged peer 1", replyTo: msgId },
       },
     });
@@ -968,7 +968,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
         id: 51,
         method: "tools/call",
         params: {
-          name: "agent_notify",
+          name: "agent_message",
           arguments: { to: "thread-2", message: "Batch item 1" },
         },
       },

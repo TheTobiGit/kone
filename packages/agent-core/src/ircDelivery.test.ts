@@ -228,3 +228,48 @@ describe("how a delivered message reads", () => {
     expect(renderIncoming([{ ...message, replyTo: "m0" }])).toContain("replying to m0");
   });
 });
+
+describe("irc delivery: the transcript", () => {
+  test("each message with a sender is journaled once, even when the first delivery fails", async () => {
+    const mailbox = new IrcMailbox();
+    const log: Dispatched[] = [];
+    const clock = fakeClock();
+    const journaled: Array<{ threadId: string; message: string }> = [];
+    let fail = true;
+    const dispatcher: IrcTurnDispatcher = {
+      sendThreadTurn: async (input) => {
+        log.push({ destination: "send", input });
+        if (fail) throw new Error("session reaped");
+        return { threadId: input.threadId, turnId: "t" };
+      },
+      steerThreadTurn: async (input) => ({ threadId: input.threadId, turnId: "t" }),
+    };
+    startIrcDelivery({
+      mailbox,
+      dispatcher,
+      isLive: () => true,
+      isBusy: () => false,
+      journal: (threadId, message) => journaled.push({ threadId, message: message.message }),
+      schedule: clock.schedule,
+    });
+    // A store-backed send stamps a sender; this one stands in for it.
+    const store = {
+      threadLineage: (id: string) =>
+        id === "child" ? { parentThreadId: "lead", relationshipToParent: "delegation" as const, rootThreadId: "lead" } : null,
+    };
+    mailbox.sendMessage({ threadId: "child", projectPath: PROJECT }, { to: "lead", message: "Is OAuth in scope?" }, store);
+
+    clock.tick();
+    await settle();
+    expect(journaled).toEqual([{ threadId: "lead", message: "Is OAuth in scope?" }]);
+
+    // The send failed, so the message is still unread; the retry delivers it
+    // without writing it on the transcript a second time.
+    fail = false;
+    mailbox.sendMessage({ threadId: "peer", projectPath: PROJECT }, { to: "lead", message: "ping" });
+    clock.tick();
+    await settle();
+    expect(journaled).toHaveLength(1);
+    expect(log.at(-1)?.input.input).toContain("Is OAuth in scope?");
+  });
+});

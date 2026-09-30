@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { detect, diffStatBetween, snapshotWorkingTree } from "@kone/git-core/status.js";
 import { GitError } from "@kone/git-core/core.js";
 import type { AgentService } from "./AgentService.js";
@@ -157,6 +158,11 @@ export interface ThreadDispatcher {
   /** Back out of a worktree that is still being built. Does not interrupt git —
    *  the creation is awaited and what it made is then removed. */
   cancelThreadWorkspace(threadId: string): void;
+  /** Put a message another agent (or kone) wrote on a thread's transcript
+   *  without dispatching it — for a caller that delivers the words to the
+   *  model some other way, as agent-message delivery batches several into one
+   *  turn. Announces it to renderers like any agent-sent block. */
+  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -514,10 +520,16 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  send's block, so a second steer collided with the first on the
    *  (thread_id, user_block_id) index and was dropped as a replay. */
   private dispatchTurn(
-    input: SendTurnInput,
+    requested: SendTurnInput,
     destination: "send" | "steer",
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
+    // An agent-sent turn is announced to renderers by block id, so the id has
+    // to exist before the journal write rather than be minted inside it.
+    const input =
+      requested.sender && requested.sender.kind !== "user" && !requested.userBlockId && !options?.silent
+        ? { ...requested, userBlockId: randomUUID() }
+        : requested;
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
     const delivery = composeTurnDelivery({
       message: input.input,
@@ -539,6 +551,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
             effort: input.effort,
             model: input.model,
           });
+    if (delivery.journal !== null && input.sender && input.sender.kind !== "user") {
+      this.announceJournaled(input.threadId, input.userBlockId, delivery.journal, input.sender);
+    }
     if (
       input.mode !== undefined ||
       input.model !== undefined ||
@@ -584,6 +599,40 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return destination === "steer"
       ? this.service.steerTurn(dispatched)
       : this.service.sendTurn(dispatched);
+  }
+
+  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void {
+    const blockId = randomUUID();
+    const count = this.store.recordUserBlock({
+      blockId,
+      threadId: input.threadId,
+      text: input.text,
+      sender: input.sender,
+    });
+    if (count > 0) this.announceJournaled(input.threadId, blockId, input.text, input.sender);
+  }
+
+  /** Tell renderers a block kone wrote for someone else is on the transcript. */
+  private announceJournaled(
+    threadId: string,
+    blockId: string | undefined,
+    text: string,
+    sender: MessageSender,
+  ): void {
+    const provider = this.store.threadMeta(threadId)?.provider;
+    if (!provider) return;
+    const at = Date.now();
+    this.broadcast(
+      {
+        type: "thread.message-journaled",
+        threadId,
+        provider,
+        at,
+        source: "kone.store",
+        block: { id: blockId ?? randomUUID(), role: "user", text, at, sender },
+      },
+      false,
+    );
   }
 
   onTurnCompleted(threadId: string): void {

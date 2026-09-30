@@ -418,6 +418,12 @@ export function registerAgentIpc(): void {
       svc.onEvent((event) => {
         if (event.type === "session.started") listener(event.threadId);
       }),
+    // Each message lands on the recipient's transcript as its sender's words,
+    // so the thread shows another agent speaking rather than a turn from
+    // nowhere.
+    journal: (threadId, message) => {
+      if (message.sender) dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender });
+    },
   });
 
   // The spawn engine (docs/thread-spawning-design.md) drives agent-spawned

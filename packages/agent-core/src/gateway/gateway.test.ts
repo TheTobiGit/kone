@@ -326,7 +326,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "agent_answer",
       "agent_wait",
       "agent_read",
-      "agent_notify",
+      "agent_message",
       "agent_list",
       "agent_inbox",
       "process_control",

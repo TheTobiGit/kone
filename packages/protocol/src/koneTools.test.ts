@@ -27,7 +27,7 @@ describe("kone tool names", () => {
   test("the worker and peer names reach their agent tools", () => {
     expect(currentKoneToolName("worker_spawn")).toBe("worker_start");
     expect(currentKoneToolName("worker_continue")).toBe("agent_followup");
-    expect(currentKoneToolName("peer_send")).toBe("agent_notify");
+    expect(currentKoneToolName("peer_send")).toBe("agent_message");
     expect(currentKoneToolName("peer_inbox")).toBe("agent_inbox");
   });
 
@@ -38,6 +38,7 @@ describe("kone tool names", () => {
     expect(currentKoneToolName("agent_targets")).toBe("agent_directory");
     expect(currentKoneToolName("agent_ask")).toBe("agent_followup");
     expect(currentKoneToolName("agent_cancel")).toBe("agent_withdraw");
+    expect(currentKoneToolName("agent_notify")).toBe("agent_message");
   });
 
   test("a current name passes through unchanged", () => {

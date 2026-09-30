@@ -1,4 +1,5 @@
 import type { IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
+import { senderRelationshipLabel } from "@kone/protocol/message-sender";
 import type { ThreadDispatcher } from "./dispatch.js";
 
 // Delivery: the half that turns a mailbox into messaging.
@@ -61,6 +62,11 @@ export interface IrcDeliveryDeps {
    *  that has to arm a delivery. Optional so a caller with no session lifecycle
    *  to hand over (tests) is not made to invent one. */
   onThreadLive?: (listener: (threadId: string) => void) => () => void;
+  /** Put one message on the recipient's transcript as its sender's words, so
+   *  the thread shows who said what rather than a turn nobody started. The
+   *  model still reads the batch as one delivery. Optional: without it
+   *  messages reach the agent and leave no mark, as before senders existed. */
+  journal?: (threadId: string, message: IrcMessageRecord) => void;
   schedule?: ScheduleDelivery;
 }
 
@@ -106,6 +112,15 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     // it took nothing, so nothing is left over yet. The overflow is the
     // difference.
     const remaining = Math.max(0, unreadCount - messages.length);
+
+    // Journaled before the turn goes out, so the messages sit above the reply
+    // they prompt. Once each: a delivery retried after a failed send finds
+    // them already on the transcript.
+    for (const message of messages) {
+      if (message.journaled || !message.sender || !deps.journal) continue;
+      deps.journal(threadId, message);
+      message.journaled = true;
+    }
 
     const input = { threadId, input: renderIncoming(messages, remaining) };
     // A running turn is steered rather than interrupted: the agent is working,
@@ -153,15 +168,21 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
 /**
  * How a delivered batch reads to the agent receiving it.
  *
- * Tagged, so an agent can tell a peer's words from its own user's — they arrive
- * on the same channel and nothing else distinguishes them. It also says plainly
- * that no reply is owed, because the default failure of agent messaging is two
- * of them being polite at each other until somebody runs out of money.
+ * Tagged, so an agent can tell another agent's words from its own user's —
+ * they arrive on the same channel and nothing else distinguishes them — and
+ * each one says who sent it, how that agent relates to this one, and what the
+ * message is for: a question from a delegate wants an answer, a note from a
+ * peer wants nothing. It says plainly when no reply is owed, because the
+ * default failure of agent messaging is two of them being polite at each other
+ * until somebody runs out of money.
  */
 export function renderIncoming(messages: IrcMessageRecord[], remaining = 0): string {
   const lines = messages.map((m) => {
-    const replyTo = m.replyTo ? ` (replying to ${m.replyTo})` : "";
-    return `From \`${m.from}\`${replyTo}:\n${m.message}`;
+    const who = m.sender?.name ?? m.from;
+    const relation = m.sender ? ` (${senderRelationshipLabel(m.sender.relationship)})` : "";
+    const kind = m.kind && m.kind !== "note" ? `, ${m.kind}` : "";
+    const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
+    return `[${m.id}] From \`${who}\`${relation}${kind}${replyTo}:\n${m.message}`;
   });
   const header =
     messages.length === 1
@@ -174,13 +195,9 @@ export function renderIncoming(messages: IrcMessageRecord[], remaining = 0): str
     remaining > 0
       ? `\n\n${remaining} more ${remaining === 1 ? "message is" : "messages are"} still in your inbox.`
       : "";
-  return [
-    "<irc>",
-    header + overflow,
-    "",
-    lines.join("\n\n"),
-    "",
-    "The user did not say this — another agent did, and it is waiting on nothing. Fold anything useful into what you are already doing. Reply with the irc tool only if the sender asked you something they cannot proceed without; a bare acknowledgement costs them a whole turn and tells them nothing.",
-    "</irc>",
-  ].join("\n");
+  const asked = messages.some((m) => m.kind === "question" || m.kind === "pushback");
+  const closing = asked
+    ? "The user did not say this — other agents did. A question or pushback is waiting on you: answer it with agent_message (kind \"answer\", replyTo its id) from what you know of the user's intent, asking the user only what you cannot answer. Anything else here needs no reply."
+    : "The user did not say this — other agents did, and nobody is waiting on a reply. Fold anything useful into what you are already doing; a bare acknowledgement costs the sender a whole turn and tells them nothing.";
+  return ["<agent_messages>", header + overflow, "", lines.join("\n\n"), "", closing, "</agent_messages>"].join("\n");
 }

@@ -60,7 +60,7 @@ const KONE_GATEWAY_LINE =
   "The `kone` MCP server is kone's app gateway. When one of its tools fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__worker_start`); the semantics are the same.";
 
 const SENDERS_LINE =
-  "Not every message in this conversation is from the user. One another agent wrote arrives under a <from_agent> header naming it and how it relates to you; one kone itself wrote arrives under <kone_notice>. Anything without a header is the user.";
+  "Not every message in this conversation is from the user. One another agent wrote arrives under a <from_agent> header, or inside <agent_messages>, naming it and how it relates to you; one kone itself wrote arrives under <kone_notice>. Anything without a header is the user.";
 
 const WORKER_HOST_CONTEXT_PREAMBLE = [
   KONE_APP_LINE,
