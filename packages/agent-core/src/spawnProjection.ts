@@ -30,6 +30,7 @@
 import { SPAWN_SUMMARY_CHAR_CAP } from "./types.js";
 import type {
   ApprovalRequest,
+  HandOffKind,
   ProviderKind,
   SpawnedThread,
   SpawnedThreadStatus,
@@ -64,6 +65,8 @@ export type SpawnProjectionInput = {
   thread: {
     threadId: string;
     parentThreadId: string;
+    handOff?: HandOffKind;
+    agentName?: string;
     title: string;
     provider: ProviderKind;
     model?: string;
@@ -279,6 +282,8 @@ export function projectSpawnedThread(input: SpawnProjectionInput): SpawnedThread
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
   };
+  if (thread.handOff) projection.handOff = thread.handOff;
+  if (thread.agentName) projection.agentName = thread.agentName;
   if (thread.model) projection.model = thread.model;
   if (thread.effort) projection.effort = thread.effort;
   if (elapsedMs !== undefined) projection.elapsedMs = elapsedMs;

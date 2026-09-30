@@ -28,10 +28,10 @@ describe("turnActivity", () => {
   describe("agent_spawn_batch", () => {
     test("labels the bare tool once", () => {
       expect(describeTurnActivity(runningBlock("agent_spawn_batch", ""))?.label).toBe(
-        "Starting agents",
+        "Giving workers tasks",
       );
       expect(describeTurnActivity(runningBlock("agent_spawn_batch", "agent_spawn_batch"))?.label).toBe(
-        "Starting agents",
+        "Giving workers tasks",
       );
     });
 
@@ -48,7 +48,7 @@ describe("turnActivity", () => {
       ];
       for (const [name, text] of cases) {
         const label = describeTurnActivity(runningBlock(name, text))?.label ?? "";
-        expect(label).toBe("Starting agents");
+        expect(label).toBe("Giving workers tasks");
         expect(label.toLowerCase().includes("kone kone")).toBe(false);
       }
     });

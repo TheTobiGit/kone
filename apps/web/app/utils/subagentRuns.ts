@@ -334,10 +334,20 @@ function runThinking(run: SubagentRunView): boolean {
  *  threads — as one list in handoff order. `running` counts the rows still live
  *  (a parked child included: it's the one thing waiting on the user), and
  *  `streaming` keeps the dock open while any of them is. */
+/** Whether a spawned thread is a worker — the dock's to show — rather than an
+ *  agent with a thread of its own. Snapshots from before kinds existed were all
+ *  workers. */
+export function isWorkerThread(thread: Pick<SpawnedThread, "handOff">): boolean {
+  return thread.handOff === undefined || thread.handOff === "worker";
+}
+
 export function deriveDelegates(blocks: ThreadBlock[], spawned: SpawnedThread[]): DelegatesState {
   const rows: DelegateRow[] = [];
   for (const r of deriveActiveSubagents(blocks).runs) rows.push(runRow(r));
-  for (const t of spawned) rows.push(threadRow(t));
+  // Only workers belong in the dock: a delegate or contractor is an agent with
+  // a thread of its own — a studio column, a row in the inbox — not a task
+  // running under this conversation.
+  for (const t of spawned) if (isWorkerThread(t)) rows.push(threadRow(t));
   rows.sort((a, b) => a.startedAt - b.startedAt);
   const running = rows.reduce((n, r) => (r.live ? n + 1 : n), 0);
   return { rows, running, streaming: running > 0 };

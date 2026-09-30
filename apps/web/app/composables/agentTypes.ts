@@ -3,6 +3,7 @@ import type {
   ChatAttachment,
   InteractionMode,
   KoneAgentApi,
+  MessageSender,
   ProviderKind,
   RuntimeItem,
   SendTurnInput,
@@ -33,6 +34,11 @@ export type UserBlock = {
    *  display name so history keeps naming the model that actually ran, even
    *  after a catalog renames it. */
   model?: string;
+  /** Who said it. Absent = the user typed it; an agent's brief, follow-up or
+   *  message carries that agent and how it relates to this thread, and a kone
+   *  notice carries `{ kind: "system" }`. Only the user's own words sit on the
+   *  user's side of the conversation. */
+  sender?: MessageSender;
 } & Historical;
 
 export type AssistantBlock = {

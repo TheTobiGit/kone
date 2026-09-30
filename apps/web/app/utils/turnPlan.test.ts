@@ -38,6 +38,7 @@ const spawn = (id: string): RuntimeItem => ({
 function tag(g: RenderGroup): string {
   if (g.kind === "steps") return `steps:${g.segments.flatMap((s) => s.items.map((i) => i.itemId)).join(",")}`;
   if (g.kind === "text") return `text:${g.seg.items.map((i) => i.itemId).join(",")}`;
+  if (g.kind === "decision") return `decision:${g.item.itemId}`;
   return `spawn:${g.record.threadId}`;
 }
 const tags = (groups: RenderGroup[] | null) => (groups ?? []).map(tag);

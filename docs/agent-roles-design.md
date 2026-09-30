@@ -1,6 +1,7 @@
 # Agent roles, relationships and messaging
 
-Status: design agreed, not yet implemented.
+Status: implemented on `feat/agent-roles` (see §13 for where the build
+departs from this design).
 
 kone agents should feel like co-workers: they have an identity, take on large
 pieces of work, and hand parts of it to others. This document fixes the roles,
@@ -341,7 +342,41 @@ on hand-offs.
 | Agent guidance prompt | `apps/web/app/utils/agents.ts` tells agents to call `agent_targets`, `agent_spawn_preset`, `agent_spawn_batch` | Rewrite for the new tools and the agent-versus-worker decision |
 | Hand-off indicators | `SpawnWorkerMark.vue` ("I spawned Theo", "I asked Ada"); labels in `koneToolPresentation.ts`; spawn record in `@kone/protocol/spawn-record` | New wording per §10; workers lose names and faces; the record carries the hand-off kind (worker / delegation / contract) |
 
-## 12. Open items
+## 12. Implementation notes
+
+- **Senders** are stored as `blocks.sender_json` (migration 15; NULL = the
+  user). An agent-sent turn is dispatched under a `<from_agent>` header, a kone
+  notice under `<kone_notice>`, and delivered agent messages inside
+  `<agent_messages>`. Every block kone writes on someone else's behalf is
+  announced to renderers as `thread.message-journaled`. The renderer's send and
+  steer IPC always strip a sender, so only the main process can set one.
+- **Workers** are threads with the `"subagent"` edge. The hand-off tools are
+  `agentsOnly`: hidden from a worker's tools/list and host context, refused if
+  called anyway, and the spawn guard has a role rung behind them.
+- **Delegation depth** (`MAX_DELEGATION_DEPTH = 2`) counts only agent children;
+  any agent may start workers.
+- **Queued notices**: `dispatcher.queueNotice` journals a kone notice and rides
+  it in front of the thread's next turn, so an idle agent is told without being
+  woken.
+
+## 13. Where the build departs from the design
+
+- **A contract is a delegation edge plus terms.** The relationship stays
+  `"delegation"` and the terms live in `threads.contract_json` (migration 16),
+  because widening the relationship CHECK means rebuilding `threads`. Code asks
+  `meta.contract` to tell a contractor from a teammate.
+- **`worker_start` replaces both `agent_spawn` and `agent_spawn_preset`**
+  (a brief, optionally from a preset). `worker_start_batch` takes workers only;
+  a teammate in a batch is refused per item and pointed at `agent_delegate`.
+- **A delegator can't disappear mid-work.** Archive and delete already take the
+  whole subtree and refuse while any descendant is mid-turn, so the "delegator
+  is gone" notice (§7) has no case to fire in; that behaviour was kept.
+- **Hire is built in the renderer** from the existing roster calls (create the
+  agent, add it to the project team, bind the thread); no new backend.
+- **Stop everything** is a bar above the composer whenever delegates or
+  contractors are working for the thread, backed by `agent:stop-chain`.
+
+## 14. Open items
 
 - For every provider (Claude, Codex, Cursor, Droid, Cline, OpenCode,
   Antigravity), check whether it has native subagents, whether they can nest,

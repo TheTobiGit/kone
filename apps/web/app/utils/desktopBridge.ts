@@ -24,7 +24,7 @@ export type DesktopAgentReach = Pick<
 > & {
   history: Pick<
     KoneAgentHistoryApi,
-    "list" | "archive" | "remove" | "setPinned" | "setDone" | "setVisited"
+    "list" | "archive" | "remove" | "setPinned" | "setDone" | "setVisited" | "threadPage"
   >;
 };
 

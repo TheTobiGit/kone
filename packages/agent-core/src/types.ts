@@ -1211,9 +1211,19 @@ export type ThreadGateKind = "approval" | "user-input";
 
 /** One spawned child, projected for both the wait tool and the UI. The single
  *  shape both consume — no second view model (trap #10). */
+/** What kind of hand-off opened a spawned thread: a worker (no identity, lives
+ *  in its agent's Subagents dock), a delegation to a teammate, or a contract
+ *  with an agent made up for the job (both full threads of their own). */
+export type HandOffKind = "worker" | "delegation" | "contract";
+
 export type SpawnedThread = {
   threadId: string;
   parentThreadId: string;
+  /** Absent on a snapshot from before hand-off kinds, which reads as a
+   *  worker — every spawn was one then. */
+  handOff?: HandOffKind;
+  /** The agent it runs as, for a delegation or contract. */
+  agentName?: string;
   title: string;
   provider: ProviderKind;
   model?: string;

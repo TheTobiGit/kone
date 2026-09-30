@@ -7,8 +7,11 @@ import type {
   RuntimeItem,
   RuntimeItemKind,
   RuntimeSessionState,
+  ContractTerms,
+  MessageSender,
   SpawnedThread,
   SpawnedThreadStatus,
+  StoredThreadMeta,
   SubagentRunSnapshot,
   TokenUsage,
 } from "~/types/desktop";
@@ -20,6 +23,11 @@ import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
 import { createScriptClock, SCRIPTED_WORD_MS, streamWords } from "~/utils/scriptedTurn";
 import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "./agentTypes";
 import { titleFromPrompt, uid } from "./agentPrefetch";
+import { registerDevHandOff } from "~/lib/devHandOffs";
+
+/** The team demo's turns, in order: the hand-offs, answering a contractor's
+ *  question, deciding after a stop — and a contractor's own first turn. */
+type TeamBeat = "handoff" | "answer" | "decide" | "contractor";
 
 export function createMockTurnRunner(deps: {
   threadId: Ref<string>;
@@ -142,7 +150,7 @@ export function createMockTurnRunner(deps: {
   // (the same order CodexAdapter's item/started · item/completed notifications
   // feed the desktop side), so the thread can render every ordering case —
   // tools-at-start, tool-after-text, thinking, final text — without the bridge.
-  function mockTurn(prompt: string, opts: { demo?: boolean; fast?: boolean } = {}): void {
+  function mockTurn(prompt: string, opts: { demo?: boolean; fast?: boolean; team?: TeamBeat } = {}): void {
     const turnId = uid();
     mockTurnId = turnId;
     let cancelled = false;
@@ -209,7 +217,7 @@ export function createMockTurnRunner(deps: {
       emit(item, "item.completed");
     };
 
-    // A worker spawn — `agent_spawn` settling with the record the gateway
+    // A hand-off — `worker_start`, `agent_delegate` or `agent_contract` settling with the record the gateway
     // writes, then the child's own lifecycle arriving as the parent's session
     // would see it. The reply's spawn line reads the record; its status reads
     // the child. Returns the child's settle, so the script can land it before
@@ -218,11 +226,13 @@ export function createMockTurnRunner(deps: {
       title: string;
       why: string;
       model: string;
-      /** The preset the worker is cut from — a `agent_spawn_preset` call. */
+      /** The preset the worker is cut from — a `worker_start` with a preset. */
       preset?: string;
       /** The teammate the work is delegated to — a `agent_delegate`
        *  call. Not on any real roster, so the line draws it by name. */
       agent?: string;
+      /** An agent contracted for the job — an `agent_contract` call. */
+      contract?: ContractTerms;
     };
     type DemoChild = { finish: (summary: string) => void };
     const NO_CHILD: DemoChild = { finish: () => {} };
@@ -233,9 +243,28 @@ export function createMockTurnRunner(deps: {
       const childId = uid();
       const parentThreadId = threadId.value;
       const createdAt = Date.now();
+      const handOff: SpawnedThread["handOff"] = opts.contract ? "contract" : opts.agent ? "delegation" : "worker";
+      const agentName = opts.contract?.name ?? opts.agent;
+      if (opts.contract || opts.agent) {
+        // The demo world answers for the thread the way the store would: its
+        // row carries the edge and, for a contractor, the terms.
+        const meta: StoredThreadMeta = {
+          threadId: childId,
+          projectPath: "/demo",
+          provider: "claudeAgent",
+          title: opts.title,
+          createdAt,
+          updatedAt: createdAt,
+          lineage: { parentThreadId, relationshipToParent: "delegation", rootThreadId: parentThreadId },
+        };
+        if (opts.contract) meta.contract = opts.contract;
+        registerDevHandOff(meta);
+      }
       const child = (status: SpawnedThreadStatus, extra: Partial<SpawnedThread> = {}): SpawnedThread => ({
         threadId: childId,
         parentThreadId,
+        handOff,
+        agentName,
         title: opts.title,
         provider: "claudeAgent",
         model: opts.model,
@@ -261,6 +290,10 @@ export function createMockTurnRunner(deps: {
       if (opts.agent) {
         record.agent = opts.agent;
         record.agentId = `demo-${opts.agent.toLowerCase()}`;
+      }
+      if (opts.contract) {
+        record.contractor = opts.contract.name;
+        record.contractorRole = opts.contract.role;
       }
       return {
         record,
@@ -288,11 +321,7 @@ export function createMockTurnRunner(deps: {
         itemId: uid(),
         kind: "tool_call",
         status: "in-progress",
-        name: opts.agent
-          ? "agent_delegate"
-          : opts.preset
-            ? "agent_spawn_preset"
-            : "agent_spawn",
+        name: opts.contract ? "agent_contract" : opts.agent ? "agent_delegate" : "worker_start",
         text: opts.title,
       };
       emit(item, "item.started");
@@ -302,22 +331,24 @@ export function createMockTurnRunner(deps: {
       item.status = "completed";
       item.detail = formatSpawnResult({
         spawns: [record],
-        summary: opts.agent
-          ? `Delegated "${opts.title}" to ${opts.agent} as ${record.threadId}.`
-          : `Spawned "${opts.title}"${opts.preset ? ` from preset ${opts.preset}` : ""} as ${record.threadId}.`,
+        summary: opts.contract
+          ? `Contracted ${opts.contract.name} (${opts.contract.role}) for "${opts.title}" as ${record.threadId}.`
+          : opts.agent
+            ? `Delegated "${opts.title}" to ${opts.agent} as ${record.threadId}.`
+            : `Started worker "${opts.title}"${opts.preset ? ` from preset ${opts.preset}` : ""} as ${record.threadId}.`,
       });
       emit(item, "item.completed");
       return child;
     };
 
-    // A `agent_spawn_batch` call: every item opens at once, and the reply says
+    // A `worker_start_batch` call: every item opens at once, and the reply says
     // each one on its own line.
     const spawnBatch = async (items: DemoSpawn[], ms = 900): Promise<DemoChild[]> => {
       const item: RuntimeItem = {
         itemId: uid(),
         kind: "tool_call",
         status: "in-progress",
-        name: "agent_spawn_batch",
+        name: "worker_start_batch",
         text: `${items.length} threads`,
       };
       emit(item, "item.started");
@@ -327,7 +358,7 @@ export function createMockTurnRunner(deps: {
       item.status = "completed";
       item.detail = formatSpawnResult({
         spawns: opened.map((o) => o.record),
-        summary: `Spawned ${opened.length} threads.`,
+        summary: `Started ${opened.length} workers.`,
       });
       emit(item, "item.completed");
       return opened.map((o) => o.child);
@@ -514,8 +545,12 @@ export function createMockTurnRunner(deps: {
     const thinky = opts.demo || reasoning.value === "high" || reasoning.value === "thinking";
 
     void (async () => {
-      await wait(1400); // connecting beat
+      await wait(opts.team ? 900 : 1400); // connecting beat
       if (cancelled) return;
+      if (opts.team) {
+        await playTeamBeat(opts.team);
+        if (cancelled) return;
+      } else {
       if (thinky) {
         await stream(
           "reasoning_text",
@@ -846,6 +881,7 @@ export function createMockTurnRunner(deps: {
           : `Done — for "${prompt}", the parts now render in the true order they arrived: thinking, tool calls, and text interleaved, exactly like a real ${provider.value} session. This is a mocked reply (no agent ran in the browser), but every event flowed through the same stream.`,
       );
       if (cancelled) return;
+      }
       // Feed the context meter so its come-in and fill are reviewable in browser
       // dev (no bridge) — it grows with each turn toward the window, crossing the
       // warm/full colour steps after enough turns. No-op cost in the desktop mock.
@@ -869,8 +905,214 @@ export function createMockTurnRunner(deps: {
       stopMock();
       if (nextQueued) {
         mockTurn(nextQueued.input);
+      } else if (opts.team) {
+        void continueTeam(opts.team);
       }
     })();
+
+    // ── the team demo's turns ────────────────────────────────────────────────
+    // An agent splitting a feature across the team: a teammate and a contractor
+    // get threads of their own, workers go to the dock, a contractor comes back
+    // with a question, and a stop settles the hand-offs.
+    async function playTeamBeat(beat: TeamBeat): Promise<void> {
+      if (beat === "handoff") {
+        await stream(
+          "reasoning_text",
+          "This is three jobs, not one: the API, the screens, and a check of what the session code does today. The API is Ada's layer. Nobody on the team owns the frontend, so I'll contract someone for it, and hand the quick lookups to workers.",
+        );
+        if (cancelled) return;
+        await tool("agent_directory", "2 teammates · 3 worker presets", undefined, 520);
+        if (cancelled) return;
+        await stream("assistant_text", "Splitting this into pieces that can run at once.");
+        if (cancelled) return;
+        const ada = await spawnWorker({
+          title: "Auth API: sessions and login routes",
+          why: "the API layer is Ada's",
+          model: "claude-sonnet-5-5",
+          agent: "Ada",
+        });
+        if (cancelled) return;
+        teamChildren.ada = ada;
+        const frontend = await spawnWorker({
+          title: "Login and signup screens",
+          why: "nobody on the team owns the frontend",
+          model: "claude-sonnet-5-5",
+          contract: TEAM_CONTRACT,
+        });
+        if (cancelled) return;
+        teamChildren.frontend = frontend;
+        const lookup = await spawnWorker({
+          title: "Find where sessions are validated today",
+          why: "it is a quick lookup",
+          model: "claude-haiku-4-5",
+        });
+        if (cancelled) return;
+        const review = await spawnWorker({
+          title: "Review the auth middleware diff",
+          why: "a second pair of eyes before it lands",
+          model: "claude-haiku-4-5",
+          preset: "Reviewer",
+        });
+        if (cancelled) return;
+        await wait(900);
+        lookup.finish("Sessions are validated in server/middleware/session.ts, once per request, against the cookie store.");
+        review.finish("Middleware diff reads clean; flagged one missing expiry check.");
+        await stream(
+          "assistant_text",
+          "Ada has the API and Frontend Auth has the screens — both in their own threads, so you can watch or step in. Two workers are checking the existing session code under this thread.",
+        );
+        return;
+      }
+      if (beat === "answer") {
+        await stream(
+          "reasoning_text",
+          "You asked for email and password; OAuth never came up. I can answer that without asking you.",
+        );
+        if (cancelled) return;
+        await tool(
+          "agent_message",
+          "answer → Frontend Auth",
+          "Sent answer msg_frontend to Frontend Auth.",
+          560,
+        );
+        if (cancelled) return;
+        await stream(
+          "assistant_text",
+          "Frontend Auth asked whether OAuth is in scope. I told it: email and password only for now — you didn't ask for OAuth.",
+        );
+        return;
+      }
+      if (beat === "contractor") {
+        await stream(
+          "reasoning_text",
+          "The brief lists login and signup but not the providers. I'll build email and password first and ask Maya about OAuth rather than guess.",
+        );
+        if (cancelled) return;
+        await tool("read_file", "app/pages/login.vue", undefined, 520);
+        if (cancelled) return;
+        await tool(
+          "agent_message",
+          "question → delegator",
+          "Sent question msg_oauth to Maya.",
+          560,
+        );
+        if (cancelled) return;
+        await stream(
+          "assistant_text",
+          "Starting on the screens. I asked Maya whether OAuth is in scope, since the brief doesn't say — email and password first either way.",
+        );
+        return;
+      }
+      if (beat === "decide") {
+        await stream(
+          "reasoning_text",
+          "The user stopped me right after moving Ada's thread in a new direction. The screens are nearly done and still wanted; the API work is what changed.",
+        );
+        if (cancelled) return;
+        await tool(
+          "agent_keep_or_stop",
+          "2 agents",
+          "Kept Frontend Auth running · stopped Ada.",
+          620,
+        );
+        if (cancelled) return;
+        teamChildren.ada?.finish("Stopped by its delegator; left a note of the routes it finished.");
+        await stream(
+          "assistant_text",
+          "Stopped. Frontend Auth keeps going on the screens; Ada stopped and left a note of what it finished. I've started nothing new — tell me where to take the API from here.",
+        );
+      }
+    }
+  }
+
+  /** The demo agent contracted for the screens. */
+  const TEAM_CONTRACT: ContractTerms = {
+    name: "Frontend Auth",
+    role: "Frontend auth specialist",
+    instructions: "Keep components small and accessible; match the design tokens; test every form state.",
+    scope: "The login and signup screens and their client-side validation. Not the API.",
+    deliverable: "Working screens wired to the auth endpoints, with tests.",
+    doneCriteria: "Both screens render, submit, and show server errors; the auth UI tests pass.",
+  };
+
+  /** The children the team demo's later beats talk about. */
+  type TeamChild = { finish: (summary: string) => void };
+  type TeamChildren = { ada?: TeamChild; frontend?: TeamChild };
+  const teamChildren: TeamChildren = {};
+
+  /** Say something into this thread the way the main process would: another
+   *  agent's message, or kone's own notice. */
+  function journal(text: string, sender: MessageSender): void {
+    reduce({
+      ...base(),
+      type: "thread.message-journaled",
+      block: { id: uid(), role: "user", text, at: Date.now(), sender },
+    });
+  }
+
+  /** What happens between the team demo's turns. */
+  async function continueTeam(after: TeamBeat): Promise<void> {
+    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    if (after === "handoff") {
+      await pause(1600);
+      journal(
+        "Is OAuth in scope, or email and password only? The brief lists login and signup but not the providers.",
+        {
+          kind: "agent",
+          threadId: `${threadId.value}:frontend`,
+          name: "Frontend Auth",
+          relationship: "contractor",
+          messageKind: "question",
+        },
+      );
+      mockTurn("", { team: "answer" });
+      return;
+    }
+    if (after === "answer") {
+      await pause(1400);
+      journal(
+        'The user spoke to Ada directly: "Use magic links instead of passwords." What it was asked may have changed; check in with it if that matters to what you are coordinating.',
+        { kind: "system" },
+      );
+      await pause(900);
+      journal(
+        "You were stopped by the user. These agents are still working because of you:\n- Ada: Auth API, still working\n- Frontend Auth: Login and signup screens, still working\n\nFor each one, decide with agent_keep_or_stop: continue, stop, or ask_user. Do not start anything new in this turn.",
+        { kind: "system" },
+      );
+      mockTurn("", { team: "decide" });
+    }
+  }
+
+  /** Play the team demo: an agent splitting a feature across the team. */
+  function team(): void {
+    if (busy.value) return;
+    const prompt = "Build the auth feature: login, signup and sessions.";
+    blocks.value = [...blocks.value, { id: uid(), role: "user", text: prompt, at: Date.now(), effort: reasoning.value }];
+    if (!title.value) title.value = titleFromPrompt(prompt);
+    mockTurn(prompt, { team: "handoff" });
+  }
+
+  /** Play a contractor's own thread: its brief from the agent that
+   *  contracted it, the origin mark with Hire, and its first reply. */
+  function contractorView(): void {
+    if (busy.value) return;
+    const contracting = `${threadId.value}:lead`;
+    registerDevHandOff({
+      threadId: threadId.value,
+      projectPath: "/demo",
+      provider: "claudeAgent",
+      title: "Login and signup screens",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      lineage: { parentThreadId: contracting, relationshipToParent: "delegation", rootThreadId: contracting },
+      contract: TEAM_CONTRACT,
+    });
+    if (!title.value) title.value = "Login and signup screens";
+    journal(
+      "Build the login and signup screens against the new auth endpoints.\n\nContract terms:\n- Scope: The login and signup screens and their client-side validation. Not the API.\n- Deliverable: Working screens wired to the auth endpoints, with tests.\n- Done when: Both screens render, submit, and show server errors; the auth UI tests pass.",
+      { kind: "agent", threadId: contracting, name: "Maya", relationship: "contracting", messageKind: "brief" },
+    );
+    mockTurn("", { team: "contractor" });
   }
 
   /** Play a scripted demo conversation — a user turn plus a full assistant reply
@@ -894,6 +1136,8 @@ export function createMockTurnRunner(deps: {
     mockQueueFollowUp,
     mockTurn,
     demo,
+    team,
+    contractorView,
     getMockTurnId: () => mockTurnId,
     hasPendingApproval,
     respondApproval,

@@ -217,6 +217,9 @@ function onHeadClick(): void {
         :reveal-delay="revealDelay"
       />
     </div>
+    <p v-else-if="grp.kind === 'decision'" class="decision-mark" :class="{ 'decision-mark--enter': !block.historical }">
+      {{ grp.text }}
+    </p>
     <SpawnWorkerMark
       v-else
       :record="grp.record"
@@ -258,6 +261,34 @@ function onHeadClick(): void {
 @media (prefers-reduced-motion: reduce) {
   .stack > .fold {
     transition: none;
+  }
+}
+
+/* ── What a stopped agent decided for the agents working for it ─────────────
+   Said in the reply like a hand-off line, in the same quiet register. */
+.decision-mark {
+  margin: 0;
+  width: 100%;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: color-mix(in oklab, var(--ink) 62%, transparent);
+}
+.decision-mark::before {
+  content: "↳ ";
+  color: color-mix(in oklab, var(--ink) 35%, transparent);
+}
+.decision-mark--enter {
+  animation: decision-in 760ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+@keyframes decision-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .decision-mark--enter {
+    animation: none;
   }
 }
 

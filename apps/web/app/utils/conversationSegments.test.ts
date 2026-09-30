@@ -36,7 +36,9 @@ const groupTags = (items: RuntimeItem[]) =>
       ? `steps:${g.segments.flatMap((s) => s.items.map((i) => i.itemId)).join(",")}`
       : g.kind === "text"
         ? `text:${g.seg.items.map((i) => i.itemId).join(",")}`
-        : `spawn:${g.record.threadId}`,
+        : g.kind === "decision"
+          ? `decision:${g.item.itemId}`
+          : `spawn:${g.record.threadId}`,
   );
 
 describe("renderGroups", () => {

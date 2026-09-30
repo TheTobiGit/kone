@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -42,6 +42,11 @@ import { STYLE_SPECS, type ConversationStyle } from "~/utils/conversationStyle";
 import { formatFileSize } from "~/utils/formatFile";
 import AssistantTurnBody from "~/components/conversation/AssistantTurnBody.vue";
 import UserTurn from "~/components/conversation/UserTurn.vue";
+import AgentMessageTurn from "~/components/conversation/AgentMessageTurn.vue";
+import KoneNoticeMark from "~/components/conversation/KoneNoticeMark.vue";
+import HandOffOriginMark from "~/components/conversation/HandOffOriginMark.vue";
+import { useThreadContract } from "~/composables/useThreadContract";
+import type { AgentSender } from "~/types/desktop";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import ReplyRef from "~/components/conversation/ReplyRef.vue";
@@ -222,6 +227,35 @@ const showFace = computed(() => spec.value.face > 0);
 const showsElbow = computed(() => look.value === "kone");
 /** A message's time the way its style says it: Discord's "Today at 11:55 AM",
  *  everywhere else the bare clock. */
+/** The agent that handed this thread its work, when one did: the sender of
+ *  the brief the thread opened on. Only read once the oldest turn is loaded —
+ *  a later page's first block is not where the thread began. */
+const origin = computed<AgentSender | null>(() => {
+  if (props.hasOlder) return null;
+  const first = props.blocks[0];
+  if (!first || first.role !== "user" || first.sender?.kind !== "agent") return null;
+  const { sender } = first;
+  return sender.messageKind === "brief" && (sender.relationship === "delegator" || sender.relationship === "contracting")
+    ? sender
+    : null;
+});
+
+/** A contractor has no roster row to name it, so its own replies are signed
+ *  with the name it was contracted under rather than a derived call sign. */
+const isContractorThread = computed(() => origin.value?.relationship === "contracting");
+const { contract: threadContract } = useThreadContract(toRef(props, "threadId"), isContractorThread);
+const speakerName = computed(() => threadContract.value?.name ?? agent.value.name);
+
+/** Which side of the conversation a block sits on. Only the user's own words
+ *  take the user's side: another agent speaking sits on the agent side, as a
+ *  peer, and a kone notice spans the thread as a line. */
+function turnSide(block: ThreadBlock): string {
+  if (block.role === "assistant") return "turn--kone";
+  if (block.sender?.kind === "agent") return "turn--kone turn--peer";
+  if (block.sender?.kind === "system") return "turn--notice";
+  return "turn--you";
+}
+
 function stampFor(at: number): string {
   return spec.value.headStamp === "day-at-clock" ? `${formatDayDivider(at, props.now)} at ${clock(at)}` : clock(at);
 }
@@ -1151,6 +1185,9 @@ watch(
       <span>{{ earlierCount }} earlier {{ earlierCount === 1 ? "exchange" : "exchanges" }}</span>
     </button>
 
+    <!-- A delegate's or contractor's thread opens on who handed it the work. -->
+    <HandOffOriginMark v-if="origin" :thread-id="threadId" :from="origin" />
+
     <template v-for="(ex, index) in exchanges" :key="ex.key">
       <!-- Centered date divider at top of thread and between different calendar days -->
       <div
@@ -1222,7 +1259,7 @@ watch(
       <!-- Thin elbow line: out of the request bubble's left edge, across to the avatar column, down to the reply.
            The default style's alone — every other style ties the two its own way, or not at all. -->
       <ExchangeConnector
-        v-if="showsElbow && ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user') && ex.blocks.some((b) => b.role === 'assistant')"
+        v-if="showsElbow && ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user' && !b.sender) && ex.blocks.some((b) => b.role === 'assistant')"
         :running="ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running')"
       />
 
@@ -1232,15 +1269,31 @@ watch(
       :data-turn-id="block.id"
       class="turn"
       :class="[
-        block.role === 'user' ? 'turn--you' : 'turn--kone',
+        turnSide(block),
         block.historical ? '' : 'turn--enter',
         block.role === 'assistant' && block.state !== 'running' ? 'turn--settled' : '',
         block.role === 'assistant' && flash[block.id] ? 'turn--flash' : '',
         block.id === searchFlash ? 'turn--search-flash' : '',
       ]"
     >
+      <!-- ── Another agent speaking — the agent's side, never the user's ── -->
+      <template v-if="block.role === 'user' && block.sender?.kind === 'agent'">
+        <AgentMessageTurn
+          :sender="block.sender"
+          :text="block.text"
+          :show-face="showFace"
+          :face-size="faceSize"
+          :stamp="stampFor(block.at)"
+          :historical="block.historical"
+          @open-thread="emit('open-thread', $event)"
+        />
+      </template>
+      <!-- ── kone telling this thread something — a line, not a bubble ──── -->
+      <template v-else-if="block.role === 'user' && block.sender?.kind === 'system'">
+        <KoneNoticeMark :text="block.text" />
+      </template>
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
-      <template v-if="block.role === 'user'">
+      <template v-else-if="block.role === 'user'">
         <!-- The whole request (bubble or edit field, head, corner time,
              attachments, footer) owns its presentation and edit state in
              UserTurn; the thread only routes what each button means. -->
@@ -1280,7 +1333,7 @@ watch(
             :block="block"
             :display="display"
             :manual="openFolds[block.id]"
-            :agent-name="agent.name"
+            :agent-name="speakerName"
             :agent-seed="agentSeed"
             :house="house"
             :work-label="workLabel(block)"
