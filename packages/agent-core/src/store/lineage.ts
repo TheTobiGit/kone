@@ -952,7 +952,7 @@ export class LineageRepo {
   }
 
   /** How many spawn hops above a root this thread sits — a root is 0, its
-   *  child 1, and so on; the engine's depth guard (MAX_SPAWN_DEPTH) refuses
+   *  child 1, and so on; the engine's depth guard (MAX_DELEGATION_DEPTH) refuses
    *  past that.
    *
    *  Walks `parent_thread_id` upward and is deliberately cycle-guarded: a
@@ -971,7 +971,7 @@ export class LineageRepo {
       const visited = new Set<string>([threadId]);
       let current = threadId;
       let depth = 0;
-      // 64 is far past the real ceiling (MAX_SPAWN_DEPTH = 2): anything that
+      // 64 is far past the real ceiling (MAX_DELEGATION_DEPTH = 2): anything that
       // reaches it is a cycle or a corrupted chain, and the caller's guard
       // treats the finite-but-absurd value as "too deep to trust".
       while (depth < 64) {

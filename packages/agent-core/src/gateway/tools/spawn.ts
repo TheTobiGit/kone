@@ -1,9 +1,10 @@
 // Worker- and teammate-dispatching gateway tools (docs/thread-spawning-design.md
-// §5.1, §6 Wave 2).
+// §5.1, §6 Wave 2; docs/agent-roles-design.md §9).
 //
-// Eleven tools that let a running agent dispatch workers and teammates, follow
-// them, read the responses they come back with, and post follow-up turns into
-// the threads it already opened — each one a kone thread. The
+// The tools that let an agent start workers and hand work to other agents,
+// follow them, read the responses they come back with, and post follow-up
+// turns into the threads it already opened — each one a kone thread. Every one
+// is `agentsOnly`: a worker is started for one task and directs nobody. The
 // engine (../../threadSpawn.ts) holds ALL the state — depth/breadth guards,
 // lineage, status projection, waiting — this module is the thin boundary:
 // validate, resolve the engine, call it, shape the result, map its errors. The
@@ -40,16 +41,14 @@ import {
   GatewayToolError,
   ReadResponseInputSchema,
   READ_RESPONSE_JSON_SCHEMA,
-  SpawnWorkerPresetInputSchema,
-  SPAWN_WORKER_PRESET_JSON_SCHEMA,
-  SPAWN_WORKER_JSON_SCHEMA,
   SPAWN_TARGETS_JSON_SCHEMA,
   SpawnTargetsInputSchema,
-  SpawnWorkerInputSchema,
-  SpawnBatchInputSchema,
-  SPAWN_BATCH_JSON_SCHEMA,
   WaitForResponsesInputSchema,
   WAIT_FOR_RESPONSES_JSON_SCHEMA,
+  WorkerStartBatchInputSchema,
+  WorkerStartInputSchema,
+  WORKER_START_BATCH_JSON_SCHEMA,
+  WORKER_START_JSON_SCHEMA,
 } from "../schemas.js";
 import { gatewayToolErrorResult } from "../registry.js";
 import {
@@ -254,7 +253,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       ];
       if (presets.length > 0) {
         parts.push(
-          `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"} (${presets.map((p) => p.name).join(", ")}) available to agent_spawn_preset.`,
+          `${presets.length} worker preset${presets.length === 1 ? "" : "s"} (${presets.map((p) => p.name).join(", ")}) available to worker_start as preset.`,
         );
       }
       const teammates = report.teammates ?? [];
@@ -280,32 +279,34 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         ),
       );
 
-  const spawnWorkerHandler = singleDispatchHandler(
-    (args: {
-      prompt: string;
-      requestId: string;
-      title?: string;
-      why?: string;
-      target?: SpawnTarget;
-      mode?: InteractionMode;
-    }): DispatchItem => args,
-  );
-
-  type HandOffArgs = {
+  type WorkerArgs = {
     task: string;
     requestId: string;
     title?: string;
     why?: string;
-    mode?: InteractionMode;
+    preset?: string;
+    target?: SpawnTarget;
     model?: AgentModelRef;
+    mode?: InteractionMode;
   };
 
-  const spawnWorkerPresetHandler = singleDispatchHandler(
-    ({ task, ...args }: HandOffArgs & { preset: string }): DispatchItem => ({ ...args, prompt: task }),
+  const workerStartHandler = singleDispatchHandler(
+    ({ task, ...args }: WorkerArgs): DispatchItem => ({ ...args, prompt: task }),
   );
 
   const delegateToTeammateHandler = singleDispatchHandler(
-    ({ task, ...args }: HandOffArgs & { agent: string }): DispatchItem => ({ ...args, prompt: task }),
+    ({
+      task,
+      ...args
+    }: {
+      agent: string;
+      task: string;
+      requestId: string;
+      title?: string;
+      why?: string;
+      mode?: InteractionMode;
+      model?: AgentModelRef;
+    }): DispatchItem => ({ ...args, prompt: task }),
   );
 
   const continueThreadHandler = (
@@ -339,14 +340,24 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     });
   };
 
-  const spawnBatchHandler = (
+  const workerBatchHandler = (
     ctx: GatewayToolContext,
-    args: { items: DispatchItem[] },
+    args: { items: Array<WorkerArgs & { agent?: string }> },
   ): Promise<GatewayToolResult> => {
     return withActiveTurn(ctx, async (engine, caller) => {
       const getAvailability = availabilityOnce(engine, caller);
       const results = await Promise.all(
-        args.items.map(async (item, index): Promise<BatchItemResult> => {
+        args.items.map(async ({ task, ...rest }, index): Promise<BatchItemResult> => {
+          // A teammate is an agent, not a worker: it takes a hand-off of its
+          // own, one at a time. Refused per item so the rest still start.
+          if (rest.agent !== undefined) {
+            return {
+              index,
+              ok: false,
+              error: `"${rest.agent}" is a teammate, not a worker — hand it work with agent_delegate`,
+            };
+          }
+          const item: DispatchItem = { ...rest, prompt: task };
           try {
             const dispatched = await dispatchOne(input.store, engine, caller, item, getAvailability);
             if (!dispatched.ok) return { index, ok: false, error: dispatched.error.message };
@@ -463,81 +474,75 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
 
   return [
     {
-      name: "agent_targets",
+      name: "agent_directory",
       description:
-        "List what you can start kone agents from: installed providers with their real model ids (for agent_spawn), saved presets with what each is for (agent_spawn_preset), and this project's teammates with their roles (agent_delegate). Also reports the model you run on, how many more agents you may start, and how deep in the spawn tree you are.",
+        "List who and what you can hand work to: this project's teammates with their roles (agent_delegate), saved worker presets with what each is for (worker_start with preset), and the installed providers with their real model ids (worker_start with target). Also reports the model you run on, how many more threads you may start, and how long your delegation chain already is.",
       inputSchema: SpawnTargetsInputSchema,
       jsonSchema: SPAWN_TARGETS_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      agentsOnly: true,
       promptSnippet:
-        "List the providers and models, saved presets and project teammates you can start a kone agent from, and how many more you may start.",
+        "List the teammates, worker presets and models you can hand work to, and how many more threads you may start.",
+      promptGuidelines: [
+        "Before handing work off, decide who should carry it. A large piece with parts of its own — a whole feature, a layer of the stack — goes to an agent: a teammate (agent_delegate) whose role fits, since an agent can plan it and start workers of its own. A short, bounded task — find something, run something, make one scoped edit — goes to a worker (worker_start), which does exactly that and reports back. Keep what you can do quickly yourself.",
+      ],
       handler: targetsHandler,
     },
     {
-      name: "agent_spawn" satisfies SpawnToolName,
+      name: "worker_start" satisfies SpawnToolName,
       description:
-        "Start a new kone agent on a task you write: a real conversation the user can see and open, which keeps running after your turn ends (not a hidden subagent inside your turn). It starts with no memory of this conversation and cannot ask you anything, so write prompt as a complete brief: the goal, the paths, the constraints, and what done looks like. why is one short clause, in your own voice, that the user reads where you started it. Omit target to run on your own provider, model and effort; set it for a cheaper or stronger model (agent_targets lists them). mode is what the agent may do unattended and is clamped to yours (a wider request is refused, not downgraded): full-access edits and runs commands, accept-edits parks on its first command, ask parks on nearly everything. Pass a stable requestId so a retry returns the same agent. Returns once the agent starts, with its threadId and first turn id: collect the result with agent_wait (pass that id as turnIds), and ask it again with agent_ask, never a second spawn.",
-      inputSchema: SpawnWorkerInputSchema,
-      jsonSchema: SPAWN_WORKER_JSON_SCHEMA,
+        "Start a worker: a kone thread that does one short, bounded task and reports back. It has no name or role of its own, cannot start agents or workers itself, and shows under your conversation rather than as a thread of its own. It starts with no memory of this conversation, so write task as a complete brief: the goal, the paths, the constraints, and what done looks like. Name a saved preset (agent_directory lists them) to lay its standing instructions and model chain under the task; otherwise it runs on your own provider and model, or on target for a cheaper or stronger one. why is one short clause, in your own voice, that the user reads where you started it. mode is what it may do unattended and is clamped to yours (a wider request is refused, not downgraded). Pass a stable requestId so a retry returns the same worker. Returns once it starts, with its threadId and first turn id: collect the result with agent_wait (pass that id as turnIds) and ask it again with agent_followup, never a second start.",
+      inputSchema: WorkerStartInputSchema,
+      jsonSchema: WORKER_START_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      agentsOnly: true,
       promptSnippet:
-        "Start a kone agent on any installed provider with a brief you write; it keeps running after your turn ends.",
+        "Start a worker on one short, bounded task with a brief you write, optionally from a saved preset.",
       promptGuidelines: [
-        "Start a kone agent when a piece of work is self-contained and large enough to crowd out your context inline, or when independent pieces can run at once. The user sees every agent you start, so keep the number proportionate to the task and give each a brief you would be willing to have read back to you.",
-        "Nobody sits in a kone agent you start: one that stops for permission stays stopped until the user notices. If the work needs a wider mode than yours, ask the user to raise your mode instead of starting an agent that cannot finish.",
+        "Nobody sits in a worker you start: one that stops for permission stays stopped until the user notices. If the work needs a wider mode than yours, ask the user to raise your mode instead of starting a worker that cannot finish.",
       ],
-      handler: spawnWorkerHandler,
-    },
-    {
-      name: "agent_spawn_preset" satisfies SpawnToolName,
-      description:
-        "Start a kone agent from a preset: a template the user saved, with its own standing instructions and model chain. Name the preset (e.g. \"Code Reviewer\") and write task as a complete brief; kone lays it under the preset's instructions. The preset's chain picks the model, falling through on a 429 or spent quota, or yours when it names none. Pass model only when the user asked for a specific one; if nothing named can run, the spawn is refused rather than substituted. why, mode and requestId work as in agent_spawn. Collect the result with agent_wait; follow up with agent_ask.",
-      inputSchema: SpawnWorkerPresetInputSchema,
-      jsonSchema: SPAWN_WORKER_PRESET_JSON_SCHEMA,
-      permission: "allow",
-      requiresActiveTurn: true,
-      promptSnippet:
-        "Start a kone agent from a preset the user saved, under the preset's own instructions and models.",
-      handler: spawnWorkerPresetHandler,
+      handler: workerStartHandler,
     },
     {
       name: "agent_delegate" satisfies SpawnToolName,
       description:
-        "Hand work to a teammate: a named kone agent on this project's team (agent_targets lists them with their roles). The conversation runs as that agent, under its name, instructions and model chain (yours when it names none). It starts with no memory of this conversation, so write task as just the ask, complete. Pass model only when the user asked for a specific one. why, mode and requestId work as in agent_spawn. Collect the result with agent_wait; follow up with agent_ask.",
+        "Delegate a large piece of work to a teammate: a named kone agent on this project's team (agent_directory lists them with their roles). It runs as that agent — under its name, instructions and model chain (yours when it names none) — in a thread of its own the user can open, and it can plan the work and start workers of its own. It starts with no memory of this conversation, so write task as the whole ask. It reads your brief as yours, not the user's, and may come back with a question or disagree: answer from what you know of the user's intent, or ask the user. Pass model only when the user asked for a specific one. why, mode and requestId work as in worker_start. Collect the result with agent_wait; follow up with agent_followup.",
       inputSchema: DelegateToTeammateInputSchema,
       jsonSchema: DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      agentsOnly: true,
       promptSnippet:
-        "Hand work to a teammate on this project's team; it runs under that agent's own name and instructions.",
+        "Delegate a large piece of work to a teammate, who runs under its own name and can start workers of its own.",
       handler: delegateToTeammateHandler,
     },
     {
-      name: "agent_spawn_batch" satisfies SpawnToolName,
+      name: "worker_start_batch" satisfies SpawnToolName,
       description:
-        "Start several independent kone agents in one call. Each item sets exactly one of target (a provider and model), preset, or agent (a teammate), plus its own why. Returns each agent's threadId for agent_wait; follow up on any of them with agent_ask.",
-      inputSchema: SpawnBatchInputSchema,
-      jsonSchema: SPAWN_BATCH_JSON_SCHEMA,
+        "Start several independent workers in one call. Each item is a worker_start: a complete task, its own why, and optionally a preset or a target. Teammates are not workers — delegate to them with agent_delegate. Returns each worker's threadId for agent_wait; follow up on any of them with agent_followup.",
+      inputSchema: WorkerStartBatchInputSchema,
+      jsonSchema: WORKER_START_BATCH_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
-      promptSnippet:
-        "Start several independent kone agents in one call.",
-      handler: spawnBatchHandler,
+      agentsOnly: true,
+      promptSnippet: "Start several independent workers in one call.",
+      handler: workerBatchHandler,
     },
     {
-      name: "agent_ask",
+      name: "agent_followup",
       description:
-        "Queue a follow-up turn on a kone agent in your subtree (one you started, or one started under it). This is the only way to ask that agent again: every spawn tool starts a new one. It keeps its full context, so reference its earlier work rather than restating it; it runs on its own provider and mode. A busy agent takes the follow-up after its current turn; a settled one is brought back up first. Pass a stable requestId so a retry does not run it twice. Returns the new turn id: pass it with the threadId to agent_wait. To reach an agent you did not start, or to tell one something without expecting a reply, use agent_notify.",
+        "Queue a follow-up turn on a worker or agent you handed work to (or one started under it). This is the only way to ask it again: every start tool opens a new thread. It keeps its full context, so reference its earlier work rather than restating it; it runs on its own provider and mode, and reads the follow-up as yours, not the user's. A busy one takes it after its current turn; a settled one is brought back up first. Pass a stable requestId so a retry does not run it twice. Returns the new turn id: pass it with the threadId to agent_wait.",
       inputSchema: ContinueThreadInputSchema,
       jsonSchema: CONTINUE_THREAD_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      agentsOnly: true,
       promptSnippet:
-        "Queue a follow-up turn on a kone agent you started; returns a turn id to agent_wait on.",
+        "Queue a follow-up turn on a worker or agent you handed work to; returns a turn id to agent_wait on.",
       promptGuidelines: [
-        "agent_ask queues a turn on a kone agent you started and returns a turn id you can agent_wait on; use it whenever you or the user want that agent asked again, since a second spawn is a stranger, not a follow-up. agent_notify reaches any agent on the project right now (steered mid-turn if running, woken if idle) with no reply built in.",
+        "agent_followup queues a turn on a thread you handed work to and returns a turn id you can agent_wait on; use it whenever you or the user want that thread asked again, since a second start is a stranger, not a follow-up.",
       ],
       handler: continueThreadHandler,
     },
@@ -546,27 +551,29 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     createAnswerChildInputTool(),
     {
       name: "agent_wait",
+      agentsOnly: true,
       description:
-        `Wait for kone agents you started and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough.`,
+        `Wait for workers and agents you handed work to and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough.`,
       inputSchema: WaitForResponsesInputSchema,
       jsonSchema: WAIT_FOR_RESPONSES_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "Collect the replies of kone agents you started; returns early when one parks on a question or approval.",
+        "Collect the replies of workers and agents you handed work to; returns early when one parks on a question or approval.",
       handler: waitForResponsesHandler,
     },
     {
       name: "agent_read",
+      agentsOnly: true,
       description:
-        "Read the full transcript of a kone agent you started, or one it started in turn: every message, in order, newest last. Use it when a reply is too thin to act on, when the work failed and you need to see where, or when you need the details it worked out rather than its conclusion. Scoped to your own subtree: agents you did not start are not readable, and neither are the user's other conversations.",
+        "Read the full transcript of a worker or agent you handed work to, or one it started in turn: every message, in order, newest last. Use it when a reply is too thin to act on, when the work failed and you need to see where, or when you need the details it worked out rather than its conclusion. Scoped to your own subtree: threads you did not hand work to are not readable, and neither are the user's other conversations.",
       inputSchema: ReadResponseInputSchema,
       jsonSchema: READ_RESPONSE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       onDemand: true,
       promptSnippet:
-        "Read the full transcript of a kone agent you started when its reply is not enough.",
+        "Read the full transcript of a worker or agent you handed work to when its reply is not enough.",
       handler: readResponseHandler,
     },
   ];

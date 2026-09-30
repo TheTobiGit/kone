@@ -84,6 +84,16 @@ export type GatewayApprove = (request: GatewayApprovalRequest) => Promise<boolea
 
 export type GatewayToolScope = "worker" | "assistant";
 
+/** What a project session is to the agents around it. An `agent` has an
+ *  identity and may hand work to other kone threads; a `worker` was started for
+ *  one task and may not (see ToolEntry.agentsOnly). Absent reads as `agent` —
+ *  every thread the user starts is one. */
+export type GatewayThreadRole = "agent" | "worker";
+
+function matchesRole(tool: ToolEntry, role?: GatewayThreadRole): boolean {
+  return !(role === "worker" && tool.agentsOnly === true);
+}
+
 /** Which slice of a scope's tools one tools/list serves. A client that can
  *  defer tools reaches the gateway as two servers — `core` loaded up front and
  *  `on-demand` behind its tool search — while every other client lists `all`. */
@@ -106,17 +116,19 @@ export interface GatewayRegistry {
   listTools(
     scope?: GatewayToolScope,
     set?: GatewayToolSet,
+    role?: GatewayThreadRole,
   ): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
   /** What the host-context block says about the tools this gateway actually
    *  serves — the same `deny` filter tools/list applies, so the prose and the
    *  advertised surface cannot disagree. */
-  listToolPrompts(scope?: GatewayToolScope): ReadonlyArray<GatewayToolPrompt>;
+  listToolPrompts(scope?: GatewayToolScope, role?: GatewayThreadRole): ReadonlyArray<GatewayToolPrompt>;
   /** Dispatch one tools/call through the full dispatch order. Never throws. */
   call(
     ctx: GatewayToolContext,
     name: string,
     args: GatewayValue | undefined,
     scope?: GatewayToolScope,
+    role?: GatewayThreadRole,
   ): Promise<GatewayToolResult>;
 }
 
@@ -127,9 +139,9 @@ export function createRegistry(
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const servable = tools.filter((tool) => tool.permission !== "deny");
 
-  function listTools(scope?: GatewayToolScope, set: GatewayToolSet = "all") {
+  function listTools(scope?: GatewayToolScope, set: GatewayToolSet = "all", role?: GatewayThreadRole) {
     return servable
-      .filter((tool) => matchesScope(tool, scope) && matchesSet(tool, set))
+      .filter((tool) => matchesScope(tool, scope) && matchesSet(tool, set) && matchesRole(tool, role))
       .map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -137,10 +149,10 @@ export function createRegistry(
       }));
   }
 
-  function listToolPrompts(scope?: GatewayToolScope): ReadonlyArray<GatewayToolPrompt> {
+  function listToolPrompts(scope?: GatewayToolScope, role?: GatewayThreadRole): ReadonlyArray<GatewayToolPrompt> {
     const list: GatewayToolPrompt[] = [];
     for (const tool of servable) {
-      if (!matchesScope(tool, scope)) continue;
+      if (!matchesScope(tool, scope) || !matchesRole(tool, role)) continue;
       const snippet = tool.promptSnippet;
       if (!snippet) continue;
       list.push({
@@ -159,10 +171,11 @@ export function createRegistry(
     name: string,
     args: GatewayValue | undefined,
     scope?: GatewayToolScope,
+    role?: GatewayThreadRole,
   ): Promise<GatewayToolResult> {
     // A thread started before a rename still shows its agent the old names.
     const resolved = toolsByName.has(name) ? name : currentKoneToolName(name);
-    const result = await dispatch(ctx, resolved, args, scope);
+    const result = await dispatch(ctx, resolved, args, scope, role);
     return toolsByName.get(resolved)?.target === "assistant" ? textOnlyResult(result) : result;
   }
 
@@ -171,6 +184,7 @@ export function createRegistry(
     name: string,
     args: GatewayValue | undefined,
     scope?: GatewayToolScope,
+    role?: GatewayThreadRole,
   ): Promise<GatewayToolResult> {
     const tool = toolsByName.get(name);
     if (!tool) {
@@ -188,6 +202,14 @@ export function createRegistry(
         new GatewayToolError(
           "permission_denied",
           `Tool "${name}" is not available for ${scope} sessions.`,
+        ),
+      );
+    }
+    if (!matchesRole(tool, role)) {
+      return gatewayToolErrorResult(
+        new GatewayToolError(
+          "permission_denied",
+          `Tool "${name}" is for agents, and you are a worker: you were started for one task and cannot start or direct kone agents or workers. Split the task with your provider's own subagents if it needs splitting, or say in your reply what should be handed off.`,
         ),
       );
     }

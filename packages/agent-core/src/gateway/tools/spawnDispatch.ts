@@ -1,6 +1,6 @@
-// One dispatch, however it was asked for. agent_spawn,
-// agent_spawn_preset, agent_delegate and each item of
-// agent_spawn_batch all come down to the same steps — resolve what the item
+// One dispatch, however it was asked for. worker_start,
+// worker_start, agent_delegate and each item of
+// worker_start_batch all come down to the same steps — resolve what the item
 // names into an engine request, open the thread, and record it — so those steps
 // live here once and each tool only maps its own arguments onto an item.
 

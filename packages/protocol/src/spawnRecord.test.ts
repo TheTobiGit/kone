@@ -36,6 +36,15 @@ describe("spawnWhy", () => {
 
 describe("isSpawnToolName", () => {
   it("names only the tools that open threads", () => {
+    expect(isSpawnToolName("worker_start")).toBe(true);
+    expect(isSpawnToolName("worker_start_batch")).toBe(true);
+    expect(isSpawnToolName("agent_delegate")).toBe(true);
+    expect(isSpawnToolName("agent_followup")).toBe(false);
+  });
+
+  it("still reads the names results were stored under before the rename", () => {
+    expect(isSpawnToolName("agent_spawn")).toBe(true);
+    expect(isSpawnToolName("agent_spawn_preset")).toBe(true);
     expect(isSpawnToolName("agent_spawn_batch")).toBe(true);
     expect(isSpawnToolName("agent_ask")).toBe(false);
   });

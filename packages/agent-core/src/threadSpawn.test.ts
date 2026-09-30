@@ -17,7 +17,7 @@ import {
   type SpawnRequest,
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
-import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_SPAWN_DEPTH } from "./types.js";
+import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
 import type {
   InteractionMode,
   ModelDescriptor,
@@ -623,6 +623,22 @@ describe("spawn engine", () => {
     expect(store.lineages.get(result.threadId)?.relationshipToParent).toBe("subagent");
     expect(store.bound.has(result.threadId)).toBe(false);
     expect(dispatcher.started[0].agent).toBeUndefined();
+  });
+
+  test("a worker cannot start anything — the engine refuses even when the tool layer is bypassed", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+    const meta = store.metas.get(CALLER.threadId)!;
+    store.metas.set(CALLER.threadId, {
+      ...meta,
+      lineage: { parentThreadId: "root", relationshipToParent: "subagent", rootThreadId: "root" },
+    });
+
+    await expect(engine.spawn(CALLER, REQUEST)).rejects.toMatchObject({ code: "capability_denied" });
+    await expect(
+      engine.spawn(CALLER, { ...REQUEST, requestId: "r-2", delegateToAgentId: "agent-backend" }),
+    ).rejects.toMatchObject({ code: "capability_denied" });
+    expect(dispatcher.started).toHaveLength(0);
   });
 
   test("a worker's brief is sent as its parent's words, not the user's", async () => {
@@ -1238,7 +1254,7 @@ describe("spawn engine", () => {
     });
     expect(report.limits).toEqual({
       depth: 0,
-      maxDepth: MAX_SPAWN_DEPTH,
+      maxDepth: MAX_DELEGATION_DEPTH,
       remainingChildren: MAX_LIVE_CHILDREN_PER_PARENT,
       remainingAppWide: MAX_LIVE_SPAWNED_THREADS,
     });

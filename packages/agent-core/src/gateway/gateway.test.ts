@@ -315,13 +315,12 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(names).toEqual([
       "scratchpad_read",
       "scratchpad_write",
-      "agent_targets",
-      "agent_spawn",
-      "agent_spawn_preset",
+      "agent_directory",
+      "worker_start",
       "agent_delegate",
-      "agent_spawn_batch",
-      "agent_ask",
-      "agent_cancel",
+      "worker_start_batch",
+      "agent_followup",
+      "agent_withdraw",
       "agent_decline",
       "agent_answer",
       "agent_wait",
@@ -344,7 +343,7 @@ describe("gateway integration (real store + HTTP)", () => {
     const core = await listSet("core");
     const onDemand = await listSet("on-demand");
     expect(onDemand).toEqual([
-      "agent_cancel",
+      "agent_withdraw",
       "agent_decline",
       "agent_answer",
       "agent_read",
@@ -645,13 +644,13 @@ describe("gateway integration (real store + HTTP)", () => {
     });
     const toolList = rpcResult(listRes).tools ?? [];
     const toolNames = toolList.map((t) => t.name);
-    expect(toolNames).toContain("agent_spawn_batch");
-    expect(toolNames).toContain("agent_ask");
+    expect(toolNames).toContain("worker_start_batch");
+    expect(toolNames).toContain("agent_followup");
     expect(toolNames).toContain("agent_read");
 
     const toolMap = new Map(toolList.map((t) => [t.name, t]));
-    expect(toolMap.get("agent_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(toolMap.get("agent_ask")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(toolMap.get("worker_start_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(toolMap.get("agent_followup")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
     expect(toolMap.get("agent_read")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
 
     initSpawnEngine({

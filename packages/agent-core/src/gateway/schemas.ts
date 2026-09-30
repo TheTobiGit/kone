@@ -130,6 +130,15 @@ export interface ToolEntry {
    * no difference.
    */
   onDemand?: boolean;
+  /**
+   * Only agents get this tool — never a worker. A worker is a kone thread
+   * started for one task with no identity of its own; it splits its work with
+   * its provider's native subagents, not by opening more kone threads, so the
+   * tools that start and direct kone agents are neither listed to it nor
+   * callable by it. (Unrelated to `target: "worker"`, which is the older name
+   * for any project-scoped session.)
+   */
+  agentsOnly?: boolean;
   handler(ctx: GatewayToolContext, input: GatewayRecord): Promise<GatewayToolResult>;
 }
 
@@ -199,50 +208,71 @@ export const SpawnTargetsInputSchema = z.object({});
  *  in the thread where the worker was spawned. Never reaches the worker. */
 const SpawnWhySchema = z.string().min(1).max(SPAWN_WHY_MAX_CHARS).optional();
 
-export const SpawnWorkerInputSchema = z.object({
-  /** The child's first turn — the brief it wakes up to. */
-  prompt: z.string().min(1),
-  /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
-  requestId: z.string().min(1).max(200),
-  /** Overrides the prompt-derived working title. */
-  title: z.string().min(1).optional(),
-  why: SpawnWhySchema,
-  /** Where to run. Omitted, the worker inherits this thread's provider and
-   *  model — a custom spawn with no model of its own. */
-  target: z
-    .object({
-      provider: z.enum(PROVIDER_KINDS),
-      model: z.string().min(1).optional(),
-      effort: z.string().min(1).optional(),
-    })
-    .optional(),
-  /** Clamped to the caller's mode — privilege never escalates across a spawn. */
-  mode: z.enum(INTERACTION_MODES).optional(),
+const WorkerTargetSchema = z.object({
+  provider: z.enum(PROVIDER_KINDS),
+  model: z.string().min(1).optional(),
+  effort: z.string().min(1).optional(),
 });
 
-export const SpawnWorkerPresetInputSchema = z.object({
-  /** The preset sub-agent to cut this spawn from — its name or its id. */
-  preset: z.string().min(1).max(200),
-  /** The specific work for this spawn, laid under the preset's standing
-   *  instructions to form the child's opening brief. */
-  task: z.string().min(1),
+const NamedModelSchema = z.object({
+  provider: z.enum(PROVIDER_KINDS),
+  model: z.string().min(1),
+  label: z.string().min(1).optional(),
+});
+
+const WorkerFields = {
+  /** The worker's brief — the whole task, complete on its own. A preset's
+   *  standing instructions are laid over it when `preset` is set. */
+  task: z.string().min(1).optional(),
+  /** `task` under the name it had before workers got a tool of their own
+   *  (agent_spawn); an agent resuming a thread from then may still send it. */
+  prompt: z.string().min(1).optional(),
   /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
   requestId: z.string().min(1).max(200),
   /** Overrides the task-derived working title. */
   title: z.string().min(1).optional(),
   why: SpawnWhySchema,
+  /** A saved worker preset to cut this worker from — its name or its id. */
+  preset: z.string().min(1).max(200).optional(),
+  /** Where a briefed worker runs. Omitted, it inherits this thread's provider
+   *  and model. Not with `preset`, whose own chain places it. */
+  target: WorkerTargetSchema.optional(),
+  /** With `preset`: a model named for this worker only — the user asking for
+   *  this piece of work to run somewhere specific. Beats the preset's chain. */
+  model: NamedModelSchema.optional(),
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
-  /** A model named for this spawn only — the user asking for this piece of
-   *  work to run somewhere specific. Beats the preset's own chain. */
-  model: z
-    .object({
-      provider: z.enum(PROVIDER_KINDS),
-      model: z.string().min(1),
-      label: z.string().min(1).optional(),
-    })
-    .optional(),
-});
+};
+
+const onePlacement = {
+  check: (value: { preset?: string; target?: object }) => !(value.preset && value.target),
+  message: "Set preset or target, not both: a preset's own model chain places its worker.",
+};
+
+const hasBrief = {
+  check: (value: { task?: string; prompt?: string }) => value.task !== undefined || value.prompt !== undefined,
+  message: "task is required: the whole brief the worker wakes up to.",
+};
+
+/** Settle the brief under its one current name. */
+function withTask<T extends { task?: string; prompt?: string }>({
+  prompt,
+  task,
+  ...rest
+}: T): Omit<T, "task" | "prompt"> & { task: string } {
+  return { ...rest, task: task ?? prompt ?? "" };
+}
+
+export const WorkerStartInputSchema = z
+  .object(WorkerFields)
+  .refine(hasBrief.check, { message: hasBrief.message })
+  .refine(onePlacement.check, { message: onePlacement.message })
+  .transform(withTask);
+
+/** Kept for the tests and callers that still name them: a briefed worker and a
+ *  preset worker are one tool now. */
+export const SpawnWorkerInputSchema = WorkerStartInputSchema;
+export const SpawnWorkerPresetInputSchema = WorkerStartInputSchema;
 
 export const DelegateToTeammateInputSchema = z.object({
   /** The project-team agent to hand this work to — its name or its id. */
@@ -267,42 +297,24 @@ export const DelegateToTeammateInputSchema = z.object({
     })
     .optional(),
 });
-export const SpawnBatchItemSchema = z.object({
-  /** Agent-supplied idempotency key scoped to (caller thread, caller turn, item index). */
-  requestId: z.string().min(1).max(200),
-  /** The task prompt or opening brief. */
-  prompt: z.string().min(1),
-  /** Optional working title. */
-  title: z.string().min(1).optional(),
-  why: SpawnWhySchema,
-  /** Direct target provider and model. */
-  target: z
-    .object({
-      provider: z.enum(PROVIDER_KINDS),
-      model: z.string().min(1).optional(),
-      effort: z.string().min(1).optional(),
-    })
-    .optional(),
-  /** Preset sub-agent name or id. */
-  preset: z.string().min(1).max(200).optional(),
-  /** Project teammate name or id. */
-  agent: z.string().min(1).max(200).optional(),
-  /** Clamped to caller mode. */
-  mode: z.enum(INTERACTION_MODES).optional(),
-  /** A model named for this item only — beats a preset's or teammate's chain. */
-  model: z
-    .object({
-      provider: z.enum(PROVIDER_KINDS),
-      model: z.string().min(1),
-      label: z.string().min(1).optional(),
-    })
-    .optional(),
+export const WorkerBatchItemSchema = z
+  .object({
+    ...WorkerFields,
+    /** Not a worker field: a teammate is delegated to one at a time, with
+     *  agent_delegate. Read only so the refusal can say so. */
+    agent: z.string().min(1).max(200).optional(),
+  })
+  .refine(hasBrief.check, { message: hasBrief.message })
+  .refine(onePlacement.check, { message: onePlacement.message })
+  .transform(withTask);
+
+export const WorkerStartBatchInputSchema = z.object({
+  /** Workers to start concurrently (up to 16). */
+  items: z.array(WorkerBatchItemSchema).min(1).max(16),
 });
 
-export const SpawnBatchInputSchema = z.object({
-  /** Batch of tasks to spawn concurrently (up to 16). */
-  items: z.array(SpawnBatchItemSchema).min(1).max(16),
-});
+export const SpawnBatchItemSchema = WorkerBatchItemSchema;
+export const SpawnBatchInputSchema = WorkerStartBatchInputSchema;
 
 export const WaitForResponsesInputSchema = z.object({
   threadIds: z.array(z.string().min(1)).min(1).max(12),
@@ -323,7 +335,7 @@ export const ReadResponseInputSchema = z.object({
 });
 
 export const ContinueThreadInputSchema = z.object({
-  /** The child thread to post the follow-up into — one agent_ask
+  /** The child thread to post the follow-up into — one agent_followup
    *  returned earlier. Must be in the caller's own spawned subtree. */
   threadId: z.string().min(1),
   /** The follow-up: a complete, self-contained ask that continues the thread's
@@ -372,52 +384,49 @@ const SPAWN_WHY_JSON_SCHEMA = {
     "One short clause finishing \"…because\", in your own voice; the user reads it where you handed the work off. e.g. \"the suite takes ten minutes and I can keep refactoring meanwhile\".",
 } satisfies GatewayRecord;
 
-export const SPAWN_WORKER_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    prompt: { type: "string" },
-    requestId: { type: "string" },
-    title: { type: "string" },
-    why: SPAWN_WHY_JSON_SCHEMA,
-    target: {
-      type: "object",
-      properties: {
-        provider: { type: "string", enum: [...PROVIDER_KINDS] },
-        model: { type: "string" },
-        effort: { type: "string" },
-      },
-      required: ["provider"],
-    },
-    mode: { type: "string", enum: [...INTERACTION_MODES] },
+const WORKER_ITEM_JSON_PROPERTIES = {
+  task: {
+    type: "string",
+    description: "The whole task, complete on its own: the goal, the paths, the constraints, and what done looks like.",
   },
-  required: ["prompt", "requestId"],
+  requestId: { type: "string" },
+  title: { type: "string" },
+  why: SPAWN_WHY_JSON_SCHEMA,
+  preset: {
+    type: "string",
+    description: "A saved worker preset's name or id, as agent_directory lists it; its standing instructions and model chain apply.",
+  },
+  target: {
+    type: "object",
+    description: "Where to run a worker you brief yourself. Omit to run on your own provider and model. Not with preset.",
+    properties: {
+      provider: { type: "string", enum: [...PROVIDER_KINDS] },
+      model: { type: "string" },
+      effort: { type: "string" },
+    },
+    required: ["provider"],
+  },
+  model: {
+    type: "object",
+    description: "With preset only, and only when the user asked for a specific model.",
+    properties: {
+      provider: { type: "string", enum: [...PROVIDER_KINDS] },
+      model: { type: "string" },
+      label: { type: "string" },
+    },
+    required: ["provider", "model"],
+  },
+  mode: { type: "string", enum: [...INTERACTION_MODES] },
 } satisfies GatewayRecord;
 
-export const SPAWN_WORKER_PRESET_JSON_SCHEMA = {
+export const WORKER_START_JSON_SCHEMA = {
   type: "object",
-  properties: {
-    preset: {
-      type: "string",
-      description:
-        "Preset name or id, as agent_targets lists it; a name that matches none is refused.",
-    },
-    task: { type: "string" },
-    requestId: { type: "string" },
-    title: { type: "string" },
-    why: SPAWN_WHY_JSON_SCHEMA,
-    mode: { type: "string", enum: [...INTERACTION_MODES] },
-    model: {
-      type: "object",
-      properties: {
-        provider: { type: "string", enum: [...PROVIDER_KINDS] },
-        model: { type: "string" },
-        label: { type: "string" },
-      },
-      required: ["provider", "model"],
-    },
-  },
-  required: ["preset", "task", "requestId"],
+  properties: WORKER_ITEM_JSON_PROPERTIES,
+  required: ["task", "requestId"],
 } satisfies GatewayRecord;
+
+export const SPAWN_WORKER_JSON_SCHEMA = WORKER_START_JSON_SCHEMA;
+export const SPAWN_WORKER_PRESET_JSON_SCHEMA = WORKER_START_JSON_SCHEMA;
 
 export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
   type: "object",
@@ -425,7 +434,7 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
     agent: {
       type: "string",
       description:
-        "Teammate name or id on this project's team, as agent_targets lists it; anyone else is refused.",
+        "Teammate name or id on this project's team, as agent_directory lists it; anyone else is refused.",
     },
     task: { type: "string" },
     requestId: { type: "string" },
@@ -486,46 +495,22 @@ export const CONTINUE_THREAD_JSON_SCHEMA = {
   },
   required: ["threadId", "message"],
 } satisfies GatewayRecord;
-export const SPAWN_BATCH_JSON_SCHEMA = {
+export const WORKER_START_BATCH_JSON_SCHEMA = {
   type: "object",
   properties: {
     items: {
       type: "array",
       items: {
         type: "object",
-        properties: {
-          requestId: { type: "string" },
-          prompt: { type: "string" },
-          title: { type: "string" },
-          why: SPAWN_WHY_JSON_SCHEMA,
-          target: {
-            type: "object",
-            properties: {
-              provider: { type: "string", enum: [...PROVIDER_KINDS] },
-              model: { type: "string" },
-              effort: { type: "string" },
-            },
-            required: ["provider"],
-          },
-          preset: { type: "string" },
-          agent: { type: "string" },
-          mode: { type: "string", enum: [...INTERACTION_MODES] },
-          model: {
-            type: "object",
-            properties: {
-              provider: { type: "string", enum: [...PROVIDER_KINDS] },
-              model: { type: "string" },
-              label: { type: "string" },
-            },
-            required: ["provider", "model"],
-          },
-        },
-        required: ["requestId", "prompt"],
+        properties: WORKER_ITEM_JSON_PROPERTIES,
+        required: ["task", "requestId"],
       },
     },
   },
   required: ["items"],
 } satisfies GatewayRecord;
+
+export const SPAWN_BATCH_JSON_SCHEMA = WORKER_START_BATCH_JSON_SCHEMA;
 
 export const CANCEL_WORKER_JSON_SCHEMA = {
   type: "object",
@@ -1400,7 +1385,7 @@ export const CreateSubagentPresetInputSchema = z.object({
     .string()
     .min(1)
     .max(64)
-    .describe("What the preset is called. This is also how agent_spawn_preset refers to it."),
+    .describe("What the preset is called. This is also how worker_start refers to it (preset)."),
   instructions: z
     .string()
     .max(4000)
@@ -1420,7 +1405,7 @@ export const CREATE_SUBAGENT_PRESET_JSON_SCHEMA = {
     name: {
       type: "string",
       description:
-        "What the preset is called. This is also how agent_spawn_preset refers to it.",
+        "What the preset is called. This is also how worker_start refers to it (preset).",
     },
     instructions: {
       type: "string",

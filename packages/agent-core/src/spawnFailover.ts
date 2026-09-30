@@ -33,6 +33,8 @@ export interface FallbackAdmissionCounts {
   parentMode: InteractionMode;
   parentEffort: string | undefined;
   parentDepth: number;
+  parentRole: "agent" | "worker";
+  childKind: "agent" | "worker";
   liveChildrenOfParent: number;
   liveSpawnedTotal: number;
 }
@@ -65,6 +67,8 @@ export class SpawnFailoverRunner {
         parentMode: counts.parentMode,
         parentEffort: counts.parentEffort,
         parentDepth: counts.parentDepth,
+        parentRole: counts.parentRole,
+        childKind: counts.childKind,
         liveChildrenOfParent: counts.liveChildrenOfParent,
         liveSpawnedTotal: counts.liveSpawnedTotal,
         providerStatus: providerStatusOf(surface.statuses, candidate.provider),

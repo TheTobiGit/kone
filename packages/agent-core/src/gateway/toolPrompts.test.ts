@@ -93,9 +93,18 @@ describe("gateway tool prompts", () => {
 
   // The scratchpad is the user's notes, and agents treated it as their own
   // memory when the prose said it was. No vocabulary from before kone agents.
+  test("a worker session is told it is a worker, and an agent session that it is an agent", () => {
+    const tools = createRegistry(TOOLS).listToolPrompts();
+    expect(renderKoneHostContext(tools, "worker", { role: "worker" })).toContain("This session is a kone worker");
+    expect(renderKoneHostContext(tools, "worker", { role: "agent" })).toContain("This session is a kone agent");
+    expect(renderKoneHostContext(tools, "worker")).toContain("This session is a kone agent");
+  });
+
   test("the rendered context uses kone-agent vocabulary", () => {
     const block = renderKoneHostContext(createRegistry(TOOLS).listToolPrompts());
-    for (const stale of [/\bworkers?\b/i, /\bpeers?\b/i, /sidebar/i, /\bboard\b/i, /memory/i]) {
+    // "worker" is not on the list: it came back as a role of its own — a
+    // thread started for one task — not as another word for a kone agent.
+    for (const stale of [/\bpeers?\b/i, /sidebar/i, /\bboard\b/i, /memory/i]) {
       expect(block).not.toMatch(stale);
     }
   });

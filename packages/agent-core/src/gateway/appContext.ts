@@ -38,7 +38,7 @@ import { KONE_ON_DEMAND_MCP_SERVER_NAME } from "./injection.js";
 export interface KoneContextOptions {
   /** The session's gateway grant. Absent means no `kone_*` tools were installed,
    *  and no host-context block is delivered at all. */
-  gateway?: Pick<GatewayConnection, "tools" | "scope">;
+  gateway?: Pick<GatewayConnection, "tools" | "scope" | "role">;
   /** Whose name is on the thread. Absent for a guest, which is told nothing. */
   agent?: AgentPersona;
   /** Session role: worker agent on a codebase or global app assistant. */
@@ -50,13 +50,32 @@ export interface KoneContextOptions {
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-09-29.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-09-30.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
+const KONE_APP_LINE =
+  "You are running inside kone, a desktop app where the user works with coding agents across their projects. The studio is where the work happens: each project is a row of panes (agent conversations, terminals, the project's scratchpad). The inbox lists every conversation by what it needs from the user, and the bench, still to come, queues jobs the user put down to run one at a time.";
+
+const KONE_GATEWAY_LINE =
+  "The `kone` MCP server is kone's app gateway. When one of its tools fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__worker_start`); the semantics are the same.";
+
+const SENDERS_LINE =
+  "Not every message in this conversation is from the user. One another agent wrote arrives under a <from_agent> header naming it and how it relates to you; one kone itself wrote arrives under <kone_notice>. Anything without a header is the user.";
+
 const WORKER_HOST_CONTEXT_PREAMBLE = [
-  "You are running inside kone, a desktop app where the user works with coding agents across their projects. The studio is where the work happens: each project is a row of panes (agent conversations, terminals, the project's scratchpad). The inbox lists every conversation by what it needs from the user, and the bench, still to come, queues jobs the user put down to run one at a time.",
-  "This session is a kone agent: a real conversation the user can see and open, which outlives the turn that started it, and which the user and other agents can message. The agents you start, the presets the user saved, the teammates on a project's team and the user's own conversations are all kone agents. A provider's built-in subagent (Claude Code's `Agent` tool, for one) is not: it runs hidden inside your own turn.",
-  "The `kone` MCP server is kone's app gateway. When one of its tools fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__agent_spawn`); the semantics are the same.",
+  KONE_APP_LINE,
+  "This session is a kone agent: a real conversation the user can see and open, which outlives the turn that started it, and which the user and other agents can message. Agents have an identity and take on large pieces of work; they hand parts of it to other agents (a teammate on the project's team) or to workers, which do one short task each and report back. A provider's built-in subagent (Claude Code's `Agent` tool, for one) is neither: it runs hidden inside your own turn.",
+  SENDERS_LINE,
+  KONE_GATEWAY_LINE,
+];
+
+/** For a session started as a worker. (WORKER_HOST_CONTEXT_PREAMBLE is the
+ *  older name for any project session, kept for the scope it is keyed on.) */
+const TASK_WORKER_HOST_CONTEXT_PREAMBLE = [
+  KONE_APP_LINE,
+  "This session is a kone worker: started by an agent for one short task. Do that task and report back — your final reply is the report the agent collects. You cannot start kone agents or workers; if the task needs splitting, use your provider's own subagents, and if part of it should go to someone else, say so in your report.",
+  SENDERS_LINE,
+  KONE_GATEWAY_LINE,
 ];
 
 const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
@@ -92,10 +111,15 @@ const TOOL_SEARCH_NOTE = `Tools marked (on demand) are served by the \`${KONE_ON
 export function renderKoneHostContext(
   tools: readonly GatewayToolPrompt[],
   scope: "worker" | "assistant" = "worker",
-  options: { toolSearch?: boolean } = {},
+  options: { toolSearch?: boolean; role?: "agent" | "worker" } = {},
 ): string {
   if (!tools?.length) return "";
-  const preamble = scope === "assistant" ? ASSISTANT_HOST_CONTEXT_PREAMBLE : WORKER_HOST_CONTEXT_PREAMBLE;
+  const preamble =
+    scope === "assistant"
+      ? ASSISTANT_HOST_CONTEXT_PREAMBLE
+      : options.role === "worker"
+        ? TASK_WORKER_HOST_CONTEXT_PREAMBLE
+        : WORKER_HOST_CONTEXT_PREAMBLE;
   const deferred = options.toolSearch === true && tools.some((tool) => tool.onDemand);
   const index = tools.map((tool) => {
     const approval = tool.needsApproval ? " (stops for the user's approval)" : "";
@@ -231,7 +255,10 @@ export function buildKoneContext(options: KoneContextOptions): KoneContextBlocks
   const scope = options.scope ?? options.gateway?.scope ?? "worker";
   return {
     hostContext: options.gateway
-      ? renderKoneHostContext(options.gateway.tools, scope, { toolSearch: options.toolSearch })
+      ? renderKoneHostContext(options.gateway.tools, scope, {
+          toolSearch: options.toolSearch,
+          role: options.gateway.role,
+        })
       : "",
     identity: renderAgentIdentity(options.agent),
   };

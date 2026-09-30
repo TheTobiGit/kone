@@ -258,13 +258,12 @@ describe("spawn gateway tools", () => {
       tools.map((t) => [t.name, { permission: t.permission, requiresActiveTurn: t.requiresActiveTurn }]),
     );
     expect(flags).toEqual({
-      agent_targets: { permission: "allow", requiresActiveTurn: false },
-      agent_spawn: { permission: "allow", requiresActiveTurn: true },
-      agent_spawn_preset: { permission: "allow", requiresActiveTurn: true },
+      agent_directory: { permission: "allow", requiresActiveTurn: false },
+      worker_start: { permission: "allow", requiresActiveTurn: true },
       agent_delegate: { permission: "allow", requiresActiveTurn: true },
-      agent_spawn_batch: { permission: "allow", requiresActiveTurn: true },
-      agent_ask: { permission: "allow", requiresActiveTurn: true },
-      agent_cancel: { permission: "allow", requiresActiveTurn: true },
+      worker_start_batch: { permission: "allow", requiresActiveTurn: true },
+      agent_followup: { permission: "allow", requiresActiveTurn: true },
+      agent_withdraw: { permission: "allow", requiresActiveTurn: true },
       agent_decline: { permission: "allow", requiresActiveTurn: true },
       agent_answer: { permission: "allow", requiresActiveTurn: true },
       agent_wait: { permission: "allow", requiresActiveTurn: false },
@@ -272,29 +271,55 @@ describe("spawn gateway tools", () => {
     });
   });
 
+  test("worker_start takes a preset or a target, never both", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "worker_start", {
+      task: "Review the diff.",
+      requestId: "r-both",
+      preset: "Reviewer",
+      target: { provider: "codex" },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({ error: { code: "invalid_input" } });
+  });
+
+  test("every hand-off tool is for agents only", () => {
+    const tools = createSpawnTools({ store: makeStore() });
+    expect(tools.filter((t) => t.agentsOnly !== true).map((t) => t.name)).toEqual([]);
+  });
+
+  test("a worker is listed none of them, and is refused them by any name", async () => {
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    expect(registry.listTools(undefined, "all", "worker")).toEqual([]);
+    expect(registry.listToolPrompts(undefined, "worker")).toEqual([]);
+    const refused = await registry.call(ctx, "agent_spawn", { prompt: "go", requestId: "r" }, undefined, "worker");
+    expect(refused.isError).toBe(true);
+    expect(refused.structuredContent).toMatchObject({ error: { code: "permission_denied" } });
+  });
+
   test("tools/list advertises every tool with its JSON schema", () => {
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
     const byName = Object.fromEntries(registry.listTools().map((t) => [t.name, t.inputSchema]));
     expect(Object.keys(byName)).toEqual([
-      "agent_targets",
-      "agent_spawn",
-      "agent_spawn_preset",
+      "agent_directory",
+      "worker_start",
       "agent_delegate",
-      "agent_spawn_batch",
-      "agent_ask",
-      "agent_cancel",
+      "worker_start_batch",
+      "agent_followup",
+      "agent_withdraw",
       "agent_decline",
       "agent_answer",
       "agent_wait",
       "agent_read",
     ]);
-    expect(byName["agent_targets"]).toEqual(SPAWN_TARGETS_JSON_SCHEMA);
-    expect(byName["agent_spawn"]).toEqual(SPAWN_WORKER_JSON_SCHEMA);
-    expect(byName["agent_spawn_preset"]).toEqual(SPAWN_WORKER_PRESET_JSON_SCHEMA);
+    expect(byName["agent_directory"]).toEqual(SPAWN_TARGETS_JSON_SCHEMA);
+    expect(byName["worker_start"]).toEqual(SPAWN_WORKER_JSON_SCHEMA);
+    expect(byName["worker_start"]).toEqual(SPAWN_WORKER_PRESET_JSON_SCHEMA);
     expect(byName["agent_delegate"]).toEqual(DELEGATE_TO_TEAMMATE_JSON_SCHEMA);
-    expect(byName["agent_spawn_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(byName["agent_ask"]).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
-    expect(byName["agent_cancel"]).toEqual(CANCEL_WORKER_JSON_SCHEMA);
+    expect(byName["worker_start_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(byName["agent_followup"]).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(byName["agent_withdraw"]).toEqual(CANCEL_WORKER_JSON_SCHEMA);
     expect(byName["agent_decline"]).toEqual(DECLINE_CHILD_GATE_JSON_SCHEMA);
     expect(byName["agent_answer"]).toEqual(ANSWER_CHILD_INPUT_JSON_SCHEMA);
     expect(byName["agent_wait"]).toEqual(WAIT_FOR_RESPONSES_JSON_SCHEMA);
@@ -1756,7 +1781,7 @@ describe("agent_spawn_batch", () => {
     });
   });
 
-  test("spawns batch items delegating to teammates carrying persona and agent binding", async () => {
+  test("a teammate in a worker batch is refused on its own item — delegation is not a worker start", async () => {
     const capturedRequests: FakeSpawnRequest[] = [];
     currentEngine = makeEngine({
       targets: async () => targetsReport([{ provider: "codex", models: ["gpt-5"] }]),
@@ -1766,7 +1791,7 @@ describe("agent_spawn_batch", () => {
           requestId: request.requestId,
           threadId: `child-${request.requestId}`,
           parentThreadId: caller.threadId,
-          title: request.title ?? "Delegation Task",
+          title: request.title ?? "Task",
           provider: request.target.provider,
           model: request.target.model,
           mode: "ask",
@@ -1774,54 +1799,19 @@ describe("agent_spawn_batch", () => {
         };
       },
     });
-    const backendAgent = makeAgent({
-      agentId: "agent-backend",
-      name: "Backend",
-      instructions: "You own the API layer.",
-      model: { provider: "codex", model: "gpt-5" },
-    });
+    const backendAgent = makeAgent({ agentId: "agent-backend", name: "Backend" });
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backendAgent]) }));
-    const res = await registry.call(ctx, "agent_spawn_batch", {
+    const res = await registry.call(ctx, "worker_start_batch", {
       items: [
-        {
-          requestId: "op-delegate-1",
-          prompt: "Build the /users endpoint.",
-          agent: "Backend",
-          title: "Build /users",
-        },
+        { requestId: "op-1", task: "Build the /users endpoint.", agent: "Backend" },
+        { requestId: "op-2", task: "Run the test suite." },
       ],
     });
     expect(res.isError).toBe(false);
-    expect(capturedRequests).toHaveLength(1);
-    expect(capturedRequests[0]).toEqual({
-      requestId: "op-delegate-1",
-      prompt: "Build the /users endpoint.",
-      title: "Build /users",
-      target: { provider: "codex", model: "gpt-5" },
-      mode: undefined,
-      delegateToAgentId: "agent-backend",
-      persona: { name: "Backend", instructions: "You own the API layer." },
-    });
-    expect(batchSummary(res)).toBe('Spawned 1 thread: "Build /users" (child-op-delegate-1).');
-    expect(res.structuredContent).toEqual({
-      batch: {
-        total: 1,
-        succeeded: 1,
-        failed: 0,
-        threads: [
-          {
-            index: 0,
-            ok: true,
-            threadId: "child-op-delegate-1",
-            title: "Build /users",
-            provider: "codex",
-            model: "gpt-5",
-            agent: "Backend",
-            kind: "delegation",
-          },
-        ],
-      },
-    });
+    // Only the worker opened; the teammate was pointed at agent_delegate.
+    expect(capturedRequests.map((r) => r.requestId)).toEqual(["op-2"]);
+    expect(batchSummary(res)).toContain('"Backend" is a teammate, not a worker');
+    expect(batchSummary(res)).toContain("agent_delegate");
   });
 
   test("handles mixed batch with partial failures formatting summary and structuredContent", async () => {
@@ -1858,7 +1848,7 @@ describe("agent_spawn_batch", () => {
     });
     expect(res.isError).toBe(false);
     expect(batchSummary(res)).toBe(
-      'Spawned 1 thread: "Valid Task" (child-op-1). 1 spawn failed: item 1: No agent "Backend" on this project\'s team.',
+      'Spawned 1 thread: "Valid Task" (child-op-1). 1 spawn failed: item 1: "Backend" is a teammate, not a worker — hand it work with agent_delegate.',
     );
     expect(res.structuredContent).toEqual({
       batch: {
@@ -1878,7 +1868,7 @@ describe("agent_spawn_batch", () => {
           {
             index: 1,
             ok: false,
-            error: 'No agent "Backend" on this project\'s team.',
+            error: '"Backend" is a teammate, not a worker — hand it work with agent_delegate',
           },
         ],
       },
@@ -1904,7 +1894,7 @@ describe("agent_spawn_batch", () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0]?.text).toBe(
-      '2 spawn failed: item 0: No preset sub-agent "UnknownPreset"; item 1: No agent "UnknownAgent" on this project\'s team.',
+      '2 spawn failed: item 0: No preset sub-agent "UnknownPreset"; item 1: "UnknownAgent" is a teammate, not a worker — hand it work with agent_delegate.',
     );
     expect(res.structuredContent).toEqual({
       batch: {
@@ -1920,7 +1910,7 @@ describe("agent_spawn_batch", () => {
           {
             index: 1,
             ok: false,
-            error: 'No agent "UnknownAgent" on this project\'s team.',
+            error: '"UnknownAgent" is a teammate, not a worker — hand it work with agent_delegate',
           },
         ],
       },
@@ -2068,19 +2058,19 @@ describe("agent_delegate", () => {
     const captured: FakeSpawnRequest[] = [];
     currentEngine = delegatingEngine(captured);
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backend]) }));
-    const res = await registry.call(ctx, "agent_spawn_batch", {
+    const res = await registry.call(ctx, "worker_start_batch", {
       items: [
-        { requestId: "a", prompt: "Write the tests.", title: "Tests", why: "it's mechanical" },
-        { requestId: "b", prompt: "Build it.", title: "Build", agent: "Backend", why: "it's their layer" },
-        { requestId: "c", prompt: "Nope.", agent: "Frontend" },
+        { requestId: "a", task: "Write the tests.", title: "Tests", why: "it's mechanical" },
+        { requestId: "b", task: "Run the linter.", title: "Lint", why: "it's quick" },
+        { requestId: "c", task: "Nope.", agent: "Frontend" },
       ],
     });
     expect(
       parseSpawnRecords(res.content[0]?.text).map((r) => [r.threadId, r.agent ?? null, r.why]),
     ).toEqual([
       ["child-a", null, "it's mechanical"],
-      ["child-b", "Backend", "it's their layer"],
+      ["child-b", null, "it's quick"],
     ]);
-    expect(batchSummary(res)).toContain('1 spawn failed: item 2: No agent "Frontend"');
+    expect(batchSummary(res)).toContain('1 spawn failed: item 2: "Frontend" is a teammate, not a worker');
   });
 });
