@@ -20,6 +20,7 @@ import {
 } from "./spawnControl.js";
 import { SpawnFailoverRunner, type FallbackAdmissionCounts } from "./spawnFailover.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
+import { getHandOffLifecycle } from "./handOffLifecycle.js";
 import {
   isSpawnedRelationship,
   MAX_LIVE_CHILDREN_PER_PARENT,
@@ -518,6 +519,14 @@ class SpawnEngineImpl implements SpawnEngine {
     const parent = this.store.threadMeta(caller.threadId);
     if (!parent) {
       throw new SpawnError("not_found", `No thread ${caller.threadId} to spawn from.`);
+    }
+    // A decision turn is for deciding what happens to work already handed
+    // off, after a stop: starting more in it would undo the stop.
+    if (getHandOffLifecycle()?.isDeciding(caller.threadId)) {
+      throw new SpawnError(
+        "capability_denied",
+        "You were just stopped: decide what happens to the agents working for you with agent_keep_or_stop, and start nothing new in this turn.",
+      );
     }
 
     const fingerprint = fingerprintOf([

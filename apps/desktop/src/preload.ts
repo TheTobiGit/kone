@@ -520,6 +520,10 @@ const api = {
       ipcRenderer.invoke("agent:fork-thread-at-block", input),
     interrupt: (threadId: string): Promise<void> =>
       ipcRenderer.invoke("agent:interrupt", threadId),
+    // Stop a thread and everything working under it, asking no decisions —
+    // the "Stop everything" choice next to an ordinary stop.
+    stopChain: (threadId: string): Promise<string[]> =>
+      ipcRenderer.invoke("agent:stop-chain", threadId),
     stopSession: (threadId: string): Promise<void> =>
       ipcRenderer.invoke("agent:stop-session", threadId),
     respond: (

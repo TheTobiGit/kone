@@ -2857,6 +2857,8 @@ export type KoneAgentApi = {
    *  resolves, so the caller can open the fork onto a live turn. */
   forkThreadAtBlock: (input: ForkThreadAtBlockInput) => Promise<ForkThreadAtBlockResult>;
   interrupt: (threadId: string) => Promise<void>;
+  /** Stop a thread and everything working under it, asking no decisions. */
+  stopChain?: (threadId: string) => Promise<string[]>;
   stopSession: (threadId: string) => Promise<void>;
   respond: (
     threadId: string,
