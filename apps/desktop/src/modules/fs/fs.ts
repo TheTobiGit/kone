@@ -1,4 +1,5 @@
-import { open, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -208,6 +209,8 @@ const TREE_HIDDEN = new Set([
 
 export const MAX_DIR_ENTRIES = 2_000;
 export const FILE_TEXT_CAP = 512 * 1024;
+/** Largest write accepted by writeProjectFile (1 MiB of UTF-8). */
+export const MAX_WRITE_SIZE = 1024 * 1024;
 /** How much of the head is probed for a NUL byte to call a file binary. */
 const BINARY_PROBE = 8 * 1024;
 
@@ -302,14 +305,53 @@ export async function readProjectFile(root: string, rel: string): Promise<Projec
   }
 }
 
-/** Write a project file's text. Rejects a path outside the project. */
+/** Write a project file's text. The parent directory is resolved inside the
+ *  project (so `..` and absolute paths are refused), and the content lands in
+ *  a fresh temp file in the same directory before an atomic rename — so a
+ *  concurrent reader never sees a truncated file. A symlink already sitting
+ *  at the target is refused outright rather than followed, as is a target
+ *  that resolves to a directory. */
 export async function writeProjectFile(root: string, rel: string, content: string): Promise<void> {
+  // No explicit type guards here: a non-string `rel` fails in path.basename
+  // and a non-string `content` fails in Buffer.byteLength, both with a
+  // TypeError that rejects the IPC call — the same duck-typing `listDir`
+  // relies on above.
+  if (Buffer.byteLength(content, "utf8") > MAX_WRITE_SIZE) {
+    throw new Error("Content exceeds the write limit.");
+  }
+  // path.basename never returns a separator, so only the empty, dot and NUL
+  // cases can fire here; traversal and nesting are handled by resolveInside
+  // below, and a bare directory resolves to itself and is refused by the
+  // lstat check. Backslashes are deliberately allowed: on POSIX they are
+  // ordinary filename characters that readProjectFile already accepts.
+  const filename = path.basename(rel);
+  if (!filename || filename === "." || filename === ".." || filename.includes("\0")) {
+    throw new Error("Path is outside the project.");
+  }
   const dir = normalizeRel(path.dirname(rel));
   const absDir = await resolveInside(root, dir || ".");
   if (!absDir) throw new Error("Path is outside the project.");
-  const filename = path.basename(rel);
   const target = path.join(absDir, filename);
-  await writeFile(target, content, "utf8");
+  // A missing target is the normal new-file case, so a failed lstat means
+  // null rather than an error to discriminate by message text.
+  const existing = await lstat(target).catch(() => null);
+  // A symlink in the final component would otherwise be followed by the
+  // write and land outside the project — refuse it before touching disk.
+  if (existing?.isSymbolicLink()) throw new Error("Path is outside the project.");
+  if (existing?.isDirectory()) throw new Error(`Not a file: ${rel}`);
+  const tmp = path.join(absDir, `.kone-write-${randomUUID()}.tmp`);
+  try {
+    // A rename replaces the inode, so hand the temp file the target's mode
+    // first — otherwise every save widens a chmod 600 file to world-readable.
+    if (existing) {
+      await writeFile(tmp, content, { encoding: "utf8", mode: existing.mode & 0o777 });
+    } else {
+      await writeFile(tmp, content, "utf8");
+    }
+    await rename(tmp, target);
+  } finally {
+    await rm(tmp, { force: true });
+  }
 }
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
