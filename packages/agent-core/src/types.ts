@@ -1072,11 +1072,15 @@ export type BlockSource = "native" | "fork-import";
 //
 // Mirror any change in apps/web/app/types/desktop.d.ts.
 
-/** How deep the spawn tree may go. The root thread is depth 0, a thread it
- *  spawns is depth 1, that thread's children are depth 2 — and depth-2 threads
- *  may not spawn. Two levels is enough for an orchestrator-and-workers shape
- *  while keeping a runaway agent's blast radius finite. */
-export const MAX_SPAWN_DEPTH = 2;
+/** How long a chain of agents handing work to agents may get. The root thread
+ *  is depth 0, an agent it delegates to (or contracts) is depth 1, and one that
+ *  agent delegates to is depth 2 — which may not hand work to another agent.
+ *
+ *  Workers are outside this count: any agent may start workers, at any depth,
+ *  because a worker can never start anything itself (spawnGuards refuses it) —
+ *  so a worker is always a leaf, one level below its agent, and the tree's
+ *  depth is bounded by this constant plus one. */
+export const MAX_DELEGATION_DEPTH = 2;
 
 /** How many spawned children one parent thread may have running at once. */
 export const MAX_LIVE_CHILDREN_PER_PARENT = 12;
@@ -1090,7 +1094,7 @@ export const MAX_LIVE_SPAWNED_THREADS = 32;
  *  parent's when the parent is on the same provider. */
 export type SpawnTarget = {
   provider: ProviderKind;
-  /** ModelDescriptor.id from `agent_targets`. A model that is not in the
+  /** ModelDescriptor.id from `agent_directory`. A model that is not in the
    *  provider's discovered catalog is rejected (with the catalog), never
    *  silently swapped — the model is a deliberate choice. */
   model?: string;
@@ -1427,6 +1431,9 @@ export type GatewayConnection = {
   tools: readonly GatewayToolPrompt[];
   /** Session scope: worker on a codebase or global app assistant. */
   scope?: "worker" | "assistant";
+  /** What a project session is to the agents around it: an agent (the
+   *  default) or a worker, started for one task, which directs nobody. */
+  role?: "agent" | "worker";
 };
 
 /** Tags the transport an event came from — for debugging + provider-specific
@@ -1589,7 +1596,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (agent_spawn), and every subsequent
+  // An agent spawned a child thread (worker_start), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value (the same
@@ -1674,7 +1681,7 @@ export type RuntimeEvent =
       removeFromTeams?: string[];
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `agent_spawn_preset` cuts a spawn from. Unlike the
+  // standing definitions `worker_start` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (BaseEvent & {

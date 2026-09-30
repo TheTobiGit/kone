@@ -25,10 +25,19 @@ describe("kone tool names", () => {
 
   // Threads from the worker/peer generation keep working after the move to agent_*.
   test("the worker and peer names reach their agent tools", () => {
-    expect(currentKoneToolName("worker_spawn")).toBe("agent_spawn");
-    expect(currentKoneToolName("worker_continue")).toBe("agent_ask");
+    expect(currentKoneToolName("worker_spawn")).toBe("worker_start");
+    expect(currentKoneToolName("worker_continue")).toBe("agent_followup");
     expect(currentKoneToolName("peer_send")).toBe("agent_notify");
     expect(currentKoneToolName("peer_inbox")).toBe("agent_inbox");
+  });
+
+  test("the agent-only generation reaches the worker and follow-up tools", () => {
+    expect(currentKoneToolName("agent_spawn")).toBe("worker_start");
+    expect(currentKoneToolName("agent_spawn_preset")).toBe("worker_start");
+    expect(currentKoneToolName("agent_spawn_batch")).toBe("worker_start_batch");
+    expect(currentKoneToolName("agent_targets")).toBe("agent_directory");
+    expect(currentKoneToolName("agent_ask")).toBe("agent_followup");
+    expect(currentKoneToolName("agent_cancel")).toBe("agent_withdraw");
   });
 
   test("a current name passes through unchanged", () => {

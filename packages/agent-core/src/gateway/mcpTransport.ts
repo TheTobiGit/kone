@@ -18,7 +18,7 @@ import type { ProviderKind } from "../types.js";
 import type { GatewayCredentials } from "./credentials.js";
 import type { InFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
-import type { GatewayRegistry, GatewayToolSet } from "./registry.js";
+import type { GatewayRegistry, GatewayThreadRole, GatewayToolSet } from "./registry.js";
 import type { GatewayRecord, GatewayValue } from "./schemas.js";
 
 /** The store surface the transport needs — structural, so unit tests can
@@ -26,7 +26,14 @@ import type { GatewayRecord, GatewayValue } from "./schemas.js";
 export type GatewayTransportStore = Pick<
   ConversationStore,
   "threadProjectPath" | "threadWorkspace"
->;
+> &
+  Partial<Pick<ConversationStore, "threadLineage">>;
+
+/** A project thread's role: a worker when it was started as one — the
+ *  `"subagent"` lineage edge — and an agent otherwise. */
+export function threadRoleOf(store: Partial<Pick<ConversationStore, "threadLineage">>, threadId: string): GatewayThreadRole {
+  return store.threadLineage?.(threadId)?.relationshipToParent === "subagent" ? "worker" : "agent";
+}
 
 export const MCP_DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = new Set(["2025-06-18", "2025-03-26", "2024-11-05"]);
@@ -221,12 +228,13 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         return jsonRpcResult(request.id, {});
       case "tools/list": {
         const scope = ctx.isAssistant ? "assistant" : "worker";
+        const role = threadRoleOf(input.store, ctx.threadId);
         // SAFETY: a tool's input schema is plain JSON by construction — the
         // registry types it as a record of unknown values only because tool
         // declarations arrive from many modules; here it crosses into the
         // JSON-RPC envelope that is serialized verbatim, where the concrete
         // gateway value type applies.
-        const tools = input.registry.listTools(scope, ctx.toolSet) as ReadonlyArray<{
+        const tools = input.registry.listTools(scope, ctx.toolSet, role) as ReadonlyArray<{
           name: string;
           description: string;
           inputSchema: GatewayRecord;
@@ -248,7 +256,8 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
           signal: ctx.signal,
         };
         const scope = ctx.isAssistant ? "assistant" : "worker";
-        const result = await input.registry.call(toolCtx, name, request.params.arguments, scope);
+        const role = threadRoleOf(input.store, ctx.threadId);
+        const result = await input.registry.call(toolCtx, name, request.params.arguments, scope, role);
         return jsonRpcResult(request.id, result);
       }
       default:

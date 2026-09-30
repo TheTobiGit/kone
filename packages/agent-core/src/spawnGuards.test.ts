@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   SPAWN_REFUSAL_EMPTY_PROMPT,
+  SPAWN_REFUSAL_WORKER,
   checkSpawn,
   spawnRefusalDepth,
   spawnRefusalModelNotFound,
@@ -10,7 +11,7 @@ import type { SpawnGuardInput } from "./spawnGuards.js";
 import {
   MAX_LIVE_CHILDREN_PER_PARENT,
   MAX_LIVE_SPAWNED_THREADS,
-  MAX_SPAWN_DEPTH,
+  MAX_DELEGATION_DEPTH,
 } from "./types.js";
 
 describe("checkSpawn", () => {
@@ -36,12 +37,30 @@ describe("checkSpawn", () => {
     }
   });
 
-  test("refuses when the child would land deeper than MAX_SPAWN_DEPTH", () => {
-    const result = checkSpawn(base({ parentDepth: MAX_SPAWN_DEPTH }));
+  test("refuses when the child would land deeper than MAX_DELEGATION_DEPTH", () => {
+    const result = checkSpawn(base({ parentDepth: MAX_DELEGATION_DEPTH }));
     expect(result).toEqual({
       ok: false,
       code: "capability_denied",
-      message: spawnRefusalDepth(MAX_SPAWN_DEPTH),
+      message: spawnRefusalDepth(MAX_DELEGATION_DEPTH),
+    });
+  });
+
+  test("a worker starts nothing, whatever it asks for", () => {
+    for (const childKind of ["agent", "worker"] as const) {
+      expect(checkSpawn(base({ parentRole: "worker", childKind }))).toEqual({
+        ok: false,
+        code: "capability_denied",
+        message: SPAWN_REFUSAL_WORKER,
+      });
+    }
+  });
+
+  test("a worker child is a leaf: it never counts against the delegation depth", () => {
+    expect(checkSpawn(base({ parentDepth: MAX_DELEGATION_DEPTH, childKind: "worker" })).ok).toBe(true);
+    expect(checkSpawn(base({ parentDepth: MAX_DELEGATION_DEPTH, childKind: "agent" }))).toMatchObject({
+      ok: false,
+      code: "capability_denied",
     });
   });
 
@@ -285,14 +304,14 @@ describe("checkSpawn", () => {
   test("depth wins over breadth in the check order", () => {
     const result = checkSpawn(
       base({
-        parentDepth: MAX_SPAWN_DEPTH,
+        parentDepth: MAX_DELEGATION_DEPTH,
         liveChildrenOfParent: MAX_LIVE_CHILDREN_PER_PARENT,
       }),
     );
     expect(result).toEqual({
       ok: false,
       code: "capability_denied",
-      message: spawnRefusalDepth(MAX_SPAWN_DEPTH),
+      message: spawnRefusalDepth(MAX_DELEGATION_DEPTH),
     });
   });
 });

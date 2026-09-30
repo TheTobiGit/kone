@@ -24,7 +24,7 @@ import {
   isSpawnedRelationship,
   MAX_LIVE_CHILDREN_PER_PARENT,
   MAX_LIVE_SPAWNED_THREADS,
-  MAX_SPAWN_DEPTH,
+  MAX_DELEGATION_DEPTH,
 } from "./types.js";
 import type {
   AgentPersona,
@@ -247,7 +247,7 @@ export type SpawnTargetsReport = {
     remainingChildren: number;
     remainingAppWide: number;
   };
-  /** The preset sub-agents `agent_spawn_preset` can invoke by name, in the
+  /** The preset sub-agents `worker_start` can invoke by name, in the
    *  order the user keeps them. Filled by the gateway tool, not the engine —
    *  presets live outside the engine's store — so it is optional: absent means
    *  the report was built without them (the engine's own `targets`), and `[]`
@@ -550,6 +550,10 @@ class SpawnEngineImpl implements SpawnEngine {
     const surface = this.providers.cachedSurface();
     const { liveChildrenOfParent, liveSpawnedTotal } = this.liveCounts(caller.threadId);
     const parentDepth = this.store.spawnDepth(caller.threadId);
+    // A worker is a thread started as one — the "subagent" edge — and starts
+    // nothing; only a delegation (or contract) lengthens the agent chain.
+    const parentRole = parent.lineage?.relationshipToParent === "subagent" ? "worker" : "agent";
+    const childKind = request.delegateToAgentId ? "agent" : "worker";
 
     const check = checkSpawn({
       prompt: request.prompt,
@@ -558,6 +562,8 @@ class SpawnEngineImpl implements SpawnEngine {
       parentMode,
       parentEffort,
       parentDepth,
+      parentRole,
+      childKind,
       liveChildrenOfParent,
       liveSpawnedTotal,
       providerStatus: providerStatusOf(surface.statuses, request.target.provider),
@@ -654,6 +660,8 @@ class SpawnEngineImpl implements SpawnEngine {
       parentMode,
       parentEffort,
       parentDepth,
+      parentRole,
+      childKind,
       liveChildrenOfParent,
       liveSpawnedTotal,
     };
@@ -726,7 +734,7 @@ class SpawnEngineImpl implements SpawnEngine {
       caller: callerEntry,
       limits: {
         depth: this.store.spawnDepth(caller.threadId),
-        maxDepth: MAX_SPAWN_DEPTH,
+        maxDepth: MAX_DELEGATION_DEPTH,
         remainingChildren: Math.max(MAX_LIVE_CHILDREN_PER_PARENT - liveChildrenOfParent, 0),
         remainingAppWide: Math.max(MAX_LIVE_SPAWNED_THREADS - liveSpawnedTotal, 0),
       },

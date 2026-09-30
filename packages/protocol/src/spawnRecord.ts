@@ -18,17 +18,27 @@ import { z } from "zod";
  *  registers them under these names and the renderer reads their results by
  *  them, so a rename lands on both sides at once. */
 export const SPAWN_TOOL_NAMES = [
-  "agent_spawn",
-  "agent_spawn_preset",
+  "worker_start",
+  "worker_start_batch",
   "agent_delegate",
-  "agent_spawn_batch",
 ] as const;
 
 export type SpawnToolName = (typeof SPAWN_TOOL_NAMES)[number];
 
-const SPAWN_TOOL_NAME_SET: ReadonlySet<string> = new Set(SPAWN_TOOL_NAMES);
+/** The names the same tools were served under before workers had tools of
+ *  their own. Their results are still stored in threads from then, and still
+ *  read as the hand-offs they recorded. */
+export const LEGACY_SPAWN_TOOL_NAMES = [
+  "agent_spawn",
+  "agent_spawn_preset",
+  "agent_spawn_batch",
+] as const;
 
-export function isSpawnToolName(name: string): name is SpawnToolName {
+const SPAWN_TOOL_NAME_SET: ReadonlySet<string> = new Set([...SPAWN_TOOL_NAMES, ...LEGACY_SPAWN_TOOL_NAMES]);
+
+/** Whether a tool call by this name left a spawn record behind — under its
+ *  current name or one it used to have. */
+export function isSpawnToolName(name: string): boolean {
   return SPAWN_TOOL_NAME_SET.has(name);
 }
 

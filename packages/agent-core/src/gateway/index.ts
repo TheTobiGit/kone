@@ -17,7 +17,7 @@ import type { EmitEvent, GatewayConnection, ProviderKind, RuntimeEvent } from ".
 import { GatewayCredentials } from "./credentials.js";
 import { startGatewayHttpServer } from "./httpServer.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
-import { makeMcpTransport } from "./mcpTransport.js";
+import { makeMcpTransport, threadRoleOf } from "./mcpTransport.js";
 import { createRegistry, type GatewayApprove } from "./registry.js";
 import { LspManager } from "../lsp/manager.js";
 import { createAstTools } from "./tools/ast.js";
@@ -350,10 +350,12 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     connectionForThread: (threadId, provider, model) => {
       const isAssistant = input.store.threadProjectPath(threadId) === GLOBAL_ASSISTANT_PROJECT_PATH;
       const scope = isAssistant ? "assistant" : "worker";
+      const role = threadRoleOf(input.store, threadId);
       return {
         ...credentials.connectionForThread(threadId, provider, model),
-        tools: registry.listToolPrompts(scope),
+        tools: registry.listToolPrompts(scope, role),
         scope,
+        role,
       };
     },
     issueBootstrapToken: (sessionToken) => credentials.issueStdioBootstrapToken(sessionToken),

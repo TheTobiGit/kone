@@ -561,7 +561,7 @@ export function resetIrcMailbox(): void {
 // reflex to acknowledge, which manufactures the next message from the other side.
 
 const IRC_SEND_DESCRIPTION = [
-  "Message any kone agent on this project, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). There is no reply built in; to ask an agent you started and wait for its answer, use agent_ask. Every message costs the reader a turn, and `to: \"all\"` charges every agent at once.",
+  "Message any kone agent on this project, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). There is no reply built in; to ask an agent you started and wait for its answer, use agent_followup. Every message costs the reader a turn, and `to: \"all\"` charges every agent at once.",
   "",
   "`to` takes an agent's exact id from agent_list (never invent one), or `parent` (whoever spawned you), `main` (your tree's root) or `all`. Set `replyTo` when answering. Plain prose: lead with the answer, and reference files by path rather than pasting them.",
   "",
@@ -722,7 +722,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       // When to send is the description's; this is the one rule that sits
       // between tools, since it is the spawn tools it steers an agent away from.
       promptGuidelines: [
-        "An idle kone agent is not a closed one: agent_ask or agent_notify wakes it with a new turn. Never re-spawn or re-delegate to reach an agent that has merely settled.",
+        "An idle kone agent is not a closed one: agent_followup or agent_notify wakes it with a new turn. Never re-spawn or re-delegate to reach an agent that has merely settled.",
       ],
       handler: sendHandler,
     },

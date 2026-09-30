@@ -626,7 +626,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
     return { credentials, store, mailbox, registry, turnState, inFlight, transport, auth1, auth2 };
   }
 
-  test("tools/list returns agent_spawn_batch, agent_notify, agent_inbox with valid JSON Schemas", async () => {
+  test("tools/list returns worker_start_batch, agent_notify, agent_inbox with valid JSON Schemas", async () => {
     const { transport, auth1 } = newToolsFixture();
     const res = await post(transport, auth1, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(res.status).toBe(200);
@@ -636,15 +636,15 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_notify, agent_inbox
     const tools = body?.result?.tools ?? [];
     const toolMap = new Map(tools.map((t) => [t.name, t]));
 
-    expect(toolMap.has("agent_spawn_batch")).toBe(true);
+    expect(toolMap.has("worker_start_batch")).toBe(true);
     expect(toolMap.has("agent_notify")).toBe(true);
     expect(toolMap.has("agent_inbox")).toBe(true);
 
-    expect(toolMap.get("agent_spawn_batch")!.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(toolMap.get("worker_start_batch")!.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
     expect(toolMap.get("agent_notify")!.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
     expect(toolMap.get("agent_inbox")!.inputSchema).toEqual(IRC_INBOX_JSON_SCHEMA);
 
-    const batchSchema = toolMap.get("agent_spawn_batch")!.inputSchema;
+    const batchSchema = toolMap.get("worker_start_batch")!.inputSchema;
     expect(batchSchema.type).toBe("object");
     expect(batchSchema.required).toEqual(["items"]);
     // SAFETY: JSON Schema object has properties record.

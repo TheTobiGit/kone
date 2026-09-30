@@ -7,9 +7,9 @@
 //
 // The check order is load-bearing, not cosmetic:
 //
-//   prompt → depth → breadth → provider health → model → effort → mode
+//   prompt → role → depth → breadth → provider health → model → effort → mode
 //
-// The first six rungs can refuse the spawn (SpawnGuardResult.ok: false); the
+// Every rung before effort can refuse the spawn (SpawnGuardResult.ok: false); the
 // one after them never does — an unsupported effort is dropped and reported as
 // a SpawnAdjustment so the parent learns what it actually got instead of being
 // silently surprised. An EXPLICIT mode escalation is a refusal, not a silent
@@ -29,7 +29,7 @@
 import {
   MAX_LIVE_CHILDREN_PER_PARENT,
   MAX_LIVE_SPAWNED_THREADS,
-  MAX_SPAWN_DEPTH,
+  MAX_DELEGATION_DEPTH,
 } from "./types.js";
 import type {
   InteractionMode,
@@ -65,6 +65,12 @@ export type SpawnGuardInput = {
   /** store.spawnDepth(parentThreadId) — the PARENT's depth. The child lands at
    *  parentDepth + 1. */
   parentDepth: number;
+  /** What the parent is. A worker may start nothing; absent reads as an agent. */
+  parentRole?: "agent" | "worker";
+  /** What the child will be. Only an agent child (a delegation or a contract)
+   *  counts against MAX_DELEGATION_DEPTH — a worker is a leaf. Absent reads as
+   *  an agent, the stricter of the two. */
+  childKind?: "agent" | "worker";
   /** Spawned children of this parent that are in flight right now. */
   liveChildrenOfParent: number;
   /** Spawned threads in flight app-wide. */
@@ -119,12 +125,17 @@ export type SpawnGuardResult =
 export const SPAWN_REFUSAL_EMPTY_PROMPT =
   "A spawned thread needs a prompt — the brief it wakes up to. Pass the whole task: the child starts with none of this conversation's context.";
 
-/** Spawn refused — the child would land deeper than MAX_SPAWN_DEPTH. Only
- *  reachable when the parent is itself a spawned child (a thread at
- *  depth-(MAX) may not spawn), so the message names the thread's own depth. */
+/** Spawn refused — an agent handing work to another agent would make the
+ *  delegation chain longer than MAX_DELEGATION_DEPTH. Only reachable from an
+ *  agent that is itself a delegate, so the message names its own depth, and
+ *  points at what it CAN still do: start workers. */
 export function spawnRefusalDepth(parentDepth: number): string {
-  return `Spawn depth limit reached (max ${MAX_SPAWN_DEPTH}). This thread is itself a spawned child at depth ${parentDepth} — do this work here rather than delegating it further.`;
+  return `Delegation depth limit reached (max ${MAX_DELEGATION_DEPTH}). This agent is itself a delegate at depth ${parentDepth}, so it cannot hand work to another agent — do this work here, or start workers for the pieces.`;
 }
+
+/** Spawn refused — the caller is a worker, and workers start nothing. */
+export const SPAWN_REFUSAL_WORKER =
+  "Workers cannot start kone agents or workers: you were started for one task. Split it with your provider's own subagents if it needs splitting, or say in your reply what should be handed off — the agent that started you decides.";
 
 /** Spawn refused — this parent already has too many children in flight. The
  *  fix is to wait on what it has, not to pile on more. */
@@ -208,10 +219,17 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     return { ok: false, code: "invalid_input", message: SPAWN_REFUSAL_EMPTY_PROMPT };
   }
 
-  // 2. Depth — the child lands at parentDepth + 1, and a thread at depth-(MAX)
-  //    may not spawn. Checked before breadth: a thread that is already too deep
-  //    has no business counting siblings, it should finish its own work.
-  if (input.parentDepth + 1 > MAX_SPAWN_DEPTH) {
+  // 2. Role — a worker starts nothing, whatever it asks for. Its tools are
+  //    already hidden from it; this is the rung that holds if one is called
+  //    anyway (a stale tool list, a legacy name).
+  if (input.parentRole === "worker") {
+    return { ok: false, code: "capability_denied", message: SPAWN_REFUSAL_WORKER };
+  }
+
+  // 3. Depth — only an agent child lengthens the delegation chain. Checked
+  //    before breadth: an agent already at the end of the chain has no business
+  //    counting siblings, it should do the work or start workers.
+  if (input.childKind !== "worker" && input.parentDepth + 1 > MAX_DELEGATION_DEPTH) {
     return {
       ok: false,
       code: "capability_denied",
@@ -219,7 +237,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     };
   }
 
-  // 3. Breadth, this parent — a parent may not outrun its own attention.
+  // 4. Breadth, this parent — a parent may not outrun its own attention.
   if (input.liveChildrenOfParent >= MAX_LIVE_CHILDREN_PER_PARENT) {
     return {
       ok: false,
@@ -228,7 +246,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     };
   }
 
-  // 4. Breadth, app-wide — the fork-bomb backstop.
+  // 5. Breadth, app-wide — the fork-bomb backstop.
   if (input.liveSpawnedTotal >= MAX_LIVE_SPAWNED_THREADS) {
     return {
       ok: false,
@@ -237,7 +255,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     };
   }
 
-  // 5. Provider health — only a KNOWN unavailability refuses. An undefined
+  // 6. Provider health — only a KNOWN unavailability refuses. An undefined
   //    status is NOT a refusal: kone simply hasn't probed yet, and refusing on
   //    absent knowledge would make a cold launch unspawnable.
   if (input.providerStatus && !input.providerStatus.available) {
@@ -252,7 +270,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     return refusal;
   }
 
-  // 6. Model — a deliberate choice, so it is refused, never silently swapped.
+  // 7. Model — a deliberate choice, so it is refused, never silently swapped.
   //    An unknown or empty catalog skips the check entirely — the same
   //    permissive fallback AgentService.validModelFor takes on a failed probe.
   const model = input.target.model;
@@ -268,7 +286,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     }
   }
 
-  // 7. Effort — never a refusal. The provider's own default is always a valid
+  // 8. Effort — never a refusal. The provider's own default is always a valid
   //    answer, so an effort that doesn't fit is dropped, not fatal. Mirrors
   //    validEffortFor exactly: drop the renderer-internal "base" sentinel, and
   //    drop an effort the chosen model's discovered reasoningEfforts doesn't
@@ -300,7 +318,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     }
   }
 
-  // 8. Mode — result mode = requested ?? parent, and an EXPLICIT escalation is
+  // 9. Mode — result mode = requested ?? parent, and an EXPLICIT escalation is
   //    a refusal. Privilege NEVER increases across a spawn, and a silently
   //    downgraded child plans against a mode it doesn't have.
   //    Unset inherits the parent's rung silently; a downgrade or equal request
@@ -316,7 +334,7 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
   }
   const mode = requestedMode ?? input.parentMode;
 
-  // 9. Provider mode floor — a provider whose print mode cannot pause for
+  // 10. Provider mode floor — a provider whose print mode cannot pause for
   //    interactive approvals (Antigravity) can only run a child at
   //    full-access. Skipped when the ACP server serves the child: approvals
   //    pause in-protocol at any rung. The child's mode is capped at the
