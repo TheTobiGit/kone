@@ -95,8 +95,11 @@ afterAll(async () => {
 type ProxyRun = { child: ChildProcess; lines: Interface };
 
 function spawnProxy(env: Record<string, string>): ProxyRun {
+  // Strip parent gateway credentials so the empty-server case stays offline
+  // even when these vars are exported in the surrounding shell.
+  const { KONE_GATEWAY_URL: _url, KONE_GATEWAY_TOKEN: _token, ...base } = process.env;
   const child = spawn(process.execPath, [STDIO_PROXY_PATH], {
-    env: { ...process.env, ...env },
+    env: { ...base, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   return { child, lines: createInterface({ input: child.stdout }) };
