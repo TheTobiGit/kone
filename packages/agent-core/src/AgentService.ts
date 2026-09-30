@@ -2315,15 +2315,25 @@ export class AgentService {
     return input;
   }
 
+  /** Cancel every queued follow-up on a thread while leaving its session up —
+   *  for a stop that interrupts the live turn, whose abort would otherwise
+   *  promote the next queued follow-up straight away. Announced like a
+   *  session stop (reason "stop"). */
+  async cancelQueuedTurns(threadId: string): Promise<void> {
+    const provider = this.routing.get(threadId) ?? this.historyStore?.threadMeta(threadId)?.provider;
+    await this.cancelQueuedForStop(threadId, provider ?? null);
+  }
+
   /** Cancel every queued/promoting row for a thread whose session is stopping,
    *  emitting one turn.queued-cancelled (reason "stop") per row. Runs BEFORE
    *  the adapter teardown so no drain can claim into a dying session. */
-  private async cancelQueuedForStop(threadId: string, provider: ProviderKind): Promise<void> {
+  private async cancelQueuedForStop(threadId: string, provider: ProviderKind | null): Promise<void> {
     const store = this.queueStore;
     if (!store) return;
     try {
       const queueIds = await store.cancelQueuedTurnsForThread(threadId);
       if (queueIds.length) this.dropQueuedCount(threadId, queueIds.length);
+      if (!provider) return;
       for (const queueId of queueIds) {
         this.dispatch({
           type: "turn.queued-cancelled",

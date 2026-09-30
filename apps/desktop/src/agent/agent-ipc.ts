@@ -446,13 +446,9 @@ export function registerAgentIpc(): void {
   // What happens to handed-off work when the agent that handed it off is
   // stopped, withdraws it, or is spoken to over its head
   // (docs/agent-roles-design.md §6–§7). The decision turn it may start is
-  // over when that turn settles.
+  // followed through the event stream — out of the queue, until it settles.
   const handOffs = initHandOffLifecycle({ store, service: svc, dispatcher });
-  svc.onEvent((event) => {
-    if (event.type === "turn.completed" || event.type === "turn.aborted") {
-      handOffs.onTurnSettled(event.threadId, event.turnId);
-    }
-  });
+  svc.onEvent((event) => handOffs.onEvent(event));
 
   /** Push one runtime event to every subscribed renderer (and optionally
    *  journal it). The single choke point every event crosses, so it stamps
@@ -699,19 +695,10 @@ export function registerAgentIpc(): void {
 
   // Whatever arrives here was typed by the user, so it is always the user's:
   // a sender is only ever set by the main process, for words an agent or kone
-  // itself wrote, and one smuggled in over IPC is dropped.
-  ipcMain.handle("agent:send-turn", async (_event, input: SendTurnInput) => {
-    const { sender: _sender, ...typed } = input;
-    const result = await dispatcher.sendThreadTurn(typed);
-    // The user going over a delegator's head is something the delegator should
-    // know before it next coordinates. Best-effort: the send already landed.
-    try {
-      await handOffs.onUserSpokeTo(typed.threadId, typed.input);
-    } catch (err) {
-      console.warn("[agent] could not tell the delegator the user spoke directly:", err);
-    }
-    return result;
-  });
+  // itself wrote, and one smuggled in over IPC is dropped. The user going over
+  // a delegator's head is something the delegator should know before it next
+  // coordinates, so it is told once the send lands.
+  ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) => handOffs.userSends(input));
   // Manual context compaction (the service runs the provider's native call or
   // its `/compact` command fallback). Resolves once the "compacted" boundary
   // has been observed or synthesized — the boundary event itself streams on
@@ -773,10 +760,7 @@ export function registerAgentIpc(): void {
     svc.reorderQueuedTurns(threadId, queueIds),
   );
   // Same as agent:send-turn: a steer from the renderer is the user speaking.
-  ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) => {
-    const { sender: _sender, ...typed } = input;
-    return dispatcher.steerThreadTurn(typed);
-  });
+  ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) => handOffs.userSteers(input));
   // Pre-turn repository snapshots. `turn-checkpoints` lists every snapshot
   // recorded for a thread (oldest first); `preview-turn-checkpoint` names what
   // restoring one would change without changing anything; `revert-turn-checkpoint`
