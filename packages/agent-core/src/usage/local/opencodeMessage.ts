@@ -1,7 +1,7 @@
 // Parses OpenCode assistant messages from its local SQLite log or message JSON
 
 import type { TranscriptProviderKind, UsageTokenTotals } from "../transcripts/types.js";
-import type { UsageRecord } from "../transcripts/transcripts.js";
+import type { MutableUsageRecord, UsageRecord } from "../transcripts/transcripts.js";
 
 import { z } from "zod";
 
@@ -147,16 +147,17 @@ export function parseOpenCodeMessageJson(
 
   const model = pickPricedModel(modelRaw, providerRaw);
 
-  return {
+  const record: MutableUsageRecord = {
     provider: "opencode",
     timestampMs,
     model,
     sessionId,
     totals,
     reportedCostUsd,
-    ...(ids?.cwd ? { cwd: ids.cwd } : {}),
     dedupeKey: messageId.length > 0 ? `opencode:${messageId}` : null,
   };
+  if (ids?.cwd) record.cwd = ids.cwd;
+  return record;
 }
 
 /** Fast timestamp extraction from raw JSON without full parse. */

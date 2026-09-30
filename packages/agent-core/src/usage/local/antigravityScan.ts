@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "../../sqlite.js";
 
-import type { UsageRecord } from "../transcripts/transcripts.js";
+import type { MutableUsageRecord, UsageRecord } from "../transcripts/transcripts.js";
 
 /** Test override, comma-separated, mirroring droidScan's DROID_SESSIONS_DIR_ENV. */
 export const ANTIGRAVITY_CONVERSATIONS_DIR_ENV = "ANTIGRAVITY_CONVERSATIONS_DIR";
@@ -344,7 +344,7 @@ function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): Usag
       const dedupeKey = `antigravity:${cascadeId}:${parsed.responseId}`;
       if (seenResponseIds.has(dedupeKey)) continue;
       seenResponseIds.add(dedupeKey);
-      records.push({
+      const record: MutableUsageRecord = {
         provider: "antigravity",
         // A row without a real created_at gets the file's mtime — stable
         // within a scan, and honest enough to land in the right day.
@@ -359,9 +359,10 @@ function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): Usag
           reasoningTokens: parsed.thinkingTokens,
         },
         reportedCostUsd: null,
-        ...(cwd ? { cwd } : {}),
         dedupeKey,
-      });
+      };
+      if (cwd) record.cwd = cwd;
+      records.push(record);
     }
     return records;
   } finally {

@@ -5,6 +5,7 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "../../sqlite.js";
+import { z } from "zod";
 
 import { listOpenCodeDatabasePaths, resolveOpenCodeDataDirs } from "../../quota/opencode.js";
 import {
@@ -133,6 +134,12 @@ function readMessagesFromDatabase(
   return records;
 }
 
+/** Session id → working directory decoded at the file I/O boundary: a legacy
+ *  session file either carries both fields or contributes nothing. */
+const LegacySessionFileSchema = z
+  .object({ id: z.string(), directory: z.string().min(1) })
+  .passthrough();
+
 /** Session id → working directory from the legacy JSON store
  *  (`storage/session/<project>/<session>.json`), for message files whose
  *  session the database doesn't know. Unreadable files are skipped. */
@@ -140,14 +147,9 @@ async function readLegacySessionDirectories(dir: string): Promise<Map<string, st
   const directories = new Map<string, string>();
   for (const file of await collectJsonFiles(path.join(dir, "storage", "session"))) {
     try {
-      const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
-      if (typeof value !== "object" || value === null) continue;
-      // SAFETY: narrowed to a non-null object above; both reads are
-      // type-checked before use.
-      const { id, directory } = value as { id?: unknown; directory?: unknown };
-      if (typeof id === "string" && typeof directory === "string" && directory) {
-        directories.set(id, directory);
-      }
+      const parsed = LegacySessionFileSchema.safeParse(JSON.parse(await fs.readFile(file, "utf8")));
+      if (!parsed.success) continue;
+      directories.set(parsed.data.id, parsed.data.directory);
     } catch {
       // A torn or foreign file costs that session its directory, nothing more.
     }
