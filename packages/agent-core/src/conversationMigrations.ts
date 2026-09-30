@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -969,6 +969,19 @@ function migration0015BlockSender(db: DatabaseSync): void {
   addColumn(db, "blocks", "sender_json", "TEXT CHECK (sender_json IS NULL OR json_valid(sender_json))");
 }
 
+/**
+ * A contractor's terms. A contract is a delegation whose identity came from the
+ * contracting agent instead of the roster, so the edge stays `"delegation"`
+ * (widening the relationship CHECK would mean rebuilding `threads`, as 0014
+ * had to) and the terms — the contractor's name, role and instructions, and
+ * the job's scope, deliverable and done criteria — ride here. NULL on every
+ * thread that is not a contractor's.
+ */
+function migration0016ThreadContract(db: DatabaseSync): void {
+  if (!hasTable(db, "threads")) return;
+  addColumn(db, "threads", "contract_json", "TEXT CHECK (contract_json IS NULL OR json_valid(contract_json))");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -985,6 +998,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 13, name: "ThreadHandIns", run: migration0013ThreadHandIns },
   { id: 14, name: "ClineProvider", run: migration0014ClineProvider, foreignKeys: "off" },
   { id: 15, name: "BlockSender", run: migration0015BlockSender },
+  { id: 16, name: "ThreadContract", run: migration0016ThreadContract },
 ];
 
 export interface MigrationOptions {

@@ -21,6 +21,7 @@ export const SPAWN_TOOL_NAMES = [
   "worker_start",
   "worker_start_batch",
   "agent_delegate",
+  "agent_contract",
 ] as const;
 
 export type SpawnToolName = (typeof SPAWN_TOOL_NAMES)[number];
@@ -63,6 +64,11 @@ const SpawnRecordSchema = z.object({
   /** That teammate's roster id — what the thread draws their face from, so a
    *  renamed teammate still reads as themselves. */
   agentId: z.string().min(1).optional(),
+  /** The contractor the work went to, by name, when the parent made one up
+   *  for the job — an agent with an identity, but none the roster holds. */
+  contractor: z.string().min(1).optional(),
+  /** That contractor's one-line role. */
+  contractorRole: z.string().min(1).optional(),
   /** Why the parent handed this off, as the clause that follows "because" —
    *  already cleaned by spawnWhy, or null when it gave no reason. */
   why: z.string().min(1).nullable(),

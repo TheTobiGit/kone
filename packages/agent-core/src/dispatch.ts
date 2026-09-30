@@ -14,6 +14,7 @@ import {
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
 import { renderSenderHeader } from "./senderHeader.js";
+import { contractPersona } from "./contractPersona.js";
 import {
   buildPromptThreadTitleFallback,
   canReplaceThreadTitle,
@@ -277,7 +278,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return this.spawnParentTurnIds.get(threadId);
   }
 
-  async startThread(input: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
+  async startThread(requested: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
+    const input = this.withContractIdentity(requested);
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
     // Register the thread BEFORE the session starts: the gateway mints the
     // session's MCP token in startSession and the provider connects to it
@@ -405,6 +407,16 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return this.service.compactThread(threadId, async () => {
       await this.ensureThreadSession(threadId, { resume: true });
     });
+  }
+
+  /** A contractor's session wakes as the contractor on every start — first,
+   *  resumed, reopened by the user — not only when the spawn engine starts it:
+   *  its identity lives on its thread, not the roster, so no caller outside
+   *  the engine would think to send it. An explicit persona still wins. */
+  private withContractIdentity(input: SessionStartInput): SessionStartInput {
+    if (input.agent) return input;
+    const contract = this.store.threadMeta(input.threadId)?.contract;
+    return contract ? { ...input, agent: contractPersona(contract) } : input;
   }
 
   async ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void> {

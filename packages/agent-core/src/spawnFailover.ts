@@ -133,7 +133,7 @@ export class SpawnFailoverRunner {
           sender: agentSenderFor(
             this.deps.store,
             caller.threadId,
-            request.delegateToAgentId ? "delegator" : "parent",
+            request.contract ? "contracting" : request.delegateToAgentId ? "delegator" : "parent",
             "brief",
           ),
         };

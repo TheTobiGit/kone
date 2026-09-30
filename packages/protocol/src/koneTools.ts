@@ -17,6 +17,7 @@ export const KONE_WORKER_TOOL_NAMES = [
   "worker_start",
   "worker_start_batch",
   "agent_delegate",
+  "agent_contract",
   "agent_followup",
   "agent_wait",
   "agent_read",

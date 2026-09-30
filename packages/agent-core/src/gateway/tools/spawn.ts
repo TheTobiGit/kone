@@ -27,6 +27,7 @@
 import { SPAWN_WAIT_MAX_MS, type SpawnTargetsReport } from "../../threadSpawn.js";
 import type { InteractionMode, SpawnedThread, SpawnTarget, StoredBlock } from "../../types.js";
 import type { AgentModelRef } from "../../ConversationStore.js";
+import type { ContractTerms } from "@kone/protocol/contract";
 import {
   formatSpawnResult,
   type SpawnRecord,
@@ -34,6 +35,8 @@ import {
 } from "@kone/protocol/spawn-record";
 import type { GatewayRecord, GatewayToolContext, GatewayToolResult, ToolEntry } from "../schemas.js";
 import {
+  ContractAgentInputSchema,
+  CONTRACT_AGENT_JSON_SCHEMA,
   ContinueThreadInputSchema,
   CONTINUE_THREAD_JSON_SCHEMA,
   DelegateToTeammateInputSchema,
@@ -309,6 +312,30 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     }): DispatchItem => ({ ...args, prompt: task }),
   );
 
+  const contractAgentHandler = singleDispatchHandler(
+    ({
+      task,
+      name,
+      role,
+      instructions,
+      scope,
+      deliverable,
+      doneCriteria,
+      ...args
+    }: ContractTerms & {
+      task: string;
+      requestId: string;
+      title?: string;
+      why?: string;
+      target?: SpawnTarget;
+      mode?: InteractionMode;
+    }): DispatchItem => ({
+      ...args,
+      prompt: task,
+      contract: { name, role, instructions, scope, deliverable, doneCriteria },
+    }),
+  );
+
   const continueThreadHandler = (
     ctx: GatewayToolContext,
     args: {
@@ -476,7 +503,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_directory",
       description:
-        "List who and what you can hand work to: this project's teammates with their roles (agent_delegate), saved worker presets with what each is for (worker_start with preset), and the installed providers with their real model ids (worker_start with target). Also reports the model you run on, how many more threads you may start, and how long your delegation chain already is.",
+        "List who and what you can hand work to: this project's teammates with their roles (agent_delegate; agent_contract makes up an agent when none fits), saved worker presets with what each is for (worker_start with preset), and the installed providers with their real model ids (worker_start with target). Also reports the model you run on, how many more threads you may start, and how long your delegation chain already is.",
       inputSchema: SpawnTargetsInputSchema,
       jsonSchema: SPAWN_TARGETS_JSON_SCHEMA,
       permission: "allow",
@@ -485,7 +512,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       promptSnippet:
         "List the teammates, worker presets and models you can hand work to, and how many more threads you may start.",
       promptGuidelines: [
-        "Before handing work off, decide who should carry it. A large piece with parts of its own — a whole feature, a layer of the stack — goes to an agent: a teammate (agent_delegate) whose role fits, since an agent can plan it and start workers of its own. A short, bounded task — find something, run something, make one scoped edit — goes to a worker (worker_start), which does exactly that and reports back. Keep what you can do quickly yourself.",
+        "Before handing work off, decide who should carry it. A large piece with parts of its own — a whole feature, a layer of the stack — goes to an agent, since an agent can plan it and start workers of its own: a teammate (agent_delegate) whose role fits, or, when none does, one you contract for the job (agent_contract). A short, bounded task — find something, run something, make one scoped edit — goes to a worker (worker_start), which does exactly that and reports back. Keep what you can do quickly yourself.",
       ],
       handler: targetsHandler,
     },
@@ -517,6 +544,19 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       promptSnippet:
         "Delegate a large piece of work to a teammate, who runs under its own name and can start workers of its own.",
       handler: delegateToTeammateHandler,
+    },
+    {
+      name: "agent_contract" satisfies SpawnToolName,
+      description:
+        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a name, a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. It is not saved to the team: when the job is done the contract ends, and only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, target and requestId work as in worker_start. Collect the deliverable with agent_wait; follow up with agent_followup.",
+      inputSchema: ContractAgentInputSchema,
+      jsonSchema: CONTRACT_AGENT_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: true,
+      agentsOnly: true,
+      promptSnippet:
+        "Contract a new agent for one large job: you write its identity and the job's terms; it is not saved to the team.",
+      handler: contractAgentHandler,
     },
     {
       name: "worker_start_batch" satisfies SpawnToolName,

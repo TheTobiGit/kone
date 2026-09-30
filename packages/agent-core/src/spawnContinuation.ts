@@ -155,7 +155,7 @@ export class ThreadContinuationManager {
       const sender = agentSenderFor(
         this.deps.store,
         caller.threadId,
-        lineage.relationshipToParent === "delegation" ? "delegator" : "parent",
+        meta.contract ? "contracting" : lineage.relationshipToParent === "delegation" ? "delegator" : "parent",
         "followup",
       );
       const turn = await this.deps.dispatcher.sendThreadTurn(
