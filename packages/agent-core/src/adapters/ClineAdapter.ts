@@ -32,7 +32,9 @@ import {
   isAcpRecord,
   isClineAuthRequired,
   jsonRpcErrorCode,
+  mergeClineFeaturedModels,
   parseClineConfigOptions,
+  parseClineFeaturedModels,
   parseClinePlan,
   readNumber,
   readString,
@@ -163,6 +165,31 @@ const SESSION_SETUP_TIMEOUT_MS = 30_000;
  *  agent is done — so the RPC deadline has to be far past any real turn. */
 const PROMPT_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const CONFIG_TIMEOUT_MS = 15_000;
+
+/** Where Cline publishes the models it features live — new releases and free or
+ *  stealth models that the catalog bundled with the CLI hasn't caught up to. */
+const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models";
+/** Bounded so an unreachable API only costs the featured extras, never a
+ *  session start. */
+const FEATURED_MODELS_TIMEOUT_MS = 5_000;
+
+/** Cline's featured models, or none on any failure. */
+export async function fetchClineFeaturedModels(): Promise<ModelDescriptor[]> {
+  try {
+    const response = await fetch(CLINE_FEATURED_MODELS_URL, {
+      signal: AbortSignal.timeout(FEATURED_MODELS_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      console.warn(`[cline] featured models unavailable: HTTP ${response.status}`);
+      return [];
+    }
+    // SAFETY: a parsed JSON body is exactly the ClineAcpValue union.
+    return parseClineFeaturedModels((await response.json()) as ClineAcpValue);
+  } catch (error) {
+    console.warn("[cline] featured models unavailable:", errorText(error));
+    return [];
+  }
+}
 /** How long stopSession waits for the old child to actually exit before it
  *  returns, so a replacement session never spawns while its predecessor still
  *  holds Cline's sqlite session store. Bounded: a child that ignores SIGTERM
@@ -275,12 +302,16 @@ export class ClineAdapter implements ProviderAdapter {
 
   private readonly emit: EmitEvent;
   private readonly sessions = new Map<string, ClineSession>();
+  /** The catalog `session/new` reports, before the featured models join it. */
   private modelsCache: Promise<ModelDescriptor[]> | null = null;
+  private featuredCache: Promise<ModelDescriptor[]> | null = null;
+  private readonly fetchFeatured: () => Promise<ModelDescriptor[]>;
   /** The CLI executable to spawn — the user's override or `cline`. */
   private binary = CLINE_BINARY;
 
-  constructor(emit: EmitEvent) {
+  constructor(emit: EmitEvent, fetchFeatured: () => Promise<ModelDescriptor[]> = fetchClineFeaturedModels) {
     this.emit = emit;
+    this.fetchFeatured = fetchFeatured;
   }
 
   setConfig(config: ProviderConfig): void {
@@ -333,6 +364,13 @@ export class ClineAdapter implements ProviderAdapter {
   }
 
   async listModels(): Promise<ModelDescriptor[]> {
+    // Cached apart, so a featured fetch that failed is retried on the next read
+    // without the session catalog it joins being probed again.
+    const [catalog, featured] = await Promise.all([this.sessionCatalog(), this.featuredModels()]);
+    return mergeClineFeaturedModels(catalog, featured);
+  }
+
+  private sessionCatalog(): Promise<ModelDescriptor[]> {
     if (this.modelsCache) return this.modelsCache;
     this.modelsCache = this.fetchModels().then((models) => {
       // An empty probe means signed out or a session that wouldn't open — don't
@@ -369,6 +407,20 @@ export class ClineAdapter implements ProviderAdapter {
     }
   }
 
+  /** The featured models, fetched once per app run. A failed or empty fetch
+   *  isn't pinned — the next catalog read tries again — and never rejects, so
+   *  neither a session start nor the catalog can fail on it. */
+  private featuredModels(): Promise<ModelDescriptor[]> {
+    if (this.featuredCache) return this.featuredCache;
+    this.featuredCache = this.fetchFeatured()
+      .catch((): ModelDescriptor[] => [])
+      .then((models) => {
+        if (models.length === 0) this.featuredCache = null;
+        return models;
+      });
+    return this.featuredCache;
+  }
+
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   async startSession(input: SessionStartInput): Promise<Session> {
@@ -377,6 +429,8 @@ export class ClineAdapter implements ProviderAdapter {
     // child would otherwise never be killed. See CodexAdapter for the same guard.
     if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
 
+    // In flight while the child spawns and handshakes, so it adds no wait.
+    const featured = this.featuredModels();
     const env = await buildClineEnv();
     const rpc = new JsonRpcClient(this.binary, CLINE_ACP_ARGS, {
       cwd: input.cwd,
@@ -500,9 +554,11 @@ export class ClineAdapter implements ProviderAdapter {
 
       // The session response's model catalog is the account's live truth
       // (fact 2); seed the picker cache with it so the catalog is never stale.
+      // The featured models it hasn't caught up to are settable here too.
       const catalog = clineModelCatalog(response, session.configOptions);
-      session.modelIds = new Set(catalog.map((model) => model.id));
       if (catalog.length > 0 && this.modelsCache === null) this.modelsCache = Promise.resolve(catalog);
+      const settable = mergeClineFeaturedModels(catalog, await featured);
+      session.modelIds = new Set(settable.map((model) => model.id));
 
       await this.applyActMode(session, response);
       if (input.model) await this.applyModel(session, input.model);

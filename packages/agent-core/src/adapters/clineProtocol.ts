@@ -185,6 +185,41 @@ export function clineModelCatalog(response: ClineAcpValue, configOptions: readon
   return (option?.options ?? []).map((choice) => ({ id: choice.value, label: choice.name?.trim() || choice.value }));
 }
 
+/** The sections of Cline's recommended-models document that run on the `cline`
+ *  provider every session opens on. `clinePass` and `clineCloud` belong to
+ *  other providers, so their ids would fail on this one. */
+const CLINE_FEATURED_SECTIONS = ["recommended", "free"] as const;
+
+/** The models Cline features live — new releases and free or stealth models —
+ *  from its recommended-models document (`{ recommended: [{ id, name }], free:
+ *  [...] }`). The bundled catalog `session/new` reports lags these, and the
+ *  CLI's own picker merges them in the same way. */
+export function parseClineFeaturedModels(document: ClineAcpValue): ModelDescriptor[] {
+  return CLINE_FEATURED_SECTIONS.flatMap((section) =>
+    acpArray(readValue(document, section)).flatMap((raw) => {
+      const id = readString(raw, "id");
+      return id ? [{ id, label: readString(raw, "name")?.trim() || id }] : [];
+    }),
+  );
+}
+
+/** The session catalog with the featured models it lacks put first. An empty
+ *  session catalog stays empty: it means signed out, and a featured model is no
+ *  more runnable then than any other. */
+export function mergeClineFeaturedModels(
+  catalog: readonly ModelDescriptor[],
+  featured: readonly ModelDescriptor[],
+): ModelDescriptor[] {
+  if (catalog.length === 0) return [];
+  const known = new Set(catalog.map((model) => model.id));
+  const extra = featured.filter((model) => {
+    if (known.has(model.id)) return false;
+    known.add(model.id);
+    return true;
+  });
+  return [...extra, ...catalog];
+}
+
 /** The session model in force: `models.currentModelId`, else the `model`
  *  config option's current value. */
 export function clineCurrentModel(response: ClineAcpValue, configOptions: readonly ClineConfigOption[]): string | undefined {
