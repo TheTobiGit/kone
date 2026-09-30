@@ -12,6 +12,7 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
@@ -442,6 +443,17 @@ export function registerAgentIpc(): void {
     onEvents: (listener) => svc.onEvent(listener),
   });
 
+  // What happens to handed-off work when the agent that handed it off is
+  // stopped, withdraws it, or is spoken to over its head
+  // (docs/agent-roles-design.md §6–§7). The decision turn it may start is
+  // over when that turn settles.
+  const handOffs = initHandOffLifecycle({ store, service: svc, dispatcher });
+  svc.onEvent((event) => {
+    if (event.type === "turn.completed" || event.type === "turn.aborted") {
+      handOffs.onTurnSettled(event.threadId, event.turnId);
+    }
+  });
+
   /** Push one runtime event to every subscribed renderer (and optionally
    *  journal it). The single choke point every event crosses, so it stamps
    *  the two envelope fields consumers dedupe/correlate on: `eventId`
@@ -688,9 +700,17 @@ export function registerAgentIpc(): void {
   // Whatever arrives here was typed by the user, so it is always the user's:
   // a sender is only ever set by the main process, for words an agent or kone
   // itself wrote, and one smuggled in over IPC is dropped.
-  ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) => {
+  ipcMain.handle("agent:send-turn", async (_event, input: SendTurnInput) => {
     const { sender: _sender, ...typed } = input;
-    return dispatcher.sendThreadTurn(typed);
+    const result = await dispatcher.sendThreadTurn(typed);
+    // The user going over a delegator's head is something the delegator should
+    // know before it next coordinates. Best-effort: the send already landed.
+    try {
+      await handOffs.onUserSpokeTo(typed.threadId, typed.input);
+    } catch (err) {
+      console.warn("[agent] could not tell the delegator the user spoke directly:", err);
+    }
+    return result;
   });
   // Manual context compaction (the service runs the provider's native call or
   // its `/compact` command fallback). Resolves once the "compacted" boundary
@@ -699,9 +719,19 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:compact-thread", (_event, threadId: string) =>
     dispatcher.compactThread(threadId),
   );
-  ipcMain.handle("agent:interrupt", (_event, threadId: string) =>
-    svc.interruptTurn(threadId),
-  );
+  ipcMain.handle("agent:interrupt", async (_event, threadId: string) => {
+    await svc.interruptTurn(threadId);
+    // The user stopped this agent: its workers stop with it, and the agents it
+    // delegated to that are still working wait on its decision.
+    try {
+      await handOffs.onUserStopped(threadId);
+    } catch (err) {
+      console.warn("[agent] could not settle the hand-offs of a stopped thread:", err);
+    }
+  });
+  // The "stop everything" choice: the thread and everything working under it,
+  // with no decisions asked.
+  ipcMain.handle("agent:stop-chain", (_event, threadId: string) => handOffs.stopEverything(threadId));
   ipcMain.handle("agent:stop-session", (_event, threadId: string) =>
     svc.stopSession(threadId),
   );

@@ -322,6 +322,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "worker_start_batch",
       "agent_followup",
       "agent_withdraw",
+      "agent_keep_or_stop",
       "agent_decline",
       "agent_answer",
       "agent_wait",
@@ -345,6 +346,7 @@ describe("gateway integration (real store + HTTP)", () => {
     const onDemand = await listSet("on-demand");
     expect(onDemand).toEqual([
       "agent_withdraw",
+      "agent_keep_or_stop",
       "agent_decline",
       "agent_answer",
       "agent_read",

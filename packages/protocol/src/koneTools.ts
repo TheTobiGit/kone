@@ -22,6 +22,7 @@ export const KONE_WORKER_TOOL_NAMES = [
   "agent_wait",
   "agent_read",
   "agent_withdraw",
+  "agent_keep_or_stop",
   "agent_decline",
   "agent_answer",
   "agent_message",

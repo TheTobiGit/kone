@@ -163,6 +163,10 @@ export interface ThreadDispatcher {
    *  model some other way, as agent-message delivery batches several into one
    *  turn. Announces it to renderers like any agent-sent block. */
   recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void;
+  /** Tell a thread something without waking it: the notice goes on its
+   *  transcript now (as kone's) and rides in front of whatever its next turn
+   *  is, so the agent reads it the next time it runs. */
+  queueNotice(threadId: string, text: string): void;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -254,6 +258,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  awaited, and the directory it produces is then removed. The alternative is
    *  a worktree nobody asked for, owned by a thread that never started. */
   private readonly cancelledWorkspaces = new Set<string>();
+  /** Notices queued for a thread's next turn (queueNotice) — kone telling an
+   *  idle agent something it should know but need not be woken for. */
+  private readonly pendingNotices = new Map<string, string[]>();
 
   // Threads whose live provider session came up with none of the thread's
   // context — no stored resume id to offer, or the provider refused the one we
@@ -601,6 +608,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       : this.service.sendTurn(dispatched);
   }
 
+  queueNotice(threadId: string, text: string): void {
+    this.recordAgentMessage({ threadId, text, sender: { kind: "system" } });
+    const queued = this.pendingNotices.get(threadId) ?? [];
+    queued.push(text);
+    this.pendingNotices.set(threadId, queued);
+  }
+
   recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void {
     const blockId = randomUUID();
     const count = this.store.recordUserBlock({
@@ -644,6 +658,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   forgetThread(threadId: string): void {
+    this.pendingNotices.delete(threadId);
     this.threadsNeedingReplay.delete(threadId);
     this.spawnParentTurnIds.delete(threadId);
     this.cancelledWorkspaces.delete(threadId);
@@ -1064,8 +1079,18 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  or null. Read before the new prompt is journaled, so the digest ends at the
    *  last thing the agent actually saw. Consumed once. */
   private replayPreamble(threadId: string): string | null {
-    if (!this.threadsNeedingReplay.delete(threadId)) return null;
+    const notices = this.takeNotices(threadId);
+    if (!this.threadsNeedingReplay.delete(threadId)) return notices;
     const thread = this.store.loadThread(threadId);
-    return thread ? buildResumeContext(thread) : null;
+    const replay = thread ? buildResumeContext(thread) : null;
+    return [replay, notices].filter((part): part is string => Boolean(part)).join("\n\n") || null;
+  }
+
+  /** The notices queued for a thread's next turn, rendered, and forgotten. */
+  private takeNotices(threadId: string): string | null {
+    const queued = this.pendingNotices.get(threadId);
+    if (!queued?.length) return null;
+    this.pendingNotices.delete(threadId);
+    return queued.map((text) => `<kone_notice>\n${text}\n</kone_notice>`).join("\n\n");
   }
 }

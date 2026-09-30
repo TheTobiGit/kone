@@ -58,6 +58,7 @@ import {
   createAnswerChildInputTool,
   createCancelWorkerTool,
   createDeclineChildGateTool,
+  createKeepOrStopTool,
 } from "./spawnChildControls.js";
 import {
   availabilityOnce,
@@ -587,6 +588,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       handler: continueThreadHandler,
     },
     createCancelWorkerTool(),
+    createKeepOrStopTool(),
     createDeclineChildGateTool(),
     createAnswerChildInputTool(),
     {

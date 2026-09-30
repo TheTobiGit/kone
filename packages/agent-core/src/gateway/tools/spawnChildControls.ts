@@ -14,36 +14,138 @@ import {
   DECLINE_CHILD_GATE_JSON_SCHEMA,
 } from "../schemas.js";
 import { withActiveTurn } from "./spawnToolContext.js";
+import { z } from "zod";
+import { getHandOffLifecycle, type HandOffDecision, type HandOffDecisionOutcome } from "../../handOffLifecycle.js";
+import { GatewayToolError, type GatewayRecord } from "../schemas.js";
+import { gatewayToolErrorResult } from "../registry.js";
 
 export function createCancelWorkerTool(): ToolEntry {
   return {
     name: "agent_withdraw",
     description:
-      "Cancel a kone agent in your subtree (one you started, or one started under it): stop its running turn and release its session, without starting anything new. Name it with threadId, as an earlier spawn, delegation or batch returned it. Use it when the work is no longer needed, is going wrong, or a newer ask supersedes it; its transcript stays readable with agent_read. This never approves or answers anything parked on the agent; it stops the work as-is.",
+      "Take back work you handed off, when it is no longer needed, is going wrong, or a newer ask supersedes it. Name the thread with threadId, as an earlier start, delegation or contract returned it. A worker stops on the spot. A delegate or contractor is a co-worker, so it is told instead: it stops, starts nothing new, and replies with a short note of what it did and what is left — collect that with agent_wait. Either way its transcript stays readable with agent_read. This never approves or answers anything parked on it.",
     inputSchema: CancelWorkerInputSchema,
     jsonSchema: CANCEL_WORKER_JSON_SCHEMA,
     permission: "allow",
     requiresActiveTurn: true,
     agentsOnly: true,
     onDemand: true,
-    promptSnippet:
-      "Stop a kone agent you started whose work is no longer needed.",
+    promptSnippet: "Take back work you handed off that is no longer needed: a worker stops, an agent is told to wrap up.",
     handler: async (
       ctx: GatewayToolContext,
       args: {
         threadId: string;
       },
     ): Promise<GatewayToolResult> => {
-      return withActiveTurn(ctx, async (engine, caller) => {
+      return withActiveTurn(ctx, async (engine, caller): Promise<GatewayToolResult> => {
+        const lifecycle = getHandOffLifecycle();
+        if (lifecycle && engine.isInSubtree(caller.threadId, args.threadId) && args.threadId !== caller.threadId) {
+          const outcome = await lifecycle.withdraw(caller.threadId, args.threadId);
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  outcome === "stopped"
+                    ? `Stopped worker ${args.threadId}. Its transcript stays readable with agent_read.`
+                    : `Told ${args.threadId} the task is withdrawn; it is wrapping up and will reply with what it did. Collect that with agent_wait.`,
+              },
+            ],
+            structuredContent: { withdrawal: { threadId: args.threadId, outcome } },
+          };
+        }
         const result: CancelChildResult = await engine.cancelChild(caller, args.threadId);
         return {
           content: [
             {
               type: "text",
-              text: `Cancelled agent ${result.threadId}. Its transcript stays readable with agent_read.`,
+              text: `Stopped ${result.threadId}. Its transcript stays readable with agent_read.`,
             },
           ],
           structuredContent: { cancellation: result },
+        };
+      });
+    },
+  };
+}
+
+const HANDOFF_DECISIONS = ["continue", "stop", "ask_user"] as const;
+
+export const KeepOrStopInputSchema = z.object({
+  decisions: z
+    .array(
+      z.object({
+        threadId: z.string().min(1),
+        decision: z.enum(HANDOFF_DECISIONS),
+      }),
+    )
+    .min(1)
+    .max(12),
+});
+
+export const KEEP_OR_STOP_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "An agent the stop notice listed." },
+          decision: {
+            type: "string",
+            enum: [...HANDOFF_DECISIONS],
+            description:
+              "continue: still worth finishing. stop: no longer wanted — it stops, and decides for its own agents in turn. ask_user: you cannot tell; ask the user in your reply.",
+          },
+        },
+        required: ["threadId", "decision"],
+      },
+    },
+  },
+  required: ["decisions"],
+} satisfies GatewayRecord;
+
+/** How a decision reads in the summary line. */
+function decisionPhrase(outcome: HandOffDecisionOutcome): string {
+  switch (outcome.decision) {
+    case "continue":
+      return `kept ${outcome.name} running`;
+    case "stop":
+      return `stopped ${outcome.name}`;
+    case "ask_user":
+      return `left ${outcome.name} running until the user decides`;
+  }
+}
+
+export function createKeepOrStopTool(): ToolEntry {
+  return {
+    name: "agent_keep_or_stop",
+    description:
+      "After the user stops you, decide what happens to the agents still working because of you — the delegates and contractors the stop notice listed. For each: continue, stop, or ask_user. A stopped one decides for its own agents the same way. Your workers already stopped with you. Use it only in the turn that follows a stop.",
+    inputSchema: KeepOrStopInputSchema,
+    jsonSchema: KEEP_OR_STOP_JSON_SCHEMA,
+    permission: "allow",
+    requiresActiveTurn: true,
+    agentsOnly: true,
+    onDemand: true,
+    promptSnippet: "After a stop, decide for each agent still working because of you: continue, stop, or ask the user.",
+    handler: async (
+      ctx: GatewayToolContext,
+      args: { decisions: Array<{ threadId: string; decision: HandOffDecision }> },
+    ): Promise<GatewayToolResult> => {
+      const lifecycle = getHandOffLifecycle();
+      if (!lifecycle) {
+        return gatewayToolErrorResult(new GatewayToolError("internal", "Hand-off decisions are not available."));
+      }
+      return withActiveTurn(ctx, async () => {
+        const outcomes = await lifecycle.decide(ctx.threadId, args.decisions);
+        const summary = outcomes.map(decisionPhrase).join(" · ");
+        return {
+          content: [{ type: "text", text: `${summary.charAt(0).toUpperCase()}${summary.slice(1)}.` }],
+          structuredContent: {
+            decisions: outcomes.map((o) => ({ threadId: o.threadId, name: o.name, decision: o.decision })),
+          },
         };
       });
     },
