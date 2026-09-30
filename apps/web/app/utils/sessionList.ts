@@ -225,6 +225,23 @@ export function markThreadVisited(threadId: string, key?: string, at = Date.now(
   void window.koneDesktop?.agent?.history?.setVisited(threadId, at).catch(() => {});
 }
 
+/** What a thread is to the agent that started it, when one did: a worker
+ *  (left out of thread lists — it lives in its agent's dock), or a delegate or
+ *  contractor (listed, with who handed it the work). */
+function handOffOf(meta: StoredThreadMeta): Pick<SessionSummary, "handOff" | "worker"> {
+  const parent = meta.lineage?.parentThreadId ?? meta.parentThreadId;
+  const relationship = meta.lineage?.relationshipToParent ?? meta.relationshipToParent;
+  if (!parent) return {};
+  if (relationship === "subagent") return { worker: true };
+  if (relationship !== "delegation") return {};
+  const handOff: NonNullable<SessionSummary["handOff"]> = {
+    kind: meta.contract ? "contract" : "delegation",
+    fromThreadId: parent,
+  };
+  if (meta.contract) handOff.role = meta.contract.role;
+  return { handOff };
+}
+
 /** Flatten one stored thread into the row shape the list renders. */
 export function summarizeSession(
   meta: StoredThreadMeta,
@@ -268,6 +285,7 @@ export function summarizeSession(
       meta.relationshipToParent === "side_chat" ||
         ((meta.forkContext || meta.sourceThreadId) && !isContinuation),
     ),
+    ...handOffOf(meta),
     done: isThreadDone(meta),
     unread: isThreadUnread(meta),
     lastVisitedAt: meta.lastVisitedAt ?? undefined,

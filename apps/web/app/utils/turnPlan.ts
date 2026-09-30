@@ -159,7 +159,7 @@ function planDone(block: AssistantBlock, display: ResponseDisplay, manual?: bool
     const fold: WorkGroup[] = [];
     const inline: RenderGroup[] = [];
     all.forEach((g, i) => {
-      if (g.kind === "spawn" || i >= replyStart) inline.push(g);
+      if (g.kind === "spawn" || g.kind === "decision" || i >= replyStart) inline.push(g);
       else append(fold, g);
     });
     // A turn with no reply to leave open shows its work rather than nothing.

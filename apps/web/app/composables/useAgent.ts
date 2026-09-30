@@ -732,6 +732,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // unless it is about to refuse: everything below assumes the user block
     // lands in this tick.
     if (sendBlockedReason.value && !(await recheckBeforeRefusing())) return;
+    // Browser dev only: the scripted team demos, typed as commands — the play
+    // shortcuts' siblings for the hand-off surfaces.
+    if (!bridge() && !busy.value && files.length === 0) {
+      if (trimmed === "/team") return void mock?.team();
+      if (trimmed === "/contractor") return void mock?.contractorView();
+    }
     touch();
     const blockId = uid();
     const wasBusy = busy.value;

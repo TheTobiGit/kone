@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import HandOffChainBar from "~/components/thread/HandOffChainBar.vue";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useStudioRowView } from "~/composables/useViewContext";
 import { describePane } from "~/utils/viewPanes";
@@ -586,6 +587,29 @@ function openLinkedThread(threadId: string): void {
   if (!threadId.trim()) return;
   void studio.open("thread", { threadId });
 }
+
+// A delegate or contractor is an agent with work of its own, so it gets a
+// column beside the agent that handed it over, the moment it is handed off —
+// the user watches the team work rather than one conversation. Opened without
+// taking focus: the user is still reading the agent that delegated. Workers
+// stay in that agent's Subagents dock. Once per child, so closing a column is
+// not undone by the next snapshot.
+const columnsOpenedFor = new Set<string>();
+watch(
+  () =>
+    agent.sessions.value.flatMap((session) =>
+      session.spawnedChildren.value
+        .filter((child) => child.handOff === "delegation" || child.handOff === "contract")
+        .map((child) => child.threadId),
+    ),
+  (delegates) => {
+    for (const threadId of delegates) {
+      if (columnsOpenedFor.has(threadId)) continue;
+      columnsOpenedFor.add(threadId);
+      void studio.open("thread", { threadId, focus: false });
+    }
+  },
+);
 
 // mod+shift+t / mod+shift+n open a terminal / the scratchpad beside the focused
 // pane and focus it — the keyboard siblings of the seam insert picks.
@@ -1821,6 +1845,10 @@ useStudioRowView(registryPath, () =>
             @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
           />
         </Transition>
+        <HandOffChainBar
+          :thread-id="focusedThread?.threadId.value"
+          :spawned="focusedThread?.spawnedChildren.value ?? []"
+        />
         <AgentComposer
           ref="composerRef"
           class="pointer-events-auto"

@@ -321,6 +321,14 @@ function select(): void {
           </span>
         </span>
 
+        <!-- Who handed this thread its work, when an agent did: the link
+             that makes a delegate or contractor readable as part of the
+             work it came from. -->
+        <span v-if="thread.handOff" class="tl__handoff">
+          <span class="tl__handoff-verb">{{ thread.handOff.kind === "contract" ? "contracted by" : "delegated by" }}</span>
+          <span class="tl__handoff-from">{{ agentIdentity(thread.handOff.fromThreadId).name }}</span>
+          <span v-if="thread.handOff.role" class="tl__handoff-role">· {{ thread.handOff.role }}</span>
+        </span>
         <span v-if="orb || thread.snippet" class="tl__sub">
           <span v-if="orb" class="tl__active-label">
             {{ orb.label }}
@@ -538,6 +546,25 @@ function select(): void {
   color: var(--faint);
 }
 
+.tl__handoff {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  color: color-mix(in oklab, var(--ink) 50%, transparent);
+}
+.tl__handoff-from {
+  font-weight: 600;
+  color: color-mix(in oklab, var(--ink) 70%, transparent);
+}
+.tl__handoff-role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tl__snippet {
   color: var(--muted);
   overflow: hidden;

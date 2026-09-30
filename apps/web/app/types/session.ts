@@ -68,6 +68,13 @@ export type SessionSummary = {
   /** True when this thread is a side chat (forked from another conversation) —
    *  rows wear the temporary chip instead of reading as a main conversation. */
   sideChat?: boolean;
+  /** Set when an agent handed this thread its work: a delegation to a
+   *  teammate or a contract with an agent made up for the job. The row says
+   *  who handed it over. */
+  handOff?: { kind: "delegation" | "contract"; fromThreadId: string; role?: string };
+  /** A worker: started for one task, with no identity of its own. It lives in
+   *  its agent's Subagents dock, so thread lists leave it out. */
+  worker?: boolean;
   /** The project this thread belongs to. Only set on the App Home aggregate
    *  list (which spans every project); the in-project block leaves it undefined
    *  since the project is implied. Drives the project chip on the row. */

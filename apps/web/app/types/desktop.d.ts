@@ -3,6 +3,10 @@
 export {};
 
 import type { StudioLayout } from "~/types/studio";
+import type { MessageSender } from "@kone/protocol/message-sender";
+import type { ContractTerms } from "@kone/protocol/contract";
+export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
+export type { ContractTerms } from "@kone/protocol/contract";
 
 export type DirEntry = {
   name: string;
@@ -1511,6 +1515,13 @@ export type RuntimeEvent =
   // child's raw turn events.
   | (AgentBaseEvent & { type: "thread.spawned"; spawned: SpawnedThread })
   | (AgentBaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
+  // kone wrote a message on the transcript on someone else's behalf — an
+  // agent's brief, follow-up or message, or kone's own notice. The user's own
+  // words never ride this: the renderer journals those itself as it sends.
+  | (AgentBaseEvent & {
+      type: "thread.message-journaled";
+      block: Extract<StoredBlock, { role: "user" }>;
+    })
   // An agent gateway write landed on a project's scratchpad
   // (scratchpad_write). `projectPath` scopes it to the project the pad
   // belongs to (a studio row is project-scoped, not thread-scoped); `writer` is
@@ -1853,6 +1864,10 @@ export type StoredThreadMeta = {
    *  spawn design). `relationshipToParent === "side_chat"` is the
    *  discriminator. */
   lineage?: ThreadLineage;
+  /** A contractor's terms: set on a thread an agent contracted — a
+   *  `"delegation"` edge whose identity came from the contract, not the
+   *  roster. */
+  contract?: ContractTerms;
   /** Short text excerpt or preview of the latest turn/prompt. */
   snippet?: string;
 };
@@ -1868,7 +1883,7 @@ export type StoredThreadMeta = {
 /** How an app-owned thread relates to another thread. `"subagent"` =
  *  agent-initiated work unit (spawn design, Phase 0); `"side_chat"` =
  *  user-initiated fork. */
-export type RelationshipToParent = "subagent" | "side_chat";
+export type RelationshipToParent = "subagent" | "delegation" | "side_chat";
 
 /** Thread lineage for app-owned relationships. Side chats are roots:
  *  `parentThreadId` is null and archive/retention subtree walks ignore them. */
@@ -1967,6 +1982,11 @@ export type SpawnedThreadStatus =
 export type SpawnedThread = {
   threadId: string;
   parentThreadId: string;
+  /** Worker, delegation to a teammate, or contract with an agent made up for
+   *  the job. Absent on snapshots from before kinds existed — a worker. */
+  handOff?: "worker" | "delegation" | "contract";
+  /** The agent a delegate or contractor runs as. */
+  agentName?: string;
   title: string;
   provider: ProviderKind;
   model?: string;
@@ -2011,6 +2031,10 @@ export type StoredBlock =
       /** Absent = `"native"`; `"fork-import"` = copied in from a side chat's
        *  source thread (original `at`, never refreshes `updated_at`). */
       source?: BlockSource;
+      /** Who said it. Absent = the user; an agent's brief, follow-up or
+       *  message carries the agent and how it relates to this thread; a
+       *  kone notice carries `{ kind: "system" }`. */
+      sender?: MessageSender;
     }
   | {
       id: string;

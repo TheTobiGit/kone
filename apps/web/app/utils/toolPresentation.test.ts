@@ -104,11 +104,11 @@ describe("toolPresentation", () => {
 
   describe("canonicalToolName", () => {
     test("unwraps kone server qualification to the bare tool", () => {
-      expect(canonicalToolName("agent_spawn_batch")).toBe("agent_spawn_batch");
-      expect(canonicalToolName("kone__worker_spawn_batch")).toBe("agent_spawn_batch");
-      expect(canonicalToolName("mcp__kone__worker_spawn_batch")).toBe("agent_spawn_batch");
-      expect(canonicalToolName("kone_worker_spawn_batch")).toBe("agent_spawn_batch");
-      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("agent_spawn_batch");
+      expect(canonicalToolName("agent_spawn_batch")).toBe("worker_start_batch");
+      expect(canonicalToolName("kone__worker_spawn_batch")).toBe("worker_start_batch");
+      expect(canonicalToolName("mcp__kone__worker_spawn_batch")).toBe("worker_start_batch");
+      expect(canonicalToolName("kone_worker_spawn_batch")).toBe("worker_start_batch");
+      expect(canonicalToolName("  KONE__KONE_SPAWN_BATCH  ")).toBe("worker_start_batch");
     });
 
     test("leaves plain and foreign-MCP names alone", () => {
@@ -254,7 +254,7 @@ describe("toolPresentation", () => {
           name: canonicalToolName("mcp__kone__worker_spawn_batch"),
           text,
         };
-        expect(toolPhrase(item)).toEqual({ before: "Starting agents" });
+        expect(toolPhrase(item)).toEqual({ before: "Giving workers tasks" });
       }
     });
 
@@ -296,8 +296,8 @@ describe("toolPresentation", () => {
     });
 
     test("labels a canonical kone tool once, and keeps foreign MCP labels", () => {
-      expect(toolMeta(canonicalToolName("kone__worker_spawn_batch")).label).toBe("Agents");
-      expect(toolMeta(canonicalToolName("mcp__kone__worker_spawn_batch")).label).toBe("Agents");
+      expect(toolMeta(canonicalToolName("kone__worker_spawn_batch")).label).toBe("Workers");
+      expect(toolMeta(canonicalToolName("mcp__kone__worker_spawn_batch")).label).toBe("Workers");
       expect(toolMeta("kone_kone_scratchpad_read").label).toBe("Scratchpad");
       expect(toolMeta("mcp__github__fetch_pr").label).toBe("Fetch Pr");
     });

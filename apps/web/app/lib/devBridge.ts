@@ -22,6 +22,7 @@ import { createMockTurnRunner } from "~/composables/agentMock";
 import { cloneStageAt } from "~/composables/useGitClone";
 import type { DesktopAgentReach, DevBridge } from "~/utils/desktopBridge";
 import * as world from "./devMocks";
+import { devHandOffThreads } from "./devHandOffs";
 import { MOCK_MAINTENANCE, MOCK_MODELS, MOCK_STATUSES } from "./devProviders";
 
 export function createDevBridge(): DevBridge {
@@ -275,9 +276,13 @@ function createDevHistory(): DesktopAgentReach["history"] {
     list: (projectPath, options) => {
       seed(projectPath);
       const archived = options?.archived ?? false;
-      const rows = [...threads.values()].filter(
-        (t) => t.projectPath === projectPath && Boolean(t.archivedAt) === archived,
-      );
+      // The demo's delegates and contractors belong to whichever project is
+      // asking: the scripted turn that made them never knew its project.
+      const handOffs = archived ? [] : [...devHandOffThreads.values()].map((t) => ({ ...t, projectPath }));
+      const rows = [
+        ...[...threads.values()].filter((t) => t.projectPath === projectPath && Boolean(t.archivedAt) === archived),
+        ...handOffs,
+      ];
       return later(rows);
     },
     archive: (threadId, archived) => {
@@ -294,6 +299,13 @@ function createDevHistory(): DesktopAgentReach["history"] {
     setVisited: (threadId, at, force) => {
       const seen = threads.get(threadId)?.lastVisitedAt ?? 0;
       return force || at > seen ? patch(threadId, { lastVisitedAt: at }) : Promise.resolve();
+    },
+    // Metadata only: the demo world keeps no transcripts, but a thread's row
+    // is what a surface asking for its page mostly wants (a contractor's
+    // terms, say).
+    threadPage: (threadId) => {
+      const meta = threads.get(threadId) ?? devHandOffThreads.get(threadId);
+      return later(meta ? { threadId, meta, blocks: [], nextCursor: null, hasMore: false } : null);
     },
   };
 }

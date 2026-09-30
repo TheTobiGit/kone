@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import HandOffChainBar from "~/components/thread/HandOffChainBar.vue";
 // A thread in the inbox with a voice: the stored transcript, plus the composer
 // you answer it in.
 //
@@ -453,6 +454,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @stop-subagent="onStopSubagent"
       />
 
+      <HandOffChainBar :thread-id="session?.threadId.value" :spawned="session?.spawnedChildren.value ?? []" />
       <AgentComposer
         :project-path="projectPath"
         :project-name="row.projectName"

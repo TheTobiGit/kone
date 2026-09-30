@@ -30,6 +30,7 @@ import {
 import type {
   AgentPersona,
   ContractTerms,
+  HandOffKind,
   InteractionMode,
   ModelDescriptor,
   ProviderKind,
@@ -433,6 +434,10 @@ export type SpawnAttempt = {
 export type TrackedChild = {
   threadId: string;
   parentThreadId: string;
+  /** Worker, delegation or contract — what the UI files the child under. */
+  handOff?: HandOffKind;
+  /** The name a delegate or contractor runs under. */
+  agentName?: string;
   /** The parent's turn that spawned this child — stamped on every child event
    *  (F10), including the engine's own thread.spawned / thread.spawn-updated
    *  announces (the dispatcher map that stamps the session events is only
@@ -644,6 +649,7 @@ class SpawnEngineImpl implements SpawnEngine {
     const child: TrackedChild = {
       threadId,
       parentThreadId: caller.threadId,
+      handOff: request.contract ? "contract" : request.delegateToAgentId ? "delegation" : "worker",
       parentTurnId: caller.turnId,
       title,
       provider: request.target.provider,
@@ -657,6 +663,8 @@ class SpawnEngineImpl implements SpawnEngine {
       sessionStopped: false,
       lastProjection: null,
     };
+    const agentName = request.contract?.name ?? request.persona?.name;
+    if (agentName && child.handOff !== "worker") child.agentName = agentName;
     this.tracked.set(threadId, child);
     this.liveChildren.add(threadId);
 
@@ -795,10 +803,19 @@ class SpawnEngineImpl implements SpawnEngine {
         turns.push(recoveredTurn);
       }
     }
+    // Recovered from the store: the edge says worker versus agent, and a
+    // contract on the row says which kind of agent.
+    const handOff: HandOffKind =
+      lineage.relationshipToParent !== "delegation" ? "worker" : meta.contract ? "contract" : "delegation";
+    const boundAgentId = handOff === "delegation" ? this.store.getThreadAgent?.(threadId)?.agentId : undefined;
+    const agentName =
+      meta.contract?.name ?? (boundAgentId ? this.store.getAgent?.(boundAgentId)?.name ?? undefined : undefined);
     return projectSpawnedThread({
       thread: {
         threadId,
         parentThreadId: lineage.parentThreadId ?? threadId,
+        handOff,
+        agentName,
         title: meta.title ?? "",
         provider: meta.provider,
         model: meta.model,
@@ -961,6 +978,8 @@ class SpawnEngineImpl implements SpawnEngine {
       thread: {
         threadId: child.threadId,
         parentThreadId: child.parentThreadId,
+        handOff: child.handOff,
+        agentName: child.agentName,
         title: child.title,
         provider: child.provider,
         model: child.model,

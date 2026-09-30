@@ -5,29 +5,27 @@ import AgentFace from "~/components/agent/AgentFace.vue";
 import RosterFace from "~/components/agent/RosterFace.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentOrDeparted } from "~/utils/agents";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { WorkflowSquare01Icon } from "@hugeicons/core-free-icons";
 
-// Work the agent handed to another agent, said in the reply at the point it
-// happened, one line per thread it opened:
+// Work the agent handed off, said in the reply at the point it happened, one
+// line per hand-off, and the kind of hand-off in the words:
 //
-//   "I spawned Theo: Audit the migration tests"    a worker it briefed itself
-//   "I spawned Theo (Reviewer): …"                 a worker cut from a preset
-//   "I asked Ada: Build the /users endpoint"        a teammate, by delegation
+//   "I gave a worker a task: Audit the migration tests"      a worker it briefed
+//   "I gave a Reviewer worker a task: …"                      a worker from a preset
+//   "I delegated to Ada: Build the /users endpoint"           a teammate
+//   "I contracted Frontend Auth: Build the login screens"     an agent made up for the job
 //
-// with the agent's reason under it when it gave one. A teammate is asked
-// rather than spawned: they are somebody already on the team, not a worker
-// brought into being for the job.
+// with the agent's reason under it when it gave one. A worker has no identity
+// — it is a task, not a colleague — so it wears the worker glyph and no name,
+// and lives in the Subagents dock rather than as a thread to open. A teammate
+// or contractor is somebody: their face and name, and their thread one click
+// away.
 //
 // First person, because it sits inside the agent's own reply under its own
-// name — naming the speaker again would turn a thing it said into a log line
-// about it. A worker is a thread like any other, so its face and name come
-// from its own id — the same ones it answers under when you open it. A
-// teammate's come from the roster, so a renamed teammate still reads as
-// themselves.
-//
-// It says what was handed off, nothing more: no live status. The line stays in
-// the reply long after the work settles, and a state read off it there would
-// be one the transcript can't keep true — the child's own thread, one click
-// away, is where its progress lives.
+// name. It says what was handed off, nothing more: no live status. The line
+// stays in the reply long after the work settles, and a state read off it there
+// would be one the transcript can't keep true.
 
 const props = defineProps<{
   record: SpawnRecord;
@@ -41,12 +39,24 @@ const emit = defineEmits<{
   "open-thread": [threadId: string];
 }>();
 
+/** What kind of hand-off this was: a worker, a teammate, or a contractor. */
+const kind = computed<"worker" | "delegation" | "contract">(() =>
+  props.record.contractor ? "contract" : props.record.agent ? "delegation" : "worker",
+);
+
 /** The teammate a delegation went to, while the roster still remembers them. */
 const teammate = computed(() => (props.record.agent ? agentOrDeparted(props.record.agentId) : undefined));
 
 const name = computed(
-  () => teammate.value?.name ?? props.record.agent ?? agentIdentity(props.record.threadId).name,
+  () =>
+    teammate.value?.name ??
+    props.record.agent ??
+    props.record.contractor ??
+    agentIdentity(props.record.threadId).name,
 );
+
+/** Only an agent has a thread of its own to open; a worker lives in the dock. */
+const opens = computed(() => props.linkable && kind.value !== "worker");
 
 /** "because the suite is slow" — the record keeps only the clause. */
 const because = computed(() => (props.record.why ? `because ${props.record.why}` : null));
@@ -57,22 +67,32 @@ const where = computed(() =>
 </script>
 
 <template>
-  <div class="spawn-mark" :class="{ 'spawn-mark--enter': animate }">
-    <p class="spawn-mark__line">
-      {{ record.agent ? "I asked" : "I spawned" }}
+  <div class="spawn-mark" :class="{ 'spawn-mark--enter': animate }" :data-kind="kind">
+    <p v-if="kind === 'worker'" class="spawn-mark__line">
+      I gave
+      <span class="spawn-mark__worker" :title="`${record.preset ? `${record.preset} worker` : 'Worker'} · ${where}`">
+        <span class="spawn-mark__glyph" aria-hidden="true">
+          <HugeiconsIcon :icon="WorkflowSquare01Icon" :size="12" :stroke-width="2" />
+        </span>
+        <span class="spawn-mark__name">{{ record.preset ? `${/^[aeiou]/i.test(record.preset) ? "an" : "a"} ${record.preset} worker` : "a worker" }}</span>
+      </span>
+      a task:
+      <span class="spawn-mark__title">{{ record.title }}</span>
+    </p>
+    <p v-else class="spawn-mark__line">
+      {{ kind === "contract" ? "I contracted" : "I delegated to" }}
       <component
-        :is="linkable ? 'button' : 'span'"
-        :type="linkable ? 'button' : undefined"
+        :is="opens ? 'button' : 'span'"
+        :type="opens ? 'button' : undefined"
         class="spawn-mark__worker"
-        :class="{ 'spawn-mark__worker--link': linkable }"
-        :title="linkable ? `Open ${name}'s thread · ${where}` : where"
-        @click="linkable && emit('open-thread', record.threadId)"
+        :class="{ 'spawn-mark__worker--link': opens }"
+        :title="opens ? `Open ${name}'s thread · ${where}` : where"
+        @click="opens && emit('open-thread', record.threadId)"
       >
         <RosterFace v-if="teammate" :agent="teammate" :size="16" />
         <AgentFace v-else :seed="record.threadId" :size="16" />
         <span class="spawn-mark__name">{{ name }}</span>
-      </component><template v-if="record.preset">
-        <span class="spawn-mark__preset">({{ record.preset }})</span></template>:
+      </component><span v-if="kind === 'contract'" class="spawn-mark__tag">contractor</span>:
       <span class="spawn-mark__title">{{ record.title }}</span>
     </p>
     <p v-if="because" class="spawn-mark__why">{{ because }}</p>
@@ -115,8 +135,25 @@ const where = computed(() =>
   color: var(--ink-soft);
   letter-spacing: -0.01em;
 }
-.spawn-mark__preset {
-  margin-left: 4px;
+/* A worker has no face: the glyph stands in, on the same small disc a face
+   would sit on. */
+.spawn-mark__glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--ink) 9%, transparent);
+  color: color-mix(in oklab, var(--ink) 60%, transparent);
+}
+.spawn-mark__tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent, var(--ink)) 12%, transparent);
+  color: color-mix(in oklab, var(--accent, var(--ink)) 78%, var(--ink));
+  font-size: 11px;
+  font-weight: 500;
 }
 .spawn-mark__worker--link {
   cursor: pointer;

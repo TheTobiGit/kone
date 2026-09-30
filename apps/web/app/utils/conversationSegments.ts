@@ -83,10 +83,20 @@ export function spawnRecordsOf(item: RuntimeItem): SpawnRecord[] {
 export type RenderGroup =
   | { kind: "steps"; key: string; segments: Segment[] }
   | { kind: "text"; seg: Segment }
-  | { kind: "spawn"; key: string; item: RuntimeItem; record: SpawnRecord };
+  | { kind: "spawn"; key: string; item: RuntimeItem; record: SpawnRecord }
+  | { kind: "decision"; key: string; item: RuntimeItem; text: string };
 
 /** The groups a settled turn folds behind its work toggler. */
-export type WorkGroup = Exclude<RenderGroup, { kind: "spawn" }>;
+export type WorkGroup = Exclude<RenderGroup, { kind: "spawn" } | { kind: "decision" }>;
+
+/** What a settled agent_keep_or_stop call said it decided — "Kept Frontend
+ *  Auth running · stopped Auth API." — or null for any other item. Like a
+ *  hand-off, it is something the agent says it did, not a step. */
+export function decisionTextOf(item: RuntimeItem): string | null {
+  if (item.kind !== "tool_call" || item.status !== "completed" || item.name !== "agent_keep_or_stop") return null;
+  const text = item.detail?.trim();
+  return text ? text : null;
+}
 
 export function renderGroups(block: AssistantBlock): RenderGroup[] {
   const out: RenderGroup[] = [];
@@ -113,6 +123,12 @@ export function renderGroups(block: AssistantBlock): RenderGroup[] {
       run = [];
     };
     for (const item of seg.items) {
+      const decided = decisionTextOf(item);
+      if (decided) {
+        flush();
+        out.push({ kind: "decision", key: `${block.id}:${item.itemId}`, item, text: decided });
+        continue;
+      }
       const records = spawnRecordsOf(item);
       if (!records.length) {
         run.push(item);

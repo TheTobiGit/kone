@@ -279,6 +279,17 @@ export function useSessionReducer(deps: SessionReducerDeps) {
       case "thread.title.updated":
         title.value = event.title;
         break;
+      case "thread.message-journaled": {
+        // Words kone put on this transcript for someone else — an agent's
+        // brief or message, kone's own notice. The user's own sends never
+        // arrive here (they are placed as they are sent), so this appends at
+        // the tail, once.
+        if (blocks.value.some((b) => b.id === event.block.id)) break;
+        const { effort: _effort, ...journaled } = event.block;
+        const block: UserBlock = { ...journaled };
+        blocks.value = [...blocks.value, block];
+        break;
+      }
       case "thread.workspace.progress":
         // Only ever arrives for a thread that asked for a worktree, and only
         // during the seconds it is being built.

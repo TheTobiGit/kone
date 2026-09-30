@@ -64,9 +64,11 @@ export function useSessionList(source: SessionListSource) {
       }
       const pins = new Set(pinnedIds.value);
       const rows = await source.fetch(history);
-      items.value = rows.map(({ meta, project }) =>
-        summarizeSession(meta, meta.isPinned ?? pins.has(meta.threadId), project),
-      );
+      // Workers are not threads to pick from a list: each lives in the
+      // Subagents dock of the agent that started it.
+      items.value = rows
+        .map(({ meta, project }) => summarizeSession(meta, meta.isPinned ?? pins.has(meta.threadId), project))
+        .filter((summary) => !summary.worker);
     } catch {
       // History is a convenience — never surface an error over an empty list.
       if (!silent) items.value = [];

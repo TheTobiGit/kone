@@ -64,35 +64,35 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
   ]),
 
   // agents
-  agent_targets: kone(UserGroupIcon, "Agents", "agent", [
+  agent_directory: kone(UserGroupIcon, "Agents", "agent", [
     "Checking who can take work",
     "Checked who can take work",
     "Couldn't check who can take work",
   ]),
-  agent_spawn: kone(WorkflowSquare01Icon, "Agent", "agent", [
-    "Starting an agent",
-    "Started an agent",
-    "Couldn't start an agent",
+  worker_start: kone(WorkflowSquare01Icon, "Worker", "agent", [
+    "Giving a worker a task",
+    "Gave a worker a task",
+    "Couldn't start a worker",
   ]),
-  agent_spawn_preset: kone(WorkflowSquare01Icon, "Agent", "agent", [
-    "Starting a specialist",
-    "Started a specialist",
-    "Couldn't start a specialist",
-  ]),
-  agent_spawn_batch: kone(WorkflowSquare01Icon, "Agents", "agent", [
-    "Starting agents",
-    "Started agents",
-    "Couldn't start agents",
+  worker_start_batch: kone(WorkflowSquare01Icon, "Workers", "agent", [
+    "Giving workers tasks",
+    "Gave workers tasks",
+    "Couldn't start workers",
   ]),
   agent_delegate: kone(UserMultiple02Icon, "Teammate", "agent", [
-    "Handing work to a teammate",
-    "Handed work to a teammate",
-    "Couldn't hand work to a teammate",
+    "Delegating to a teammate",
+    "Delegated to a teammate",
+    "Couldn't delegate",
   ]),
-  agent_ask: kone(BubbleChatIcon, "Ask", "agent", [
-    "Asking an agent",
-    "Asked an agent",
-    "Couldn't ask an agent",
+  agent_contract: kone(UserMultiple02Icon, "Contractor", "agent", [
+    "Contracting an agent",
+    "Contracted an agent",
+    "Couldn't contract an agent",
+  ]),
+  agent_followup: kone(BubbleChatIcon, "Follow-up", "agent", [
+    "Following up",
+    "Followed up",
+    "Couldn't follow up",
   ]),
   agent_wait: kone(HourglassIcon, "Waiting", "agent", [
     "Waiting on agents",
@@ -104,10 +104,15 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Read an agent's transcript",
     "Couldn't read an agent's transcript",
   ]),
-  agent_cancel: kone(Cancel01Icon, "Stop agent", "del", [
-    "Stopping an agent",
-    "Stopped an agent",
-    "Couldn't stop an agent",
+  agent_withdraw: kone(Cancel01Icon, "Withdraw", "del", [
+    "Withdrawing work",
+    "Withdrew work",
+    "Couldn't withdraw work",
+  ]),
+  agent_keep_or_stop: kone(UserGroupIcon, "Decide", "agent", [
+    "Deciding on running agents",
+    "Decided on running agents",
+    "Couldn't decide on running agents",
   ]),
   agent_decline: kone(Cancel01Icon, "Decline", "agent", [
     "Declining an agent's request",
@@ -120,10 +125,10 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Couldn't answer an agent's question",
   ]),
 
-  agent_notify: kone(BubbleChatIcon, "Notify", "agent", [
-    "Notifying another agent",
-    "Notified another agent",
-    "Couldn't notify another agent",
+  agent_message: kone(BubbleChatIcon, "Message", "agent", [
+    "Messaging an agent",
+    "Messaged an agent",
+    "Couldn't message the agent",
   ]),
   agent_list: kone(UserGroupIcon, "Agents", "agent", [
     "Checking who else is working",
