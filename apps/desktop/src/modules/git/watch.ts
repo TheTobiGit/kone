@@ -1,7 +1,7 @@
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import path from "node:path";
 
-import { repoRoot } from "@kone/git-core/core.js";
+import { git, repoRoot } from "@kone/git-core/core.js";
 import { invalidateFileIndex } from "./files.js";
 import { status } from "@kone/git-core/status.js";
 import type { GitStatus } from "@kone/git-core/types.js";
@@ -92,6 +92,8 @@ type RawWatchEvent = (_event: string, filename: string | null) => void;
  *  the whole tree. */
 function startWatchers(
   root: string,
+  gitDir: string,
+  commonDir: string,
   onRawEvent: (prefix: string) => RawWatchEvent,
   onPoll: () => void,
 ): (() => void) | null {
@@ -112,8 +114,9 @@ function startWatchers(
     // Best-effort per scope: a missing dir (no .git/refs yet) or EMFILE just
     // means that scope has no live sync; the poll still catches changes.
     watch(root, "", false);
-    watch(path.join(root, ".git"), ".git", false);
-    watch(path.join(root, ".git", "refs"), ".git/refs", true);
+    watch(gitDir, ".git", false);
+    if (commonDir !== gitDir) watch(commonDir, ".git", false);
+    watch(path.join(commonDir, "refs"), ".git/refs", true);
     pollTimer = setInterval(onPoll, LINUX_STATUS_POLL_INTERVAL_MS);
     // setInterval keeps the Electron main loop alive; the explicit teardown is
     // the real stop, this just avoids holding the loop for a forgotten watcher.
@@ -122,6 +125,14 @@ function startWatchers(
     // Recursive watch unsupported or the OS refused (too many files) —
     // degrade to no live sync rather than crash; the initial read stands.
     return null;
+  }
+
+  if (process.platform !== "linux" && gitDir !== path.join(root, ".git")) {
+    // A linked worktree has a .git FILE. Its HEAD/index live outside the tree,
+    // and its branch refs live in the main repository's shared git directory.
+    watch(gitDir, ".git", false);
+    if (commonDir !== gitDir) watch(commonDir, ".git", false);
+    watch(path.join(commonDir, "refs"), ".git/refs", true);
   }
 
   return () => {
@@ -136,6 +147,22 @@ function startWatchers(
   };
 }
 
+/** The repo's own and shared git directories — they differ in a linked
+ *  worktree, whose .git is a file. Falls back to `<root>/.git` when git can't
+ *  say, so a failed lookup degrades to the plain-checkout layout instead of
+ *  failing the whole watch. */
+async function gitDirs(root: string): Promise<{ gitDir: string; commonDir: string }> {
+  const fallback = path.join(root, ".git");
+  try {
+    const out = await git(root, ["rev-parse", "--absolute-git-dir", "--git-common-dir"]);
+    const [gitPath, commonPath] = out.trim().split("\n");
+    const gitDir = gitPath ? path.resolve(root, gitPath) : fallback;
+    return { gitDir, commonDir: commonPath ? path.resolve(root, commonPath) : gitDir };
+  } catch {
+    return { gitDir: fallback, commonDir: fallback };
+  }
+}
+
 /** Watch `dir`'s repository and call `onStatus` (debounced) with a fresh status
  *  whenever it changes on disk. Resolves the repo root first; a non-repo yields a
  *  no-op stop fn and no callbacks. Returns a function that stops watching.
@@ -147,6 +174,7 @@ export async function watchStatus(
   const resolved = await repoRoot(dir);
   if (!resolved) return () => {};
   const root: string = resolved;
+  const { gitDir, commonDir } = await gitDirs(root);
 
   let closed = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -228,7 +256,7 @@ export async function watchStatus(
     schedule();
   };
 
-  const stopWatchers = startWatchers(root, onRawEvent, () => void poll());
+  const stopWatchers = startWatchers(root, gitDir, commonDir, onRawEvent, () => void poll());
   if (!stopWatchers) return () => {};
 
   return () => {

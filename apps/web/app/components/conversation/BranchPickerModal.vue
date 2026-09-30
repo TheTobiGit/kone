@@ -6,11 +6,12 @@ import { Magnet } from "~/components/ui/magnet";
 import type { GitBranch } from "~/types/desktop";
 import type { WorkspaceChoice } from "~/utils/threadWorkspace";
 import { useModalExit } from "~/composables/useModalExit";
+import { branchPickerOptions, checkoutErrorMessage } from "~/utils/branchPicker";
 
 // The branch overlay — the same scrim + elastic card shell the folder and model
 // pickers use (bottom-left anchored, a hairline ring, a springy height that
 // settles as the list loads), wrapped around a list of the project's local
-// branches.
+// and remote branches.
 //
 // It answers two different questions, and the difference matters because one of
 // them moves the user's files.
@@ -90,12 +91,7 @@ async function load() {
   loadError.value = null;
   try {
     const all = await git.branches(props.projectPath);
-    // Local branches only — checking out a remote-tracking ref detaches HEAD.
-    // The current one leads: it is where a new worktree starts unless told
-    // otherwise, so it is the row most picks land on.
-    branches.value = all
-      .filter((b) => !b.remote)
-      .sort((a, b) => Number(b.current) - Number(a.current));
+    branches.value = branchPickerOptions(all);
   } catch {
     loadError.value = "Couldn’t load branches";
   } finally {
@@ -117,9 +113,9 @@ async function choose(b: GitBranch) {
   switchError.value = null;
   try {
     await git.checkout(props.projectPath, b.name);
-  } catch {
+  } catch (error) {
     switchingTo.value = null;
-    switchError.value = "Couldn’t switch — commit or stash changes first";
+    switchError.value = checkoutErrorMessage(error instanceof Error ? error.message : String(error));
     return;
   }
   // The checkout landed — keep the spinner up and the scrim locked while the app
@@ -130,7 +126,8 @@ async function choose(b: GitBranch) {
   } catch {
     /* the branch still moved; the live watcher will reconcile the read */
   }
-  close(() => emit("switched", b.name));
+  const name = b.remote ? b.name.slice(b.name.indexOf("/") + 1) : b.name;
+  close(() => emit("switched", name));
 }
 
 function pick(choice: WorkspaceChoice) {
@@ -323,6 +320,7 @@ onBeforeUnmount(() => {
             <span class="choice-dot" :class="{ 'is-on': isChosenBase(b.name) }" aria-hidden="true" />
             <span class="choice-label choice-label--branch">{{ b.name }}</span>
             <span v-if="b.current" class="choice-tag">current</span>
+            <span v-else-if="b.remote" class="choice-tag">remote</span>
           </button>
         </div>
         </Transition>
@@ -361,6 +359,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="picker-label" :title="b.name">{{ b.name }}</span>
               <span v-if="b.current" class="branch-tag">current</span>
+              <span v-else-if="b.remote" class="branch-tag">remote</span>
             </button>
           </Magnet>
 

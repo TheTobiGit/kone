@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, test } from "bun:test";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
-import { createBranch, stage } from "./mutations.js";
+import { checkout, createBranch, stage } from "./mutations.js";
 import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 // repos' worktree setup: the branch is created before the (risky) checkout and
@@ -28,6 +28,67 @@ async function branchExists(dir: string, name: string): Promise<boolean> {
 async function currentBranch(dir: string): Promise<string> {
   return (await git(dir, ["branch", "--show-current"])).trim();
 }
+
+describe("checkout", () => {
+  const repos: string[] = [];
+  afterEach(async () => {
+    await Promise.all(repos.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  async function withRemote(rev = "HEAD"): Promise<string> {
+    const dir = await makeRepo();
+    repos.push(dir);
+    await git(dir, ["remote", "add", "origin", dir]);
+    await git(dir, ["update-ref", "refs/remotes/origin/feature/login", rev]);
+    return dir;
+  }
+
+  test("creates an attached local branch tracking the selected remote", async () => {
+    const dir = await withRemote("HEAD~1");
+    // Explicit tracking must work even when automatic tracking is disabled.
+    await git(dir, ["config", "branch.autoSetupMerge", "false"]);
+    await checkout(dir, "origin/feature/login");
+    expect(await currentBranch(dir)).toBe("feature/login");
+    expect((await git(dir, ["rev-parse", "--abbrev-ref", "@{upstream}"])).trim()).toBe("origin/feature/login");
+    expect(await readFile(path.join(dir, "a.txt"), "utf8")).toBe("one\n");
+  });
+
+  test("preserves an existing local branch and its commits", async () => {
+    const dir = await withRemote("HEAD~1");
+    await git(dir, ["branch", "feature/login"]);
+    const original = (await git(dir, ["rev-parse", "feature/login"])).trim();
+    await checkout(dir, "origin/feature/login");
+    expect(await currentBranch(dir)).toBe("feature/login");
+    expect((await git(dir, ["rev-parse", "HEAD"])).trim()).toBe(original);
+  });
+
+  test("a conflicting edit blocks the switch without creating a local branch", async () => {
+    const dir = await withRemote("HEAD~1");
+    await writeFile(path.join(dir, "a.txt"), "unsaved\n");
+    await expect(checkout(dir, "origin/feature/login")).rejects.toThrow();
+    expect(await branchExists(dir, "feature/login")).toBe(false);
+    expect(await currentBranch(dir)).toBe("main");
+    expect(await readFile(path.join(dir, "a.txt"), "utf8")).toBe("unsaved\n");
+  });
+
+  test("uses the selected remote when multiple remotes have the same branch", async () => {
+    const dir = await withRemote();
+    await git(dir, ["remote", "add", "upstream", dir]);
+    await git(dir, ["update-ref", "refs/remotes/upstream/feature/login", "HEAD~1"]);
+    await checkout(dir, "upstream/feature/login");
+    expect((await git(dir, ["rev-parse", "--abbrev-ref", "@{upstream}"])).trim()).toBe("upstream/feature/login");
+    expect(await readFile(path.join(dir, "a.txt"), "utf8")).toBe("one\n");
+  });
+
+  test("switches local branches with slashes and rejects missing branches", async () => {
+    const dir = await withRemote();
+    await git(dir, ["branch", "feature/local"]);
+    await checkout(dir, "feature/local");
+    expect(await currentBranch(dir)).toBe("feature/local");
+    await expect(checkout(dir, "origin/missing")).rejects.toThrow("no longer exists");
+    expect(await currentBranch(dir)).toBe("feature/local");
+  });
+});
 
 describe("createBranch", () => {
   test("creates the branch and switches to it", async () => {
