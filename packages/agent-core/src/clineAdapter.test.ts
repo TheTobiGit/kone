@@ -14,12 +14,14 @@ import {
   clineToolStatus,
   clineToolTarget,
   isClineAuthRequired,
+  mergeClineFeaturedModels,
   parseClineConfigOptions,
+  parseClineFeaturedModels,
   parseClinePlan,
   selectClinePermissionOption,
 } from "./adapters/clineProtocol.js";
 import { detectClineAuth, parseClineVersion, resolveClineBinary } from "./clineHome.js";
-import type { ApprovalDecision, EmitEvent, RuntimeEvent } from "./types.js";
+import type { ApprovalDecision, EmitEvent, ModelDescriptor, RuntimeEvent } from "./types.js";
 
 // The `session/new` fixture is trimmed from a live `cline --acp` 3.0.65 capture
 // (2026-09-29): the same field names and shapes (`modelId`, the `provider` /
@@ -287,13 +289,17 @@ function sessionChild(): FakeJsonRpcClient {
   return child;
 }
 
+/** Featured models the fake recommended-models fetch hands back; none by
+ *  default, so no test reaches the network. */
+let featuredModels: ModelDescriptor[] = [];
+
 function makeAdapter() {
   const events: RuntimeEvent[] = [];
   // SAFETY: EmitEvent takes a RuntimeEvent; the collector only stores it.
   const emit: EmitEvent = (event) => {
     events.push(event);
   };
-  return { adapter: new ClineAdapter(emit), events };
+  return { adapter: new ClineAdapter(emit, async () => featuredModels), events };
 }
 
 function types(events: RuntimeEvent[]): string[] {
@@ -328,6 +334,7 @@ function selected(reply: RecordLike): string | undefined {
 
 beforeEach(() => {
   resetBehavior();
+  featuredModels = [];
   children.length = 0;
 });
 
@@ -452,6 +459,38 @@ describe("Cline config options and catalog", () => {
       "openai/gpt-6-sol",
       "moonshotai/kimi-k3",
     ]);
+  });
+
+  test("featured models come from the sections that run on the `cline` provider", () => {
+    const document = {
+      recommended: [{ id: "anthropic/claude-sonnet-5.5", name: "claude-sonnet-5.5", tags: ["NEW"] }],
+      free: [{ id: "stealth/pixel-canary", name: "Pixel Canary" }, { name: "no id" }, { id: "cline-free/x", name: " " }],
+      clinePass: [{ id: "cline-pass/glm-5.3", name: "glm" }],
+      clineCloud: [{ id: "cline-cloud/kimi-k3", name: "kimi" }],
+    };
+    expect(parseClineFeaturedModels(document)).toEqual([
+      { id: "anthropic/claude-sonnet-5.5", label: "claude-sonnet-5.5" },
+      { id: "stealth/pixel-canary", label: "Pixel Canary" },
+      { id: "cline-free/x", label: "cline-free/x" },
+    ]);
+    expect(parseClineFeaturedModels(undefined)).toEqual([]);
+  });
+
+  test("featured models the catalog lacks go first; a signed-out empty catalog stays empty", () => {
+    const catalog = [
+      { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5" },
+      { id: "moonshotai/kimi-k3", label: "Kimi K3" },
+    ];
+    const featured = [
+      { id: "moonshotai/kimi-k3", label: "kimi-k3" },
+      { id: "stealth/pixel-canary", label: "Pixel Canary" },
+      { id: "stealth/pixel-canary", label: "dupe" },
+    ];
+    expect(mergeClineFeaturedModels(catalog, featured)).toEqual([
+      { id: "stealth/pixel-canary", label: "Pixel Canary" },
+      ...catalog,
+    ]);
+    expect(mergeClineFeaturedModels([], featured)).toEqual([]);
   });
 
   test("a session that opened off `act` is switched onto it, once", () => {
@@ -616,6 +655,53 @@ describe("ClineAdapter startSession", () => {
     const set = sessionChild().calls.find((call) => call.method === "session/set_config_option");
     expect(set?.params).toMatchObject({ configId: "model", value: "openai/gpt-6-sol" });
     expect(session.model).toBe("openai/gpt-6-sol");
+  });
+
+  test("a featured model the bundled catalog lacks is listed and can be set", async () => {
+    featuredModels = [{ id: "stealth/pixel-canary", label: "Pixel Canary" }];
+    const { adapter } = makeAdapter();
+    const session = await adapter.startSession({
+      threadId: "t1",
+      provider: "cline",
+      cwd: PROJECT,
+      model: "stealth/pixel-canary",
+    });
+    const set = sessionChild().calls.find((call) => call.method === "session/set_config_option");
+    expect(set?.params).toMatchObject({ configId: "model", value: "stealth/pixel-canary" });
+    expect(session.model).toBe("stealth/pixel-canary");
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual([
+      "stealth/pixel-canary",
+      "anthropic/claude-sonnet-5",
+      "openai/gpt-6-sol",
+      "moonshotai/kimi-k3",
+    ]);
+  });
+
+  test("a featured fetch that came back empty is retried on the next catalog read", async () => {
+    const { adapter } = makeAdapter();
+    await adapter.startSession({ threadId: "t1", provider: "cline", cwd: PROJECT });
+    expect((await adapter.listModels()).map((model) => model.id)).not.toContain("stealth/pixel-canary");
+
+    featuredModels = [{ id: "stealth/pixel-canary", label: "Pixel Canary" }];
+    const spawned = children.length;
+    expect((await adapter.listModels())[0]).toEqual({ id: "stealth/pixel-canary", label: "Pixel Canary" });
+    // The session catalog stayed cached: recovering the featured list spawned nothing.
+    expect(children.length).toBe(spawned);
+  });
+
+  test("a featured fetch that throws costs only the featured models", async () => {
+    const events: RuntimeEvent[] = [];
+    const adapter = new ClineAdapter(
+      (event) => {
+        events.push(event);
+      },
+      async () => {
+        throw new Error("offline");
+      },
+    );
+    const session = await adapter.startSession({ threadId: "t1", provider: "cline", cwd: PROJECT });
+    expect(session.status).toBe("ready");
+    expect((await adapter.listModels()).map((model) => model.id)).toContain("anthropic/claude-sonnet-5");
   });
 
   test("a model outside the catalog is never sent — cline would accept it and fail at the prompt", async () => {
