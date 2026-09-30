@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import { HandOffLifecycle, type HandOffLifecycleDeps } from "./handOffLifecycle.js";
-import type { SendTurnInput, StoredThreadMeta, ThreadLineage } from "./types.js";
+import type { RuntimeEvent, SendTurnInput, StoredThreadMeta, ThreadLineage } from "./types.js";
 
 // The tree every test starts from:
 //
@@ -34,7 +34,7 @@ class TreeStore {
   }
 }
 
-type Said = { threadId: string; how: "steer" | "send" | "notice"; text: string };
+type Said = { threadId: string; how: "steer" | "send" | "notice"; text: string; sender?: string };
 
 function harness() {
   const store = new TreeStore();
@@ -50,6 +50,11 @@ function harness() {
   const stopped: string[] = [];
   const interrupted: string[] = [];
   const said: Said[] = [];
+  /** Every stop-shaped call, in order, so tests can check what came first. */
+  const calls: string[] = [];
+  /** Dispatches that should be refused, by kind. */
+  type Failures = { send?: Error; steer?: Error };
+  const failures: Failures = {};
   let turn = 0;
 
   const deps: HandOffLifecycleDeps = {
@@ -58,22 +63,31 @@ function harness() {
       isThreadBusy: (id) => busy.has(id),
       hasLiveSession: (id) => live.has(id),
       interruptTurn: async (id) => {
+        calls.push(`interrupt:${id}`);
         interrupted.push(id);
         busy.delete(id);
       },
       stopSession: async (id) => {
+        calls.push(`stop:${id}`);
         stopped.push(id);
         live.delete(id);
         busy.delete(id);
       },
+      cancelQueuedTurns: async (id) => {
+        calls.push(`cancel-queue:${id}`);
+      },
     },
     dispatcher: {
       sendThreadTurn: async (input: SendTurnInput) => {
+        if (failures.send) throw failures.send;
         said.push({ threadId: input.threadId, how: "send", text: input.input });
         return { threadId: input.threadId, turnId: `turn-${++turn}` };
       },
       steerThreadTurn: async (input: SendTurnInput) => {
-        said.push({ threadId: input.threadId, how: "steer", text: input.input });
+        if (failures.steer) throw failures.steer;
+        const steered: Said = { threadId: input.threadId, how: "steer", text: input.input };
+        if (input.sender) steered.sender = input.sender.kind;
+        said.push(steered);
         return { threadId: input.threadId, turnId: `turn-${++turn}` };
       },
       queueNotice: (threadId: string, text: string) => {
@@ -82,7 +96,7 @@ function harness() {
       ensureThreadSession: async () => {},
     },
   };
-  return { lifecycle: new HandOffLifecycle(deps), store, busy, stopped, interrupted, said };
+  return { lifecycle: new HandOffLifecycle(deps), store, busy, stopped, interrupted, said, calls, failures };
 }
 
 let h: ReturnType<typeof harness>;
@@ -127,6 +141,30 @@ describe("when the user stops an agent", () => {
     expect(h.lifecycle.isDeciding("main")).toBe(true);
     const decisionTurn = `turn-${h.said.length}`;
     h.lifecycle.onTurnSettled("main", decisionTurn);
+    expect(h.lifecycle.isDeciding("main")).toBe(false);
+  });
+
+  test("a decision turn that could not be sent leaves nothing deciding", async () => {
+    h.failures.send = new Error("session gone");
+    await expect(h.lifecycle.onUserStopped("main")).rejects.toThrow("session gone");
+    expect(h.lifecycle.isDeciding("main")).toBe(false);
+  });
+
+  test("a queued decision promoted without a turn id is the next turn to start", async () => {
+    // The send answers with a queue id: the stopped turn had not aborted yet.
+    await h.lifecycle.onUserStopped("main");
+    const queueId = `turn-${h.said.length}`;
+    const base = { threadId: "main", provider: "codex", source: "kone.store", at: 1 } as const;
+    const events: RuntimeEvent[] = [
+      { ...base, type: "turn.aborted", turnId: "turn-old" },
+      { ...base, type: "turn.promoted", queueId },
+    ];
+    for (const event of events) h.lifecycle.onEvent(event);
+    expect(h.lifecycle.isDeciding("main")).toBe(true);
+    h.lifecycle.onEvent({ ...base, type: "turn.started", turnId: "turn-decision" });
+    h.lifecycle.onEvent({ ...base, type: "turn.completed", turnId: "turn-other" });
+    expect(h.lifecycle.isDeciding("main")).toBe(true);
+    h.lifecycle.onEvent({ ...base, type: "turn.completed", turnId: "turn-decision" });
     expect(h.lifecycle.isDeciding("main")).toBe(false);
   });
 });
@@ -196,6 +234,22 @@ describe("the user speaking to a delegate directly", () => {
     expect(h.said.at(-1)).toMatchObject({ threadId: "main", how: "steer" });
   });
 
+  test("a steer the user types is dispatched as theirs, and the delegator hears of it", async () => {
+    // A sender smuggled in with typed words is dropped: they are the user's.
+    await h.lifecycle.userSteers({ threadId: "frontend", input: "Drop the SMS fallback.", sender: { kind: "system" } });
+    expect(h.said[0]).toEqual({ threadId: "frontend", how: "steer", text: "Drop the SMS fallback." });
+    expect(h.said[1]).toMatchObject({ threadId: "main", how: "notice" });
+    expect(h.said[1]?.text).toContain('"Drop the SMS fallback."');
+  });
+
+  test("a send or steer that is refused tells nobody", async () => {
+    h.failures.steer = new Error("compacting");
+    h.failures.send = new Error("no session");
+    await expect(h.lifecycle.userSteers({ threadId: "frontend", input: "x" })).rejects.toThrow("compacting");
+    await expect(h.lifecycle.userSends({ threadId: "frontend", input: "x" })).rejects.toThrow("no session");
+    expect(h.said).toEqual([]);
+  });
+
   test("nothing is said for a worker or a thread nobody handed over", async () => {
     await h.lifecycle.onUserSpokeTo("search", "hi");
     await h.lifecycle.onUserSpokeTo("main", "hi");
@@ -209,5 +263,7 @@ describe("stop everything", () => {
     const stopped = await h.lifecycle.stopEverything("main");
     expect(stopped).toEqual(["api-worker", "backend", "frontend", "docs", "search", "main"]);
     expect(h.said).toEqual([]);
+    // Its queued follow-ups go before the interrupt, whose abort would promote one.
+    expect(h.calls.slice(-2)).toEqual(["cancel-queue:main", "interrupt:main"]);
   });
 });

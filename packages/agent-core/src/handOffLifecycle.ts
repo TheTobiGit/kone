@@ -16,7 +16,14 @@
 
 import { SpawnError } from "./threadSpawn.js";
 import type { ThreadDispatcher } from "./dispatch.js";
-import type { MessageSender, StoredThreadMeta, ThreadLineage } from "./types.js";
+import type {
+  MessageSender,
+  RuntimeEvent,
+  SendTurnInput,
+  StoredThreadMeta,
+  ThreadLineage,
+  TurnStartResult,
+} from "./types.js";
 
 /** Structural — the real ConversationStore satisfies it. */
 export interface HandOffLifecycleStore {
@@ -33,6 +40,8 @@ export interface HandOffLifecycleService {
   hasLiveSession(threadId: string): boolean;
   interruptTurn(threadId: string): Promise<void>;
   stopSession(threadId: string): Promise<void>;
+  /** Drop the thread's queued follow-ups, leaving its session up. */
+  cancelQueuedTurns(threadId: string): Promise<void>;
 }
 
 export interface HandOffLifecycleDeps {
@@ -52,10 +61,28 @@ export type HandOffDecisionOutcome = {
 
 const SYSTEM: MessageSender = { kind: "system" };
 
+/** Where an agent's decision turn is. The send that carries it may land as a
+ *  live turn or, when the interrupted turn has not finished aborting yet, as a
+ *  queued follow-up that becomes a turn of its own later — so the id the send
+ *  answered with may be a queue id, swapped for the real turn id on promotion.
+ *  Events can outrun the send's answer (a promotion, even a settlement, may be
+ *  heard before the queue id is), so what happened meanwhile is remembered. */
+type DecisionTurn = {
+  /** The id the decision is known by: the turn id, or the queue id until promoted. */
+  id: string | null;
+  /** Promoted without a turn id and none running yet: the next turn to start is it. */
+  awaitingStart: boolean;
+  /** The turn running now, if one started since the decision was sent. */
+  live: string | null;
+  /** Turns that settled since the decision was sent. */
+  settled: Set<string>;
+  /** Queue ids promoted since the decision was sent, with the turn each became. */
+  promoted: Map<string, string | null>;
+};
+
 export class HandOffLifecycle {
-  /** Agents in a decision turn, with that turn's id once it is known: they may
-   *  decide, not start anything new. */
-  private readonly deciding = new Map<string, string | null>();
+  /** Agents in a decision turn: they may decide, not start anything new. */
+  private readonly deciding = new Map<string, DecisionTurn>();
 
   constructor(private readonly deps: HandOffLifecycleDeps) {}
 
@@ -63,10 +90,55 @@ export class HandOffLifecycle {
     return this.deciding.has(threadId);
   }
 
+  /** Follow the decision turns through the runtime event stream: promotion out
+   *  of the queue, settlement, a cancelled queue row, a session going away. */
+  onEvent(event: RuntimeEvent): void {
+    const decision = this.deciding.get(event.threadId);
+    if (!decision) return;
+    switch (event.type) {
+      case "turn.started":
+        decision.live = event.turnId;
+        if (decision.awaitingStart) {
+          decision.id = event.turnId;
+          decision.awaitingStart = false;
+        }
+        return;
+      case "turn.promoted": {
+        // The promoted turn has usually started by now (the drain announces
+        // the promotion after the adapter took it); one live turn per thread,
+        // so a running one is it.
+        const turnId = event.turnId ?? decision.live;
+        if (decision.id === null) decision.promoted.set(event.queueId, turnId);
+        else if (decision.id === event.queueId) this.adopt(event.threadId, decision, turnId);
+        return;
+      }
+      case "turn.completed":
+      case "turn.aborted":
+        if (decision.live === event.turnId) decision.live = null;
+        this.onTurnSettled(event.threadId, event.turnId);
+        return;
+      case "turn.queued-cancelled":
+        // The decision never ran and never will.
+        if (decision.id === event.queueId) this.deciding.delete(event.threadId);
+        return;
+      case "session.exited":
+        this.deciding.delete(event.threadId);
+        return;
+      case "session.state.changed":
+        if (event.state === "stopped" || event.state === "error") this.deciding.delete(event.threadId);
+        return;
+      default:
+        return;
+    }
+  }
+
   /** The decision turn is over once the turn that carried it settles — that
    *  turn, not the interrupted one whose abort may land a moment later. */
   onTurnSettled(threadId: string, turnId: string): void {
-    if (this.deciding.get(threadId) === turnId) this.deciding.delete(threadId);
+    const decision = this.deciding.get(threadId);
+    if (!decision) return;
+    if (decision.id === turnId) this.deciding.delete(threadId);
+    else decision.settled.add(turnId);
   }
 
   /**
@@ -89,6 +161,10 @@ export class HandOffLifecycle {
       }
     };
     for (const child of this.deps.store.spawnedChildren(threadId)) await walk(child.threadId);
+    // The thread keeps its session, but nothing it had lined up runs: an
+    // interrupted turn's abort promotes the next queued follow-up, and that
+    // would start new work the moment everything was stopped.
+    await this.deps.service.cancelQueuedTurns(threadId);
     if (this.deps.service.isThreadBusy(threadId)) {
       await this.deps.service.interruptTurn(threadId);
       stopped.push(threadId);
@@ -153,6 +229,16 @@ export class HandOffLifecycle {
     return "told";
   }
 
+  /** Send words the user typed into a thread, as a turn. */
+  async userSends(input: SendTurnInput): Promise<TurnStartResult> {
+    return this.userSpeaks(input, (typed) => this.deps.dispatcher.sendThreadTurn(typed));
+  }
+
+  /** Steer words the user typed into a thread's running turn (or its queue). */
+  async userSteers(input: SendTurnInput): Promise<TurnStartResult> {
+    return this.userSpeaks(input, (typed) => this.deps.dispatcher.steerThreadTurn(typed));
+  }
+
   /**
    * The user typed into a delegate's or contractor's thread directly. Its
    * delegator is told — quietly, on its next turn, unless it is running now —
@@ -172,6 +258,24 @@ export class HandOffLifecycle {
   }
 
   // ── internals ────────────────────────────────────────────────────────────
+
+  /** Whatever the user typed is always the user's: a sender is only ever set
+   *  for words an agent or kone itself wrote, so one arriving here is dropped.
+   *  Once the words are accepted, the delegator (if any) hears the user went
+   *  over its head — best-effort, since the words already landed. */
+  private async userSpeaks(
+    input: SendTurnInput,
+    dispatch: (typed: SendTurnInput) => Promise<TurnStartResult>,
+  ): Promise<TurnStartResult> {
+    const { sender: _sender, ...typed } = input;
+    const result = await dispatch(typed);
+    try {
+      await this.onUserSpokeTo(typed.threadId, typed.input);
+    } catch (err) {
+      console.warn("[agent] could not tell the delegator the user spoke directly:", err);
+    }
+    return result;
+  }
 
   private async onStopped(threadId: string, by: string): Promise<{ decisionTurn: boolean }> {
     const children = this.deps.store.spawnedChildren(threadId);
@@ -198,23 +302,44 @@ export class HandOffLifecycle {
     const list = working
       .map((child) => `- ${this.nameOf(child.threadId)} (${child.threadId}): ${child.title ?? "untitled"}, still working`)
       .join("\n");
-    this.deciding.set(threadId, null);
-    await this.deps.dispatcher.ensureThreadSession(threadId, { resume: true });
-    const turn = await this.deps.dispatcher.sendThreadTurn(
-      {
-        threadId,
-        sender: SYSTEM,
-        input: [
-          `You were stopped by ${by}. These agents are still working because of you:`,
-          list,
-          "",
-          `For each one, decide with agent_keep_or_stop: continue (it is still worth finishing), stop (the work is no longer wanted), or ask_user (you cannot tell — then ask the user in your reply). Do not start anything new in this turn; ${by === "the user" ? "the user stopped you for a reason" : "you were stopped for a reason"}.`,
-        ].join("\n"),
-      },
-      { generateTitle: false },
-    );
-    this.deciding.set(threadId, turn.turnId);
+    const decision: DecisionTurn = { id: null, awaitingStart: false, live: null, settled: new Set(), promoted: new Map() };
+    this.deciding.set(threadId, decision);
+    let turn: { turnId: string };
+    try {
+      await this.deps.dispatcher.ensureThreadSession(threadId, { resume: true });
+      turn = await this.deps.dispatcher.sendThreadTurn(
+        {
+          threadId,
+          sender: SYSTEM,
+          input: [
+            `You were stopped by ${by}. These agents are still working because of you:`,
+            list,
+            "",
+            `For each one, decide with agent_keep_or_stop: continue (it is still worth finishing), stop (the work is no longer wanted), or ask_user (you cannot tell — then ask the user in your reply). Do not start anything new in this turn; ${by === "the user" ? "the user stopped you for a reason" : "you were stopped for a reason"}.`,
+          ].join("\n"),
+        },
+        { generateTitle: false },
+      );
+    } catch (err) {
+      // No decision turn is coming, so nothing should be refused on its account.
+      if (this.deciding.get(threadId) === decision) this.deciding.delete(threadId);
+      throw err;
+    }
+    if (this.deciding.get(threadId) !== decision) return { decisionTurn: true };
+    decision.id = turn.turnId;
+    // Queued, and promoted while the send was still answering.
+    if (decision.promoted.has(turn.turnId)) this.adopt(threadId, decision, decision.promoted.get(turn.turnId) ?? null);
+    else if (decision.settled.has(turn.turnId)) this.deciding.delete(threadId);
     return { decisionTurn: true };
+  }
+
+  /** The queued decision became a real turn: know it by that turn's id from
+   *  here on, or by the next one to start when the promotion did not name it. */
+  private adopt(threadId: string, decision: DecisionTurn, turnId: string | null): void {
+    decision.promoted.clear();
+    decision.id = turnId;
+    decision.awaitingStart = turnId === null;
+    if (turnId !== null && decision.settled.has(turnId)) this.deciding.delete(threadId);
   }
 
   private async stopDelegate(threadId: string, delegatorName: string): Promise<void> {
