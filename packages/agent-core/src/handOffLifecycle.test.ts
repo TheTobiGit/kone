@@ -169,6 +169,37 @@ describe("when the user stops an agent", () => {
   });
 });
 
+describe("the user pressing Stop", () => {
+  test("interrupts first, then settles what it handed off", async () => {
+    h.busy.add("main");
+    await h.lifecycle.userStops("main");
+    expect(h.calls[0]).toBe("interrupt:main");
+    expect(h.stopped).toEqual(["search"]);
+    expect(h.lifecycle.isDeciding("main")).toBe(true);
+  });
+
+  test("during its decision turn ends the decision instead of asking again", async () => {
+    await h.lifecycle.userStops("main");
+    const decisionsSent = h.said.filter((s) => s.threadId === "main").length;
+    h.calls.length = 0;
+
+    await h.lifecycle.userStops("main");
+
+    expect(h.lifecycle.isDeciding("main")).toBe(false);
+    expect(h.said.filter((s) => s.threadId === "main")).toHaveLength(decisionsSent);
+    // The decision had not started yet, so it is dropped from the queue before
+    // the interrupt could promote it.
+    expect(h.calls).toEqual(["cancel-queue:main", "interrupt:main"]);
+  });
+
+  test("a stop that lands while it is already deciding asks nothing new", async () => {
+    await h.lifecycle.onUserStopped("main");
+    const sent = h.said.length;
+    expect((await h.lifecycle.onUserStopped("main")).decisionTurn).toBe(true);
+    expect(h.said).toHaveLength(sent);
+  });
+});
+
 describe("the decisions", () => {
   test("continue tells it; stop stops it and passes the decision down; ask_user leaves it", async () => {
     await h.lifecycle.onUserStopped("main");
@@ -189,6 +220,8 @@ describe("the decisions", () => {
     // The stopped delegate is interrupted, hears why, and its own worker stops
     // with it — the stop travelled one link further.
     expect(h.interrupted).toContain("backend");
+    // Its queued follow-ups go first, or the interrupt's abort would promote one.
+    expect(h.calls.indexOf("cancel-queue:backend")).toBeLessThan(h.calls.indexOf("interrupt:backend"));
     expect(h.said.find((s) => s.threadId === "backend")?.how).toBe("notice");
     expect(h.stopped).toContain("api-worker");
     expect(h.said.some((s) => s.threadId === "docs")).toBe(false);

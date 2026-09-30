@@ -706,16 +706,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:compact-thread", (_event, threadId: string) =>
     dispatcher.compactThread(threadId),
   );
-  ipcMain.handle("agent:interrupt", async (_event, threadId: string) => {
-    await svc.interruptTurn(threadId);
-    // The user stopped this agent: its workers stop with it, and the agents it
-    // delegated to that are still working wait on its decision.
-    try {
-      await handOffs.onUserStopped(threadId);
-    } catch (err) {
-      console.warn("[agent] could not settle the hand-offs of a stopped thread:", err);
-    }
-  });
+  // A bare interrupt — the app's own, ahead of a provider switch or a row
+  // teardown. Nothing it handed off is touched.
+  ipcMain.handle("agent:interrupt", (_event, threadId: string) => svc.interruptTurn(threadId));
+  // The user pressed Stop: its workers stop with it, and the agents it
+  // delegated to that are still working wait on its decision.
+  ipcMain.handle("agent:stop", (_event, threadId: string) => handOffs.userStops(threadId));
   // The "stop everything" choice: the thread and everything working under it,
   // with no decisions asked.
   ipcMain.handle("agent:stop-chain", (_event, threadId: string) => handOffs.stopEverything(threadId));

@@ -142,6 +142,30 @@ export class HandOffLifecycle {
   }
 
   /**
+   * The user pressed Stop on `threadId`: interrupt it, then settle the work it
+   * handed off. A Stop during its decision turn ends that decision rather than
+   * asking it again — the agent goes idle, and its delegates carry on as they
+   * were last told. Only the interrupt can fail this; settling is best-effort.
+   */
+  async userStops(threadId: string): Promise<void> {
+    const decision = this.deciding.get(threadId);
+    if (decision) {
+      this.deciding.delete(threadId);
+      // A decision still waiting in the queue would be promoted by this very
+      // interrupt's abort, and run as if nothing had been said.
+      if (decision.id === null || decision.id !== decision.live) await this.deps.service.cancelQueuedTurns(threadId);
+      await this.deps.service.interruptTurn(threadId);
+      return;
+    }
+    await this.deps.service.interruptTurn(threadId);
+    try {
+      await this.onUserStopped(threadId);
+    } catch (err) {
+      console.warn("[agent] could not settle the hand-offs of a stopped thread:", err);
+    }
+  }
+
+  /**
    * The user stopped `threadId`. Its workers stop with it; its delegates and
    * contractors that are still working are told, and it gets a decision turn
    * for them. With none working it is a plain stop — nothing to decide.
@@ -278,6 +302,9 @@ export class HandOffLifecycle {
   }
 
   private async onStopped(threadId: string, by: string): Promise<{ decisionTurn: boolean }> {
+    // Already deciding for these same agents: a second decision turn would
+    // only ask the question again.
+    if (this.deciding.has(threadId)) return { decisionTurn: true };
     const children = this.deps.store.spawnedChildren(threadId);
     // Workers are part of the agent: they stop with it, no questions asked.
     for (const child of children) {
@@ -343,6 +370,9 @@ export class HandOffLifecycle {
   }
 
   private async stopDelegate(threadId: string, delegatorName: string): Promise<void> {
+    // Nothing it had lined up runs: the interrupt's abort would otherwise
+    // promote its next queued follow-up and it would carry on working.
+    await this.deps.service.cancelQueuedTurns(threadId);
     if (this.deps.service.isThreadBusy(threadId)) await this.deps.service.interruptTurn(threadId);
     // It hears why before anything else, then decides for its own delegates.
     this.deps.dispatcher.queueNotice(

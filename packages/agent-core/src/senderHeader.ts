@@ -27,6 +27,8 @@ function nameOf(sender: AgentSender): string {
       return "the agent that contracted you";
     case "parent":
       return "the agent that started you";
+    case "upstream":
+      return "an agent further up your chain";
     case "delegate":
       return "your delegate";
     case "contractor":
@@ -53,6 +55,8 @@ function guidanceFor(sender: AgentSender): string {
       return `${Name} contracted you for this job. The brief is its reading of what the user wants, and it can be wrong or missing something. If a part looks wrong or unclear, ask ${name} (agent_message, kind "question") or push back (kind "pushback") rather than acting on a guess. Deliver what the contract asks for; your final reply goes back to ${name}.`;
     case "parent":
       return `${Name} started you as a worker for this one task. Do it and report: your final reply is the report ${name} collects. If you are blocked, say so in that reply instead of guessing.`;
+    case "upstream":
+      return `${Name} is further up the chain that handed you this work — it brought in the agent that brought you in. Its ask can be wrong or missing something like any delegator's; if a part looks wrong or unclear, say so in your reply rather than acting on a guess. Your final reply goes back to ${name}.`;
     case "delegate":
     case "contractor":
     case "child":
@@ -88,13 +92,14 @@ export function renderSenderHeader(sender: MessageSender | undefined): string | 
 /** Where an agent's name and roster id are read from — structural, so the
  *  spawn engine's store and the real ConversationStore both satisfy it. */
 export interface SenderIdentitySource {
+  threadMeta?(threadId: string): { contract?: { name: string } } | null;
   getThreadAgent?(threadId: string): { agentId: string | null } | null;
   getAgent?(agentId: string): { name: string | null } | null;
 }
 
 /**
  * The sender for a message an agent's thread is sending. The name is a
- * snapshot of the roster row as it stands — what the receiving model is told —
+ * snapshot of its contract name or the roster row as it stands — what the receiving model is told —
  * and the roster id rides along so the renderer can show the agent's current
  * name and face. A guest thread (bound to no agent) carries neither; the
  * renderer derives its call sign from `threadId`, the header names it by
@@ -114,5 +119,8 @@ export function agentSenderFor(
     const name = source.getAgent?.(agentId)?.name?.trim();
     if (name) sender.name = name;
   }
+  // A contractor answers under its contract's name, bound to a roster agent or not.
+  const contractName = source.threadMeta?.(threadId)?.contract?.name.trim();
+  if (contractName) sender.name = contractName;
   return sender;
 }
