@@ -15,8 +15,19 @@ import { USAGE_RANGE_IDS } from "~/utils/usageRanges";
 // flip from paying for it twice. The windows are cached per project, so a new
 // project starts cold: `settled` drops and the cards shimmer until they land.
 
-export function useSpaceUsage(projectPath: () => string, visible: () => boolean) {
-  const space = useAgentSettings(projectPath);
+/** The slice of the settings state the usage board reads. A parameter (rather
+ *  than a call the board makes itself) so a test can hand over a stub whose
+ *  reads it opens and finishes by hand; the board defaults to the real one. */
+export type SpaceUsageSource = Pick<
+  ReturnType<typeof useAgentSettings>,
+  "ensureRanges" | "usageFor"
+>;
+
+export function useSpaceUsage(
+  projectPath: () => string,
+  visible: () => boolean,
+  space: SpaceUsageSource = useAgentSettings(projectPath),
+) {
 
   // `settled` here is the first full pass being done: a window still without a
   // report past it has nothing to read (no desktop bridge).
