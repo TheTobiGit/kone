@@ -27,6 +27,25 @@ export interface UsageRecord {
   readonly dedupeKey: string | null;
 }
 
+/**
+ * Mutable mirror of {@link UsageRecord} for parsers that learn `cwd` after
+ * building the rest of the record: the object is completed in separate
+ * statements, with `cwd` assigned only when the log carries one. An
+ * interface (rather than a mapped type) because the owner-contract lint rule
+ * only recognises interface declarations — keep its fields in sync with
+ * UsageRecord by hand.
+ */
+export interface MutableUsageRecord {
+  provider: TranscriptProviderKind;
+  timestampMs: number;
+  model: string;
+  sessionId: string;
+  totals: UsageTokenTotals;
+  reportedCostUsd: number | null;
+  cwd?: string;
+  dedupeKey: string | null;
+}
+
 const EMPTY_TOTALS: UsageTokenTotals = {
   uncachedInputTokens: 0,
   cachedInputTokens: 0,
@@ -161,7 +180,7 @@ export function parseClaudeLine(line: string): UsageRecord | null {
   const cost = record["costUSD"];
   const cwd = transcriptText(record["cwd"]);
 
-  return {
+  const usage: MutableUsageRecord = {
     provider: "claude",
     timestampMs,
     model,
@@ -175,9 +194,10 @@ export function parseClaudeLine(line: string): UsageRecord | null {
       reasoningTokens: 0,
     },
     reportedCostUsd: isTranscriptNumber(cost) ? cost : null,
-    ...(cwd ? { cwd } : {}),
     dedupeKey,
   };
+  if (cwd) usage.cwd = cwd;
+  return usage;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -331,7 +351,7 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
 
   if (totalTokens(totals) === 0) return null;
 
-  return {
+  const usage: MutableUsageRecord = {
     provider: "codex",
     timestampMs,
     model: state.model,
@@ -339,11 +359,12 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     totals,
     // Codex does not report cost in the rollout.
     reportedCostUsd: null,
-    ...(state.cwd ? { cwd: state.cwd } : {}),
     // Events surviving the fork-copy suppression above are unique to this
     // rollout, so they need no global dedup.
     dedupeKey: null,
   };
+  if (state.cwd) usage.cwd = state.cwd;
+  return usage;
 }
 
 export { EMPTY_TOTALS };

@@ -16,7 +16,7 @@
  */
 import type { TranscriptProviderKind } from "./types.js";
 
-import type { UsageRecord } from "./transcripts.js";
+import type { MutableUsageRecord, UsageRecord } from "./transcripts.js";
 
 // v2: Codex fork-copy suppression changed what a file parses to, so v1
 // entries would keep serving double-counted records forever.
@@ -181,7 +181,7 @@ export function decodeScanCache(document: JsonValue | null | undefined): ScanCac
         break;
       }
 
-      records.push({
+      const record: MutableUsageRecord = {
         provider,
         timestampMs,
         model,
@@ -194,9 +194,11 @@ export function decodeScanCache(document: JsonValue | null | undefined): ScanCac
           reasoningTokens: reasoning,
         },
         reportedCostUsd,
-        ...(cwdIndex !== null && cwds[cwdIndex] !== undefined ? { cwd: cwds[cwdIndex] } : {}),
         dedupeKey,
-      });
+      };
+      const cwd = cwdIndex !== null ? cwds[cwdIndex] : undefined;
+      if (cwd !== undefined) record.cwd = cwd;
+      records.push(record);
     }
 
     if (corrupt) continue;

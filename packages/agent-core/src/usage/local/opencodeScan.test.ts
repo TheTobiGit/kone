@@ -48,7 +48,15 @@ function withDatabase(build: (db: Database) => void): void {
   db.close();
 }
 
-function v2Message(tokens: object, model = { id: "muse-spark-1.3", providerID: "opencode" }): string {
+/** Token payload shape for the v2 log fixtures below. */
+interface OpenCodeTestTokens {
+  readonly input?: number;
+  readonly output?: number;
+  readonly reasoning?: number;
+  readonly cache?: { readonly read?: number; readonly write?: number };
+}
+
+function v2Message(tokens: OpenCodeTestTokens, model = { id: "muse-spark-1.3", providerID: "opencode" }): string {
   return JSON.stringify({ time: { created: T0 }, model, tokens, cost: 0 });
 }
 
