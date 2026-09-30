@@ -27,6 +27,7 @@ import type {
   Session,
   SpawnThreadResult,
   StoredThreadMeta,
+  ContractTerms,
   ThreadLineage,
   UserInputAnswers,
 } from "./types.js";
@@ -81,9 +82,10 @@ class FakeStore implements SpawnEngineStore {
     createdAt: number;
     title: string;
     lineage: ThreadLineage;
+    contract?: ContractTerms;
   }): boolean {
     if (this.metas.has(input.threadId)) return false;
-    this.metas.set(input.threadId, {
+    const meta: StoredThreadMeta = {
       threadId: input.threadId,
       projectPath: input.projectPath,
       provider: input.provider,
@@ -92,7 +94,9 @@ class FakeStore implements SpawnEngineStore {
       updatedAt: input.createdAt,
       title: input.title,
       lineage: input.lineage,
-    });
+    };
+    if (input.contract) meta.contract = input.contract;
+    this.metas.set(input.threadId, meta);
     this.lineages.set(input.threadId, input.lineage);
     const parent = input.lineage.parentThreadId ?? "";
     const list = this.childrenByParent.get(parent) ?? [];
@@ -128,7 +132,11 @@ class FakeStore implements SpawnEngineStore {
       .filter((m): m is StoredThreadMeta => m !== undefined);
   }
 
+  /** Pins every thread's depth, for tests that need a caller deep in a chain. */
+  depthOverride: number | undefined = undefined;
+
   spawnDepth(threadId: string): number {
+    if (this.depthOverride !== undefined) return this.depthOverride;
     let depth = 0;
     let current = threadId;
     const seen = new Set([threadId]);
@@ -639,6 +647,49 @@ describe("spawn engine", () => {
       engine.spawn(CALLER, { ...REQUEST, requestId: "r-2", delegateToAgentId: "agent-backend" }),
     ).rejects.toMatchObject({ code: "capability_denied" });
     expect(dispatcher.started).toHaveLength(0);
+  });
+
+  test("a contract opens an agent: a delegation edge carrying its terms, briefed as the contracting agent", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+    const contract = {
+      name: "Frontend Auth",
+      role: "Frontend auth specialist",
+      instructions: "Keep components small.",
+      scope: "Login and signup screens.",
+      deliverable: "Working screens.",
+      doneCriteria: "Tests pass.",
+    };
+    const persona = { name: "Frontend Auth", instructions: "Your role: Frontend auth specialist." };
+
+    const result = await engine.spawn(CALLER, { ...REQUEST, contract, persona });
+
+    expect(store.lineages.get(result.threadId)?.relationshipToParent).toBe("delegation");
+    expect(store.metas.get(result.threadId)?.contract).toEqual(contract);
+    // No roster row stands behind a contractor: nothing is bound.
+    expect(store.bound.has(result.threadId)).toBe(false);
+    expect(dispatcher.started[0]?.agent).toEqual(persona);
+    expect(dispatcher.sent[0]?.input.sender).toMatchObject({ relationship: "contracting", messageKind: "brief" });
+  });
+
+  test("a contractor counts against the delegation depth, a worker does not", async () => {
+    const { engine, store, providers } = makeEngine();
+    setupParent(store, providers);
+    store.depthOverride = MAX_DELEGATION_DEPTH;
+    const contract = {
+      name: "Deep",
+      role: "r",
+      instructions: "i",
+      scope: "s",
+      deliverable: "d",
+      doneCriteria: "c",
+    };
+    await expect(engine.spawn(CALLER, { ...REQUEST, contract })).rejects.toMatchObject({
+      code: "capability_denied",
+    });
+    await expect(engine.spawn(CALLER, { ...REQUEST, requestId: "r-worker" })).resolves.toMatchObject({
+      status: "dispatched",
+    });
   });
 
   test("a worker's brief is sent as its parent's words, not the user's", async () => {

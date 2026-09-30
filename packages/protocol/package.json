@@ -16,6 +16,10 @@
       "types": "./src/koneTools.ts",
       "default": "./src/koneTools.ts"
     },
+    "./contract": {
+      "types": "./src/contract.ts",
+      "default": "./src/contract.ts"
+    },
     "./message-sender": {
       "types": "./src/messageSender.ts",
       "default": "./src/messageSender.ts"

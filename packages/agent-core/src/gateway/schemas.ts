@@ -20,6 +20,7 @@ import {
   MIN_MEASURE,
 } from "@kone/protocol/typography";
 import { SPAWN_WHY_MAX_CHARS } from "@kone/protocol/spawn-record";
+import { ContractTermsSchema } from "@kone/protocol/contract";
 import type { ProviderKind } from "../types.js";
 import { LSP_ACTIONS } from "../lsp/types.js";
 
@@ -274,6 +275,23 @@ export const WorkerStartInputSchema = z
 export const SpawnWorkerInputSchema = WorkerStartInputSchema;
 export const SpawnWorkerPresetInputSchema = WorkerStartInputSchema;
 
+/** An agent contracted for one job: the identity the calling agent writes for
+ *  it, the job's terms, and the task itself. */
+export const ContractAgentInputSchema = ContractTermsSchema.extend({
+  /** The specific work — the contractor's opening brief. The terms below are
+   *  laid under it; its identity reaches it separately. */
+  task: z.string().min(1),
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
+  requestId: z.string().min(1).max(200),
+  /** Overrides the task-derived working title. */
+  title: z.string().min(1).optional(),
+  why: SpawnWhySchema,
+  /** Where it runs. Omitted, it inherits this thread's provider and model. */
+  target: WorkerTargetSchema.optional(),
+  /** Clamped to the caller's mode — privilege never escalates across a spawn. */
+  mode: z.enum(INTERACTION_MODES).optional(),
+});
+
 export const DelegateToTeammateInputSchema = z.object({
   /** The project-team agent to hand this work to — its name or its id. */
   agent: z.string().min(1).max(200),
@@ -452,6 +470,46 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
     },
   },
   required: ["agent", "task", "requestId"],
+} satisfies GatewayRecord;
+
+export const CONTRACT_AGENT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    name: {
+      type: "string",
+      description: "What the contractor is called: a short name it answers under and the user sees, e.g. \"Frontend Auth\".",
+    },
+    role: {
+      type: "string",
+      description: "One line saying what it is for, e.g. \"Frontend auth specialist\".",
+    },
+    instructions: {
+      type: "string",
+      description: "Its standing instructions: how it should work and what it cares about, written the way the user would write an agent's instructions.",
+    },
+    task: {
+      type: "string",
+      description: "The job itself, complete on its own: the goal, the paths, what you already know.",
+    },
+    scope: { type: "string", description: "What is and is not part of the job." },
+    deliverable: { type: "string", description: "What it hands back when done." },
+    doneCriteria: { type: "string", description: "How you will both know the job is finished." },
+    requestId: { type: "string" },
+    title: { type: "string" },
+    why: SPAWN_WHY_JSON_SCHEMA,
+    target: {
+      type: "object",
+      description: "Where it runs. Omit to run on your own provider and model.",
+      properties: {
+        provider: { type: "string", enum: [...PROVIDER_KINDS] },
+        model: { type: "string" },
+        effort: { type: "string" },
+      },
+      required: ["provider"],
+    },
+    mode: { type: "string", enum: [...INTERACTION_MODES] },
+  },
+  required: ["name", "role", "instructions", "task", "scope", "deliverable", "doneCriteria", "requestId"],
 } satisfies GatewayRecord;
 
 export const WAIT_FOR_RESPONSES_JSON_SCHEMA = {

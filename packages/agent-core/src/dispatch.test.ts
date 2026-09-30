@@ -51,6 +51,7 @@ class FakeAdapter {
   };
   static sent: string[] = [];
   static startedCwds: string[] = [];
+  static startedAgents: Array<SessionStartInput["agent"]> = [];
   static turnCounter = 0;
   constructor(readonly emit: EmitEvent) {}
   async discover(): Promise<never[]> {
@@ -60,11 +61,12 @@ class FakeAdapter {
     return [];
   }
   async startSession(
-    input: Pick<SessionStartInput, "threadId" | "cwd">,
+    input: Pick<SessionStartInput, "threadId" | "cwd" | "agent">,
   ): Promise<{ threadId: string; provider: "codex" }> {
     // The directory a provider process would have been spawned in. Recorded
     // before the gate so a test can tell the session has started coming up.
     FakeAdapter.startedCwds.push(input.cwd);
+    FakeAdapter.startedAgents.push(input.agent);
     if (startGate) await startGate;
     return { threadId: input.threadId, provider: "codex" };
   }
@@ -365,6 +367,35 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello" });
     const block = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
     expect(block?.role === "user" ? block.sender : "missing").toBeUndefined();
+  });
+
+  test("a contractor's session wakes as the contractor, whoever starts it", async () => {
+    const { store, dispatcher } = await harness();
+    const contract = {
+      name: "Frontend Auth",
+      role: "Frontend auth specialist",
+      instructions: "Keep components small.",
+      scope: "Login screens.",
+      deliverable: "Working screens.",
+      doneCriteria: "Tests pass.",
+    };
+    store.writeSpawnedThread({
+      threadId: "t-contractor",
+      projectPath: CWD,
+      provider: "codex",
+      createdAt: 1,
+      title: "Login screens",
+      lineage: { parentThreadId: THREAD, relationshipToParent: "delegation", rootThreadId: THREAD },
+      contract,
+    });
+    FakeAdapter.startedAgents = [];
+
+    // A start that names no persona — the user reopening the thread, a resume.
+    await dispatcher.startThread({ threadId: "t-contractor", provider: "codex", cwd: CWD });
+
+    expect(FakeAdapter.startedAgents.at(-1)?.name).toBe("Frontend Auth");
+    expect(FakeAdapter.startedAgents.at(-1)?.instructions).toContain("Frontend auth specialist");
+    expect(FakeAdapter.startedAgents.at(-1)?.instructions).toContain("Keep components small.");
   });
 
   test("a silent first turn does not name the thread after itself", async () => {

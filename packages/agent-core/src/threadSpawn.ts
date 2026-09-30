@@ -28,6 +28,7 @@ import {
 } from "./types.js";
 import type {
   AgentPersona,
+  ContractTerms,
   InteractionMode,
   ModelDescriptor,
   ProviderKind,
@@ -62,6 +63,7 @@ export interface SpawnEngineStore {
     createdAt: number;
     title: string;
     lineage: ThreadLineage;
+    contract?: ContractTerms;
   }): boolean;
   threadLineage(threadId: string): ThreadLineage | null;
   /** Bind a delegated child to the agent it runs as, before its first turn
@@ -193,9 +195,15 @@ export type SpawnRequest = {
    *  model). Absent for an anonymous sub-agent spawn. */
   delegateToAgentId?: string;
   /** The delegated agent's identity — its name and standing instructions — set
-   *  on the child's session so the model works as that agent. Only meaningful
-   *  alongside `delegateToAgentId`; ignored otherwise. */
+   *  on the child's session so the model works as that agent. Meaningful
+   *  alongside `delegateToAgentId` or `contract`; ignored otherwise. */
   persona?: AgentPersona;
+  /** When this spawn is a contract: the terms the calling agent wrote for an
+   *  agent it made up on the spot. The child is an agent (a `"delegation"`
+   *  edge, counted against the delegation depth) whose identity is kept on its
+   *  own thread instead of being bound to a roster row. Never alongside
+   *  `delegateToAgentId`. */
+  contract?: ContractTerms;
   /** What is left of the target's fallback chain, in the order to try it. Used
    *  twice, at two different moments: the engine walks it here if the child
    *  cannot even be STARTED on `target` because that model is rate-limited or
@@ -521,6 +529,7 @@ class SpawnEngineImpl implements SpawnEngine {
       request.mode,
       request.title,
       request.delegateToAgentId,
+      request.contract ? JSON.stringify(request.contract) : undefined,
     ]);
     const reserve = this.store.reserveGatewayOp({
       threadId: caller.threadId,
@@ -553,7 +562,8 @@ class SpawnEngineImpl implements SpawnEngine {
     // A worker is a thread started as one — the "subagent" edge — and starts
     // nothing; only a delegation (or contract) lengthens the agent chain.
     const parentRole = parent.lineage?.relationshipToParent === "subagent" ? "worker" : "agent";
-    const childKind = request.delegateToAgentId ? "agent" : "worker";
+    const childIsAgent = Boolean(request.delegateToAgentId || request.contract);
+    const childKind = childIsAgent ? "agent" : "worker";
 
     const check = checkSpawn({
       prompt: request.prompt,
@@ -581,7 +591,7 @@ class SpawnEngineImpl implements SpawnEngine {
 
     const lineage: ThreadLineage = {
       parentThreadId: caller.threadId,
-      relationshipToParent: request.delegateToAgentId ? "delegation" : "subagent",
+      relationshipToParent: childIsAgent ? "delegation" : "subagent",
       rootThreadId: parent.lineage?.rootThreadId ?? caller.threadId,
     };
     if (
@@ -593,6 +603,7 @@ class SpawnEngineImpl implements SpawnEngine {
         createdAt: now,
         title,
         lineage,
+        contract: request.contract,
       })
     ) {
       throw new SpawnError("internal", "Failed to persist the spawned thread row.");

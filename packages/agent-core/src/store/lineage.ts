@@ -7,6 +7,7 @@ import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, THREAD_USAGE_COLUMNS, type ThreadRow } from "../conversationStoreTypes.js";
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
 import { encodeMessageSender } from "@kone/protocol/message-sender";
+import { encodeContractTerms, type ContractTerms } from "@kone/protocol/contract";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
   buildEditForkTitle,
@@ -830,6 +831,8 @@ export class LineageRepo {
     createdAt: number;
     title: string;
     lineage: ThreadLineage;
+    /** A contractor's terms; absent for any other spawn. */
+    contract?: ContractTerms;
   }): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
@@ -840,8 +843,8 @@ export class LineageRepo {
         db.prepare(
           `INSERT INTO threads (
              thread_id, project_path, provider, model, created_at,
-             last_activity_at, title, relationship_to_parent, parent_thread_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             last_activity_at, title, relationship_to_parent, parent_thread_id, contract_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           input.threadId,
           input.projectPath,
@@ -852,6 +855,7 @@ export class LineageRepo {
           input.title,
           input.lineage.relationshipToParent ?? null,
           input.lineage.parentThreadId,
+          input.contract ? encodeContractTerms(input.contract) : null,
         );
       });
       return true;

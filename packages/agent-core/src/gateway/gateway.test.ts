@@ -318,6 +318,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "agent_directory",
       "worker_start",
       "agent_delegate",
+      "agent_contract",
       "worker_start_batch",
       "agent_followup",
       "agent_withdraw",

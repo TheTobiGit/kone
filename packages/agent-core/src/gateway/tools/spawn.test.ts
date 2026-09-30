@@ -3,7 +3,7 @@ import { initSpawnEngine as realInitSpawnEngine } from "../../threadSpawn.js";
 import { parseSpawnRecords } from "@kone/protocol/spawn-record";
 import { z } from "zod";
 
-import type { AgentPersona, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
+import type { AgentPersona, ContractTerms, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
 import type {
   AgentRecord,
   NativeSubagentConfig,
@@ -64,6 +64,8 @@ type FakeSpawnRequest = {
    *  identity into the session. A plain spawn leaves both undefined. */
   delegateToAgentId?: string;
   persona?: AgentPersona;
+  /** Set only by a contract — the terms of an agent made up for the job. */
+  contract?: ContractTerms;
   fallbacks?: Array<{ provider: string; model?: string }>;
 };
 type FakeWaitInput = {
@@ -261,6 +263,7 @@ describe("spawn gateway tools", () => {
       agent_directory: { permission: "allow", requiresActiveTurn: false },
       worker_start: { permission: "allow", requiresActiveTurn: true },
       agent_delegate: { permission: "allow", requiresActiveTurn: true },
+      agent_contract: { permission: "allow", requiresActiveTurn: true },
       worker_start_batch: { permission: "allow", requiresActiveTurn: true },
       agent_followup: { permission: "allow", requiresActiveTurn: true },
       agent_withdraw: { permission: "allow", requiresActiveTurn: true },
@@ -305,6 +308,7 @@ describe("spawn gateway tools", () => {
       "agent_directory",
       "worker_start",
       "agent_delegate",
+      "agent_contract",
       "worker_start_batch",
       "agent_followup",
       "agent_withdraw",
@@ -797,7 +801,7 @@ describe("spawn gateway tools", () => {
           why: "the suite is slow and I can keep refactoring meanwhile",
         },
       ],
-      summary: 'Spawned "Fix tests" on codex/gpt-5 as child-1. Collect its response with agent_wait.',
+      summary: 'Started worker "Fix tests" on codex/gpt-5 as child-1. Collect its response with agent_wait.',
     });
     // The why is the thread's to show, not the child's to read.
     expect(capturedRequest).not.toHaveProperty("why");
@@ -1320,7 +1324,7 @@ describe("agent_spawn_preset", () => {
           why: "I need the map before I touch the middleware",
         },
       ],
-      summary: 'Spawned "Look around" from preset Explorer on claudeAgent/haiku as child-1. Collect its response with agent_wait.',
+      summary: 'Started worker "Look around" from preset Explorer on claudeAgent/haiku as child-1. Collect its response with agent_wait.',
     });
     expect(capturedRequest).not.toHaveProperty("why");
   });
@@ -2000,6 +2004,59 @@ describe("agent_delegate", () => {
       },
     });
   const backend = makeAgent({ model: { provider: "codex", model: "gpt-5" } });
+
+  test("agent_contract opens an agent under the identity and terms the caller wrote", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = delegatingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "agent_contract", {
+      name: "Frontend Auth",
+      role: "Frontend auth specialist",
+      instructions: "Keep components small and accessible.",
+      task: "Build the login and signup screens.",
+      scope: "The two screens; not the API.",
+      deliverable: "Working screens wired to the auth endpoints.",
+      doneCriteria: "Both render and the auth tests pass.",
+      requestId: "c-1",
+      title: "Auth screens",
+      why: "the frontend is a job of its own",
+    });
+    expect(res.isError).toBeUndefined();
+    const request = captured[0]!;
+    expect(request.contract).toEqual({
+      name: "Frontend Auth",
+      role: "Frontend auth specialist",
+      instructions: "Keep components small and accessible.",
+      scope: "The two screens; not the API.",
+      deliverable: "Working screens wired to the auth endpoints.",
+      doneCriteria: "Both render and the auth tests pass.",
+    });
+    expect(request.persona?.name).toBe("Frontend Auth");
+    expect(request.prompt).toStartWith("Build the login and signup screens.\n\nContract terms:");
+    expect(request.delegateToAgentId).toBeUndefined();
+    const [record] = parseSpawnRecords(res.content[0]?.text);
+    expect(record).toMatchObject({
+      threadId: "child-c-1",
+      contractor: "Frontend Auth",
+      contractorRole: "Frontend auth specialist",
+      why: "the frontend is a job of its own",
+    });
+  });
+
+  test("agent_contract refuses terms with a part missing", async () => {
+    currentEngine = delegatingEngine([]);
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "agent_contract", {
+      name: "Frontend Auth",
+      role: "Frontend auth specialist",
+      instructions: "Keep components small.",
+      task: "Build the screens.",
+      scope: "The screens.",
+      deliverable: "Screens.",
+      requestId: "c-2",
+    });
+    expect(res.structuredContent).toMatchObject({ error: { code: "invalid_input" } });
+  });
 
   test("runs the work as the teammate and records who was asked, and why", async () => {
     const captured: FakeSpawnRequest[] = [];

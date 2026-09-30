@@ -1,8 +1,8 @@
-// One dispatch, however it was asked for. worker_start,
-// worker_start, agent_delegate and each item of
-// worker_start_batch all come down to the same steps — resolve what the item
-// names into an engine request, open the thread, and record it — so those steps
-// live here once and each tool only maps its own arguments onto an item.
+// One dispatch, however it was asked for. worker_start, agent_delegate,
+// agent_contract and each item of worker_start_batch all come down to the same
+// steps — resolve what the item names into an engine request, open the thread,
+// and record it — so those steps live here once and each tool only maps its own
+// arguments onto an item.
 
 import type { SpawnCaller, SpawnEngine, SpawnRequest, SpawnTargetsReport } from "../../threadSpawn.js";
 import type {
@@ -23,6 +23,8 @@ import { resolveLegacyPresetId } from "@kone/protocol/subagent-presets";
 import { presetNameKey } from "../../rosterRecord.js";
 import { planPresetSpawn } from "../../presetSpawn.js";
 import { resolveDelegation } from "../../delegate.js";
+import { contractPersona } from "../../contractPersona.js";
+import { renderContractBrief, type ContractTerms } from "@kone/protocol/contract";
 import type { ModelCandidate, ModelSelection, ProviderAvailability } from "../../agentModel.js";
 import { GatewayToolError, type GatewayRecord } from "../schemas.js";
 
@@ -57,6 +59,8 @@ export type DispatchItem = {
   target?: { provider: ProviderKind; model?: string; effort?: string };
   preset?: string;
   agent?: string;
+  /** An agent made up for this job — its identity and the job's terms. */
+  contract?: ContractTerms;
   mode?: InteractionMode;
   model?: AgentModelRef;
 };
@@ -66,7 +70,8 @@ export type DispatchItem = {
 export type DispatchMeta =
   | { kind: "spawn" }
   | { kind: "preset"; preset: string; selection: ModelSelection }
-  | { kind: "delegation"; agent: string; agentId: string; selection: ModelSelection };
+  | { kind: "delegation"; agent: string; agentId: string; selection: ModelSelection }
+  | { kind: "contract"; contractor: string; role: string };
 
 type PreparedDispatch =
   | { ok: true; request: SpawnRequest; meta: DispatchMeta }
@@ -225,6 +230,22 @@ async function prepareDispatch(
     };
   }
 
+  if (item.contract) {
+    return {
+      ok: true,
+      request: {
+        requestId: item.requestId,
+        prompt: renderContractBrief(item.prompt, item.contract),
+        title: item.title,
+        target: inheritSpawnTarget(caller, item.target),
+        mode: item.mode,
+        contract: item.contract,
+        persona: contractPersona(item.contract),
+      },
+      meta: { kind: "contract", contractor: item.contract.name, role: item.contract.role },
+    };
+  }
+
   if (item.preset) {
     const preset = findPreset(store, item.preset);
     if (!preset) {
@@ -294,6 +315,10 @@ function spawnRecordFor(
     record.agent = meta.agent;
     record.agentId = meta.agentId;
   }
+  if (meta.kind === "contract") {
+    record.contractor = meta.contractor;
+    record.contractorRole = meta.role;
+  }
   return record;
 }
 
@@ -331,9 +356,11 @@ export function spawnSentence(result: SpawnThreadResult, meta: DispatchMeta): st
   const handed =
     meta.kind === "delegation"
       ? `Delegated "${result.title}" to ${meta.agent}`
-      : meta.kind === "preset"
-        ? `Spawned "${result.title}" from preset ${meta.preset}`
-        : `Spawned "${result.title}"`;
+      : meta.kind === "contract"
+        ? `Contracted ${meta.contractor} (${meta.role}) for "${result.title}"`
+        : meta.kind === "preset"
+          ? `Started worker "${result.title}" from preset ${meta.preset}`
+          : `Started worker "${result.title}"`;
   const place = `${result.provider}${result.model ? `/${result.model}` : ""}`;
   return `${handed} on ${place} as ${result.threadId}.${failoverNote(result)} Collect its response with agent_wait.`;
 }
@@ -349,5 +376,7 @@ export function structuredDispatch(result: SpawnThreadResult, meta: DispatchMeta
       return { spawn: result, preset: meta.preset, selection: meta.selection };
     case "delegation":
       return { delegation: result, agent: meta.agent, selection: meta.selection };
+    case "contract":
+      return { contract: result, contractor: meta.contractor, role: meta.role };
   }
 }

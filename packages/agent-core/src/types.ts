@@ -706,6 +706,10 @@ export type StoredThreadMeta = {
    *  the spawn design). `relationshipToParent === "side_chat"` is the
    *  discriminator. */
   lineage?: ThreadLineage;
+  /** A contractor's terms: set on a thread an agent contracted, which is a
+   *  `"delegation"` edge whose identity came from the contract rather than the
+   *  roster. Absent on every other thread. */
+  contract?: ContractTerms;
   /** Short text excerpt or preview of the latest turn/prompt. */
   snippet?: string;
 };
@@ -742,6 +746,8 @@ export type {
   SenderRelationship,
 } from "@kone/protocol/message-sender";
 import type { MessageSender } from "@kone/protocol/message-sender";
+export type { ContractTerms } from "@kone/protocol/contract";
+import type { ContractTerms } from "@kone/protocol/contract";
 
 /** One imported transcript row, in the shape `writeForkThread` takes. */
 export type ForkImportedBlock = {

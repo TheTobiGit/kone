@@ -25,6 +25,20 @@ function v14Database() {
   return { db, file };
 }
 
+describe("migration 16: ThreadContract", () => {
+  test("existing threads carry no contract, and the column refuses anything but JSON", () => {
+    const { db, file } = v14Database();
+    migrate(db, file);
+    // SAFETY: one row projecting the TEXT contract_json column.
+    const row = db.prepare("SELECT contract_json FROM threads WHERE thread_id = 't-1'").get() as {
+      contract_json: string | null;
+    };
+    expect(row.contract_json).toBeNull();
+    expect(() => db.exec(`UPDATE threads SET contract_json = 'not json' WHERE thread_id = 't-1'`)).toThrow(/CHECK/);
+    db.close();
+  });
+});
+
 describe("migration 15: BlockSender", () => {
   test("existing prompts keep reading as the user", () => {
     const { db, file } = v14Database();
