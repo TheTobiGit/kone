@@ -912,7 +912,7 @@ watch(
       if (list?.length) {
         // SAFETY: raw is Partial<Record<ProviderKind, ModelOption[]>>, so
         // every key Object.entries yields is a ProviderKind.
-        next[provider as ProviderKind] = buildModelCatalog(list);
+        next[provider as ProviderKind] = buildModelCatalog(list, provider as ProviderKind);
       }
     }
     catalogs.value = { ...catalogs.value, ...next };
@@ -1226,7 +1226,7 @@ onMounted(async () => {
   await Promise.all(
     readyProviders.map(async (s) => {
       const raw = await providers.models(s.provider);
-      catalogs.value = { ...catalogs.value, [s.provider]: buildModelCatalog(raw) };
+      catalogs.value = { ...catalogs.value, [s.provider]: buildModelCatalog(raw, s.provider) };
     }),
   );
 

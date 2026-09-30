@@ -69,7 +69,7 @@ const catalogs = computed<Partial<Record<ProviderKind, ModelOption[]>>>(() => {
   for (const [prov, list] of Object.entries(providers.modelCache.value)) {
     if (list) {
       // SAFETY: Keys of modelCache correspond to ProviderKind values
-      out[prov as ProviderKind] = buildModelCatalog(list);
+      out[prov as ProviderKind] = buildModelCatalog(list, prov as ProviderKind);
     }
   }
   return out;

@@ -120,7 +120,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     (raw) => {
       const next: Partial<Record<ProviderKind, ModelOption[]>> = {};
       for (const [provider, list] of Object.entries(raw)) {
-        if (list?.length) next[toProviderKind(provider)] = buildModelCatalog(list);
+        if (list?.length) next[toProviderKind(provider)] = buildModelCatalog(list, toProviderKind(provider));
       }
       catalogs.value = { ...catalogs.value, ...next };
     },
@@ -476,7 +476,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     await Promise.all(
       enabledReady.value.map(async (s) => {
         const raw = await providers.models(s.provider);
-        catalogs.value = { ...catalogs.value, [s.provider]: buildModelCatalog(raw) };
+        catalogs.value = { ...catalogs.value, [s.provider]: buildModelCatalog(raw, s.provider) };
       }),
     );
   });

@@ -44,9 +44,8 @@ export const PROVIDER_LABEL = {
  *    dark (brand `#020202` on `#F5F5F5`; the old green had no brand basis).
  *  - antigravity: Google blue `#4285F4` (≈ Antigravity royal `#3186FF`),
  *    both schemes.
-  *  - cline: a teal stand-in (`#0d9488` in light, `#2dd4bf` in dark) until
-  *    Cline's official mark lands in ProviderLogo — separable from every brand
-  *    above on both grounds. */
+  *  - cline: the brand's purple `#9F58FA`, both schemes (its ink `#151516`
+  *    would read as a fifth dark line). */
 export const PROVIDER_COLORS = {
   light: {
     codex: "#1b1b1e",
@@ -55,7 +54,7 @@ export const PROVIDER_COLORS = {
     cursor: "#f54e00",
     droid: "#3f3f46",
     antigravity: "#4285f4",
-    cline: "#0d9488",
+    cline: "#9f58fa",
   },
   dark: {
     codex: "#e6e6e6",
@@ -64,7 +63,7 @@ export const PROVIDER_COLORS = {
     cursor: "#f54e00",
     droid: "#71717a",
     antigravity: "#4285f4",
-    cline: "#2dd4bf",
+    cline: "#9f58fa",
   },
 } satisfies Record<ThemeScheme, Record<ProviderKind, string>>;
 
