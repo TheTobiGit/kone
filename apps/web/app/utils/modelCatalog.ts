@@ -51,8 +51,14 @@ export type BrandKey =
  *  `composer-*` family; antigravity re-sells Gemini, Claude and GPT-OSS; cline
  *  re-sells hundreds, stealth models among them), each with its own mark. A
  *  model names its true vendor where one is known, and wears the harness's
- *  mark where none is — never the anonymous dot. */
-export const HARNESS_BRANDS: Partial<Record<ProviderKind, BrandKey>> = {
+ *  mark where none is — never the anonymous dot.
+ *
+ *  Keyed by provider so any ProviderKind indexes it. A named interface rather
+ *  than an inline Record: the lint contract for owner-keyed tables only
+ *  recognises an interface declaration, so this stays empty on purpose — do
+ *  not collapse it to a type alias. */
+interface HarnessBrandMap extends Partial<Record<ProviderKind, BrandKey>> {}
+export const HARNESS_BRANDS: HarnessBrandMap = {
   opencode: "opencode",
   cursor: "cursor",
   antigravity: "antigravity",

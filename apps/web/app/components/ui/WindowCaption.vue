@@ -6,9 +6,9 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 // Windows: a cluster fixed top-right over the content. Linux: a slim bar
 // across the top that the app sits below (`--titlebar-h`), holding the drag
 // surface and the same buttons. Above every surface so the controls stay
-// reachable with any portal open. Mount once via Teleport to body —
-// the stage transform would otherwise re-anchor `fixed` when the settings
-// drawer slides it.
+// reachable with any portal open. Callers mount this under Teleport to
+// body — the template below is a plain fixed div, and a transformed
+// ancestor (the sliding settings stage) would otherwise re-anchor it.
 
 // The boot-time chrome decision (plugins/frameless), not a re-derivation.
 const chrome = useNuxtApp().$shellChrome;

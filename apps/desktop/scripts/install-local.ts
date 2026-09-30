@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 // Package kone and promote it into /Applications as a dogfood build.
 //
@@ -91,8 +92,8 @@ async function installLinux() {
   // artifacts used the package name ("desktop"), so probe both plus "Kone".
   // The configured name wins when present; anything else is a legacy fallback.
   const configured = await readLinuxExecutableName();
-  const candidates = [...new Set([configured, "kone", "Kone", "desktop"].filter(Boolean))];
-  const binaryName = candidates.find((n) => existsSync(path.join(builtDir, n as string)));
+  const candidates = [...new Set([configured, "kone", "Kone", "desktop"].filter((n): n is string => n !== null))];
+  const binaryName = candidates.find((n) => existsSync(path.join(builtDir, n)));
   if (!binaryName) {
     console.error(`No executable found in ${builtDir} (tried ${candidates.join(", ")}).`);
     process.exit(1);
@@ -151,11 +152,21 @@ async function installLinux() {
   console.log(`Desktop entry: ${desktopEntry}`);
 }
 
+/** package.json decoded at the file I/O boundary: only the Linux executable
+ *  name matters, everything else passes through unread. */
+const DesktopPackageSchema = z.object({
+  build: z
+    .object({ linux: z.object({ executableName: z.string().min(1) }).partial() })
+    .partial()
+    .optional(),
+});
+
 async function readLinuxExecutableName(): Promise<string | null> {
   try {
-    const pkg = await Bun.file(path.join(desktopDir, "package.json")).json();
-    const name = pkg?.build?.linux?.executableName;
-    return typeof name === "string" && name.length > 0 ? name : null;
+    const pkg: unknown = await Bun.file(path.join(desktopDir, "package.json")).json();
+    const parsed = DesktopPackageSchema.safeParse(pkg);
+    if (!parsed.success) return null;
+    return parsed.data.build?.linux?.executableName ?? null;
   } catch {
     return null;
   }

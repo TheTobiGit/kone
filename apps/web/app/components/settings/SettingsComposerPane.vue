@@ -198,6 +198,7 @@ function onTrackKey(e: KeyboardEvent) {
   const next = INTERACTION_MODES[modeIndex.value + step];
   if (!next) return;
   chooseMode(next.id);
+  // SAFETY: this handler is bound to the track element, so currentTarget is that HTMLElement.
   const track = e.currentTarget as HTMLElement;
   track.querySelectorAll<HTMLElement>("[role=radio]")[modeIndex.value]?.focus();
 }
