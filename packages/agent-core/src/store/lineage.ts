@@ -6,6 +6,7 @@ import { isBranchForkContext, isContinuationForkContext } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, THREAD_USAGE_COLUMNS, type ThreadRow } from "../conversationStoreTypes.js";
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
+import { encodeMessageSender } from "@kone/protocol/message-sender";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
   buildEditForkTitle,
@@ -57,6 +58,7 @@ type ForkPrefixBlock = {
   effort: string | null;
   model: string | null;
   source: string;
+  sender_json: string | null;
 };
 
 /** The fork point's own columns: its arrival order (which bounds the copied
@@ -151,7 +153,7 @@ function readForkPrefix(
     .prepare(
       `SELECT role, turn_id, text,
               CASE WHEN state = 'running' THEN 'interrupted' ELSE state END AS state,
-              error, at, ended_at, attachments_json, effort, model, source
+              error, at, ended_at, attachments_json, effort, model, source, sender_json
          FROM blocks
         WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
         ORDER BY seq`,
@@ -222,8 +224,8 @@ function insertForkThreadRow(
  *  timestamps, same attachment metadata, same settlement states. */
 function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPrefixBlock[]): void {
   const insertBlock = db.prepare(
-    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source, sender_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const block of prefix) {
     insertBlock.run(
@@ -240,6 +242,7 @@ function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPr
       block.effort,
       block.model,
       block.source,
+      block.sender_json,
     );
   }
 }
@@ -482,8 +485,8 @@ export class LineageRepo {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const insertBlock = db.prepare(
-        `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, at, ended_at, attachments_json, effort, model, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork-import')`,
+        `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, at, ended_at, attachments_json, effort, model, source, sender_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork-import', ?)`,
       );
       const insertNarrativeItem = db.prepare(
         `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, at)
@@ -526,6 +529,7 @@ export class LineageRepo {
               block.attachments?.length ? JSON.stringify(block.attachments) : null,
               block.effort ?? null,
               block.model ?? null,
+              block.role === "user" ? encodeMessageSender(block.sender) : null,
             );
             // Imported history is written once and settled by construction,
             // so it indexes inline — there is no later completion event that

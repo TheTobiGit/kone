@@ -37,6 +37,7 @@ import {
   type ProviderAvailability,
 } from "../../agentModel.js";
 import { resolveDelegation } from "../../delegate.js";
+import { agentSenderFor } from "../../senderHeader.js";
 import { compact, decodeCursor, encodeCursor, squash } from "../helpers.js";
 import type {
   AgentPersona,
@@ -836,7 +837,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // thread's transcript names who answered from its very first block.
     if (agentId) store.bindThreadAgent(threadId, agentId);
 
-    const turnInput: SendTurnInput = { threadId, input: params.prompt };
+    // The brief is this agent's, not the user's: the new thread is the user's
+    // own, on their board, but its first words came from here.
+    const turnInput: SendTurnInput = {
+      threadId,
+      input: params.prompt,
+      sender: agentSenderFor(store, ctx.threadId, "peer", "brief"),
+    };
     if (target.model) turnInput.model = target.model;
     if (params.mode) turnInput.mode = params.mode;
     const turn = await runner.sendThreadTurn(
@@ -964,7 +971,11 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // Only a running turn is busy. "starting" is a session that is up with no
     // turn run yet: a send goes straight to it.
     const busy = status === "working";
-    const turnInput: SendTurnInput = { threadId: params.threadId, input: params.message };
+    const turnInput: SendTurnInput = {
+      threadId: params.threadId,
+      input: params.message,
+      sender: agentSenderFor(store, ctx.threadId, "peer", "note"),
+    };
     // The service queues a send that lands on a busy thread, the same durable
     // queue a user's follow-up joins. A steer goes into the running turn — only
     // when there is one to go into and the host can reach it.
@@ -995,7 +1006,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       content: [
         {
           type: "text",
-          text: `${summary} It shows in that thread as a message from the user. Read the reply back with app_read_thread.`,
+          text: `${summary} It shows in that thread as a message from you, not from the user. Read the reply back with app_read_thread.`,
         },
       ],
       structuredContent: payload,

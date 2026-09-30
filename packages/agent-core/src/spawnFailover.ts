@@ -1,6 +1,7 @@
 import { isQuotaOrRateLimitError } from "./adapters/errors.js";
 import type { ModelCandidate } from "./agentModel.js";
 import type { ThreadDispatcher } from "./dispatch.js";
+import { agentSenderFor } from "./senderHeader.js";
 import { checkSpawn } from "./spawnGuards.js";
 import type {
   SpawnAttempt,
@@ -120,7 +121,18 @@ export class SpawnFailoverRunner {
           turnId: caller.turnId,
           requestId: request.requestId,
         });
-        const turnInput: SendTurnInput = { threadId, input: request.prompt };
+        // The brief is the spawning agent talking, not the user: journaled and
+        // headed as such, so the child weighs it as a hand-off it may question.
+        const turnInput: SendTurnInput = {
+          threadId,
+          input: request.prompt,
+          sender: agentSenderFor(
+            this.deps.store,
+            caller.threadId,
+            request.delegateToAgentId ? "delegator" : "parent",
+            "brief",
+          ),
+        };
         if (failover) turnInput.fallbacks = failover;
         const turnStart = await this.deps.dispatcher.sendThreadTurn(
           turnInput,

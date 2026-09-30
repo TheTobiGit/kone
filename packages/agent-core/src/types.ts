@@ -295,6 +295,10 @@ export type SendTurnInput = {
   dispatchMode?: "queue" | "steer";
   /** Files/images attached to this turn (metadata only; bytes live on disk). */
   attachments?: ChatAttachment[];
+  /** Who is saying this turn. Absent = the user. An agent sender is journaled
+   *  on the block and announced to the model in a header in front of the
+   *  text, so the receiving agent never mistakes it for its user. */
+  sender?: MessageSender;
   /** Override the session model for this turn. */
   model?: string;
   mode?: InteractionMode;
@@ -729,6 +733,16 @@ export function copyTurnStamp(
   if (from.model) to.model = from.model;
 }
 
+/** Who said a message. Canonical definition lives in @kone/protocol (shared
+ *  with the renderer); absent on a block means the user typed it. */
+export type {
+  AgentSender,
+  MessageKind,
+  MessageSender,
+  SenderRelationship,
+} from "@kone/protocol/message-sender";
+import type { MessageSender } from "@kone/protocol/message-sender";
+
 /** One imported transcript row, in the shape `writeForkThread` takes. */
 export type ForkImportedBlock = {
   id: string;
@@ -736,6 +750,8 @@ export type ForkImportedBlock = {
   text: string;
   at: number;
   attachments?: ChatAttachment[];
+  /** Who said a user-role row; absent = the user. */
+  sender?: MessageSender;
 } & TurnStamp;
 
 /** One reconstructed block — the persisted form of a renderer timeline block. */
@@ -750,6 +766,9 @@ export type StoredBlock =
        *  row); `"fork-import"` = copied in from a side chat's source thread,
        *  carrying its original `at` and never refreshing `updated_at`. */
       source?: BlockSource;
+      /** Who said it. Absent = the user; an agent's brief, follow-up or
+       *  message carries the agent and how it relates to this thread. */
+      sender?: MessageSender;
     } & TurnStamp)
   | {
       id: string;

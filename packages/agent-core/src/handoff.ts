@@ -136,6 +136,7 @@ function buildHandoffImportedBlocks(
     const row: ForkImportedBlock = { id: randomUUID(), role: b.role, text, at: b.at };
     if (b.role === "user") {
       if (b.attachments?.length) row.attachments = b.attachments;
+      if (b.sender) row.sender = b.sender;
       copyTurnStamp(b, row);
     }
     rows.push(row);

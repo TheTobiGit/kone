@@ -14,6 +14,7 @@ import type {
   SubagentRun,
 } from "./types.js";
 import { copyTurnStamp } from "./types.js";
+import { parseMessageSender } from "@kone/protocol/message-sender";
 import { threadEnvMode } from "./threadWorkspace.js";
 import { priceTurnUsage } from "./usage/storeUsage.js";
 import type { ThreadEnvMode, ThreadWorkspace } from "./threadWorkspace.js";
@@ -198,6 +199,9 @@ export type BlockRow = {
    *  written before the model was journaled. */
   model: string | null;
   source: BlockSource;
+  /** Who said a user-role block, as JSON; NULL = the user. Absent on rows read
+   *  through a projection that doesn't name it. */
+  sender_json?: string | null;
 };
 
 /** An attachment's registry row — its metadata plus where the bytes live. */
@@ -665,6 +669,8 @@ export function assembleBlocks(
       if (attachments?.length) block.attachments = attachments;
       copyTurnStamp(b, block);
       if (b.source === "fork-import") block.source = "fork-import";
+      const sender = parseMessageSender(b.sender_json);
+      if (sender) block.sender = sender;
       return block;
     }
     const block: StoredBlock = {

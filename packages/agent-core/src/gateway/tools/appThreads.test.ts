@@ -1131,7 +1131,9 @@ describe("app_send_to_thread", () => {
     );
 
     expect(result.isError).toBeUndefined();
-    expect(calls.turns[0]?.input).toEqual({ threadId: "t-newest", input: "Also run the tests" });
+    expect(calls.turns[0]?.input).toMatchObject({ threadId: "t-newest", input: "Also run the tests" });
+    // It lands as this agent's words, not the user's.
+    expect(calls.turns[0]?.input.sender).toMatchObject({ kind: "agent", relationship: "peer", messageKind: "note" });
     expect(calls.resumed).toHaveLength(0);
     expect(text(result)).toContain('Sent to "Wire the projects module" (t-newest), and woke it with a new turn.');
   });

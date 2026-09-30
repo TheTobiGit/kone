@@ -446,6 +446,7 @@ function buildImportedBlocks(source: StoredThread): ForkImportedBlock[] {
         at: b.at,
       };
       if (b.attachments?.length) imported.attachments = b.attachments;
+      if (b.sender) imported.sender = b.sender;
       copyTurnStamp(b, imported);
       rows.push(imported);
       continue;
