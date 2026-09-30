@@ -141,8 +141,7 @@ const PROVIDER_META = {
     label: "Cline",
     vendor: "Cline",
     brand: "cline",
-    // Teal stand-in wash until Cline's official brand lands (see ProviderLogo).
-    grad: "linear-gradient(152deg, #2dd4bf 0%, #0d9488 100%)",
+    grad: "linear-gradient(152deg, #bd8bfc 0%, #9f58fa 100%)",
     blurb: "Cline's coding agent CLI, driven over ACP.",
     binary: "cline",
     signIn: "cline auth",
@@ -529,7 +528,7 @@ const modelRows = computed<ModelRow[]>(() => {
   const provider = current.value.provider;
   const descriptors = providers.modelCache.value[provider] ?? [];
   const byId = new Map(descriptors.map((d) => [d.id, d]));
-  return buildModelCatalog(descriptors).map((fam) => {
+  return buildModelCatalog(descriptors, provider).map((fam) => {
     const rep = fam.efforts[0]?.modelId ? byId.get(fam.efforts[0].modelId) : undefined;
     const tokens =
       fam.contextWindows?.find((w) => w.isDefault)?.tokens ??
@@ -566,10 +565,10 @@ const hiddenCount = computed(() =>
   ),
 );
 
-/** Whether the open provider's brand is a harness (opencode/cursor) — then a
- *  model's own vendor is worth naming, since the catalog spans many vendors. */
+/** Whether the open provider's brand is a harness (opencode/cursor/cline) — then
+ *  a model's own vendor is worth naming, since the catalog spans many vendors. */
 const showVendor = computed(() =>
-  current.value.provider === "opencode" || current.value.provider === "cursor",
+  ["opencode", "cursor", "cline"].includes(current.value.provider),
 );
 
 function toggleModel(key: string) {

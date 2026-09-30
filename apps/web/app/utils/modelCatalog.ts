@@ -48,14 +48,16 @@ export type BrandKey =
 /** Provider kinds that are *harnesses* — a house of upstream providers, so one
  *  provider's catalog spans many real vendors (opencode → deepseek, openai,
  *  qwen, …; cursor re-sells claude, gpt, gemini, grok, kimi plus its own
- *  `composer-*` family; antigravity re-sells Gemini, Claude and GPT-OSS). For
- *  these, a model row shows the harness's own mark with the model's true vendor
- *  badge on its corner, instead of the vendor mark alone. */
-export const HARNESS_PROVIDERS: ReadonlySet<ProviderKind> = new Set([
-  "opencode",
-  "cursor",
-  "antigravity",
-]);
+ *  `composer-*` family; antigravity re-sells Gemini, Claude and GPT-OSS; cline
+ *  re-sells hundreds, stealth models among them), each with its own mark. A
+ *  model names its true vendor where one is known, and wears the harness's
+ *  mark where none is — never the anonymous dot. */
+export const HARNESS_BRANDS: Partial<Record<ProviderKind, BrandKey>> = {
+  opencode: "opencode",
+  cursor: "cursor",
+  antigravity: "antigravity",
+  cline: "cline",
+};
 
 /** The reasoning-effort tiers we know how to style, whether baked into an id
  *  suffix or reported live by a provider's real `supportedReasoningEfforts`.
@@ -210,6 +212,7 @@ const GATEWAY_VENDORS: [RegExp, BrandKey, string][] = [
   [/^opencode/, "opencode", "OpenCode"],
   [/^cursor/, "cursor", "Cursor"],
   [/^agy/, "antigravity", "Antigravity"],
+  [/^(cline|stealth)/, "cline", "Cline"],
 ];
 
 /** The logomark and vendor name for a catalog entry.
@@ -247,7 +250,7 @@ export function sessionBrand(
   providerBrand: BrandKey,
   modelId: string | undefined,
 ): BrandKey {
-  if (modelId && HARNESS_PROVIDERS.has(provider)) {
+  if (modelId && HARNESS_BRANDS[provider]) {
     const { brand } = brandOf(modelId);
     if (brand !== "generic") return brand;
   }
@@ -402,8 +405,11 @@ export function parseModelTsvRows(text: string): ParsedModelRow[] {
   return rows;
 }
 
-/** Group a provider's raw model list into family options with real efforts. */
-export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
+/** Group a provider's raw model list into family options with real efforts.
+ *  Pass the provider when the list is one provider's: a harness then marks the
+ *  models whose vendor is unknown with its own logo. */
+export function buildModelCatalog(models: ModelDescriptor[], provider?: ProviderKind): ModelOption[] {
+  const harnessBrand = provider ? HARNESS_BRANDS[provider] : undefined;
   const byCore = new Map<
     string,
     {
@@ -474,7 +480,9 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
     const mediumIdx = efforts.findIndex((e) => e.tier === "medium");
     const defaultEffortIndex =
       providerDefaultIdx >= 0 ? providerDefaultIdx : mediumIdx >= 0 ? mediumIdx : Math.floor((efforts.length - 1) / 2);
-    const { brand, vendor } = brandOf(core);
+    const resolved = brandOf(core);
+    const brand = resolved.brand === "generic" && harnessBrand ? harnessBrand : resolved.brand;
+    const { vendor } = resolved;
     // "Fast" is the only speed tier any real Codex model has offered so far —
     // surface it as a plain on/off toggle rather than a full tier picker.
     const fastEntry = serviceTiers?.find((t) => t.id.toLowerCase() === "fast");

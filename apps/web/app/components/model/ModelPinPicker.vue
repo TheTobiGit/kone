@@ -58,7 +58,7 @@ const providers = computed<ProviderKind[]>(() =>
 );
 
 function catalogFor(p: ProviderKind): ModelOption[] {
-  return buildModelCatalog(modelCache.value[p] ?? []);
+  return buildModelCatalog(modelCache.value[p] ?? [], p);
 }
 
 // Which provider's list is open. Seeded to the pinned model's provider so the

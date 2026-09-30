@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ModelDescriptor } from "~/types/desktop";
-import { buildModelCatalog, describeModelId, familyForId, familyForIdStrict, isPlaceholderModelId, parseModelTsvRows } from "./modelCatalog";
+import {
+  buildModelCatalog,
+  describeModelId,
+  familyForId,
+  familyForIdStrict,
+  isPlaceholderModelId,
+  parseModelTsvRows,
+  sessionBrand,
+} from "./modelCatalog";
 
 /** One descriptor per raw slug, labelled the way OpenCode's `models --verbose`
  *  labels them (the `name` field), so we exercise the real catalog path. */
@@ -64,6 +72,46 @@ describe("brandOf — OpenCode is a house of providers", () => {
       "opencode-go/minimax-m2.7",
     );
     expect(catalog.map((o) => o.brand)).toEqual(["deepseek", "zai", "kimi", "minimax"]);
+  });
+});
+
+describe("a harness marks the models whose vendor it can't name", () => {
+  const cline = (...ids: string[]) =>
+    buildModelCatalog(
+      ids.map((id) => ({ id, label: id })),
+      "cline",
+    ).map((o) => o.brand);
+
+  test("Cline's unknown vendors wear the Cline mark; known vendors keep their own", () => {
+    expect(cline("stealth/pixel-canary", "aion-labs/aion-3.5", "upstage/solar-mini4")).toEqual([
+      "cline",
+      "cline",
+      "cline",
+    ]);
+    expect(cline("anthropic/claude-sonnet-5", "cline-free/mimo-v2.6-flash", "moonshotai/kimi-k3")).toEqual([
+      "claude",
+      "xiaomi",
+      "kimi",
+    ]);
+  });
+
+  test("a gateway-named vendor keeps its name under the harness mark", () => {
+    expect(buildModelCatalog([{ id: "cerebras/something-unknown", label: "x" }], "opencode")[0]).toMatchObject({
+      brand: "opencode",
+      vendor: "Cerebras",
+    });
+  });
+
+  test("a single-vendor provider, or no provider, keeps the dot", () => {
+    expect(buildModelCatalog([{ id: "aion-labs/aion-3.5", label: "x" }], "codex")[0]?.brand).toBe("generic");
+    expect(brandFor("aion-labs/aion-3.5").brand).toBe("generic");
+    // Cline's own gateways resolve without provider context.
+    expect(brandFor("stealth/pixel-canary")).toEqual({ brand: "cline", vendor: "Cline" });
+  });
+
+  test("a Cline thread shows its model's vendor, else the Cline mark", () => {
+    expect(sessionBrand("cline", "cline", "anthropic/claude-sonnet-5")).toBe("claude");
+    expect(sessionBrand("cline", "cline", "aion-labs/aion-3.5")).toBe("cline");
   });
 });
 
