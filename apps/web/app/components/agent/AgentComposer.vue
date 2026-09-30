@@ -33,6 +33,7 @@ import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
 import { useComposerTrigger } from "~/composables/useComposerTrigger";
 import { useComposerWake } from "~/composables/useComposerWake";
+import { useWorktreeBranch } from "~/composables/useWorktreeBranch";
 import type { MentionItem, MentionProject, SlashCommandItem } from "~/utils/composerMentions";
 import { SLASH_COMMANDS } from "~/composables/useComposerSlash";
 import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
@@ -292,6 +293,10 @@ const canSwitchBranch = computed(() => props.branchSwitchable !== false);
 const draftWorktree = computed(
   () => canSwitchBranch.value && props.envMode === "worktree" && !props.worktreePath,
 );
+const shownBranch = useWorktreeBranch({
+  worktreePath: () => props.worktreePath,
+  fallbackBranch: () => props.branch,
+});
 const showTray = computed(() => !props.hideContextTray);
 
 // ── agent (leading the context tray) ─────────────────────────────────────────
@@ -1452,35 +1457,35 @@ defineExpose({ wake, setDraft, focus });
            the workspace can be chosen — so this one control asks both halves of
            "where does this work land". -->
       <button
-        v-if="branch && draftWorktree"
+        v-if="shownBranch && draftWorktree"
         type="button"
         class="tray__item tray__item--action"
-        :aria-label="`New worktree from ${branch}. Choose where this conversation works.`"
-        :title="`A new worktree, starting from ${branch} — click to change`"
+        :aria-label="`New worktree from ${shownBranch}. Choose where this conversation works.`"
+        :title="`A new worktree, starting from ${shownBranch} — click to change`"
         @click.stop="emit('open-branch')"
       >
         <WorktreeIcon :size="13" />
         <span class="tray__label">New worktree</span>
-        <span class="tray__label tray__label--soft">from {{ branch }}</span>
+        <span class="tray__label tray__label--soft">from {{ shownBranch }}</span>
       </button>
       <button
-        v-else-if="branch && canSwitchBranch"
+        v-else-if="shownBranch && canSwitchBranch"
         type="button"
         class="tray__item tray__item--action"
-        :aria-label="`On ${branch}. Choose where this conversation works.`"
-        :title="`On ${branch} — click to choose where this conversation works`"
+        :aria-label="`On ${shownBranch}. Choose where this conversation works.`"
+        :title="`On ${shownBranch} — click to choose where this conversation works`"
         @click.stop="emit('open-branch')"
       >
         <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
-        <span class="tray__label">{{ branch }}</span>
+        <span class="tray__label">{{ shownBranch }}</span>
       </button>
       <span
-        v-else-if="branch"
+        v-else-if="shownBranch"
         class="tray__item"
-        :title="`On ${branch}`"
+        :title="`On ${shownBranch}`"
       >
         <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
-        <span class="tray__label">{{ branch }}</span>
+        <span class="tray__label">{{ shownBranch }}</span>
       </span>
       <!-- Frozen once the thread has started: the same words, with nothing that
            implies you can still change them. Renders nothing for a conversation

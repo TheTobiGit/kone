@@ -38,6 +38,21 @@ afterEach(async () => {
 });
 
 describe("watchStatus invalidates the file index", () => {
+  test("a linked worktree's branch rename is reported without waiting for a poll", async () => {
+    const dir = await makeRepo();
+    const linked = `${dir}-linked`;
+    repos.push(dir, linked);
+    await git(dir, ["worktree", "add", "-b", "kone/placeholder", linked]);
+
+    let branch: string | null = null;
+    stopWatch = await watchStatus(linked, (fresh) => { branch = fresh.branch; });
+    // HEAD and branch refs are outside the worktree: watching its .git file
+    // cannot see the conversation title replacing the placeholder branch.
+    await git(linked, ["branch", "-m", "kone/review-origin-branch"]);
+    await waitUntil(() => branch === "kone/review-origin-branch");
+    expect(branch).toBe("kone/review-origin-branch");
+  });
+
   test("a newly created file is visible to files() after the watcher fires, without waiting out the index TTL", async () => {
     const dir = await makeRepo();
     repos.push(dir);

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Folder01Icon, GitBranchIcon, LinkSquare02Icon } from "@hugeicons/core-free-icons";
 import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
 import { basename, hasOwnWorkspace, isWorkspacePending } from "~/utils/threadWorkspace";
 import type { GitRemote, ThreadEnvMode } from "~/types/desktop";
+import { useWorktreeBranch } from "~/composables/useWorktreeBranch";
 
 // The thread-info panel's Project group: the repo the thread's project tracks,
 // the branch the thread is on and the folder it works in. Rendered straight
@@ -108,24 +109,11 @@ function openFolder(): void {
 
 // ── the branch it is on ─────────────────────────────────────────────────────
 // A worktree carries a branch of its own, which is not the one the project's
-// checkout is on — so a thread in one asks its own folder. Until that answers,
-// or when it cannot, the row falls back to the project's branch.
-const worktreeBranch = ref<string | null>(null);
-watch(
-  () => props.worktreePath,
-  async (path) => {
-    worktreeBranch.value = null;
-    if (!path) return;
-    try {
-      const status = await git.status(path);
-      if (props.worktreePath === path) worktreeBranch.value = status?.branch ?? null;
-    } catch {
-      // Gone from disk, or not a repository any more: the fallback stands.
-    }
-  },
-  { immediate: true },
-);
-const shownBranch = computed(() => worktreeBranch.value ?? props.branch);
+// checkout is on — so a thread in one asks and watches its own folder.
+const shownBranch = useWorktreeBranch({
+  worktreePath: () => props.worktreePath,
+  fallbackBranch: () => props.branch,
+});
 
 /** The group stands for a thread in a git repo, and for any thread with a
  *  folder to open — a plain folder is still somewhere it works. */

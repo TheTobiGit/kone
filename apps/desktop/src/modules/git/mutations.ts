@@ -32,17 +32,43 @@ export async function unstage(dir: string, paths: string[]): Promise<void> {
   });
 }
 
-/** Switch the working tree to `branch` — a local branch name as reported by
+/** Switch the working tree to `branch` — a local or remote branch reported by
  *  `branches()`. Git refuses (and this throws GitError) when the checkout would
  *  clobber conflicting local changes; the message is surfaced to the caller so
  *  the UI can explain the failure. The open project's watcher pushes the new
- *  status once the switch lands. */
+ *  status once the switch lands. Remote branches create a local tracking branch
+ *  rather than detaching HEAD. An existing local branch is never reset. */
 export async function checkout(dir: string, branch: string): Promise<void> {
   return withRepoMutation(dir, async () => {
     const root = await repoRoot(dir);
     if (!root || !branch.trim()) return;
-    await git(root, ["checkout", branch]);
+    const name = branch.trim();
+    if (await refExists(root, `refs/heads/${name}`)) {
+      await git(root, ["switch", "--no-guess", "--", name]);
+      return;
+    }
+    const remoteRef = `refs/remotes/${name}`;
+    if (!(await refExists(root, remoteRef))) {
+      throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
+    }
+    const localName = name.slice(name.indexOf("/") + 1);
+    if (await refExists(root, `refs/heads/${localName}`)) {
+      await git(root, ["switch", "--no-guess", "--", localName]);
+    } else {
+      // switch -c is atomic: a failed checkout leaves no new branch behind.
+      await git(root, ["switch", "--track", "-c", localName, remoteRef]);
+    }
   });
+}
+
+async function refExists(root: string, ref: string): Promise<boolean> {
+  try {
+    await git(root, ["show-ref", "--verify", "--quiet", ref]);
+    return true;
+  } catch (error) {
+    if (error instanceof GitError && error.code === 1) return false;
+    throw error;
+  }
 }
 
 /** Whether `relPath` exists in the current HEAD commit. */
