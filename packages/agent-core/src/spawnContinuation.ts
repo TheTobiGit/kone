@@ -1,3 +1,4 @@
+import { agentSenderFor } from "./senderHeader.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type {
   ContinueThreadRequest,
@@ -149,8 +150,16 @@ export class ThreadContinuationManager {
     });
 
     try {
+      // Whoever above the child asks, the ask arrives as that agent's words —
+      // never the user's — under the relationship the hand-off was made with.
+      const sender = agentSenderFor(
+        this.deps.store,
+        caller.threadId,
+        lineage.relationshipToParent === "delegation" ? "delegator" : "parent",
+        "followup",
+      );
       const turn = await this.deps.dispatcher.sendThreadTurn(
-        { threadId: request.threadId, input: message },
+        { threadId: request.threadId, input: message, sender },
         { generateTitle: false, parentTurnId: caller.turnId },
       );
       if (tracked) {

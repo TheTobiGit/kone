@@ -13,6 +13,7 @@ import {
   type QuitResumeThreadSnapshot,
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
+import { renderSenderHeader } from "./senderHeader.js";
 import {
   buildPromptThreadTitleFallback,
   canReplaceThreadTitle,
@@ -22,6 +23,7 @@ import type {
   CompactThreadResult,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
+  MessageSender,
   ThreadWorkspaceStep,
   ProviderKind,
   RuntimeEvent,
@@ -198,12 +200,20 @@ export function composeTurnDelivery(input: {
   message: string;
   /** App-authored context that rides in front of the message. Never journaled. */
   preamble?: string | null;
+  /** Who said the message, when it was not the user. Its header rides between
+   *  the preamble and the message — closest to the words it attributes — and,
+   *  like the preamble, is never journaled: the block keeps the sender as data,
+   *  not as text. */
+  sender?: MessageSender;
   /** The app started this turn, not a person: journal nothing. */
   silent?: boolean;
 }): TurnDelivery {
+  const front = [input.preamble, renderSenderHeader(input.sender)].filter(
+    (part): part is string => Boolean(part),
+  );
   return {
     journal: input.silent ? null : input.message,
-    dispatch: input.preamble ? `${input.preamble}\n\n${input.message}` : input.message,
+    dispatch: front.length > 0 ? `${front.join("\n\n")}\n\n${input.message}` : input.message,
   };
 }
 
@@ -500,6 +510,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const delivery = composeTurnDelivery({
       message: input.input,
       preamble: this.replayPreamble(input.threadId),
+      sender: input.sender,
       silent: options?.silent,
     });
     // Persist the user prompt (with any attachment metadata) before dispatching,
@@ -512,6 +523,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
             threadId: input.threadId,
             text: delivery.journal,
             attachments: input.attachments,
+            sender: input.sender,
             effort: input.effort,
             model: input.model,
           });
@@ -552,8 +564,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         ).then((title) => this.nameWorkspaceBranch(input.threadId, title));
       }
     }
+    // The sender has done its work once it is journaled and rendered into the
+    // text; the service below only ever sees the words the provider is sent.
+    const { sender: _sender, ...forService } = input;
     const dispatched =
-      delivery.dispatch === input.input ? input : { ...input, input: delivery.dispatch };
+      delivery.dispatch === input.input ? forService : { ...forService, input: delivery.dispatch };
     return destination === "steer"
       ? this.service.steerTurn(dispatched)
       : this.service.sendTurn(dispatched);

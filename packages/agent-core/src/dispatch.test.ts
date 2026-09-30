@@ -337,6 +337,36 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(userTexts(store)).toEqual(["first message"]);
   });
 
+  test("an agent-sent turn is journaled with its sender and dispatched under a header", async () => {
+    const { store, dispatcher } = await harness();
+    await dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "Audit the migration tests",
+      sender: { kind: "agent", threadId: "t-parent", relationship: "parent", messageKind: "brief" },
+    });
+
+    // The words are journaled as they were written, with the sender as data...
+    expect(userTexts(store)).toEqual(["Audit the migration tests"]);
+    const block = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
+    expect(block?.role === "user" ? block.sender : undefined).toEqual({
+      kind: "agent",
+      threadId: "t-parent",
+      relationship: "parent",
+      messageKind: "brief",
+    });
+    // ...and the agent reads who said them.
+    expect(FakeAdapter.sent).toHaveLength(1);
+    expect(FakeAdapter.sent[0]).toContain('relationship="parent"');
+    expect(FakeAdapter.sent[0]).toEndWith("Audit the migration tests");
+  });
+
+  test("a user turn reads back with no sender", async () => {
+    const { store, dispatcher } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello" });
+    const block = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
+    expect(block?.role === "user" ? block.sender : "missing").toBeUndefined();
+  });
+
   test("a silent first turn does not name the thread after itself", async () => {
     const { store, dispatcher } = await harness();
 
@@ -384,6 +414,34 @@ describe("composeTurnDelivery", () => {
     const delivery = composeTurnDelivery({ message: "go on", preamble: "history", silent: true });
     expect(delivery.journal).toBeNull();
     expect(delivery.dispatch).toBe("history\n\ngo on");
+  });
+
+  test("an agent sender is headed in the dispatch and kept out of the journal", () => {
+    const delivery = composeTurnDelivery({
+      message: "Build the login form",
+      sender: { kind: "agent", threadId: "t-main", name: "Maya", relationship: "delegator", messageKind: "brief" },
+    });
+    expect(delivery.journal).toBe("Build the login form");
+    expect(delivery.dispatch).toStartWith('<from_agent name="Maya" relationship="delegator" kind="brief">');
+    expect(delivery.dispatch).toContain("not by the user");
+    expect(delivery.dispatch).toEndWith("\n\nBuild the login form");
+  });
+
+  test("the sender header sits between the preamble and the words it attributes", () => {
+    const delivery = composeTurnDelivery({
+      message: "go on",
+      preamble: "history",
+      sender: { kind: "agent", threadId: "t-main", relationship: "parent" },
+    });
+    expect(delivery.dispatch.startsWith("history\n\n<from_agent")).toBe(true);
+    expect(delivery.dispatch.endsWith("</from_agent>\n\ngo on")).toBe(true);
+  });
+
+  test("the user as sender changes nothing", () => {
+    expect(composeTurnDelivery({ message: "hi", sender: { kind: "user" } })).toEqual({
+      journal: "hi",
+      dispatch: "hi",
+    });
   });
 
   test("an empty preamble changes nothing", () => {

@@ -65,7 +65,7 @@ describe("migration 14: ClineProvider", () => {
     // SAFETY: rowid is selected by name; jobs has a TEXT primary key so it is a plain rowid.
     const rowidsBefore = db.prepare("SELECT job_id, rowid FROM jobs ORDER BY job_id").all();
 
-    migrate(db, file);
+    migrate(db, file, { toMigrationInclusive: 14 });
 
     expect(pragma(db, "user_version")).toBe(14);
     expect(count(db, "threads")).toBe(3);
@@ -92,7 +92,7 @@ describe("migration 14: ClineProvider", () => {
   test("references survive: foreign keys are back on, the cascades still fire, and nothing is orphaned", () => {
     const { db, file } = v13Database();
     seed(db);
-    migrate(db, file);
+    migrate(db, file, { toMigrationInclusive: 14 });
 
     expect(pragma(db, "foreign_keys")).toBe(1);
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -124,7 +124,7 @@ describe("migration 14: ClineProvider", () => {
     const before = { threads: columns("threads"), jobs: columns("jobs"), indexes: indexSql() };
     expect(before.indexes.length).toBeGreaterThan(5);
 
-    migrate(db, file);
+    migrate(db, file, { toMigrationInclusive: 14 });
 
     expect(columns("threads")).toEqual(before.threads);
     expect(columns("jobs")).toEqual(before.jobs);
@@ -136,13 +136,13 @@ describe("migration 14: ClineProvider", () => {
 
   test("a store that already lists cline is left alone", () => {
     const { db, file } = v13Database();
-    migrate(db, file);
+    migrate(db, file, { toMigrationInclusive: 14 });
     db.exec(`INSERT INTO threads (thread_id, project_path, provider, created_at, last_activity_at)
              VALUES ('t-cline', '/p', 'cline', 1, 1)`);
     // Re-running the rung by hand (a crash between the rebuild and its stamp) changes nothing.
     db.exec("DELETE FROM schema_migrations WHERE migration_id = 14");
     db.exec("PRAGMA user_version = 13");
-    migrate(db, file);
+    migrate(db, file, { toMigrationInclusive: 14 });
     expect(count(db, "threads")).toBe(1);
     db.close();
   });

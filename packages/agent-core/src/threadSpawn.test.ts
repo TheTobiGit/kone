@@ -491,6 +491,7 @@ describe("spawn engine", () => {
     expect(dispatcher.sent[0].input).toEqual({
       threadId: result.threadId,
       input: REQUEST.prompt,
+      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "brief" },
     });
     expect(dispatcher.sent[0].options).toEqual({
       title: buildPromptThreadTitleFallback(REQUEST.prompt),
@@ -622,6 +623,34 @@ describe("spawn engine", () => {
     expect(store.lineages.get(result.threadId)?.relationshipToParent).toBe("subagent");
     expect(store.bound.has(result.threadId)).toBe(false);
     expect(dispatcher.started[0].agent).toBeUndefined();
+  });
+
+  test("a worker's brief is sent as its parent's words, not the user's", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+
+    await engine.spawn(CALLER, REQUEST);
+
+    expect(dispatcher.sent[0]?.input.sender).toMatchObject({
+      kind: "agent",
+      threadId: CALLER.threadId,
+      relationship: "parent",
+      messageKind: "brief",
+    });
+  });
+
+  test("a delegate's brief is sent as its delegator's words", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+
+    await engine.spawn(CALLER, { ...REQUEST, delegateToAgentId: "agent-backend" });
+
+    expect(dispatcher.sent[0]?.input.sender).toMatchObject({
+      kind: "agent",
+      threadId: CALLER.threadId,
+      relationship: "delegator",
+      messageKind: "brief",
+    });
   });
 
   test("an explicit title wins over the prompt fallback", async () => {
@@ -1330,9 +1359,11 @@ describe("continueThread", () => {
     // No second startThread — the child's session is still live.
     expect(h.dispatcher.started).toHaveLength(1);
     expect(h.dispatcher.sent).toHaveLength(2);
+    // It is the caller asking, never the user.
     expect(h.dispatcher.sent[1]?.input).toEqual({
       threadId: child,
       input: "Also update the README to match.",
+      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "followup" },
     });
     // The follow-up is the caller's turn speaking into the child: no rename,
     // and the child's events correlate back to the caller's turn (F10).

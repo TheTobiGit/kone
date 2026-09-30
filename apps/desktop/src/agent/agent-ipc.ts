@@ -679,9 +679,13 @@ export function registerAgentIpc(): void {
     dispatcher.forkThreadTurn(input),
   );
 
-  ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) =>
-    dispatcher.sendThreadTurn(input),
-  );
+  // Whatever arrives here was typed by the user, so it is always the user's:
+  // a sender is only ever set by the main process, for words an agent or kone
+  // itself wrote, and one smuggled in over IPC is dropped.
+  ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) => {
+    const { sender: _sender, ...typed } = input;
+    return dispatcher.sendThreadTurn(typed);
+  });
   // Manual context compaction (the service runs the provider's native call or
   // its `/compact` command fallback). Resolves once the "compacted" boundary
   // has been observed or synthesized — the boundary event itself streams on
@@ -732,9 +736,11 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
     svc.reorderQueuedTurns(threadId, queueIds),
   );
-  ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) =>
-    dispatcher.steerThreadTurn(input),
-  );
+  // Same as agent:send-turn: a steer from the renderer is the user speaking.
+  ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) => {
+    const { sender: _sender, ...typed } = input;
+    return dispatcher.steerThreadTurn(typed);
+  });
   // Pre-turn repository snapshots. `turn-checkpoints` lists every snapshot
   // recorded for a thread (oldest first); `preview-turn-checkpoint` names what
   // restoring one would change without changing anything; `revert-turn-checkpoint`

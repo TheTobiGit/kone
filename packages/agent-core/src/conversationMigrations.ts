@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -957,6 +957,18 @@ function widenProviderCheck(db: DatabaseSync, table: string): void {
   for (const index of indexes) db.exec(index.sql);
 }
 
+/**
+ * Who said a user-role block. Every row so far was typed by a person, so the
+ * column is nullable and NULL keeps meaning "the user" — an agent's brief,
+ * follow-up or message writes its sender as JSON (see
+ * @kone/protocol/message-sender), and nothing already on disk changes meaning.
+ */
+function migration0015BlockSender(db: DatabaseSync): void {
+  // Same as 0012: an upgrade fixture may carry no blocks table at all.
+  if (!hasTable(db, "blocks")) return;
+  addColumn(db, "blocks", "sender_json", "TEXT CHECK (sender_json IS NULL OR json_valid(sender_json))");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -972,6 +984,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 12, name: "BlockTurnStamps", run: migration0012BlockTurnStamps },
   { id: 13, name: "ThreadHandIns", run: migration0013ThreadHandIns },
   { id: 14, name: "ClineProvider", run: migration0014ClineProvider, foreignKeys: "off" },
+  { id: 15, name: "BlockSender", run: migration0015BlockSender },
 ];
 
 export interface MigrationOptions {

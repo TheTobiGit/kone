@@ -1,7 +1,8 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
-import type { ChatAttachment, InteractionMode, ProviderKind, StoredThreadMeta, TurnStamp } from "../types.js";
+import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, StoredThreadMeta, TurnStamp } from "../types.js";
+import { encodeMessageSender } from "@kone/protocol/message-sender";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
 
@@ -64,6 +65,8 @@ export class ThreadRepo {
     text: string;
     at?: number;
     attachments?: ChatAttachment[];
+    /** Who said it; absent = the user (stored as NULL). */
+    sender?: MessageSender;
   } & TurnStamp): number {
     const db = this.dbh.handle();
     if (!db) return 0;
@@ -76,8 +79,8 @@ export class ThreadRepo {
       // nothing. Cheap here: once per user turn, not per streamed delta.
       this.dbh.durably(db, () => {
         db.prepare(
-          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json, effort, model)
-           VALUES (?, ?, 'user', ?, ?, ?, ?, ?)`,
+          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json, effort, model, sender_json)
+           VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?)`,
         ).run(
           blockId,
           input.threadId,
@@ -86,6 +89,7 @@ export class ThreadRepo {
           input.attachments?.length ? JSON.stringify(input.attachments) : null,
           input.effort ?? null,
           input.model ?? null,
+          encodeMessageSender(input.sender),
         );
         // A user block is written once, never streamed, so it indexes at write
         // time — no delta-amplification concern like the item path has.
