@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -212,5 +212,25 @@ describe("project files", () => {
     expect(read.text).toBe("# Hello");
 
     await expect(writeProjectFile(project, "../outside.txt", "nope")).rejects.toThrow(/outside/);
+  });
+
+  test("refuses to write through a symlink pointing outside the project", async () => {
+    // Mirrors the read-side escape test above: escape.txt is a symlink inside
+    // the project pointing at a file outside it. The write must be refused
+    // and the outside file left untouched.
+    await expect(writeProjectFile(project, "escape.txt", "pwned")).rejects.toThrow(/outside/);
+    expect(readFileSync(path.join(outside, "secret.txt"), "utf8")).toBe("nope");
+  });
+
+  test("keeps a restricted file mode across an atomic write", async () => {
+    const { chmodSync, statSync } = await import("node:fs");
+    const target = path.join(project, "secret.env");
+    writeFileSync(target, "TOKEN=old\n", { mode: 0o600 });
+    chmodSync(target, 0o600);
+    await writeProjectFile(project, "secret.env", "TOKEN=new\n");
+    expect(readFileSync(target, "utf8")).toBe("TOKEN=new\n");
+    // The temp-file + rename must not widen a chmod 600 file to the default
+    // 644: only the permission bits are compared, not the file-type bits.
+    expect(statSync(target).mode & 0o777).toBe(0o600);
   });
 });
