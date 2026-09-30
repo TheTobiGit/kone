@@ -353,8 +353,8 @@ export class EventIngestRepo {
           withTransaction(db, () => {
             const total = event.usage.total;
             if (total !== undefined && total !== null && Number.isFinite(total)) {
-              // Codex, OpenCode, Cursor and Antigravity report running thread totals
-              // (keep the max); Claude reports per-turn spend (accumulate).
+              // Codex, OpenCode, Cursor, Antigravity and Droid report running thread totals
+              // (keep the max); Claude and Cline report per-turn spend (accumulate).
               const isRunningTotal = RUNNING_TOTAL_PROVIDERS.includes(event.provider);
               const sql = isRunningTotal
                   ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`

@@ -21,7 +21,7 @@ const LINUX_STATUS_POLL_INTERVAL_MS = 15_000;
 
 /** Whether a changed path under the repo root is worth re-reading status for.
  *  Working-tree files count; inside `.git` only the refs that staging/committing
- *  move matter (index, HEAD, refs) — object/log churn is ignored. node_modules
+ *  move matter (index, HEAD, refs, packed-refs) — object/log churn is ignored. node_modules
  *  is skipped entirely (git ignores it, and watching it is pure noise). */
 function watchRelevant(filename: string | null): boolean {
   // A null filename means the platform couldn't name the file — re-check to be
@@ -37,6 +37,7 @@ function watchRelevant(filename: string | null): boolean {
       rest === "HEAD" ||
       rest === "ORIG_HEAD" ||
       rest === "MERGE_HEAD" ||
+      rest === "packed-refs" ||
       rest.startsWith("refs/")
     );
   }
@@ -83,9 +84,11 @@ type RawWatchEvent = (_event: string, filename: string | null) => void;
  *  Node supports recursive watching on Linux since v19/20, but it adds one
  *  inotify watch per directory — on large trees that is hundreds of watches
  *  for a status signal. So on Linux this fans out to cheap non-recursive
- *  watchers (working-tree top level + `.git` for index/HEAD + `.git/refs`)
- *  plus a low-frequency `onPoll` tick as a safety net for nested edits, which
- *  don't raise inotify there. Everywhere else one recursive watcher covers
+ *  watchers (working-tree top level + `.git` for index/HEAD/packed-refs),
+ *  a recursive one over `.git/refs` alone (a handful of directories, and
+ *  branch and remote refs sit below its top level), plus a low-frequency
+ *  `onPoll` tick as a safety net for nested edits, which don't raise inotify
+ *  there. Everywhere else one recursive watcher covers
  *  the whole tree. */
 function startWatchers(
   root: string,
@@ -110,7 +113,7 @@ function startWatchers(
     // means that scope has no live sync; the poll still catches changes.
     watch(root, "", false);
     watch(path.join(root, ".git"), ".git", false);
-    watch(path.join(root, ".git", "refs"), ".git/refs", false);
+    watch(path.join(root, ".git", "refs"), ".git/refs", true);
     pollTimer = setInterval(onPoll, LINUX_STATUS_POLL_INTERVAL_MS);
     // setInterval keeps the Electron main loop alive; the explicit teardown is
     // the real stop, this just avoids holding the loop for a forgotten watcher.

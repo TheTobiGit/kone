@@ -1013,7 +1013,9 @@ export class ClineAdapter implements ProviderAdapter {
   /** ACP's `usage_update` carrying the session's running `used`/`size` totals.
    *  UNVERIFIED (no signed-in account): cline is not known to emit it. The ACP
    *  shape is only ever `used`/`size` — no input/output split, so no cache or
-   *  reasoning split either. */
+   *  reasoning split either. `used` is the context fill, not spend, so it sets
+   *  no `total`: the store adds each Cline total to the thread's tokens, and
+   *  the per-turn spend already arrives with the prompt result. */
   private handleUsage(session: ClineSession, update: ClineAcpRecord): void {
     const used = readNumber(update, "used");
     const size = readNumber(update, "size");
@@ -1024,10 +1026,7 @@ export class ClineAdapter implements ProviderAdapter {
       cacheCreationTokens: 0,
       reasoningTokens: 0,
     };
-    if (used !== undefined) {
-      usage.contextUsed = used;
-      usage.total = used;
-    }
+    if (used !== undefined) usage.contextUsed = used;
     if (size !== undefined) usage.contextWindow = size;
     this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
   }
