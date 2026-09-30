@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { nextTick, ref } from "vue";
+import type { UsageRange } from "~/types/desktop";
 import { useSpaceUsage } from "./useSpaceUsage";
 
-// useSpaceUsage reaches for Nuxt's auto-imported useAgentSettings. Here that is
-// a stand-in whose two reads the test holds open or releases by hand, so the
-// order of "read started", "project changed" and "read finished" is the test's.
+// The board reads through its injected source: a stand-in whose reads the test
+// holds open or releases by hand, so the order of "read started", "project
+// changed" and "read finished" is the test's.
 
 type Read = { promise: Promise<void>; finish: () => void };
 function deferred(): Read {
@@ -15,13 +16,11 @@ function deferred(): Read {
   return { promise, finish };
 }
 
-type Host = { useAgentSettings?: unknown };
-
 function setup() {
   const loads: Read[] = [];
-  const asked: { ranges: readonly string[]; revalidate: boolean | undefined }[] = [];
+  const asked: { ranges: readonly UsageRange[]; revalidate: boolean | undefined }[] = [];
   const stub = {
-    ensureRanges: (ranges: readonly string[], options?: { revalidate?: boolean }) => {
+    ensureRanges: (ranges: readonly UsageRange[], options?: { revalidate?: boolean }) => {
       asked.push({ ranges, revalidate: options?.revalidate });
       const read = deferred();
       loads.push(read);
@@ -29,16 +28,13 @@ function setup() {
     },
     usageFor: () => null,
   };
-  // SAFETY: the composable calls the auto-imported useAgentSettings as a free
-  // global and touches only ensureRanges and usageFor on what it returns, both
-  // of which the stub provides.
-  (globalThis as Host).useAgentSettings = () => stub;
 
   const path = ref("/a");
   const visible = ref(true);
   const usage = useSpaceUsage(
     () => path.value,
     () => visible.value,
+    stub,
   );
   return { path, visible, usage, loads, asked };
 }
@@ -59,9 +55,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   warn.mockRestore();
-  // SAFETY: Host names only the useAgentSettings global that setup() installed;
-  // this removes exactly that one property.
-  delete (globalThis as Host).useAgentSettings;
 });
 
 describe("useSpaceUsage", () => {

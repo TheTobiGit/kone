@@ -187,7 +187,7 @@ export function useSpaceInstructions(
     };
   }
 
-  async function refresh(): Promise<void> {
+  async function read(current: () => boolean): Promise<void> {
     const root = getPath();
     if (!root) return;
 
@@ -197,11 +197,16 @@ export function useSpaceInstructions(
         probeCandidates(root, AGENTS_CANDIDATES, "agents"),
         probeCandidates(root, CLAUDE_CANDIDATES, "claude"),
       ]);
+      if (!current()) return;
       agents.value = agentsInfo;
       claude.value = claudeInfo;
     } finally {
-      loading.value = false;
+      if (current()) loading.value = false;
     }
+  }
+
+  function refresh(): Promise<void> {
+    return read(() => true);
   }
 
   async function reveal(relPath: string): Promise<void> {
@@ -222,7 +227,7 @@ export function useSpaceInstructions(
 
   // Files are cheap to read and edited by hand between visits, so every arrival
   // re-reads them rather than waiting out the gap the slower reads keep.
-  useSpaceRefresh(getPath, getVisible, refresh, { revisitMs: 0 });
+  useSpaceRefresh(getPath, getVisible, read, { revisitMs: 0 });
 
   return {
     loading: computed(() => loading.value),
