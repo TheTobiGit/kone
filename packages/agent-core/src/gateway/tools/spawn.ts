@@ -23,7 +23,7 @@
 // gateway's GatewayErrorCode values by construction, so they pass straight
 // through; anything else falls through to the registry's internal handling.
 
-import type { SpawnTargetsReport } from "../../threadSpawn.js";
+import { SPAWN_WAIT_MAX_MS, type SpawnTargetsReport } from "../../threadSpawn.js";
 import type { InteractionMode, SpawnedThread, SpawnTarget, StoredBlock } from "../../types.js";
 import type { AgentModelRef } from "../../ConversationStore.js";
 import {
@@ -547,7 +547,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_wait",
       description:
-        "Wait for kone agents you started and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. A timeout only reports progress and cancels nothing; call again to keep waiting. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough.",
+        `Wait for kone agents you started and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough.`,
       inputSchema: WaitForResponsesInputSchema,
       jsonSchema: WAIT_FOR_RESPONSES_JSON_SCHEMA,
       permission: "allow",
