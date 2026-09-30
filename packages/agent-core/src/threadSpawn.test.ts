@@ -1440,6 +1440,36 @@ describe("continueThread", () => {
     });
   });
 
+  test("a follow-up from past the parent is labelled as from up the chain", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const child = await liveChild(h);
+    const grandchild = "grandchild-1";
+    h.store.metas.set(grandchild, {
+      threadId: grandchild,
+      projectPath: CALLER.cwd,
+      provider: "opencode",
+      createdAt: 1,
+      updatedAt: 1,
+      title: "Grandchild",
+    });
+    h.store.lineages.set(grandchild, {
+      parentThreadId: child,
+      relationshipToParent: "delegation",
+      rootThreadId: CALLER.threadId,
+    });
+    h.providers.liveSessions.add(grandchild);
+
+    await h.engine.continueThread(CALLER, { threadId: grandchild, message: "Check the edge case too." });
+
+    expect(h.dispatcher.sent.at(-1)?.input.sender).toEqual({
+      kind: "agent",
+      threadId: CALLER.threadId,
+      relationship: "upstream",
+      messageKind: "followup",
+    });
+  });
+
   test("a follow-up to a settled child brings its session back up first", async () => {
     const h = makeEngine();
     setupParent(h.store, h.providers);

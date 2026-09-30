@@ -1538,7 +1538,7 @@ async function onSendNow(entry: QueuedTurnEntry) {
   await agent.sendQueuedEntryNow(entry);
 }
 function onInterrupt() {
-  void agent.interrupt();
+  void agent.stop();
 }
 
 // Answer the agent's live question — hands the picked/typed answers back to the

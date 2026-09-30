@@ -151,13 +151,17 @@ export class ThreadContinuationManager {
 
     try {
       // Whoever above the child asks, the ask arrives as that agent's words —
-      // never the user's — under the relationship the hand-off was made with.
-      const sender = agentSenderFor(
-        this.deps.store,
-        caller.threadId,
-        meta.contract ? "contracting" : lineage.relationshipToParent === "delegation" ? "delegator" : "parent",
-        "followup",
-      );
+      // never the user's — under the relationship the hand-off was made with,
+      // or as from up the chain when an ancestor past the parent asks.
+      const relationship =
+        lineage.parentThreadId !== caller.threadId
+          ? "upstream"
+          : meta.contract
+            ? "contracting"
+            : lineage.relationshipToParent === "delegation"
+              ? "delegator"
+              : "parent";
+      const sender = agentSenderFor(this.deps.store, caller.threadId, relationship, "followup");
       const turn = await this.deps.dispatcher.sendThreadTurn(
         { threadId: request.threadId, input: message, sender },
         { generateTitle: false, parentTurnId: caller.turnId },

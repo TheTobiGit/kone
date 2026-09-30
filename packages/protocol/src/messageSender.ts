@@ -19,6 +19,8 @@ import { z } from "zod";
  *  - `delegator`: handed this thread's agent its work (a teammate delegation).
  *  - `contracting`: contracted this thread's agent for a job.
  *  - `parent`: started this thread as a worker.
+ *  - `upstream`: further up the chain than whoever handed this thread its
+ *    work — the delegator's delegator, say — reaching down to it directly.
  *  - `delegate` / `contractor` / `child`: the reverse edges, for a message
  *    coming back up.
  *  - `peer`: an agent on the project with no hand-off between them. */
@@ -26,6 +28,7 @@ export const SENDER_RELATIONSHIPS = [
   "delegator",
   "contracting",
   "parent",
+  "upstream",
   "delegate",
   "contractor",
   "child",
@@ -104,6 +107,8 @@ export function senderRelationshipLabel(relationship: SenderRelationship): strin
       return "contracted you";
     case "parent":
       return "started you";
+    case "upstream":
+      return "up your chain";
     case "delegate":
       return "your delegate";
     case "contractor":

@@ -1015,8 +1015,22 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     busy,
   });
 
-  /** Interrupt the running turn. */
+  /** Interrupt the running turn. The app's own interrupt: nothing the thread
+   *  handed off is touched. */
   async function interrupt(): Promise<void> {
+    return halt((api, id) => api.interrupt(id));
+  }
+
+  /** The user's Stop: interrupt the running turn, and settle the work the
+   *  thread handed off (its workers stop; its working delegates await its
+   *  decision). */
+  async function stop(): Promise<void> {
+    return halt((api, id) => (api.stop ?? api.interrupt)(id));
+  }
+
+  async function halt(
+    call: (api: NonNullable<ReturnType<typeof bridge>>, id: string) => Promise<void>,
+  ): Promise<void> {
     const tid = mock?.getMockTurnId();
     if (tid) {
       // Running a mock turn (browser dev or ⇧⌘D demo): halt its timers and mark aborted.
@@ -1038,7 +1052,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       return;
     }
     try {
-      await api.interrupt(threadId.value);
+      await call(api, threadId.value);
     } catch {
       // The turn.aborted event (or its absence) is the source of truth.
     }
@@ -1258,6 +1272,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     showAttachmentInFolder,
     demo: (opts?: { fast?: boolean }) => mock?.demo(opts),
     interrupt,
+    stop,
     compactThread,
     stopSubagent,
     steerSubagent,
@@ -1730,6 +1745,7 @@ export function useAgent(options: UseAgentOptions) {
     return s.showAttachmentInFolder(attachmentId);
   };
   const interrupt = async () => { await active.value?.interrupt(); };
+  const stop = async () => { await active.value?.stop(); };
   const stopSubagent = async (toolUseId: string) => {
     await active.value?.stopSubagent(toolUseId);
   };
@@ -2123,6 +2139,7 @@ export function useAgent(options: UseAgentOptions) {
     showAttachmentInFolder,
     demo,
     interrupt,
+    stop,
     stopSubagent,
     steerSubagent,
     respondUserInput,

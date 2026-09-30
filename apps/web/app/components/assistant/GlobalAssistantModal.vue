@@ -543,7 +543,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               @remove-queued="session?.cancelQueuedTurn($event)"
               @reorder-queued="session?.reorderQueuedTurns($event)"
               @send-now="onSendNow"
-              @interrupt="session?.interrupt()"
+              @interrupt="session?.stop()"
               @update:model-id="composer.onModelId"
               @update:reasoning="composer.onReasoning"
               @update:mode="composer.onMode"
