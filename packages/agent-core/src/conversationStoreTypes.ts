@@ -141,7 +141,7 @@ export type ThreadRow = {
 /** Providers whose usage reports are running thread totals rather than one
  *  turn's spend: every `turn_usage` row they write already holds the whole
  *  thread so far, so the thread's usage is its latest row, never a sum. */
-export const RUNNING_TOTAL_PROVIDERS: readonly string[] = ["codex", "opencode", "cursor", "antigravity"];
+export const RUNNING_TOTAL_PROVIDERS: readonly ProviderKind[] = ["codex", "opencode", "cursor", "antigravity", "droid"];
 
 const runningTotalList = RUNNING_TOTAL_PROVIDERS.map((p) => `'${p}'`).join(", ");
 

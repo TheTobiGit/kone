@@ -1416,6 +1416,27 @@ describe("live capture contracts", () => {
     expect(store.threadMeta("t-anty")?.tokens).toBe(220);
   });
 
+  test("token-usage for droid keeps the max running total, not the sum", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-droid", projectPath: "/p", provider: "droid" });
+    store.applyEvent(turnStarted("t-droid", "turn-1", 10));
+    // Droid reports a running session total, so each event already includes
+    // everything before it.
+    store.applyEvent(tokenUsage("t-droid", 15, { total: 1200 }, "droid"));
+    store.applyEvent(tokenUsage("t-droid", 20, { total: 2000 }, "droid"));
+    expect(store.threadMeta("t-droid")?.tokens).toBe(2000);
+  });
+
+  test("token-usage for cline sums each turn's spend", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-cline", projectPath: "/p", provider: "cline" });
+    store.applyEvent(turnStarted("t-cline", "turn-1", 10));
+    // Cline's prompt result carries one turn's usage, not the thread's.
+    store.applyEvent(tokenUsage("t-cline", 15, { total: 1200 }, "cline"));
+    store.applyEvent(tokenUsage("t-cline", 20, { total: 2000 }, "cline"));
+    expect(store.threadMeta("t-cline")?.tokens).toBe(3200);
+  });
+
   test("backfills token totals for stored Antigravity threads on store initialization", async () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-backfill", projectPath: "/p", provider: "antigravity" });
