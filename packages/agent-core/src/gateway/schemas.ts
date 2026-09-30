@@ -623,11 +623,33 @@ export const ANSWER_CHILD_INPUT_JSON_SCHEMA = {
 
 // ── irc inter-agent communication tools ──────────────────────────────────────
 
-export const IrcSendInputSchema = z.object({
-  to: z.string().min(1, "Recipient is required"),
-  message: z.string().min(1, "Message cannot be empty"),
-  replyTo: z.string().min(1).optional(),
-});
+/** What an agent_message is for — the agent_message kinds of
+ *  @kone/protocol/message-sender's MessageKind. */
+export const AGENT_MESSAGE_KINDS = ["note", "question", "pushback", "report", "answer"] as const;
+
+/** The longest agent_message may wait for its answer, like agent_wait's cap. */
+export const AGENT_MESSAGE_WAIT_MAX_MS = 60_000;
+
+export const IrcSendInputSchema = z
+  .object({
+    to: z.string().min(1, "Recipient is required"),
+    message: z.string().min(1, "Message cannot be empty"),
+    /** What the message is for. Absent reads as a note. */
+    kind: z.enum(AGENT_MESSAGE_KINDS).optional(),
+    replyTo: z.string().min(1).optional(),
+    /** With a question: park until the answer arrives (up to the cap) and get
+     *  it back as this call's result. Off by default — the answer otherwise
+     *  reaches you like any message. */
+    wait: z.boolean().optional(),
+    /** How long `wait` holds, below AGENT_MESSAGE_WAIT_MAX_MS. */
+    timeoutMs: z.number().int().positive().max(AGENT_MESSAGE_WAIT_MAX_MS).optional(),
+  })
+  .refine((value) => value.kind !== "answer" || value.replyTo !== undefined, {
+    message: "An answer names the question it answers: set replyTo to the question's message id.",
+  })
+  .refine((value) => value.wait !== true || value.kind === "question", {
+    message: "Only a question waits for an answer.",
+  });
 
 export const IrcSendMessageInputSchema = IrcSendInputSchema;
 export const IrcMessageInputSchema = IrcSendInputSchema;
@@ -642,15 +664,30 @@ export const IRC_SEND_JSON_SCHEMA = {
   properties: {
     to: {
       type: "string",
-      description: "Recipient thread ID, agent name, 'parent', or 'all' to broadcast.",
+      description:
+        "Who it is for: `delegator` (whoever handed you your work), `delegates` or `children` (the agents or workers you handed work to), `parent` (for a worker: the agent that started you), `main` (your tree's root), an agent's name or thread id from agent_list, or `all` (main agent only).",
     },
     message: {
       type: "string",
-      description: "Text content of the direct message to send.",
+      description: "The message itself. Lead with the point; reference files by path.",
+    },
+    kind: {
+      type: "string",
+      enum: [...AGENT_MESSAGE_KINDS],
+      description:
+        "note: information, no reply expected (the default). question: you need an answer. pushback: you disagree with the task and propose something else. report: results or a deliverable. answer: a reply to a question (set replyTo).",
     },
     replyTo: {
       type: "string",
-      description: "Optional message ID being replied to.",
+      description: "The message id this answers.",
+    },
+    wait: {
+      type: "boolean",
+      description: "With kind question: park until the answer arrives and get it back as this call's result.",
+    },
+    timeoutMs: {
+      type: "integer",
+      description: `How long wait holds, at most ${AGENT_MESSAGE_WAIT_MAX_MS}.`,
     },
   },
   required: ["to", "message"],

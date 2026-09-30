@@ -161,6 +161,7 @@ const released: Array<{
   reclaimGeneratedBranch?: boolean;
 }> = [];
 /** Every workspace progress report, in order. */
+let journaledEvents: Array<{ id: string; text: string; sender?: unknown }> = [];
 const steps: Array<{ step: string; state: string }> = [];
 /** The note each finished fetch step carried, in order. */
 const fetchNotes: Array<string | undefined> = [];
@@ -197,6 +198,7 @@ async function harness(): Promise<{
     service,
     store,
     broadcast: (event) => {
+      if (event.type === "thread.message-journaled") journaledEvents.push(event.block);
       if (event.type === "thread.workspace.progress") {
         steps.push({ step: event.step, state: event.state });
         if (event.step === "fetch" && event.state === "done") fetchNotes.push(event.note);
@@ -360,6 +362,33 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(FakeAdapter.sent).toHaveLength(1);
     expect(FakeAdapter.sent[0]).toContain('relationship="parent"');
     expect(FakeAdapter.sent[0]).toEndWith("Audit the migration tests");
+  });
+
+  test("an agent-sent turn is announced to renderers under the block id it was stored with", async () => {
+    const { store, dispatcher } = await harness();
+    journaledEvents = [];
+    await dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "Build the login screen",
+      sender: { kind: "agent", threadId: "t-lead", relationship: "delegator", messageKind: "brief" },
+    });
+    const stored = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
+    expect(journaledEvents).toHaveLength(1);
+    expect(journaledEvents[0]?.id).toBe(stored?.id);
+    expect(journaledEvents[0]?.text).toBe("Build the login screen");
+  });
+
+  test("a message recorded without a turn is journaled and announced; the user's own words never are", async () => {
+    const { store, dispatcher } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello" });
+    journaledEvents = [];
+    dispatcher.recordAgentMessage({
+      threadId: THREAD,
+      text: "Is OAuth in scope?",
+      sender: { kind: "agent", threadId: "t-child", relationship: "delegate", messageKind: "question" },
+    });
+    expect(userTexts(store)).toEqual(["hello", "Is OAuth in scope?"]);
+    expect(journaledEvents.map((b) => b.text)).toEqual(["Is OAuth in scope?"]);
   });
 
   test("a user turn reads back with no sender", async () => {

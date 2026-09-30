@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { ProviderKind, StoredThreadMeta, ThreadLineage } from "../../types.js";
+import type { AgentSender, ProviderKind, SenderRelationship, StoredThreadMeta, ThreadLineage } from "../../types.js";
+import { agentSenderFor } from "../../senderHeader.js";
 import type { AgentRecord } from "../../ConversationStore.js";
 import type {
   GatewayRecord,
@@ -10,6 +11,7 @@ import type {
   ToolEntry,
 } from "../schemas.js";
 import {
+  AGENT_MESSAGE_WAIT_MAX_MS,
   GatewayToolError,
   IrcInboxInputSchema,
   IrcListInputSchema,
@@ -37,16 +39,28 @@ const MAX_INBOX_MESSAGES = 50;
  *  fleet never trips it. */
 const MAX_PAIR_EXCHANGES = 16;
 
+/** What an agent_message is for. */
+export type AgentMessageKind = "note" | "question" | "pushback" | "report" | "answer";
+
 /** In-memory representation of a queued inter-agent message. */
 export interface IrcMessageRecord {
   id: string;
   from: string;
   to: string;
   message: string;
+  /** Absent on a message from before kinds existed; reads as a note. */
+  kind?: AgentMessageKind;
   replyTo?: string;
   createdAt: number;
   read: boolean;
   projectPath?: string;
+  /** Who sent it, as THIS copy's recipient relates to them — each recipient
+   *  gets its own copy, so a broadcast reads "your worker" to one agent and
+   *  "teammate" to another. Absent when no store could say. */
+  sender?: AgentSender;
+  /** Set once the message is on the recipient's transcript, so a delivery
+   *  retried after a failed send does not write it twice. */
+  journaled?: boolean;
 }
 
 /** Who is asking for a roster, and the scope they may see. */
@@ -83,6 +97,34 @@ export interface IrcToolStore {
   threadLineage?(threadId: string): ThreadLineage | null;
   listThreads?(projectPath: string): StoredThreadMeta[];
   listProjectAgents?(projectPath: string): AgentRecord[];
+  /** The threads a parent handed work to — what `delegates` and `children`
+   *  resolve against. */
+  spawnedChildren?(parentThreadId: string): StoredThreadMeta[];
+  /** Who a thread runs as, for the sender's name. */
+  getThreadAgent?(threadId: string): { agentId: string | null } | null;
+  getAgent?(agentId: string): { name: string | null } | null;
+}
+
+/**
+ * How the sender relates to one recipient, from the recipient's side — the
+ * relationship its copy of the message is headed with. Only a direct hand-off
+ * edge counts: a thread's own parent and its own children. Everyone else on
+ * the project is a peer.
+ */
+export function relationshipOf(store: IrcToolStore | undefined, fromThreadId: string, toThreadId: string): SenderRelationship {
+  const fromLineage = store?.threadLineage?.(fromThreadId);
+  if (fromLineage?.parentThreadId === toThreadId) {
+    // The sender works for the recipient.
+    if (fromLineage.relationshipToParent === "subagent") return "child";
+    return store?.threadMeta?.(fromThreadId)?.contract ? "contractor" : "delegate";
+  }
+  const toLineage = store?.threadLineage?.(toThreadId);
+  if (toLineage?.parentThreadId === fromThreadId) {
+    // The recipient works for the sender.
+    if (toLineage.relationshipToParent === "subagent") return "parent";
+    return store?.threadMeta?.(toThreadId)?.contract ? "contracting" : "delegator";
+  }
+  return "peer";
 }
 
 export interface IrcToolInput {
@@ -155,8 +197,27 @@ export class IrcMailbox {
       throw new GatewayToolError("invalid_input", "Recipient cannot be empty.");
     }
 
-    // 1. Direct parent routing
-    if (trimmed.toLowerCase() === "parent") {
+    // 0. The agents or workers this thread handed work to.
+    const lowered = trimmed.toLowerCase();
+    if (lowered === "delegates" || lowered === "children") {
+      const wanted = lowered === "delegates" ? "delegation" : "subagent";
+      const ids = (store?.spawnedChildren?.(sender.threadId) ?? [])
+        .filter((child) => child.lineage?.relationshipToParent === wanted)
+        .map((child) => child.threadId);
+      if (ids.length === 0) {
+        throw new GatewayToolError(
+          "not_found",
+          lowered === "delegates"
+            ? "You have not delegated to or contracted any agent."
+            : "You have not started any workers.",
+        );
+      }
+      return ids;
+    }
+
+    // 1. Direct parent routing. `delegator` is the same edge named from a
+    //    delegate's or contractor's side.
+    if (lowered === "parent" || lowered === "delegator") {
       let parentId = sender.parentThreadId;
       if (!parentId && store?.threadLineage) {
         parentId = store.threadLineage(sender.threadId)?.parentThreadId ?? undefined;
@@ -340,7 +401,15 @@ export class IrcMailbox {
     }
 
     const recipients = this.resolveRecipients(sender, input.to, store);
-    this.guardPingPong(sender.threadId, recipients);
+    const kind: AgentMessageKind = input.kind ?? "note";
+    // A question and its answer between a hand-off's two ends is the
+    // conversation this bus exists for — a delegate asking what the user
+    // meant — so it never counts toward the ping-pong cap. Peers chatting do.
+    const handOffExchange =
+      (kind === "question" || kind === "answer") &&
+      recipients.length === 1 &&
+      relationshipOf(store, sender.threadId, recipients[0]!) !== "peer";
+    if (!handOffExchange) this.guardPingPong(sender.threadId, recipients);
     const messageId = `msg_${randomUUID()}`;
     const createdAt = Date.now();
 
@@ -349,6 +418,7 @@ export class IrcMailbox {
       from: sender.threadId,
       to: input.to,
       message: input.message,
+      kind,
       createdAt,
       read: false,
       projectPath: sender.projectPath,
@@ -363,7 +433,15 @@ export class IrcMailbox {
         queue = [];
         this.inboxes.set(recipientId, queue);
       }
-      const messageCopy = { ...record };
+      const messageCopy: IrcMessageRecord = { ...record };
+      if (store) {
+        messageCopy.sender = agentSenderFor(
+          store,
+          sender.threadId,
+          relationshipOf(store, sender.threadId, recipientId),
+          kind,
+        );
+      }
       // Push a distinct record copy for independent read tracking if needed
       queue.push(messageCopy);
       // Oldest first: a backlog this deep means nobody has been reading, and the
@@ -436,6 +514,49 @@ export class IrcMailbox {
   /** Unordered pair key — a loop is a loop whichever way the last message went. */
   private pairKey(a: string, b: string): string {
     return a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+  }
+
+  /**
+   * Hold until `threadId` receives the answer to its message `messageId`, and
+   * hand it back — or null at the timeout or on abort.
+   *
+   * The answer is consumed here, as it is returned: it becomes the asking
+   * tool call's result, so the delivery that would otherwise steer it into the
+   * same turn a moment later finds nothing left to deliver.
+   */
+  waitForReply(
+    threadId: string,
+    messageId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<IrcMessageRecord | null> {
+    const take = (): IrcMessageRecord | null => {
+      const queue = this.inboxes.get(threadId) ?? [];
+      const reply = queue.find((m) => !m.read && m.replyTo === messageId);
+      if (!reply) return null;
+      reply.read = true;
+      return reply;
+    };
+    const already = take();
+    if (already) return Promise.resolve(already);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value: IrcMessageRecord | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      const onAbort = (): void => finish(null);
+      const unsubscribe = this.onMessageDelivered((recipient, message) => {
+        if (recipient === threadId && message.replyTo === messageId) finish(take());
+      });
+      const timer = setTimeout(() => finish(null), Math.min(timeoutMs, AGENT_MESSAGE_WAIT_MAX_MS));
+      if (signal?.aborted) finish(null);
+      else signal?.addEventListener("abort", onAbort);
+    });
   }
 
   /**
@@ -561,11 +682,13 @@ export function resetIrcMailbox(): void {
 // reflex to acknowledge, which manufactures the next message from the other side.
 
 const IRC_SEND_DESCRIPTION = [
-  "Message any kone agent on this project, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). There is no reply built in; to ask an agent you started and wait for its answer, use agent_followup. Every message costs the reader a turn, and `to: \"all\"` charges every agent at once.",
+  "Message another kone agent, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). It arrives headed as yours, with how you relate to the reader, so it is never mistaken for the user. Every message costs the reader a turn.",
   "",
-  "`to` takes an agent's exact id from agent_list (never invent one), or `parent` (whoever spawned you), `main` (your tree's root) or `all`. Set `replyTo` when answering. Plain prose: lead with the answer, and reference files by path rather than pasting them.",
+  "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say; set wait to hold for the answer. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question, with replyTo set to its message id.",
   "",
-  "Send only what changes what somebody does: claiming a file before you edit it, a decision that is not yours, a finding that makes another agent's work wrong, or an answer an agent is blocked on. Never send an acknowledgement, a progress report or plan, anything a tool could answer, or the next line of a back-and-forth. The bus refuses a pair that has traded 16 messages with nobody else involved; long before that, decide with what you have or escalate the exact decision.",
+  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `all` broadcasts to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
+  "",
+  "When someone you handed work to asks you something, answer from what you know of the user's intent; ask the user only what you cannot answer, then pass the answer down. Never send an acknowledgement, a progress report, anything a tool could answer, or the next line of chit-chat. Between peers the bus refuses a pair that has traded 16 messages with nobody else involved; a question and its answer along a hand-off never count.",
 ].join("\n");
 
 const IRC_LIST_DESCRIPTION = [
@@ -579,7 +702,7 @@ const IRC_INBOX_DESCRIPTION = [
 ].join("\n");
 
 /**
- * Creates the IRC gateway tools: `agent_notify`, `agent_list` and
+ * Creates the messaging gateway tools: `agent_message`, `agent_list` and
  * `agent_inbox`.
  */
 export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
@@ -590,50 +713,105 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     args: GatewayRecord,
   ): Promise<GatewayToolResult> => {
     const parsed = IrcSendInputSchema.parse(args);
+    const kind = parsed.kind ?? "note";
 
     let parentThreadId: string | null | undefined;
     let rootThreadId: string | undefined;
+    let relationshipToParent: ThreadLineage["relationshipToParent"] | undefined;
 
     if (input.store?.threadLineage) {
       const lineage = input.store.threadLineage(ctx.threadId);
       parentThreadId = lineage?.parentThreadId;
       rootThreadId = lineage?.rootThreadId;
+      relationshipToParent = lineage?.relationshipToParent;
     }
 
-    const result = mailbox.sendMessage(
-      {
-        threadId: ctx.threadId,
-        projectPath: ctx.cwd,
-        parentThreadId,
-        rootThreadId,
-        model: ctx.model,
-        provider: ctx.provider,
-      },
-      parsed,
-      input.store,
-    );
+    const target = parsed.to.trim().toLowerCase();
+    // A broadcast interrupts every agent on the project at once: the main
+    // agent's call, never one of the agents working for it.
+    if ((target === "all" || target === "*") && parentThreadId) {
+      throw new GatewayToolError(
+        "permission_denied",
+        "Only the main agent may message `all`. Message your `delegator`, or name the agents you mean.",
+      );
+    }
+
+    const sender = {
+      threadId: ctx.threadId,
+      projectPath: ctx.cwd,
+      parentThreadId,
+      rootThreadId,
+      model: ctx.model,
+      provider: ctx.provider,
+    };
+
+    // A worker does its task and reports: it speaks to the agent that started
+    // it, and only to report or to say what it is blocked on.
+    if (relationshipToParent === "subagent") {
+      const recipients = mailbox.resolveRecipients(sender, parsed.to, input.store);
+      if (recipients.length !== 1 || recipients[0] !== parentThreadId || (kind !== "report" && kind !== "question")) {
+        throw new GatewayToolError(
+          "permission_denied",
+          "You are a worker: you may only message your `parent`, with kind report or question. Put anything else in your final reply — it is the report your parent collects.",
+        );
+      }
+    }
+
+    const result = mailbox.sendMessage(sender, parsed, input.store);
 
     const recipientDesc =
       result.recipients.length === 1
         ? result.recipients[0]
         : `${result.recipients.length} recipients (${result.recipients.join(", ")})`;
+    const structured: GatewayRecord = {
+      messageId: result.messageId,
+      from: ctx.threadId,
+      to: parsed.to,
+      kind,
+      delivered: result.delivered,
+      recipients: result.recipients,
+      replyTo: parsed.replyTo ?? null,
+      createdAt: result.message.createdAt,
+    };
+
+    if (parsed.wait === true) {
+      const reply = await mailbox.waitForReply(
+        ctx.threadId,
+        result.messageId,
+        parsed.timeoutMs ?? AGENT_MESSAGE_WAIT_MAX_MS,
+        ctx.signal,
+      );
+      if (reply) {
+        structured.answer = { messageId: reply.id, from: reply.from, message: reply.message };
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Asked ${parsed.to} [${recipientDesc}] (${result.messageId}). Their answer:\n${reply.message}`,
+            },
+          ],
+          structuredContent: structured,
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Asked ${parsed.to} [${recipientDesc}] (${result.messageId}); no answer yet. It reaches you like any message when it comes — carry on with what you can meanwhile.`,
+          },
+        ],
+        structuredContent: structured,
+      };
+    }
 
     return {
       content: [
         {
           type: "text",
-          text: `Message ${result.messageId} sent to ${parsed.to} [${recipientDesc}].`,
+          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}].`,
         },
       ],
-      structuredContent: {
-        messageId: result.messageId,
-        from: ctx.threadId,
-        to: parsed.to,
-        delivered: result.delivered,
-        recipients: result.recipients,
-        replyTo: parsed.replyTo ?? null,
-        createdAt: result.message.createdAt,
-      },
+      structuredContent: structured,
     };
   };
 
@@ -711,18 +889,20 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
 
   return [
     {
-      name: "agent_notify",
+      name: "agent_message",
       description: IRC_SEND_DESCRIPTION,
       inputSchema: IrcSendInputSchema,
       jsonSchema: IRC_SEND_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "Message any kone agent on this project, running or idle, with no reply built in: a running one is steered mid-turn, an idle one wakes with a new turn.",
-      // When to send is the description's; this is the one rule that sits
-      // between tools, since it is the spawn tools it steers an agent away from.
+        "Message another kone agent, running or idle — a running one is steered mid-turn, an idle one wakes with a new turn — as a note, question, pushback, report or answer, headed as yours so it is never taken for the user.",
+      // When to send is the description's; these are the rules that sit
+      // between tools: the spawn tools it steers an agent away from, and the
+      // hand-off conversation it carries.
       promptGuidelines: [
-        "An idle kone agent is not a closed one: agent_followup or agent_notify wakes it with a new turn. Never re-spawn or re-delegate to reach an agent that has merely settled.",
+        "An idle kone agent is not a closed one: agent_followup or agent_message wakes it with a new turn. Never re-spawn or re-delegate to reach an agent that has merely settled.",
+        "When a message you were handed work in looks wrong or unclear, ask or push back with agent_message to your delegator instead of guessing; when one you handed work to asks, answer from the user's intent as you know it, and ask the user only what you cannot answer.",
       ],
       handler: sendHandler,
     },

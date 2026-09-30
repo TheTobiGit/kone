@@ -597,13 +597,13 @@ describe("createIrcTools gateway registration and execution", () => {
   test("Tools export proper schemas, names, and permissions", () => {
     const tools = createIrcTools();
     expect(tools.map((t) => t.name)).toEqual([
-      "agent_notify",
+      "agent_message",
       "agent_list",
       "agent_inbox",
     ]);
 
     const [msgTool, listTool, inboxTool] = tools;
-    expect(msgTool!.name).toBe("agent_notify");
+    expect(msgTool!.name).toBe("agent_message");
     expect(msgTool!.permission).toBe("allow");
     expect(msgTool!.requiresActiveTurn).toBe(true);
     expect(msgTool!.jsonSchema).toBe(IRC_SEND_JSON_SCHEMA);
@@ -620,7 +620,7 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(inboxTool!.jsonSchema).toBe(IRC_INBOX_JSON_SCHEMA);
   });
 
-  test("agent_notify tells the agent that idle peers are reachable", () => {
+  test("agent_message tells the agent that idle peers are reachable", () => {
     const tools = createIrcTools();
     // SAFETY: the previous test pins the tool order; the send tool is first.
     const send = tools[0]!;
@@ -639,13 +639,13 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(guidelines.some((g) => /idle kone agent is not a closed one/.test(g))).toBe(true);
   });
 
-  test("agent_notify requires an active turn", async () => {
+  test("agent_message requires an active turn", async () => {
     const registry = createRegistry(createIrcTools());
     const ctxNoTurn = makeCtx({ turnId: null });
 
     const result = await registry.call(
       ctxNoTurn,
-      "agent_notify",
+      "agent_message",
       { to: "thread-target", message: "Turnless attempt" },
     );
 
@@ -665,11 +665,11 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(result.content[0]!.text).toBe("Inbox is empty (0 unread messages).");
   });
 
-  test("Calling agent_notify with invalid inputs returns invalid_input", async () => {
+  test("Calling agent_message with invalid inputs returns invalid_input", async () => {
     const registry = createRegistry(createIrcTools());
     const ctx = makeCtx();
 
-    const result = await registry.call(ctx, "agent_notify", { to: "" });
+    const result = await registry.call(ctx, "agent_message", { to: "" });
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error).toMatchObject({
       code: "invalid_input",
@@ -700,7 +700,7 @@ describe("createIrcTools gateway registration and execution", () => {
     // Alice sends message to Bob
     const sendResult1 = await registry.call(
       aliceCtx,
-      "agent_notify",
+      "agent_message",
       { to: "agent-bob", message: "Could you check the logs for errors?" },
     );
 
@@ -727,7 +727,7 @@ describe("createIrcTools gateway registration and execution", () => {
     // Bob replies to Alice with replyTo
     const sendResult2 = await registry.call(
       bobCtx,
-      "agent_notify",
+      "agent_message",
       {
         to: "agent-alice",
         message: "Found 2 timeout errors in worker.ts",
@@ -760,7 +760,7 @@ describe("createIrcTools gateway registration and execution", () => {
 
     const result = await registry.call(
       localCtx,
-      "agent_notify",
+      "agent_message",
       { to: "agent-foreign", message: "Unauthorized message" },
     );
 
@@ -777,7 +777,7 @@ describe("createIrcTools gateway registration and execution", () => {
 
     const ctxA = makeCtx({ threadId: "agent-1", turnId: "turn-1" });
 
-    await registry.call(ctxA, "agent_notify", { to: "agent-2", message: "Isolated message" });
+    await registry.call(ctxA, "agent_message", { to: "agent-2", message: "Isolated message" });
 
     // Message is present in customMailbox
     expect(customMailbox.getUnreadCount("agent-2")).toBe(1);
@@ -797,7 +797,7 @@ describe("createIrcTools gateway registration and execution", () => {
     const registry = createRegistry(createIrcTools({ mailbox: customMailbox }));
     const ctxA = makeCtx({ threadId: "agent-1", turnId: "turn-1" });
 
-    await registry.call(ctxA, "agent_notify", {
+    await registry.call(ctxA, "agent_message", {
       to: "agent-2",
       message: "Abort current approach and switch to plan B",
     });
@@ -807,7 +807,7 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(interrupted[0].message).toBe("Abort current approach and switch to plan B");
 
     unsubscribe();
-    await registry.call(ctxA, "agent_notify", {
+    await registry.call(ctxA, "agent_message", {
       to: "agent-2",
       message: "Second message after unsubscribe",
     });

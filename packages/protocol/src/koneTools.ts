@@ -24,7 +24,7 @@ export const KONE_WORKER_TOOL_NAMES = [
   "agent_withdraw",
   "agent_decline",
   "agent_answer",
-  "agent_notify",
+  "agent_message",
   "agent_list",
   "agent_inbox",
   "process_control",
@@ -52,7 +52,7 @@ export const LEGACY_KONE_TOOL_NAMES: Readonly<Record<string, KoneWorkerToolName>
   kone_cancel_worker: "agent_withdraw",
   kone_decline_child_gate: "agent_decline",
   kone_answer_child_input: "agent_answer",
-  kone_irc_send: "agent_notify",
+  kone_irc_send: "agent_message",
   kone_irc_list: "agent_list",
   kone_irc_inbox: "agent_inbox",
   kone_launch: "process_control",
@@ -72,7 +72,7 @@ export const LEGACY_KONE_TOOL_NAMES: Readonly<Record<string, KoneWorkerToolName>
   worker_cancel: "agent_withdraw",
   worker_decline: "agent_decline",
   worker_answer: "agent_answer",
-  peer_send: "agent_notify",
+  peer_send: "agent_message",
   peer_list: "agent_list",
   peer_inbox: "agent_inbox",
 
@@ -85,6 +85,8 @@ export const LEGACY_KONE_TOOL_NAMES: Readonly<Record<string, KoneWorkerToolName>
   agent_spawn_batch: "worker_start_batch",
   agent_ask: "agent_followup",
   agent_cancel: "agent_withdraw",
+  // Messaging before it had kinds and relationship addresses.
+  agent_notify: "agent_message",
 };
 
 const WORKER_TOOL_NAME_SET: ReadonlySet<string> = new Set(KONE_WORKER_TOOL_NAMES);

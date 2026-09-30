@@ -1602,6 +1602,14 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
+  // kone wrote a message on the transcript on someone else's behalf — an
+  // agent's brief, follow-up or message, or kone's own notice — so a renderer
+  // showing the thread can place it without reloading. The user's own words
+  // never ride this: the renderer journals those itself as they are sent.
+  | (BaseEvent & {
+      type: "thread.message-journaled";
+      block: Extract<StoredBlock, { role: "user" }>;
+    })
   // An agent spawned a child thread (worker_start), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
