@@ -92,7 +92,7 @@ const where = computed(() =>
         <RosterFace v-if="teammate" :agent="teammate" :size="16" />
         <AgentFace v-else :seed="record.threadId" :size="16" />
         <span class="spawn-mark__name">{{ name }}</span>
-      </component><span v-if="kind === 'contract'" class="spawn-mark__tag">contractor</span>:
+      </component>:
       <span class="spawn-mark__title">{{ record.title }}</span>
     </p>
     <p v-if="because" class="spawn-mark__why">{{ because }}</p>
@@ -146,23 +146,21 @@ const where = computed(() =>
   background: color-mix(in oklab, var(--ink) 9%, transparent);
   color: color-mix(in oklab, var(--ink) 60%, transparent);
 }
-.spawn-mark__tag {
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--accent, var(--ink)) 12%, transparent);
-  color: color-mix(in oklab, var(--accent, var(--ink)) 78%, var(--ink));
-  font-size: 11px;
-  font-weight: 500;
-}
 .spawn-mark__worker--link {
   cursor: pointer;
 }
+/* Always drawn and only coloured in, so the underline fades up under the
+   pointer rather than snapping on. */
+.spawn-mark__worker--link .spawn-mark__name {
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 0.2s ease;
+}
 .spawn-mark__worker--link:hover .spawn-mark__name,
 .spawn-mark__worker--link:focus-visible .spawn-mark__name {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: color-mix(in oklab, var(--ink) 30%, transparent);
+  text-decoration-color: color-mix(in oklab, var(--ink) 40%, transparent);
 }
 .spawn-mark__why {
   font-style: italic;
