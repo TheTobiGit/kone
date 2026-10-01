@@ -27,8 +27,14 @@
 // that a hand-written paragraph could restate but never enforce.
 
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
-import type { AgentPersona, GatewayConnection, GatewayToolPrompt } from "../types.js";
+import type {
+  AgentPersona,
+  GatewayConnection,
+  GatewayModelPreference,
+  GatewayToolPrompt,
+} from "../types.js";
 import { KONE_ON_DEMAND_MCP_SERVER_NAME } from "./injection.js";
+import { activeModelPreferences, type ModelPreference } from "../modelPreference.js";
 
 /**
  * Everything the blocks are built from. One struct, threaded to every channel,
@@ -38,7 +44,7 @@ import { KONE_ON_DEMAND_MCP_SERVER_NAME } from "./injection.js";
 export interface KoneContextOptions {
   /** The session's gateway grant. Absent means no `kone_*` tools were installed,
    *  and no host-context block is delivered at all. */
-  gateway?: Pick<GatewayConnection, "tools" | "scope" | "role">;
+  gateway?: Pick<GatewayConnection, "tools" | "scope" | "role" | "modelPreferences">;
   /** Whose name is on the thread. Absent for a guest, which is told nothing. */
   agent?: AgentPersona;
   /** Session role: worker agent on a codebase or global app assistant. */
@@ -50,7 +56,7 @@ export interface KoneContextOptions {
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-09-30.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-10-01.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
 const KONE_APP_LINE =
@@ -96,6 +102,79 @@ const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
  *  tool missing from its tool list, and conclude it was never granted. */
 const TOOL_SEARCH_NOTE = `Tools marked (on demand) are served by the \`${KONE_ON_DEMAND_MCP_SERVER_NAME}\` MCP server and are not loaded yet. When you need one, load it with ToolSearch (query \`select:mcp__${KONE_ON_DEMAND_MCP_SERVER_NAME}__<tool name>\`), then call it like any other tool.`;
 
+// ── the user's model preferences ─────────────────────────────────────────────
+// A preference is the user saying which model a kind of work runs on. It only
+// takes effect when an agent passes the kind on a hand-off, and an agent that
+// meets the list only by calling agent_directory mostly never does: it reaches
+// for its own subagent or skill instead, which runs on its own model, and the
+// rule is skipped without anyone deciding to skip it. So the list rides in the
+// host context, with the standing rule that makes it bind.
+//
+// The wording follows what the dispatch actually does with `kind`: a `target`
+// the agent names wins over it, and so does a preset's or a teammate's own
+// model chain — the kind only fills in where nothing more specific placed the
+// thread. Telling an agent "pass kind" without that would send it to a teammate
+// with a model of its own and leave it believing the rule applied.
+//
+// The block is written once, at session start, so it can go stale when the user
+// edits a rule mid-session. It says so, and points at agent_directory, which
+// reads the store on every call.
+
+/** The stored list as the grant carries it: only the rules switched on with a
+ *  model, in the user's order — any other is dormant, and naming it to an agent
+ *  would offer a kind that places nothing. */
+export function hostContextModelPreferences(prefs: readonly ModelPreference[]): GatewayModelPreference[] {
+  return activeModelPreferences(prefs).map((pref) => ({
+    kind: pref.kind,
+    label: pref.label,
+    hint: pref.hint,
+    model: { provider: pref.model.provider, model: pref.model.model },
+    effort: pref.effort,
+  }));
+}
+
+/** The hand-off tools that take `kind`, in the order the rule names them. */
+const KIND_TOOLS = ["worker_start", "worker_start_batch", "agent_contract", "agent_delegate"] as const;
+
+/** One preference as a line of the list. Every field is the user's own text, so
+ *  each goes through `oneLine` like any other name in these blocks. */
+function modelPreferenceLine(pref: GatewayModelPreference): string {
+  const kind = oneLine(pref.kind, MAX_NAME_LENGTH);
+  const label = oneLine(pref.label, MAX_PREFERENCE_FIELD_LENGTH);
+  const model = `${oneLine(pref.model.provider, MAX_NAME_LENGTH)} / ${oneLine(pref.model.model, MAX_PREFERENCE_FIELD_LENGTH)}`;
+  const effort = pref.effort ? `effort ${oneLine(pref.effort, MAX_NAME_LENGTH)}` : "the provider's default effort";
+  const hint = oneLine(pref.hint, MAX_PREFERENCE_HINT_LENGTH);
+  return `- \`${kind}\` (${label}): ${model}, ${effort}.${hint ? ` When it applies: ${hint}` : ""}`;
+}
+
+/**
+ * The preferences section, or nothing when there is nothing to bind: no rule
+ * switched on, or a session that holds none of the tools a kind is passed to
+ * (a worker, the assistant), which could not act on the list if it had it.
+ */
+function renderModelPreferences(
+  prefs: readonly GatewayModelPreference[] | undefined,
+  tools: readonly GatewayToolPrompt[],
+): string[] {
+  if (!prefs?.length) return [];
+  const held = new Set(tools.map((tool) => tool.name));
+  const handOffs = KIND_TOOLS.filter((name) => held.has(name)).map((name) => `\`${name}\``);
+  if (!handOffs.length) return [];
+  const lines = [
+    "The user's model preferences by kind of work, as they stood when this session started:",
+    ...prefs.map(modelPreferenceLine),
+    `Each one is the user's explicit choice of model for that kind of work, and it comes before your own judgment of which model fits. When a piece of work matches one of these kinds, hand it off through kone with that \`kind\` (${handOffs.join(", ")}). Do not do that work inline, and do not run it through your provider's built-in subagent or skill: those run on your own model and skip the user's choice. If a skill has the method you want, read its file and put its steps in the brief.`,
+    "`kind` places the thread only when nothing more specific does: a `target` you pass wins over it, and so does a preset's or a teammate's own model. For work under a preference, start a briefed worker or contractor with `kind` and no `target`, or delegate only to a teammate with no model of its own.",
+    "An explicit instruction from the user in this conversation, such as doing it yourself or using another model, still wins over a stored preference.",
+  ];
+  if (held.has("agent_directory")) {
+    lines.push(
+      "The user can change these during the session. `agent_directory` has the live list, so check it before relying on this one when the session has run a while or a hand-off reports a kind it does not know.",
+    );
+  }
+  return lines;
+}
+
 /**
  * The host-context block for a session holding `tools`.
  *
@@ -111,7 +190,11 @@ const TOOL_SEARCH_NOTE = `Tools marked (on demand) are served by the \`${KONE_ON
 export function renderKoneHostContext(
   tools: readonly GatewayToolPrompt[],
   scope: "worker" | "assistant" = "worker",
-  options: { toolSearch?: boolean; role?: "agent" | "worker" } = {},
+  options: {
+    toolSearch?: boolean;
+    role?: "agent" | "worker";
+    modelPreferences?: readonly GatewayModelPreference[];
+  } = {},
 ): string {
   if (!tools?.length) return "";
   const preamble =
@@ -135,6 +218,7 @@ export function renderKoneHostContext(
       guidelines.push(guideline);
     }
   }
+  const preferences = scope === "worker" ? renderModelPreferences(options.modelPreferences, tools) : [];
   return [
     KONE_HOST_CONTEXT_MARKER,
     ...preamble,
@@ -143,6 +227,7 @@ export function renderKoneHostContext(
     ...index,
     ...(deferred ? ["", TOOL_SEARCH_NOTE] : []),
     ...(guidelines.length ? ["", ...guidelines] : []),
+    ...(preferences.length ? ["", ...preferences] : []),
   ].join("\n");
 }
 
@@ -169,6 +254,11 @@ export const KONE_AGENT_IDENTITY_VERSION = "2026-08-20.4";
 export const KONE_AGENT_IDENTITY_MARKER = `[kone agent identity ${KONE_AGENT_IDENTITY_VERSION}]`;
 
 const MAX_NAME_LENGTH = 48;
+/** Bounds for a preference's label/model id and its hint — the store's own
+ *  limits, restated so a field that slipped past them still can't grow the
+ *  block. */
+const MAX_PREFERENCE_FIELD_LENGTH = 80;
+const MAX_PREFERENCE_HINT_LENGTH = 300;
 /** A generous ceiling for an agent's instructions — room for real standing
  *  orders, short of a field that could crowd the turn out of its own context. */
 const MAX_INSTRUCTIONS_LENGTH = 4000;
@@ -258,6 +348,7 @@ export function buildKoneContext(options: KoneContextOptions): KoneContextBlocks
       ? renderKoneHostContext(options.gateway.tools, scope, {
           toolSearch: options.toolSearch,
           role: options.gateway.role,
+          modelPreferences: options.gateway.modelPreferences,
         })
       : "",
     identity: renderAgentIdentity(options.agent),

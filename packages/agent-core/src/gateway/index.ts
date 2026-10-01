@@ -72,6 +72,7 @@ import {
   type TerminalScreenReading,
 } from "./tools/appView.js";
 import { createViewPreamble } from "./viewPreamble.js";
+import { hostContextModelPreferences } from "./appContext.js";
 import type { ViewSnapshot } from "@kone/protocol/view-context";
 
 export type { GatewaySessionCredential } from "./credentials.js";
@@ -356,6 +357,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
         tools: registry.listToolPrompts(scope, role),
         scope,
         role,
+        modelPreferences: hostContextModelPreferences(input.store.listModelPreferences()),
       };
     },
     issueBootstrapToken: (sessionToken) => credentials.issueStdioBootstrapToken(sessionToken),

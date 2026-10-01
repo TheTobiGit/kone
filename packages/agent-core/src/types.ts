@@ -1452,6 +1452,21 @@ export type GatewayConnection = {
   /** What a project session is to the agents around it: an agent (the
    *  default) or a worker, started for one task, which directs nobody. */
   role?: "agent" | "worker";
+  /** The user's model preferences that were switched on with a model when the
+   *  grant was minted, in their order. Carried here so the host context can name
+   *  them up front: a preference the agent only meets by calling a tool is one
+   *  it never applies. A snapshot — `agent_directory` reads the live list. */
+  modelPreferences?: readonly GatewayModelPreference[];
+};
+
+/** One preference as the host context names it: the kind an agent passes, what
+ *  the user calls it, when it applies, and where the thread will run. */
+export type GatewayModelPreference = {
+  kind: string;
+  label: string;
+  hint: string;
+  model: { provider: ProviderKind; model: string };
+  effort: string | null;
 };
 
 /** Tags the transport an event came from — for debugging + provider-specific
