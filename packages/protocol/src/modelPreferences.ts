@@ -9,12 +9,13 @@
  * its caller runs. A preference lets the user say "quick fixes go to a small
  * fast model, reviews to a deep one" once, and every agent reads it.
  *
- * Each preference is a kind of work: a stable slug the agent passes as `kind`,
- * a label the user reads, and a hint that tells the agent when the kind
- * applies. A short set of suggested kinds ships as a starting point — the user
- * renames, removes and adds their own. A kind with no model is dormant: kept so
- * the user can finish it, but never offered to an agent, so a suggestion costs
- * nothing until the user routes it.
+ * Each preference — a rule, to the user — is a kind of work: a stable slug the
+ * agent passes as `kind`, a label the user reads, and an optional hint that
+ * tells the agent when the kind applies. A short set of built-in kinds always
+ * ships; the user can rename them or switch them off but not delete them, and
+ * adds and removes their own beside them. A rule reaches an agent only when it
+ * is switched on and has a model, so a built-in costs nothing until the user
+ * routes it.
  *
  * Shared by the store (which seeds the suggestions and normalizes what it
  * reads) and the renderer (which draws them before the bridge answers), so the
@@ -71,6 +72,20 @@ export const DEFAULT_MODEL_PREFERENCE_KINDS: readonly ModelPreferenceKind[] = [
     hint: "An independent take on a problem or a plan, meant to differ from your own thinking.",
   },
 ];
+
+/** The built-in kinds with no model set and switched off — the list a user who
+ *  never saved one opens on, so there is a starting set to route. */
+export function defaultModelPreferences() {
+  return DEFAULT_MODEL_PREFERENCE_KINDS.map((kind) => ({ ...kind, model: null, effort: null, enabled: false }));
+}
+
+const BUILTIN_KINDS = new Set(DEFAULT_MODEL_PREFERENCE_KINDS.map((k) => k.kind));
+
+/** Whether a slug names one of the built-in kinds, which can be switched off
+ *  but never removed. */
+export function isBuiltInModelPreference(kind: string): boolean {
+  return BUILTIN_KINDS.has(kind);
+}
 
 export const MODEL_PREFERENCE_KIND_MAX = 48;
 export const MODEL_PREFERENCE_LABEL_MAX = 60;

@@ -1,18 +1,23 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Add01Icon, Delete02Icon, Route01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import CreateRouteModal from "~/components/presets/CreateRouteModal.vue";
+import ProviderLogo from "~/components/provider/ProviderLogo.vue";
+import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { useModelPreferences } from "~/composables/useModelPreferences";
 import { useSound } from "~/composables/useSound";
-import { buildModelCatalog, describeModelId, effortMeta, isEffortTier } from "~/utils/modelCatalog";
+import { buildModelCatalog, describeModelId, effortMeta, isEffortTier, sessionBrand } from "~/utils/modelCatalog";
+import { PROVIDER_BRAND } from "~/utils/modelPicker";
+import { isBuiltInModelPreference } from "@kone/protocol/model-preferences";
 import type { ModelPreference } from "~/types/desktop";
 
-// The routing half of the Teams page: the user's own categories of work, each
-// sent to a model. A category with no model is kept but dormant — no agent is
-// told of it — so the list says which are live and which are still waiting on
-// one. It owns its own editor, since nothing else on the page opens it.
+// The Rules half of the Teams page: each rule sends a kind of work to a model.
+// The built-ins always stand and are only switched off; the user's own sit
+// beside them and can be removed. A rule reaches an agent only when it is on
+// and has a model, so the list says which are live. It owns its own editor,
+// since nothing else on the page opens it.
 
 const props = defineProps<{
   /** Whether the drawer is showing — closing it closes the editor too. */
@@ -21,13 +26,13 @@ const props = defineProps<{
   dealt: boolean;
 }>();
 
-const { preferences: routes, routedCount, canAdd, removeRoute, restoreSuggested } = useModelPreferences();
+const { preferences: routes, canAdd, setEnabled, removeRoute } = useModelPreferences();
 const { modelCache, prepare: prepareProviders } = useAgentProviders();
 const { cue } = useSound();
 onMounted(() => void prepareProviders());
 
 // ── the editor ──────────────────────────────────────────────────────────────
-// Closed, a category open for rewriting (its kind), or a blank card (no kind).
+// Closed, a rule open for rewriting (its kind), or a blank card (no kind).
 const editing = ref<{ kind: string | null } | null>(null);
 
 const editingRoute = computed(() => {
@@ -58,17 +63,41 @@ function create(): boolean {
 defineExpose({ create });
 
 // ── the list ────────────────────────────────────────────────────────────────
-/** A route's model as a line of text: its name, and the effort when it has one.
- *  A category with none says so, since that is what keeps it from agents. */
-function routeModel(route: ModelPreference): string {
-  if (!route.model) return "Not set";
+const sections = computed(() => [
+  { id: "builtin", title: "Built-in", rows: routes.value.filter((r) => isBuiltInModelPreference(r.kind)) },
+  { id: "custom", title: "Custom", rows: routes.value.filter((r) => !isBuiltInModelPreference(r.kind)) },
+]);
+
+/** Flip a rule's switch. One with no model has nothing to run on, so switching
+ *  it on opens the editor to pick one — saving that switches it on. */
+function toggle(route: ModelPreference, on: boolean) {
+  if (on && !route.model) {
+    openRoute(route.kind);
+    return;
+  }
+  void setEnabled(route.kind, on);
+  cue("toggle");
+}
+
+/** A route's model by name, or nothing when it has none — the row says "Not
+ *  set" itself, since that is what keeps it from agents. */
+function routeModel(route: ModelPreference): string | null {
+  if (!route.model) return null;
   const catalog = buildModelCatalog(modelCache.value[route.model.provider] ?? [], route.model.provider);
-  const name = describeModelId(route.model.model, catalog).name;
-  return isEffortTier(route.effort) ? `${name} · ${effortMeta(route.effort).label}` : name;
+  return describeModelId(route.model.model, catalog).name;
+}
+
+function routeEffort(route: ModelPreference): string | null {
+  return isEffortTier(route.effort) ? effortMeta(route.effort).label : null;
+}
+
+function routeBrand(route: ModelPreference) {
+  const { provider, model } = route.model!;
+  return sessionBrand(provider, PROVIDER_BRAND[provider], model);
 }
 
 // Removing asks twice: the first press arms the row, the second removes it, and
-// the arm lapses on its own, so a stray click never costs a category.
+// the arm lapses on its own, so a stray click never costs a rule.
 const armed = ref<string | null>(null);
 let armTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -98,58 +127,42 @@ onBeforeUnmount(() => clearTimeout(armTimer));
       @saved="editing = null"
     />
 
-    <section class="tm-kind" aria-label="Categories">
+    <section v-for="(sec, si) in sections" :key="sec.id" class="tm-kind" :aria-label="sec.title">
       <header class="tm-kind__head">
-        <span class="tm-kind__title">Categories</span>
-        <span class="tm-kind__meta">{{ routes.length }}</span>
+        <span class="tm-kind__title">{{ sec.title }}</span>
+        <span class="tm-kind__meta">{{ sec.rows.length }}</span>
         <span class="tm-kind__rule" aria-hidden="true" />
       </header>
 
-      <p v-if="!routes.length" class="tm-route__empty">
-        No categories. Name a kind of work and pick the model it runs on, and agents
-        hand that work to it instead of keeping it on their own.
-        <button
-          type="button"
-          class="tm-route__restore"
-          :tabindex="open ? 0 : -1"
-          @click="restoreSuggested"
-        >
-          Bring back the suggested ones
-        </button>
-      </p>
-      <p v-else-if="!routedCount" class="tm-route__empty">
-        These are suggestions. Give one a model and agents start sending that kind of
-        work there; until then none of them is told about it.
-      </p>
-
-      <div class="tm__rows" role="list" aria-label="Categories">
+      <div v-if="sec.rows.length" class="tm-map" role="list" :aria-label="sec.title">
         <article
-          v-for="(r, i) in routes"
+          v-for="(r, i) in sec.rows"
           :key="r.kind"
           role="listitem"
-          class="tm-sub tm-sub--custom"
-          :class="{ 'is-off': !r.model }"
-          :style="{ '--i': i }"
+          class="tm-map__row"
+          :class="{ 'is-unset': !r.model, 'is-off': !r.enabled }"
+          :style="{ '--i': si * sections[0]!.rows.length + i }"
           :tabindex="open ? 0 : -1"
-          :aria-label="`${r.label}${r.model ? '' : ', no model set'}`"
+          :aria-label="`${r.label}, ${routeModel(r) ?? 'no model set'}${r.enabled ? '' : ', off'}`"
           @click="openRoute(r.kind)"
           @keydown.enter.prevent="openRoute(r.kind)"
           @keydown.space.prevent="openRoute(r.kind)"
         >
-          <span class="tm-sub__glyph" aria-hidden="true">
-            <HugeiconsIcon :icon="Route01Icon" :size="18" :stroke-width="1.7" />
-          </span>
-          <div class="tm-sub__body">
-            <div class="tm-sub__line">
-              <h4 class="tm-sub__name">{{ r.label }}</h4>
-              <span class="tm-sub__model">{{ routeModel(r) }}</span>
-            </div>
-            <p class="tm-sub__brief">
-              {{ r.hint || "No description — agents would choose this by name alone." }}
-            </p>
+          <div class="tm-map__kind">
+            <h4 class="tm-map__name">{{ r.label }}</h4>
+            <p v-if="r.hint" class="tm-map__hint">{{ r.hint }}</p>
           </div>
-          <div class="tm-sub__act" @click.stop @keydown.stop>
+          <span class="tm-map__model">
+            <template v-if="r.model">
+              <ProviderLogo :brand="routeBrand(r)" :size="14" />
+              <span class="tm-map__modelname">{{ routeModel(r) }}</span>
+              <span v-if="routeEffort(r)" class="tm-map__effort">{{ routeEffort(r) }}</span>
+            </template>
+            <span v-else class="tm-map__modelname">Not set</span>
+          </span>
+          <div class="tm-map__act" @click.stop @keydown.stop>
             <button
+              v-if="sec.id === 'custom'"
               type="button"
               class="tm-route__remove"
               :class="{ 'is-armed': armed === r.kind }"
@@ -161,23 +174,29 @@ onBeforeUnmount(() => clearTimeout(armTimer));
               <HugeiconsIcon :icon="Delete02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
               <span v-if="armed === r.kind">Remove?</span>
             </button>
+            <ToggleSwitch
+              :model-value="r.enabled"
+              :aria-label="r.label"
+              @update:model-value="toggle(r, $event)"
+            />
           </div>
         </article>
-
-        <button
-          v-if="canAdd"
-          type="button"
-          class="tm-add tm-add--sub"
-          :style="{ '--i': routes.length }"
-          :tabindex="open ? 0 : -1"
-          @click="create"
-        >
-          <span class="tm-add__ring" aria-hidden="true">
-            <HugeiconsIcon :icon="Add01Icon" :size="16" :stroke-width="1.6" />
-          </span>
-          <span class="tm-add__label">New category</span>
-        </button>
       </div>
+      <p v-else class="tm-route__empty">None yet. Add one for a kind of work the built-ins don't cover.</p>
+
+      <button
+        v-if="sec.id === 'custom' && canAdd"
+        type="button"
+        class="tm-add tm-add--sub"
+        :style="{ '--i': routes.length }"
+        :tabindex="open ? 0 : -1"
+        @click="create"
+      >
+        <span class="tm-add__ring" aria-hidden="true">
+          <HugeiconsIcon :icon="Add01Icon" :size="16" :stroke-width="1.6" />
+        </span>
+        <span class="tm-add__label">New rule</span>
+      </button>
     </section>
   </div>
 </template>
@@ -194,21 +213,7 @@ onBeforeUnmount(() => clearTimeout(armTimer));
   color: var(--muted);
   text-wrap: pretty;
 }
-.tm-route__restore {
-  display: block;
-  margin-top: 6px;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-  cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--ink) 25%, transparent);
-  text-underline-offset: 3px;
-  transition: color 140ms ease;
-}
-.tm-route__restore:hover {
-  color: var(--ink);
-}
-/* The remove control stays out of the way until the card is being looked at,
+/* The remove control stays out of the way until the row is being looked at,
    then asks twice — the first press arms it and it says so. */
 .tm-route__remove {
   display: inline-flex;
@@ -226,7 +231,7 @@ onBeforeUnmount(() => clearTimeout(armTimer));
     background-color 140ms ease,
     color 140ms ease;
 }
-.tm-sub:is(:hover, :focus-within) .tm-route__remove,
+.tm-map__row:is(:hover, :focus-within) .tm-route__remove,
 .tm-route__remove.is-armed {
   opacity: 1;
 }
@@ -245,6 +250,126 @@ onBeforeUnmount(() => clearTimeout(armTimer));
 @media (hover: none) {
   .tm-route__remove {
     opacity: 1;
+  }
+}
+/* A rule is a setting, not a thing you define: one kind of work and the
+   model it goes to, read across a line. So the list is a single column of
+   rows on hairlines, the model set in a chip at the right edge — nothing like
+   the worker cards, which carry a glyph and a brief because each is its own
+   definition. */
+.tm-map {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  overflow: hidden;
+}
+.tm-map__row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 52px;
+  padding: 10px 10px 10px 16px;
+  cursor: pointer;
+  outline: none;
+  animation: tm-deal 460ms var(--tm-ease) calc(var(--i, 0) * 28ms + 40ms) backwards;
+  transition: background-color 160ms ease;
+}
+.tm__stack.is-dealt .tm-map__row {
+  animation: none;
+}
+.tm-map__row + .tm-map__row {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.tm-map__row:hover {
+  background-color: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.tm-map__row:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+
+.tm-map__kind {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.tm-map__name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tm-map__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chip is the answer the row gives. Unset, it turns to a dashed outline:
+   a slot still waiting on a model, which is why no agent hears of it. */
+.tm-map__model {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  max-width: 50%;
+  height: 28px;
+  padding-inline: 9px 11px;
+  border-radius: 999px;
+  background: var(--panel);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.tm-map__modelname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tm-map__effort {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.tm-map__row.is-unset .tm-map__model {
+  padding-inline: 11px;
+  background: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 16%, transparent);
+  color: var(--muted);
+}
+.tm-map__row.is-unset .tm-map__name {
+  color: var(--ink-soft);
+}
+
+.tm-map__act {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  cursor: default;
+}
+/* Off reads as benched, not broken: the words and the chip fade back, the
+   switch stays at full strength so turning it on again is the obvious move. */
+.tm-map__row.is-off :is(.tm-map__kind, .tm-map__model) {
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-map__row {
+    animation: none;
+    transition: none;
   }
 }
 </style>

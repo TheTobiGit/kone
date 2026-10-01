@@ -1173,32 +1173,72 @@ describe("the schema", () => {
 });
 
 describe("model preferences", () => {
-  test("a store that never saved a list reads the suggested kinds, all dormant", () => {
+  test("a store that never saved a list reads the built-in kinds, all off", () => {
     const prefs = freshStore().listModelPreferences();
     expect(prefs.map((p) => p.kind)).toContain("code-review");
-    expect(prefs.every((p) => p.model === null && p.effort === null)).toBe(true);
+    expect(prefs.every((p) => p.model === null && p.effort === null && !p.enabled)).toBe(true);
   });
 
-  test("a saved list reads back normalized, in the order given", () => {
+  test("a saved list reads back normalized, in the order given, the missing built-ins after", () => {
     const store = freshStore();
     const saved = store.saveModelPreferences([
       { kind: "Review", label: "Review", hint: "Read for bugs.", model: { provider: "codex", model: "gpt-5" }, effort: "high" },
-      { kind: "quick-fix", label: "Quick fixes", hint: "", model: null, effort: "low" },
+      { kind: "quick-fix", label: "Quick fixes", hint: "", model: null, effort: "low", enabled: true },
       { kind: "review", label: "Duplicate", hint: "", model: null, effort: null },
     ]);
     expect(saved).not.toBeNull();
     const read = store.listModelPreferences();
-    expect(read).toEqual([
-      { kind: "review", label: "Review", hint: "Read for bugs.", model: { provider: "codex", model: "gpt-5" }, effort: "high" },
-      // An effort with no model has nothing to tune, so it is dropped.
-      { kind: "quick-fix", label: "Quick fixes", hint: "", model: null, effort: null },
+    expect(read.slice(0, 2)).toEqual([
+      // Saved before kinds could be switched off: a kind with a model reads as on.
+      { kind: "review", label: "Review", hint: "Read for bugs.", model: { provider: "codex", model: "gpt-5" }, effort: "high", enabled: true },
+      // An effort with no model has nothing to tune, and nothing to switch on.
+      { kind: "quick-fix", label: "Quick fixes", hint: "", model: null, effort: null, enabled: false },
     ]);
+    expect(read.map((p) => p.kind)).toContain("code-review");
+    expect(read.filter((p) => p.kind === "quick-fix")).toHaveLength(1);
   });
 
-  test("an empty list is kept, not reset to the suggestions", () => {
+  test("a kind switched off stays off with its model", () => {
+    const store = freshStore();
+    store.saveModelPreferences([
+      { kind: "tests", label: "Tests", hint: "", model: { provider: "codex", model: "gpt-5" }, effort: null, enabled: false },
+    ]);
+    const tests = store.listModelPreferences().find((p) => p.kind === "tests");
+    expect(tests).toMatchObject({ model: { provider: "codex", model: "gpt-5" }, enabled: false });
+  });
+
+  test("an empty list keeps the built-ins, switched off", () => {
     const store = freshStore();
     store.saveModelPreferences([]);
-    expect(store.listModelPreferences()).toEqual([]);
+    const read = store.listModelPreferences();
+    expect(read.map((p) => p.kind)).toContain("code-review");
+    expect(read.every((p) => !p.enabled)).toBe(true);
+  });
+
+  // Before built-ins were fixed, a user could delete them all and fill every
+  // slot with their own. Putting the built-ins back must not push any of those out.
+  test("a full list of the user's own rules keeps every one, the built-ins after", () => {
+    const store = freshStore();
+    const own = Array.from({ length: 32 }, (_, i) => ({
+      kind: `own-${i}`,
+      label: `Own ${i}`,
+      hint: "",
+      model: { provider: "codex", model: "gpt-5" },
+      effort: null,
+      enabled: true,
+    }));
+    // Saving through the store would put the built-ins in, so the old list is
+    // written straight to the row the store reads.
+    store.saveModelPreferences([]);
+    const db = rawDb();
+    db.prepare(`UPDATE app_state SET value = ? WHERE key = ?`).run(JSON.stringify(own), "model_preferences");
+    db.close();
+    const read = store.listModelPreferences();
+    expect(read.slice(0, 32).map((p) => p.kind)).toEqual(own.map((p) => p.kind));
+    expect(read.map((p) => p.kind)).toContain("code-review");
+    const saved = store.saveModelPreferences(read);
+    expect(saved).toEqual(read);
+    expect(store.listModelPreferences()).toEqual(read);
   });
 
   test("a corrupt document reads as the suggestions", () => {

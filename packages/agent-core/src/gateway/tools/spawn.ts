@@ -135,8 +135,8 @@ export function teammateTargets(
   return out;
 }
 
-/** The kinds of work the user set a model for, shaped for the report in the
- *  user's order. A kind with no model is left out: naming it would place
+/** The kinds of work the user switched on with a model, shaped for the report
+ *  in the user's order. Any other kind is left out: naming it would place
  *  nothing, so it is not something an agent can choose. */
 function modelPreferenceTargets(
   store: SpawnToolStore,

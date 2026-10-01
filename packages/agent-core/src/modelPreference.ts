@@ -1,8 +1,9 @@
 import {
-  DEFAULT_MODEL_PREFERENCE_KINDS,
   MODEL_PREFERENCE_HINT_MAX,
   MODEL_PREFERENCE_LABEL_MAX,
   MODEL_PREFERENCE_LIST_MAX,
+  defaultModelPreferences,
+  isBuiltInModelPreference,
   modelPreferenceKindKey,
 } from "@kone/protocol/model-preferences";
 import {
@@ -30,13 +31,10 @@ export type ModelPreference = {
    *  provider's default. Soft, as a spawn's effort always is: one the model
    *  doesn't take is dropped and reported, never refused. */
   effort: string | null;
+  /** Whether the user has it switched on. Only a kind that is on and has a
+   *  model reaches an agent, so this is never true without a model. */
+  enabled: boolean;
 };
-
-/** The suggested kinds with no model set — what a store that never saved a list
- *  reads as, so the user opens the pane on a starting set to route. */
-export function defaultModelPreferences(): ModelPreference[] {
-  return DEFAULT_MODEL_PREFERENCE_KINDS.map((kind) => ({ ...kind, model: null, effort: null }));
-}
 
 /** One line of text from a stored or submitted field, bounded; empty when the
  *  field is not text. */
@@ -60,27 +58,35 @@ export function normalizeModelPreference(entry: ColumnValue | undefined): ModelP
     model,
     // An effort without a model has nothing to tune.
     effort: model ? boundRefField(entry.effort) : null,
+    // A list saved before kinds could be switched off has no flag: a kind with
+    // a model was live then, so it reads as on.
+    enabled: model ? entry.enabled !== false : false,
   };
 }
 
 /** A whole list through the gate: each entry normalized, the unusable dropped,
- *  a repeated kind kept at its first place only, and the list bounded. */
+ *  a repeated kind kept at its first place only, the user's own bounded, and
+ *  any built-in the list lacks put back switched off. The bound counts only
+ *  the user's own: a list saved when built-ins could be deleted may hold a
+ *  full bound of them, and putting the built-ins back must not push any out.
+ *  So a list read can always be saved again unchanged. */
 export function normalizeModelPreferences(list: readonly ColumnValue[]): ModelPreference[] {
   const out: ModelPreference[] = [];
   const seen = new Set<string>();
+  let own = 0;
   for (const entry of list) {
     const pref = normalizeModelPreference(entry);
     if (!pref || seen.has(pref.kind)) continue;
+    if (!isBuiltInModelPreference(pref.kind) && own++ >= MODEL_PREFERENCE_LIST_MAX) continue;
     seen.add(pref.kind);
     out.push(pref);
-    if (out.length >= MODEL_PREFERENCE_LIST_MAX) break;
   }
-  return out;
+  return [...out, ...defaultModelPreferences().filter((p) => !seen.has(p.kind))];
 }
 
 /** The preference an agent's `kind` names, matched on the slug so any spelling
- *  of it finds the same entry. Only a kind with a model is found: one the user
- *  hasn't set is dormant, and to an agent it doesn't exist — the same answer as
+ *  of it finds the same entry. Only a kind that is on with a model is found:
+ *  any other is dormant, and to an agent it doesn't exist — the same answer as
  *  a kind nobody ever made. */
 export function lookupModelPreference(
   prefs: readonly ModelPreference[],
@@ -91,9 +97,10 @@ export function lookupModelPreference(
   return activeModelPreferences(prefs).find((p) => p.kind === wanted) ?? null;
 }
 
-/** The kinds an agent can pass: only those with a model, in the user's order. */
+/** The kinds an agent can pass: only those switched on with a model, in the
+ *  user's order. */
 export function activeModelPreferences(
   prefs: readonly ModelPreference[],
 ): Array<ModelPreference & { model: AgentModelRef }> {
-  return prefs.flatMap((p) => (p.model ? [{ ...p, model: p.model }] : []));
+  return prefs.flatMap((p) => (p.enabled && p.model ? [{ ...p, model: p.model }] : []));
 }

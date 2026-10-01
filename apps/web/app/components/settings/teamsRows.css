@@ -1,6 +1,6 @@
-/* What the sub-agent rows and the model-routing rows share: the section head,
-   the two-up grid of cards, the card itself, and the tile that adds one. Both
-   panes import this, so a row looks the same wherever it is drawn. */
+/* What the Workers and Models tabs share: the section head, the deal-in, and
+   the tile that adds one. The worker cards live here too; the Models list
+   draws its own rows. */
 .tm__stack {
   display: flex;
   flex-direction: column;
@@ -59,7 +59,7 @@
   color: inherit;
 }
 
-/* The new-sub-agent tile is a bare line under the custom cards: no ground and
+/* The new-worker tile is a bare line under the custom cards: no ground and
    no box around the plus, so it reads as an invitation after the list rather
    than one more card in it. The inset puts the plus on the centre line of the
    glyphs above, with the label close beside it; the tile hugs its content so
@@ -87,7 +87,7 @@
   transform: scale(0.985);
 }
 
-/* ── sub-agent rows ──────────────────────────────────────────────────────── */
+/* ── worker rows ──────────────────────────────────────────────────────── */
 .tm-kind {
   display: flex;
   flex-direction: column;
