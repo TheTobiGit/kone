@@ -192,6 +192,15 @@ describe("checkSpawn", () => {
     }
   });
 
+  test("a null target effort is the provider's default — it does not inherit the parent's", () => {
+    const result = checkSpawn(base({ target: { provider: "codex", effort: null }, parentEffort: "high" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.effort).toBeUndefined();
+      expect(result.adjustments).toEqual([]);
+    }
+  });
+
   test("an inherited effort the child's model doesn't list is dropped with an adjustment, still ok", () => {
     const catalog = [{ id: "gpt-5", label: "GPT-5", reasoningEfforts: ["low", "high"] }];
     const result = checkSpawn(

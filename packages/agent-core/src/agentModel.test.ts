@@ -232,6 +232,31 @@ describe("planSpawnModel", () => {
     });
   });
 
+  test("a preferred model keeps the caller's own model as its failover rung", () => {
+    const plan = planSpawnModel({
+      chain: [],
+      preferred: ref("claudeAgent", "opus"),
+      caller: { provider: "codex", model: "gpt-5" },
+      availability: surface(),
+    });
+    expect(plan).toEqual({
+      ok: true,
+      target: { provider: "claudeAgent", model: "opus" },
+      fallbacks: [{ provider: "codex", model: "gpt-5" }],
+      selection: "preferred",
+    });
+  });
+
+  test("a preferred model that is the caller's own needs no failover rung", () => {
+    const plan = planSpawnModel({
+      chain: [],
+      preferred: ref("codex", "gpt-5"),
+      caller: { provider: "codex", model: "gpt-5" },
+      availability: surface(),
+    });
+    expect(plan).toMatchObject({ ok: true, fallbacks: [], selection: "preferred" });
+  });
+
   test("a requested model that cannot run is refused rather than inherited", () => {
     const plan = planSpawnModel({
       requested: ref("cursor", "auto"),

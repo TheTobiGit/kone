@@ -25,6 +25,7 @@ import {
 } from "../schemas.js";
 import { createRegistry } from "../registry.js";
 import { mergeVisiblePresets } from "../../rosterRecord.js";
+import type { ModelPreference } from "../../modelPreference.js";
 
 // The tools import ../../threadSpawn.ts, which the engine worker is writing in
 // parallel — stub it wholesale (mock.module before the dynamic import, the
@@ -139,6 +140,7 @@ type SpawnToolStore = {
   listNativeSubagentConfigs(): NativeSubagentConfig[];
   listVisiblePresets(): SubagentPresetRecord[];
   listProjectAgents(projectPath: string): AgentRecord[];
+  listModelPreferences(): ModelPreference[];
 };
 let createSpawnTools: (input: { store: SpawnToolStore }) => ToolEntry[];
 
@@ -181,6 +183,7 @@ function makeStore(
   presets: SubagentPresetRecord[] = [],
   team: AgentRecord[] = [],
   nativeConfigs: NativeSubagentConfig[] = [],
+  modelPreferences: ModelPreference[] = [],
 ): SpawnToolStore {
   const byId = new Map(threads.map((t) => [t.threadId, t]));
   const presetById = new Map(presets.map((p) => [p.presetId, p]));
@@ -191,6 +194,7 @@ function makeStore(
     listNativeSubagentConfigs: () => nativeConfigs,
     listVisiblePresets: () => mergeVisiblePresets(presets, nativeConfigs),
     listProjectAgents: () => team,
+    listModelPreferences: () => modelPreferences,
   };
 }
 
@@ -2131,5 +2135,189 @@ describe("agent_delegate", () => {
       ["child-b", null, "it's quick"],
     ]);
     expect(batchSummary(res)).toContain('1 spawn failed: item 2: "Frontend" is a teammate, not a worker');
+  });
+});
+
+describe("model preferences by kind of work", () => {
+  const prefs: ModelPreference[] = [
+    {
+      kind: "quick-fix",
+      label: "Quick fixes",
+      hint: "A small change.",
+      model: { provider: "claudeAgent", model: "haiku" },
+      effort: "low",
+    },
+    { kind: "review", label: "Review", hint: "", model: null, effort: null },
+    {
+      kind: "git",
+      label: "Git work",
+      hint: "",
+      model: { provider: "cursor", model: "gone" },
+      effort: null,
+    },
+  ];
+
+  const capturingEngine = (captured: FakeSpawnRequest[]) =>
+    makeEngine({
+      targets: async () =>
+        targetsReport([
+          { provider: "codex", models: ["gpt-5"] },
+          { provider: "claudeAgent", models: ["haiku", "opus"] },
+        ]),
+      spawn: async (caller, request) => {
+        captured.push(request);
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? "t",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+
+  test("a briefed worker naming a kind runs on the user's model and effort for it", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], prefs) }));
+    const res = await registry.call(ctx, "worker_start", {
+      task: "Fix the typo.",
+      requestId: "op-1",
+      kind: "Quick Fix",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(captured[0]!.target).toEqual({ provider: "claudeAgent", model: "haiku", effort: "low" });
+    expect(res.structuredContent).toMatchObject({
+      preference: { kind: "quick-fix", outcome: "applied" },
+    });
+    expect(JSON.stringify(res.content)).toContain("the user's model for Quick fixes");
+  });
+
+  test("a target the caller named beats the kind", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], prefs) }));
+    const res = await registry.call(ctx, "worker_start", {
+      task: "Fix it.",
+      requestId: "op-1",
+      kind: "quick-fix",
+      target: { provider: "claudeAgent", model: "opus" },
+    });
+    expect(captured[0]!.target).toEqual({ provider: "claudeAgent", model: "opus" });
+    expect(res.structuredContent).toMatchObject({ preference: { outcome: "overridden" } });
+  });
+
+  test("a preset's own chain beats the kind; a preset that inherits takes it", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const pinned = makePreset({ model: { provider: "claudeAgent", model: "opus" } });
+    const inheriting = makePreset({ presetId: "preset-free", name: "Free", model: null });
+    const registry = createRegistry(
+      createSpawnTools({ store: makeStore([], [pinned, inheriting], [], [], prefs) }),
+    );
+    await registry.call(ctx, "worker_start", { preset: "Explorer", task: "Go.", requestId: "a", kind: "quick-fix" });
+    await registry.call(ctx, "worker_start", { preset: "Free", task: "Go.", requestId: "b", kind: "quick-fix" });
+    expect(captured[0]!.target).toEqual({ provider: "claudeAgent", model: "opus" });
+    expect(captured[1]!.target).toEqual({ provider: "claudeAgent", model: "haiku", effort: "low" });
+  });
+
+  test("a teammate with no model of its own takes the kind", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const registry = createRegistry(
+      createSpawnTools({ store: makeStore([], [], [makeAgent({ model: null })], [], prefs) }),
+    );
+    const res = await registry.call(ctx, "agent_delegate", {
+      agent: "Backend",
+      task: "Fix it.",
+      requestId: "op-1",
+      kind: "quick-fix",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(captured[0]!.target).toEqual({ provider: "claudeAgent", model: "haiku", effort: "low" });
+    expect(res.structuredContent).toMatchObject({ selection: "preferred" });
+  });
+
+  test("a briefed worker placed by a kind keeps the caller's model as its failover", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], prefs) }));
+    const res = await registry.call(ctx, "worker_start", {
+      task: "Fix it.",
+      requestId: "op-1",
+      kind: "quick-fix",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(captured[0]!.target).toMatchObject({ provider: "claudeAgent", model: "haiku" });
+    expect(captured[0]!.fallbacks).toHaveLength(1);
+    expect(captured[0]!.fallbacks![0]).toMatchObject({ provider: ctx.provider, model: ctx.model });
+  });
+
+  test("a kind with no effort asks for the provider's default, not the caller's effort", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const plain: ModelPreference[] = [
+      { kind: "tests", label: "Tests", hint: "", model: { provider: "claudeAgent", model: "haiku" }, effort: null },
+    ];
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], plain) }));
+    await registry.call(ctx, "worker_start", { task: "Go.", requestId: "a", kind: "tests" });
+    expect(captured[0]!.target).toEqual({ provider: "claudeAgent", model: "haiku", effort: null });
+  });
+
+  test("a thread that failed over from the kind's model does not claim to run on it", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    const base = capturingEngine(captured);
+    currentEngine = {
+      ...base,
+      spawn: async (caller, request) => ({
+        ...(await base.spawn(caller, request)),
+        provider: ctx.provider,
+        model: ctx.model,
+        failedOverFrom: { provider: "claudeAgent", model: "haiku", reason: "rate limited" },
+      }),
+    };
+    const inheriting = makePreset({ presetId: "preset-free", name: "Free", model: null });
+    const registry = createRegistry(
+      createSpawnTools({ store: makeStore([], [inheriting], [makeAgent({ model: null })], [], prefs) }),
+    );
+
+    const worker = await registry.call(ctx, "worker_start", { task: "Go.", requestId: "a", kind: "quick-fix" });
+    expect(worker.structuredContent).toMatchObject({ preference: { kind: "quick-fix", outcome: "failed_over" } });
+    const text = JSON.stringify(worker.content);
+    expect(text).not.toContain("That is the user's model");
+    expect(text).toContain("Fell back from claudeAgent/haiku");
+
+    const preset = await registry.call(ctx, "worker_start", { preset: "Free", task: "Go.", requestId: "b", kind: "quick-fix" });
+    expect(preset.structuredContent).toMatchObject({ selection: "inherited", preference: { outcome: "failed_over" } });
+    const delegated = await registry.call(ctx, "agent_delegate", { agent: "Backend", task: "Go.", requestId: "c", kind: "quick-fix" });
+    expect(delegated.structuredContent).toMatchObject({ selection: "inherited", preference: { outcome: "failed_over" } });
+  });
+
+  test("an unavailable kind, or one with no model set, runs on the caller's model — the unset one reads as unknown", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], prefs) }));
+    const outcomes: string[] = [];
+    for (const kind of ["review", "git", "painting"]) {
+      const res = await registry.call(ctx, "worker_start", { task: "Go.", requestId: kind, kind });
+      expect(res.isError).toBeUndefined();
+      // SAFETY: every start above names a kind, so its result carries a preference note.
+      outcomes.push((res.structuredContent as { preference: { outcome: string } }).preference.outcome);
+    }
+    expect(outcomes).toEqual(["unknown", "unavailable", "unknown"]);
+    for (const request of captured) expect(request.target).toEqual({ provider: "codex", model: "gpt-5" });
+  });
+
+  test("agent_directory lists only the kinds with a model", async () => {
+    currentEngine = capturingEngine([]);
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], prefs) }));
+    const res = await registry.call(ctx, "agent_directory", {});
+    // SAFETY: agent_directory's structured result is always { report }.
+    const report = (res.structuredContent as { report: { modelPreferences: Array<{ kind: string }> } }).report;
+    expect(report.modelPreferences.map((p) => p.kind)).toEqual(["quick-fix", "git"]);
+    expect(JSON.stringify(res.content)).toContain("quick-fix (Quick fixes: A small change) → claudeAgent/haiku at low effort");
   });
 });

@@ -24,6 +24,10 @@
       "types": "./src/messageSender.ts",
       "default": "./src/messageSender.ts"
     },
+    "./model-preferences": {
+      "types": "./src/modelPreferences.ts",
+      "default": "./src/modelPreferences.ts"
+    },
     "./plan-tasks": {
       "types": "./src/planTasks.ts",
       "default": "./src/planTasks.ts"

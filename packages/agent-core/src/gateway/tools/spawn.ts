@@ -25,7 +25,7 @@
 // through; anything else falls through to the registry's internal handling.
 
 import { SPAWN_WAIT_MAX_MS, type SpawnTargetsReport } from "../../threadSpawn.js";
-import type { InteractionMode, SpawnedThread, SpawnTarget, StoredBlock } from "../../types.js";
+import type { InteractionMode, SpawnedThread, StoredBlock } from "../../types.js";
 import type { AgentModelRef } from "../../ConversationStore.js";
 import type { ContractTerms } from "@kone/protocol/contract";
 import {
@@ -68,9 +68,11 @@ import {
   type DispatchItem,
   type Dispatched,
   type DispatchMeta,
+  type RequestedTarget,
   type SpawnToolStore,
 } from "./spawnDispatch.js";
 import { mapSpawnError, requiredEngine, callerOf, withActiveTurn } from "./spawnToolContext.js";
+import { activeModelPreferences } from "../../modelPreference.js";
 
 export type { SpawnToolStore } from "./spawnDispatch.js";
 
@@ -131,6 +133,24 @@ export function teammateTargets(
     out.push(entry);
   }
   return out;
+}
+
+/** The kinds of work the user set a model for, shaped for the report in the
+ *  user's order. A kind with no model is left out: naming it would place
+ *  nothing, so it is not something an agent can choose. */
+function modelPreferenceTargets(
+  store: SpawnToolStore,
+): NonNullable<SpawnTargetsReport["modelPreferences"]> {
+  return activeModelPreferences(store.listModelPreferences()).map((pref) => {
+    const entry: NonNullable<SpawnTargetsReport["modelPreferences"]>[number] = {
+      kind: pref.kind,
+      label: pref.label,
+      model: { provider: pref.model.provider, model: pref.model.model },
+    };
+    if (pref.hint) entry.hint = pref.hint;
+    if (pref.effort) entry.effort = pref.effort;
+    return entry;
+  });
 }
 
 const TRUNCATION_MARKER = "\n…[truncated]";
@@ -248,7 +268,13 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       // The engine reports providers/models/limits — all it knows. Presets and
       // teammates are the store's, so they join the report here.
       const presets = presetTargets(input.store);
-      const report: SpawnTargetsReport = { ...base, presets, teammates: teammateTargets(input.store, caller.cwd) };
+      const modelPreferences = modelPreferenceTargets(input.store);
+      const report: SpawnTargetsReport = {
+        ...base,
+        presets,
+        teammates: teammateTargets(input.store, caller.cwd),
+        modelPreferences,
+      };
       const ready = report.providers.filter((p) => p.available).map((p) => p.provider);
       const parts = [
         ready.length > 0
@@ -264,6 +290,16 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       if (teammates.length > 0) {
         parts.push(
           `${teammates.length} teammate${teammates.length === 1 ? "" : "s"} on this project (${teammates.map((t) => (t.role ? `${t.name}, ${t.role}` : t.name)).join("; ")}) available to agent_delegate.`,
+        );
+      }
+      if (modelPreferences.length > 0) {
+        parts.push(
+          `The user's model preferences by kind of work — pass the kind as kind to worker_start, agent_contract or agent_delegate when the work fits one and you were not told a model: ${modelPreferences
+            .map(
+              (p) =>
+                `${p.kind} (${p.label}${p.hint ? `: ${p.hint.replace(/\.$/, "")}` : ""}) → ${p.model.provider}/${p.model.model}${p.effort ? ` at ${p.effort} effort` : ""}`,
+            )
+            .join("; ")}.`,
         );
       }
       return { content: [{ type: "text", text: parts.join(" ") }], structuredContent: { report } };
@@ -289,8 +325,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     title?: string;
     why?: string;
     preset?: string;
-    target?: SpawnTarget;
+    target?: RequestedTarget;
     model?: AgentModelRef;
+    kind?: string;
     mode?: InteractionMode;
   };
 
@@ -310,6 +347,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       why?: string;
       mode?: InteractionMode;
       model?: AgentModelRef;
+      kind?: string;
     }): DispatchItem => ({ ...args, prompt: task }),
   );
 
@@ -328,7 +366,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       requestId: string;
       title?: string;
       why?: string;
-      target?: SpawnTarget;
+      target?: RequestedTarget;
+      kind?: string;
       mode?: InteractionMode;
     }): DispatchItem => ({
       ...args,
@@ -504,14 +543,14 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_directory",
       description:
-        "List who and what you can hand work to: this project's teammates with their roles (agent_delegate; agent_contract makes up an agent when none fits), saved worker presets with what each is for (worker_start with preset), and the installed providers with their real model ids (worker_start with target). Also reports the model you run on, how many more threads you may start, and how long your delegation chain already is.",
+        "List who and what you can hand work to: this project's teammates with their roles (agent_delegate; agent_contract makes up an agent when none fits), saved worker presets with what each is for (worker_start with preset), the user's model preferences by kind of work (kind on any start or delegation), and the installed providers with their real model ids (worker_start with target). Also reports the model you run on, how many more threads you may start, and how long your delegation chain already is.",
       inputSchema: SpawnTargetsInputSchema,
       jsonSchema: SPAWN_TARGETS_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       agentsOnly: true,
       promptSnippet:
-        "List the teammates, worker presets and models you can hand work to, and how many more threads you may start.",
+        "List the teammates, worker presets, model preferences and models you can hand work to, and how many more threads you may start.",
       promptGuidelines: [
         "Before handing work off, decide who should carry it. A large piece with parts of its own — a whole feature, a layer of the stack — goes to an agent, since an agent can plan it and start workers of its own: a teammate (agent_delegate) whose role fits, or, when none does, one you contract for the job (agent_contract). A short, bounded task — find something, run something, make one scoped edit — goes to a worker (worker_start), which does exactly that and reports back. Keep what you can do quickly yourself.",
       ],
@@ -520,7 +559,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "worker_start" satisfies SpawnToolName,
       description:
-        "Start a worker: a kone thread that does one short, bounded task and reports back. It has no name or role of its own, cannot start agents or workers itself, and shows under your conversation rather than as a thread of its own. It starts with no memory of this conversation, so write task as a complete brief: the goal, the paths, the constraints, and what done looks like. Name a saved preset (agent_directory lists them) to lay its standing instructions and model chain under the task; otherwise it runs on your own provider and model, or on target for a cheaper or stronger one. why is one short clause, in your own voice, that the user reads where you started it. mode is what it may do unattended and is clamped to yours (a wider request is refused, not downgraded). Pass a stable requestId so a retry returns the same worker. Returns once it starts, with its threadId and first turn id: collect the result with agent_wait (pass that id as turnIds) and ask it again with agent_followup, never a second start.",
+        "Start a worker: a kone thread that does one short, bounded task and reports back. It has no name or role of its own, cannot start agents or workers itself, and shows under your conversation rather than as a thread of its own. It starts with no memory of this conversation, so write task as a complete brief: the goal, the paths, the constraints, and what done looks like. Name a saved preset (agent_directory lists them) to lay its standing instructions and model chain under the task. Name the kind of work (agent_directory lists the user's model preferences) to run it on the model and effort the user chose for that kind; otherwise it runs on your own provider and model. Use target only when the user asked for a specific model. why is one short clause, in your own voice, that the user reads where you started it. mode is what it may do unattended and is clamped to yours (a wider request is refused, not downgraded). Pass a stable requestId so a retry returns the same worker. Returns once it starts, with its threadId and first turn id: collect the result with agent_wait (pass that id as turnIds) and ask it again with agent_followup, never a second start.",
       inputSchema: WorkerStartInputSchema,
       jsonSchema: WORKER_START_JSON_SCHEMA,
       permission: "allow",
@@ -536,7 +575,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_delegate" satisfies SpawnToolName,
       description:
-        "Delegate a large piece of work to a teammate: a named kone agent on this project's team (agent_directory lists them with their roles). It runs as that agent — under its name, instructions and model chain (yours when it names none) — in a thread of its own the user can open, and it can plan the work and start workers of its own. It starts with no memory of this conversation, so write task as the whole ask. It reads your brief as yours, not the user's, and may come back with a question or disagree: answer from what you know of the user's intent, or ask the user. Pass model only when the user asked for a specific one. why, mode and requestId work as in worker_start. Collect the result with agent_wait; follow up with agent_followup.",
+        "Delegate a large piece of work to a teammate: a named kone agent on this project's team (agent_directory lists them with their roles). It runs as that agent — under its name, instructions and model chain (when it names none, the user's model for kind, else yours) — in a thread of its own the user can open, and it can plan the work and start workers of its own. It starts with no memory of this conversation, so write task as the whole ask. It reads your brief as yours, not the user's, and may come back with a question or disagree: answer from what you know of the user's intent, or ask the user. Pass model only when the user asked for a specific one. why, mode and requestId work as in worker_start. Collect the result with agent_wait; follow up with agent_followup.",
       inputSchema: DelegateToTeammateInputSchema,
       jsonSchema: DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
       permission: "allow",
@@ -549,7 +588,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_contract" satisfies SpawnToolName,
       description:
-        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a name, a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. It is not saved to the team: when the job is done the contract ends, and only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, target and requestId work as in worker_start. Collect the deliverable with agent_wait; follow up with agent_followup.",
+        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a name, a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. It is not saved to the team: when the job is done the contract ends, and only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, kind, target and requestId work as in worker_start. Collect the deliverable with agent_wait; follow up with agent_followup.",
       inputSchema: ContractAgentInputSchema,
       jsonSchema: CONTRACT_AGENT_JSON_SCHEMA,
       permission: "allow",
@@ -562,7 +601,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "worker_start_batch" satisfies SpawnToolName,
       description:
-        "Start several independent workers in one call. Each item is a worker_start: a complete task, its own why, and optionally a preset or a target. Teammates are not workers — delegate to them with agent_delegate. Returns each worker's threadId for agent_wait; follow up on any of them with agent_followup.",
+        "Start several independent workers in one call. Each item is a worker_start: a complete task, its own why, and optionally a preset, a kind or a target. Teammates are not workers — delegate to them with agent_delegate. Returns each worker's threadId for agent_wait; follow up on any of them with agent_followup.",
       inputSchema: WorkerStartBatchInputSchema,
       jsonSchema: WORKER_START_BATCH_JSON_SCHEMA,
       permission: "allow",

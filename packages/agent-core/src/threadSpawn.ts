@@ -281,6 +281,16 @@ export type SpawnTargetsReport = {
     /** A one-line gist of the teammate's standing instructions. */
     summary?: string;
   }>;
+  /** The kinds of work the user set a model for, in their order — what a start
+   *  or delegation names as `kind`. Dormant kinds (no model) are left out. Same
+   *  provenance as `presets`. */
+  modelPreferences?: Array<{
+    kind: string;
+    label: string;
+    hint?: string;
+    model: { provider: ProviderKind; model: string };
+    effort?: string;
+  }>;
 };
 
 export const SPAWN_WAIT_DEFAULT_MS = 30_000;
@@ -539,7 +549,9 @@ class SpawnEngineImpl implements SpawnEngine {
       request.prompt,
       request.target.provider,
       request.target.model,
-      request.target.effort,
+      // Inherit and provider-default are different requests, so they must not
+      // share a fingerprint.
+      request.target.effort === null ? "\u0000default" : request.target.effort,
       request.mode,
       request.title,
       request.delegateToAgentId,

@@ -1107,8 +1107,10 @@ export type SpawnTarget = {
   /** Reasoning-effort tier, in the provider's own vocabulary. Unlike `model`,
    *  an unsupported effort is dropped (the provider's default applies) and
    *  reported back in `SpawnThreadResult.adjustments` — effort is a nicety,
-   *  not a decision worth failing a spawn over. */
-  effort?: string;
+   *  not a decision worth failing a spawn over. Omitted, the child inherits the
+   *  parent session's effort; `null` is the deliberate other answer — run at the
+   *  provider's own default — and is resolved once, in `checkSpawn`. */
+  effort?: string | null;
 };
 
 export type SpawnThreadInput = {

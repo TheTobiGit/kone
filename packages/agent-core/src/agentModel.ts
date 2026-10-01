@@ -176,7 +176,9 @@ export function resolveModelWithFallback(
  *   - `assigned` — the entity's own chain supplied it.
  *   - `inherited` — the entity names no model, so the child rides the caller's
  *     own provider and model, exactly as an unspecified spawn does. */
-export type ModelSelection = "requested" | "assigned" | "inherited";
+/** Where a dispatched child's model came from: named in the call, the entity's
+ *  own chain, the user's preference for the kind of work, or the caller's own. */
+export type ModelSelection = "requested" | "assigned" | "preferred" | "inherited";
 
 export type ModelPlan =
   | {
@@ -185,11 +187,18 @@ export type ModelPlan =
       /** What is left of the chain below the chosen model. Handed to the
        *  runtime as the child's failover list, so a 429 mid-turn moves it down
        *  the chain instead of failing the work. Empty for a requested or
-       *  inherited model — neither carries a chain of its own. */
+       *  inherited model — neither carries a chain of its own. A preferred model
+       *  carries one rung: the caller's own model. */
       fallbacks: readonly ModelCandidate[];
       selection: ModelSelection;
     }
   | { ok: false; tried: readonly AgentModelRef[] };
+
+function callerCandidate(caller: { provider: ProviderKind; model?: string }): ModelCandidate {
+  const candidate: ModelCandidate = { provider: caller.provider };
+  if (caller.model) candidate.model = caller.model;
+  return candidate;
+}
 
 /** Decide which model a dispatched child runs on, from the three inputs that
  *  can name one: what the caller asked for, what the entity is assigned, and
@@ -199,6 +208,11 @@ export function planSpawnModel(input: {
   requested?: AgentModelRef | null;
   /** The entity's assigned chain, primary first. Empty means it inherits. */
   chain: readonly AgentModelRef[];
+  /** The model the user prefers for this kind of work, when the caller named a
+   *  kind. Consulted only for an entity that inherits, and soft: one that can't
+   *  run right now falls through to the caller's own model rather than refusing,
+   *  because a preference is a default, not an assignment. */
+  preferred?: AgentModelRef | null;
   /** The dispatching thread's own provider and model. */
   caller: { provider: ProviderKind; model?: string };
   availability: readonly ProviderAvailability[];
@@ -225,9 +239,25 @@ export function planSpawnModel(input: {
   }
   if (resolution.outcome === "unavailable") return { ok: false, tried: resolution.tried };
 
-  const target: ModelCandidate = { provider: input.caller.provider };
-  if (input.caller.model) target.model = input.caller.model;
-  return { ok: true, target, fallbacks: [], selection: "inherited" };
+  if (input.preferred) {
+    const preferred = resolveAgentModel(input.preferred, input.availability);
+    if (preferred.outcome === "resolved") {
+      // A preference is soft at run time too: passing the availability check
+      // doesn't stop a 429 mid-turn, so the caller's own model sits below it as
+      // the failover rung. Skipped when it is the very model chosen.
+      const sameAsCaller =
+        preferred.ref.provider === input.caller.provider &&
+        (!input.caller.model || preferred.ref.model === input.caller.model);
+      return {
+        ok: true,
+        target: { provider: preferred.ref.provider, model: preferred.ref.model },
+        fallbacks: sameAsCaller ? [] : [callerCandidate(input.caller)],
+        selection: "preferred",
+      };
+    }
+  }
+
+  return { ok: true, target: callerCandidate(input.caller), fallbacks: [], selection: "inherited" };
 }
 
 /** Name a chain the way a refusal should read: `provider/model`, in the order

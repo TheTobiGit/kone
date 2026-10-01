@@ -3605,6 +3605,19 @@ export type PresetNativeConfigInput = {
   patch: NativeSubagentConfigPatch;
 };
 
+/** One category of work the user made and the model they want it to run on
+ *  (mirrors the desktop `ModelPreference`; hand-mirrored for the same reason
+ *  `NativeSubagentConfig` is). An agent passes `kind` when it starts a thread
+ *  for that category; one with no model is kept for the user to finish and
+ *  never offered to an agent. `effort` is the provider's own vocabulary. */
+export type ModelPreference = {
+  kind: string;
+  label: string;
+  hint: string;
+  model: AgentModelRef | null;
+  effort: string | null;
+};
+
 /** The preset sub-agents: reusable definitions a spawn is cut from. Separate
  *  from `roster` — a preset is a standing definition any agent can invoke, not
  *  a person you hand a thread to. */
@@ -3620,6 +3633,12 @@ export type KonePresetsApi = {
   /** Write one native's config — its toggle, its pinned model chain. Returns
    *  the stored config, or null when the id is not one kone shipped. */
   nativeConfig: (input: PresetNativeConfigInput) => Promise<NativeSubagentConfig | null>;
+  /** The user's categories of work and their models, in their order. A store
+   *  that never saved a list reports the suggested categories with no models. */
+  modelPreferences: () => Promise<ModelPreference[]>;
+  /** Replace the whole list. Returns what was stored — normalized, a repeated
+   *  kind kept once — or null when the write failed. */
+  saveModelPreferences: (input: { preferences: ModelPreference[] }) => Promise<ModelPreference[] | null>;
 };
 
 /** One theme in the renderer's library as the shell mirrors it. Deliberately
