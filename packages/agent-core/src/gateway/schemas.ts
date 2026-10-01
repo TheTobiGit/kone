@@ -215,6 +215,10 @@ const WorkerTargetSchema = z.object({
   effort: z.string().min(1).optional(),
 });
 
+/** The kind of work, as the user's model preferences name it — the model the
+ *  thread runs on when nothing more specific places it. */
+const WorkKindSchema = z.string().min(1).max(100).optional();
+
 const NamedModelSchema = z.object({
   provider: z.enum(PROVIDER_KINDS),
   model: z.string().min(1),
@@ -241,6 +245,7 @@ const WorkerFields = {
   /** With `preset`: a model named for this worker only — the user asking for
    *  this piece of work to run somewhere specific. Beats the preset's chain. */
   model: NamedModelSchema.optional(),
+  kind: WorkKindSchema,
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
 };
@@ -286,8 +291,10 @@ export const ContractAgentInputSchema = ContractTermsSchema.extend({
   /** Overrides the task-derived working title. */
   title: z.string().min(1).optional(),
   why: SpawnWhySchema,
-  /** Where it runs. Omitted, it inherits this thread's provider and model. */
+  /** Where it runs. Omitted, the user's model for `kind`, else this thread's
+   *  provider and model. */
   target: WorkerTargetSchema.optional(),
+  kind: WorkKindSchema,
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
 });
@@ -314,6 +321,8 @@ export const DelegateToTeammateInputSchema = z.object({
       label: z.string().min(1).optional(),
     })
     .optional(),
+  /** For a teammate with no model of its own: the user's model for this kind. */
+  kind: WorkKindSchema,
 });
 export const WorkerBatchItemSchema = z
   .object({
@@ -402,6 +411,12 @@ const SPAWN_WHY_JSON_SCHEMA = {
     "One short clause finishing \"…because\", in your own voice; the user reads it where you handed the work off. e.g. \"the suite takes ten minutes and I can keep refactoring meanwhile\".",
 } satisfies GatewayRecord;
 
+const WORK_KIND_JSON_SCHEMA = {
+  type: "string",
+  description:
+    "The kind of work, from the model preferences agent_directory lists. Runs it on the model and effort the user chose for that kind, unless a target, a named model, or a preset's or teammate's own model places it. Pass it whenever the work fits a kind and you were not told a model.",
+} satisfies GatewayRecord;
+
 const WORKER_ITEM_JSON_PROPERTIES = {
   task: {
     type: "string",
@@ -416,7 +431,7 @@ const WORKER_ITEM_JSON_PROPERTIES = {
   },
   target: {
     type: "object",
-    description: "Where to run a worker you brief yourself. Omit to run on your own provider and model. Not with preset.",
+    description: "Where to run a worker you brief yourself, when the user asked for a specific model. Omit to run on the user's model for kind, else your own. Not with preset.",
     properties: {
       provider: { type: "string", enum: [...PROVIDER_KINDS] },
       model: { type: "string" },
@@ -434,6 +449,7 @@ const WORKER_ITEM_JSON_PROPERTIES = {
     },
     required: ["provider", "model"],
   },
+  kind: WORK_KIND_JSON_SCHEMA,
   mode: { type: "string", enum: [...INTERACTION_MODES] },
 } satisfies GatewayRecord;
 
@@ -468,6 +484,7 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
       },
       required: ["provider", "model"],
     },
+    kind: WORK_KIND_JSON_SCHEMA,
   },
   required: ["agent", "task", "requestId"],
 } satisfies GatewayRecord;
@@ -499,7 +516,7 @@ export const CONTRACT_AGENT_JSON_SCHEMA = {
     why: SPAWN_WHY_JSON_SCHEMA,
     target: {
       type: "object",
-      description: "Where it runs. Omit to run on your own provider and model.",
+      description: "Where it runs, when the user asked for a specific model. Omit to run on the user's model for kind, else your own.",
       properties: {
         provider: { type: "string", enum: [...PROVIDER_KINDS] },
         model: { type: "string" },
@@ -507,6 +524,7 @@ export const CONTRACT_AGENT_JSON_SCHEMA = {
       },
       required: ["provider"],
     },
+    kind: WORK_KIND_JSON_SCHEMA,
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
   required: ["name", "role", "instructions", "task", "scope", "deliverable", "doneCriteria", "requestId"],

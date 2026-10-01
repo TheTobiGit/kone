@@ -7,6 +7,8 @@ import { ScratchpadRepo } from "./store/scratchpads.js";
 import { JobRepo, type ClaimedJob, type JobRunOutcome } from "./store/jobs.js";
 import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
+import { ModelPreferenceRepo } from "./store/modelPreferences.js";
+import type { ModelPreference } from "./modelPreference.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
@@ -36,6 +38,7 @@ export class ConversationStore implements CheckpointStore {
   private readonly jobs: JobRepo;
   private readonly stats: StatsRepo;
   private readonly subagentPresets: SubagentPresetRepo;
+  private readonly modelPreferences: ModelPreferenceRepo;
   private readonly threadLifecycle: ThreadLifecycleRepo;
   private readonly queuedTurns: QueuedTurnRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
@@ -75,6 +78,7 @@ export class ConversationStore implements CheckpointStore {
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
+    this.modelPreferences = new ModelPreferenceRepo(this.dbh);
     this.scratchpads = new ScratchpadRepo(this.dbh);
     this.jobs = new JobRepo(this.dbh);
     this.gatewayOps = new GatewayOpRepo(this.dbh);
@@ -820,6 +824,16 @@ export class ConversationStore implements CheckpointStore {
     return this.subagentPresets.listVisiblePresets();
   }
 
+  /** @see ModelPreferenceRepo */
+  listModelPreferences(): ModelPreference[] {
+    return this.modelPreferences.listModelPreferences();
+  }
+
+  /** @see ModelPreferenceRepo */
+  saveModelPreferences(list: readonly ModelPreference[]): ModelPreference[] | null {
+    return this.modelPreferences.saveModelPreferences(list);
+  }
+
   /** @see RosterRepo */
   listThreadAgents(): ThreadAgentBinding[] {
     return this.roster.listThreadAgents();
@@ -901,5 +915,6 @@ export function resetConversationStoreForTests(): void {
 
 export * from "./conversationMigrations.js";
 export * from "./rosterRecord.js";
+export type { ModelPreference } from "./modelPreference.js";
 export * from "./conversationStoreTypes.js";
 export * from "./conversationWire.js";

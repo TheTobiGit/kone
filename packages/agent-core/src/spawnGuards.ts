@@ -296,7 +296,9 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
   // unset inherits the parent's rung silently). The inherited value runs the
   // exact same validation as an explicit one — an unsupported tier drops to
   // the provider's default with an adjustment, never a refusal.
-  let effort = input.target.effort || input.parentEffort;
+  // `null` is the explicit "provider's default" — it stops the inheritance, so
+  // a model whose default is `medium` is not handed the parent's `high`.
+  let effort = input.target.effort === null ? undefined : input.target.effort || input.parentEffort;
   if (effort === "base") {
     adjustments.push({
       field: "effort",

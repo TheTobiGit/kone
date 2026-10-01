@@ -9,6 +9,7 @@
  * channel family rather than crowding either of those.
  */
 import type {
+  ModelPreference,
   NativeSubagentConfig,
   NativeSubagentConfigPatch,
   SubagentPresetCreateInput,
@@ -32,3 +33,12 @@ export type PresetNativeConfigInput = {
 };
 
 export type PresetNativeConfigResult = NativeSubagentConfig;
+
+/** The user's model preferences by kind of work — which model and effort a
+ *  thread an agent starts for that kind runs on. Written whole: the list is
+ *  the order the user reads it in, so a save replaces it. */
+export type ModelPreferencesSaveInput = {
+  preferences: ModelPreference[];
+};
+
+export type ModelPreferencesResult = ModelPreference[];

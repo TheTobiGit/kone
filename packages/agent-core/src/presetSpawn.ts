@@ -62,10 +62,13 @@ export function planPresetSpawn(
   /** A model named in the dispatch call itself — the user asking for this piece
    *  of work to run somewhere specific. Overrides the preset's own chain. */
   requested?: AgentModelRef | null,
+  /** The user's model for the kind of work the caller named, if any — used only
+   *  when the preset names no chain of its own. */
+  preferred?: AgentModelRef | null,
 ): PresetSpawnPlan {
   const prompt = composePrompt(preset.instructions, task);
   const chain = modelChainOf(preset.model, preset.modelFallbacks);
-  const plan = planSpawnModel({ requested, chain, caller, availability });
+  const plan = planSpawnModel({ requested, chain, preferred, caller, availability });
 
   if (!plan.ok) {
     return {

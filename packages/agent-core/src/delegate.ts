@@ -84,6 +84,9 @@ export function resolveDelegation(input: {
    *  piece of work to run somewhere specific. Overrides the teammate's own
    *  chain: it is the more recent and more specific instruction. */
   requestedModel?: AgentModelRef | null;
+  /** The user's model for the kind of work the caller named, if any — used only
+   *  for a teammate that names no chain of its own. */
+  preferredModel?: AgentModelRef | null;
 }): DelegationPlan {
   const name = text(input.agent.name);
   if (!name) {
@@ -100,10 +103,12 @@ export function resolveDelegation(input: {
 
   // The model the child runs on: what the caller asked for, else the agent's
   // own chain walked down to the first rung that can run, else — for an agent
-  // that names none — the delegating agent's own model.
+  // that names none — the user's model for the kind of work, else the
+  // delegating agent's own model.
   const plan = planSpawnModel({
     requested: input.requestedModel,
     chain: modelChainOf(input.agent.model, input.agent.modelFallbacks),
+    preferred: input.preferredModel,
     caller: input.caller,
     availability: input.availability,
   });

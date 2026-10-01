@@ -1171,3 +1171,42 @@ describe("the schema", () => {
     expect(tables).toContain("subagent_presets");
   });
 });
+
+describe("model preferences", () => {
+  test("a store that never saved a list reads the suggested kinds, all dormant", () => {
+    const prefs = freshStore().listModelPreferences();
+    expect(prefs.map((p) => p.kind)).toContain("code-review");
+    expect(prefs.every((p) => p.model === null && p.effort === null)).toBe(true);
+  });
+
+  test("a saved list reads back normalized, in the order given", () => {
+    const store = freshStore();
+    const saved = store.saveModelPreferences([
+      { kind: "Review", label: "Review", hint: "Read for bugs.", model: { provider: "codex", model: "gpt-5" }, effort: "high" },
+      { kind: "quick-fix", label: "Quick fixes", hint: "", model: null, effort: "low" },
+      { kind: "review", label: "Duplicate", hint: "", model: null, effort: null },
+    ]);
+    expect(saved).not.toBeNull();
+    const read = store.listModelPreferences();
+    expect(read).toEqual([
+      { kind: "review", label: "Review", hint: "Read for bugs.", model: { provider: "codex", model: "gpt-5" }, effort: "high" },
+      // An effort with no model has nothing to tune, so it is dropped.
+      { kind: "quick-fix", label: "Quick fixes", hint: "", model: null, effort: null },
+    ]);
+  });
+
+  test("an empty list is kept, not reset to the suggestions", () => {
+    const store = freshStore();
+    store.saveModelPreferences([]);
+    expect(store.listModelPreferences()).toEqual([]);
+  });
+
+  test("a corrupt document reads as the suggestions", () => {
+    const store = freshStore();
+    store.saveModelPreferences([{ kind: "review", label: "Review", hint: "", model: null, effort: null }]);
+    const db = rawDb();
+    db.prepare(`UPDATE app_state SET value = ? WHERE key = ?`).run("{not json", "model_preferences");
+    db.close();
+    expect(store.listModelPreferences().length).toBeGreaterThan(0);
+  });
+});

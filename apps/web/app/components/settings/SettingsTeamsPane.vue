@@ -6,6 +6,7 @@ import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   Folder02Icon,
+  Route01Icon,
   RoboticIcon,
   SparklesIcon,
   UserGroupIcon,
@@ -19,12 +20,14 @@ import SettingsAgentDetail from "~/components/settings/SettingsAgentDetail.vue";
 import SettingsSubagentDetail from "~/components/settings/SettingsSubagentDetail.vue";
 import CreateAgentModal from "~/components/agent/CreateAgentModal.vue";
 import CreateSubagentModal from "~/components/presets/CreateSubagentModal.vue";
+import SettingsRoutingPane from "~/components/settings/SettingsRoutingPane.vue";
 import RosterFace from "~/components/agent/RosterFace.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
 import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
 import { useAgentRoster } from "~/composables/useAgentRoster";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSubagentPresets } from "~/composables/useSubagentPresets";
+import { useModelPreferences } from "~/composables/useModelPreferences";
 import { useSound } from "~/composables/useSound";
 import { botGround, botMark } from "~/utils/bot";
 import { formatModelChain } from "~/utils/detailFormat";
@@ -32,14 +35,16 @@ import { nativeSubagentIcon } from "~/utils/subagentIcons";
 import type { Agent } from "~/utils/agents";
 import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
 
-// Everyone who does the work, on one page: the agents a thread is handed to, and
-// the sub-agents those agents spawn for a piece of it. They were two panes, but
-// they are two ends of one relationship — a lead and the workers it delegates
-// to — and choosing either well means seeing the other. So the page opens on
-// that relationship (the cast, lead → workers) and then splits into the two
-// rosters under one switch, each keeping its own shape: agents are people, drawn
-// as portraits in their project teams; sub-agents are definitions, drawn as
-// cards carrying their model and their brief.
+// Everyone who does the work, on one page: the agents a thread is handed to, the
+// sub-agents those agents spawn for a piece of it, and the routing that says
+// which model each kind of work runs on. Agents and sub-agents were two panes,
+// but they are two ends of one relationship — a lead and the workers it
+// delegates to — and choosing either well means seeing the other. So the page
+// opens on that relationship (the cast, lead → workers) and then splits under
+// one switch, each part keeping its own shape: agents are people, drawn as
+// portraits in their project teams; sub-agents are definitions, drawn as cards
+// carrying their model and their brief; model routing is a list of
+// categories of work, each drawn as a card with the model it is sent to.
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
@@ -50,10 +55,10 @@ const { presets, nativeConfigs, configureNative } = useSubagentPresets();
 const { cue } = useSound();
 
 // ── which roster ────────────────────────────────────────────────────────────
-type Tab = "agents" | "subagents";
-const TABS: readonly Tab[] = ["agents", "subagents"];
+type Tab = "agents" | "subagents" | "routing";
+const TABS: readonly Tab[] = ["agents", "subagents", "routing"];
 const tab = ref<Tab>("agents");
-/** Which way the panels slide: forward is agents → sub-agents, the order the
+/** Which way the panels slide: forward is left to right, the order the
  *  switch reads in, so the content moves the way the pill does. */
 const direction = ref<"fwd" | "back">("fwd");
 const tablist = ref<HTMLElement>();
@@ -120,7 +125,14 @@ function openPreset(id: string) {
   cue("press");
 }
 
+/** The routing list opens its own editor, so on that tab the button asks it to. */
+const routing = ref<InstanceType<typeof SettingsRoutingPane>>();
+
 function startCreate() {
+  if (tab.value === "routing") {
+    routing.value?.create();
+    return;
+  }
   overlay.value = tab.value === "agents" ? { kind: "createAgent" } : { kind: "createSubagent" };
   cue("open");
 }
@@ -225,10 +237,16 @@ const nativesOn = computed(() => natives.value.filter((n) => n.enabled).length);
  *  retire one). */
 const spawnable = computed(() => nativesOn.value + presets.value.length);
 
+// ── routing ─────────────────────────────────────────────────────────────────
+// Only the counts live here — the hero and the tab show them; the list itself
+// is SettingsRoutingPane's.
+const { preferences: routes, routedCount } = useModelPreferences();
+
 const heroStats = computed(() => [
   { label: "Agents", value: roster.value.length },
   ...(teamCount.value ? [{ label: "Teams", value: teamCount.value }] : []),
   { label: "Sub-agents ready", value: spawnable.value },
+  ...(routedCount.value ? [{ label: "Routed", value: routedCount.value }] : []),
 ]);
 
 function toggleNative(presetId: string, enabled: boolean) {
@@ -294,7 +312,8 @@ function glyphs(text: string): string[] {
 const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
 
-const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub-agent"));
+const NEW_LABEL = { agents: "New agent", subagents: "New sub-agent", routing: "New category" } as const;
+const newLabel = computed(() => NEW_LABEL[tab.value]);
 </script>
 
 <template>
@@ -353,7 +372,7 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
         <!-- ── hero: the page's subject, and the relationship it's about ── -->
         <SettingsBanner
           title="Teams"
-          lede="The agents you hand a thread to, and the sub-agents they call in for a piece of it."
+          lede="The agents you hand a thread to, the sub-agents they call in for a piece of it, and the models each kind of work is sent to."
           :stats="heroStats"
         >
           <template #art>
@@ -434,6 +453,21 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
             <HugeiconsIcon :icon="RoboticIcon" :size="14" :stroke-width="1.8" aria-hidden="true" />
             <span>Sub-agents</span>
             <span class="tm__tabcount">{{ natives.length + presets.length }}</span>
+          </button>
+          <button
+            id="tm-tab-routing"
+            type="button"
+            role="tab"
+            class="tm__tab"
+            :class="{ 'is-on': tab === 'routing' }"
+            :aria-selected="tab === 'routing'"
+            aria-controls="tm-panel"
+            :tabindex="open && tab === 'routing' ? 0 : -1"
+            @click="pickTab('routing')"
+          >
+            <HugeiconsIcon :icon="Route01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+            <span>Model routing</span>
+            <span class="tm__tabcount">{{ routes.length }}</span>
           </button>
         </div>
 
@@ -632,7 +666,12 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
             </div>
 
             <!-- ── sub-agents ── -->
-            <div v-else key="subagents" class="tm__stack" :class="{ 'is-dealt': dealt.has('subagents') }">
+            <div
+              v-else-if="tab === 'subagents'"
+              key="subagents"
+              class="tm__stack"
+              :class="{ 'is-dealt': dealt.has('subagents') }"
+            >
               <section class="tm-kind" aria-label="Built-in">
                 <header class="tm-kind__head">
                   <span class="tm-kind__title">Built-in</span>
@@ -728,6 +767,15 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
                 </div>
               </section>
             </div>
+
+            <!-- ── routing ── -->
+            <SettingsRoutingPane
+              v-else
+              key="routing"
+              ref="routing"
+              :open="open"
+              :dealt="dealt.has('routing')"
+            />
           </Transition>
         </div>
       </div>
@@ -739,10 +787,17 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
       available to work within it; the composer offers a project's team, and a teammate can delegate
       only to another. A sub-agent is the other end of that hand-off: a focused worker an agent
       spawns for one isolated task. The built-ins are tested patterns you can switch off; a custom
-      one carries your own brief and can pin the model it runs on.
+      one carries your own brief and can pin the model it runs on. Model routing is how you
+      say which model each kind of work runs on: pick a model for a category — a few are suggested,
+      and you can add your own — and an agent handing off that kind of work sends it there. A
+      category with no model stays hidden from agents. It is a
+      default, not an assignment — a model you name for the work, or a preset's or teammate's own,
+      comes first, and if the routed model can't run right now the work stays on the agent's own.
     </template>
   </SettingsPageShell>
 </template>
+
+<style scoped src="./teamsRows.css"></style>
 
 <style scoped>
 .tm {
@@ -909,14 +964,14 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
 }
 
 /* ── the switch ──────────────────────────────────────────────────────────── */
-/* Two equal segments, so the pill only ever travels one segment's width and can
-   be pure CSS — no measuring the buttons on every resize. */
+/* Equal segments, so the pill only ever travels whole segment widths and can be
+   pure CSS — no measuring the buttons on every resize. */
 .tm__tabs {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   align-self: flex-start;
-  width: min(100%, 320px);
+  width: min(100%, 520px);
   padding: 3px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--ink) 5%, transparent);
@@ -926,7 +981,7 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
   top: 3px;
   bottom: 3px;
   left: 3px;
-  width: calc(50% - 3px);
+  width: calc((100% - 6px) / 3);
   border-radius: 9px;
   background: var(--panel);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent);
@@ -934,6 +989,9 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
 }
 .tm__tabs[data-at="subagents"] .tm__pill {
   transform: translateX(100%);
+}
+.tm__tabs[data-at="routing"] .tm__pill {
+  transform: translateX(200%);
 }
 .tm__tab {
   position: relative;
@@ -983,11 +1041,6 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
   min-width: 0;
   max-width: 58rem;
 }
-.tm__stack {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
 .tm-slide-fwd-enter-active,
 .tm-slide-fwd-leave-active,
 .tm-slide-back-enter-active,
@@ -1012,12 +1065,10 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
 
 /* Every card and row deals in on its own beat, so a roster arrives as a hand
    laid out rather than a block switched on. */
-.tm-agent,
-.tm-sub,
-.tm-add {
+.tm-agent {
   animation: tm-deal 460ms var(--tm-ease) calc(var(--i, 0) * 28ms + 40ms) backwards;
 }
-.tm__stack.is-dealt :is(.tm-agent, .tm-sub, .tm-add) {
+.tm__stack.is-dealt .tm-agent {
   animation: none;
 }
 @keyframes tm-deal {
@@ -1460,42 +1511,6 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
   }
 }
 
-/* ── add tiles ───────────────────────────────────────────────────────────── */
-.tm-add {
-  display: flex;
-  align-items: center;
-  border-radius: 16px;
-  color: var(--muted);
-  cursor: pointer;
-  outline: none;
-  transition: color 180ms ease;
-}
-.tm-add:hover {
-  color: var(--ink);
-}
-.tm-add:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.tm-add__ring {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
-  transition:
-    transform 380ms var(--tm-spring),
-    color 180ms ease;
-}
-.tm-add:hover .tm-add__ring {
-  transform: rotate(90deg);
-  color: var(--accent);
-}
-.tm-add__label {
-  font-size: 13px;
-  font-weight: 500;
-  color: inherit;
-}
-
 /* The new-agent tile is laid out as a member would be — disc, then a label on
    the name's line — with no border of its own, so the row reads as agents
    plus one empty seat rather than agents plus a button. Like a member's tile,
@@ -1518,231 +1533,11 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
   line-height: 1.3;
 }
 
-/* The new-sub-agent tile is a bare line under the custom cards: no ground and
-   no box around the plus, so it reads as an invitation after the list rather
-   than one more card in it. The inset puts the plus on the centre line of the
-   glyphs above, with the label close beside it; the tile hugs its content so
-   the hover answers only over the words. */
-.tm-add--sub {
-  justify-self: start;
-  width: fit-content;
-  gap: 8px;
-  padding: 8px 14px 8px 22px;
-  margin-top: 2px;
-  border-radius: 12px;
-  text-align: start;
-}
-.tm-add--sub .tm-add__label {
-  font-size: 14px;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
-}
-.tm-add--sub .tm-add__ring {
-  width: 24px;
-  height: 24px;
-  background: none;
-}
-.tm-add--sub:active {
-  transform: scale(0.985);
-}
-
-/* ── sub-agent rows ──────────────────────────────────────────────────────── */
-.tm-kind {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.tm-kind__head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding-inline: 6px;
-}
-.tm-kind__title {
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  line-height: 1;
-  color: var(--ink-soft);
-}
-.tm-kind__meta {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-.tm-kind__rule {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--ink) 11%, transparent), transparent);
-}
-
-/* One column until there's room for two cards that each still hold a
-   two-line brief at a readable measure. */
-.tm__rows {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
-@container (min-width: 620px) {
-  .tm__rows {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.tm-sub {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 13px;
-  padding: 14px 14px 14px 14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-  cursor: pointer;
-  outline: none;
-  transition:
-    transform 220ms var(--tm-ease),
-    opacity 220ms var(--tm-ease);
-}
-/* The card itself holds still on hover — a lift made a row of them feel
-   heavy. What answers is inside it: the glyph wakes to the accent with a small
-   spring, and the model and brief step up a shade so the card reads as
-   picked up rather than moved. Pressing gives a hair of give. */
-.tm-sub:active {
-  transform: scale(0.992);
-}
-.tm-sub:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-/* Off reads as benched, not broken: the brief fades back, the switch stays at
-   full strength so turning it on again is the obvious move. */
-.tm-sub.is-off .tm-sub__glyph,
-.tm-sub.is-off .tm-sub__body {
-  opacity: 0.5;
-}
-
-.tm-sub__glyph {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--panel);
-  color: var(--ink-soft);
-  transition:
-    color 220ms ease,
-    opacity 220ms ease;
-}
-.tm-sub__glyph :deep(svg) {
-  transition: transform 360ms var(--tm-spring);
-}
-.tm-sub:is(:hover, :focus-visible) .tm-sub__glyph {
-  color: var(--accent);
-}
-.tm-sub:is(:hover, :focus-visible) .tm-sub__glyph :deep(svg) {
-  transform: scale(1.12);
-}
-.tm-sub--custom .tm-sub__glyph {
-  color: var(--accent);
-}
-
-.tm-sub__body {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-  flex: 1;
-  transition: opacity 220ms ease;
-}
-.tm-sub__line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-.tm-sub__name {
-  margin: 0;
-  flex-shrink: 0;
-  max-width: 60%;
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tm-sub__model {
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.25;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: color 200ms ease;
-}
-.tm-sub:is(:hover, :focus-visible) .tm-sub__model {
-  color: var(--ink-soft);
-}
-.tm-sub__brief {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--ink-soft);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  line-clamp: 2;
-  overflow: hidden;
-  text-wrap: pretty;
-  transition: color 200ms ease;
-}
-.tm-sub:is(:hover, :focus-visible) .tm-sub__brief {
-  color: var(--ink);
-}
-
-/* The switch's zone is wider than the switch: a click that lands just beside
-   it meant the switch, and opening the page instead would be a surprise. */
-.tm-sub__act {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  margin: -10px -10px -10px -4px;
-  padding: 12px 10px 10px 8px;
-  cursor: default;
-}
-.tm-sub__go {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  align-self: center;
-  color: var(--muted);
-  opacity: 0;
-  transform: translateX(-4px);
-  transition:
-    opacity 160ms ease,
-    transform 260ms var(--tm-spring),
-    color 160ms ease;
-}
-.tm-sub:is(:hover, :focus-visible) .tm-sub__go {
-  opacity: 1;
-  transform: none;
-  color: var(--accent);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .tm__lead,
   .tm__worker,
   .tm__current-flow,
   .tm-agent,
-  .tm-sub,
-  .tm-add,
   .tm-agent__live i {
     animation: none;
   }
@@ -1756,12 +1551,7 @@ const newLabel = computed(() => (tab.value === "agents" ? "New agent" : "New sub
   .tm-team__chev,
   .tm-team__body,
   .tm-team__body .tm-agent,
-  .tm-team__body .tm-add--agent,
-  .tm-sub,
-  .tm-sub__glyph,
-  .tm-sub__glyph :deep(svg),
-  .tm-sub__go,
-  .tm-add__ring {
+  .tm-team__body .tm-add--agent {
     transition: none;
     transform: none;
   }

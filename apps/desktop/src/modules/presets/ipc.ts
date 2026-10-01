@@ -2,6 +2,7 @@ import { ipcMain } from "electron";
 
 import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import type {
+  ModelPreferencesSaveInput,
   PresetCreateInput,
   PresetDeleteInput,
   PresetNativeConfigInput,
@@ -30,5 +31,9 @@ export function registerPresetsIpc(): void {
   ipcMain.handle("presets:native-list", () => store.listNativeSubagentConfigs());
   ipcMain.handle("presets:native-config", (_event, input: PresetNativeConfigInput) =>
     store.setNativeSubagentConfig(input.presetId, input.patch),
+  );
+  ipcMain.handle("presets:model-prefs-list", () => store.listModelPreferences());
+  ipcMain.handle("presets:model-prefs-save", (_event, input: ModelPreferencesSaveInput) =>
+    store.saveModelPreferences(Array.isArray(input?.preferences) ? input.preferences : []),
   );
 }

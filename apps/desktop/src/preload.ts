@@ -116,6 +116,8 @@ import type {
 import type {
   PresetCreateInput,
   PresetDeleteInput,
+  ModelPreferencesResult,
+  ModelPreferencesSaveInput,
   PresetNativeConfigInput,
   PresetNativeConfigResult,
   PresetUpdateInput,
@@ -843,6 +845,10 @@ const api = {
       ipcRenderer.invoke("presets:native-list"),
     nativeConfig: (input: PresetNativeConfigInput): Promise<PresetNativeConfigResult | null> =>
       ipcRenderer.invoke("presets:native-config", input),
+    modelPreferences: (): Promise<ModelPreferencesResult> =>
+      ipcRenderer.invoke("presets:model-prefs-list"),
+    saveModelPreferences: (input: ModelPreferencesSaveInput): Promise<ModelPreferencesResult | null> =>
+      ipcRenderer.invoke("presets:model-prefs-save", input),
   },
   avatars: {
     fetch: (input: AvatarFetchInput): Promise<AvatarFetchResult> =>
