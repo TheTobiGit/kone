@@ -216,7 +216,7 @@ watch(
         <button
           type="button"
           class="det__action-btn"
-          :title="isNative ? 'Duplicate and edit this sub-agent' : 'Edit this sub-agent'"
+          :title="isNative ? 'Duplicate and edit this worker' : 'Edit this worker'"
           :tabindex="open ? 0 : -1"
           @click="openEdit"
         >
@@ -227,7 +227,7 @@ watch(
         <button
           type="button"
           class="det__action-btn"
-          title="Duplicate this sub-agent preset"
+          title="Duplicate this worker preset"
           :tabindex="open ? 0 : -1"
           @click="handleDuplicate"
         >
@@ -239,7 +239,7 @@ watch(
           v-if="!isNative"
           type="button"
           class="det__action-btn det__action-btn--danger"
-          title="Delete this sub-agent preset"
+          title="Delete this worker preset"
           :tabindex="open ? 0 : -1"
           @click="isDeleting ? handleDelete() : (isDeleting = true)"
         >
@@ -286,7 +286,7 @@ watch(
       <DetailTabs
         :tabs="TABS"
         :reset-key="presetId"
-        ariaLabel="Sub-agent"
+        ariaLabel="Worker"
         :can-focus="open"
         v-slot="{ tab }"
       >
@@ -308,7 +308,7 @@ watch(
     </article>
 
     <template #foot>
-      A preset is a reusable sub-agent definition an agent invokes when it needs one. It has no
+      A preset is a reusable worker definition an agent invokes when it needs one. It has no
       thread history of its own; each spawn copies the standing brief and resolves its model chain
       afresh.
     </template>
