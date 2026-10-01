@@ -2,7 +2,7 @@
 import ModelPinPicker from "~/components/model/ModelPinPicker.vue";
 import type { AgentModelRef } from "~/types/desktop";
 
-// Model preference for a preset sub-agent: inherit (null) or an assigned chain.
+// Model preference for a preset worker: inherit (null) or an assigned chain.
 // Null is a real answer: no preference, run where the caller runs.
 
 export type PresetModelChain = {

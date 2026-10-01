@@ -20,16 +20,16 @@ import {
 } from "~/utils/modelCatalog";
 import type { AgentModelRef, ModelPreference } from "~/types/desktop";
 
-// Making or rewriting a category of work: a name, when it applies, and the
+// Making or rewriting a rule: a name, when it applies, and the
 // model it runs on. The shell carries the scrim, card, rows and keyboard, so
 // this is the row definitions plus the one submit path — the same shape as the
-// sub-agent card beside it.
+// worker card beside it.
 //
-// The model is the one part an agent never reads as words: a category with no
+// The model is the one part an agent never reads as words: a rule with no
 // model is saved but dormant, and stays out of sight until it has one.
 
 const props = defineProps<{
-  /** The category being rewritten. Absent, the card is making a new one. */
+  /** The rule being rewritten. Absent, the card is making a new one. */
   route?: ModelPreference;
 }>();
 
@@ -47,15 +47,15 @@ const shellRef = ref<DrawerModalHandle | null>(null);
 // ── sections ──────────────────────────────────────────────────────────────────
 type Section = "name" | "applies" | "model";
 const SECTIONS: { id: Section; label: string }[] = [
-  { id: "name", label: "Category" },
+  { id: "name", label: "Rule" },
   { id: "applies", label: "When" },
   { id: "model", label: "Model" },
 ];
 
 const HINTS = {
   name: "The kind of work, in your words.",
-  applies: "When an agent should reach for it. Agents read this to choose.",
-  model: "What that work runs on. Without one, agents never see the category.",
+  applies: "Optional. When an agent should reach for it — agents read this to choose.",
+  model: "What that work runs on. Without one, agents never see the rule.",
 } satisfies Record<Section, string>;
 
 // ── form state ────────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ function onEffort(rung: Effort) {
   place(model.value.provider, rung);
 }
 
-/** What the closed row says: the model's name and effort, or what a category
+/** What the closed row says: the model's name and effort, or what a rule
  *  without one means. */
 const modelSummary = computed(() => {
   if (!model.value) return "Not set — agents won't see it";
@@ -128,13 +128,13 @@ const modelSummary = computed(() => {
 
 const summaries = computed<Record<Section, string>>(() => ({
   name: label.value.trim() || "Not named yet",
-  applies: hint.value.trim() || "Nothing yet — agents choose by name alone",
+  applies: hint.value.trim() || "Optional — agents choose by name alone",
   model: modelSummary.value,
 }));
 
 const actionLabel = computed(() => {
   if (isSubmitting.value) return "Saving…";
-  return isEditing.value ? "Save changes" : "Add category";
+  return isEditing.value ? "Save changes" : "Add rule";
 });
 
 // ── submit ────────────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ async function submit() {
       effort: effort.value,
     });
     if (!kind) {
-      errorMsg.value = "Could not save the category — the list may be full.";
+      errorMsg.value = "Could not save the rule — the list may be full.";
       cue("error");
       isSubmitting.value = false;
       return;
@@ -172,8 +172,8 @@ async function submit() {
     :hints="HINTS"
     :summaries="summaries"
     :initial-open="props.route ? null : 'name'"
-    :eyebrow="isEditing ? 'Edit category' : 'New category'"
-    :dialog-label="isEditing ? 'Edit a category' : 'Add a category'"
+    :eyebrow="isEditing ? 'Edit rule' : 'New rule'"
+    :dialog-label="isEditing ? 'Edit a rule' : 'Add a rule'"
     :error="errorMsg"
     :action-label="actionLabel"
     :can-submit="canSubmit"
@@ -181,7 +181,7 @@ async function submit() {
     @close="emit('close')"
     @submit="submit"
   >
-    <!-- Category: what the work is called. -->
+    <!-- Rule: what the work is called. -->
     <template #row-name>
       <label class="dm-field">
         <span class="dm-glyph">
@@ -196,7 +196,7 @@ async function submit() {
           maxlength="60"
           spellcheck="false"
           autocomplete="off"
-          aria-label="Category name"
+          aria-label="Rule name"
         />
       </label>
     </template>
@@ -210,7 +210,7 @@ async function submit() {
         rows="3"
         maxlength="300"
         placeholder="e.g. A small, well-understood change: a typo, a rename, a one-line bug."
-        aria-label="When this category applies"
+        aria-label="When this rule applies"
       />
     </template>
 

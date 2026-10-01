@@ -21,6 +21,7 @@ import SettingsSubagentDetail from "~/components/settings/SettingsSubagentDetail
 import CreateAgentModal from "~/components/agent/CreateAgentModal.vue";
 import CreateSubagentModal from "~/components/presets/CreateSubagentModal.vue";
 import SettingsRoutingPane from "~/components/settings/SettingsRoutingPane.vue";
+import TeamsExplainer from "~/components/settings/TeamsExplainer.vue";
 import RosterFace from "~/components/agent/RosterFace.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
 import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
@@ -36,15 +37,16 @@ import type { Agent } from "~/utils/agents";
 import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
 
 // Everyone who does the work, on one page: the agents a thread is handed to, the
-// sub-agents those agents spawn for a piece of it, and the routing that says
-// which model each kind of work runs on. Agents and sub-agents were two panes,
+// workers those agents spawn for a piece of it, and the rules that say
+// which model each kind of work runs on. Agents and workers were two panes,
 // but they are two ends of one relationship — a lead and the workers it
 // delegates to — and choosing either well means seeing the other. So the page
 // opens on that relationship (the cast, lead → workers) and then splits under
 // one switch, each part keeping its own shape: agents are people, drawn as
-// portraits in their project teams; sub-agents are definitions, drawn as cards
-// carrying their model and their brief; model routing is a list of
-// categories of work, each drawn as a card with the model it is sent to.
+// portraits in their project teams; workers are definitions, drawn as cards
+// carrying their model and their brief; rules are a list, each a kind of
+// work and the model it is sent to. What the three are
+// is said once, above the switch, rather than under each title.
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
@@ -216,7 +218,7 @@ const hasTeams = computed(() => sections.value.some((s) => s.key !== NO_TEAM));
 
 const teamCount = computed(() => sections.value.filter((s) => s.key !== NO_TEAM).length);
 
-// ── sub-agents ──────────────────────────────────────────────────────────────
+// ── workers ─────────────────────────────────────────────────────────────────
 const natives = computed(() =>
   BUILTIN_SUBAGENT_PRESETS.map((preset) => {
     const config = nativeConfigs.value.find((c) => c.presetId === preset.presetId);
@@ -232,7 +234,7 @@ const natives = computed(() =>
 );
 
 const nativesOn = computed(() => natives.value.filter((n) => n.enabled).length);
-/** Every sub-agent an agent could spawn right now: the built-ins left on, and
+/** Every worker an agent could spawn right now: the built-ins left on, and
  *  every custom preset (a custom preset has no off switch — deleting is how you
  *  retire one). */
 const spawnable = computed(() => nativesOn.value + presets.value.length);
@@ -245,8 +247,8 @@ const { preferences: routes, routedCount } = useModelPreferences();
 const heroStats = computed(() => [
   { label: "Agents", value: roster.value.length },
   ...(teamCount.value ? [{ label: "Teams", value: teamCount.value }] : []),
-  { label: "Sub-agents ready", value: spawnable.value },
-  ...(routedCount.value ? [{ label: "Routed", value: routedCount.value }] : []),
+  { label: "Workers ready", value: spawnable.value },
+  ...(routedCount.value ? [{ label: "Rules on", value: routedCount.value }] : []),
 ]);
 
 function toggleNative(presetId: string, enabled: boolean) {
@@ -312,7 +314,7 @@ function glyphs(text: string): string[] {
 const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
 
-const NEW_LABEL = { agents: "New agent", subagents: "New sub-agent", routing: "New category" } as const;
+const NEW_LABEL = { agents: "New agent", subagents: "New worker", routing: "New rule" } as const;
 const newLabel = computed(() => NEW_LABEL[tab.value]);
 </script>
 
@@ -372,7 +374,7 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
         <!-- ── hero: the page's subject, and the relationship it's about ── -->
         <SettingsBanner
           title="Teams"
-          lede="The agents you hand a thread to, the sub-agents they call in for a piece of it, and the models each kind of work is sent to."
+          lede="Who does the work, and what it runs on."
           :stats="heroStats"
         >
           <template #art>
@@ -414,6 +416,8 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
           </template>
         </SettingsBanner>
 
+        <TeamsExplainer :tab="tab" :open="open" @pick="pickTab" />
+
         <!-- ── the switch ── -->
         <div
           ref="tablist"
@@ -451,7 +455,7 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
             @click="pickTab('subagents')"
           >
             <HugeiconsIcon :icon="RoboticIcon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-            <span>Sub-agents</span>
+            <span>Workers</span>
             <span class="tm__tabcount">{{ natives.length + presets.length }}</span>
           </button>
           <button
@@ -466,7 +470,7 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
             @click="pickTab('routing')"
           >
             <HugeiconsIcon :icon="Route01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-            <span>Model routing</span>
+            <span>Rules</span>
             <span class="tm__tabcount">{{ routes.length }}</span>
           </button>
         </div>
@@ -665,7 +669,7 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
               </section>
             </div>
 
-            <!-- ── sub-agents ── -->
+            <!-- ── workers ── -->
             <div
               v-else-if="tab === 'subagents'"
               key="subagents"
@@ -762,7 +766,7 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
                     <span class="tm-add__ring" aria-hidden="true">
                       <HugeiconsIcon :icon="Add01Icon" :size="16" :stroke-width="1.6" />
                     </span>
-                    <span class="tm-add__label">New sub-agent</span>
+                    <span class="tm-add__label">New worker</span>
                   </button>
                 </div>
               </section>
@@ -781,19 +785,6 @@ const newLabel = computed(() => NEW_LABEL[tab.value]);
       </div>
     </div>
 
-    <template #foot>
-      An agent is whoever does the work, kept apart from the threads they do it in, so the same name
-      and face follow them across every conversation. Every project has a team — the agents made
-      available to work within it; the composer offers a project's team, and a teammate can delegate
-      only to another. A sub-agent is the other end of that hand-off: a focused worker an agent
-      spawns for one isolated task. The built-ins are tested patterns you can switch off; a custom
-      one carries your own brief and can pin the model it runs on. Model routing is how you
-      say which model each kind of work runs on: pick a model for a category — a few are suggested,
-      and you can add your own — and an agent handing off that kind of work sends it there. A
-      category with no model stays hidden from agents. It is a
-      default, not an assignment — a model you name for the work, or a preset's or teammate's own,
-      comes first, and if the routed model can't run right now the work stays on the agent's own.
-    </template>
   </SettingsPageShell>
 </template>
 

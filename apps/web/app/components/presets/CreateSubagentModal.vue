@@ -10,7 +10,7 @@ import { formatModelChain } from "~/utils/detailFormat";
 import { normalizeChain } from "@kone/protocol/subagent-presets";
 import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
 
-// Creating or editing a preset sub-agent: the shell carries the scrim, card,
+// Creating or editing a preset worker: the shell carries the scrim, card,
 // rows and keyboard, so this is the row definitions plus the one submit path.
 // One row is open at a time to keep the card compact within the settings
 // drawer. When creating, identity opens first; when editing, rows start
@@ -85,7 +85,7 @@ const summaries = computed<Record<Section, string>>(() => {
 
 const actionLabel = computed(() => {
   if (isSubmitting.value) return isEditing.value ? "Saving…" : "Creating…";
-  return isEditing.value ? "Save changes" : "Create sub-agent";
+  return isEditing.value ? "Save changes" : "Create worker";
 });
 
 // ── submit ────────────────────────────────────────────────────────────────────
@@ -117,8 +117,8 @@ async function persist(operation: Operation) {
     if (!result) {
       errorMsg.value =
         operation === "save"
-          ? "Could not save the sub-agent — check the fields and try again."
-          : "Could not create the sub-agent — check the fields and try again.";
+          ? "Could not save the worker — check the fields and try again."
+          : "Could not create the worker — check the fields and try again.";
       cue("error");
       isSubmitting.value = false;
       return;
@@ -146,8 +146,8 @@ function submit() {
     :hints="HINTS"
     :summaries="summaries"
     :initial-open="props.preset ? null : 'identity'"
-    :eyebrow="isEditing ? 'Edit sub-agent' : 'New sub-agent'"
-    :dialog-label="isEditing ? 'Edit sub-agent' : 'Create a sub-agent'"
+    :eyebrow="isEditing ? 'Edit worker' : 'New worker'"
+    :dialog-label="isEditing ? 'Edit worker' : 'Create a worker'"
     :error="errorMsg"
     :action-label="actionLabel"
     :can-submit="canSubmit"
@@ -155,7 +155,7 @@ function submit() {
     @close="emit('close')"
     @submit="submit"
   >
-    <!-- Identity: what the sub-agent is called. -->
+    <!-- Identity: what the worker is called. -->
     <template #row-identity>
       <label class="dm-field">
         <span class="dm-glyph">
@@ -175,7 +175,7 @@ function submit() {
           maxlength="64"
           spellcheck="false"
           autocomplete="off"
-          aria-label="Sub-agent name"
+          aria-label="Worker name"
         />
       </label>
     </template>

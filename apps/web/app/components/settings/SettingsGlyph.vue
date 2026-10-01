@@ -122,7 +122,7 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         </g>
       </template>
 
-      <!-- Sub-agents: a parent hands work down; the children appear in turn. -->
+      <!-- Workers: a parent hands work down; the children appear in turn. -->
       <template v-else-if="kind === 'subagents'">
         <g class="d"><circle cx="12" cy="5.5" r="2.3" pathLength="1" /></g>
         <g class="d" style="--at: 380ms; --dur: 600ms"><path class="wire" d="M12 7.8v4.2M12 12H6v3.5M12 12h6v3.5M12 12v3.5" pathLength="1" /></g>

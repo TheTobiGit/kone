@@ -107,7 +107,7 @@ function openSection(target: SettingsPane) {
 //   · Workspaces are kone's four places to work, in the order they're summoned.
 //   · Ecosystem puts the people before the machinery: which agent answers is a
 //     bigger choice than which CLI carries them. Teams holds both the agents and
-//     the sub-agents they spawn — two ends of one hand-off, not two settings.
+//     the workers they spawn — two ends of one hand-off, not two settings.
 type RootRow = {
   pane: SettingsPane;
   label: string;
