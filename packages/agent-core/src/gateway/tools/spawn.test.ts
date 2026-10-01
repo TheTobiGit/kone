@@ -1696,7 +1696,9 @@ describe("agent_spawn_batch", () => {
       mode: "ask",
     });
     expect(batchSummary(res)).toBe('Spawned 2 threads: "Task 1" (child-op-1), "Task 2" (child-op-2).');
+    // The structured result carries the same record the text does.
     expect(res.structuredContent).toEqual({
+      ...JSON.parse(res.content[0]!.text!),
       batch: {
         total: 2,
         succeeded: 2,
@@ -1770,7 +1772,9 @@ describe("agent_spawn_batch", () => {
       mode: undefined,
     });
     expect(batchSummary(res)).toBe('Spawned 1 thread: "Explore Auth" (child-op-preset-1).');
+    // The structured result carries the same record the text does.
     expect(res.structuredContent).toEqual({
+      ...JSON.parse(res.content[0]!.text!),
       batch: {
         total: 1,
         succeeded: 1,
@@ -1860,7 +1864,9 @@ describe("agent_spawn_batch", () => {
     expect(batchSummary(res)).toBe(
       'Spawned 1 thread: "Valid Task" (child-op-1). 1 spawn failed: item 1: "Backend" is a teammate, not a worker — hand it work with agent_delegate.',
     );
+    // The structured result carries the same record the text does.
     expect(res.structuredContent).toEqual({
+      ...JSON.parse(res.content[0]!.text!),
       batch: {
         total: 2,
         succeeded: 1,
@@ -1906,6 +1912,7 @@ describe("agent_spawn_batch", () => {
     expect(res.content[0]?.text).toBe(
       '2 spawn failed: item 0: No preset sub-agent "UnknownPreset"; item 1: "UnknownAgent" is a teammate, not a worker — hand it work with agent_delegate.',
     );
+    // Nothing opened, so nothing is recorded.
     expect(res.structuredContent).toEqual({
       batch: {
         total: 2,
@@ -1965,7 +1972,9 @@ describe("agent_spawn_batch", () => {
     expect(batchSummary(res)).toBe(
       'Spawned 1 thread: "Task OK" (child-op-ok). 1 spawn failed: item 1: Spawn depth limit reached (max 2).',
     );
+    // The structured result carries the same record the text does.
     expect(res.structuredContent).toEqual({
+      ...JSON.parse(res.content[0]!.text!),
       batch: {
         total: 2,
         succeeded: 1,
