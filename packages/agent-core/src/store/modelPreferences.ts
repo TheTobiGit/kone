@@ -1,10 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import type { ColumnValue } from "../rosterRecord.js";
-import {
-  defaultModelPreferences,
-  normalizeModelPreferences,
-  type ModelPreference,
-} from "../modelPreference.js";
+import { defaultModelPreferences } from "@kone/protocol/model-preferences";
+import { normalizeModelPreferences, type ModelPreference } from "../modelPreference.js";
 
 /** The user's model preferences by kind of work, kept as one JSON document in
  *  app_state for the same reason the native preset config is: the list is
@@ -16,7 +13,7 @@ export class ModelPreferenceRepo {
 
   /** The saved list, or the suggested kinds with no models when nothing was
    *  ever saved. Never throws: a corrupt document reads as the suggestions —
-   *  every kind dormant, so every spawn runs where its caller runs, as before
+   *  every kind off, so every spawn runs where its caller runs, as before
    *  the feature. */
   listModelPreferences(): ModelPreference[] {
     const db = this.dbh.handle();
@@ -38,8 +35,8 @@ export class ModelPreferenceRepo {
   }
 
   /** Replace the whole list, in the order given. Returns what was stored — the
-   *  submitted list through the normalizer — or null when the write failed. An
-   *  empty list is a real answer (the user removed every kind) and is kept. */
+   *  submitted list through the normalizer, built-ins always included — or null
+   *  when the write failed. */
   saveModelPreferences(list: readonly ColumnValue[]): ModelPreference[] | null {
     const db = this.dbh.handle();
     if (!db) return null;

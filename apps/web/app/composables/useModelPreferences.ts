@@ -1,28 +1,26 @@
 import { computed, onMounted, ref } from "vue";
 import {
-  DEFAULT_MODEL_PREFERENCE_KINDS,
   MODEL_PREFERENCE_KIND_MAX,
   MODEL_PREFERENCE_LIST_MAX,
+  defaultModelPreferences,
+  isBuiltInModelPreference,
   modelPreferenceKindKey,
 } from "@kone/protocol/model-preferences";
 import { sendable } from "~/utils/agentStore";
 import type { AgentModelRef, ModelPreference } from "~/types/desktop";
 
-// The user's model routing: for each category of work they define, which model
+// The user's model routing: for each rule they define, which model
 // and effort a thread an agent starts for it runs on, when nobody named a
 // model. The list lives in the store (the spawn gateway reads it on every
 // dispatch), so a change here reaches the next hand-off without a restart.
 //
-// A short set of suggested categories ships as a starting point, each with no
+// A short set of suggested rules ships as a starting point, each with no
 // model. The user renames, removes and adds their own, and an agent only ever
-// hears of a category once it has a model — a suggestion costs nothing until
+// hears of a rule once it has a model — a suggestion costs nothing until
 // it is routed.
 //
 // Module-scope, so the Teams page and anything else that reads the list share
 // one copy and one hydration.
-
-const suggested = (): ModelPreference[] =>
-  DEFAULT_MODEL_PREFERENCE_KINDS.map((kind) => ({ ...kind, model: null, effort: null }));
 
 /** The store's side of the list — the two calls the composable makes. */
 export type ModelPreferencesBridge = {
@@ -52,8 +50,8 @@ type Outcome = "saved" | "skipped" | "failed";
  *  change shows on the click; an edit the store refuses is lifted out of that
  *  stack and the ones after it stay. */
 export function createModelPreferenceStore(bridge: () => ModelPreferencesBridge | undefined) {
-  const preferences = ref<ModelPreference[]>(suggested());
-  let confirmed = suggested();
+  const preferences = ref<ModelPreference[]>(defaultModelPreferences());
+  let confirmed: ModelPreference[] = defaultModelPreferences();
   const waiting: Edit[] = [];
   let loading: Promise<void> | null = null;
   let tail: Promise<unknown> = Promise.resolve();
@@ -124,12 +122,12 @@ type Made = { kind: string | null };
 
 const SAVE_FAILED = "Could not save — nothing was changed.";
 
-/** A slug for a new category that no existing one already has. The suffix of a
+/** A slug for a new rule that no existing one already has. The suffix of a
  *  repeat is counted inside the slug limit, so the store — which re-keys every
  *  slug to that limit — keeps exactly the slug chosen here rather than cutting
- *  the suffix off and taking the new category for a duplicate. */
+ *  the suffix off and taking the new rule for a duplicate. */
 function freshKind(label: string, taken: readonly ModelPreference[]): string {
-  const base = modelPreferenceKindKey(label) || "category";
+  const base = modelPreferenceKindKey(label) || "rule";
   const used = new Set(taken.map((p) => p.kind));
   if (!used.has(base)) return base;
   for (let n = 2; ; n++) {
@@ -140,7 +138,7 @@ function freshKind(label: string, taken: readonly ModelPreference[]): string {
   }
 }
 
-/** What the editor submits: a category's words and where it runs. */
+/** What the editor submits: a rule's words and where it runs. */
 export type RouteDraft = {
   label: string;
   hint: string;
@@ -159,15 +157,17 @@ export function useModelPreferences() {
   // next edit reads again before it writes.
   onMounted(() => void hydrate().catch(() => {}));
 
-  /** Categories an agent can see: those with a model. */
-  const routedCount = computed(() => preferences.value.filter((p) => p.model).length);
+  /** Rules an agent can see: those switched on with a model. */
+  const routedCount = computed(() => preferences.value.filter((p) => p.enabled && p.model).length);
 
   const canAdd = computed(() => preferences.value.length < MODEL_PREFERENCE_LIST_MAX);
 
-  /** Add a category, or rewrite one. A rewrite keeps its slug, so an agent that
-   *  already learned it keeps reaching the same category after a rename. An
-   *  effort belongs to the model it tunes, so none is kept without one.
-   *  Returns the category's slug, or null when the draft has no name or the list
+  /** Add a rule, or rewrite one. A rewrite keeps its slug, so an agent that
+   *  already learned it keeps reaching the same rule after a rename. An
+   *  effort belongs to the model it tunes, so none is kept without one. Giving
+   *  a rule its first model switches it on — that is what picking one means —
+   *  and taking the model away switches it off; otherwise the switch stays.
+   *  Returns the rule's slug, or null when the draft has no name or the list
    *  is full. Throws when the store could not keep the change. */
   const saveRoute = async (kind: string | null, draft: RouteDraft): Promise<string | null> => {
     const label = draft.label.trim();
@@ -183,28 +183,34 @@ export function useModelPreferences() {
       made.kind = null;
       if (kind && list.some((p) => p.kind === kind)) {
         made.kind = kind;
-        return list.map((p) => (p.kind === kind ? { ...p, ...entry } : p));
+        return list.map((p) =>
+          p.kind === kind ? { ...p, ...entry, enabled: Boolean(entry.model) && (p.enabled || !p.model) } : p,
+        );
       }
       if (list.length >= MODEL_PREFERENCE_LIST_MAX) return null;
       made.kind = freshKind(label, list);
-      return [...list, { kind: made.kind, ...entry }];
+      return [...list, { kind: made.kind, ...entry, enabled: Boolean(entry.model) }];
     });
     if (outcome === "failed") throw new Error(SAVE_FAILED);
     return outcome === "saved" ? made.kind : null;
   };
 
-  /** Bring back any suggested category the list no longer has, after the user's
-   *  own and unset, so nothing they made or routed is touched. */
-  const restoreSuggested = async (): Promise<boolean> =>
+  /** Switch a rule on or off. A rule with no model has nothing to switch on,
+   *  so that asks nothing of the store; the caller opens its editor instead. */
+  const setEnabled = async (kind: string, enabled: boolean): Promise<boolean> =>
     (await mutate((list) => {
-      const have = new Set(list.map((p) => p.kind));
-      const missing = suggested().filter((p) => !have.has(p.kind));
-      return missing.length ? [...list, ...missing].slice(0, MODEL_PREFERENCE_LIST_MAX) : null;
+      const rule = list.find((p) => p.kind === kind);
+      if (!rule || rule.enabled === enabled || (enabled && !rule.model)) return null;
+      return list.map((p) => (p.kind === kind ? { ...p, enabled } : p));
     })) !== "failed";
 
+  /** Remove one of the user's own rules. A built-in is only ever switched off. */
   const removeRoute = async (kind: string): Promise<boolean> =>
-    (await mutate((list) => (list.some((p) => p.kind === kind) ? list.filter((p) => p.kind !== kind) : null))) !==
-    "failed";
+    (await mutate((list) =>
+      !isBuiltInModelPreference(kind) && list.some((p) => p.kind === kind)
+        ? list.filter((p) => p.kind !== kind)
+        : null,
+    )) !== "failed";
 
-  return { preferences, routedCount, canAdd, saveRoute, removeRoute, restoreSuggested };
+  return { preferences, routedCount, canAdd, saveRoute, setEnabled, removeRoute };
 }

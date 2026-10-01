@@ -2146,14 +2146,16 @@ describe("model preferences by kind of work", () => {
       hint: "A small change.",
       model: { provider: "claudeAgent", model: "haiku" },
       effort: "low",
+      enabled: true,
     },
-    { kind: "review", label: "Review", hint: "", model: null, effort: null },
+    { kind: "review", label: "Review", hint: "", model: null, effort: null, enabled: false },
     {
       kind: "git",
       label: "Git work",
       hint: "",
       model: { provider: "cursor", model: "gone" },
       effort: null,
+      enabled: true,
     },
   ];
 
@@ -2194,6 +2196,15 @@ describe("model preferences by kind of work", () => {
       preference: { kind: "quick-fix", outcome: "applied" },
     });
     expect(JSON.stringify(res.content)).toContain("the user's model for Quick fixes");
+  });
+
+  test("a kind the user switched off places nothing, even with a model", async () => {
+    const captured: FakeSpawnRequest[] = [];
+    currentEngine = capturingEngine(captured);
+    const off = prefs.map((p) => (p.kind === "quick-fix" ? { ...p, enabled: false } : p));
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], off) }));
+    await registry.call(ctx, "worker_start", { task: "Fix it.", requestId: "op-1", kind: "quick-fix" });
+    expect(captured[0]!.target).not.toMatchObject({ model: "haiku" });
   });
 
   test("a target the caller named beats the kind", async () => {
@@ -2260,7 +2271,7 @@ describe("model preferences by kind of work", () => {
     const captured: FakeSpawnRequest[] = [];
     currentEngine = capturingEngine(captured);
     const plain: ModelPreference[] = [
-      { kind: "tests", label: "Tests", hint: "", model: { provider: "claudeAgent", model: "haiku" }, effort: null },
+      { kind: "tests", label: "Tests", hint: "", model: { provider: "claudeAgent", model: "haiku" }, effort: null, enabled: true },
     ];
     const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [], [], plain) }));
     await registry.call(ctx, "worker_start", { task: "Go.", requestId: "a", kind: "tests" });

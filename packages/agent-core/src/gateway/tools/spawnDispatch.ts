@@ -207,6 +207,7 @@ function kindPreference(store: SpawnToolStore, ref: string | undefined): ModelPr
       hint: "",
       model: null,
       effort: null,
+      enabled: false,
     }
   );
 }

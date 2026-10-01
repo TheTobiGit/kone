@@ -8,6 +8,7 @@ const route = (kind: string, model = true): ModelPreference => ({
   hint: "",
   model: model ? { provider: "claudeAgent", model: "opus" } : null,
   effort: null,
+  enabled: model,
 });
 
 /** A promise the test settles by hand. */
