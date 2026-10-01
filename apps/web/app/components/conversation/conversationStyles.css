@@ -334,7 +334,8 @@
 }
 /* The rail: out from under your face, down the request and the gap, to stop
    just short of the reply's. */
-.thread.thread--style-timeline .turn--you:has(+ .turn--kone)::after {
+.thread.thread--style-timeline .turn--you:has(+ .turn--kone:not(.turn--peer))::after,
+.thread.thread--style-timeline .turn--peer:has(+ .turn--kone:not(.turn--peer))::after {
   content: "";
   position: absolute;
   top: calc(var(--tl-face) + 6px);
@@ -432,7 +433,8 @@
 /* The arrow: the drop and the bend belong to your row — the bend lands at the
    middle of the reply's 28px face, the exchange's gap below your row — and
    the head to the reply's. */
-.thread.thread--style-thread .turn--you:has(+ .turn--kone)::after {
+.thread.thread--style-thread .turn--you:has(+ .turn--kone:not(.turn--peer))::after,
+.thread.thread--style-thread .turn--peer:has(+ .turn--kone:not(.turn--peer))::after {
   content: "";
   position: absolute;
   top: calc(var(--sl-face) + 8px);
@@ -444,7 +446,8 @@
   border-bottom-left-radius: 10px;
   transition: border-color 0.35s ease;
 }
-.thread.thread--style-thread .turn--you + .turn--kone::after {
+.thread.thread--style-thread .turn--you + .turn--kone:not(.turn--peer)::after,
+.thread.thread--style-thread .turn--peer + .turn--kone:not(.turn--peer)::after {
   content: "";
   position: absolute;
   top: 10px;
@@ -817,7 +820,44 @@
 
 /* ── Another agent speaking ────────────────────────────────────────────────────
    AgentMessageTurn rides the agent side in every style (it is a `.turn--kone`
-   too); these are the few places a style names its speaker another way. */
+   too), so its head is laid out like a reply's. Its words are drawn the way
+   each style draws a message from someone else: kone's bubble (in the
+   component), the timeline's tinted bubble, Slack's and Discord's flat rows,
+   the chat's incoming bubble with its tail (the reply's own `.turn--kone
+   .stack`, which outweighs kone's), and the prompt's output line. */
+/* A reply's head tucks its answer up under it with a negative margin; a
+   message from another agent is spaced like a request instead, its words a
+   clear step below its name. */
+.thread.thread--style-timeline .turn--peer .speaker,
+.thread.thread--style-thread .turn--peer .speaker,
+.thread.thread--style-channel .turn--peer .speaker {
+  margin-bottom: 0;
+}
+.thread.thread--style-timeline .turn--peer .peer-body {
+  max-width: 100%;
+  padding: 9px 14px;
+  border-radius: 4px 14px 14px 14px;
+}
+/* In Slack the brief is the request: it sits in the gutter, its face's tile
+   at the edge, and the arrow drops out from under it into the reply. */
+.thread.thread--style-thread .turn--peer {
+  padding-left: var(--sl-gutter);
+}
+.thread.thread--style-thread .turn--peer .speaker__face {
+  left: 0;
+}
+/* Its tile is the reply's 28px face in 3px of padding, shorter than your
+   36px face, so the arrow starts just under the tile instead. */
+.thread.thread--style-thread .turn--peer:has(+ .turn--kone:not(.turn--peer))::after {
+  top: 40px;
+}
+.thread.thread--style-thread .turn--peer .peer-body,
+.thread.thread--style-channel .turn--peer .peer-body {
+  max-width: 100%;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
 .thread.thread--style-prompt .peer-body__prefix {
   display: inline;
   margin-right: 6px;
@@ -832,16 +872,10 @@
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
+  max-width: 100%;
+  padding: 0;
   border-radius: 0;
   background: none;
-  padding: 2px 0 2px 10px;
-}
-/* WhatsApp's group chat: the sender's name sits on top of the bubble, so the
-   head tucks in tight above it. */
-.thread.thread--style-chat .turn--peer .peer-body {
-  border-radius: 12px 12px 12px 4px;
-  border-left-width: 0;
-  box-shadow: 0 1px 0 color-mix(in oklab, var(--ink) 8%, transparent);
 }
 /* A kone notice spans the thread in every style. */
 .thread .turn--notice {

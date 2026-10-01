@@ -18,8 +18,9 @@ import { agentOrDeparted } from "~/utils/agents";
 // for, so a question reads as waiting on an answer and a note as needing none.
 //
 // It reuses the reply's speaker classes so every conversation style lays it out
-// the way it lays out an agent speaking; `.turn--peer` on the turn adds the
-// tint that tells it apart from this thread's own agent.
+// the way it lays out an agent speaking, and each style then draws the words
+// as its own message from someone else: kone's left-hand bubble here, and the
+// rest in conversationStyles.css under "Another agent speaking".
 
 const props = defineProps<{
   sender: AgentSender;
@@ -79,7 +80,8 @@ const purpose = computed(() => {
       >
         {{ name }}
       </button>
-      <span class="peer-head__tag">{{ relation }}<template v-if="purpose"> · {{ purpose }}</template></span>
+      <!-- A brief's sender is already named on the thread's connected line. -->
+      <span v-if="purpose !== 'brief'" class="peer-head__tag" :data-kind="purpose ?? 'note'">{{ relation }}<template v-if="purpose"> · {{ purpose }}</template></span>
       <span v-if="stamp" class="speaker__stamp">{{ stamp }}</span>
     </div>
   </div>
@@ -139,12 +141,17 @@ const purpose = computed(() => {
   font-weight: 600;
   color: var(--ink-soft);
   cursor: pointer;
+  /* Always drawn and only coloured in, so the underline fades up under the
+     pointer rather than snapping on. */
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 0.2s ease;
 }
 .peer-head__name:hover,
 .peer-head__name:focus-visible {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: color-mix(in oklab, var(--ink) 30%, transparent);
+  text-decoration-color: color-mix(in oklab, var(--ink) 40%, transparent);
 }
 /* Who the sender is to this thread: small, and quiet enough not to compete
    with the words. */
@@ -157,21 +164,26 @@ const purpose = computed(() => {
   font-weight: 500;
   line-height: 1.2;
 }
-/* The words themselves, on a tinted card with an edge in the sender's
-   colour: another agent speaking, never this thread's own reply. */
-.peer-body {
-  width: 100%;
-  min-width: 0;
-  padding: 9px 12px;
-  border-left: 2px solid color-mix(in oklab, var(--accent, var(--ink)) 55%, transparent);
-  border-radius: 4px 10px 10px 4px;
-  background: color-mix(in oklab, var(--accent, var(--ink)) 6%, var(--ground));
+/* A question or pushback is waiting on this thread — the tag warms to say so,
+   in every style, since not every style has a surface to tint. */
+.peer-head__tag[data-kind="question"],
+.peer-head__tag[data-kind="pushback"] {
+  background: color-mix(in oklab, var(--warn, #c08a3e) 14%, transparent);
+  color: color-mix(in oklab, var(--warn, #c08a3e) 80%, var(--ink));
 }
-/* A question or pushback is waiting on this thread — a warmer edge says so. */
-.peer-body[data-kind="question"],
-.peer-body[data-kind="pushback"] {
-  border-left-color: color-mix(in oklab, var(--warn, #c08a3e) 75%, transparent);
-  background: color-mix(in oklab, var(--warn, #c08a3e) 7%, var(--ground));
+/* kone's words from someone else: a bubble on the agent's side, the user's
+   own bubble mirrored — its tucked corner under the sender's face, and a
+   neutral wash where the user's carries the accent. Written `.stack.peer-body`
+   so it outweighs the thread's own full-width `.stack`. */
+.stack.peer-body {
+  align-self: flex-start;
+  width: auto;
+  max-width: 88%;
+  min-width: 0;
+  padding: 10px 15px;
+  border-radius: 5px 16px 16px 16px;
+  background: color-mix(in oklab, var(--ink) 4.5%, var(--ground));
+  text-wrap: pretty;
 }
 .peer-body__prefix {
   display: none;

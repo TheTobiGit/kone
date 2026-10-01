@@ -425,6 +425,11 @@ type EnrichedExchange = {
   key: string;
   blocks: ThreadBlock[];
   requestText: string;
+  /** The agent that wrote the request, when it was not the user. */
+  requestFrom: AgentSender | null;
+  /** The request is kone telling the thread something, which no reply
+   *  quotes. */
+  requestIsNotice: boolean;
   reply: AssistantBlock | undefined;
   receipt: ReceiptState;
   parts: Map<string, AttachmentPartition>;
@@ -672,6 +677,13 @@ const hasRunningExchange = computed(
 const allExchanges = computed<EnrichedExchange[]>(() => {
   const groups: EnrichedExchange[] = [];
   for (const b of props.blocks) {
+    // A turn nobody asked for that settled having said and done nothing — the
+    // provider's own compaction turn, which the compaction marker already
+    // stands for — has nothing to show, and drawn it is a speaker over an empty
+    // reply. Only one that answers no request: an empty answer to a request
+    // still settles that request's receipt and keeps its checkpoint.
+    const answersRequest = groups.at(-1)?.blocks.at(-1)?.role === "user";
+    if (b.role === "assistant" && b.state === "completed" && b.items.length === 0 && !b.error && !answersRequest) continue;
     if (b.role === "user" || groups.length === 0) {
       const parts = new Map<string, AttachmentPartition>();
       if (b.role === "user" && b.attachments?.length) {
@@ -681,6 +693,8 @@ const allExchanges = computed<EnrichedExchange[]>(() => {
         key: b.id,
         blocks: [b],
         requestText: b.role === "user" ? b.text : "",
+        requestFrom: b.role === "user" && b.sender?.kind === "agent" ? b.sender : null,
+        requestIsNotice: b.role === "user" && b.sender?.kind === "system",
         reply: undefined,
         receipt: "sent",
         parts,
@@ -1185,9 +1199,6 @@ watch(
       <span>{{ earlierCount }} earlier {{ earlierCount === 1 ? "exchange" : "exchanges" }}</span>
     </button>
 
-    <!-- A delegate's or contractor's thread opens on who handed it the work. -->
-    <HandOffOriginMark v-if="origin" :thread-id="threadId" :from="origin" />
-
     <template v-for="(ex, index) in exchanges" :key="ex.key">
       <!-- Centered date divider at top of thread and between different calendar days -->
       <div
@@ -1211,6 +1222,16 @@ watch(
         :key="`connected-${connectedSeed}`"
         :seed="connectedSeed"
         :animate="!ex.blocks[0]?.historical"
+        :name="threadContract?.name"
+        :from="origin"
+        @open-thread="(id) => emit('open-thread', id)"
+      />
+      <!-- With no connected line to carry it, who handed the thread its work
+           stands on its own. -->
+      <HandOffOriginMark
+        v-if="index === 0 && origin && !connectedSeed"
+        :thread-id="threadId"
+        :from="origin"
       />
 
       <!-- Centered compaction markers settled since the previous exchange -->
@@ -1325,8 +1346,9 @@ watch(
         <!-- Discord's reply: which request this answers, as a line with a
              spine running into it from the reply's face. -->
         <ReplyRef
-          v-if="spec.replyRef && ex.requestText"
+          v-if="spec.replyRef && ex.requestText && !ex.requestIsNotice"
           :text="ex.requestText"
+          :from="ex.requestFrom"
         />
         <div class="stack selectable">
           <AssistantTurnBody
@@ -1476,6 +1498,7 @@ watch(
     <CompactionMarker
       v-for="(m, mi) in trailingMarkers"
       :key="`compact-trailing-${mi}`"
+      class="thread-mark--trailing"
       :class="{ 'thread-mark--enter': tailIsLive }"
       :marker="m"
       :format-time="clock"
@@ -1763,6 +1786,12 @@ watch(
    file from the component. */
 .exchange + .thread-mark {
   margin-top: calc(var(--turn-foot-lift) - var(--turn-foot) - var(--turn-mark-clearance));
+}
+/* A mark at the tail has no request below it to stay centred against, so it
+   keeps the column's full rhythm under the reply, less only the footer's
+   reserve: the reply reads as finished before the mark, not crowded by it. */
+.exchange + .thread-mark--trailing {
+  margin-top: calc(var(--turn-foot-lift) - var(--turn-foot));
 }
 
 /* Marks stacked at the head of a conversation — the day, then who picked the
