@@ -203,14 +203,13 @@ function messageText(message: { role: string; text: string }): string {
 function singleResult(dispatched: Dispatched): GatewayToolResult {
   if (!dispatched.ok) return gatewayToolErrorResult(dispatched.error);
   const { result, meta, record } = dispatched;
+  const spawn = { spawns: [record], summary: spawnSentence(result, meta) };
   return {
-    content: [
-      {
-        type: "text",
-        text: formatSpawnResult({ spawns: [record], summary: spawnSentence(result, meta) }),
-      },
-    ],
-    structuredContent: structuredDispatch(result, meta),
+    content: [{ type: "text", text: formatSpawnResult(spawn) }],
+    // The record rides in the structured result too: a provider that stores
+    // the structured result in place of the text (Claude's does) still leaves
+    // the thread a record to read back.
+    structuredContent: { ...structuredDispatch(result, meta), ...spawn },
   };
 }
 
@@ -443,6 +442,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         content: [{ type: "text", text }],
         isError: spawns.length === 0,
         structuredContent: {
+          // As in a single dispatch: the record survives a provider that
+          // stores this in place of the text.
+          ...(spawns.length > 0 ? { spawns, summary } : {}),
           batch: {
             total: args.items.length,
             succeeded: spawns.length,
