@@ -336,6 +336,23 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.latestAssistantText("never-spoke-1")).toBeNull();
   });
 
+  test("latestAssistantText returns the final reply, not the narration between tool calls", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "child-2", projectPath: "/tmp/proj", provider: "codex" });
+    store.applyEvent(turnStarted("child-2", "turn-1", 10));
+    // A Codex-style turn: each progress update is its own message, with tool
+    // calls between them, and the report comes after the last tool call.
+    store.applyEvent(item("child-2", "turn-1", "n1", "assistant_text", "I'll trace the send path."));
+    store.applyEvent(item("child-2", "turn-1", "t1", "tool_call", "rg steerTurn"));
+    store.applyEvent(item("child-2", "turn-1", "n2", "assistant_text", "Checking Stop next."));
+    store.applyEvent(item("child-2", "turn-1", "t2", "tool_call", "sed -n 1,80p queue.ts"));
+    store.applyEvent(item("child-2", "turn-1", "r0", "reasoning_text", "hidden"));
+    store.applyEvent(item("child-2", "turn-1", "f1", "assistant_text", "Findings: "));
+    store.applyEvent(item("child-2", "turn-1", "f2", "assistant_text", "one, two."));
+
+    expect(store.latestAssistantText("child-2")).toBe("Findings: one, two.");
+  });
+
   test("threadTurnSpan reports endedAt null while a turn runs, with the newest block's state", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "child-1", projectPath: "/tmp/proj", provider: "opencode" });

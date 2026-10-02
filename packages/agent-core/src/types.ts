@@ -1327,8 +1327,11 @@ export type SpawnedThread = {
   tokens?: number;
 };
 
-/** How many characters of a child's final message ride back to the parent. */
-export const SPAWN_SUMMARY_CHAR_CAP = 2_000;
+/** How many characters of a child's final message ride back to the parent.
+ *  The final message is the deliverable — a review or a report runs to
+ *  several thousand characters — so the cap is sized to carry one whole and
+ *  only stops a runaway reply; a cut one points at agent_read. */
+export const SPAWN_SUMMARY_CHAR_CAP = 16_000;
 
 // ── Normalized runtime event model ───────────────────────────────────────────
 // Every adapter translates its transport (print-mode stdout, JSON-RPC, ACP, an
