@@ -322,12 +322,18 @@ export class TranscriptRepo {
     }
   }
 
-  /** The most recent assistant block's narrative text — its `assistant_text`
-   *  items concatenated in arrival order, trimmed. This is what becomes the
-   *  child's summary, so it is the narrative only: reasoning, plan and tool
-   *  calls are excluded (they stay in the child's transcript, readable on
-   *  demand via agent_read). Null when the thread has never produced
-   *  assistant text. */
+  /** The most recent assistant block's final reply — the last run of
+   *  `assistant_text` items, concatenated in arrival order and trimmed. A
+   *  run ends at a main-conversation tool call: the text an agent writes
+   *  between tool calls is progress narration ("I'll trace…", "Next I'm
+   *  checking…"), and only what follows its last tool call is the answer.
+   *  Codex in particular sends each such update as its own message, and
+   *  gluing them onto the report pushed the report itself past the summary
+   *  cap. A turn that ends on a tool call still reports the run before it.
+   *  This is what becomes the child's summary, so it is the narrative only:
+   *  reasoning and plan items never join or break a run (they stay in the
+   *  child's transcript, readable on demand via agent_read). Null when the
+   *  thread has never produced assistant text. */
   latestAssistantText(threadId: string): string | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -347,12 +353,30 @@ export class TranscriptRepo {
       // loadTurnParts performs.
       const items = db
         .prepare(
-          `SELECT text, text_json, ${itemChunkArraySql("items")} AS chunk_text FROM items
-            WHERE thread_id = ? AND turn_id = ? AND kind = 'assistant_text'
+          `SELECT kind, text, text_json, ${itemChunkArraySql("items")} AS chunk_text FROM items
+            WHERE thread_id = ? AND turn_id = ?
+              AND (kind = 'assistant_text' OR (kind = 'tool_call' AND subagent_tool_use_id IS NULL))
             ORDER BY seq`,
         )
-        .all(threadId, block.turn_id) as Array<{ text: string | null; text_json: string | null; chunk_text: string | null }>;
-      const text = items.map((i) => decodeStoredText(i.text, i.text_json) + decodeChunkArray(i.chunk_text)).join("").trim();
+        .all(threadId, block.turn_id) as Array<{
+          kind: "assistant_text" | "tool_call";
+          text: string | null;
+          text_json: string | null;
+          chunk_text: string | null;
+        }>;
+      // Walk back from the end: skip tool calls the turn ended on, then take
+      // text until the tool call that precedes it.
+      const run: string[] = [];
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i]!;
+        if (item.kind === "tool_call") {
+          if (run.length > 0) break;
+          continue;
+        }
+        const text = decodeStoredText(item.text, item.text_json) + decodeChunkArray(item.chunk_text);
+        if (text.trim().length > 0) run.unshift(text);
+      }
+      const text = run.join("").trim();
       return text || null;
     } catch (err) {
       console.error("[conversation-store] latestAssistantText failed:", err);
