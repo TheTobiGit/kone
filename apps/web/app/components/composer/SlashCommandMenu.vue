@@ -1,11 +1,13 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import ComposerPickerMenu from "~/components/composer/ComposerPickerMenu.vue";
 import { slashCommandTitle, type SlashCommandItem } from "~/utils/composerMentions";
 
 // The `/` picker's popover: the shared composer shell with one command row per
 // item. The glyph rides on the item now, so the menu never keeps a parallel
-// name→icon map beside the command table.
+// name→icon map beside the command table. Skill rows follow the commands in
+// the same list, so one keyboard walk covers both.
 
 const props = defineProps<{
   items: SlashCommandItem[];
@@ -18,6 +20,20 @@ const emit = defineEmits<{
   highlight: [index: number];
 }>();
 
+const hasSkills = computed(() => props.items.some((item) => item.skill));
+const hasCommands = computed(() => props.items.some((item) => !item.skill));
+const title = computed(() => {
+  if (hasSkills.value && hasCommands.value) return "Commands & skills";
+  return hasSkills.value ? "Skills" : "Commands";
+});
+
+// The first skill after the commands wears the hairline the mention list
+// draws between its sections, so the two kinds never read as one run.
+function rowClass(item: SlashCommandItem, index: number): string {
+  const prev = props.items[index - 1];
+  return item.skill && prev && !prev.skill ? "composer-picker__row--boundary" : "";
+}
+
 function selectAt(index: number): void {
   const item = props.items[index];
   if (item) emit("select", item);
@@ -27,12 +43,13 @@ function selectAt(index: number): void {
 <template>
   <ComposerPickerMenu
     glyph="/"
-    title="Commands"
+    :title="title"
     :query="props.query"
-    list-label="Slash commands"
+    :list-label="title"
     :items="props.items"
     :active-index="props.activeIndex"
     :item-key="(item) => item.name"
+    :row-class="rowClass"
     @select="selectAt"
     @highlight="emit('highlight', $event)"
   >
@@ -45,7 +62,7 @@ function selectAt(index: number): void {
     </template>
 
     <template #empty>
-      <p class="slash-menu__empty">No matching command</p>
+      <p class="slash-menu__empty">No matching command or skill</p>
     </template>
   </ComposerPickerMenu>
 </template>

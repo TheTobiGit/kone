@@ -1,8 +1,8 @@
 import { computed, ref, type Ref } from "vue";
-import type { ChatAttachment, KoneAgentApi } from "~/types/desktop";
+import type { ChatAttachment, KoneAgentApi, SkillReference } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
 import { seedFromBridge } from "../useCompaction";
-import type { QueuedTurnEntry, QueueBridge, ThreadBlock } from "../agentTypes";
+import type { QueuedTurnEntry, QueueBridge, ThreadBlock, TurnDraft } from "../agentTypes";
 
 /** Safe-parse a queued turn's attachments payload. Returns undefined when the
  *  row carries none, or when the stored JSON is missing or malformed — every
@@ -17,6 +17,17 @@ export function parseQueuedAttachments(json?: string | null): ChatAttachment[] |
   } catch {
     return undefined;
   }
+}
+
+/** The column value for a queued turn's attachments: NULL when there are
+ *  none. Mirrors the skills serializer so both halves of a queue row go
+ *  through helpers instead of one using a helper and the other an inline
+ *  stringify at its single write site. */
+export function serializeQueuedAttachments(attachments?: ChatAttachment[] | null): string | null {
+  if (!attachments || attachments.length === 0) return null;
+  return JSON.stringify(
+    attachments.map(({ type, id, name, mimeType, sizeBytes }) => ({ type, id, name, mimeType, sizeBytes })),
+  );
 }
 
 /** The transcript ids a queued-turn row hides or orders around: its anchored
@@ -49,15 +60,20 @@ export function sortQueuedByIds(rows: QueuedTurnEntry[], ids: readonly string[])
 /** Follow-ups durably queued behind the running turn. The send path stays in
  *  the session that creates this unit — a queued entry sent now is steered
  *  into the live turn when one runs, else sent as a fresh turn — so it
- *  arrives as the `send`/`steerTurn` callbacks below. */
+ *  arrives as the `send`/`steerTurn` callbacks below. Both take the draft
+ *  object; the positional overloads stay only for callers predating it. */
 export type SessionQueueDeps = {
   blocks: Ref<ThreadBlock[]>;
   threadId: Ref<string>;
   bridge: () => KoneAgentApi | null;
   error: Ref<string | null>;
   busy: Ref<boolean>;
-  send: (text: string, attachments?: ChatAttachment[]) => Promise<void>;
-  steerTurn: (text: string, attachments?: ChatAttachment[]) => Promise<void>;
+  send:
+    & ((draft: TurnDraft) => Promise<void>)
+    & ((text: string, attachments?: ChatAttachment[], skills?: SkillReference[]) => Promise<void>);
+  steerTurn:
+    & ((draft: TurnDraft) => Promise<void>)
+    & ((text: string, attachments?: ChatAttachment[], skills?: SkillReference[]) => Promise<void>);
 };
 
 /** Durable follow-ups queued behind the running turn (the AgentService queue
@@ -156,10 +172,13 @@ export function useSessionQueue(deps: SessionQueueDeps) {
   async function sendQueuedEntryNow(entry: QueuedTurnEntry): Promise<void> {
     await cancelQueuedTurn(entry.queueId);
     const attachments = parseQueuedAttachments(entry.attachmentsJson);
+    const draft: TurnDraft = { text: entry.input };
+    if (attachments) draft.attachments = attachments;
+    if (entry.skills) draft.skills = entry.skills;
     if (busy.value) {
-      void steerTurn(entry.input, attachments);
+      void steerTurn(draft);
     } else {
-      void send(entry.input, attachments);
+      void send(draft);
     }
   }
 

@@ -217,3 +217,41 @@ describe("CodexAdapter steerTurn", () => {
     ).rejects.toThrow("No Codex session for thread missing-thread");
   });
 });
+
+describe("CodexAdapter turn input with invoked skills", () => {
+  test("a native skill rides as a skill item beside a $mention-led text item", async () => {
+    const skillPath = "/home/u/.agents/skills/deploy/SKILL.md";
+    const items = await helpers.buildCodexTurnInputItems({
+      threadId: "t",
+      input: "  ship it  ",
+      skills: [{ name: "deploy", path: skillPath }],
+    });
+    expect(items).toEqual([
+      { type: "text", text: "$deploy ship it", text_elements: [] },
+      { type: "skill", name: "deploy", path: skillPath },
+    ]);
+  });
+
+  test("a skill-only turn is valid and a foreign-root skill is inlined, not sent as an item", async () => {
+    const root = mkdtempSync(path.join(SANDBOX_DIR, "kone-codex-skill-"));
+    const skillDir = path.join(root, ".claude", "skills", "review");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(path.join(skillDir, "SKILL.md"), "Review with care.");
+    const items = await helpers.buildCodexTurnInputItems({
+      threadId: "t",
+      input: "",
+      skills: [{ name: "review", path: path.join(skillDir, "SKILL.md") }],
+    });
+    expect(items).toHaveLength(1);
+    const [only] = items;
+    if (only?.type !== "text") throw new Error("expected a single text item");
+    expect(only.text).toStartWith("<invoked_skills>");
+    expect(only.text).toContain("Review with care.");
+  });
+
+  test("a turn with nothing in it still refuses", async () => {
+    await expect(helpers.buildCodexTurnInputItems({ threadId: "t", input: "   " })).rejects.toThrow(
+      "Turn input must include text or an attachment.",
+    );
+  });
+});

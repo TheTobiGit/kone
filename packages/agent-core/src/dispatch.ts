@@ -16,6 +16,7 @@ import {
 import { buildResumeContext } from "./resumeContext.js";
 import { renderSenderHeader } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
+import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
 import {
   buildPromptThreadTitleFallback,
   canReplaceThreadTitle,
@@ -34,6 +35,7 @@ import type {
   SessionStartInput,
   TurnStartResult,
 } from "./types.js";
+import { turnLabel } from "./types.js";
 import {
   describeCopiedFiles,
   freshenBase,
@@ -276,6 +278,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // choke point reads it to stamp every event the child emits with its
   // spawning turn's id (F10).
   private readonly spawnParentTurnIds = new Map<string, string>();
+  // One dispatch tail per thread with a turn still being journaled. Each tail
+  // resolves once its turn is journaled and handed to the service — never
+  // later, so a slow provider round-trip never holds later transcripts
+  // hostage — and a tail only ever follows gates, which only ever resolve, so
+  // awaiting one cannot throw.
+  private readonly dispatchTails = new Map<string, Promise<void>>();
 
   constructor(deps: ThreadDispatcherDeps) {
     this.service = deps.service;
@@ -531,6 +539,81 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     destination: "send" | "steer",
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
+    const prior = this.dispatchTails.get(requested.threadId);
+    // Fast path: a turn with no skills to resolve and nothing ahead of it on
+    // its thread journals in the same tick it was called, which the service's
+    // busy check relies on to queue a second send behind the first.
+    if (!requested.skills?.length && !prior) {
+      const { skills: _none, ...plain } = requested;
+      return this.dispatchResolvedTurn(plain, destination, options);
+    }
+    // Otherwise the turn joins its thread's tail: it waits for every earlier
+    // turn to finish journaling before resolving its own skills and journaling
+    // itself. Skill resolution reads asynchronously, so a skill-bearing send
+    // followed at once by a plain one would otherwise journal second-first.
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prior ? prior.then(() => gate) : gate;
+    this.dispatchTails.set(requested.threadId, tail);
+    const settle = (): void => {
+      release();
+      if (this.dispatchTails.get(requested.threadId) === tail) {
+        this.dispatchTails.delete(requested.threadId);
+      }
+    };
+    return (async (): Promise<TurnStartResult> => {
+      await prior;
+      let resolved: SendTurnInput;
+      try {
+        if (requested.skills?.length) {
+          resolved = await this.withResolvedSkills(requested);
+        } else {
+          const { skills: _none, ...plain } = requested;
+          resolved = plain;
+        }
+      } catch (error) {
+        settle();
+        throw error;
+      }
+      let started: Promise<TurnStartResult>;
+      try {
+        started = this.dispatchResolvedTurn(resolved, destination, options);
+      } catch (error) {
+        settle();
+        throw error;
+      }
+      // Journaled, and the service is holding its busy marker: later turns may go.
+      settle();
+      return started;
+    })();
+  }
+
+  /** Resolve the skills a turn invokes against what the thread's provider can
+   *  run in the thread's working directory, before anything is journaled — a
+   *  skill that is gone or disabled rejects the send instead of reaching the
+   *  transcript and then doing nothing. The resolved references carry the
+   *  listed copy's own name and path, which is what gets journaled, queued and
+   *  delivered. */
+  private async withResolvedSkills(input: SendTurnInput): Promise<SendTurnInput> {
+    const provider = this.store.threadMeta(input.threadId)?.provider;
+    const first = input.skills?.[0]?.name ?? "unknown";
+    if (!provider) throw new SkillUnavailableError(first, "the thread has no provider to run it.");
+    // Project skills resolve against the directory the thread runs in. Null —
+    // no project path yet, or a worktree that does not exist — leaves only
+    // user-scope skills resolvable.
+    const projectPath = this.store.threadProjectPath(input.threadId);
+    const dir = projectPath ? this.threadWorkingDir(input.threadId, projectPath, "project") : null;
+    const skills = await resolveSkillReferences(provider, dir, input.skills);
+    return { ...input, skills };
+  }
+
+  private dispatchResolvedTurn(
+    requested: SendTurnInput,
+    destination: "send" | "steer",
+    options?: StartThreadTurnOptions,
+  ): Promise<TurnStartResult> {
     // An agent-sent turn is announced to renderers by block id, so the id has
     // to exist before the journal write rather than be minted inside it.
     const input =
@@ -554,6 +637,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
             threadId: input.threadId,
             text: delivery.journal,
             attachments: input.attachments,
+            skills: input.skills,
             sender: input.sender,
             effort: input.effort,
             model: input.model,
@@ -590,9 +674,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
             threadId: input.threadId,
             provider,
             model: input.model ?? meta?.model,
-            // An attachment-only first turn has no prompt text — name the thread
-            // after the first attached file instead of leaving it blank.
-            message: input.input.trim() || input.attachments?.[0]?.name || "",
+            // A skill- or attachment-only first turn has no prompt text — name
+            // the thread after the skill or the first attached file instead of
+            // leaving it blank.
+            message: turnLabel(input),
           },
           options,
         ).then((title) => this.nameWorkspaceBranch(input.threadId, title));
@@ -661,6 +746,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.pendingNotices.delete(threadId);
     this.threadsNeedingReplay.delete(threadId);
     this.spawnParentTurnIds.delete(threadId);
+    this.dispatchTails.delete(threadId);
     this.cancelledWorkspaces.delete(threadId);
   }
 
@@ -1032,11 +1118,18 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  that does not exist yet. `projectPath` is the thread's identity; this is its
    *  place, and the two differ exactly when the thread owns a worktree. An
    *  unknown or unreadable workspace answers null — callers skip rather than
-   *  fall back to the shared checkout. */
-  private threadWorkingDir(threadId: string, projectPath: string): string | null {
+   *  fall back to the shared checkout — unless `fallback` is "project", which
+   *  answers the project's own directory when no workspace row exists yet:
+   *  listing project skills needs somewhere to read from, while a checkpoint
+   *  or diffstat must never be taken in a directory the turn never ran in. */
+  private threadWorkingDir(
+    threadId: string,
+    projectPath: string,
+    fallback?: "project",
+  ): string | null {
     try {
       const workspace = this.store.threadWorkspace(threadId);
-      if (!workspace) return null;
+      if (!workspace) return fallback === "project" ? workingDirFor(projectPath) : null;
       return threadWorkingDir({ projectPath, ...workspace });
     } catch {
       return null;

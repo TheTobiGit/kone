@@ -444,6 +444,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
           createdAt: event.at,
           position: event.position,
         };
+        if (event.skills?.length) entry.skills = event.skills;
         if (event.effort) entry.effort = event.effort;
         if (event.model) entry.model = event.model;
         if (blockId) entry.blockId = blockId;
@@ -505,6 +506,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
             at: promo.createdAt,
           };
           if (attachments?.length) userBlock.attachments = attachments;
+          if (promo.skills?.length) userBlock.skills = promo.skills;
           // What the turn runs with is on the row itself — the same fields the
           // backend journals for it — so a promoted turn is stamped identically
           // whether the row was enqueued a second ago or drained from storage

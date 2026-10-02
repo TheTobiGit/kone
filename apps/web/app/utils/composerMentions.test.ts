@@ -271,3 +271,4 @@ describe("unified mention list", () => {
     expect(resolve("/a/file.ts")).toBe("file");
   });
 });
+

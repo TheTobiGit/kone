@@ -2112,6 +2112,7 @@ export class AgentService {
       updatedAt: now,
       promotedAt: null,
     };
+    if (input.skills?.length) row.skills = input.skills;
     try {
       const accepted = await store.enqueueQueuedTurn(row);
       if (!accepted) {
@@ -2142,6 +2143,7 @@ export class AgentService {
       input: input.input,
       attachmentsJson: row.attachmentsJson,
     };
+    if (row.skills?.length) queued.skills = row.skills;
     // The stamps the row was journaled with, so the renderer can mark the
     // promoted turn without waiting for a re-read of the queue.
     copyTurnStamp(row, queued);
@@ -2307,6 +2309,7 @@ export class AgentService {
       input: row.input,
     };
     if (attachments?.length) input.attachments = attachments;
+    if (row.skills?.length) input.skills = row.skills;
     if (row.model) input.model = row.model;
     if (row.mode) input.mode = row.mode;
     if (row.effort) input.effort = row.effort;

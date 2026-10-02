@@ -22,6 +22,7 @@ import {
 import { SPAWN_WHY_MAX_CHARS } from "@kone/protocol/spawn-record";
 import { ContractTermsSchema } from "@kone/protocol/contract";
 import type { ProviderKind } from "../types.js";
+import { PROVIDER_KIND_VALUES as PROVIDER_KINDS } from "../types.js";
 import { LSP_ACTIONS } from "../lsp/types.js";
 
 /** One decoded gateway payload — validated tool arguments, structured tool
@@ -195,10 +196,6 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA = {
 // Schemas for the worker- and teammate-dispatching tools. The zod `inputSchema`
 // validates args; the hand-written JSON schemas are what tools/list advertises,
 // so the enum literals are repeated there — the client never sees zod.
-
-/** The seven provider kinds as a literal tuple — ProviderKind is a plain union,
- *  and zod needs a runtime value for its enum. */
-const PROVIDER_KINDS = ["codex", "claudeAgent", "opencode", "cursor", "droid", "cline", "antigravity"] as const;
 
 /** The three interaction modes, same deal. */
 const INTERACTION_MODES = ["ask", "accept-edits", "full-access"] as const;

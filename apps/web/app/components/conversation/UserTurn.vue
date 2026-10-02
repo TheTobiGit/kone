@@ -16,6 +16,7 @@ import type {
   ReceiptState,
 } from "~/components/conversation/ConversationThread.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
+import SkillChip from "~/components/composer/SkillChip.vue";
 import YouHead from "~/components/conversation/YouHead.vue";
 import ReceiptTicks from "~/components/conversation/ReceiptTicks.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
@@ -206,6 +207,16 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
         />
       </button>
     </div>
+    <!-- The skills this turn invoked. The prompt text never names them, so
+         this row is the only place a reader (or a reload) learns of them. -->
+    <div v-if="block.skills?.length" class="you-skills" aria-label="Skills invoked">
+      <SkillChip
+        v-for="skill in block.skills"
+        :key="skill.path || skill.name"
+        :name="skill.name"
+        :path="skill.path"
+      />
+    </div>
     <!-- What was attached to this turn -->
     <div v-if="block.attachments?.length" class="you-attachments selectable">
       <!-- Images thumbnail grid -->
@@ -381,6 +392,17 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
 .you-expand:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
   outline-offset: 1px;
+}
+/* Skills sit where attachments do — under the message, right-aligned, or
+   standing alone on a skill-only turn. The chip sizes itself off the
+   composer's type variable, set here to the timeline's smaller step. */
+.you-skills {
+  --font-size-composer: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 80%;
 }
 /* Attachments that rode this turn — a right-aligned wrap of file chips under
    the message (or standing alone on an attachment-only turn). */

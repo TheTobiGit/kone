@@ -40,6 +40,7 @@ import {
 import { getTerminalManager } from "../modules/terminal/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
+import { listInvokableSkillsChecked } from "@kone/agent-core/skillInvocation.js";
 import {
   deleteSkillToTrash,
   editSkillFrontmatter,
@@ -949,6 +950,11 @@ export function registerAgentIpc(): void {
     (_event, projectPath: string | string[] | null) => scanAgentInventory(projectPath),
   );
   ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
+  // The composer's skill picker: what the thread's provider can run in its cwd.
+  // The arguments are re-checked inside, so a stray value lists nothing.
+  ipcMain.handle("agent:skills-list-invokable", (_event, provider: ProviderKind, cwd: string | null) =>
+    listInvokableSkillsChecked(provider, cwd),
+  );
   ipcMain.handle("agent:skill-state-read", (_event, query: SkillStateQuery) =>
     readSkillState(stateContext(query)),
   );

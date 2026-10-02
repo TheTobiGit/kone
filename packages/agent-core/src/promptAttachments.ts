@@ -1,6 +1,7 @@
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { pathToFileURL } from "node:url";
 import { CLAUDE_NATIVE_IMAGE_MIME_TYPES, type ChatAttachment } from "./types.js";
+import type { SkillPrompt } from "./skillInvocation.js";
 
 // Turns the bytes-free ChatAttachment metadata that rides a turn into the
 // per-provider prompt payload each adapter needs — reading the actual bytes
@@ -202,4 +203,13 @@ export async function buildCursorAttachmentInput(
 export function composePromptText(text: string, block: string): string {
   if (!block) return text;
   return text ? `${text}\n\n${block}` : block;
+}
+
+/** Join a skill-shaped prompt with its file block: the attached-files block
+ *  lands directly after the prose, and the inlined-skills block lands after
+ *  that. The file block stays adjacent to the prose it annotates, and the
+ *  skill block stays last so turns built before this helper read byte-for-byte
+ *  the same. */
+export function composeTurnText(skillPrompt: SkillPrompt, fileBlock: string): string {
+  return composePromptText(composePromptText(skillPrompt.text, fileBlock), skillPrompt.inlineBlock);
 }

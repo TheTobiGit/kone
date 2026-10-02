@@ -60,6 +60,7 @@ import type {
   UserInputQuestion,
   UserInputRespondResult,
 } from "../types.js";
+import { inlineSkills } from "../skillInvocation.js";
 
 // Antigravity adapter — drives Google's `agy` CLI in print mode: one fresh
 // process per turn (`agy -p`), the transcript it writes under
@@ -1221,6 +1222,9 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
       const fileBlock = await attachments.buildTextAttachmentBlock(input.attachments);
       promptText = attachments.composePromptText(promptText, fileBlock);
     }
+    // Print mode has no skill input: an invoked skill's SKILL.md is inlined
+    // after the prompt.
+    promptText = await inlineSkills(promptText, input.skills);
     if (!promptText) {
       throw new Error("A prompt or file attachment is required.");
     }

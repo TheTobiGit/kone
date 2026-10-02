@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -982,6 +982,22 @@ function migration0016ThreadContract(db: DatabaseSync): void {
   addColumn(db, "threads", "contract_json", "TEXT CHECK (contract_json IS NULL OR json_valid(contract_json))");
 }
 
+/**
+ * The skills a user invoked on a prompt, as `[{ name, path }]` JSON. Carried on
+ * the journaled user block so a reloaded thread shows the same chips, and on
+ * the queued-turn row so a follow-up promoted later still invokes them. NULL
+ * on every row written before skills could be invoked, and on every prompt
+ * that invoked none.
+ */
+function migration0017BlockSkills(db: DatabaseSync): void {
+  if (hasTable(db, "blocks")) {
+    addColumn(db, "blocks", "skills_json", "TEXT CHECK (skills_json IS NULL OR json_valid(skills_json))");
+  }
+  if (hasTable(db, "queued_turns")) {
+    addColumn(db, "queued_turns", "skills_json", "TEXT CHECK (skills_json IS NULL OR json_valid(skills_json))");
+  }
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -999,6 +1015,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 14, name: "ClineProvider", run: migration0014ClineProvider, foreignKeys: "off" },
   { id: 15, name: "BlockSender", run: migration0015BlockSender },
   { id: 16, name: "ThreadContract", run: migration0016ThreadContract },
+  { id: 17, name: "BlockSkills", run: migration0017BlockSkills },
 ];
 
 export interface MigrationOptions {

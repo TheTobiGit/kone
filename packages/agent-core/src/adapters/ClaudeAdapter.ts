@@ -67,9 +67,10 @@ import { formatPlanTasks } from "@kone/protocol/plan-tasks";
 import { errorText, isResumeRefusalError } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
+import { buildSkillPrompt } from "../skillInvocation.js";
 import {
   buildClaudeAttachmentContent,
-  composePromptText,
+  composeTurnText,
   type ClaudeImageBlock,
 } from "../promptAttachments.js";
 
@@ -705,16 +706,18 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
-  /** Build the SDK user message for a turn/steer: the prompt text — with
-   *  non-image / unsupported-image files folded in as an <attached_files>
-   *  path block — plus native image blocks for gif/jpeg/png/webp (reads any
-   *  attachment bytes off disk). An attachment-only turn is valid; we just
-   *  skip text. Shared by sendTurn and steerTurn so a steer's message is
-   *  byte-for-byte what a turn's would be. */
+  /** Build the SDK user message for a turn/steer: the prompt text — led by
+   *  an invoked skill's `/name` slash command, with non-image /
+   *  unsupported-image files folded in as an <attached_files> path block and
+   *  any skill Claude Code can't load itself inlined after that — plus native
+   *  image blocks for gif/jpeg/png/webp (reads any attachment bytes off
+   *  disk). An attachment-only turn is valid; we just skip text. Shared by
+   *  sendTurn and steerTurn so a steer's message is byte-for-byte what a
+   *  turn's would be. */
   private async buildUserMessage(input: SendTurnInput): Promise<SDKUserMessage> {
-    const text = input.input.trim();
+    const skillPrompt = await buildSkillPrompt("claudeAgent", input.input.trim(), input.skills);
     const { imageBlocks, fileBlock } = await buildClaudeAttachmentContent(input.attachments);
-    const promptText = composePromptText(text, fileBlock);
+    const promptText = composeTurnText(skillPrompt, fileBlock);
     const content: Array<{ type: "text"; text: string } | ClaudeImageBlock> = [];
     if (promptText.length > 0) content.push({ type: "text", text: promptText });
     content.push(...imageBlocks);

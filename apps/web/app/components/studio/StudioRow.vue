@@ -19,7 +19,7 @@ import type {
 import type { Project } from "~/composables/useProject";
 import { useKeyedWorkspaceChoice } from "~/composables/useWorkspaceChoice";
 import type { StudioDestination } from "~/types/studio";
-import type { GitRemote } from "~/types/desktop";
+import type { GitRemote, SkillReference } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
@@ -42,7 +42,12 @@ import {
   setLastUsedModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
-import { setInlineThread, type QueuedTurnEntry } from "~/composables/useAgent";
+import {
+  normalizeComposerDraft,
+  setInlineThread,
+  type ComposerDraft,
+  type QueuedTurnEntry,
+} from "~/composables/useAgent";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import {
@@ -1482,7 +1487,14 @@ watch(pickedForProject, async (nextAgent, prevAgent) => {
   persistThreadSelection();
 });
 
-async function onSend(text: string, files?: File[]) {
+async function onSend(draft: ComposerDraft): Promise<void>;
+async function onSend(text: string, files?: File[], skills?: SkillReference[]): Promise<void>;
+async function onSend(
+  textOrDraft: string | ComposerDraft,
+  files?: File[],
+  skills?: SkillReference[],
+): Promise<void> {
+  const draft = normalizeComposerDraft(textOrDraft, files, skills);
   // The composer only docks under a focused thread pane on the studio, so the
   // send target is that focused thread. Settle it first: never send on top of
   // the pre-mount boot session — it carries the hardcoded `codex` default and
@@ -1516,18 +1528,18 @@ async function onSend(text: string, files?: File[]) {
     // composer never showed that pick — nobody was on the thread to pin it
     // until this line — so it is applied here, before the send carries the
     // turn out on it.
-    await applyAgentPin(await settleAgentFor(text, currentId));
+    await applyAgentPin(await settleAgentFor(draft.text, currentId));
   }
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
   // carries; a failed upload is dropped rather than sinking the whole send.
   let attachments: ChatAttachment[] | undefined;
-  if (files?.length) {
-    const results = await Promise.allSettled(files.map((f) => agent.uploadAttachment(f)));
+  if (draft.files?.length) {
+    const results = await Promise.allSettled(draft.files.map((f) => agent.uploadAttachment(f)));
     const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     if (ok.length) attachments = ok;
   }
-  void agent.send(text, attachments);
+  void agent.send({ text: draft.text, attachments, skills: draft.skills });
 }
 /** Drop one durably queued follow-up (the composer strip's ✕). The backend
  *  emits turn.queued-cancelled; the strip clears on that event. */
@@ -1853,6 +1865,8 @@ useStudioRowView(registryPath, () =>
           ref="composerRef"
           class="pointer-events-auto"
           :project-path="project.path"
+          :provider="focusedThread?.provider.value ?? agent.provider.value"
+          :send-rejection="focusedThread?.sendRejection.value"
           :project-name="project.name"
           :branch="composerBranch"
           :branch-switchable="threadIsBlank && !focusedIsSideChat"

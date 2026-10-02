@@ -1,5 +1,5 @@
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
@@ -50,6 +50,7 @@ class FakeAdapter {
     supportsSubagents: false,
   };
   static sent: string[] = [];
+  static sentSkills: Array<SendTurnInput["skills"]> = [];
   static startedCwds: string[] = [];
   static startedAgents: Array<SessionStartInput["agent"]> = [];
   static turnCounter = 0;
@@ -72,6 +73,7 @@ class FakeAdapter {
   }
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     FakeAdapter.sent.push(input.input);
+    FakeAdapter.sentSkills.push(input.skills);
     return { threadId: input.threadId, turnId: `turn-${++FakeAdapter.turnCounter}` };
   }
   async interruptTurn(): Promise<void> {}
@@ -1280,5 +1282,152 @@ describe("thread dispatcher: compactThread", () => {
     expect(result).toEqual({ threadId: idle, provider: "codex", native: true });
     expect(service.hasLiveSession(idle)).toBe(true);
     expect(CompactAdapter.compactCalls).toEqual([idle]);
+  });
+});
+
+describe("thread dispatcher: invoked skills", () => {
+  // A codex-native project skill under the thread's own cwd, named so no
+  // skill the machine's user has installed can collide with it.
+  const SKILL_NAME = "kone-dispatch-qa-skill";
+  const SKILL_DIR = path.join(CWD, ".agents", "skills", SKILL_NAME);
+  const SKILL_PATH = path.join(SKILL_DIR, "SKILL.md");
+
+  beforeAll(() => {
+    mkdirSync(SKILL_DIR, { recursive: true });
+    writeFileSync(SKILL_PATH, `---\nname: ${SKILL_NAME}\ndescription: dispatcher fixture\n---\nDo the thing.\n`);
+  });
+  afterAll(() => {
+    rmSync(path.join(CWD, ".agents"), { recursive: true, force: true });
+  });
+  beforeEach(() => {
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.sentSkills.length = 0;
+    FakeAdapter.turnCounter = 0;
+  });
+
+  function blockSkills(): Array<string | null> {
+    const db = new Database(path.join(lastDataDir, "kone.sqlite"), { readonly: true });
+    try {
+      // SAFETY: the SELECT projects exactly one nullable TEXT column.
+      const rows = db
+        .prepare(`SELECT skills_json FROM blocks WHERE thread_id = ? AND role = 'user' ORDER BY seq`)
+        .all(THREAD) as Array<{ skills_json: string | null }>;
+      return rows.map((r) => r.skills_json);
+    } finally {
+      db.close();
+    }
+  }
+
+  test("a skill resolved by name, any case, is journaled and sent as the listed copy", async () => {
+    const { dispatcher } = await harness();
+    await dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "",
+      skills: [{ name: SKILL_NAME.toUpperCase(), path: "/elsewhere/SKILL.md" }],
+    });
+
+    const resolved = [{ name: SKILL_NAME, path: SKILL_PATH }];
+    expect(blockSkills()).toEqual([JSON.stringify(resolved)]);
+    expect(FakeAdapter.sentSkills).toEqual([resolved]);
+  });
+
+  test("an unknown skill rejects before anything is journaled or sent", async () => {
+    const { store, dispatcher } = await harness();
+    const send = dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "use it",
+      skills: [{ name: "kone-no-such-skill", path: "/nowhere/kone-no-such-skill/SKILL.md" }],
+    });
+
+    await expect(send).rejects.toThrow('Skill "kone-no-such-skill" is not available');
+    expect(userTexts(store)).toEqual([]);
+    expect(FakeAdapter.sent).toEqual([]);
+  });
+
+  test("a malformed reference rejects before anything is journaled", async () => {
+    const { store, dispatcher } = await harness();
+    for (const bad of [
+      { name: "", path: SKILL_PATH },
+      { name: SKILL_NAME, path: "relative/SKILL.md" },
+      { name: SKILL_NAME, path: SKILL_DIR },
+    ]) {
+      await expect(dispatcher.sendThreadTurn({ threadId: THREAD, input: "x", skills: [bad] })).rejects.toThrow(
+        "is not available",
+      );
+    }
+    expect(userTexts(store)).toEqual([]);
+  });
+
+  test("a busy send queues its skills and the promoted turn carries them", async () => {
+    const { dispatcher, emit, service } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+    turnStarted(emit, "turn-1");
+
+    const queuedEvents: RuntimeEvent[] = [];
+    const unsubscribe = service.onEvent((event) => {
+      if (event.type === "turn.queued") queuedEvents.push(event);
+    });
+    await dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "then this",
+      skills: [{ name: SKILL_NAME, path: SKILL_PATH }],
+    });
+    const resolved = [{ name: SKILL_NAME, path: SKILL_PATH }];
+
+    const [row] = await service.listQueuedTurns(THREAD);
+    expect(row?.skills).toEqual(resolved);
+    unsubscribe();
+    expect(queuedEvents.map((e) => (e.type === "turn.queued" ? e.skills : undefined))).toEqual([resolved]);
+
+    // SAFETY: a complete turn.completed literal, the shape an adapter emits.
+    emit({ type: "turn.completed", threadId: THREAD, provider: "codex", turnId: "turn-1", at: Date.now(), source: "codex.app-server" } as RuntimeEvent);
+    await waitFor(() => FakeAdapter.sent.length === 2);
+    expect(FakeAdapter.sent[1]).toBe("then this");
+    expect(FakeAdapter.sentSkills[1]).toEqual(resolved);
+  });
+
+  test("a steer while busy carries its skills onto the queue row and its block", async () => {
+    const { dispatcher, emit, service } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+    turnStarted(emit, "turn-1");
+
+    await dispatcher.steerThreadTurn({
+      threadId: THREAD,
+      input: "",
+      skills: [{ name: SKILL_NAME, path: SKILL_PATH }],
+    });
+
+    const resolved = [{ name: SKILL_NAME, path: SKILL_PATH }];
+    const [row] = await service.listQueuedTurns(THREAD);
+    expect(row?.skills).toEqual(resolved);
+    expect(blockSkills()).toEqual([null, JSON.stringify(resolved)]);
+  });
+
+  test("a skill send followed at once by a plain send journals in call order", async () => {
+    const { store, dispatcher } = await harness();
+
+    // Fired without awaiting: skill resolution reads asynchronously, so the
+    // plain send's journal used to land first and the transcript read
+    // second-first.
+    const skill = dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "run the skill",
+      skills: [{ name: SKILL_NAME, path: SKILL_PATH }],
+    });
+    const plain = dispatcher.sendThreadTurn({ threadId: THREAD, input: "plain follow-up" });
+    await Promise.all([skill, plain]);
+
+    expect(userTexts(store)).toEqual(["run the skill", "plain follow-up"]);
+  });
+
+  test("a plain send with nothing ahead of it journals in the same tick", async () => {
+    const { store, dispatcher } = await harness();
+
+    const pending = dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+
+    // The service's busy check queues a second send behind the first only when
+    // the first journaled before the second was called.
+    expect(userTexts(store)).toEqual(["first message"]);
+    await pending;
   });
 });

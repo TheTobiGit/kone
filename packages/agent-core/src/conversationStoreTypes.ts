@@ -4,6 +4,7 @@ import { decodeChunkArray, decodeStoredText } from "./store/itemTextChunks.js";
 import type {
   BlockSource,
   ChatAttachment,
+  SkillReference,
   InteractionMode,
   JobStatus,
   ProviderKind,
@@ -14,6 +15,7 @@ import type {
   SubagentRun,
 } from "./types.js";
 import { copyTurnStamp } from "./types.js";
+import { ProviderKindSchema, SkillReferenceListSchema } from "./types.js";
 import { parseMessageSender } from "@kone/protocol/message-sender";
 import { parseContractTerms } from "@kone/protocol/contract";
 import { threadEnvMode } from "./threadWorkspace.js";
@@ -206,6 +208,9 @@ export type BlockRow = {
   /** Who said a user-role block, as JSON; NULL = the user. Absent on rows read
    *  through a projection that doesn't name it. */
   sender_json?: string | null;
+  /** Skills invoked on a user-role block, as JSON; NULL = none. Absent on rows
+   *  read through a projection that doesn't name it. */
+  skills_json?: string | null;
 };
 
 /** An attachment's registry row — its metadata plus where the bytes live. */
@@ -255,6 +260,38 @@ export function parseAttachments(json: string | null): ChatAttachment[] | undefi
   }
 }
 
+/** Parse a row's invoked-skills JSON. Bad JSON, a deviant shape or a blank entry
+ *  reads as no skills — the prompt still renders, just without its chips.
+ *  Blank entries are dropped here rather than in the shared schema, so the
+ *  send-time check can reject them with a sentence instead. */
+export function parseSkillReferences(json: string | null | undefined): SkillReference[] | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed = SkillReferenceListSchema.safeParse(JSON.parse(json));
+    if (!parsed.success || parsed.data.length === 0) return undefined;
+    if (parsed.data.some((entry) => !entry.name || !entry.path)) return undefined;
+    return parsed.data.map(({ name, path }) => ({ name, path }));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The column value for a turn's invoked skills: NULL when there are none. */
+export function serializeSkillReferences(skills: SkillReference[] | undefined): string | null {
+  return skills?.length ? JSON.stringify(skills.map(({ name, path }) => ({ name, path }))) : null;
+}
+
+/** The column value for a turn's attachments: NULL when there are none. The
+ *  twin of the skills serializer above, so both halves of a queue or block
+ *  row go through helpers instead of one using a helper and the other an
+ *  inline stringify at its write site. */
+export function serializeAttachments(attachments: ChatAttachment[] | undefined): string | null {
+  if (!attachments || attachments.length === 0) return null;
+  return JSON.stringify(
+    attachments.map(({ type, id, name, mimeType, sizeBytes }) => ({ type, id, name, mimeType, sizeBytes })),
+  );
+}
+
 // ── durable turn queue (v20) ─────────────────────────────────────────────────
 
 /** How a queued follow-up runs when the live turn settles: 'queue' joins the
@@ -282,6 +319,8 @@ export type QueuedTurnEnqueueInput = {
   input: string;
   /** File/image metadata (bytes live on disk; JSON-serialized on the row). */
   attachments?: ChatAttachment[];
+  /** Skills invoked on the turn, replayed onto the promoted send. */
+  skills?: SkillReference[];
   /** Enqueue timestamp; defaults to now (callers pass it for ordering tests). */
   at?: number;
   model?: string;
@@ -301,6 +340,7 @@ export type QueuedTurnRow = {
   state: QueuedTurnState;
   input: string;
   attachments?: ChatAttachment[];
+  skills?: SkillReference[];
   model?: string;
   mode?: string;
   effort?: string;
@@ -325,6 +365,8 @@ export type QueuedTurnDbRow = {
   state: QueuedTurnState;
   input: string;
   attachments_json: string | null;
+  /** Absent on databases read before migration 17 ran in a test fixture. */
+  skills_json?: string | null;
   model: string | null;
   mode: string | null;
   effort: string | null;
@@ -351,6 +393,8 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
     updatedAt: row.updated_at,
   };
   if (attachments?.length) queued.attachments = attachments;
+  const skills = parseSkillReferences(row.skills_json);
+  if (skills) queued.skills = skills;
   if (row.model) queued.model = row.model;
   if (row.mode) queued.mode = row.mode;
   if (row.effort) queued.effort = row.effort;
@@ -673,6 +717,8 @@ export function assembleBlocks(
       };
       const attachments = parseAttachments(b.attachments_json);
       if (attachments?.length) block.attachments = attachments;
+      const skills = parseSkillReferences(b.skills_json);
+      if (skills) block.skills = skills;
       copyTurnStamp(b, block);
       if (b.source === "fork-import") block.source = "fork-import";
       const sender = parseMessageSender(b.sender_json);
@@ -1019,26 +1065,6 @@ export type JobRunDbRow = {
   error: string | null;
   created_at: number;
 };
-
-/** Every ProviderKind as a value, so a decoded chain can reject a provider id
- *  the runtime has no adapter for. Declared as a record `satisfies
- *  Record<ProviderKind, null>` rather than a bare list because that makes the
- *  union and this set one edit: a provider added to the union without a key
- *  here fails to compile. */
-const PROVIDER_KINDS = {
-  codex: null,
-  claudeAgent: null,
-  opencode: null,
-  cursor: null,
-  droid: null,
-  cline: null,
-  antigravity: null,
-} satisfies Record<ProviderKind, null>;
-
-// SAFETY: the keys of a record declared `satisfies Record<ProviderKind, null>`
-// are exactly the ProviderKind members, and the literal above is non-empty, so
-// the tuple form z.enum requires holds by construction.
-const ProviderKindSchema = z.enum(Object.keys(PROVIDER_KINDS) as [ProviderKind, ...ProviderKind[]]);
 
 const InteractionModeSchema = z.enum(["ask", "accept-edits", "full-access"]);
 

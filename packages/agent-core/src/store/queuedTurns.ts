@@ -1,6 +1,6 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import { rowToQueuedTurn, type QueuedTurnDbRow, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
+import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
  *  runs next. Rows with an explicit position (set by reorder) drain first in
@@ -44,9 +44,9 @@ export class QueuedTurnRepo {
         .prepare(
           `INSERT INTO queued_turns (
              queue_id, thread_id, user_block_id, dispatch_mode, state, input,
-             attachments_json, model, mode, effort, service_tier, context_window,
+             attachments_json, skills_json, model, mode, effort, service_tier, context_window,
              attempt_count, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT (thread_id, user_block_id)
              WHERE state IN ('queued', 'promoting') DO NOTHING`,
         )
@@ -56,7 +56,8 @@ export class QueuedTurnRepo {
           input.userBlockId,
           input.dispatchMode ?? "queue",
           input.input,
-          input.attachments?.length ? JSON.stringify(input.attachments) : null,
+          serializeAttachments(input.attachments),
+          serializeSkillReferences(input.skills),
           input.model ?? null,
           input.mode ?? null,
           input.effort ?? null,

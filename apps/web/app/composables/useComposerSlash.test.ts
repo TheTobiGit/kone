@@ -4,6 +4,7 @@ import {
   SLASH_COMMANDS,
   slashAllowed,
   type SlashCapabilities,
+  useComposerSlash,
 } from "./useComposerSlash";
 import { slashCommandTitle } from "~/utils/composerMentions";
 
@@ -61,5 +62,46 @@ describe("slashAllowed", () => {
   test("unknown names are never allowed — the provider owns them", () => {
     expect(slashAllowed(ALL_ON, "unknown")).toBe(false);
     expect(slashAllowed(ALL_ON, "")).toBe(false);
+  });
+});
+
+describe("useComposerSlash skill rows", () => {
+  const open = () => true;
+  const gates = { canSwitchAgent: open, canSwitchModel: open, canCompact: open, canBranch: open, canCreate: open };
+  const entry = (name: string) => ({
+    name,
+    description: null,
+    path: `/s/${name}/SKILL.md`,
+    directory: `/s/${name}`,
+    origin: "claude",
+    scope: "user" as const,
+    displayName: null,
+    shortDescription: null,
+    author: null,
+    modifiedAt: 0,
+    shadowedBy: [],
+    manualOnly: false,
+    enabled: true,
+  });
+
+  test("skills follow the commands, and only skill rows carry a skill", () => {
+    const { slashItemsFor } = useComposerSlash({ ...gates, skills: () => [entry("tdd")] });
+    const rows = slashItemsFor("");
+    expect(rows.at(-1)?.name).toBe("tdd");
+    expect(rows.filter((r) => r.skill).map((r) => r.name)).toEqual(["tdd"]);
+  });
+
+  test("a skill named like a hidden command is still left out", () => {
+    const { slashItemsFor } = useComposerSlash({
+      ...gates,
+      canCompact: () => false,
+      skills: () => [entry("compact")],
+    });
+    expect(slashItemsFor("comp")).toEqual([]);
+  });
+
+  test("no skills leaves the command list as it was", () => {
+    const { slashItemsFor } = useComposerSlash(gates);
+    expect(slashItemsFor("").every((r) => !r.skill)).toBe(true);
   });
 });

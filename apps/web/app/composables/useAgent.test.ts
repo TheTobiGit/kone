@@ -4,14 +4,19 @@ import {
   clearOrphanUserInputs,
   dropOrphanApproval,
   dropOrphanUserInput,
+  normalizeComposerDraft,
+  normalizeTurnDraft,
+  parseQueuedAttachments,
+  serializeQueuedAttachments,
   stashOrphanApproval,
   stashOrphanUserInput,
   takeOrphanApprovals,
   takeOrphanUserInputs,
+  turnLabel,
   useAgent,
   type UserBlock,
 } from "./useAgent";
-import type { AgentBaseEvent, RuntimeEvent } from "~/types/desktop";
+import type { AgentBaseEvent, ChatAttachment, RuntimeEvent } from "~/types/desktop";
 import { createDevBridge } from "~/lib/devBridge";
 import { installDevBridge } from "~/utils/desktopBridge";
 
@@ -363,6 +368,50 @@ describe("useAgent durable turn queue", () => {
     );
     expect(session.timelineBlocks.value.map((b) => b.id)).toContain(entry.userBlockId);
     expect(session.queuedTurns.value).toHaveLength(0);
+  });
+
+  test("live turn.queued skills ride the row and land on the promoted block", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    const skills = [{ name: "animate-text", path: "/home/u/.codex/skills/animate-text/SKILL.md" }];
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-sk",
+        userBlockId: "ub-sk",
+        dispatchMode: "queue",
+        position: 1,
+        input: "",
+        skills,
+      }),
+    );
+    expect(session.queuedTurns.value[0]?.skills).toEqual(skills);
+
+    session.reduce(queuedEvent(session.threadId.value, "turn.promoted", { queueId: "q-sk", turnId: "t-1" }));
+    const block = session.timelineBlocks.value.find((b) => b.id === "ub-sk");
+    expect(block?.role).toBe("user");
+    if (block?.role === "user") {
+      expect(block.text).toBe("");
+      expect(block.skills).toEqual(skills);
+    }
+  });
+
+  test("a queued turn without skills promotes without the field", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-plain",
+        userBlockId: "ub-plain",
+        dispatchMode: "queue",
+        position: 1,
+        input: "plain",
+        skills: [],
+      }),
+    );
+    expect(session.queuedTurns.value[0]?.skills).toBeUndefined();
+    session.reduce(queuedEvent(session.threadId.value, "turn.promoted", { queueId: "q-plain", turnId: "t-1" }));
+    const block = session.timelineBlocks.value.find((b) => b.id === "ub-plain");
+    expect(block?.role === "user" ? block.skills : "not a user block").toBeUndefined();
   });
 
   test("live turn.queued attachments survive promotion", () => {
@@ -1009,5 +1058,97 @@ describe("useAgent single blank thread invariant", () => {
     const agent = useAgent({ provider: "codex", cwd, rehydrate: false });
     const session = agent.sessions.value[0]!;
     expect(session.mode.value).toBe("full-access");
+  });
+});
+
+describe("TurnDraft object param", () => {
+  test("turnLabel prefers text, then skill, then file, then empty", () => {
+    expect(turnLabel({ text: "  hello  " })).toBe("hello");
+    expect(
+      turnLabel({
+        text: "   ",
+        skills: [{ name: "animate-text", path: "/s/animate-text/SKILL.md" }],
+        attachments: [{ type: "file", id: "a1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 1 }],
+      }),
+    ).toBe("animate-text");
+    expect(
+      turnLabel({
+        text: "",
+        attachments: [{ type: "file", id: "a1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 1 }],
+      }),
+    ).toBe("notes.txt");
+    expect(turnLabel({ text: "   " })).toBe("");
+  });
+
+  test("normalizeTurnDraft folds legacy positionals and prefers the object", () => {
+    expect(normalizeTurnDraft("hi")).toEqual({ text: "hi" });
+    expect(
+      normalizeTurnDraft("hi", [{ type: "file", id: "a1", name: "n.txt", mimeType: "text/plain", sizeBytes: 1 }]),
+    ).toEqual({
+      text: "hi",
+      attachments: [{ type: "file", id: "a1", name: "n.txt", mimeType: "text/plain", sizeBytes: 1 }],
+    });
+    const skills = [{ name: "s", path: "/s/SKILL.md" }];
+    expect(normalizeTurnDraft({ text: "obj", skills })).toEqual({ text: "obj", skills });
+    // An object wins over positionals arriving alongside it.
+    expect(normalizeTurnDraft({ text: "obj" }, undefined, skills)).toEqual({ text: "obj", skills });
+    const file = new File(["x"], "f.txt", { type: "text/plain" });
+    expect(normalizeComposerDraft("hi", [file], skills)).toEqual({ text: "hi", files: [file], skills });
+  });
+
+  test("idle send accepts the draft object like the legacy positionals", () => {
+    const { session } = harness();
+    void session.send({ text: "object send" });
+    const users = session.blocks.value.filter((b) => b.role === "user");
+    const last = users[users.length - 1]!;
+    expect(last.text).toBe("object send");
+  });
+
+  test("busy send with the draft object parks input, files and skills (browser dev)", () => {
+    const { session } = harness();
+    session.sessionState.value = "running"; // busy
+    const skills = [{ name: "animate-text", path: "/home/u/.codex/skills/animate-text/SKILL.md" }];
+    void session.send({
+      text: "",
+      attachments: [{ type: "file", id: "a9", name: "notes.txt", mimeType: "text/plain", sizeBytes: 10 }],
+      skills,
+    });
+    const entry = session.queuedTurns.value[0]!;
+    expect(entry.input).toBe("");
+    expect(entry.attachmentsJson).toContain("a9");
+    expect(entry.skills).toEqual(skills);
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", {
+        queueId: entry.queueId,
+        turnId: "t-promoted",
+      }),
+    );
+    const block = session.timelineBlocks.value.find((b) => b.id === entry.userBlockId)!;
+    expect(block?.role).toBe("user");
+    if (block?.role === "user") {
+      expect(block.attachments?.map((a) => a.id)).toEqual(["a9"]);
+      expect(block.skills).toEqual(skills);
+    }
+  });
+
+  test("busy steer with the draft object parks on the steer lane", () => {
+    const { session } = harness();
+    session.sessionState.value = "running"; // busy
+    void session.steerTurn({ text: "nudge it" });
+    const entry = session.queuedTurns.value[0]!;
+    expect(entry.input).toBe("nudge it");
+    expect(entry.dispatchMode).toBe("steer");
+  });
+
+  test("serializeQueuedAttachments round-trips through parseQueuedAttachments", () => {
+    expect(serializeQueuedAttachments(undefined)).toBeNull();
+    expect(serializeQueuedAttachments([])).toBeNull();
+    const attachments: ChatAttachment[] = [
+      { type: "file", id: "a1", name: "n.txt", mimeType: "text/plain", sizeBytes: 1 },
+    ];
+    const json = serializeQueuedAttachments(attachments);
+    expect(parseQueuedAttachments(json)?.map((a) => a.id)).toEqual(["a1"]);
+    expect(parseQueuedAttachments("not-json")).toBeUndefined();
   });
 });

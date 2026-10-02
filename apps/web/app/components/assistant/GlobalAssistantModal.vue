@@ -30,8 +30,13 @@ import ConversationThread from "~/components/conversation/ConversationThread.vue
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
 import ThreadInteractionOverlay from "~/components/thread/ThreadInteractionOverlay.vue";
-import { setInlineThread, type QueuedTurnEntry } from "~/composables/useAgent";
-import type { ApprovalDecision, ChatAttachment, UserInputAnswers } from "~/types/desktop";
+import {
+  normalizeComposerDraft,
+  setInlineThread,
+  type ComposerDraft,
+  type QueuedTurnEntry,
+} from "~/composables/useAgent";
+import type { ApprovalDecision, ChatAttachment, SkillReference, UserInputAnswers } from "~/types/desktop";
 import {
   useGlobalAssistant,
   GLOBAL_ASSISTANT_PROJECT_PATH,
@@ -281,7 +286,14 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   return results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 }
 
-async function onSend(text: string, files?: File[]): Promise<void> {
+async function onSend(draft: ComposerDraft): Promise<void>;
+async function onSend(text: string, files?: File[], skills?: SkillReference[]): Promise<void>;
+async function onSend(
+  textOrDraft: string | ComposerDraft,
+  files?: File[],
+  skills?: SkillReference[],
+): Promise<void> {
+  const draft = normalizeComposerDraft(textOrDraft, files, skills);
   const s = session.value;
   if (!s) return;
   // Nothing to settle about who is on this thread: the assistant is kone, on
@@ -289,7 +301,7 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   // project because a project has a team; this one has no project and no
   // roster, so a binding here would only pin a name that is never shown.
   await composer.syncTarget();
-  await s.send(text, await upload(files));
+  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills });
   // The list is titled from the conversation, so a send is when a row's name
   // (and its place in the order) can change.
   void refreshThreads();
@@ -520,6 +532,8 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               always-open
               hide-context-tray
               :project-path="GLOBAL_ASSISTANT_PROJECT_PATH"
+              :provider="composer.provider.value"
+              :send-rejection="session?.sendRejection.value"
               :mention-projects="mentionProjects"
               disable-file-mentions
               :branch-switchable="false"

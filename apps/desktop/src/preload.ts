@@ -14,7 +14,7 @@ import type {
   ThreadAgentBinding,
   TurnCheckpointRecord,
 } from "@kone/agent-core/ConversationStore.js";
-import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
+import type { AgentInventory, InvokableSkill } from "@kone/agent-core/inventory/types.js";
 import type { SkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import type { FrontmatterEdit, MutateResult } from "@kone/agent-core/inventory/skillMutate.js";
 import type {
@@ -670,8 +670,11 @@ const api = {
       readSkill: (skillMdPath: string): Promise<SkillDetail | null> =>
         ipcRenderer.invoke("agent:skill-read", skillMdPath),
     },
-    // Managing a skill: state, frontmatter edits and removal.
+    // Invoking a skill (the composer's picker), and managing one: state,
+    // frontmatter edits and removal.
     skills: {
+      listInvokable: (provider: ProviderKind, cwd: string | null): Promise<InvokableSkill[]> =>
+        ipcRenderer.invoke("agent:skills-list-invokable", provider, cwd),
       readState: (query: SkillStateQuery): Promise<SkillStateResult> =>
         ipcRenderer.invoke("agent:skill-state-read", query),
       writeState: (query: SkillStateQuery, state: WritableSkillState): Promise<StateWriteResult> =>
