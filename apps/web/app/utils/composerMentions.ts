@@ -1,5 +1,5 @@
 import type { AiChipIcon } from "@hugeicons/core-free-icons";
-import type { GitProjectFile } from "~/types/desktop";
+import type { GitProjectFile, SkillReference } from "~/types/desktop";
 
 export type ComposerTrigger = {
   query: string;
@@ -180,11 +180,13 @@ export function parseLeadingSlashCommand(text: string): LeadingSlashCommand | nu
 }
 
 /** One row in the composer's `/` picker. The `/name` label derives from the
- *  name at render time — storing it beside the name only ever drifted. */
+ *  name at render time — storing it beside the name only ever drifted. A row
+ *  carrying `skill` inserts a skill chip; every other row runs a command. */
 export type SlashCommandItem = {
   name: string;
   description: string;
   icon: typeof AiChipIcon;
+  skill?: SkillReference;
 };
 
 /** Render a slash row's label: the name with its leading marker. */
@@ -203,7 +205,19 @@ export function filterSlashCommandItems(
 ): SlashCommandItem[] {
   const q = query.trim().toLowerCase();
   if (!q) return [...items];
-  return items.filter((item) => item.name.toLowerCase().startsWith(q));
+  const prefixed: SlashCommandItem[] = [];
+  const loose: SlashCommandItem[] = [];
+  for (const item of items) {
+    const name = item.name.toLowerCase();
+    if (name.startsWith(q)) prefixed.push(item);
+    // Skills are an open-ended set named by their authors, so they also
+    // answer to a word inside the name or the description — `/typo` should
+    // find `better-typography`. Commands stay prefix-only.
+    else if (item.skill && (name.includes(q) || item.description.toLowerCase().includes(q))) {
+      loose.push(item);
+    }
+  }
+  return [...prefixed, ...loose];
 }
 
 /** A composer buffer after a range replacement, plus the caret position that

@@ -1,9 +1,9 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
-import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, StoredThreadMeta, TurnStamp } from "../types.js";
+import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, SkillReference, StoredThreadMeta, TurnStamp } from "../types.js";
 import { encodeMessageSender } from "@kone/protocol/message-sender";
-import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
+import { DONE_CLEARED, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
 
 import { itemFullTextSql } from "./itemTextChunks.js";
@@ -65,6 +65,8 @@ export class ThreadRepo {
     text: string;
     at?: number;
     attachments?: ChatAttachment[];
+    /** Skills invoked on the prompt; absent = none (stored as NULL). */
+    skills?: SkillReference[];
     /** Who said it; absent = the user (stored as NULL). */
     sender?: MessageSender;
   } & TurnStamp): number {
@@ -79,14 +81,15 @@ export class ThreadRepo {
       // nothing. Cheap here: once per user turn, not per streamed delta.
       this.dbh.durably(db, () => {
         db.prepare(
-          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json, effort, model, sender_json)
-           VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json, skills_json, effort, model, sender_json)
+           VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           blockId,
           input.threadId,
           input.text,
           at,
           input.attachments?.length ? JSON.stringify(input.attachments) : null,
+          serializeSkillReferences(input.skills),
           input.effort ?? null,
           input.model ?? null,
           encodeMessageSender(input.sender),

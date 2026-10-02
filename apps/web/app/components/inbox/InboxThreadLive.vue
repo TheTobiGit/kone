@@ -31,9 +31,9 @@ import { useStudioIntake } from "~/composables/useStudioIntake";
 import { getSideChatSource } from "~/composables/sideChats";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { resolveBranchDrift } from "~/utils/branchDrift";
-import type { ApprovalDecision, ChatAttachment, GitRemote, UserInputAnswers } from "~/types/desktop";
+import type { ApprovalDecision, ChatAttachment, GitRemote, SkillReference, UserInputAnswers } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
-import type { QueuedTurnEntry } from "~/composables/useAgent";
+import { normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
 
 const props = defineProps<{
   /** The row this pane is showing. Carries the project the thread lives in,
@@ -329,7 +329,14 @@ watch(() => props.row.threadId, () => void nextTick(() => tryLiveInitialScroll()
 watch(blocks, () => tryLiveInitialScroll());
 onMounted(() => void nextTick(() => tryLiveInitialScroll()));
 
-async function onSend(text: string, files?: File[]): Promise<void> {
+async function onSend(draft: ComposerDraft): Promise<void>;
+async function onSend(text: string, files?: File[], skills?: SkillReference[]): Promise<void>;
+async function onSend(
+  textOrDraft: string | ComposerDraft,
+  files?: File[],
+  skills?: SkillReference[],
+): Promise<void> {
+  const draft = normalizeComposerDraft(textOrDraft, files, skills);
   const s = session.value;
   if (!s) return;
   // Settle who is on the thread before the turn goes out: the binding is
@@ -340,8 +347,8 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   const threadId = s.threadId.value;
   // Only the thread's first turn asks: every later one finds it already
   // decided and leaves both the binding and the router alone.
-  if (threadId) await composer.settleAndPin(text, threadId);
-  await s.send(text, await upload(files));
+  if (threadId) await composer.settleAndPin(draft.text, threadId);
+  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills });
 }
 
 async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
@@ -457,6 +464,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       <HandOffChainBar :thread-id="session?.threadId.value" :spawned="session?.spawnedChildren.value ?? []" />
       <AgentComposer
         :project-path="projectPath"
+        :provider="composer.provider.value"
+        :send-rejection="session?.sendRejection.value"
         :project-name="row.projectName"
         :branch="composer.branch.value ?? undefined"
         :branch-switchable="false"

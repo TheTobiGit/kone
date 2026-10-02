@@ -3,6 +3,7 @@ import { initialWorkspaceSteps } from "~/utils/workspaceSteps";
 import type {
   ApprovalDecision,
   ChatAttachment,
+  SkillReference,
   HandInInput,
   HandInRecord,
   InteractionMode,
@@ -31,11 +32,15 @@ import {
   type ThreadBlock,
   type QueuedTurnEntry,
   type QueueBridge,
+  type SendRejection,
   type ReasoningTier,
   type UseAgentOptions,
   type ThreadSummary,
   type SessionCtx,
   type HandInOutcome,
+  type TurnDraft,
+  normalizeTurnDraft,
+  turnLabel,
 } from "./agentTypes";
 
 import {
@@ -116,6 +121,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const session = shallowRef<Session | null>(null);
   const sessionState = ref<RuntimeSessionState>("starting");
   const error = ref<string | null>(null);
+  /** The latest send or steer the backend refused, stamped so two refusals in
+   *  a row still read as two. The composer clears its field the moment it
+   *  dispatches, so this is its cue to hand the draft back — a refused turn,
+   *  such as one naming a skill that has since gone, must not also cost the
+   *  user what they wrote. */
+  const sendRejection = shallowRef<SendRejection | null>(null);
   /** A non-fatal provider warning (adapter `session.warning` — e.g. a Codex
    *  error notification with willRetry, or a benign notice). The session keeps
    *  running; this is a transient surface, cleared on the next state change or
@@ -707,25 +718,53 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *
    *  One builder for send() and steerTurn() so the two can never disagree about
    *  what a request looks like on screen. */
-  function buildUserBlock(id: string, text: string, files: ChatAttachment[]): UserBlock {
-    const block: UserBlock = { id, role: "user", text, at: Date.now(), effort: reasoning.value };
+  function buildUserBlock(id: string, draft: TurnDraft): UserBlock {
+    const files = draft.attachments ?? [];
+    const skills = draft.skills ?? [];
+    const block: UserBlock = { id, role: "user", text: draft.text, at: Date.now(), effort: reasoning.value };
     if (model.value) block.model = model.value;
     if (files.length) block.attachments = files;
+    if (skills.length) block.skills = skills;
     return block;
   }
 
+  /** Record a refused send for the composer, and say why on the session. */
+  function rejectSend(
+    blockId: string,
+    message: string,
+    sent: Pick<SendRejection, "input" | "skills">,
+  ): void {
+    blocks.value = blocks.value.filter((b) => b.id !== blockId);
+    error.value = message;
+    sendRejection.value = { at: Date.now(), message, ...sent };
+  }
+
   /** Send a user turn. Pushes the user block immediately when idle; the reply
-   *  streams in. `attachments` (already uploaded to disk via the bridge, so
-   *  bytes-free) ride the turn — a turn is valid with text, attachments, or both.
+   *  streams in. The draft carries prose plus what rode along (already
+   *  uploaded to disk via the bridge, so bytes-free) — a turn is valid with
+   *  text, attachments, skills, or any mix.
    *
    *  There is NO busy early-return: a send while a turn runs is durably
    *  enqueued by the service (it emits turn.queued and acks with the queue id
    *  as turnId). A busy send pushes nothing — the row in queuedTurnsRaw is the
    *  only copy until turn.promoted rebuilds the block at the tail. */
-  async function send(text: string, attachments?: ChatAttachment[]): Promise<void> {
-    const trimmed = text.trim();
-    const files = attachments ?? [];
-    if (!trimmed && files.length === 0) return;
+  async function send(draft: TurnDraft): Promise<void>;
+  async function send(
+    text: string,
+    attachments?: ChatAttachment[],
+    invoked?: SkillReference[],
+  ): Promise<void>;
+  async function send(
+    textOrDraft: string | TurnDraft,
+    attachments?: ChatAttachment[],
+    invoked?: SkillReference[],
+  ): Promise<void> {
+    const normalized = normalizeTurnDraft(textOrDraft, attachments, invoked);
+    const trimmed = normalized.text.trim();
+    const files = normalized.attachments ?? [];
+    const skills = normalized.skills ?? [];
+    // A skill alone is a whole request — "run this" needs no further words.
+    if (!trimmed && files.length === 0 && skills.length === 0) return;
     // Last line of defense. The composer already refuses a blocked send while
     // keeping the draft (`blockedReason`), so reaching here means the surface
     // acted on a status that has since gone stale. The check is synchronous
@@ -742,11 +781,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const blockId = uid();
     const wasBusy = busy.value;
     retireWorkspaceSteps();
-    if (!wasBusy) blocks.value = [...blocks.value, buildUserBlock(blockId, trimmed, files)];
+    if (!wasBusy)
+      blocks.value = [...blocks.value, buildUserBlock(blockId, { text: trimmed, attachments: files, skills })];
     // Instant label for a brand-new thread; desktop may refine it via
     // thread.title.updated once the agent rename lands. An attachment-only turn
     // seeds the label from the first file name.
-    if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
+    if (!title.value) title.value = titleFromPrompt(turnLabel({ text: trimmed, attachments: files, skills }));
 
     const api = bridge();
     if (!api) {
@@ -755,10 +795,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // row exactly like the real queue does (the mock consumes it when the
       // turn settles; see mockQueueFollowUp).
       if (busy.value) {
-        mock?.mockQueueFollowUp(blockId, "queue", trimmed, files.length ? files : undefined);
+        mock?.mockQueueFollowUp(
+          blockId,
+          "queue",
+          trimmed,
+          files.length ? files : undefined,
+          skills.length ? skills : undefined,
+        );
         return;
       }
-      mock?.mockTurn(trimmed || files[0]?.name || "Attachment");
+      mock?.mockTurn(turnLabel({ text: trimmed, attachments: files, skills }) || "Attachment");
       return;
     }
     dispatching.value = true;
@@ -782,14 +828,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         contextWindow: contextWindow.value,
       };
       if (files.length) turn.attachments = files;
+      if (skills.length) turn.skills = skills;
       const result = await api.sendTurn(turn);
       // A busy send was durably enqueued — the ack's turnId IS the queue id.
       // Remember which local block it belongs to so the turn.queued row can
       // anchor to it (the store journals the block under its own id).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
-      blocks.value = blocks.value.filter((b) => b.id !== blockId);
-      error.value = peelIpcError(e, "Could not send to the agent");
+      rejectSend(blockId, peelIpcError(e, "Could not send to the agent"), { input: trimmed, skills });
     } finally {
       dispatching.value = false;
     }
@@ -802,16 +848,29 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  Without a live turn the backend treats a steer as a plain send. Mirrors
    *  send(): pushes the user block immediately when idle and rides the same
    *  per-turn knobs; a busy steer parks only the queue row. */
-  async function steerTurn(text: string, attachments?: ChatAttachment[]): Promise<void> {
-    const trimmed = text.trim();
-    const files = attachments ?? [];
-    if (!trimmed && files.length === 0) return;
+  async function steerTurn(draft: TurnDraft): Promise<void>;
+  async function steerTurn(
+    text: string,
+    attachments?: ChatAttachment[],
+    invoked?: SkillReference[],
+  ): Promise<void>;
+  async function steerTurn(
+    textOrDraft: string | TurnDraft,
+    attachments?: ChatAttachment[],
+    invoked?: SkillReference[],
+  ): Promise<void> {
+    const normalized = normalizeTurnDraft(textOrDraft, attachments, invoked);
+    const trimmed = normalized.text.trim();
+    const files = normalized.attachments ?? [];
+    const skills = normalized.skills ?? [];
+    if (!trimmed && files.length === 0 && skills.length === 0) return;
     touch();
     const blockId = uid();
     const wasBusy = busy.value;
     retireWorkspaceSteps();
-    if (!wasBusy) blocks.value = [...blocks.value, buildUserBlock(blockId, trimmed, files)];
-    if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
+    if (!wasBusy)
+      blocks.value = [...blocks.value, buildUserBlock(blockId, { text: trimmed, attachments: files, skills })];
+    if (!title.value) title.value = titleFromPrompt(turnLabel({ text: trimmed, attachments: files, skills }));
 
     const api = bridge();
     if (!api) {
@@ -819,10 +878,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // mock has no live-steer channel), exactly like the real providers
       // without one.
       if (busy.value) {
-        mock?.mockQueueFollowUp(blockId, "steer", trimmed, files.length ? files : undefined);
+        mock?.mockQueueFollowUp(
+          blockId,
+          "steer",
+          trimmed,
+          files.length ? files : undefined,
+          skills.length ? skills : undefined,
+        );
         return;
       }
-      mock?.mockTurn(trimmed || files[0]?.name || "Attachment");
+      mock?.mockTurn(turnLabel({ text: trimmed, attachments: files, skills }) || "Attachment");
       return;
     }
     dispatching.value = true;
@@ -846,6 +911,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           contextWindow: contextWindow.value,
         };
         if (files.length) turn.attachments = files;
+        if (skills.length) turn.skills = skills;
         await api.sendTurn(turn);
         return;
       }
@@ -860,6 +926,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         contextWindow: contextWindow.value,
       };
       if (files.length) turn.attachments = files;
+      if (skills.length) turn.skills = skills;
       const result = await steer(turn);
       // A steer that fell back to the durable queue acks with the queue id —
       // record the anchor so its row finds this block (a live-steer ack is
@@ -867,8 +934,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // at the next turn boundary).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
-      blocks.value = blocks.value.filter((b) => b.id !== blockId);
-      error.value = peelIpcError(e, "Could not steer the agent");
+      rejectSend(blockId, peelIpcError(e, "Could not steer the agent"), { input: trimmed, skills });
     } finally {
       dispatching.value = false;
     }
@@ -1195,6 +1261,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     busy,
     everRan,
     error,
+    sendRejection,
     warning,
     // Why a send would be refused right now, or null. The composer binds it to
     // keep the draft instead of dispatching into a provider that can't run it.
@@ -1662,6 +1729,7 @@ export function useAgent(options: UseAgentOptions) {
    *  composer's strip reads; matches the `busy` projection it sits beside. */
   const queuedTurns = computed<QueuedTurnEntry[]>(() => active.value?.queuedTurns.value ?? []);
   const error = computed(() => active.value?.error.value ?? null);
+  const sendRejection = computed(() => active.value?.sendRejection.value ?? null);
   const warning = computed(() => active.value?.warning.value ?? null);
   const sendBlockedReason = computed(() => active.value?.sendBlockedReason.value ?? null);
   const tokenUsage = computed(() => active.value?.tokenUsage.value ?? null);
@@ -1709,14 +1777,32 @@ export function useAgent(options: UseAgentOptions) {
   // Each delegates to the focused thread — and no-ops when the board has no
   // thread column at all (see `active`).
   const start = async () => { await active.value?.start(); };
-  const send = async (text: string, attachments?: ChatAttachment[]) => {
-    await active.value?.send(text, attachments);
-  };
+  async function send(draft: TurnDraft): Promise<void>;
+  async function send(text: string, attachments?: ChatAttachment[], skills?: SkillReference[]): Promise<void>;
+  async function send(
+    textOrDraft: string | TurnDraft,
+    attachments?: ChatAttachment[],
+    skills?: SkillReference[],
+  ): Promise<void> {
+    const draft = normalizeTurnDraft(textOrDraft, attachments, skills);
+    await active.value?.send(draft);
+  }
   /** Steer a mid-turn nudge into the RUNNING thread's live turn (same turn,
    *  no new boundary). No-ops when the board has no thread column at all. */
-  const steerTurn = async (text: string, attachments?: ChatAttachment[]) => {
-    await active.value?.steerTurn(text, attachments);
-  };
+  async function steerTurn(draft: TurnDraft): Promise<void>;
+  async function steerTurn(
+    text: string,
+    attachments?: ChatAttachment[],
+    skills?: SkillReference[],
+  ): Promise<void>;
+  async function steerTurn(
+    textOrDraft: string | TurnDraft,
+    attachments?: ChatAttachment[],
+    skills?: SkillReference[],
+  ): Promise<void> {
+    const draft = normalizeTurnDraft(textOrDraft, attachments, skills);
+    await active.value?.steerTurn(draft);
+  }
   /** Cancel one durably queued follow-up (the composer strip's ✕). */
   const cancelQueuedTurn = async (queueId: string) => {
     await active.value?.cancelQueuedTurn(queueId);
@@ -2091,6 +2177,7 @@ export function useAgent(options: UseAgentOptions) {
     busy,
     queuedTurns,
     error,
+    sendRejection,
     warning,
     sendBlockedReason,
     tokenUsage,
@@ -2157,9 +2244,9 @@ export function useAgent(options: UseAgentOptions) {
 
 export * from "./agentTypes";
 export * from "./agentPrefetch";
-// AgentQueueStrip.vue imports parseQueuedAttachments from here; the helper
-// lives in ./session/sessionQueue, so it is re-exported to keep that import.
-export { parseQueuedAttachments } from "./session/sessionQueue";
+// AgentQueueStrip.vue imports parseQueuedAttachments from here; the helpers
+// live in ./session/sessionQueue, so they are re-exported to keep that import.
+export { parseQueuedAttachments, serializeQueuedAttachments } from "./session/sessionQueue";
 // useAgent.test.ts imports the orphan stashes from here; they live in
 // ./agent/agentOrphans, so they are re-exported to keep that import.
 export {

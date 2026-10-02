@@ -40,6 +40,7 @@ import {
   type OpenCodeJsonValue,
   type RecordLike,
 } from "./opencodeJson.js";
+import { inlineSkills } from "../skillInvocation.js";
 type OpenCodeClient = { request(method: string, route: string, body?: OpenCodeJsonValue, signal?: AbortSignal): Promise<OpenCodeJsonValue>; events(signal: AbortSignal): AsyncIterable<RecordLike> };
 /** One opencode `task` tool call, recognized from its tool part. opencode runs
  *  the child as a *separate session* on the same server, so we also track the
@@ -687,7 +688,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     }
     // prependT3OrchestrationInstructions pattern): the app-context block rides
     // the very first user turn so the agent knows the gateway tools exist.
-    const composed = composePromptText(text, "");
+    // No skill input kone drives on this server: an invoked skill's SKILL.md
+    // is inlined after the prompt.
+    const composed = await inlineSkills(composePromptText(text, ""), input.skills);
     const prompt = koneHostContextForFirstRun({
       prompt: composed,
       runOrdinal: session.runOrdinal + 1,

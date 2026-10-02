@@ -45,6 +45,7 @@ import type {
   UserInputRespondResult,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
+import { inlineSkills } from "../skillInvocation.js";
 
 // Droid adapter — drives Factory's `droid exec --output-format acp`, a
 // persistent JSON-RPC-over-stdio child per thread speaking ACP (the Agent
@@ -967,6 +968,9 @@ export class DroidAdapter implements ProviderAdapter {
       imageBlocks = built.imageBlocks;
       promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
     }
+    // No skill input this CLI can be handed: an invoked skill's SKILL.md is
+    // inlined after the prompt.
+    promptText = await inlineSkills(promptText, input.skills);
     // prependT3OrchestrationInstructions pattern — the same wiring as
     // OpenCodeAdapter): the app-context block rides the very first user turn
     // so the agent knows the gateway tools exist.

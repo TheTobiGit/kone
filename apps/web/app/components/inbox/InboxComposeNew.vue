@@ -30,10 +30,10 @@ import AgentComposer from "~/components/agent/AgentComposer.vue";
 import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
-import type { ChatAttachment } from "~/types/desktop";
+import type { ChatAttachment, SkillReference } from "~/types/desktop";
 import { useWorkspaceChoice } from "~/composables/useWorkspaceChoice";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import type { QueuedTurnEntry } from "~/composables/useAgent";
+import { normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
 import type { ThreadSession } from "~/composables/useAgent";
 import type { SessionSummary } from "~/types/session";
 
@@ -183,14 +183,21 @@ function onComposerDraft(text: string): void {
   composer.prefetchRoute(text);
 }
 
-async function onSend(text: string, files?: File[]): Promise<void> {
+async function onSend(draft: ComposerDraft): Promise<void>;
+async function onSend(text: string, files?: File[], skills?: SkillReference[]): Promise<void>;
+async function onSend(
+  textOrDraft: string | ComposerDraft,
+  files?: File[],
+  skills?: SkillReference[],
+): Promise<void> {
+  const draft = normalizeComposerDraft(textOrDraft, files, skills);
   if (sending.value) return;
   sending.value = true;
   try {
     // Attachments go up before the session is claimed: a failed upload should
     // leave you looking at the message you wrote, not at a thread that exists
     // with nothing in it.
-    const uploaded = await upload(files);
+    const uploaded = await upload(draft.files);
     // A session already here means an earlier send failed and this is another
     // try at it. Its settings are the session's own by then — the composer has
     // been writing picks straight into it — so the draft is not put back over
@@ -216,9 +223,9 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // line on — an answer arriving after it would reach a session that had
     // already asked who it was.
     const id = s.threadId.value;
-    if (id) await composer.settleAndPin(text, id);
+    if (id) await composer.settleAndPin(draft.text, id);
     // Not awaited: see the handover note above.
-    const sent = s.send(text, uploaded);
+    const sent = s.send({ text: draft.text, attachments: uploaded, skills: draft.skills });
     // The send gate can still refuse on a status that went stale under the
     // composer, and a refusal writes no block. Then nothing was started and
     // there is nothing to hand over — stay here, with the session's error on
@@ -334,6 +341,8 @@ defineExpose({ focus });
         ref="composerRef"
         always-open
         :project-path="projectPath"
+        :provider="composer.provider.value"
+        :send-rejection="session?.sendRejection.value"
         :project-name="projectName"
         :branch="displayedBranch ?? undefined"
         :branch-switchable="!sending"

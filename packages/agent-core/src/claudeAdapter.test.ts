@@ -7,7 +7,7 @@
 // spawned; the adapter is imported dynamically so the stub is in place first.
 
 import { describe, expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -955,5 +955,39 @@ describe("ClaudeAdapter live model and effort", () => {
   test("the adapter reports its model switch as in-session", () => {
     const { adapter } = setup();
     expect(adapter.capabilities.sessionModelSwitch).toBe("in-session");
+  });
+});
+
+describe("Claude turn input with invoked skills", () => {
+  async function firstPromptText(skills: Array<{ name: string; path: string }>, input: string): Promise<string> {
+    const { adapter } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input, skills });
+    const { value } = await state.promptIterable![Symbol.asyncIterator]().next();
+    if (!value || !Array.isArray(value.message.content)) throw new Error("the turn never arrived as content blocks");
+    const first = value.message.content[0];
+    if (first?.type !== "text") throw new Error("the turn's first block is not text");
+    return first.text;
+  }
+
+  test("a native .claude skill leads the prompt as its slash command", async () => {
+    const text = await firstPromptText([{ name: "review", path: "/home/u/.claude/skills/review/SKILL.md" }], "fix it");
+    expect(text).toBe("/review fix it");
+  });
+
+  test("a skill Claude Code can't load is inlined after the prompt", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kone-claude-skill-"));
+    const skillDir = path.join(root, ".agents", "skills", "lint");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(path.join(skillDir, "SKILL.md"), "Run the linter.");
+    const text = await firstPromptText(
+      [
+        { name: "review", path: "/home/u/.claude/skills/review/SKILL.md" },
+        { name: "lint", path: path.join(skillDir, "SKILL.md") },
+      ],
+      "go",
+    );
+    expect(text).toStartWith("/review go\n\n<invoked_skills>");
+    expect(text).toContain("Run the linter.");
   });
 });

@@ -9,6 +9,8 @@ import {
   filterSlashCommandItems,
   type SlashCommandItem,
 } from "~/utils/composerMentions";
+import { buildSkillSlashItems } from "~/utils/composerSkills";
+import type { InvokableSkill } from "~/types/desktop";
 
 /** Which capability surface a slash row needs. One name per row, shared by the
  *  menu filter and the send-time dispatch so a row can never be offered where
@@ -95,6 +97,9 @@ export function useComposerSlash(deps: {
   canBranch: () => boolean;
   /** The row only runs where a fresh thread can start — `/new` needs a host. */
   canCreate: () => boolean;
+  /** Skills the conversation can invoke, listed after the commands. Empty
+   *  where a pick could never travel (a job carries no skills). */
+  skills?: () => readonly InvokableSkill[];
 }) {
   function readGates() {
     return {
@@ -114,7 +119,10 @@ export function useComposerSlash(deps: {
 
   function slashItemsFor(query: string): SlashCommandItem[] {
     const visible = BUILTIN_SLASH_COMMANDS.filter((item) => isSlashAllowed(item.name));
-    return filterSlashCommandItems(visible, query);
+    // Built against every command, not just the visible ones: a skill named
+    // like a hidden command would still be read as that command at send time.
+    const skillRows = buildSkillSlashItems(BUILTIN_SLASH_COMMANDS, deps.skills?.() ?? []);
+    return filterSlashCommandItems([...visible, ...skillRows], query);
   }
 
   return {

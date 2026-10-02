@@ -47,9 +47,10 @@ import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "@kone/protocol/plan-tasks";
 import {
   buildCodexAttachmentInput,
-  composePromptText,
+  composeTurnText,
   type CodexImageItem,
 } from "../promptAttachments.js";
+import { buildSkillPrompt, type CodexSkillItem } from "../skillInvocation.js";
 
 // Codex adapter — drives `codex app-server` as a persistent JSON-RPC-over-stdio
 // child process per thread (transport: jsonRpc.ts). One session = one live
@@ -413,9 +414,28 @@ export function mapModeToTurnOverrides(mode: InteractionMode): Pick<
 // and the mode overrides; model/effort/serviceTier/collaborationMode are
 // optional per the app-server protocol (only those four ride a turn, see the
 // context-window note at the call site).
+/** One app-server user-input item: prompt text, an image, or a skill. */
+export type CodexTurnInputItem = { type: "text"; text: string; text_elements: [] } | CodexImageItem | CodexSkillItem;
+
+/** The input items one turn/start or turn/steer carries — shared so a steer
+ *  sends exactly what a turn would. Throws when the turn would carry nothing,
+ *  or when an invoked skill's SKILL.md can no longer be read. */
+export async function buildCodexTurnInputItems(input: SendTurnInput): Promise<CodexTurnInputItem[]> {
+  const skillPrompt = await buildSkillPrompt("codex", input.input.trim(), input.skills);
+  const { imageItems, fileBlock } = await buildCodexAttachmentInput(input.attachments);
+  const promptText = composeTurnText(skillPrompt, fileBlock);
+  const items: CodexTurnInputItem[] = [];
+  if (promptText.length > 0) items.push({ type: "text", text: promptText, text_elements: [] });
+  items.push(...imageItems, ...skillPrompt.codexItems);
+  if (items.length === 0) {
+    throw new Error("Turn input must include text or an attachment.");
+  }
+  return items;
+}
+
 interface CodexTurnStartParams extends CodexJsonObject {
   threadId: string;
-  input: Array<{ type: "text"; text: string; text_elements: [] } | CodexImageItem>;
+  input: CodexTurnInputItem[];
   approvalPolicy: string;
   approvalsReviewer: string;
   sandboxPolicy: { type: string; [key: string]: string };
@@ -426,7 +446,7 @@ interface CodexTurnStartParams extends CodexJsonObject {
 }
 interface CodexTurnSteerParams extends CodexJsonObject {
   threadId: string;
-  input: Array<{ type: "text"; text: string; text_elements: [] } | CodexImageItem>;
+  input: CodexTurnInputItem[];
   expectedTurnId: string;
 }
 
@@ -932,21 +952,12 @@ export class CodexAdapter implements ProviderAdapter {
     session.mode = mode;
     if (input.model) session.model = input.model;
 
-    const text = input.input.trim();
-
-    // Compose the turn's input items: the prompt text (with any non-image files
-    // folded in as an <attached_files> path block) followed by native image
-    // items. An attachment-only turn is valid — we just skip the text item.
-    const { imageItems, fileBlock } = await buildCodexAttachmentInput(input.attachments);
-    const promptText = composePromptText(text, fileBlock);
-    const inputItems: Array<
-      { type: "text"; text: string; text_elements: [] } | CodexImageItem
-    > = [];
-    if (promptText.length > 0) inputItems.push({ type: "text", text: promptText, text_elements: [] });
-    inputItems.push(...imageItems);
-    if (inputItems.length === 0) {
-      throw new Error("Turn input must include text or an attachment.");
-    }
+    // Compose the turn's input items: the prompt text (led by any invoked
+    // skill's `$name` mention, with non-image files folded in as an
+    // <attached_files> path block and foreign-root skills inlined after it),
+    // then native image items, then one `skill` item per skill Codex loads
+    // itself. An attachment-only turn is valid — we just skip the text item.
+    const inputItems = await buildCodexTurnInputItems(input);
 
     // The kone host-context block rides the codex-rs `developer_instructions`
     // both use). Delivered on EVERY turn, which covers resumed threads too:
@@ -998,16 +1009,7 @@ export class CodexAdapter implements ProviderAdapter {
     if (input.model) session.model = input.model;
 
     const text = input.input.trim();
-    const { imageItems, fileBlock } = await buildCodexAttachmentInput(input.attachments);
-    const promptText = composePromptText(text, fileBlock);
-    const inputItems: Array<
-      { type: "text"; text: string; text_elements: [] } | CodexImageItem
-    > = [];
-    if (promptText.length > 0) inputItems.push({ type: "text", text: promptText, text_elements: [] });
-    inputItems.push(...imageItems);
-    if (inputItems.length === 0) {
-      throw new Error("Turn input must include text or an attachment.");
-    }
+    const inputItems = await buildCodexTurnInputItems(input);
 
     const steerParams: CodexTurnSteerParams = {
       threadId: session.conversationId,

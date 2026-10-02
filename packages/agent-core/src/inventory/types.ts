@@ -48,6 +48,15 @@ export type SkillEntry = {
   shadowedByWinner?: SkillCopy | null;
 };
 
+/** One skill the composer's picker can offer: the row's identity, where it
+ *  lives, and the two description lines it shows. Deliberately not a
+ *  SkillEntry — the picker never reads enabled/shadowed state from this path,
+ *  so promising a full inventory entry would force fake flags onto every row. */
+export type InvokableSkill = Pick<
+  SkillEntry,
+  "name" | "path" | "description" | "shortDescription" | "scope" | "origin"
+>;
+
 /** How an MCP server is reached. `unknown` is a real, expected value — plenty
  *  of on-disk configs omit an explicit `type` tag and give us nothing to
  *  shape-infer from (no `command`, no `url`). */

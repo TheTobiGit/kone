@@ -963,12 +963,24 @@ export type UploadAttachmentInput = {
   data: string;
 };
 
+/** A skill invoked on a turn: its frontmatter name and absolute SKILL.md
+ *  path (mirror packages/agent-core/src/types.ts). */
+export type SkillReference = {
+  name: string;
+  path: string;
+};
+
 export type SendTurnInput = {
   threadId: string;
   userBlockId?: string;
+  /** The user's prose. Never carries a `/name` token for an invoked skill —
+   *  `skills` is authoritative and the provider adapter does the injection. */
   input: string;
   /** Files/images attached to this turn (metadata only; bytes live on disk). */
   attachments?: ChatAttachment[];
+  /** Skills invoked on this turn. A skill that is gone or disabled by send
+   *  time rejects the send with `Skill "<name>" is not available: …`. */
+  skills?: SkillReference[];
   model?: string;
   mode?: InteractionMode;
   /** Reasoning effort tier. Providers that bake effort into the model id
@@ -1014,6 +1026,8 @@ export type QueuedTurnRow = {
   input: string;
   /** Files/images attached to the queued turn (metadata only; bytes on disk). */
   attachments?: ChatAttachment[];
+  /** Skills invoked on the queued turn. */
+  skills?: SkillReference[];
   model?: string;
   mode?: string;
   effort?: string;
@@ -1662,6 +1676,8 @@ export type RuntimeEvent =
       input?: string;
       /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
       attachmentsJson?: string | null;
+      /** Skills invoked on the queued request, parsed. */
+      skills?: SkillReference[];
       /** What the queued request will run with, carried so the renderer's row
        *  is complete without a re-read — the same pair the store journaled on
        *  the row, so a live queue and a rehydrated one stamp the promoted turn
@@ -2022,6 +2038,8 @@ export type StoredBlock =
       text: string;
       at: number;
       attachments?: ChatAttachment[];
+      /** Skills invoked on this prompt, as they were sent. */
+      skills?: SkillReference[];
       /** The reasoning-effort tier the request was sent with. Absent on rows
        *  written before the tier was journaled — those never claim a switch. */
       effort?: string;
@@ -2517,6 +2535,15 @@ export type SkillEntry = {
   shadowedByWinner?: SkillCopy | null;
 };
 
+/** One skill the composer's picker can offer: the row's identity, where it
+ *  lives, and the two description lines it shows. A narrow view over
+ *  SkillEntry — the picker never reads enabled/shadowed state from this path,
+ *  so it must not promise a full inventory entry. */
+export type InvokableSkill = Pick<
+  SkillEntry,
+  "name" | "path" | "description" | "shortDescription" | "scope" | "origin"
+>;
+
 /** Full per-skill detail for the skill detail view — what the list's
  *  name/description snippet can't show. Read on demand instead of padding the
  *  scan's payload, so the list render never waits on the slowest root. */
@@ -2710,6 +2737,12 @@ export type InternalSkillsSettings = {
 };
 
 export type KoneAgentSkillsApi = {
+  /** The skills `provider` can run for a turn in `cwd`: one row per name,
+   *  enabled in the provider's own config and in kone's internal gate. Each
+   *  row carries only what the picker shows — never inventory state like
+   *  enabled/shadowed, which the inventory scan owns. Never
+   *  rejects — an unreadable root just contributes nothing. */
+  listInvokable: (provider: ProviderKind, cwd: string | null) => Promise<InvokableSkill[]>;
   /** Read a skill's effective state from whatever file its CLI keeps it in. */
   readState: (query: SkillStateQuery) => Promise<SkillStateResult>;
   /** Write the state into that same file, surgically — comments, key order and

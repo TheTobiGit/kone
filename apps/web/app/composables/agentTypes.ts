@@ -7,11 +7,101 @@ import type {
   ProviderKind,
   RuntimeItem,
   SendTurnInput,
+  SkillReference,
   TurnStartResult,
   UserInputQuestion,
 } from "~/types/desktop";
 import type { EffortTier } from "~/utils/modelCatalog";
 import type { ActivePlanTask } from "~/utils/planTasks";
+
+/** A send or steer the backend refused, with what it carried. The composer
+ *  that sent it restores its own draft (chips where they sat); any other
+ *  composer on the thread — the inbox hands a new thread over before the
+ *  answer is in — rebuilds one from `input` and `skills`. */
+export type SendRejection = {
+  at: number;
+  message: string;
+  input: string;
+  skills: SkillReference[];
+};
+
+/** One user turn as the composer meant it: prose plus what rode along. A
+ *  single object so the next per-turn field lands here instead of threading
+ *  another optional positional through every send path. */
+export type TurnDraft = {
+  text: string;
+  attachments?: ChatAttachment[];
+  skills?: SkillReference[];
+};
+
+/** The naming source for a turn: prose first, then the invoked skill, then
+ *  the first file. Empty when the turn carries nothing nameable. Callers add
+ *  their own fallback (a title helper, an "Attachment" placeholder). */
+export function turnLabel(draft: TurnDraft): string {
+  const trimmed = draft.text.trim();
+  return trimmed || draft.skills?.[0]?.name || draft.attachments?.[0]?.name || "";
+}
+
+/** Whether a send argument is already a draft object. Reads through
+ *  `instanceof` so no raw type test sits at the call boundary. */
+export function isTurnDraft(value: string | TurnDraft): value is TurnDraft {
+  return value instanceof Object;
+}
+
+/** Fold the legacy positional send shape into a draft. An object wins over
+ *  positionals when both arrive; a string builds from the positionals. */
+export function normalizeTurnDraft(
+  textOrDraft: string | TurnDraft,
+  attachments?: ChatAttachment[],
+  skills?: SkillReference[],
+): TurnDraft {
+  if (isTurnDraft(textOrDraft)) {
+    const draft: TurnDraft = { text: textOrDraft.text };
+    const resolvedAttachments = textOrDraft.attachments ?? attachments;
+    if (resolvedAttachments) draft.attachments = resolvedAttachments;
+    const resolvedSkills = textOrDraft.skills ?? skills;
+    if (resolvedSkills) draft.skills = resolvedSkills;
+    return draft;
+  }
+  const draft: TurnDraft = { text: textOrDraft };
+  if (attachments) draft.attachments = attachments;
+  if (skills) draft.skills = skills;
+  return draft;
+}
+
+/** What a host composer hands its session: prose plus the still-local files.
+ *  Kept beside TurnDraft so the four hosts share one shape — the upload maps
+ *  `files` to the draft's `attachments` before sending. */
+export type ComposerDraft = {
+  text: string;
+  files?: File[];
+  skills?: SkillReference[];
+};
+
+/** Whether a host send argument is already a composer draft object. */
+export function isComposerDraft(value: string | ComposerDraft): value is ComposerDraft {
+  return value instanceof Object;
+}
+
+/** Fold a host's legacy positional send into a composer draft. */
+export function normalizeComposerDraft(
+  textOrDraft: string | ComposerDraft,
+  files?: File[],
+  skills?: SkillReference[],
+): ComposerDraft {
+  if (isComposerDraft(textOrDraft)) {
+    const draft: ComposerDraft = { text: textOrDraft.text };
+    const resolvedFiles = textOrDraft.files ?? files;
+    if (resolvedFiles) draft.files = resolvedFiles;
+    const resolvedSkills = textOrDraft.skills ?? skills;
+    if (resolvedSkills) draft.skills = resolvedSkills;
+    return draft;
+  }
+  const draft: ComposerDraft = { text: textOrDraft };
+  if (files) draft.files = files;
+  if (skills) draft.skills = skills;
+  return draft;
+}
 
 /** Set on blocks bulk-loaded from storage (rehydrate/openThread) so the view
  *  renders them settled — no entry springs, no per-word blur-in. Live turns
@@ -25,6 +115,9 @@ export type UserBlock = {
   at: number;
   /** Files/images the user attached to this prompt (metadata only). */
   attachments?: ChatAttachment[];
+  /** Skills invoked on this prompt, as they were sent. The prompt text never
+   *  names them, so this is the only record the timeline has of them. */
+  skills?: SkillReference[];
   /** The reasoning-effort tier this turn was sent with — stamped at send time
    *  so the timeline can mark effort changes between turns. Absent on blocks
    *  that predate the stamp (stored history) — those never claim a change. */
@@ -153,6 +246,9 @@ export type QueuedTurnRow = {
   input: string;
   createdAt: number;
   attachmentsJson?: string | null;
+  /** Skills invoked on the queued request — the row is the prompt until it is
+   *  promoted, so they live here, not only on a block. */
+  skills?: SkillReference[];
   /** What the request will run with — the reasoning tier and the raw model id,
    *  as the store journaled them on the row. Read back when the row is promoted
    *  so a turn sent while busy is stamped exactly like an idle one, whether the

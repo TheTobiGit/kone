@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 16 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 17 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(16);
+    expect(version.user_version).toBe(17);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -250,6 +250,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 14, name: "ClineProvider" },
       { migration_id: 15, name: "BlockSender" },
       { migration_id: 16, name: "ThreadContract" },
+      { migration_id: 17, name: "BlockSkills" },
     ]);
 
     const idx = raw

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // ── Agent provider data model ───────────────────────────────────────────────
 // The load-bearing contract for kone's multi-provider agent layer. Everything
 // here is flat and serializable — it all crosses the IPC boundary to the
@@ -16,6 +18,31 @@
  *  `cline --acp`; `antigravity` drives Google's `agy` CLI in print mode
  *  (transcript + capture-hook polling). Grows as adapters land. */
 export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "droid" | "cline" | "antigravity";
+
+/** Every ProviderKind as a value, in one place. The union above and this tuple
+ *  are one edit: every provider check and every provider schema derives from
+ *  this, so adding a provider cannot leave a stale copy accepting the old set. */
+export const PROVIDER_KIND_VALUES = [
+  "codex",
+  "claudeAgent",
+  "opencode",
+  "cursor",
+  "droid",
+  "cline",
+  "antigravity",
+] as const;
+
+/** Runtime schema for a ProviderKind — the single gate for provider ids that
+ *  crossed a process boundary. */
+export const ProviderKindSchema = z.enum(PROVIDER_KIND_VALUES);
+
+/** Whether a runtime string names a provider the runtime has an adapter for. */
+export function isProviderKind(value: string): value is ProviderKind {
+  for (const kind of PROVIDER_KIND_VALUES) {
+    if (value === kind) return true;
+  }
+  return false;
+}
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -280,6 +307,27 @@ export const CLAUDE_NATIVE_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
+/** A skill the user invoked on a turn: the skill's frontmatter `name`
+ *  (matched case-insensitively) and the absolute path of its SKILL.md. Rides
+ *  the turn beside the prose and is persisted on the user block so a reloaded
+ *  thread shows the same chips. The adapter turns it into the provider's own
+ *  invocation; the prompt text never carries a `/name` token for it. Mirror
+ *  any change in apps/web/app/types/desktop.d.ts. */
+export type SkillReference = {
+  name: string;
+  path: string;
+};
+
+/** One invoked skill as it crosses a boundary: the wire shape of
+ *  SkillReference. The base schema stays permissive (no min): write-time
+ *  strictness lives in resolveSkillReferences, which rejects blank names and
+ *  non-SKILL.md paths with a sentence, and read-time strictness lives at the
+ *  store read, which drops blank entries back to absent. */
+export const SkillReferenceSchema = z.object({ name: z.string(), path: z.string() });
+
+/** The list form, shared by the send-time check and the store codec. */
+export const SkillReferenceListSchema = z.array(SkillReferenceSchema);
+
 export type SendTurnInput = {
   threadId: string;
   /** The renderer-side user block id that triggered this turn, ensuring the
@@ -295,6 +343,10 @@ export type SendTurnInput = {
   dispatchMode?: "queue" | "steer";
   /** Files/images attached to this turn (metadata only; bytes live on disk). */
   attachments?: ChatAttachment[];
+  /** Skills the user invoked on this turn. Validated against what the
+   *  thread's provider can run in its cwd before the turn is journaled; a
+   *  removed or disabled skill rejects the send rather than being dropped. */
+  skills?: SkillReference[];
   /** Who is saying this turn. Absent = the user. An agent sender is journaled
    *  on the block and announced to the model in a header in front of the
    *  text, so the receiving agent never mistakes it for its user. */
@@ -324,6 +376,15 @@ export type TurnStartResult = {
   /** kone-owned id for the turn just accepted. */
   turnId: string;
 };
+
+/** The naming source for a turn: prose first, then the invoked skill, then
+ *  the first file. Empty when the turn carries nothing nameable. One helper
+ *  so the dispatcher's first-turn fallback and the renderer's instant label
+ *  can never drift on the order. */
+export function turnLabel(draft: Pick<SendTurnInput, "input" | "attachments" | "skills">): string {
+  const trimmed = draft.input.trim();
+  return trimmed || draft.skills?.[0]?.name || draft.attachments?.[0]?.name || "";
+}
 
 /** Outcome of a manual context-compaction request. Resolves once the provider
  *  has compacted and the `thread.state.changed` "compacted" boundary has been
@@ -768,6 +829,8 @@ export type StoredBlock =
       text: string;
       at: number;
       attachments?: ChatAttachment[];
+      /** Skills invoked on this prompt, as they were sent. */
+      skills?: SkillReference[];
       /** Where the block came from. Absent = `"native"` (a live conversation
        *  row); `"fork-import"` = copied in from a side chat's source thread,
        *  carrying its original `at` and never refreshing `updated_at`. */
@@ -855,6 +918,9 @@ export type QueuedTurnRow = {
   input: string;
   /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
   attachmentsJson: string | null;
+  /** Skills invoked on the turn, already resolved against the provider. The
+   *  store persists and returns them under this same parsed field. */
+  skills?: SkillReference[];
   model: string | null;
   mode: InteractionMode | null;
   effort: string | null;
@@ -1791,6 +1857,8 @@ export type RuntimeEvent =
       input?: string;
       /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
       attachmentsJson?: string | null;
+      /** Skills invoked on the queued turn; absent when it invoked none. */
+      skills?: SkillReference[];
       /** What the queued request will run with, carried so the renderer's row
        *  is complete without a re-read — the same pair the store journaled on
        *  the row, so a live queue and a rehydrated one stamp the promoted turn

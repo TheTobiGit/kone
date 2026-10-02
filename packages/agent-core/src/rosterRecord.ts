@@ -1,4 +1,5 @@
 import type { ProviderKind } from "./types.js";
+import { isProviderKind } from "./types.js";
 import {
   BUILTIN_SUBAGENT_PRESETS,
   normalizeChain,
@@ -385,18 +386,6 @@ export function boundRefField(value: ColumnValue | undefined): string | null {
   if (text === null) return null;
   const trimmed = text.trim().slice(0, AGENT_REF_FIELD_MAX);
   return trimmed || null;
-}
-
-function isProviderKind(value: string): value is ProviderKind {
-  return (
-    value === "codex" ||
-    value === "claudeAgent" ||
-    value === "opencode" ||
-    value === "cursor" ||
-    value === "droid" ||
-    value === "cline" ||
-    value === "antigravity"
-  );
 }
 
 /** Serialize a capability list to the JSON a column holds. Null and undefined

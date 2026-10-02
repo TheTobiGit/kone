@@ -60,6 +60,7 @@ type ForkPrefixBlock = {
   model: string | null;
   source: string;
   sender_json: string | null;
+  skills_json: string | null;
 };
 
 /** The fork point's own columns: its arrival order (which bounds the copied
@@ -70,6 +71,9 @@ type ForkPoint = {
   seq: number;
   at: number;
   attachmentsJson: string | null;
+  /** The replaced message's invoked skills, which the edited replacement
+   *  inherits for the same reason it inherits the attachments. */
+  skillsJson: string | null;
   /** The replaced message's own tier, which the edited replacement inherits —
    *  the edit restates that request, so the fork's timeline keeps its mark. */
   effort: string | null;
@@ -105,7 +109,7 @@ function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string
   // SAFETY: the projection names only the fork point's own columns.
   const forkPoint = db
     .prepare(
-      `SELECT seq, role, attachments_json, effort, model, at FROM blocks
+      `SELECT seq, role, attachments_json, skills_json, effort, model, at FROM blocks
         WHERE thread_id = ? AND block_id = ?`,
     )
     .get(sourceThreadId, blockId) as
@@ -113,6 +117,7 @@ function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string
         seq: number;
         role: string;
         attachments_json: string | null;
+        skills_json: string | null;
         effort: string | null;
         model: string | null;
         at: number;
@@ -133,6 +138,7 @@ function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string
       seq: forkPoint.seq,
       at: forkPoint.at,
       attachmentsJson: forkPoint.attachments_json,
+      skillsJson: forkPoint.skills_json,
       effort: forkPoint.effort,
       model: forkPoint.model,
     },
@@ -154,7 +160,7 @@ function readForkPrefix(
     .prepare(
       `SELECT role, turn_id, text,
               CASE WHEN state = 'running' THEN 'interrupted' ELSE state END AS state,
-              error, at, ended_at, attachments_json, effort, model, source, sender_json
+              error, at, ended_at, attachments_json, effort, model, source, sender_json, skills_json
          FROM blocks
         WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
         ORDER BY seq`,
@@ -225,8 +231,8 @@ function insertForkThreadRow(
  *  timestamps, same attachment metadata, same settlement states. */
 function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPrefixBlock[]): void {
   const insertBlock = db.prepare(
-    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source, sender_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source, sender_json, skills_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const block of prefix) {
     insertBlock.run(
@@ -244,6 +250,7 @@ function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPr
       block.model,
       block.source,
       block.sender_json,
+      block.skills_json,
     );
   }
 }
@@ -261,19 +268,21 @@ function insertForkEditedBlock(
     editedText: string;
     now: number;
     attachmentsJson: string | null;
+    skillsJson: string | null;
     effort: string | null;
     model: string | null;
   },
 ): void {
   db.prepare(
-    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source)
-     VALUES (?, ?, 'user', NULL, ?, NULL, NULL, ?, NULL, ?, ?, ?, 'native')`,
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, skills_json, effort, model, source)
+     VALUES (?, ?, 'user', NULL, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?, 'native')`,
   ).run(
     input.editedBlockId,
     input.threadId,
     input.editedText,
     input.now,
     input.attachmentsJson,
+    input.skillsJson,
     input.effort,
     input.model,
   );
@@ -663,6 +672,7 @@ export class LineageRepo {
             editedText,
             now,
             attachmentsJson: pointRead.point.attachmentsJson,
+            skillsJson: pointRead.point.skillsJson,
             effort: pointRead.point.effort,
             model: pointRead.point.model,
           });

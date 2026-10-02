@@ -75,6 +75,7 @@ import type {
   UserInputRespondResult,
   UserInputQuestion,
 } from "../types.js";
+import { inlineSkills } from "../skillInvocation.js";
 
 // The pure protocol shapes live in antigravityAcpProtocol.ts; the previously
 // public ones are re-exported here so existing importers keep working.
@@ -685,6 +686,9 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       imageBlocks = built.imageBlocks;
       promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
     }
+    // No skill input this server can be handed: an invoked skill's SKILL.md is
+    // inlined after the prompt.
+    promptText = await inlineSkills(promptText, input.skills);
     if (!promptText && imageBlocks.length === 0) {
       throw new Error("Turn input must include text or an attachment.");
     }

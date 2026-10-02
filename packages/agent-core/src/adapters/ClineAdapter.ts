@@ -75,6 +75,7 @@ import type {
   UserInputRespondResult,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
+import { inlineSkills } from "../skillInvocation.js";
 
 // Cline adapter — drives `cline --acp`, a persistent JSON-RPC-over-stdio child
 // per thread speaking ACP (the Agent Client Protocol), the same transport
@@ -596,6 +597,9 @@ export class ClineAdapter implements ProviderAdapter {
       imageBlocks = built.imageBlocks;
       promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
     }
+    // No skill input this CLI can be handed: an invoked skill's SKILL.md is
+    // inlined after the prompt.
+    promptText = await inlineSkills(promptText, input.skills);
     // The app-context block rides the very first user turn so the agent knows
     // the gateway tools exist.
     promptText = koneHostContextForFirstRun({

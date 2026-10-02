@@ -25,18 +25,30 @@ import ComposerStatusTray from "~/components/agent/ComposerStatusTray.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
-import type { AttachmentKind, InteractionMode, ProviderStatus, ThreadEnvMode } from "~/types/desktop";
+import type {
+  AttachmentKind,
+  InteractionMode,
+  ProviderKind,
+  ProviderStatus,
+  SkillReference,
+  ThreadEnvMode,
+} from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
+import type { SendRejection } from "~/composables/agentTypes";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
 import { useComposerTrigger } from "~/composables/useComposerTrigger";
 import { useComposerWake } from "~/composables/useComposerWake";
+import { useComposerSkills } from "~/composables/useComposerSkills";
 import { useWorktreeBranch } from "~/composables/useWorktreeBranch";
 import type { MentionItem, MentionProject, SlashCommandItem } from "~/utils/composerMentions";
 import { SLASH_COMMANDS } from "~/composables/useComposerSlash";
-import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
+import {
+  createMentionKindResolver,
+  parseLeadingSlashCommand,
+} from "~/utils/composerMentions";
 import { isWorkspacePending } from "~/utils/threadWorkspace";
 import { FALLBACK_MODE, INTERACTION_MODES } from "~/utils/interactionModes";
 import { useComposerPrefs } from "~/composables/useComposerPrefs";
@@ -206,12 +218,19 @@ const props = defineProps<{
   /** Whether the `/new` row is offered. False hides it where no host
    *  handles the emit — the picker row and the send-time parse alike. */
   creatable?: boolean;
+  /** The provider the draft will go to. Skills are installed per CLI, so this
+   *  decides which ones the `/` menu offers; absent offers none. */
+  provider?: ProviderKind | null;
+  /** The session's latest refused send. The field is already empty by then,
+   *  so a new stamp here is the cue to hand the draft back. */
+  sendRejection?: SendRejection | null;
 }>();
 
 const emit = defineEmits<{
-  /** The draft, plus any picked files. The parent uploads the files (scoped to
-   *  the final thread) and hands the resulting metadata to the agent turn. */
-  send: [text: string, files?: File[]];
+  /** The draft, plus any picked files and skills. The parent uploads the
+   *  files (scoped to the final thread) and hands the resulting metadata to
+   *  the agent turn. The text never names the skills — they ride apart. */
+  send: [text: string, files?: File[], skills?: SkillReference[]];
   /** File the job — the `kind: "job"` commit. `intent` is its two halves:
    *  queue it to run next, or park it as a draft nobody will start. The title
    *  may be empty; the store derives one from the body, and deriving a second
@@ -526,19 +545,6 @@ watch(open, (v) => emit("update:open", v));
 const surface = ref<HTMLElement | null>(null);
 const dock = ref<HTMLElement | null>(null);
 
-// ── composer modules (mentions, attachments, draft) ──────────────────────────
-const {
-  draftKey: DRAFT_KEY,
-  scheduleDraftSave,
-  persistDraft,
-  restoreDraft,
-  clearDraft,
-} = useComposerDraft({
-  getProjectPath: () => props.projectPath,
-  getText: () => text.value,
-  setEditorFromText: (val) => setMentionEditorFromText(val),
-});
-
 const mentionKindResolver = computed(() =>
   createMentionKindResolver(props.mentionProjects ?? []),
 );
@@ -551,12 +557,33 @@ const mentionKindResolver = computed(() =>
 // gates feed BOTH the `/` menu filter and the send-time dispatch through the
 // one command table, so a row can never be offered where its send-time twin
 // would refuse to run.
+// ── skills (`/name` chips) ──────────────────────────────────────────────────
+// What the provider can invoke from where the turn runs. The composable owns
+// the list, the chip marks, the send-time guard and the refused-send restore;
+// the component keeps this one wiring plus a single composeTurn() call in the
+// dispatch below.
+const skills = useComposerSkills({
+  provider: () => props.provider,
+  cwd: () => (props.disableFileMentions || !hasProject.value ? null : props.projectPath),
+  isJob: () => isJob.value,
+  isOpen: () => open.value,
+  sendRejection: () => props.sendRejection,
+  currentText: () => text.value,
+  draftParts: () => draftParts(),
+  setEditorFromText: (value, saved) => setMentionEditorFromText(value, saved),
+  markSkillChips: (isAvailable) => markSkillChips(isAvailable),
+  getSetDraft: () => setDraft,
+  cueError: () => cue("error"),
+  flashNotice: (message) => flash(message),
+});
+
 const { slashItemsFor, isSlashAllowed } = useComposerSlash({
   canSwitchAgent: () => canSwitchAgent.value,
   canSwitchModel: () => canSwitchModel.value,
   canCompact: () => props.compactable !== false,
   canBranch: () => canSwitchBranch.value,
   canCreate: () => props.creatable !== false,
+  skills: () => skills.invokableSkills.value,
 });
 
 // ── one trigger state for both markers ──────────────────────────────────────
@@ -589,6 +616,9 @@ const {
   serializeEditor,
   syncEditorText,
   applyMention,
+  applySkill,
+  draftParts,
+  markSkillChips,
   setEditorFromText: setMentionEditorFromText,
   clearEditor: clearMentionEditor,
   focusEditorEnd,
@@ -603,6 +633,21 @@ const {
   fileMentionsEnabled: () => !props.disableFileMentions,
   resolveMentionKind: (path) => mentionKindResolver.value(path),
   placeCaret: (node, offset) => trigger.placeCaret(node, offset),
+  skills: () => skills.invokableSkills.value,
+});
+
+// ── composer draft persistence (text plus the skills that were chips) ───────
+const {
+  draftKey: DRAFT_KEY,
+  scheduleDraftSave,
+  persistDraft,
+  restoreDraft,
+  clearDraft,
+} = useComposerDraft({
+  getProjectPath: () => props.projectPath,
+  getText: () => text.value,
+  getSkills: () => skills.currentDraftSkills(),
+  setEditorFromText: (val, saved) => skills.restoreEditorFromText(val, saved),
 });
 
 /** A picked row runs in place of a send. Most consume the token and never
@@ -653,6 +698,11 @@ function acceptTriggerItem(item: MentionItem | SlashCommandItem): void {
     return;
   }
   if (active.marker === "/" && "name" in item && !("kind" in item)) {
+    if (item.skill) {
+      applySkill(item.skill, trigger.consumeToken());
+      cue("select");
+      return;
+    }
     runSlashCommand(item.name, "", { fromMenu: true });
   }
 }
@@ -900,16 +950,21 @@ function dispatchDraft(intent: "queued" | "draft" = "queued") {
     cue("error");
     return;
   }
-  const draft = text.value.trim();
-  // A turn is valid with text, attachments, or both — an attachment-only send
-  // (a screenshot with no words) is allowed.
+  // A turn is valid with text, attachments, skills, or any mix — an
+  // attachment-only send (a screenshot with no words) is allowed, and so is a
+  // lone skill chip.
   const files = attachments.value.map((a) => a.file);
 
   if (isJob.value) {
+    const draft = text.value.trim();
     emit("file", { title: title.value.trim(), body: draft, intent }, files.length ? files : undefined);
     title.value = "";
   } else {
-    emit("send", draft, files.length ? files : undefined);
+    // The chips, not the text, say which skills run — the guard refuses the
+    // send when a chip can no longer run, and the draft stays.
+    const turn = skills.composeTurn();
+    if (!turn) return;
+    emit("send", turn.input, files.length ? files : undefined, turn.skills.length ? turn.skills : undefined);
   }
 
   cue("send");
@@ -946,7 +1001,8 @@ function submitOrQueue() {
 // back in the field so it can be reworked and sent fresh.
 async function onQueueEdit(entry: QueuedTurnEntry) {
   emit("remove-queued", entry.queueId);
-  await setDraft(entry.input || "");
+  const picked = entry.skills ?? [];
+  await setDraft(skills.draftFromTurn(entry.input || "", picked), picked);
 }
 onMounted(() => {
   restoreDraft();
@@ -963,10 +1019,10 @@ watch(text, scheduleDraftSave);
 // itself.
 watch(text, (draft) => emit("update:draft", draft));
 
-async function setDraft(draft: string) {
+async function setDraft(draft: string, saved?: readonly SkillReference[]) {
   await wake();
   await nextTick();
-  setMentionEditorFromText(draft);
+  skills.restoreEditorFromText(draft, saved);
   trigger.dismiss();
   focusEditorEnd();
   syncSoon();

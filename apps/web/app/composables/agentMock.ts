@@ -22,7 +22,9 @@ import {
 import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
 import { createScriptClock, SCRIPTED_WORD_MS, streamWords } from "~/utils/scriptedTurn";
 import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "./agentTypes";
+import type { ChatAttachment, SkillReference } from "~/types/desktop";
 import { titleFromPrompt, uid } from "./agentPrefetch";
+import { serializeQueuedAttachments } from "./session/sessionQueue";
 import { registerDevHandOff } from "~/lib/devHandOffs";
 
 /** The team demo's turns, in order: the hand-offs, answering a contractor's
@@ -128,9 +130,10 @@ export function createMockTurnRunner(deps: {
     blockId: string,
     dispatchMode: "queue" | "steer",
     input?: string,
-    attachments?: { type: string; id: string; name: string; mimeType: string; sizeBytes: number }[],
+    attachments?: ChatAttachment[],
+    skills?: SkillReference[],
   ): void {
-    reduce({
+    const event: RuntimeEvent = {
       ...base(),
       type: "turn.queued",
       queueId: uid(),
@@ -138,8 +141,10 @@ export function createMockTurnRunner(deps: {
       dispatchMode,
       position: queuedTurnsRaw.value.length + 1,
       input,
-      attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
-    });
+      attachmentsJson: serializeQueuedAttachments(attachments),
+    };
+    if (skills?.length && event.type === "turn.queued") event.skills = skills;
+    reduce(event);
     sessionState.value = "running";
   }
 
@@ -959,7 +964,7 @@ export function createMockTurnRunner(deps: {
         review.finish("Middleware diff reads clean; flagged one missing expiry check.");
         await stream(
           "assistant_text",
-          "Ada has the API and Frontend Auth has the screens — both in their own threads, so you can watch or step in. Two workers are checking the existing session code under this thread.",
+          "Ada has the API and Theo has the screens — both in their own threads, so you can watch or step in. Two workers are checking the existing session code under this thread.",
         );
         return;
       }
@@ -971,14 +976,14 @@ export function createMockTurnRunner(deps: {
         if (cancelled) return;
         await tool(
           "agent_message",
-          "answer → Frontend Auth",
-          "Sent answer msg_frontend to Frontend Auth.",
+          "answer → Theo",
+          "Sent answer msg_frontend to Theo.",
           560,
         );
         if (cancelled) return;
         await stream(
           "assistant_text",
-          "Frontend Auth asked whether OAuth is in scope. I told it: email and password only for now — you didn't ask for OAuth.",
+          "Theo asked whether OAuth is in scope. I told it: email and password only for now — you didn't ask for OAuth.",
         );
         return;
       }
@@ -1012,14 +1017,14 @@ export function createMockTurnRunner(deps: {
         await tool(
           "agent_keep_or_stop",
           "2 agents",
-          "Kept Frontend Auth running · stopped Ada.",
+          "Kept Theo running · stopped Ada.",
           620,
         );
         if (cancelled) return;
         teamChildren.ada?.finish("Stopped by its delegator; left a note of the routes it finished.");
         await stream(
           "assistant_text",
-          "Stopped. Frontend Auth keeps going on the screens; Ada stopped and left a note of what it finished. I've started nothing new — tell me where to take the API from here.",
+          "Stopped. Theo keeps going on the screens; Ada stopped and left a note of what it finished. I've started nothing new — tell me where to take the API from here.",
         );
       }
     }
@@ -1027,7 +1032,7 @@ export function createMockTurnRunner(deps: {
 
   /** The demo agent contracted for the screens. */
   const TEAM_CONTRACT: ContractTerms = {
-    name: "Frontend Auth",
+    name: "Theo",
     role: "Frontend auth specialist",
     instructions: "Keep components small and accessible; match the design tokens; test every form state.",
     scope: "The login and signup screens and their client-side validation. Not the API.",
@@ -1060,7 +1065,7 @@ export function createMockTurnRunner(deps: {
         {
           kind: "agent",
           threadId: `${threadId.value}:frontend`,
-          name: "Frontend Auth",
+          name: "Theo",
           relationship: "contractor",
           messageKind: "question",
         },
@@ -1076,7 +1081,7 @@ export function createMockTurnRunner(deps: {
       );
       await pause(900);
       journal(
-        "You were stopped by the user. These agents are still working because of you:\n- Ada: Auth API, still working\n- Frontend Auth: Login and signup screens, still working\n\nFor each one, decide with agent_keep_or_stop: continue, stop, or ask_user. Do not start anything new in this turn.",
+        "You were stopped by the user. These agents are still working because of you:\n- Ada: Auth API, still working\n- Theo: Login and signup screens, still working\n\nFor each one, decide with agent_keep_or_stop: continue, stop, or ask_user. Do not start anything new in this turn.",
         { kind: "system" },
       );
       mockTurn("", { team: "decide" });
