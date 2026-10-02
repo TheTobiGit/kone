@@ -213,8 +213,10 @@ describe("the decisions", () => {
 
     expect(outcomes.map((o) => [o.name, o.decision])).toEqual([
       ["Frontend Auth", "continue"],
-      ["Auth API", "stop"],
-      ["Auth docs", "ask_user"],
+      // Bound to no teammate: named by the call sign rolled from the thread
+      // id — the name the user sees on it — not by its title.
+      ["Heron", "stop"],
+      ["Beacon", "ask_user"],
     ]);
     expect(h.said.find((s) => s.threadId === "frontend")?.text).toContain("carry on");
     // The stopped delegate is interrupted, hears why, and its own worker stops

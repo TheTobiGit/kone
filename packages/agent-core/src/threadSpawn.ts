@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ModelCandidate } from "./agentModel.js";
 import type { ThreadDispatcher } from "./dispatch.js";
+import type { ThreadAgentBinding } from "./rosterRecord.js";
 import { checkSpawn, type SpawnRefusalDetails } from "./spawnGuards.js";
 import {
   projectSpawnedThread,
@@ -21,6 +22,7 @@ import {
 import { SpawnFailoverRunner, type FallbackAdmissionCounts } from "./spawnFailover.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { getHandOffLifecycle } from "./handOffLifecycle.js";
+import type { SettledTurnReport, SettleReportSink } from "./settleReports.js";
 import {
   isSpawnedRelationship,
   MAX_LIVE_CHILDREN_PER_PARENT,
@@ -69,9 +71,10 @@ export interface SpawnEngineStore {
   }): boolean;
   threadLineage(threadId: string): ThreadLineage | null;
   /** Bind a delegated child to the agent it runs as, before its first turn
-   *  dispatches. The return value is ignored — the engine only needs the write
-   *  to land so the thread's transcript names who answered. */
-  bindThreadAgent(threadId: string, agentId: string): void;
+   *  dispatches, so the thread's transcript names who answered. Returns what
+   *  the thread is bound to now, or null when the write didn't land — the
+   *  answer the engine announces to the renderer. */
+  bindThreadAgent(threadId: string, agentId: string): ThreadAgentBinding | null;
   /** Persist the provider/model a child actually started on, after a spawn-time
    *  failover moved it off the primary. The row is written before dispatch, so
    *  a retry that lands on a later candidate has to rewrite the stored target
@@ -170,6 +173,10 @@ export interface SpawnEngineDeps {
    *  are NEVER journaled. */
   emit: (event: RuntimeEvent) => void;
   onEvents: (listener: (event: RuntimeEvent) => void) => () => void;
+  /** Where a settled turn nobody collected is sent, so the agent that handed
+   *  the work off hears it finished. Absent, results are only ever collected
+   *  through waitFor. */
+  reports?: SettleReportSink;
 }
 
 /** The parent session asking to spawn. Every field is server-derived from the
@@ -364,6 +371,10 @@ export interface SpawnEngine {
   snapshot(threadId: string): SpawnedThread | null;
   /** True when `threadId` is `rootThreadId` itself or any spawned descendant. */
   isInSubtree(rootThreadId: string, threadId: string): boolean;
+  /** The agent that handed `threadId` its work stopped or withdrew it: what
+   *  its current turn comes to is no news to that agent, so it is not
+   *  reported. A follow-up from up the chain lifts it. */
+  muteReports(threadId: string): void;
   waitFor(input: {
     threadIds: string[];
     /** Positionally paired with `threadIds`: pin each wait to that exact turn
@@ -469,6 +480,19 @@ export type TrackedChild = {
   lastProjection: SpawnedThread | null;
 };
 
+/** What has become of each settled turn's report, for one child. */
+type ChildReports = {
+  /** Turns a wait already handed to the parent. */
+  collected: Set<string>;
+  /** Turns settled while the parent was parked in a wait that will return
+   *  them — reported only if that wait is abandoned. */
+  held: Set<string>;
+  /** Turns already reported, with the message that carried each (null when
+   *  none went out). */
+  reported: Map<string, string | null>;
+  muted: boolean;
+};
+
 /** Live spawned-thread counts: how many live threads belong to a given parent
  *  and how many are live overall. */
 type LiveSpawnCounts = {
@@ -484,6 +508,8 @@ class SpawnEngineImpl implements SpawnEngine {
 
   private readonly tracked = new Map<string, TrackedChild>();
   private readonly liveChildren = new Set<string>();
+  private readonly reports = new Map<string, ChildReports>();
+  private readonly reportSink: SettleReportSink | undefined;
   private readonly unsubscribeEvents: () => void;
 
   private readonly waitCoordinator: SpawnWaitCoordinator;
@@ -496,6 +522,7 @@ class SpawnEngineImpl implements SpawnEngine {
     this.providers = deps.providers;
     this.dispatcher = deps.dispatcher;
     this.emit = deps.emit;
+    this.reportSink = deps.reports;
     this.unsubscribeEvents = deps.onEvents((event) => this.onEvent(event));
 
     this.waitCoordinator = new SpawnWaitCoordinator({
@@ -503,6 +530,8 @@ class SpawnEngineImpl implements SpawnEngine {
       store: this.store,
       snapshot: (threadId) => this.snapshot(threadId),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
+      onCollected: (scopeThreadId, threadId, turnId) => this.onCollected(scopeThreadId, threadId, turnId),
+      onAbandoned: (scopeThreadId, threadIds) => this.onAbandoned(scopeThreadId, threadIds),
     });
 
     this.continuation = new ThreadContinuationManager({
@@ -636,7 +665,21 @@ class SpawnEngineImpl implements SpawnEngine {
     }
 
     if (request.delegateToAgentId) {
-      this.store.bindThreadAgent(threadId, request.delegateToAgentId);
+      const binding = this.store.bindThreadAgent(threadId, request.delegateToAgentId);
+      // Ahead of thread.spawned: a renderer that has not heard the binding
+      // shows the child under a name rolled from its id instead of the
+      // teammate's, and nothing it does itself would teach it otherwise.
+      if (binding) {
+        this.emit({
+          type: "thread.agent-bound",
+          threadId,
+          provider: request.target.provider,
+          at: now,
+          source: "kone.store",
+          parentTurnId: caller.turnId,
+          binding,
+        });
+      }
     }
 
     const result: SpawnThreadResult = {
@@ -720,11 +763,19 @@ class SpawnEngineImpl implements SpawnEngine {
   }
 
   continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult> {
+    // Asked again: what the child does next is news once more.
+    if (this.isInSubtree(caller.threadId, request.threadId)) this.reportsOf(request.threadId).muted = false;
     return this.continuation.continueThread(caller, request);
   }
 
   cancelChild(caller: SpawnCaller, threadId: string): Promise<CancelChildResult> {
+    // Before the stop, whose recompute is what settles the child.
+    if (this.isInSubtree(caller.threadId, threadId)) this.muteReports(threadId);
     return this.controls.cancelChild(caller, threadId);
+  }
+
+  muteReports(threadId: string): void {
+    this.reportsOf(threadId).muted = true;
   }
 
   declineChildGate(
@@ -874,6 +925,7 @@ class SpawnEngineImpl implements SpawnEngine {
     this.waitCoordinator.dispose();
     this.tracked.clear();
     this.liveChildren.clear();
+    this.reports.clear();
   }
 
   private onEvent(event: RuntimeEvent): void {
@@ -958,6 +1010,10 @@ class SpawnEngineImpl implements SpawnEngine {
 
   private recompute(child: TrackedChild): void {
     const spawned = this.project(child, Date.now());
+    // The moment the child stops moving — a turn settled, or the session under
+    // a running turn went away. A parked gate is not it: that projection is
+    // not terminal.
+    const settled = spawned.terminal && child.lastProjection !== null && !child.lastProjection.terminal;
     if (spawned.terminal) this.liveChildren.delete(child.threadId);
     else this.liveChildren.add(child.threadId);
 
@@ -982,7 +1038,81 @@ class SpawnEngineImpl implements SpawnEngine {
       parentTurnId: child.parentTurnId,
       spawned,
     });
+    // Waiters first, so a parent parked on this child has collected it before
+    // anything decides whether to tell it.
     this.waitCoordinator.checkWaiters();
+    if (settled) this.scheduleReport(child);
+  }
+
+  private reportsOf(threadId: string): ChildReports {
+    let state = this.reports.get(threadId);
+    if (!state) {
+      state = { collected: new Set(), held: new Set(), reported: new Map(), muted: false };
+      this.reports.set(threadId, state);
+    }
+    return state;
+  }
+
+  /** Report the child's newest turn, a moment from now: the event that settled
+   *  it is still on its way to the store's other listeners, and the reply text
+   *  is read from the transcript they write. Only a real provider turn is
+   *  reported — a placeholder for a child that never got one going is a spawn
+   *  failure, which the spawn call itself answers. */
+  private scheduleReport(child: TrackedChild): void {
+    if (!this.reportSink) return;
+    const turnId = child.turns[child.turns.length - 1]?.turnId;
+    if (!turnId || turnId.startsWith("<")) return;
+    queueMicrotask(() => this.report(child, turnId));
+  }
+
+  private report(child: TrackedChild, turnId: string): void {
+    const sink = this.reportSink;
+    if (!sink || this.tracked.get(child.threadId) !== child) return;
+    const state = this.reportsOf(child.threadId);
+    if (state.reported.has(turnId) || state.collected.has(turnId)) return;
+    if (state.muted) {
+      state.reported.set(turnId, null);
+      return;
+    }
+    if (this.waitCoordinator.isCollecting(child.parentThreadId, child.threadId, turnId)) {
+      state.held.add(turnId);
+      return;
+    }
+    state.held.delete(turnId);
+    const turn = this.waitCoordinator.snapshotForWait(child.threadId, turnId);
+    if (!turn.terminal) return;
+    const report: SettledTurnReport = {
+      childThreadId: child.threadId,
+      parentThreadId: child.parentThreadId,
+      turnId,
+      handOff: child.handOff ?? "worker",
+      status: turn.status,
+    };
+    if (turn.summary) report.summary = turn.summary;
+    if (turn.detail) report.detail = turn.detail;
+    state.reported.set(turnId, sink.deliver(report));
+  }
+
+  /** Only the parent's own wait counts: a wait further up the chain tells that
+   *  agent, not the one the child works for. */
+  private onCollected(scopeThreadId: string, threadId: string, turnId: string): void {
+    const child = this.tracked.get(threadId);
+    if (!child || child.parentThreadId !== scopeThreadId) return;
+    const state = this.reportsOf(threadId);
+    state.collected.add(turnId);
+    state.held.delete(turnId);
+    const messageId = state.reported.get(turnId);
+    if (messageId) this.reportSink?.retract(child.parentThreadId, messageId);
+  }
+
+  private onAbandoned(scopeThreadId: string, threadIds: readonly string[]): void {
+    for (const threadId of threadIds) {
+      const child = this.tracked.get(threadId);
+      if (!child || child.parentThreadId !== scopeThreadId) continue;
+      for (const turnId of this.reportsOf(threadId).held) {
+        queueMicrotask(() => this.report(child, turnId));
+      }
+    }
   }
 
   private project(child: TrackedChild, now: number): SpawnedThread {

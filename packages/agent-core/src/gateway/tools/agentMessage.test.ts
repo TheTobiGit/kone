@@ -229,3 +229,36 @@ describe("how a delivery reads", () => {
     expect(text).toContain('kind "answer"');
   });
 });
+
+describe("names", () => {
+  /** The store with the project's thread list, which name routing reads. */
+  function withThreadList(): void {
+    const listed = Object.assign(store, {
+      listThreads: (projectPath: string) => [...store.metas.values()].filter((m) => m.projectPath === projectPath),
+    });
+    registry = createRegistry(createIrcTools({ store: listed, mailbox }));
+  }
+
+  test("an agent bound to no teammate is reached by the name rolled from its thread id", async () => {
+    withThreadList();
+    // "backend" rolls Heron, the name the renderer shows on that thread.
+    await registry.call(ctxFor("frontend"), "agent_message", { to: "heron", message: "Schema is final." });
+    expect(inbox("backend")).toHaveLength(1);
+    expect(inbox("backend")[0]?.sender?.name).toBe("Frontend Auth");
+  });
+
+  test("a contractor is reached by its contract name", async () => {
+    withThreadList();
+    await registry.call(ctxFor("backend"), "agent_message", { to: "Frontend Auth", message: "Endpoint is up." });
+    expect(inbox("frontend")).toHaveLength(1);
+    // And the guest it heard from is named, not described.
+    expect(inbox("frontend")[0]?.sender?.name).toBe("Heron");
+  });
+
+  test("agent_list names every peer the way the user sees it", async () => {
+    await registry.call(ctxFor("backend"), "agent_message", { to: "delegator", message: "Started." });
+    const result = await registry.call(ctxFor("main"), "agent_list", {});
+    const text = result.content.map((c) => ("text" in c ? c.text : "")).join("\n");
+    expect(text).toContain("Heron `backend`");
+  });
+});

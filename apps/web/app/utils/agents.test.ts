@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { ref } from "vue";
 
 import { rememberSideChatSource } from "~/composables/sideChats";
+import { agentIdentity } from "./agentIdentity";
 import {
   addAgentToProject,
   agentById,
@@ -30,6 +31,8 @@ import {
 import {
   agentRows,
   applyRosterSnapshot,
+  bindingHeard,
+  bindingsHeardSoFar,
   GUEST_BINDING,
   projectTeams,
   selectedAgentId,
@@ -847,6 +850,67 @@ describe("the store's answer arriving", () => {
 
     expect(agentById(made?.id)?.name).toBe("Ama");
     expect(threadBindings.value["thread-a"]).toBe(KONE.id);
+  });
+});
+
+describe("a binding the main process settled", () => {
+  function row(agentId: string) {
+    const now = Date.now();
+    return {
+      agentId,
+      presetId: agentId,
+      name: null,
+      role: null,
+      instructions: null,
+      faceBody: null,
+      faceInk: null,
+      skills: null,
+      model: null,
+      modelFallbacks: null,
+      avatar: null,
+      bot: null,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+  }
+
+  // A delegation binds its child in the main process, and the renderer made no
+  // write of its own to reconcile. Until it hears of the binding the child has
+  // no agent here and its transcript wears a name rolled from its id.
+  test("is who the thread runs as the moment it is heard", () => {
+    const id = threadId();
+    expect(agentForThread(id)).toBeUndefined();
+
+    bindingHeard({ threadId: id, agentId: KONE.id, route: null });
+
+    expect(agentForThread(id)?.id).toBe(KONE.id);
+    expect(agentIdentity(id).name).toBe(KONE.name);
+  });
+
+  test("survives a snapshot that was asked for before it was written", () => {
+    const id = threadId();
+    const askedAt = bindingsHeardSoFar();
+    bindingHeard({ threadId: id, agentId: KONE.id, route: null });
+
+    // The store answered before the spawn wrote the row, and the reply landed after.
+    applyRosterSnapshot(
+      { agents: [row(KONE.id)], bindings: [], selectedAgentId: null },
+      askedAt,
+    );
+
+    expect(agentForThread(id)?.id).toBe(KONE.id);
+  });
+
+  test("is dropped by a snapshot asked for after it, like any other row", () => {
+    const id = threadId();
+    bindingHeard({ threadId: id, agentId: KONE.id, route: null });
+
+    // Asked for after the binding was heard, so its absence means the thread is gone.
+    applyRosterSnapshot({ agents: [row(KONE.id)], bindings: [], selectedAgentId: null });
+
+    expect(threadBindings.value[id]).toBeUndefined();
   });
 });
 

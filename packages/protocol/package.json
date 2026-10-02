@@ -8,6 +8,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./agent-call-sign": {
+      "types": "./src/agentCallSign.ts",
+      "default": "./src/agentCallSign.ts"
+    },
     "./ipc-error": {
       "types": "./src/ipcError.ts",
       "default": "./src/ipcError.ts"

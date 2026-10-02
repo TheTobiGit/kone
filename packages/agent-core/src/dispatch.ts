@@ -14,7 +14,7 @@ import {
   type QuitResumeThreadSnapshot,
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
-import { renderSenderHeader } from "./senderHeader.js";
+import { renderSenderHeader, threadAgentName } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
 import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
 import {
@@ -300,7 +300,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   async startThread(requested: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
-    const input = this.withContractIdentity(requested);
+    const input = this.withThreadIdentity(requested);
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
     // Register the thread BEFORE the session starts: the gateway mints the
     // session's MCP token in startSession and the provider connects to it
@@ -433,11 +433,16 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   /** A contractor's session wakes as the contractor on every start — first,
    *  resumed, reopened by the user — not only when the spawn engine starts it:
    *  its identity lives on its thread, not the roster, so no caller outside
-   *  the engine would think to send it. An explicit persona still wins. */
-  private withContractIdentity(input: SessionStartInput): SessionStartInput {
+   *  the engine would think to send it. A guest likewise wakes knowing the
+   *  call sign other agents address it by. A thread bound to a teammate is
+   *  left to its caller, which sends the teammate's persona. An explicit
+   *  persona always wins. */
+  private withThreadIdentity(input: SessionStartInput): SessionStartInput {
     if (input.agent) return input;
     const contract = this.store.threadMeta(input.threadId)?.contract;
-    return contract ? { ...input, agent: contractPersona(contract) } : input;
+    if (contract) return { ...input, agent: contractPersona(contract) };
+    if (this.store.getThreadAgent(input.threadId)?.agentId) return input;
+    return { ...input, agent: { name: threadAgentName(this.store, input.threadId), guest: true } };
   }
 
   async ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void> {

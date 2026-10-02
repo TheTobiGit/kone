@@ -111,7 +111,7 @@ export class ConversationStore implements CheckpointStore {
   }
 
   /** @see AttachmentRowRepo */
-  registerAttachment(row: StoredAttachment): void {
+  registerAttachment(row: StoredAttachment): boolean {
     return this.attachmentRows.registerAttachment(row);
   }
 

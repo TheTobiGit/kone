@@ -45,7 +45,7 @@ export interface KoneContextOptions {
   /** The session's gateway grant. Absent means no `kone_*` tools were installed,
    *  and no host-context block is delivered at all. */
   gateway?: Pick<GatewayConnection, "tools" | "scope" | "role" | "modelPreferences">;
-  /** Whose name is on the thread. Absent for a guest, which is told nothing. */
+  /** Whose name is on the thread — a guest carries its call sign, flagged `guest`. */
   agent?: AgentPersona;
   /** Session role: worker agent on a codebase or global app assistant. */
   scope?: "worker" | "assistant";
@@ -245,12 +245,14 @@ export function renderKoneHostContext(
 // work, in the user's words, framed as standing orders rather than this turn's
 // request. An agent may have them or not; without them it is still just a name.
 //
-// A guest session is told none of this, which is the point. A guest name belongs
-// to the conversation rather than to anybody — it is rolled from the thread's id
-// so a column has a face — and telling a model it "is Alder" would make an actor
-// out of a label. A guest behaves exactly as it did before any of this existed.
+// A guest is told one thing and no more. Its name belongs to the conversation
+// rather than to anybody — it is rolled from the thread's id so a column has a
+// face — and telling a model it "is Alder" would make an actor out of a label.
+// But other agents address it by that name, and a message to "Alder" means
+// nothing to a session that has never heard it. So a guest learns its label,
+// framed as what others call it: no "you are", no standing orders.
 
-export const KONE_AGENT_IDENTITY_VERSION = "2026-08-20.4";
+export const KONE_AGENT_IDENTITY_VERSION = "2026-10-02.1";
 export const KONE_AGENT_IDENTITY_MARKER = `[kone agent identity ${KONE_AGENT_IDENTITY_VERSION}]`;
 
 const MAX_NAME_LENGTH = 48;
@@ -299,14 +301,21 @@ function sanitizeProse(value: string, limit: number): string {
     .slice(0, limit);
 }
 
-/** The agent's identity block, or "" for a guest — see the note above. Empty
- *  for a nameless agent too: a block that has to say "you are" and then trail
+/** The agent's identity block — for a guest, only the label others address it
+ *  by (see the note above); "" with no persona at all. Empty for a nameless
+ *  agent too: a block that has to say "you are" and then trail
  *  off is worse than no block. The agent's instructions, when it has any, follow
  *  the name. */
 export function renderAgentIdentity(agent: AgentPersona | undefined): string {
   if (!agent) return "";
   const name = oneLine(agent.name, MAX_NAME_LENGTH);
   if (!name) return "";
+  if (agent.guest) {
+    return [
+      KONE_AGENT_IDENTITY_MARKER,
+      `kone labels this conversation ${name}. Other agents see that name on your messages and address you by it, so a message to ${name} is a message to you.`,
+    ].join("\n");
+  }
   const lines = [
     KONE_AGENT_IDENTITY_MARKER,
     `The user handed this thread to a named agent, and you are it: in kone you are ${name}. kone labels your turns with that name and the user will address you by it, so answer to it, and use it when you refer to yourself.`,

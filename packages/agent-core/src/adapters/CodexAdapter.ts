@@ -29,6 +29,8 @@ import type {
   Session,
   SendTurnInput,
   SessionStartInput,
+  SubagentRunSnapshot,
+  SubagentStatus,
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
@@ -157,6 +159,24 @@ type CodexSession = {
    *  awaits `promise`; respondToRequest resolves it (or we drain on
    *  interrupt/stop) — the decision becomes the `requestApproval` reply. */
   pendingApprovals: Map<string, PendingApproval>;
+  /** Subagents the model spawned, keyed by the child's own Codex conversation
+   *  id — the `threadId` every one of its notifications names. A settled run
+   *  stays here so its late traffic is recognized and dropped. */
+  subagentRuns: Map<string, CodexSubagentRun>;
+  /** The turn each child conversation is running right now, child or deeper.
+   *  Stopping the parent has to reach these too. */
+  childLiveTurns: Map<string, string>;
+};
+
+/** One spawned subagent. The spawning call's item id is the run's id; the
+ *  child's items and status are filed under the parent turn that spawned it,
+ *  since kone never records the child's own turns. */
+type CodexSubagentRun = {
+  snapshot: SubagentRunSnapshot;
+  turnId: string;
+  settled: boolean;
+  /** The child's latest finished message — its report, once it settles. */
+  lastAssistantText?: string;
 };
 
 /** A parked Codex user-input request: the questions we emitted and the resolver
@@ -466,6 +486,49 @@ function normalizeItemType(raw: CodexJsonValue | null | undefined): string {
     .toLowerCase();
 }
 
+/** True when a notification or request names a Codex conversation other than
+ *  the session's own — the work of a subagent the model spawned, which Codex
+ *  streams over the parent's connection. Every app-server notification and
+ *  server request carries the `threadId` it belongs to; until the session's
+ *  own id is known, nothing is treated as foreign. */
+function isFromSubagent(session: CodexSession, params: CodexJsonValue | null | undefined): boolean {
+  const threadId = readString(params, "threadId");
+  return Boolean(threadId && session.conversationId && threadId !== session.conversationId);
+}
+
+/** Where a server request belongs. A subagent's request names the child's
+ *  turn, which kone never recorded, so it is filed under the parent turn that
+ *  spawned the child and scoped to its run; a child kone holds no run for falls
+ *  back to the parent's live turn. */
+type CodexRequestScope = { turnId?: string; subagentToolUseId?: string };
+
+function requestScope(session: CodexSession, params: CodexJsonValue | null | undefined): CodexRequestScope {
+  if (!isFromSubagent(session, params)) return { turnId: readString(params, "turnId") ?? session.activeTurnId };
+  const run = session.subagentRuns.get(readString(params, "threadId") ?? "");
+  if (!run) return { turnId: session.activeTurnId };
+  return { turnId: run.turnId, subagentToolUseId: run.snapshot.toolUseId };
+}
+
+/** Bound on each child interrupt, so a wedged child can't hold up stopping the parent. */
+const CHILD_INTERRUPT_TIMEOUT_MS = 3_000;
+
+const CODEX_DELTA_METHODS = [
+  "item/agentMessage/delta",
+  "item/reasoning/textDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/commandExecution/outputDelta",
+  "item/fileChange/outputDelta",
+  "item/plan/delta",
+];
+
+/** The run's label: the last segment of the agent path Codex gives a spawned
+ *  child (`/root/composer_review` → `composer_review`), the task name the
+ *  model chose for it. */
+function subagentLabel(agentPath: string | undefined): string | undefined {
+  const name = agentPath?.split("/").filter(Boolean).pop();
+  return name || undefined;
+}
+
 function toRuntimeItemKind(rawType: CodexJsonValue | null | undefined): { kind: RuntimeItemKind; defaultName?: string } | null {
   const type = normalizeItemType(rawType);
   if (!type || type.includes("user")) return null;
@@ -693,9 +756,9 @@ export class CodexAdapter implements ProviderAdapter {
     supportsToolEvents: true,
     supportsResume: true,
     supportsModelList: true,
-    // Codex has no nested-agent surface of its own (no Task/Agent tool), so a
-    // turn never fans out into runs kone could project.
-    supportsSubagents: false,
+    // A spawned subagent runs as its own Codex conversation; its items nest
+    // under the spawning call as a run (see openSubagentRun).
+    supportsSubagents: true,
     // The app-server compacts the thread's context on `thread/compact/start`
     // and announces the settled boundary as `thread/compacted`.
     compaction: { kind: "native" },
@@ -855,6 +918,8 @@ export class CodexAdapter implements ProviderAdapter {
       items: new Map(),
       pendingUserInputs: new Map(),
       pendingApprovals: new Map(),
+      subagentRuns: new Map(),
+      childLiveTurns: new Map(),
     };
     this.wireNotifications(session);
     this.wireRequests(session);
@@ -877,6 +942,8 @@ export class CodexAdapter implements ProviderAdapter {
       // request so no RPC handler hangs on a promise nothing will settle.
       this.drainApprovals(session);
       this.drainUserInputs(session);
+      // The children ran inside this process and died with it.
+      this.settleSubagentRuns(session, "failed");
       this.emit({ ...this.base(session), type: "session.exited", code });
     });
 
@@ -1056,6 +1123,16 @@ export class CodexAdapter implements ProviderAdapter {
     // Unblock any parked user-input request so the interrupt lands cleanly.
     this.drainUserInputs(session);
     this.drainApprovals(session);
+    // Each child is a conversation with turns of its own, and the parent's
+    // interrupt names only the parent's turn. Reach every running child first,
+    // best-effort and bounded: a child that already stopped just refuses.
+    await Promise.all(
+      [...session.childLiveTurns].map(([childThreadId, childTurnId]) =>
+        session.rpc
+          .call("turn/interrupt", { threadId: childThreadId, turnId: childTurnId }, CHILD_INTERRUPT_TIMEOUT_MS)
+          .catch(() => undefined),
+      ),
+    );
     await session.rpc.call("turn/interrupt", {
       threadId: session.conversationId,
       turnId: session.activeTurnId,
@@ -1083,6 +1160,7 @@ export class CodexAdapter implements ProviderAdapter {
     if (!turnId) return;
     session.activeTurnId = undefined;
     session.liveTurnIds.delete(turnId);
+    this.settleSubagentRuns(session, "stopped");
     this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
   }
 
@@ -1125,8 +1203,22 @@ export class CodexAdapter implements ProviderAdapter {
 
   private wireNotifications(session: CodexSession): void {
     const { rpc } = session;
+    // A subagent the model spawns runs as its own Codex conversation, but its
+    // notifications stream over this same connection. Its turns, usage and
+    // errors belong to that child, not to this session: letting them through
+    // would start and end turns kone never asked for and clear the parent's
+    // live turn when the child finishes. Only its items come through, nested
+    // under its run (see handleSubagentNotification).
+    const onOwnNotification = (method: string, handler: (params: CodexJsonValue | null | undefined) => void) =>
+      rpc.onNotification(method, (params) => {
+        if (isFromSubagent(session, params)) {
+          this.handleSubagentNotification(session, method, params);
+          return;
+        }
+        handler(params);
+      });
 
-    rpc.onNotification("turn/started", (params) => {
+    onOwnNotification("turn/started", (params) => {
       const turnId = readString(params, "turn", "id") ?? readString(params, "turnId");
       if (!turnId) return;
       session.activeTurnId = turnId;
@@ -1134,12 +1226,10 @@ export class CodexAdapter implements ProviderAdapter {
       this.emit({ ...this.base(session), type: "turn.started", turnId });
     });
 
-    rpc.onNotification("turn/plan/updated", (params) => {
-      // Honor the turn the notification names, not `activeTurnId`. Codex forwards
-      // child/collaboration-turn plans while the parent turn is still active, so
-      // keying off `activeTurnId` would let a child plan clobber the parent's and
-      // emit under the wrong turn. Fall back to `activeTurnId` only when the
-      // notification carries no turn id of its own.
+    onOwnNotification("turn/plan/updated", (params) => {
+      // Honor the turn the notification names, not `activeTurnId`, which can
+      // lag behind the wire around turn boundaries. Fall back to `activeTurnId`
+      // only when the notification carries no turn id of its own.
       const turnId =
         readString(params, "turn", "id") ??
         readString(params, "turnId") ??
@@ -1170,7 +1260,7 @@ export class CodexAdapter implements ProviderAdapter {
       );
     });
 
-    rpc.onNotification("turn/completed", (params) => {
+    onOwnNotification("turn/completed", (params) => {
       const turn = asRecord(params)?.turn;
       const turnId = readString(turn, "id") ?? readString(params, "turnId") ?? session.activeTurnId;
       const status = readString(turn, "status") ?? "completed";
@@ -1180,6 +1270,9 @@ export class CodexAdapter implements ProviderAdapter {
       }
       session.activeTurnId = undefined;
       if (!turnId) return;
+      // A run can outlive the turn that spawned it, and reports back on its
+      // own; one whose turn was stopped or failed has nobody left to report to.
+      if (status !== "completed") this.settleSubagentRuns(session, status === "failed" ? "failed" : "stopped", turnId);
       if (status === "completed") {
         this.emit({
           ...this.base(session),
@@ -1194,7 +1287,7 @@ export class CodexAdapter implements ProviderAdapter {
       this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason, message });
     });
 
-    rpc.onNotification("thread/tokenUsage/updated", (params) => {
+    onOwnNotification("thread/tokenUsage/updated", (params) => {
       // Codex shape: `{ tokenUsage: { last, total } }` where each side is a
       // breakdown with `totalTokens` / `inputTokens` / … `total` is the running
       // thread cumulative — ConversationStore keeps MAX
@@ -1271,31 +1364,23 @@ export class CodexAdapter implements ProviderAdapter {
       });
     });
 
-    rpc.onNotification("item/started", (params) => this.handleItemLifecycle(session, params, "started"));
-    rpc.onNotification("item/completed", (params) => this.handleItemLifecycle(session, params, "completed"));
+    onOwnNotification("item/started", (params) => this.handleItemLifecycle(session, params, "started"));
+    onOwnNotification("item/completed", (params) => this.handleItemLifecycle(session, params, "completed"));
 
     // The app-server announces a settled context compaction as
     // `thread/compacted` — the boundary the store invalidates its usage
     // snapshot on. Older builds instead complete a `context_compaction` item;
     // that path is caught in handleItemLifecycle. Both collapse into the one
     // count-less boundary below (see emitCompactedBoundary).
-    rpc.onNotification("thread/compacted", () => {
+    onOwnNotification("thread/compacted", () => {
       this.emitCompactedBoundary(session);
     });
 
-    const deltaMethods = [
-      "item/agentMessage/delta",
-      "item/reasoning/textDelta",
-      "item/reasoning/summaryTextDelta",
-      "item/commandExecution/outputDelta",
-      "item/fileChange/outputDelta",
-      "item/plan/delta",
-    ];
-    for (const method of deltaMethods) {
-      rpc.onNotification(method, (params) => this.handleDelta(session, params));
+    for (const method of CODEX_DELTA_METHODS) {
+      onOwnNotification(method, (params) => this.handleDelta(session, params));
     }
 
-    rpc.onNotification("error", (params) => {
+    onOwnNotification("error", (params) => {
       // Real app-server shape: `{ error: { message, additionalDetails,
       // codexErrorInfo }, threadId, turnId, willRetry }` — the message is
       // ServerNotification__ErrorNotification / __TurnError). Reading a flat
@@ -1330,7 +1415,7 @@ export class CodexAdapter implements ProviderAdapter {
       this.emit({ ...this.base(session), type: "session.state.changed", state: "error", message: fullMessage });
     });
 
-    rpc.onNotification("model/rerouted", (params) => {
+    onOwnNotification("model/rerouted", (params) => {
       // The app-server swapped the request to a different model mid-session
       // (e.g. an unavailable model falling back to the catalog default).
       // Surface it so the UI stops showing a stale model label.
@@ -1392,17 +1477,19 @@ export class CodexAdapter implements ProviderAdapter {
       return declinedApprovalReply(kind);
     }
     const requestId = randomUUID();
-    const turnId = readString(params, "turnId") ?? session.activeTurnId;
+    const { turnId, subagentToolUseId } = requestScope(session, params);
     const approval = buildApprovalRequest(kind, params);
     const decision = await new Promise<ApprovalDecision>((resolve) => {
       session.pendingApprovals.set(requestId, { kind, params, approval, resolve });
-      this.emit({
+      const requested: Extract<RuntimeEvent, { type: "approval.requested" }> = {
         ...this.base(session),
         type: "approval.requested",
         requestId,
         turnId,
         approval,
-      });
+      };
+      if (subagentToolUseId) requested.subagentToolUseId = subagentToolUseId;
+      this.emit(requested);
     });
     this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
     // A permission grant has no "cancel" reply — refusals are just empty
@@ -1442,7 +1529,7 @@ export class CodexAdapter implements ProviderAdapter {
     if (questions.length === 0) return { answers: {} };
 
     const requestId = randomUUID();
-    const turnId = readString(params, "turnId") ?? session.activeTurnId;
+    const { turnId } = requestScope(session, params);
     const answers = await new Promise<UserInputAnswers>((resolve) => {
       session.pendingUserInputs.set(requestId, { questions, resolve });
       this.emit({
@@ -1482,19 +1569,71 @@ export class CodexAdapter implements ProviderAdapter {
     }
   }
 
-  private handleItemLifecycle(session: CodexSession, params: CodexJsonValue | null | undefined, lifecycle: "started" | "completed"): void {
+  /** Route one notification from a child conversation. Turn lifecycle only
+   *  tracks which child turn is running, so stopping the parent can reach it;
+   *  items and deltas nest under the child's run. A child kone holds no run
+   *  for — one spawned by another child, or one whose spawn was never seen —
+   *  and a settled run's late traffic are dropped, as are the child's usage,
+   *  errors, plans and compactions. */
+  private handleSubagentNotification(
+    session: CodexSession,
+    method: string,
+    params: CodexJsonValue | null | undefined,
+  ): void {
+    const childThreadId = readString(params, "threadId");
+    if (!childThreadId) return;
+    if (method === "turn/started") {
+      const turnId = readString(params, "turn", "id") ?? readString(params, "turnId");
+      if (turnId) session.childLiveTurns.set(childThreadId, turnId);
+      return;
+    }
+    if (method === "turn/completed") {
+      session.childLiveTurns.delete(childThreadId);
+      return;
+    }
+    const run = session.subagentRuns.get(childThreadId);
+    if (!run || run.settled) return;
+    if (method === "item/started") this.handleItemLifecycle(session, params, "started", run);
+    else if (method === "item/completed") this.handleItemLifecycle(session, params, "completed", run);
+    else if (CODEX_DELTA_METHODS.includes(method)) this.handleDelta(session, params, run);
+  }
+
+  /** `run` is set when the item comes from a spawned child: it files under the
+   *  run's turn, scoped to the run, and feeds the run's progress. */
+  private handleItemLifecycle(
+    session: CodexSession,
+    params: CodexJsonValue | null | undefined,
+    lifecycle: "started" | "completed",
+    run?: CodexSubagentRun,
+  ): void {
     const payload = asRecord(params);
     const raw = asRecord(payload?.item) ?? payload;
     if (!raw) return;
     const itemId = readString(raw, "id") ?? readString(raw, "itemId");
     if (!itemId) return;
+    const itemType = normalizeItemType(raw.type);
 
     // Older app-server builds settle a compaction as a `context_compaction`
     // item rather than a `thread/compacted` notification — either way the
     // boundary is the same `thread.state.changed` "compacted" event. The item
     // itself carries no transcript content, so only the boundary is emitted.
-    if (lifecycle === "completed" && normalizeItemType(raw.type).includes("compact")) {
-      this.emitCompactedBoundary(session);
+    if (itemType.includes("compact")) {
+      if (lifecycle === "completed" && !run) this.emitCompactedBoundary(session);
+      return;
+    }
+
+    // File the item under the turn the notification names; `activeTurnId` is
+    // only a fallback for payloads that carry none.
+    const turnId = run ? run.turnId : (readString(payload, "turnId") ?? session.activeTurnId);
+
+    // Spawn bookkeeping is only this session's own; a child's spawns (its own
+    // children) are not nested, and its notes to the parent aren't transcript.
+    if (itemType === "sub agent activity") {
+      if (!run && turnId) this.handleSubagentActivity(session, raw, itemId, turnId);
+      return;
+    }
+    if (!run && turnId && itemType === "collab agent tool call" && readString(raw, "tool") === "spawnAgent") {
+      this.handleSpawnCall(session, raw, itemId, turnId, lifecycle);
       return;
     }
 
@@ -1514,7 +1653,12 @@ export class CodexAdapter implements ProviderAdapter {
         detail: "",
       };
       session.items.set(itemId, buffer);
-      this.emitItem(session, "item.started", buffer, "in-progress");
+      this.emitItem(session, "item.started", buffer, "in-progress", turnId, run);
+      if (run && buffer.kind === "tool_call") {
+        run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;
+        run.snapshot.lastToolName = buffer.name;
+        this.emitSubagent(session, run, "subagent.updated");
+      }
       return;
     }
 
@@ -1536,10 +1680,162 @@ export class CodexAdapter implements ProviderAdapter {
       "item.completed",
       buffer,
       mapCodexItemStatus(readString(raw, "status"), Boolean(asRecord(raw.error))),
+      turnId,
+      run,
     );
+    if (run && kind === "assistant_text" && buffer.text.trim()) run.lastAssistantText = buffer.text;
   }
 
-  private handleDelta(session: CodexSession, params: CodexJsonValue | null | undefined): void {
+  /** A `subAgentActivity` item is the parent's record of a child: `started`
+   *  when the model spawns it (the item id is the spawning call's), then
+   *  `interacted` each time the parent sends it more, and `completed` or
+   *  `interrupted` when it finishes. None of it is transcript of its own — it
+   *  opens, reopens and settles the child's run. */
+  private handleSubagentActivity(session: CodexSession, raw: CodexJsonObject, itemId: string, turnId: string): void {
+    const childThreadId = readString(raw, "agentThreadId");
+    if (!childThreadId) return;
+    const activity = readString(raw, "kind");
+    if (activity === "started") {
+      this.openSubagentRun(session, childThreadId, itemId, turnId, { agentPath: readString(raw, "agentPath") });
+      return;
+    }
+    const run = session.subagentRuns.get(childThreadId);
+    if (!run) return;
+    if (activity === "completed") this.settleSubagentRun(session, run, "completed");
+    else if (activity === "interrupted") this.settleSubagentRun(session, run, "stopped");
+    else if (activity === "interacted" && run.settled) {
+      // Fresh input to a child that had finished: it works again, in the same run.
+      run.settled = false;
+      run.snapshot.status = "running";
+      delete run.snapshot.endedAt;
+      this.emitSubagent(session, run, "subagent.updated");
+    }
+  }
+
+  /** A `collabAgentToolCall` for `spawnAgent` names the children it created in
+   *  `receiverThreadIds`, with the brief and model it gave them. It opens the
+   *  same runs a `subAgentActivity` start does; whichever arrives second only
+   *  fills in what the first didn't know. The call itself returns as soon as the
+   *  child exists, but it stays open until the child settles, so the step
+   *  reads as running for as long as the child does. */
+  private handleSpawnCall(
+    session: CodexSession,
+    raw: CodexJsonObject,
+    itemId: string,
+    turnId: string,
+    lifecycle: "started" | "completed",
+  ): void {
+    const receivers = Array.isArray(raw.receiverThreadIds)
+      ? raw.receiverThreadIds.filter((id): id is string => Boolean(id) && !(id instanceof Object)).map(String)
+      : [];
+    const spawn = {
+      prompt: readString(raw, "prompt"),
+      model: readString(raw, "model"),
+      effort: readString(raw, "reasoningEffort"),
+    };
+    for (const childThreadId of receivers) {
+      this.openSubagentRun(session, childThreadId, itemId, turnId, spawn);
+    }
+    if (lifecycle !== "completed") return;
+    const failed = mapCodexItemStatus(readString(raw, "status"), Boolean(asRecord(raw.error))) === "failed";
+    const runs = [...session.subagentRuns.values()].filter((run) => run.snapshot.toolUseId === itemId);
+    if (failed) {
+      for (const run of runs) this.settleSubagentRun(session, run, "failed");
+    }
+    // A spawn that named no child has no run to close the call later.
+    if (runs.length === 0) {
+      const buffer = session.items.get(itemId);
+      if (buffer) this.emitItem(session, "item.completed", buffer, failed ? "failed" : "completed", turnId);
+    }
+  }
+
+  /** Open (or fill in) the run for one spawned child. Opening emits the spawn
+   *  call as a subagent tool call first, then `subagent.started`, so the run
+   *  has its call to hang from. */
+  private openSubagentRun(
+    session: CodexSession,
+    childThreadId: string,
+    toolUseId: string,
+    turnId: string,
+    spawn: { agentPath?: string; prompt?: string; model?: string; effort?: string },
+  ): void {
+    const description = subagentLabel(spawn.agentPath);
+    const existing = session.subagentRuns.get(childThreadId);
+    if (existing) {
+      const snapshot = existing.snapshot;
+      let changed = false;
+      for (const [key, value] of [
+        ["description", description],
+        ["prompt", spawn.prompt],
+        ["model", spawn.model],
+        ["effort", spawn.effort],
+      ] as const) {
+        if (value && !snapshot[key]) {
+          snapshot[key] = value;
+          changed = true;
+        }
+      }
+      const buffer = session.items.get(snapshot.parentItemId ?? "");
+      if (buffer && description && !buffer.text) {
+        buffer.text = description;
+        this.emitItem(session, "item.updated", buffer, "in-progress", existing.turnId);
+      }
+      if (changed) this.emitSubagent(session, existing, "subagent.updated");
+      return;
+    }
+
+    let buffer = session.items.get(toolUseId);
+    if (!buffer) {
+      buffer = { itemId: toolUseId, kind: "tool_call", name: "agent", text: description ?? "", detail: "" };
+      session.items.set(toolUseId, buffer);
+      this.emitItem(session, "item.started", buffer, "in-progress", turnId);
+    }
+    const snapshot: SubagentRunSnapshot = {
+      toolUseId,
+      parentItemId: toolUseId,
+      status: "running",
+      startedAt: Date.now(),
+    };
+    if (description) snapshot.description = description;
+    if (spawn.prompt) snapshot.prompt = spawn.prompt;
+    // A spawn that names no model runs on the parent's.
+    const model = spawn.model ?? session.model;
+    if (model) snapshot.model = model;
+    if (spawn.effort) snapshot.effort = spawn.effort;
+    const run: CodexSubagentRun = { snapshot, turnId, settled: false };
+    session.subagentRuns.set(childThreadId, run);
+    this.emitSubagent(session, run, "subagent.started");
+  }
+
+  /** Settle every live run — or only those spawned by `turnId` — the same way. */
+  private settleSubagentRuns(session: CodexSession, status: SubagentStatus, turnId?: string): void {
+    for (const run of session.subagentRuns.values()) {
+      if (!turnId || run.turnId === turnId) this.settleSubagentRun(session, run, status);
+    }
+  }
+
+  /** Close a run out once: stamp its outcome and report, emit
+   *  `subagent.completed`, and close the spawn call it hangs from. */
+  private settleSubagentRun(session: CodexSession, run: CodexSubagentRun, status: SubagentStatus): void {
+    if (run.settled) return;
+    run.settled = true;
+    run.snapshot.status = status;
+    run.snapshot.endedAt = Date.now();
+    if (run.lastAssistantText) run.snapshot.summary = run.lastAssistantText;
+    this.emitSubagent(session, run, "subagent.completed");
+    const buffer = session.items.get(run.snapshot.toolUseId);
+    if (buffer) this.emitItem(session, "item.completed", buffer, status === "failed" ? "failed" : "completed", run.turnId);
+  }
+
+  private emitSubagent(
+    session: CodexSession,
+    run: CodexSubagentRun,
+    type: "subagent.started" | "subagent.updated" | "subagent.completed",
+  ): void {
+    this.emit({ ...this.base(session), type, turnId: run.turnId, subagent: { ...run.snapshot } });
+  }
+
+  private handleDelta(session: CodexSession, params: CodexJsonValue | null | undefined, run?: CodexSubagentRun): void {
     const payload = asRecord(params);
     if (!payload) return;
     const itemId = readString(payload, "itemId") ?? readString(payload.item, "id");
@@ -1556,7 +1852,8 @@ export class CodexAdapter implements ProviderAdapter {
     } else {
       buffer.text += delta;
     }
-    this.emitItem(session, "item.updated", buffer, "in-progress");
+    const turnId = run ? run.turnId : (readString(payload, "turnId") ?? session.activeTurnId);
+    this.emitItem(session, "item.updated", buffer, "in-progress", turnId, run);
   }
 
   private completePlanItem(session: CodexSession, turnId: string): void {
@@ -1573,6 +1870,7 @@ export class CodexAdapter implements ProviderAdapter {
     buffer: CodexItemBuffer,
     status: RuntimeItemStatus,
     turnId: string | undefined = session.activeTurnId,
+    run?: CodexSubagentRun,
   ): void {
     if (!turnId) return;
     const item: RuntimeItem = {
@@ -1584,7 +1882,14 @@ export class CodexAdapter implements ProviderAdapter {
     };
     if (buffer.tasks?.length) item.tasks = buffer.tasks;
     if (buffer.detail.length > 0) item.detail = buffer.detail;
-    this.emit({ ...this.base(session), type, turnId, item });
+    const event: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = {
+      ...this.base(session),
+      type,
+      turnId,
+      item,
+    };
+    if (run) event.subagentToolUseId = run.snapshot.toolUseId;
+    this.emit(event);
   }
 
   // ── shared helpers ───────────────────────────────────────────────────────

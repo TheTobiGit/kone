@@ -11,6 +11,9 @@ import { setUserDataDir } from "../userDataDir.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Database } from "bun:sqlite";
+import type { JsonRpcRequestHandler } from "../jsonRpc.js";
+import type { JsonValue } from "../lib-jsonValue.js";
+import type { SubagentRunSnapshot } from "../types.js";
 
 // Two hazards to dodge. First, the import chain reaches AttachmentStore →
 // ConversationStore → node:sqlite (an Electron-runtime built-in this bun can't
@@ -253,5 +256,293 @@ describe("CodexAdapter turn input with invoked skills", () => {
     await expect(helpers.buildCodexTurnInputItems({ threadId: "t", input: "   " })).rejects.toThrow(
       "Turn input must include text or an attachment.",
     );
+  });
+});
+
+// Codex streams a spawned subagent's notifications over the parent's own
+// app-server connection, each stamped with the child conversation's `threadId`.
+// These drive the adapter's real notification handlers with a stand-in RPC.
+type NotificationHandler = (params: JsonValue | null | undefined) => void;
+
+function wiredCodexSession(conversationId: string) {
+  const events: Array<{
+    type: string;
+    turnId?: string;
+    requestId?: string;
+    subagentToolUseId?: string;
+    item?: { itemId: string; kind: string; name?: string; text: string; status: string };
+    subagent?: SubagentRunSnapshot;
+  }> = [];
+  const adapter = new helpers.CodexAdapter((event) => {
+    // SAFETY: the test only reads the type/turnId/item fields every runtime event shape it asserts on carries.
+    events.push(event as (typeof events)[number]);
+  });
+  const notifications = new Map<string, NotificationHandler>();
+  const requests = new Map<string, JsonRpcRequestHandler>();
+  const calls: Array<{ method: string; params: JsonValue }> = [];
+  const rpc = {
+    onNotification: (method: string, handler: NotificationHandler) => notifications.set(method, handler),
+    onRequest: (method: string, handler: JsonRpcRequestHandler) => requests.set(method, handler),
+    onExit: () => undefined,
+    kill: async () => undefined,
+    call: async (method: string, params: JsonValue) => {
+      calls.push({ method, params });
+      return {};
+    },
+  };
+  const session = {
+    threadId: "kone-thread",
+    cwd: "/tmp",
+    mode: "accept-edits",
+    conversationId,
+    rpc,
+    liveTurnIds: new Set<string>(),
+    items: new Map(),
+    pendingUserInputs: new Map(),
+    pendingApprovals: new Map(),
+    subagentRuns: new Map(),
+    childLiveTurns: new Map<string, string>(),
+  };
+  // SAFETY: `session` carries every CodexSession field the notification and
+  // request handlers read; the stand-in rpc implements the four methods they call.
+  const wired = session as never;
+  adapter["sessions"].set(session.threadId, wired);
+  adapter["wireNotifications"](wired);
+  adapter["wireRequests"](wired);
+  const notify = (method: string, params: JsonValue) => {
+    const handler = notifications.get(method);
+    if (!handler) throw new Error(`no handler for ${method}`);
+    handler(params);
+  };
+  const request = (method: string, params: JsonValue) => {
+    const handler = requests.get(method);
+    if (!handler) throw new Error(`no handler for ${method}`);
+    return handler(params);
+  };
+  return { adapter, events, session, notify, request, calls };
+}
+
+describe("CodexAdapter subagent (spawn_agent) notifications", () => {
+  const PARENT = "parent-conv";
+  const CHILD = "child-conv";
+  const PARENT_TURN = "parent-turn";
+  const CHILD_TURN = "child-turn";
+
+  function agentMessage(threadId: string, turnId: string, id: string, lifecycle: "item/started" | "item/completed", text = "") {
+    return [lifecycle, { threadId, turnId, item: { type: "agentMessage", id, text } }] as const;
+  }
+
+  test("a child's turn and items never touch the parent's turn, and the parent's final answer lands", async () => {
+    const { adapter, events, session, notify } = wiredCodexSession(PARENT);
+
+    notify("turn/started", { threadId: PARENT, turn: { id: PARENT_TURN, status: "inProgress" } });
+    notify(...agentMessage(PARENT, PARENT_TURN, "p-intro", "item/started"));
+    notify("item/agentMessage/delta", { threadId: PARENT, turnId: PARENT_TURN, itemId: "p-intro", delta: "Spawning reviewers." });
+    notify(...agentMessage(PARENT, PARENT_TURN, "p-intro", "item/completed", "Spawning reviewers."));
+
+    // The child runs a whole turn of its own while the parent's turn is live.
+    notify("turn/started", { threadId: CHILD, turn: { id: CHILD_TURN, status: "inProgress" } });
+    notify(...agentMessage(CHILD, CHILD_TURN, "c-msg", "item/started"));
+    notify("item/agentMessage/delta", { threadId: CHILD, turnId: CHILD_TURN, itemId: "c-msg", delta: "Child partial" });
+    notify(...agentMessage(CHILD, CHILD_TURN, "c-msg", "item/completed", "Child partial"));
+    notify("thread/tokenUsage/updated", { threadId: CHILD, turnId: CHILD_TURN, tokenUsage: { total: { totalTokens: 1 }, last: { totalTokens: 1 } } });
+    notify("turn/completed", { threadId: CHILD, turn: { id: CHILD_TURN, status: "completed" } });
+
+    // The parent is still running after its child finished.
+    expect(session.activeTurnId).toBe(PARENT_TURN);
+    expect((await adapter.listSessions())[0]?.status).toBe("running");
+
+    notify(...agentMessage(PARENT, PARENT_TURN, "p-final", "item/started"));
+    notify("item/agentMessage/delta", { threadId: PARENT, turnId: PARENT_TURN, itemId: "p-final", delta: "Final answer." });
+    notify(...agentMessage(PARENT, PARENT_TURN, "p-final", "item/completed", "Final answer."));
+    notify("turn/completed", { threadId: PARENT, turn: { id: PARENT_TURN, status: "completed" } });
+
+    const lifecycle = events.filter((e) => e.type.startsWith("turn."));
+    expect(lifecycle.map((e) => [e.type, e.turnId])).toEqual([
+      ["turn.started", PARENT_TURN],
+      ["turn.completed", PARENT_TURN],
+    ]);
+    const final = events.filter((e) => e.type === "item.completed" && e.item?.itemId === "p-final");
+    expect(final).toHaveLength(1);
+    expect(final[0]?.turnId).toBe(PARENT_TURN);
+    expect(final[0]?.item?.text).toBe("Final answer.");
+    // Nothing from the child is filed as the parent's own transcript or usage.
+    expect(events.some((e) => e.item?.itemId === "c-msg")).toBe(false);
+    expect(events.some((e) => e.type === "thread.token-usage.updated")).toBe(false);
+    expect(session.activeTurnId).toBeUndefined();
+  });
+
+  test("a child's fatal error neither aborts the parent's turn nor flips the session to error", () => {
+    const { events, session, notify } = wiredCodexSession(PARENT);
+    notify("turn/started", { threadId: PARENT, turn: { id: PARENT_TURN, status: "inProgress" } });
+    notify("error", { threadId: CHILD, turnId: CHILD_TURN, willRetry: false, error: { message: "child blew up" } });
+    expect(session.activeTurnId).toBe(PARENT_TURN);
+    expect(events.some((e) => e.type === "turn.aborted" || e.type === "session.state.changed")).toBe(false);
+  });
+
+  test("a child's approval request still parks for the user, filed under the parent's live turn", async () => {
+    const { events, notify, request, adapter } = wiredCodexSession(PARENT);
+    notify("turn/started", { threadId: PARENT, turn: { id: PARENT_TURN, status: "inProgress" } });
+    const reply = request("item/commandExecution/requestApproval", {
+      threadId: CHILD,
+      turnId: CHILD_TURN,
+      itemId: "c-cmd",
+      command: "ls",
+    });
+    const asked = events.find((e) => e.type === "approval.requested");
+    expect(asked?.turnId).toBe(PARENT_TURN);
+    const requestId = asked?.requestId;
+    if (!requestId) throw new Error("approval.requested carried no requestId");
+    await adapter.respondToRequest("kone-thread", requestId, "allow-once");
+    expect(await reply).toBeDefined();
+  });
+});
+
+describe("CodexAdapter nests spawned subagents under the parent turn", () => {
+  const PARENT = "parent-conv";
+  const CHILD = "child-conv";
+  const PARENT_TURN = "parent-turn";
+  const CHILD_TURN = "child-turn";
+  const SPAWN = "call_spawn";
+
+  function spawnActivity(kind: "started" | "interacted" | "interrupted" | "completed", id = SPAWN) {
+    return {
+      threadId: PARENT,
+      turnId: PARENT_TURN,
+      item: { type: "subAgentActivity", id, kind, agentThreadId: CHILD, agentPath: "/root/composer_review" },
+    };
+  }
+
+  function startParentAndSpawn() {
+    const wired = wiredCodexSession(PARENT);
+    wired.notify("turn/started", { threadId: PARENT, turn: { id: PARENT_TURN, status: "inProgress" } });
+    wired.notify("item/completed", spawnActivity("started"));
+    return wired;
+  }
+
+  test("a spawn opens a run on a subagent tool call, and the child's items land inside it", () => {
+    const { events, notify } = startParentAndSpawn();
+
+    const spawnIndex = events.findIndex((e) => e.type === "item.started" && e.item?.itemId === SPAWN);
+    const runIndex = events.findIndex((e) => e.type === "subagent.started");
+    expect(spawnIndex).toBeGreaterThanOrEqual(0);
+    // The run attaches to its tool call, so the call has to exist first.
+    expect(runIndex).toBeGreaterThan(spawnIndex);
+    const spawn = events[spawnIndex];
+    expect(spawn?.turnId).toBe(PARENT_TURN);
+    expect(spawn?.item).toMatchObject({ kind: "tool_call", name: "agent", text: "composer_review", status: "in-progress" });
+    expect(events[runIndex]?.turnId).toBe(PARENT_TURN);
+    expect(events[runIndex]?.subagent).toMatchObject({
+      toolUseId: SPAWN,
+      parentItemId: SPAWN,
+      description: "composer_review",
+      status: "running",
+    });
+
+    notify("turn/started", { threadId: CHILD, turn: { id: CHILD_TURN, status: "inProgress" } });
+    notify("item/started", { threadId: CHILD, turnId: CHILD_TURN, item: { type: "commandExecution", id: "c-cmd", command: "ls" } });
+    notify("item/started", { threadId: CHILD, turnId: CHILD_TURN, item: { type: "agentMessage", id: "c-msg", text: "" } });
+    notify("item/agentMessage/delta", { threadId: CHILD, turnId: CHILD_TURN, itemId: "c-msg", delta: "Child report" });
+    notify("item/completed", { threadId: CHILD, turnId: CHILD_TURN, item: { type: "agentMessage", id: "c-msg", text: "Child report" } });
+    notify("turn/completed", { threadId: CHILD, turn: { id: CHILD_TURN, status: "completed" } });
+
+    const childItems = events.filter((e) => e.item?.itemId === "c-msg" || e.item?.itemId === "c-cmd");
+    expect(childItems.length).toBeGreaterThan(0);
+    for (const e of childItems) {
+      expect(e.turnId).toBe(PARENT_TURN);
+      expect(e.subagentToolUseId).toBe(SPAWN);
+    }
+    expect(childItems.find((e) => e.type === "item.completed" && e.item?.itemId === "c-msg")?.item?.text).toBe("Child report");
+    // The child's tool use shows as live progress on the run.
+    expect(events.some((e) => e.type === "subagent.updated" && e.subagent?.lastToolName === "run" && e.subagent.toolUses === 1)).toBe(true);
+    // Still no child turn lifecycle on the parent.
+    expect(events.filter((e) => e.type.startsWith("turn.")).map((e) => e.turnId)).toEqual([PARENT_TURN]);
+  });
+
+  test("the parent's completion notice settles the run with the child's last message and closes the spawn call", () => {
+    const { events, notify } = startParentAndSpawn();
+    notify("turn/started", { threadId: CHILD, turn: { id: CHILD_TURN, status: "inProgress" } });
+    notify("item/completed", { threadId: CHILD, turnId: CHILD_TURN, item: { type: "agentMessage", id: "c-msg", text: "Child report" } });
+    notify("turn/completed", { threadId: CHILD, turn: { id: CHILD_TURN, status: "completed" } });
+    notify("item/completed", spawnActivity("completed", "subagent-completed-1"));
+
+    const settled = events.filter((e) => e.type === "subagent.completed");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]?.turnId).toBe(PARENT_TURN);
+    expect(settled[0]?.subagent).toMatchObject({ toolUseId: SPAWN, status: "completed", summary: "Child report" });
+    expect(settled[0]?.subagent?.endedAt).toBeNumber();
+    const closed = events.filter((e) => e.type === "item.completed" && e.item?.itemId === SPAWN);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.item?.status).toBe("completed");
+    // The completion notice is bookkeeping, not a transcript entry.
+    expect(events.some((e) => e.item?.itemId === "subagent-completed-1")).toBe(false);
+
+    // A settled run takes no more traffic.
+    const before = events.length;
+    notify("item/completed", { threadId: CHILD, turnId: CHILD_TURN, item: { type: "agentMessage", id: "late", text: "late" } });
+    expect(events.length).toBe(before);
+  });
+
+  test("a collabAgentToolCall spawn opens the run with its prompt and model, once", () => {
+    const { events, notify } = wiredCodexSession(PARENT);
+    notify("turn/started", { threadId: PARENT, turn: { id: PARENT_TURN, status: "inProgress" } });
+    notify("item/started", {
+      threadId: PARENT,
+      turnId: PARENT_TURN,
+      item: {
+        type: "collabAgentToolCall",
+        id: SPAWN,
+        tool: "spawnAgent",
+        status: "inProgress",
+        senderThreadId: PARENT,
+        receiverThreadIds: [CHILD],
+        prompt: "Review the composer",
+        model: "gpt-6.1-sol",
+        reasoningEffort: "high",
+        agentsStates: {},
+      },
+    });
+    notify("item/completed", spawnActivity("started"));
+
+    expect(events.filter((e) => e.type === "subagent.started")).toHaveLength(1);
+    const run = events.find((e) => e.type === "subagent.started")?.subagent;
+    expect(run).toMatchObject({ toolUseId: SPAWN, parentItemId: SPAWN, prompt: "Review the composer", model: "gpt-6.1-sol", effort: "high" });
+    expect(events.find((e) => e.type === "item.started" && e.item?.itemId === SPAWN)?.item?.name).toBe("agent");
+    expect(events.filter((e) => e.type === "item.started" && e.item?.itemId === SPAWN)).toHaveLength(1);
+  });
+
+  test("a known child's approval is scoped to its run", () => {
+    const { events, request } = startParentAndSpawn();
+    void request("item/commandExecution/requestApproval", { threadId: CHILD, turnId: CHILD_TURN, itemId: "c-cmd", command: "ls" });
+    const asked = events.find((e) => e.type === "approval.requested");
+    expect(asked?.turnId).toBe(PARENT_TURN);
+    expect(asked?.subagentToolUseId).toBe(SPAWN);
+  });
+
+  test("interrupting the parent interrupts every child turn still running, then the parent", async () => {
+    const { adapter, notify, calls } = startParentAndSpawn();
+    notify("turn/started", { threadId: CHILD, turn: { id: CHILD_TURN, status: "inProgress" } });
+    notify("turn/started", { threadId: "other-child", turn: { id: "other-turn", status: "inProgress" } });
+    notify("turn/completed", { threadId: "other-child", turn: { id: "other-turn", status: "completed" } });
+
+    await adapter.interruptTurn("kone-thread");
+
+    const interrupts = calls.filter((c) => c.method === "turn/interrupt").map((c) => c.params);
+    expect(interrupts).toEqual([
+      { threadId: CHILD, turnId: CHILD_TURN },
+      { threadId: PARENT, turnId: PARENT_TURN },
+    ]);
+  });
+
+  test("a parent turn that ends interrupted settles its live runs as stopped", () => {
+    const { events, notify } = startParentAndSpawn();
+    notify("turn/completed", { threadId: PARENT, turn: { id: PARENT_TURN, status: "interrupted" } });
+    const settled = events.find((e) => e.type === "subagent.completed");
+    expect(settled?.subagent).toMatchObject({ toolUseId: SPAWN, status: "stopped" });
+    expect(events.find((e) => e.type === "item.completed" && e.item?.itemId === SPAWN)).toBeDefined();
+    // The run settles before the turn it belongs to closes.
+    const settledAt = events.findIndex((e) => e.type === "subagent.completed");
+    const abortedAt = events.findIndex((e) => e.type === "turn.aborted");
+    expect(settledAt).toBeLessThan(abortedAt);
   });
 });

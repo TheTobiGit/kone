@@ -141,7 +141,10 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
       // Delivered. Drain exactly what was handed over, so a message that
       // arrived while the turn was starting is still unread and still gets its
       // own delivery.
-      deps.mailbox.getInbox(threadId, { limit: messages.length });
+      deps.mailbox.markRead(
+        threadId,
+        messages.map((m) => m.id),
+      );
       // Past the batch cap the rest stayed behind. Nothing else is going to
       // come along for them — the senders' events have already fired — so the
       // overflow arms its own round rather than waiting for a message that may

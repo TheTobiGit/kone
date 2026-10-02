@@ -810,10 +810,37 @@ const armed = computed(
 const commitReady = computed(() => (isJob.value ? armed.value && hasProject.value : armed.value));
 const card = computed(() => hasAttachments.value);
 
-// Read the surface's natural height at its current (settled) width.
+// Read the surface's natural height at its open width. Mid-wake the surface is
+// still orb-wide (its width eases out a beat later), and text wrapped that
+// narrow reads far too tall — so then a hidden copy at the full track width is
+// measured instead.
 function measure(): number {
   const el = surface.value;
   if (!el) return REST;
+  const track = el.parentElement;
+  if (track) {
+    const cs = getComputedStyle(track);
+    const width = track.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    if (Math.abs(parseFloat(getComputedStyle(el).width) - width) > 1) {
+      // SAFETY: a deep clone of an HTMLElement is an HTMLElement of the same tag.
+      const ghost = el.cloneNode(true) as HTMLElement;
+      ghost.setAttribute("aria-hidden", "true");
+      Object.assign(ghost.style, {
+        position: "absolute",
+        top: "0",
+        left: "0",
+        width: `${width}px`,
+        height: "auto",
+        visibility: "hidden",
+        pointerEvents: "none",
+        transition: "none",
+      });
+      track.appendChild(ghost);
+      const h = ghost.offsetHeight;
+      ghost.remove();
+      return h;
+    }
+  }
   const prev = el.style.height;
   el.style.height = "auto";
   const h = el.offsetHeight;

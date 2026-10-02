@@ -82,15 +82,19 @@ describe("promptAttachments", () => {
     expect(emptyTextComposed).toBe(block);
   });
 
-  test("buildTextAttachmentBlock returns empty string when no attachments exist or are missing from store", async () => {
+  test("buildTextAttachmentBlock returns empty string when no attachments exist", async () => {
     const { buildTextAttachmentBlock } = await import("./promptAttachments.js");
     expect(await buildTextAttachmentBlock(undefined)).toBe("");
     expect(await buildTextAttachmentBlock([])).toBe("");
+  });
+
+  test("an attachment missing from the store fails the turn instead of being left out", async () => {
+    const { buildTextAttachmentBlock } = await import("./promptAttachments.js");
     expect(
-      await buildTextAttachmentBlock([
+      buildTextAttachmentBlock([
         { id: "non_existent_id", name: "ghost.txt", mimeType: "text/plain", sizeBytes: 10, type: "file" },
       ]),
-    ).toBe("");
+    ).rejects.toThrow('Attachment "ghost.txt" could not be found');
   });
 
   test("buildCursorAttachmentInput separates images into imageBlocks and non-images into fileBlock", async () => {

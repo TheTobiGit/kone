@@ -16,10 +16,11 @@ export class AttachmentRowRepo {
   /** Register an uploaded attachment's bytes-free metadata + on-disk path, so
    *  adapters can resolve `id → file` at dispatch (even after a reload) and a
    *  future GC pass can find orphaned files. Called by AttachmentStore right
-   *  after the bytes are written. */
-  registerAttachment(row: StoredAttachment): void {
+   *  after the bytes are written. False when the row did not land — most often
+   *  because its thread has no row yet. */
+  registerAttachment(row: StoredAttachment): boolean {
     const db = this.dbh.handle();
-    if (!db) return;
+    if (!db) return false;
     try {
       db.prepare(
         `INSERT INTO attachments
@@ -42,8 +43,10 @@ export class AttachmentRowRepo {
         row.relPath,
         row.createdAt ?? Date.now(),
       );
+      return true;
     } catch (err) {
       console.error("[conversation-store] registerAttachment failed:", err);
+      return false;
     }
   }
 
