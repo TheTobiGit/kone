@@ -14,7 +14,7 @@ import { WorkflowSquare01Icon } from "@hugeicons/core-free-icons";
 //   "I gave a worker a task: Audit the migration tests"      a worker it briefed
 //   "I gave a Reviewer worker a task: …"                      a worker from a preset
 //   "I delegated to Ada: Build the /users endpoint"           a teammate
-//   "I contracted Frontend Auth: Build the login screens"     an agent made up for the job
+//   "I contracted Theo: Build the login screens"             an agent made up for the job
 //
 // with the agent's reason under it when it gave one. A worker has no identity
 // — it is a task, not a colleague — so it wears the worker glyph and no name,

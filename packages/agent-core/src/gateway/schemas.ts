@@ -494,7 +494,7 @@ export const CONTRACT_AGENT_JSON_SCHEMA = {
   properties: {
     name: {
       type: "string",
-      description: "What the contractor is called: a short name it answers under and the user sees, e.g. \"Frontend Auth\".",
+      description: "What the contractor is called: a person's first name it answers under and the user sees, e.g. \"Theo\". Not a job title or a description of the work; that is what role is for.",
     },
     role: {
       type: "string",
