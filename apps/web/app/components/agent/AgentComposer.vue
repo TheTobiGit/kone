@@ -34,7 +34,10 @@ import type {
   ThreadEnvMode,
 } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
-import type { SendRejection } from "~/composables/agentTypes";
+import type { ComposerDraft, QueueReturn, SendRejection } from "~/composables/agentTypes";
+import { resolveFollowUpDispatch } from "~/utils/followUp";
+import { useComposerQueueReturn } from "~/composables/useComposerQueueReturn";
+import { useShortcuts } from "~/composables/useShortcuts";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
@@ -50,7 +53,7 @@ import {
   parseLeadingSlashCommand,
 } from "~/utils/composerMentions";
 import { isWorkspacePending } from "~/utils/threadWorkspace";
-import { FALLBACK_MODE, INTERACTION_MODES } from "~/utils/interactionModes";
+import { FALLBACK_MODE, INTERACTION_MODES, isInteractionMode } from "~/utils/interactionModes";
 import { useComposerPrefs } from "~/composables/useComposerPrefs";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
@@ -60,6 +63,7 @@ import {
   effortForTier,
   familyForId,
   hasEffortChoice,
+  isEffortTier,
   type EffortTier,
   type ModelOption,
 } from "~/utils/modelCatalog";
@@ -224,13 +228,18 @@ const props = defineProps<{
   /** The session's latest refused send. The field is already empty by then,
    *  so a new stamp here is the cue to hand the draft back. */
   sendRejection?: SendRejection | null;
+  /** Queued messages a Stop handed back. A new stamp puts them in the field,
+   *  ahead of anything already being written there. */
+  queueReturn?: QueueReturn | null;
 }>();
 
 const emit = defineEmits<{
   /** The draft, plus any picked files and skills. The parent uploads the
    *  files (scoped to the final thread) and hands the resulting metadata to
-   *  the agent turn. The text never names the skills — they ride apart. */
-  send: [text: string, files?: File[], skills?: SkillReference[]];
+   *  the agent turn. The text never names the skills — they ride apart.
+   *  `steer` is set when, with a turn running, it goes into that turn rather
+   *  than waiting behind it. */
+  send: [draft: ComposerDraft];
   /** File the job — the `kind: "job"` commit. `intent` is its two halves:
    *  queue it to run next, or park it as a draft nobody will start. The title
    *  may be empty; the store derives one from the body, and deriving a second
@@ -600,7 +609,7 @@ const trigger = useComposerTrigger<MentionItem | SlashCommandItem>({
   resolveItems: (active) =>
     active.marker === "@" ? mentionItemsFor(active.query) : slashItemsFor(active.query),
   applyItem: (item) => acceptTriggerItem(item),
-  onCommit: () => submitOrQueue(),
+  onCommit: ({ opposite }) => submitOrQueue(opposite),
   sendsOnPlainEnter: () => composerPrefs.value.sendKey === "enter",
   onMutated: () => handleEditorChanged(),
 });
@@ -754,9 +763,31 @@ function clearComposerEditor(): void {
 
 const isEmpty = computed(() => text.value.trim().length === 0);
 const askLabel = computed(() => (isJob.value ? "What should this job do?" : "Ask anything…"));
+/** What a send does right now if it isn't flipped by the chord: start a turn,
+ *  wait behind the running one, or go into it. */
+const followUp = computed(() =>
+  resolveFollowUpDispatch({ behavior: composerPrefs.value.followUp, busy: props.busy ?? false }),
+);
+const modKey = useShortcuts().isMacPlatform() ? "⌘" : "Ctrl";
+/** The chord that does the other thing for one send (see useComposerTrigger). */
+const oppositeChord = computed(() =>
+  composerPrefs.value.sendKey === "enter" ? `${modKey}+Enter` : `⇧${modKey}+Enter`,
+);
 const seedLabel = computed(() => {
-  if (!isJob.value) return props.busy && !armed.value ? "Stop" : "Send";
+  if (!isJob.value) {
+    if (!props.busy) return "Send";
+    if (!armed.value) return "Stop";
+    return followUp.value === "steer" ? "Steer into the running turn" : "Queue after this turn";
+  }
   return hasProject.value ? "Queue this job" : "Choose a project first";
+});
+/** The seed's tooltip while a turn runs and there is a draft: what a click
+ *  does, and the chord that does the other. */
+const seedHint = computed(() => {
+  if (isJob.value || !props.busy || !armed.value) return undefined;
+  return followUp.value === "steer"
+    ? `Steer: goes into the running turn now. ${oppositeChord.value} queues it instead.`
+    : `Queue: runs when this turn ends. ${oppositeChord.value} steers it into the turn now.`;
 });
 
 const {
@@ -767,6 +798,7 @@ const {
   hasAttachments,
   flash,
   addFiles,
+  restoreUploaded,
   openFilePicker,
   onFilePicked,
   removeAttachment,
@@ -947,10 +979,11 @@ async function onGlobalKey(e: KeyboardEvent) {
 useEventListener(window, "keydown", onGlobalKey);
 
 /** Ship the current draft (text + attachments) as a SEND. Shared by the seed
- *  (idle) and Enter — while a turn runs Enter also sends: the host's service
- *  durably enqueues the follow-up behind the running turn instead of
- *  dropping it, so no draft is ever lost or parked locally. */
-function dispatchDraft(intent: "queued" | "draft" = "queued") {
+ *  (idle) and Enter — while a turn runs a send either queues behind it (the
+ *  host's service durably enqueues it, so no draft is ever lost or parked
+ *  locally) or is steered into it, per the follow-up preference, which
+ *  `opposite` flips for this one send. */
+function dispatchDraft(intent: "queued" | "draft" = "queued", opposite = false) {
   if (!armed.value) {
     void wake();
     return;
@@ -991,7 +1024,16 @@ function dispatchDraft(intent: "queued" | "draft" = "queued") {
     // send when a chip can no longer run, and the draft stays.
     const turn = skills.composeTurn();
     if (!turn) return;
-    emit("send", turn.input, files.length ? files : undefined, turn.skills.length ? turn.skills : undefined);
+    const draft: ComposerDraft = { text: turn.input };
+    if (files.length) draft.files = files;
+    if (turn.skills.length) draft.skills = turn.skills;
+    const dispatch = resolveFollowUpDispatch({
+      behavior: composerPrefs.value.followUp,
+      busy: props.busy ?? false,
+      opposite,
+    });
+    if (dispatch === "steer") draft.steer = true;
+    emit("send", draft);
   }
 
   cue("send");
@@ -1009,7 +1051,8 @@ function park() {
 function send() {
   // While a turn runs the seed is a stop — until there is a draft, when it
   // becomes a send: typing arms it, and the send queues behind the running
-  // turn rather than interrupting it.
+  // turn or steers into it (the follow-up preference) rather than
+  // interrupting it.
   if (props.busy && !armed.value) {
     emit("interrupt");
     cue("press");
@@ -1018,22 +1061,41 @@ function send() {
   dispatchDraft();
 }
 
-/** Enter while a turn runs — a plain SEND now (the service queues), never a
- *  stop and never a local park. */
-function submitOrQueue() {
-  dispatchDraft();
+/** Enter — a SEND (queued or steered while a turn runs, `opposite` flipping
+ *  the preference for this one), never a stop and never a local park. */
+function submitOrQueue(opposite = false) {
+  dispatchDraft("queued", opposite);
 }
 
-// Edit arrives from the queue strip: drop the queued row, then park its text
-// back in the field so it can be reworked and sent fresh.
+// Edit arrives from the queue strip: drop the queued row, then park it back
+// in the field — words, skills and files, and the model, effort and mode it
+// was queued with — so it can be reworked and sent fresh.
 async function onQueueEdit(entry: QueuedTurnEntry) {
   emit("remove-queued", entry.queueId);
   const picked = entry.skills ?? [];
+  // Model first: switching it can reset the effort to the new model's default.
+  if (entry.model && entry.model !== props.modelId) emit("update:modelId", entry.model);
+  if (isEffortTier(entry.effort) && entry.effort !== props.reasoning) emit("update:reasoning", entry.effort);
+  if (isInteractionMode(entry.mode) && entry.mode !== props.mode) emit("update:mode", entry.mode);
   await setDraft(skills.draftFromTurn(entry.input || "", picked), picked);
+  if (entry.attachments?.length) await restoreUploaded(entry.attachments);
 }
+
+// Stop hands the queued messages back into the field (see
+// useComposerQueueReturn). One that arrived while this composer was away is
+// taken on mount, after the saved draft is back, so it lands ahead of it.
+const handBack = useComposerQueueReturn({
+  queueReturn: () => props.queueReturn,
+  currentText: () => text.value,
+  currentSkills: () => skills.currentDraftSkills(),
+  draftFromTurn: (input, picked) => skills.draftFromTurn(input, picked),
+  setDraft: (draft, picked) => setDraft(draft, picked),
+  restoreUploaded: (list) => restoreUploaded(list),
+});
 onMounted(() => {
   restoreDraft();
   sync();
+  void nextTick(() => handBack.consume());
 });
 onUnmounted(() => {
   persistDraft();
@@ -1116,6 +1178,7 @@ defineExpose({ wake, setDraft, focus });
     <AgentQueueStrip
       v-if="!isJob"
       :queued="queued"
+      :busy="busy"
       @remove-queued="emit('remove-queued', $event)"
       @send-now="emit('send-now', $event)"
       @edit="onQueueEdit"
@@ -1408,7 +1471,7 @@ defineExpose({ wake, setDraft, focus });
               class="seed"
               :class="{ 'seed--armed': commitReady, 'seed--dim': isJob }"
               :aria-label="seedLabel"
-              :title="isJob ? seedLabel : undefined"
+              :title="isJob ? seedLabel : seedHint"
               :tabindex="open ? 0 : -1"
               @mousedown.prevent
               @click.stop="send"

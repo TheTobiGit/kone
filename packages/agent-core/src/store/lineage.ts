@@ -8,7 +8,7 @@ import { parseJsonObject, rowToMeta, THREAD_USAGE_COLUMNS, type ThreadRow } from
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
 import { encodeMessageSender } from "@kone/protocol/message-sender";
 import { encodeContractTerms, type ContractTerms } from "@kone/protocol/contract";
-import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
+import { PENDING_QUEUE_STATES, WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
   buildEditForkTitle,
   findEditLineageRoot,
@@ -61,6 +61,7 @@ type ForkPrefixBlock = {
   source: string;
   sender_json: string | null;
   skills_json: string | null;
+  steered: number | null;
 };
 
 /** The fork point's own columns: its arrival order (which bounds the copied
@@ -128,7 +129,7 @@ function readForkPoint(db: DatabaseSync, sourceThreadId: string, blockId: string
   const queued = db
     .prepare(
       `SELECT 1 FROM queued_turns
-        WHERE thread_id = ? AND user_block_id = ? AND state IN ('queued', 'promoting')`,
+        WHERE thread_id = ? AND user_block_id = ? AND state IN ${PENDING_QUEUE_STATES}`,
     )
     .get(sourceThreadId, blockId);
   if (queued) return { ok: false, reason: "queued-turn" };
@@ -160,7 +161,7 @@ function readForkPrefix(
     .prepare(
       `SELECT role, turn_id, text,
               CASE WHEN state = 'running' THEN 'interrupted' ELSE state END AS state,
-              error, at, ended_at, attachments_json, effort, model, source, sender_json, skills_json
+              error, at, ended_at, attachments_json, effort, model, source, sender_json, skills_json, steered
          FROM blocks
         WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
         ORDER BY seq`,
@@ -231,8 +232,8 @@ function insertForkThreadRow(
  *  timestamps, same attachment metadata, same settlement states. */
 function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPrefixBlock[]): void {
   const insertBlock = db.prepare(
-    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source, sender_json, skills_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, error, at, ended_at, attachments_json, effort, model, source, sender_json, skills_json, steered)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const block of prefix) {
     insertBlock.run(
@@ -251,6 +252,7 @@ function copyForkPrefixBlocks(db: DatabaseSync, threadId: string, prefix: ForkPr
       block.source,
       block.sender_json,
       block.skills_json,
+      block.steered,
     );
   }
 }

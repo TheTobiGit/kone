@@ -1,6 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
+import { PENDING_QUEUE_STATES } from "./sql.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
  *  runs next. Rows with an explicit position (set by reorder) drain first in
@@ -25,13 +26,15 @@ export class QueuedTurnRepo {
   // the service layer when the live turn settles, and cancelled when the
   // thread is deleted. Lifecycle: 'queued' → 'promoting' → 'promoted'
   // (claim → promote), 'promoting' → 'queued' (claim → release: the drain
-  // failed and the turn must not be lost), and any active state → 'cancelled'
-  // (stop/delete). Only the ACTIVE states count as pending: a settled row
-  // (promoted/cancelled) is inert history, and a later releaseClaim must never
-  // match a cancelled row — that resurrection bug is why cancel flips BOTH
+  // failed and the turn must not be lost), 'promoting' → 'failed' (released
+  // as held once its retries ran out), and any pending state → 'cancelled'
+  // (stop/delete). Only the PENDING states (PENDING_QUEUE_STATES) count: a
+  // settled row (promoted/cancelled) is inert history, and a later
+  // releaseClaim must never match a cancelled row — that resurrection bug is
+  // why cancel flips every pending state.
 
   /** Durably enqueue a turn for `threadId`. The partial unique index on
-   *  (thread_id, user_block_id) over the active states makes a replayed
+   *  (thread_id, user_block_id) over the pending states makes a replayed
    *  enqueue — the same prompt delivered twice by a retrying caller — a
    *  no-op. Returns whether a row was actually inserted. */
   enqueueQueuedTurn(input: QueuedTurnEnqueueInput): boolean {
@@ -48,7 +51,7 @@ export class QueuedTurnRepo {
              attempt_count, created_at, updated_at
            ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT (thread_id, user_block_id)
-             WHERE state IN ('queued', 'promoting') DO NOTHING`,
+             WHERE state IN ${PENDING_QUEUE_STATES} DO NOTHING`,
         )
         .run(
           input.queueId,
@@ -80,9 +83,12 @@ export class QueuedTurnRepo {
    *  order (rowid) as the final tiebreak. rowid rather than queue_id:
    *  created_at is a millisecond clock, so two rows enqueued in the same tick
    *  tie on it, and breaking that tie by a random UUID ordered them
-   *  arbitrarily instead of by arrival. Returns the row now in 'promoting'
-   *  (attempt_count already bumped), or null when the thread has nothing
-   *  active to claim. */
+   *  arbitrarily instead of by arrival. A held ('failed') row pauses what
+   *  runs after it: the candidate is the first waiting-or-held row in run
+   *  order, and it is only claimed when it is waiting. Rows ahead of a held
+   *  one (a Send now moved them there) still run. Returns the row now in
+   *  'promoting' (attempt_count already bumped), or null when the thread has
+   *  nothing to claim. */
   claimNextQueuedTurn(threadId: string, staleTimeoutMs = 120_000): QueuedTurnRow | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -105,10 +111,11 @@ export class QueuedTurnRepo {
                   updated_at = ?
             WHERE queue_id = (
               SELECT queue_id FROM queued_turns
-               WHERE thread_id = ? AND state = 'queued'
+               WHERE thread_id = ? AND state IN ('queued', 'failed')
                ORDER BY ${QUEUED_TURN_ORDER}
                LIMIT 1
             )
+              AND state = 'queued'
            RETURNING *`,
         )
         .get(now, threadId) as QueuedTurnDbRow | undefined;
@@ -116,6 +123,58 @@ export class QueuedTurnRepo {
     } catch (err) {
       console.error("[conversation-store] claimNextQueuedTurn failed:", err);
       return null;
+    }
+  }
+
+  /** Claim one named row for an immediate send (the strip's "Send now"),
+   *  whether it is waiting or held. Same flip as claimNext — 'promoting',
+   *  attempt_count bumped — so a drain can't take it meanwhile and a single
+   *  cancel refuses it. `from` is the state it left, which is the state a
+   *  failed send puts it back in. Null when the row is not waiting or held
+   *  (already claimed, promoted or cancelled). */
+  claimQueuedTurn(queueId: string): { row: QueuedTurnRow; from: "queued" | "failed" } | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      let claimed: { row: QueuedTurnRow; from: "queued" | "failed" } | null = null;
+      this.dbh.durably(db, () => {
+        // SAFETY: the projection names only the row's state column.
+        const prior = db
+          .prepare(`SELECT state FROM queued_turns WHERE queue_id = ? AND state IN ('queued', 'failed')`)
+          .get(queueId) as { state: "queued" | "failed" } | undefined;
+        if (!prior) return;
+        // SAFETY: RETURNING * of queued_turns is exactly QueuedTurnDbRow.
+        const row = db
+          .prepare(
+            `UPDATE queued_turns
+                SET state = 'promoting', attempt_count = attempt_count + 1, updated_at = ?
+              WHERE queue_id = ? AND state = ?
+             RETURNING *`,
+          )
+          .get(Date.now(), queueId, prior.state) as QueuedTurnDbRow | undefined;
+        if (row) claimed = { row: rowToQueuedTurn(row), from: prior.state };
+      });
+      return claimed;
+    } catch (err) {
+      console.error("[conversation-store] claimQueuedTurn failed:", err);
+      return null;
+    }
+  }
+
+  /** Whether a claim on this row still stands — still 'promoting', not
+   *  cancelled by a stop or delete since it was taken. A claimant checks this
+   *  last thing before handing the row to a provider. */
+  isQueuedTurnClaimed(queueId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      return (
+        db.prepare(`SELECT 1 FROM queued_turns WHERE queue_id = ? AND state = 'promoting'`).get(queueId) !==
+        undefined
+      );
+    } catch (err) {
+      console.error("[conversation-store] isQueuedTurnClaimed failed:", err);
+      return false;
     }
   }
 
@@ -189,21 +248,22 @@ export class QueuedTurnRepo {
     }
   }
 
-  /** Give a claimed turn back: 'promoting' → 'queued' so the next drain
-   *  retries it. attempt_count is preserved (the retry ledger stays honest).
+  /** Give a claimed turn back: 'promoting' → 'queued' so a later drain
+   *  retries it, or → 'failed' to hold it for the user once its retries ran
+   *  out. attempt_count is preserved (the retry ledger stays honest).
    *  Returns false when the row is not in 'promoting' — the cancelled-row
    *  resurrection guard: cancelQueuedTurnsForThread flips 'promoting' rows to
    *  'cancelled' first, so a drain's late release can no longer match. */
-  releaseQueuedTurn(queueId: string): boolean {
+  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
     try {
       const result = db
         .prepare(
-          `UPDATE queued_turns SET state = 'queued', updated_at = ?
+          `UPDATE queued_turns SET state = ?, updated_at = ?
             WHERE queue_id = ? AND state = 'promoting'`,
         )
-        .run(Date.now(), queueId);
+        .run(to, Date.now(), queueId);
       return Number(result.changes) > 0;
     } catch (err) {
       console.error("[conversation-store] releaseQueuedTurn failed:", err);
@@ -232,7 +292,7 @@ export class QueuedTurnRepo {
         const activeRows = db
           .prepare(
             `SELECT queue_id FROM queued_turns
-              WHERE thread_id = ? AND state IN ('queued', 'promoting')
+              WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}
               ORDER BY ${QUEUED_TURN_ORDER}`,
           )
           .all(threadId) as Array<{ queue_id: string }>;
@@ -252,7 +312,7 @@ export class QueuedTurnRepo {
 
         const updateStmt = db.prepare(
           `UPDATE queued_turns SET sort_key = ?, updated_at = ?
-            WHERE thread_id = ? AND queue_id = ? AND state IN ('queued', 'promoting')`,
+            WHERE thread_id = ? AND queue_id = ? AND state IN ${PENDING_QUEUE_STATES}`,
         );
 
         const now = Date.now();
@@ -282,7 +342,7 @@ export class QueuedTurnRepo {
   }
 
   /** Cancel ONE queued turn (the UI's per-item cancel). Only a row still
-   *  WAITING can flip: 'promoting' means a drain has already claimed it and
+   *  WAITING (or held after its retries ran out) can flip: 'promoting' means a drain has already claimed it and
    *  handed it to the adapter, so flipping it would report a cancellation for
    *  a turn that is running — the strip row would vanish,
    *  turn.queued-cancelled would go out with reason "user", and the agent
@@ -290,7 +350,7 @@ export class QueuedTurnRepo {
    *  (false); the row promotes and the running turn replaces it in the strip. The stop/delete path keeps
    *  cancelling 'promoting' rows on purpose — see cancelQueuedTurnsForThread,
    *  where the session is being torn down regardless. A successful flip also
-   *  removes the row's journaled prompt: only 'queued' flips here, so the turn
+   *  removes the row's journaled prompt: only 'queued'/'failed' flip here, so the turn
    *  provably never started and its block has no reply and never will —
    *  leaving it would strand an unanswered prompt in the transcript.
    *  Returns whether a row flipped. */
@@ -303,14 +363,14 @@ export class QueuedTurnRepo {
         // SAFETY: the projection names only the row's thread + journaled block.
         const row = db
           .prepare(
-            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ? AND state = 'queued'`,
+            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ? AND state IN ('queued', 'failed')`,
           )
           .get(queueId) as { thread_id: string; user_block_id: string } | undefined;
         if (!row) return;
         const result = db
           .prepare(
             `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE queue_id = ? AND state = 'queued'`,
+            WHERE queue_id = ? AND state IN ('queued', 'failed')`,
           )
           .run(Date.now(), queueId);
         if (Number(result.changes) === 0) return;
@@ -324,15 +384,15 @@ export class QueuedTurnRepo {
     }
   }
 
-  /** Cancel every active queued turn for a thread (stop/delete path). Flips
-   *  BOTH active states: a drain racing the cancellation may hold a row in
+  /** Cancel every pending queued turn for a thread (stop/delete path). Flips
+   *  every pending state: a drain racing the cancellation may hold a row in
    *  'promoting'; if only 'queued' flipped, that drain's error path could
    *  `releaseQueuedTurn` the row back to 'queued', resurrecting a turn the
-   *  user cancelled. Rows that never started ('queued') take their journaled
-   *  prompt with them, exactly like cancelQueuedTurn — a claimed row
+   *  user cancelled. Rows that never started ('queued'/'failed') take their
+   *  journaled prompt with them, exactly like cancelQueuedTurn — a claimed row
    *  ('promoting') may already have a running turn behind it, so its prompt
    *  stays, the same way a single cancel refuses a claimed row. Returns the
-   *  cancelled queue ids. */
+   *  cancelled queue ids, in queue order. */
   cancelQueuedTurnsForThread(threadId: string): string[] {
     const db = this.dbh.handle();
     if (!db) return [];
@@ -344,7 +404,8 @@ export class QueuedTurnRepo {
         const active = db
           .prepare(
             `SELECT queue_id, thread_id, user_block_id, state FROM queued_turns
-              WHERE thread_id = ? AND state IN ('queued', 'promoting')`,
+              WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}
+              ORDER BY ${QUEUED_TURN_ORDER}`,
           )
           .all(threadId) as Array<{
           queue_id: string;
@@ -355,12 +416,13 @@ export class QueuedTurnRepo {
         if (active.length === 0) return;
         db.prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE thread_id = ? AND state IN ('queued', 'promoting')`,
+            WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`,
         ).run(Date.now(), threadId);
         for (const row of active) {
-          // Only 'queued' flips provably never started; a 'promoting' row was
-          // claimed by a drain and may own a live turn, so its prompt stays.
-          if (row.state !== "queued") continue;
+          // Only 'queued'/'failed' rows provably never started; a 'promoting'
+          // row was claimed by a drain and may own a live turn, so its prompt
+          // stays.
+          if (row.state === "promoting") continue;
           this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
         }
         queueIds = active.map((r) => r.queue_id);
@@ -372,10 +434,12 @@ export class QueuedTurnRepo {
     }
   }
 
-  /** Active queued turns for a thread, in execution order — QUEUED_TURN_ORDER,
+  /** Pending queued turns for a thread, in execution order — QUEUED_TURN_ORDER,
    *  the same explicit-first then steer-first-then-FIFO ordering claimNext
-   *  uses, so the UI shows exactly what will run next. Settled rows
-   *  (promoted/cancelled) are excluded: they are history, not queue. */
+   *  uses, so the UI shows exactly what will run next. Held ('failed') rows
+   *  are listed in their place: they are still the user's unsent messages.
+   *  Settled rows (promoted/cancelled) are excluded: they are history, not
+   *  queue. */
   listQueuedTurns(threadId: string): QueuedTurnRow[] {
     const db = this.dbh.handle();
     if (!db) return [];
@@ -385,7 +449,7 @@ export class QueuedTurnRepo {
       const rows = db
         .prepare(
           `SELECT * FROM queued_turns
-            WHERE thread_id = ? AND state IN ('queued', 'promoting')
+            WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}
             ORDER BY ${QUEUED_TURN_ORDER}`,
         )
         .all(threadId) as QueuedTurnDbRow[];

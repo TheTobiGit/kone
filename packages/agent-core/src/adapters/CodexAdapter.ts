@@ -1090,14 +1090,14 @@ export class CodexAdapter implements ProviderAdapter {
     session.activeTurnId = turnId;
     session.liveTurnIds.add(turnId);
 
-    if (text) {
-      this.emit({
-        ...this.base(session),
-        type: "turn.steered",
-        turnId,
-        message: text,
-      });
-    }
+    const steered: Extract<RuntimeEvent, { type: "turn.steered" }> = {
+      ...this.base(session),
+      type: "turn.steered",
+      turnId,
+      message: text,
+    };
+    if (input.userBlockId) steered.userBlockId = input.userBlockId;
+    this.emit(steered);
 
     return { threadId: input.threadId, turnId };
   }

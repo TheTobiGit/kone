@@ -1,4 +1,5 @@
 import { useStorage } from "@vueuse/core";
+import type { FollowUpBehavior } from "~/utils/followUp";
 
 // How the composer behaves under your hands — per-install feel knobs on the same
 // shelf as the strip's centring (useStripPrefs) and the conversation displays
@@ -16,6 +17,10 @@ export type SendKey = "enter" | "mod-enter";
 
 export type ComposerPrefs = {
   sendKey: SendKey;
+  /** What a message sent while the agent works does: wait for the turn to
+   *  end (`queue`), or go into the running turn (`steer`). The chord one step
+   *  past the send key does the other, for one send. */
+  followUp: FollowUpBehavior;
   /** A printable keystroke anywhere on the page wakes the composer and lands
    *  in the field. */
   typeToWake: boolean;
@@ -28,6 +33,7 @@ export type ComposerPrefs = {
 
 export const DEFAULT_COMPOSER_PREFS: ComposerPrefs = {
   sendKey: "enter",
+  followUp: "queue",
   typeToWake: true,
   keepDrafts: true,
   foldOnBlur: true,

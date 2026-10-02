@@ -20,6 +20,7 @@ import type {
   PendingApproval,
   PendingUserInput,
   QueuedTurnEntry,
+  QueueReturn,
   ThreadBlock,
   UserBlock,
 } from "../agentTypes";
@@ -72,6 +73,8 @@ export type SessionReducerDeps = {
   everRan: Ref<boolean>;
   spawnedChildren: Ref<SpawnedThread[]>;
   queuedTurnsRaw: Ref<QueuedTurnEntry[]>;
+  queueReturn: Ref<QueueReturn | null>;
+  mergeQueueReturn: (rows: QueuedTurnEntry[], at: number) => QueueReturn;
   pendingQueueAnchors: Map<string, string>;
   pendingUserInput: Ref<PendingUserInput | null>;
   pendingApprovals: Ref<PendingApproval[]>;
@@ -101,6 +104,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     everRan,
     spawnedChildren,
     queuedTurnsRaw,
+    queueReturn,
+    mergeQueueReturn,
     pendingQueueAnchors,
     pendingUserInput,
     pendingApprovals,
@@ -440,22 +445,36 @@ export function useSessionReducer(deps: SessionReducerDeps) {
           dispatchMode: event.dispatchMode,
           state: "queued",
           input: event.input || anchorText,
-          attachmentsJson: event.attachmentsJson ?? null,
           createdAt: event.at,
           position: event.position,
         };
+        const attachments = parseQueuedAttachments(event.attachmentsJson);
+        if (attachments?.length) entry.attachments = attachments;
         if (event.skills?.length) entry.skills = event.skills;
         if (event.effort) entry.effort = event.effort;
         if (event.model) entry.model = event.model;
+        if (event.mode) entry.mode = event.mode;
         if (blockId) entry.blockId = blockId;
         // A re-seed may already hold this queueId — replace, never duplicate.
-        // Arrival order wins: event.position goes stale after a cancellation
-        // or a reorder, so it is kept on the entry for compat only and never
-        // used to sort here. The display computed renumbers from array order.
-        queuedTurnsRaw.value = [
-          ...queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId),
-          entry,
-        ];
+        // The backend's run order wins (a steer row claims ahead of plain
+        // follow-ups, so arrival is not run order); without one, arrival.
+        // event.position goes stale after a cancellation or a reorder, so it
+        // is kept for compat only — the display computed renumbers.
+        const next = [...queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId), entry];
+        queuedTurnsRaw.value = event.order ? sortQueuedByIds(next, event.order) : next;
+        break;
+      }
+      case "turn.queued-updated": {
+        // Claimed and being handed over, back in line awaiting a retry, or
+        // held after its tries ran out — the row stays, only its status moves.
+        queuedTurnsRaw.value = queuedTurnsRaw.value.map((q) => {
+          if (q.queueId !== event.queueId) return q;
+          const { retryAt: _retryAt, error: _error, ...rest } = q;
+          const updated: QueuedTurnEntry = { ...rest, state: event.state };
+          if (event.retryAt) updated.retryAt = event.retryAt;
+          if (event.error) updated.error = event.error;
+          return updated;
+        });
         break;
       }
       case "turn.queued-cancelled": {
@@ -484,6 +503,12 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         if (droppedIds.size > 0) {
           blocks.value = blocks.value.filter((b) => !droppedIds.has(b.id));
         }
+        // A Stop keeps queued work from starting, not the words: they go back
+        // to the composer. (The first "stop" event clears the whole line, so
+        // this hands everything back once.)
+        if (event.reason === "stop" && dropped.length > 0) {
+          queueReturn.value = mergeQueueReturn(dropped, Date.now());
+        }
         break;
       }
       case "turn.promoted": {
@@ -492,20 +517,20 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         // it only fires after the adapter accepted the send and the store
         // marked the row promoted, so a failed promotion never clears the
         // row.) The entry IS the prompt — rebuild the user block from its
-        // input + attachmentsJson every time, including re-seeded rows that
+        // input + attachments every time, including re-seeded rows that
         // never had a block here.
         const promo = queuedTurnsRaw.value.find((q) => q.queueId === event.queueId);
 
         let userBlock: UserBlock | undefined;
         if (promo) {
-          const attachments = parseQueuedAttachments(promo.attachmentsJson);
           userBlock = {
             id: promo.userBlockId,
             role: "user",
             text: promo.input,
             at: promo.createdAt,
           };
-          if (attachments?.length) userBlock.attachments = attachments;
+          if (promo.attachments?.length) userBlock.attachments = promo.attachments;
+          if (promo.steered) userBlock.steered = true;
           if (promo.skills?.length) userBlock.skills = promo.skills;
           // What the turn runs with is on the row itself — the same fields the
           // backend journals for it — so a promoted turn is stamped identically
@@ -533,13 +558,27 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         if (event.turnId) pendingQueueAnchors.delete(event.turnId);
         break;
       }
-      case "turn.steered":
-        // The nudge was offered into the LIVE turn — no new boundary, no
-        // state to fold beyond the user block already pushed optimistically
-        // (a steer that fell back to the queue arrives as turn.queued
-        // instead). Prune the steered turn's anchor if tracked.
+      case "turn.steered": {
+        // The provider took the message into its LIVE turn — no new boundary.
+        // The block is already on screen (steerTurn pushed it), so it only
+        // gains its mark; a queued row sent now is marked here and carries the
+        // mark into the block turn.promoted builds next. (A steer that fell
+        // back to the queue arrives as turn.queued instead.)
         pendingQueueAnchors.delete(event.turnId);
+        const steeredId = event.userBlockId;
+        if (!steeredId) break;
+        if (blocks.value.some((b) => b.role === "user" && b.id === steeredId)) {
+          blocks.value = blocks.value.map((b) =>
+            b.role === "user" && b.id === steeredId ? { ...b, steered: true } : b,
+          );
+        }
+        if (queuedTurnsRaw.value.some((q) => q.userBlockId === steeredId)) {
+          queuedTurnsRaw.value = queuedTurnsRaw.value.map((q) =>
+            q.userBlockId === steeredId ? { ...q, steered: true } : q,
+          );
+        }
         break;
+      }
       case "turn.queued-reordered": {
         if (event.threadId !== threadId.value) break;
         queuedTurnsRaw.value = sortQueuedByIds(queuedTurnsRaw.value, event.queueIds);

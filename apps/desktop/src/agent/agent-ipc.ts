@@ -303,21 +303,9 @@ export function registerAgentIpc(): void {
         // deleteThread nothing names them anymore. Spawned children are included:
         // subtreeWorkspaces walks the whole subtree, not just the root.
         const doomed = collectSubtreeWorktrees(store, threadId);
-        const meta = store.threadMeta(threadId);
-        const cancelledQueueIds = store.cancelQueuedTurnsForThread(threadId);
-        if (meta) {
-          for (const queueId of cancelledQueueIds) {
-            broadcast({
-              type: "turn.queued-cancelled",
-              threadId,
-              provider: meta.provider,
-              queueId,
-              reason: "thread-deleted",
-              at: Date.now(),
-              source: "kone.store",
-            });
-          }
-        }
+        // The service cancels the queue (announcing "thread-deleted" per row)
+        // and drops any retry still pending for it.
+        svc.cancelQueuedTurnsForDelete(threadId);
         await attachments.deleteThreadFiles(threadId);
         const res = store.deleteThread(threadId);
         dispatcher.forgetThread(threadId);
@@ -766,6 +754,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
     svc.reorderQueuedTurns(threadId, queueIds),
   );
+  // "Send now" on a queued row: steered into the live turn, sent as a turn
+  // when idle, or moved to the front when the provider can't steer. A failed
+  // delivery rejects with the row back where it was.
+  ipcMain.handle("agent:queue-send-now", (_event, threadId: string, queueId: string) =>
+    svc.sendQueuedTurnNow(threadId, queueId),
+  );
   // Same as agent:send-turn: a steer from the renderer is the user speaking.
   ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) => handOffs.userSteers(input));
   // Pre-turn repository snapshots. `turn-checkpoints` lists every snapshot
@@ -1019,28 +1013,13 @@ export function registerAgentIpc(): void {
     // deleteThread nothing names them anymore. Spawned children are included:
     // subtreeWorkspaces walks the whole subtree, not just the root.
     const doomed = collectSubtreeWorktrees(store, threadId);
-    // Flip the thread's queued + promoting rows and surface one
-    // turn.queued-cancelled (reason "thread-deleted") per row BEFORE the
-    // thread is dropped: a deleted thread's follow-ups must never survive to
-    // resurrect (deleteThread removes the rows outright), and every renderer
-    // must learn its chips are gone. The service owns the stop-path reason
-    // ("stop"); this delete path emits its own reason through the same
-    // broadcast every service event crosses.
-    const meta = store.threadMeta(threadId);
-    const cancelledQueueIds = store.cancelQueuedTurnsForThread(threadId);
-    if (meta) {
-      for (const queueId of cancelledQueueIds) {
-        broadcast({
-          type: "turn.queued-cancelled",
-          threadId,
-          provider: meta.provider,
-          queueId,
-          reason: "thread-deleted",
-          at: Date.now(),
-          source: "kone.store",
-        });
-      }
-    }
+    // Cancel the thread's pending rows and surface one turn.queued-cancelled
+    // (reason "thread-deleted") per row BEFORE the thread is dropped: a
+    // deleted thread's follow-ups must never survive to resurrect
+    // (deleteThread removes the rows outright), every renderer must learn its
+    // chips are gone, and a retry still waiting on its backoff must not fire.
+    // The service owns all three.
+    svc.cancelQueuedTurnsForDelete(threadId);
     // Unlink the thread's attachment files first (best-effort), then drop every
     // row — otherwise the bytes on disk would outlive the conversation.
     await attachments.deleteThreadFiles(threadId);

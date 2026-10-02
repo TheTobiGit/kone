@@ -110,6 +110,11 @@ export class ConversationStore implements CheckpointStore {
     return this.threads.recordUserBlock(input);
   }
 
+  /** @see ThreadRepo */
+  markUserBlockSteered(threadId: string, blockId: string): void {
+    this.threads.markUserBlockSteered(threadId, blockId);
+  }
+
   /** @see AttachmentRowRepo */
   registerAttachment(row: StoredAttachment): boolean {
     return this.attachmentRows.registerAttachment(row);
@@ -215,6 +220,16 @@ export class ConversationStore implements CheckpointStore {
   }
 
   /** @see QueuedTurnRepo */
+  claimQueuedTurn(queueId: string): { row: QueuedTurnRow; from: "queued" | "failed" } | null {
+    return this.queuedTurns.claimQueuedTurn(queueId);
+  }
+
+  /** @see QueuedTurnRepo */
+  isQueuedTurnClaimed(queueId: string): boolean {
+    return this.queuedTurns.isQueuedTurnClaimed(queueId);
+  }
+
+  /** @see QueuedTurnRepo */
   recoverStaleClaims(staleTimeoutMs = 120_000): number {
     return this.queuedTurns.recoverStaleClaims(staleTimeoutMs);
   }
@@ -225,8 +240,8 @@ export class ConversationStore implements CheckpointStore {
   }
 
   /** @see QueuedTurnRepo */
-  releaseQueuedTurn(queueId: string): boolean {
-    return this.queuedTurns.releaseQueuedTurn(queueId);
+  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean {
+    return this.queuedTurns.releaseQueuedTurn(queueId, to);
   }
 
   /** @see QueuedTurnRepo */

@@ -1,8 +1,8 @@
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, shallowRef, type Ref } from "vue";
 import type { ChatAttachment, KoneAgentApi, SkillReference } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
 import { seedFromBridge } from "../useCompaction";
-import type { QueuedTurnEntry, QueueBridge, ThreadBlock, TurnDraft } from "../agentTypes";
+import type { QueuedTurnEntry, QueueBridge, QueueReturn, ThreadBlock, TurnDraft } from "../agentTypes";
 
 /** Safe-parse a queued turn's attachments payload. Returns undefined when the
  *  row carries none, or when the stored JSON is missing or malformed — every
@@ -57,17 +57,46 @@ export function sortQueuedByIds(rows: QueuedTurnEntry[], ids: readonly string[])
   );
 }
 
+/** Merge the rows a Stop cancelled into the one draft the composer gets back,
+ *  in queue order: their words joined by blank lines, every attachment and
+ *  skill kept once. */
+export function mergeQueueReturn(rows: QueuedTurnEntry[], at: number): QueueReturn {
+  const skills = new Map<string, SkillReference>();
+  for (const row of rows) for (const skill of row.skills ?? []) skills.set(skill.path, skill);
+  return {
+    at,
+    text: rows.map((r) => r.input.trim()).filter(Boolean).join("\n\n"),
+    attachments: rows.flatMap((r) => r.attachments ?? []),
+    skills: [...skills.values()],
+  };
+}
+
+const claimedReturns = new WeakSet<QueueReturn>();
+
+/** Whether this hand-back is still to be restored, claiming it if so. A
+ *  composer can come back to a thread (focus moves, a pane remounts) long
+ *  after it restored that thread's hand-back; it must not restore it twice. */
+export function claimQueueReturn(back: QueueReturn): boolean {
+  if (claimedReturns.has(back)) return false;
+  claimedReturns.add(back);
+  return true;
+}
+
 /** Follow-ups durably queued behind the running turn. The send path stays in
- *  the session that creates this unit — a queued entry sent now is steered
- *  into the live turn when one runs, else sent as a fresh turn — so it
- *  arrives as the `send`/`steerTurn` callbacks below. Both take the draft
- *  object; the positional overloads stay only for callers predating it. */
+ *  the session that creates this unit — only the browser-dev fallback of a
+ *  queued entry sent now uses it — so it arrives as the `send`/`steerTurn`
+ *  callbacks below. Both take the draft object; the positional overloads stay
+ *  only for callers predating it. */
 export type SessionQueueDeps = {
   blocks: Ref<ThreadBlock[]>;
   threadId: Ref<string>;
   bridge: () => KoneAgentApi | null;
   error: Ref<string | null>;
   busy: Ref<boolean>;
+  /** Start the provider session if this thread hasn't yet (a reopened thread
+   *  defers it); false when it didn't come up. Send now needs one, since the
+   *  backend claims nothing without a session to deliver to. */
+  ensureSession: () => Promise<boolean>;
   send:
     & ((draft: TurnDraft) => Promise<void>)
     & ((text: string, attachments?: ChatAttachment[], skills?: SkillReference[]) => Promise<void>);
@@ -82,7 +111,7 @@ export type SessionQueueDeps = {
  *  identity re-seeds by an explicit bridge query — the rows survive crashes,
  *  so a reloaded renderer has no record of them otherwise. */
 export function useSessionQueue(deps: SessionQueueDeps) {
-  const { blocks, threadId, bridge, error, busy, send, steerTurn } = deps;
+  const { blocks, threadId, bridge, error, busy, ensureSession, send, steerTurn } = deps;
 
   /** Follow-ups durably queued behind the running turn (the AgentService queue
    *  slice: a send while busy is enqueued, promoted on settle, cancelled on
@@ -108,6 +137,9 @@ export function useSessionQueue(deps: SessionQueueDeps) {
   const queuedTurns = computed<QueuedTurnEntry[]>(() =>
     queuedTurnsRaw.value.map((q, i) => ({ ...q, position: i + 1 })),
   );
+  /** The latest set of queued messages a Stop handed back, for the composer
+   *  to put in its field (see mergeQueueReturn). */
+  const queueReturn = shallowRef<QueueReturn | null>(null);
 
   /** Anchor a queue row to a transcript user block by the store's userBlockId,
    *  else by the send-ack record for this queueId. Returns undefined when the
@@ -138,17 +170,14 @@ export function useSessionQueue(deps: SessionQueueDeps) {
         return;
       }
       const anchored = new Set(queuedTurnsRaw.value.map((q) => q.blockId).filter(Boolean));
-      const entries: QueuedTurnEntry[] = rows
-        .slice()
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .map((row, i) => {
-          const byId = blocks.value.find(
-            (b) => b.role === "user" && b.id === row.userBlockId,
-          );
-          const entry: QueuedTurnEntry = { ...row, position: i + 1 };
-          if (byId && !anchored.has(byId.id)) entry.blockId = byId.id;
-          return entry;
-        });
+      // The bridge lists rows in the order they will run (an explicit reorder,
+      // then steer rows, then arrival), so that order is kept as-is.
+      const entries: QueuedTurnEntry[] = rows.map((row, i) => {
+        const byId = blocks.value.find((b) => b.role === "user" && b.id === row.userBlockId);
+        const entry: QueuedTurnEntry = { ...row, position: i + 1 };
+        if (byId && !anchored.has(byId.id)) entry.blockId = byId.id;
+        return entry;
+      });
       queuedTurnsRaw.value = entries;
     });
   }
@@ -167,19 +196,30 @@ export function useSessionQueue(deps: SessionQueueDeps) {
     }
   }
 
-  /** Send a queued follow-up now: drop its row, then steer its prompt into
-   *  the live turn when one runs, else send it as a fresh turn. */
+  /** Send a queued follow-up now. The backend delivers the row itself, with
+   *  the settings it was queued with, and keeps it until the provider takes
+   *  it: turn.promoted then moves it into the thread, and a refusal leaves it
+   *  in the strip marked with why (turn.queued-updated). */
   async function sendQueuedEntryNow(entry: QueuedTurnEntry): Promise<void> {
-    await cancelQueuedTurn(entry.queueId);
-    const attachments = parseQueuedAttachments(entry.attachmentsJson);
-    const draft: TurnDraft = { text: entry.input };
-    if (attachments) draft.attachments = attachments;
-    if (entry.skills) draft.skills = entry.skills;
-    if (busy.value) {
-      void steerTurn(draft);
-    } else {
-      void send(draft);
+    const api = bridge();
+    // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
+    const sendNow = (api as KoneAgentApi & QueueBridge | null)?.sendQueuedTurnNow;
+    if (sendNow) {
+      try {
+        if (!(await ensureSession())) return;
+        await sendNow(threadId.value, entry.queueId);
+      } catch (e) {
+        error.value = peelIpcError(e, "Could not send the queued message");
+      }
+      return;
     }
+    // Browser dev: the scripted runner has no durable queue to deliver from,
+    // so the row is taken out here and its words go out as a fresh send.
+    queuedTurnsRaw.value = queuedTurnsRaw.value.filter((q) => q.queueId !== entry.queueId);
+    const draft: TurnDraft = { text: entry.input };
+    if (entry.attachments?.length) draft.attachments = entry.attachments;
+    if (entry.skills) draft.skills = entry.skills;
+    await (busy.value ? steerTurn(draft) : send(draft));
   }
 
   /** Reorder the active queued turns. Optimistically re-sorts queuedTurnsRaw
@@ -201,6 +241,7 @@ export function useSessionQueue(deps: SessionQueueDeps) {
     queuedTurnsRaw,
     pendingQueueAnchors,
     queuedTurns,
+    queueReturn,
     anchorFor,
     seedQueuedTurns,
     cancelQueuedTurn,

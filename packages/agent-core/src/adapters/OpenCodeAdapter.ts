@@ -728,10 +728,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const session = this.sessions.get(input.threadId);
     if (!session?.activeTurnId) return this.sendTurn(input);
     const result = await this.sendTurn(input);
-    const steerText = input.input.trim();
-    if (steerText) {
-      this.emit({ ...base(session), type: "turn.steered", turnId: result.turnId, message: steerText });
-    }
+    const steered: Extract<RuntimeEvent, { type: "turn.steered" }> = {
+      ...base(session),
+      type: "turn.steered",
+      turnId: result.turnId,
+      message: input.input.trim(),
+    };
+    if (input.userBlockId) steered.userBlockId = input.userBlockId;
+    this.emit(steered);
     return result;
   }
 

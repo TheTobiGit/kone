@@ -170,10 +170,12 @@ describe("when the user stops an agent", () => {
 });
 
 describe("the user pressing Stop", () => {
-  test("interrupts first, then settles what it handed off", async () => {
+  test("drops its queue, interrupts, then settles what it handed off", async () => {
     h.busy.add("main");
     await h.lifecycle.userStops("main");
-    expect(h.calls[0]).toBe("interrupt:main");
+    // The queue goes first: the interrupt's abort would otherwise promote the
+    // next queued follow-up.
+    expect(h.calls.slice(0, 2)).toEqual(["cancel-queue:main", "interrupt:main"]);
     expect(h.stopped).toEqual(["search"]);
     expect(h.lifecycle.isDeciding("main")).toBe(true);
   });

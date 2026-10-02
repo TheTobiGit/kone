@@ -348,7 +348,7 @@ async function onSend(
   // Only the thread's first turn asks: every later one finds it already
   // decided and leaves both the binding and the router alone.
   if (threadId) await composer.settleAndPin(draft.text, threadId);
-  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills });
+  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills, steer: draft.steer });
 }
 
 async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
@@ -466,6 +466,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :project-path="projectPath"
         :provider="composer.provider.value"
         :send-rejection="session?.sendRejection.value"
+        :queue-return="session?.queueReturn.value"
         :project-name="row.projectName"
         :branch="composer.branch.value ?? undefined"
         :branch-switchable="false"

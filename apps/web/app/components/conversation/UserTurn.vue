@@ -154,6 +154,16 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
       </template>
     </YouHead>
 
+    <!-- Sent into a turn that was already running, not a turn of its own: the
+         reply above it kept going and took it in along the way. -->
+    <p
+      v-if="block.steered"
+      class="you-steered"
+      title="Sent while the agent was working; it took this in without starting a new turn."
+    >
+      Steered into the running turn
+    </p>
+
     <!-- Edit-and-resend: the request bubble stays the bubble — its text
          becomes a seamless auto-growing field. The actions live in the one
          footer below, not inside the bubble. Saving ships a NEW user turn. -->
@@ -396,6 +406,12 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
 /* Skills sit where attachments do — under the message, right-aligned, or
    standing alone on a skill-only turn. The chip sizes itself off the
    composer's type variable, set here to the timeline's smaller step. */
+.you-steered {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 14px;
+}
 .you-skills {
   --font-size-composer: 12px;
   display: flex;

@@ -558,6 +558,10 @@ const api = {
       ipcRenderer.invoke("agent:queue-cancel", threadId, queueId),
     reorderQueuedTurns: (threadId: string, queueIds: string[]): Promise<boolean> =>
       ipcRenderer.invoke("agent:queue-reorder", threadId, queueIds),
+    // Deliver one queued row now with the settings it was queued with; the
+    // row stays in the queue unless the provider takes it.
+    sendQueuedTurnNow: (threadId: string, queueId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:queue-send-now", threadId, queueId),
     steerTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:steer-turn", input),
     // Pre-turn repository snapshots for a thread (oldest first); the preview

@@ -5,6 +5,7 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 
 import { setUserDataDir } from "./userDataDir.js";
+import type { QueuedTurnEnqueueInput } from "./conversationStoreTypes.js";
 import type {
   ProviderAdapter,
   QueuedTurnRow,
@@ -139,6 +140,8 @@ type FakeStoredThread = { threadId: string; blocks: FakeUserBlock[] };
 
 class FakeQueueStore {
   rows: QueuedTurnRow[] = [];
+  /** Journaled blocks marked as steered into a running turn. */
+  steeredBlocks: string[] = [];
   private blocksByThread = new Map<string, FakeUserBlock[]>();
   private journaled = 0;
 
@@ -165,6 +168,7 @@ class FakeQueueStore {
 
   reset(): void {
     this.rows.length = 0;
+    this.steeredBlocks.length = 0;
     this.blocksByThread.clear();
     this.journaled = 0;
   }
@@ -175,59 +179,105 @@ class FakeQueueStore {
     return { threadId, blocks: [...blocks] };
   }
 
-  async enqueueQueuedTurn(row: QueuedTurnRow): Promise<boolean> {
-    if (this.rows.some((r) => r.threadId === row.threadId && r.userBlockId === row.userBlockId)) {
+  latestUserBlockId(threadId: string): string | null {
+    return this.blocksByThread.get(threadId)?.at(-1)?.id ?? null;
+  }
+
+  // Synchronous, like ConversationStore: the service is typed against the
+  // store's own signatures, and a fake that answered with promises would hide
+  // exactly the sync/async mistakes the real store exposes.
+  enqueueQueuedTurn(input: QueuedTurnEnqueueInput): boolean {
+    if (this.rows.some((r) => r.threadId === input.threadId && r.userBlockId === input.userBlockId)) {
       return false;
     }
-    this.rows.push({ ...row });
+    const now = Date.now();
+    const { at: _at, ...fields } = input;
+    this.rows.push({
+      ...fields,
+      dispatchMode: input.dispatchMode ?? "queue",
+      state: "queued",
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
     return true;
   }
 
-  async claimNextQueuedTurn(threadId: string): Promise<QueuedTurnRow | null> {
-    const candidates = this.rows
-      .filter((r) => r.threadId === threadId && r.state === "queued")
+  claimNextQueuedTurn(threadId: string): QueuedTurnRow | null {
+    const pending = this.rows
+      .filter((r) => r.threadId === threadId && (r.state === "queued" || r.state === "failed"))
       .sort((a, b) => {
         if (a.dispatchMode !== b.dispatchMode) return a.dispatchMode === "steer" ? -1 : 1;
         return a.createdAt - b.createdAt;
       });
-    const row = candidates[0];
-    if (!row) return null;
+    // A held row pauses what runs after it, as in the store.
+    const row = pending[0];
+    if (!row || row.state !== "queued") return null;
     row.state = "promoting";
     row.attemptCount += 1;
     row.updatedAt = Date.now();
     return { ...row };
   }
 
-  async markQueuedTurnPromoted(queueId: string): Promise<boolean> {
+  claimQueuedTurn(queueId: string): { row: QueuedTurnRow; from: "queued" | "failed" } | null {
+    const row = this.rows.find((r) => r.queueId === queueId && (r.state === "queued" || r.state === "failed"));
+    if (!row) return null;
+    const from = row.state === "failed" ? "failed" : "queued";
+    row.state = "promoting";
+    row.attemptCount += 1;
+    return { row: { ...row }, from };
+  }
+
+  isQueuedTurnClaimed(queueId: string): boolean {
+    return this.rows.some((r) => r.queueId === queueId && r.state === "promoting");
+  }
+
+  markQueuedTurnPromoted(queueId: string): boolean {
     const idx = this.rows.findIndex((r) => r.queueId === queueId && r.state === "promoting");
     if (idx < 0) return false;
     this.rows.splice(idx, 1);
     return true;
   }
 
-  async releaseQueuedTurn(queueId: string): Promise<void> {
-    const row = this.rows.find((r) => r.queueId === queueId);
-    if (row) {
-      row.state = "queued";
-      row.updatedAt = Date.now();
-    }
+  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean {
+    const row = this.rows.find((r) => r.queueId === queueId && r.state === "promoting");
+    if (!row) return false;
+    row.state = to;
+    row.updatedAt = Date.now();
+    return true;
   }
 
-  async cancelQueuedTurn(queueId: string): Promise<boolean> {
-    const idx = this.rows.findIndex((r) => r.queueId === queueId);
+  reorderQueuedTurns(threadId: string, queueIds: string[]): boolean {
+    const mine = this.rows.filter((r) => r.threadId === threadId);
+    const rest = this.rows.filter((r) => r.threadId !== threadId);
+    const head = queueIds.flatMap((id) => mine.filter((r) => r.queueId === id));
+    this.rows = [...head, ...mine.filter((r) => !queueIds.includes(r.queueId)), ...rest];
+    return head.length > 0;
+  }
+
+  markUserBlockSteered(_threadId: string, blockId: string): void {
+    this.steeredBlocks.push(blockId);
+  }
+
+  cancelQueuedTurn(queueId: string): boolean {
+    const idx = this.rows.findIndex((r) => r.queueId === queueId && r.state !== "promoting");
     if (idx < 0) return false;
     this.rows.splice(idx, 1);
     return true;
   }
 
-  async cancelQueuedTurnsForThread(threadId: string): Promise<string[]> {
+  cancelQueuedTurnsForThread(threadId: string): string[] {
     const ids = this.rows.filter((r) => r.threadId === threadId).map((r) => r.queueId);
     this.rows = this.rows.filter((r) => r.threadId !== threadId);
     return ids;
   }
 
-  async listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]> {
+  listQueuedTurns(threadId: string): QueuedTurnRow[] {
     return this.rows.filter((r) => r.threadId === threadId).map((r) => ({ ...r }));
+  }
+
+  recoverStaleClaims(): number {
+    return 0;
   }
 }
 
@@ -571,7 +621,7 @@ describe("AgentService durable turn queue + steering", () => {
       threadId: thread,
       input: "follow-up please",
       model: "gpt-5",
-      mode: "auto",
+      mode: "full-access",
       effort: "high",
       serviceTier: "fast",
       contextWindow: "200k",
@@ -588,7 +638,7 @@ describe("AgentService durable turn queue + steering", () => {
       state: "queued",
       input: "follow-up please",
       model: "gpt-5",
-      mode: "auto",
+      mode: "full-access",
       effort: "high",
       serviceTier: "fast",
       contextWindow: "200k",
@@ -611,7 +661,7 @@ describe("AgentService durable turn queue + steering", () => {
     });
   });
 
-  test("turn.queued carries attachmentsJson from the enqueued row", async () => {
+  test("the enqueued row keeps its attachments, and turn.queued carries them", async () => {
     const thread = "t-q-enqueue-attachments";
     fakeStore.seedUserBlocks(thread, ["block-first", "block-followup"]);
     await startBusyThread(thread, "live-1");
@@ -625,12 +675,12 @@ describe("AgentService durable turn queue + steering", () => {
     });
 
     const row = fakeStore.rows.find((r) => r.threadId === thread)!;
-    expect(row.attachmentsJson).toContain("a1");
+    expect(row.attachments?.map((a) => a.id)).toEqual(["a1"]);
     // SAFETY: the predicate matches only turn.queued events.
     const queued = received.find(
       (e) => e.threadId === thread && e.type === "turn.queued",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
-    expect(queued?.attachmentsJson).toBe(row.attachmentsJson);
+    expect(queued?.attachmentsJson).toBe(JSON.stringify(row.attachments));
   });
 
   test("turn.queued carries the tier and model the row was journaled with", async () => {
@@ -783,20 +833,31 @@ describe("AgentService durable turn queue + steering", () => {
     await startBusyThread(thread, "live-9");
     const codexFake = FakeAdapter.instances.find((a) => a.provider === "codex")!;
     let steered: SendTurnInput | undefined;
+    // The adapter is the one that announces the steer, as the real ones do.
     codexFake.steerTurn = async (input: SendTurnInput) => {
       steered = input;
+      codexFake.emit({
+        ...codexBase,
+        threadId: input.threadId,
+        type: "turn.steered",
+        turnId: "live-9",
+        message: input.input,
+        userBlockId: input.userBlockId!,
+      });
       return { threadId: input.threadId, turnId: "steer-ack" };
     };
 
-    const result = await service.steerTurn({ threadId: thread, input: "nudge the plan" });
+    const result = await service.steerTurn({ threadId: thread, input: "nudge the plan", userBlockId: "ub-nudge" });
 
     expect(result.turnId).toBe("steer-ack");
     expect(steered?.input).toBe("nudge the plan");
     expect(fakeStore.rows).toHaveLength(0); // nothing enqueued
-    const steeredEvent = received.find(
-      (e) => e.threadId === thread && e.type === "turn.steered",
-    );
-    expect(steeredEvent).toMatchObject({ turnId: "live-9", message: "nudge the plan" });
+    // Announced once — by the adapter, never again by the service.
+    const steeredEvents = received.filter((e) => e.threadId === thread && e.type === "turn.steered");
+    expect(steeredEvents).toHaveLength(1);
+    expect(steeredEvents[0]).toMatchObject({ turnId: "live-9", message: "nudge the plan", userBlockId: "ub-nudge" });
+    // The journaled prompt is marked, so a reload shows it as steered too.
+    expect(fakeStore.steeredBlocks).toEqual(["ub-nudge"]);
     delete codexFake.steerTurn;
   });
 
@@ -861,6 +922,129 @@ describe("AgentService durable turn queue + steering", () => {
     expect(fakeStore.rows.map((r) => r.input)).toEqual(["two"]);
     // SAFETY: FakeAdapter.sendTurn is an own-property override for this test only.
     delete (codexFake as Partial<FakeAdapter>).sendTurn;
+  });
+
+  test("turn.queued carries the run order and the mode the row will run in", async () => {
+    const thread = "t-q-order";
+    await startBusyThread(thread, "live-1");
+    fakeStore.journalUserBlock(thread, "plain");
+    await service.sendTurn({ threadId: thread, input: "plain", mode: "full-access" });
+    fakeStore.journalUserBlock(thread, "second");
+    await service.sendTurn({ threadId: thread, input: "second" });
+
+    const queued = received.filter(
+      (e): e is Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> =>
+        e.threadId === thread && e.type === "turn.queued",
+    );
+    expect(queued[0]?.mode).toBe("full-access");
+    expect(queued[1]?.order).toEqual(fakeStore.rows.map((r) => r.queueId));
+  });
+
+  test("send now steers a queued row into the live turn with its own settings", async () => {
+    const thread = "t-q-send-now-steer";
+    await startBusyThread(thread, "live-1");
+    const blockId = fakeStore.journalUserBlock(thread, "queued words");
+    await service.sendTurn({ threadId: thread, input: "queued words", model: "gpt-5", effort: "low", mode: "full-access" });
+    const queueId = fakeStore.rows[0]!.queueId;
+    const codexFake = FakeAdapter.instances.find((a) => a.provider === "codex")!;
+    let steered: SendTurnInput | undefined;
+    // The row is still in the queue (claimed) while the provider takes it.
+    let stateDuringSteer: string | undefined;
+    codexFake.steerTurn = async (input: SendTurnInput) => {
+      steered = input;
+      stateDuringSteer = fakeStore.rows.find((r) => r.queueId === queueId)?.state;
+      return { threadId: input.threadId, turnId: "live-1" };
+    };
+
+    expect(await service.sendQueuedTurnNow(thread, queueId)).toBe(true);
+
+    expect(stateDuringSteer).toBe("promoting");
+    expect(steered).toMatchObject({ input: "queued words", model: "gpt-5", effort: "low", mode: "full-access", userBlockId: blockId });
+    expect(fakeStore.rows).toHaveLength(0);
+    expect(received.find((e) => e.threadId === thread && e.type === "turn.promoted")).toMatchObject({
+      queueId,
+      turnId: "live-1",
+    });
+    delete codexFake.steerTurn;
+  });
+
+  test("send now that the provider refuses puts the row back and says why", async () => {
+    const thread = "t-q-send-now-refused";
+    await startBusyThread(thread, "live-1");
+    fakeStore.journalUserBlock(thread, "keep me");
+    await service.sendTurn({ threadId: thread, input: "keep me" });
+    const queueId = fakeStore.rows[0]!.queueId;
+    const codexFake = FakeAdapter.instances.find((a) => a.provider === "codex")!;
+    codexFake.steerTurn = async () => {
+      throw new Error("turn ended");
+    };
+
+    await expect(service.sendQueuedTurnNow(thread, queueId)).rejects.toThrow("turn ended");
+
+    expect(fakeStore.rows).toHaveLength(1);
+    expect(fakeStore.rows[0]).toMatchObject({ queueId, state: "queued", input: "keep me" });
+    const updates = received.filter((e) => e.threadId === thread && e.type === "turn.queued-updated");
+    expect(updates.map((e) => (e.type === "turn.queued-updated" ? e.state : null))).toEqual(["promoting", "queued"]);
+    expect(updates[1]).toMatchObject({ error: "turn ended" });
+    delete codexFake.steerTurn;
+  });
+
+  test("send now without a live steer channel moves the row first and interrupts", async () => {
+    const thread = "t-q-send-now-fallback";
+    await startBusyThread(thread, "live-1");
+    const codexFake = FakeAdapter.instances.find((a) => a.provider === "codex")!;
+    delete codexFake.steerTurn;
+    fakeStore.journalUserBlock(thread, "first");
+    await service.sendTurn({ threadId: thread, input: "first" });
+    fakeStore.journalUserBlock(thread, "urgent");
+    await service.sendTurn({ threadId: thread, input: "urgent" });
+    const urgent = fakeStore.rows[1]!.queueId;
+
+    expect(await service.sendQueuedTurnNow(thread, urgent)).toBe(true);
+
+    expect(fakeStore.rows.map((r) => r.input)).toEqual(["urgent", "first"]);
+    expect(fakeStore.rows[0]?.state).toBe("queued");
+    expect(received.find((e) => e.threadId === thread && e.type === "turn.queued-reordered")).toMatchObject({
+      queueIds: [urgent],
+    });
+    expect(FakeAdapter.interrupted).toContain(thread);
+    expect(FakeAdapter.sentTurns.filter((t) => t.threadId === thread)).toHaveLength(0);
+  });
+
+  test("send now on an idle thread starts the row as a turn", async () => {
+    const thread = "t-q-send-now-idle";
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    // A held row left from before: idle, nothing will drain it on its own.
+    await fakeStore.enqueueQueuedTurn({
+      queueId: "q-held",
+      threadId: thread,
+      userBlockId: "ub-held",
+      dispatchMode: "queue",
+      state: "failed",
+      input: "try me again",
+      attachmentsJson: null,
+      model: "gpt-5",
+      mode: null,
+      effort: null,
+      serviceTier: null,
+      contextWindow: null,
+      attemptCount: 4,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      promotedAt: null,
+    });
+
+    expect(await service.sendQueuedTurnNow(thread, "q-held")).toBe(true);
+
+    const sent = FakeAdapter.sentTurns.filter((t) => t.threadId === thread);
+    expect(sent.map((t) => t.input)).toEqual([{ threadId: thread, input: "try me again", model: "gpt-5" }]);
+    expect(fakeStore.rows).toHaveLength(0);
+  });
+
+  test("send now on a row that already left the queue does nothing", async () => {
+    await service.startSession({ threadId: "t-q-send-now-gone", provider: "codex", cwd: "/tmp", mode: "ask" });
+    expect(await service.sendQueuedTurnNow("t-q-send-now-gone", "no-such-row")).toBe(false);
+    expect(FakeAdapter.sentTurns.filter((t) => t.threadId === "t-q-send-now-gone")).toHaveLength(0);
   });
 });
 

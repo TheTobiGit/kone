@@ -35,6 +35,7 @@ import {
   setDefaultModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
+import type { FollowUpBehavior } from "~/utils/followUp";
 
 // The Composer page, in two halves.
 //
@@ -243,6 +244,21 @@ function chooseSend(id: SendKey) {
   cue("toggle");
 }
 
+/** What a message written while the agent works does. */
+const FOLLOW_UP_OPTIONS: { id: FollowUpBehavior; label: string; title: string }[] = [
+  { id: "queue", label: "Queue", title: "Wait for the running turn to end, then send" },
+  { id: "steer", label: "Steer", title: "Send into the running turn straight away" },
+];
+const followUpIndex = computed(() => FOLLOW_UP_OPTIONS.findIndex((o) => o.id === prefs.value.followUp));
+/** The chord that does the other one for a single send. */
+const oppositeChord = computed(() => (prefs.value.sendKey === "enter" ? `${mod} Enter` : `⇧ ${mod} Enter`));
+
+function chooseFollowUp(id: FollowUpBehavior) {
+  if (prefs.value.followUp === id) return;
+  composer.set("followUp", id);
+  cue("toggle");
+}
+
 type SwitchRow = {
   key: "typeToWake" | "keepDrafts" | "foldOnBlur";
   title: string;
@@ -266,7 +282,7 @@ const SWITCHES: SwitchRow[] = [
   },
 ];
 
-const PREF_KEYS: (keyof ComposerPrefs)[] = ["sendKey", "typeToWake", "keepDrafts", "foldOnBlur"];
+const PREF_KEYS: (keyof ComposerPrefs)[] = ["sendKey", "followUp", "typeToWake", "keepDrafts", "foldOnBlur"];
 const isDefault = computed(() =>
   PREF_KEYS.every((k) => prefs.value[k] === DEFAULT_COMPOSER_PREFS[k]),
 );
@@ -474,6 +490,31 @@ function resetBehaviour() {
                 @click="chooseSend(o.id)"
               >
                 <kbd v-for="k in o.keys" :key="k" class="cp__cap cp__cap--sm">{{ k }}</kbd>
+              </button>
+            </div>
+          </div>
+
+          <div class="srow__row">
+            <div class="cp__copy">
+              <h3 class="srow__title">While the agent works</h3>
+              <p class="cp__hint">What sending does mid-turn. {{ oppositeChord }} does the other, once.</p>
+            </div>
+
+            <div class="cp__seg" role="radiogroup" aria-label="What a message sent mid-turn does">
+              <i class="cp__seg-pill" :style="{ '--i': followUpIndex }" aria-hidden="true" />
+              <button
+                v-for="o in FOLLOW_UP_OPTIONS"
+                :key="o.id"
+                type="button"
+                role="radio"
+                class="cp__seg-opt"
+                :class="{ 'cp__seg-opt--on': prefs.followUp === o.id }"
+                :aria-checked="prefs.followUp === o.id"
+                :title="o.title"
+                :tabindex="open ? 0 : -1"
+                @click="chooseFollowUp(o.id)"
+              >
+                {{ o.label }}
               </button>
             </div>
           </div>

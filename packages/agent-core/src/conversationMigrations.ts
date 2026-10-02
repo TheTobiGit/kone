@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 19;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -998,6 +998,46 @@ function migration0017BlockSkills(db: DatabaseSync): void {
   }
 }
 
+/**
+ * Whether a user block was delivered into a turn that was already running (a
+ * steer) rather than starting a turn of its own. Set once the provider took
+ * it, so a reloaded thread marks the same messages the live one did. NULL on
+ * every other block.
+ */
+function migration0018BlockSteered(db: DatabaseSync): void {
+  if (!hasTable(db, "blocks")) return;
+  addColumn(db, "blocks", "steered", "INTEGER");
+}
+
+/**
+ * One pending row per prompt, held rows included. The (thread_id,
+ * user_block_id) index used to cover only waiting and claimed rows, so a
+ * replayed send of a held ('failed') prompt queued a second copy, and sending
+ * the held original then collided with that copy on the index. Duplicates
+ * already on disk are settled first: a held copy beside a waiting or claimed
+ * one is cancelled, and of several held copies the earliest stays.
+ */
+function migration0019PendingUserBlockIndex(db: DatabaseSync): void {
+  if (!hasTable(db, "queued_turns")) return;
+  db.prepare(
+    `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+      WHERE state = 'failed' AND EXISTS (
+        SELECT 1 FROM queued_turns other
+         WHERE other.thread_id = queued_turns.thread_id
+           AND other.user_block_id = queued_turns.user_block_id
+           AND other.rowid <> queued_turns.rowid
+           AND (other.state IN ('queued', 'promoting')
+                OR (other.state = 'failed' AND other.rowid < queued_turns.rowid))
+      )`,
+  ).run(Date.now());
+  db.exec(`
+    DROP INDEX IF EXISTS idx_queued_turns_active_user_block;
+    CREATE UNIQUE INDEX idx_queued_turns_active_user_block
+      ON queued_turns (thread_id, user_block_id)
+      WHERE state IN ('queued', 'promoting', 'failed');
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1016,6 +1056,8 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 15, name: "BlockSender", run: migration0015BlockSender },
   { id: 16, name: "ThreadContract", run: migration0016ThreadContract },
   { id: 17, name: "BlockSkills", run: migration0017BlockSkills },
+  { id: 18, name: "BlockSteered", run: migration0018BlockSteered },
+  { id: 19, name: "PendingUserBlockIndex", run: migration0019PendingUserBlockIndex },
 ];
 
 export interface MigrationOptions {

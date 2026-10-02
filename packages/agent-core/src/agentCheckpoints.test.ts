@@ -122,8 +122,8 @@ let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 
 function buildService(checkpointStore: CheckpointStore): AgentServiceType {
   const queueStub = {
-    enqueueQueuedTurn: async () => true,
-    claimNextQueuedTurn: async () => null,
+    enqueueQueuedTurn: () => true,
+    claimNextQueuedTurn: () => null,
   };
   return new AgentServiceCtor({
     // SAFETY: the service only reads the queue slice on the busy/promotion

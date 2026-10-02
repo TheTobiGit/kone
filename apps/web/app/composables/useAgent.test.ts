@@ -39,6 +39,7 @@ function harness() {
 
 type QueueEventType =
   | "turn.queued"
+  | "turn.queued-updated"
   | "turn.queued-cancelled"
   | "turn.promoted"
   | "turn.steered"
@@ -431,7 +432,7 @@ describe("useAgent durable turn queue", () => {
       }),
     );
     const entry = session.queuedTurns.value[0]!;
-    expect(entry.attachmentsJson).toBe(attachmentsJson);
+    expect(entry.attachments?.map((a) => a.id)).toEqual(["a1"]);
     // Nothing was ever pushed to blocks — the row is the only copy.
     expect(session.blocks.value.map((b) => b.id)).not.toContain("ub-att");
 
@@ -457,7 +458,7 @@ describe("useAgent durable turn queue", () => {
     ]);
     const entry = session.queuedTurns.value[0]!;
     expect(entry.input).toBe("with file");
-    expect(entry.attachmentsJson).toContain("a2");
+    expect(entry.attachments?.map((a) => a.id)).toEqual(["a2"]);
 
     session.reduce(
       queuedEvent(session.threadId.value, "turn.promoted", {
@@ -600,6 +601,170 @@ describe("useAgent durable turn queue", () => {
     // leave ["b-first", "b-second", "turn-1"].
     expect(session.blocks.value.map((b) => b.id)).toEqual(["b-first", "turn-1", "b-second"]);
     expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-first", "turn-1"]);
+  });
+
+
+  test("turn.queued follows the backend's run order, not arrival", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-plain",
+        userBlockId: "b-plain",
+        dispatchMode: "queue",
+        position: 1,
+        input: "plain",
+      }),
+    );
+    // A steer row claims ahead of plain follow-ups, so it lands first.
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-steer",
+        userBlockId: "b-steer",
+        dispatchMode: "steer",
+        position: 2,
+        input: "steer",
+        order: ["q-steer", "q-plain"],
+      }),
+    );
+    expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-steer", "q-plain"]);
+  });
+
+  test("turn.queued-updated moves a row's status without moving the row", () => {
+    const { session } = harness();
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q1",
+        userBlockId: "b1",
+        dispatchMode: "queue",
+        position: 1,
+        input: "hello",
+      }),
+    );
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued-updated", {
+        queueId: "q1",
+        state: "queued",
+        attemptCount: 1,
+        retryAt: 123,
+        error: "provider is down",
+      }),
+    );
+    expect(session.queuedTurns.value[0]).toMatchObject({ state: "queued", retryAt: 123, error: "provider is down" });
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued-updated", { queueId: "q1", state: "promoting", attemptCount: 2 }),
+    );
+    const claimed = session.queuedTurns.value[0]!;
+    expect(claimed.state).toBe("promoting");
+    expect(claimed.retryAt).toBeUndefined();
+    expect(claimed.error).toBeUndefined();
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued-updated", {
+        queueId: "q1",
+        state: "failed",
+        attemptCount: 4,
+        error: "provider is down",
+      }),
+    );
+    expect(session.queuedTurns.value.map((q) => [q.queueId, q.state])).toEqual([["q1", "failed"]]);
+  });
+
+  test("a Stop hands the queued messages back for the composer, in queue order", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    const file = { type: "file" as const, id: "a1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 3 };
+    const skill = { name: "review", path: "/skills/review/SKILL.md" };
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q1",
+        userBlockId: "b1",
+        dispatchMode: "queue",
+        position: 1,
+        input: "first thing",
+        attachmentsJson: JSON.stringify([file]),
+      }),
+    );
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q2",
+        userBlockId: "b2",
+        dispatchMode: "queue",
+        position: 2,
+        input: "second thing",
+        skills: [skill],
+      }),
+    );
+    for (const queueId of ["q1", "q2"]) {
+      session.reduce(queuedEvent(session.threadId.value, "turn.queued-cancelled", { queueId, reason: "stop" }));
+    }
+
+    expect(session.queuedTurns.value).toHaveLength(0);
+    expect(session.queueReturn.value).toMatchObject({
+      text: "first thing\n\nsecond thing",
+      attachments: [file],
+      skills: [skill],
+    });
+  });
+
+  test("a user removal hands nothing back", () => {
+    const { session } = harness();
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q1",
+        userBlockId: "b1",
+        dispatchMode: "queue",
+        position: 1,
+        input: "gone",
+      }),
+    );
+    session.reduce(queuedEvent(session.threadId.value, "turn.queued-cancelled", { queueId: "q1", reason: "user" }));
+    expect(session.queueReturn.value).toBeNull();
+  });
+
+  test("a busy steer puts its block in the transcript at once (browser dev)", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    void session.steerTurn("look at the tests too");
+    // The dev runner has no live steer channel, so this one fell back to the
+    // queue: its block is there under the row's id, hidden until it runs.
+    const row = session.queuedTurns.value[0]!;
+    expect(row.dispatchMode).toBe("steer");
+    const pushed = session.blocks.value.find((b) => b.id === row.userBlockId)!;
+    expect(pushed.role === "user" && pushed.text).toBe("look at the tests too");
+    expect(session.timelineBlocks.value.map((b) => b.id)).not.toContain(pushed.id);
+  });
+
+  test("turn.steered marks the block the provider took into the live turn", () => {
+    const { session } = harness();
+    session.blocks.value = [...session.blocks.value, userBlock("ub-steer", "nudge")];
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.steered", { turnId: "t-live", message: "nudge", userBlockId: "ub-steer" }),
+    );
+    const marked = session.timelineBlocks.value.find((b) => b.id === "ub-steer")!;
+    expect(marked.role === "user" && marked.steered).toBe(true);
+  });
+
+  test("a queued row sent now into the live turn promotes as a steered block", () => {
+    const { session } = harness();
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q1",
+        userBlockId: "ub-1",
+        dispatchMode: "queue",
+        position: 1,
+        input: "sent now",
+      }),
+    );
+    // The adapter announces the steer before the service settles the row.
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.steered", { turnId: "t-live", message: "sent now", userBlockId: "ub-1" }),
+    );
+    session.reduce(queuedEvent(session.threadId.value, "turn.promoted", { queueId: "q1", turnId: "t-live" }));
+
+    const block = session.timelineBlocks.value.find((b) => b.id === "ub-1")!;
+    expect(block.role === "user" && block.steered).toBe(true);
   });
 
   test("events for other threads are ignored", () => {
@@ -1115,7 +1280,7 @@ describe("TurnDraft object param", () => {
     });
     const entry = session.queuedTurns.value[0]!;
     expect(entry.input).toBe("");
-    expect(entry.attachmentsJson).toContain("a9");
+    expect(entry.attachments?.map((a) => a.id)).toEqual(["a9"]);
     expect(entry.skills).toEqual(skills);
 
     session.reduce(

@@ -1021,7 +1021,8 @@ export type QueuedTurnRow = {
   threadId: string;
   userBlockId: string;
   dispatchMode: "queue" | "steer";
-  state: "queued" | "promoting";
+  /** "failed" is a held row: its retries ran out and it waits for the user. */
+  state: "queued" | "promoting" | "failed";
   /** The user's prompt text. */
   input: string;
   /** Files/images attached to the queued turn (metadata only; bytes on disk). */
@@ -1662,10 +1663,11 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
-  // `turnId` is the live turn the message was steered into; `message` is the
-  // trimmed prompt text (absent for attachment-only steers — the event is
-  // then not emitted at all).
-  | (AgentBaseEvent & { type: "turn.steered"; turnId: string; message: string })
+  // Emitted once, by the adapter that delivered it. `turnId` is the live turn
+  // the message was steered into; `message` is the trimmed prompt text (empty
+  // for an attachment- or skill-only steer); `userBlockId` names the journaled
+  // prompt block, so the transcript can mark that block as steered.
+  | (AgentBaseEvent & { type: "turn.steered"; turnId: string; message: string; userBlockId?: string })
   // A follow-up was durably enqueued because the thread has a live turn.
   // `position` is the turn's place in line within the queue (the first queued
   // follow-up is #1). `dispatchMode` distinguishes a plain follow-up from a
@@ -1687,6 +1689,23 @@ export type RuntimeEvent =
        *  identically. */
       effort?: string;
       model?: string;
+      /** The permission mode the request will run in. */
+      mode?: string;
+      /** Every pending queue id on the thread in the order they will run,
+       *  this one included — arrival order is not run order. */
+      order?: string[];
+    })
+  // A pending queue row changed state without leaving the queue: claimed and
+  // on its way to the provider (`promoting`), released after a failed start
+  // with another try coming at `retryAt` (`queued`), or held after its tries
+  // ran out (`failed`, with `error`).
+  | (AgentBaseEvent & {
+      type: "turn.queued-updated";
+      queueId: string;
+      state: "queued" | "promoting" | "failed";
+      attemptCount: number;
+      retryAt?: number;
+      error?: string;
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -2056,6 +2075,8 @@ export type StoredBlock =
        *  message carries the agent and how it relates to this thread; a
        *  kone notice carries `{ kind: "system" }`. */
       sender?: MessageSender;
+      /** Delivered into a turn that was already running. */
+      steered?: boolean;
     }
   | {
       id: string;
@@ -2951,6 +2972,11 @@ export type KoneAgentApi = {
    *  when no such row exists. */
   cancelQueuedTurn: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  /** Deliver one queued row now, with the settings it was queued with: steered
+   *  into the live turn, started when idle, or moved to the front of the queue
+   *  when the provider can't steer. Rejects with the row back where it was;
+   *  false when the row already left the queue. */
+  sendQueuedTurnNow: (threadId: string, queueId: string) => Promise<boolean>;
   /** Deliver a mid-turn message without starting a new turn boundary: routes
    *  to the live turn when the provider has a live-steer channel, else
    *  enqueues it as a steer (claiming first) — or sends normally when there
