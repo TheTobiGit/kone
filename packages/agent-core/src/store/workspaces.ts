@@ -1,5 +1,6 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
+import { PENDING_QUEUE_STATES } from "./sql.js";
 import { threadEnvMode, type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "../threadWorkspace.js";
 
 /** Subtree reader owned by the lifecycle repo, injected so this module never imports it. */
@@ -182,7 +183,7 @@ export class WorkspaceRepo {
               AND SUM(t.pinned_at IS NOT NULL) = 0
               AND NOT EXISTS (
                 SELECT 1 FROM queued_turns q JOIN threads x ON x.thread_id = q.thread_id
-                 WHERE x.worktree_path = t.worktree_path AND q.state IN ('queued', 'promoting'))
+                 WHERE x.worktree_path = t.worktree_path AND q.state IN ${PENDING_QUEUE_STATES})
               AND NOT EXISTS (
                 SELECT 1 FROM blocks b JOIN threads x ON x.thread_id = b.thread_id
                  WHERE x.worktree_path = t.worktree_path

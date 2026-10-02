@@ -301,7 +301,7 @@ async function onSend(
   // project because a project has a team; this one has no project and no
   // roster, so a binding here would only pin a name that is never shown.
   await composer.syncTarget();
-  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills });
+  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills, steer: draft.steer });
   // The list is titled from the conversation, so a send is when a row's name
   // (and its place in the order) can change.
   void refreshThreads();
@@ -534,6 +534,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               :project-path="GLOBAL_ASSISTANT_PROJECT_PATH"
               :provider="composer.provider.value"
               :send-rejection="session?.sendRejection.value"
+              :queue-return="session?.queueReturn.value"
               :mention-projects="mentionProjects"
               disable-file-mentions
               :branch-switchable="false"

@@ -8,7 +8,7 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
-import { parseQueuedAttachments } from "~/composables/useAgent";
+import { queuedRowStatus } from "~/utils/followUp";
 
 // Follow-ups parked behind the running turn. The host owns the list (send
 // while busy enqueues; cancel/steer round-trip through the bridge); this
@@ -17,6 +17,8 @@ import { parseQueuedAttachments } from "~/composables/useAgent";
 
 const props = defineProps<{
   queued?: QueuedTurnEntry[];
+  /** A turn is running — the first row then runs when it ends. */
+  busy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -30,12 +32,16 @@ const emit = defineEmits<{
 // note for attachment-only follow-ups.
 function queuedLabel(entry: QueuedTurnEntry): string {
   if (entry.input) return entry.input;
-  const parsed = parseQueuedAttachments(entry.attachmentsJson);
-  if (parsed && parsed.length > 0) {
-    const first = parsed[0]?.name;
-    if (first) return parsed.length > 1 ? `${first} +${parsed.length - 1}` : first;
-  }
+  const files = entry.attachments ?? [];
+  const first = files[0]?.name;
+  if (first) return files.length > 1 ? `${first} +${files.length - 1}` : first;
   return "Queued message";
+}
+
+/** Each row's status: what it is doing, or what it is waiting on. */
+function statusOf(entry: QueuedTurnEntry, index: number) {
+  const heldAhead = (props.queued ?? []).slice(0, index).some((q) => q.state === "failed");
+  return queuedRowStatus(entry, index, props.busy ?? false, heldAhead);
 }
 
 // Drag order needs the from-index and the hover-index only: the dragged id is
@@ -104,7 +110,7 @@ function onQueueDragEnd() {
           'queue__item--drag-over': dragOverIndex === index && draggedIndex !== index,
         }"
         :draggable="(queued?.length ?? 0) > 1"
-        :title="`Queued #${item.position} · ${queuedLabel(item)}`"
+        :title="`Queued #${item.position} · ${queuedLabel(item)}\n${statusOf(item, index).detail}`"
         @dragstart="onQueueDragStart($event, item, index)"
         @dragover.prevent="onQueueDragHighlight($event, index)"
         @dragenter.prevent="onQueueDragHighlight($event, index)"
@@ -117,12 +123,19 @@ function onQueueDragEnd() {
         </span>
         <span class="queue__pos">{{ item.position }}</span>
         <span class="queue__text">{{ queuedLabel(item) }}</span>
+        <span
+          class="queue__status"
+          :class="`queue__status--${statusOf(item, index).tone}`"
+          :title="statusOf(item, index).detail"
+        >{{ statusOf(item, index).label }}</span>
         <div class="queue__actions">
+          <!-- While a turn runs, Send now steers the message into it. -->
           <button
             type="button"
             class="queue__action queue__action--send"
-            title="Send now"
+            :title="busy ? 'Send now, into the running turn (an agent that can\'t take messages mid-turn stops and runs it next)' : 'Send now'"
             aria-label="Send now"
+            :disabled="item.state === 'promoting'"
             @click.stop="emit('send-now', item)"
           >
             <HugeiconsIcon :icon="FastForwardIcon" :size="12" :stroke-width="2" />
@@ -247,6 +260,18 @@ function onQueueDragEnd() {
   font-weight: 450;
   opacity: 0.88;
 }
+.queue__status {
+  flex: none;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.queue__status--active {
+  color: var(--boost, #4f46e5);
+}
+.queue__status--failed {
+  color: var(--danger, #ef4444);
+}
 .queue__actions {
   display: flex;
   align-items: center;
@@ -271,11 +296,15 @@ function onQueueDragEnd() {
   white-space: nowrap;
   transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
-.queue__action:hover {
+.queue__action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.queue__action:hover:not(:disabled) {
   background: color-mix(in srgb, var(--ink) 12%, transparent);
   color: var(--ink);
 }
-.queue__action--send:hover {
+.queue__action--send:hover:not(:disabled) {
   background: color-mix(in srgb, var(--boost, #4f46e5) 15%, transparent);
   color: var(--boost, #4f46e5);
 }

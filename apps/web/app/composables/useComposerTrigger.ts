@@ -29,11 +29,13 @@ export function useComposerTrigger<T>(opts: {
   blocked?: (marker: TriggerMarker) => boolean;
   resolveItems: (trigger: ActiveTrigger) => readonly T[];
   applyItem: (item: T, trigger: ActiveTrigger) => void;
-  /** Enter with no menu open — the draft's normal send. */
-  onCommit?: () => void;
+  /** Enter with no menu open — the draft's send. `opposite` is the chord one
+   *  step past the send key (⌘/Ctrl+Enter when Enter sends, ⇧⌘/Ctrl+Enter
+   *  when ⌘/Ctrl+Enter does): the composer's follow-up behaviour, flipped for
+   *  this one send. */
+  onCommit?: (how: { opposite: boolean }) => void;
   /** Whether a bare Enter commits. False leaves it to the field as a newline
-   *  and only ⌘/Ctrl+Enter commits (the composer's send-key setting). Either
-   *  way ⌘/Ctrl+Enter sends, so the chord works whichever is set. */
+   *  and only ⌘/Ctrl+Enter commits (the composer's send-key setting). */
   sendsOnPlainEnter?: () => boolean;
   /** Re-serialize the field after a token mutation (the editor sync). */
   onMutated?: () => void;
@@ -179,12 +181,12 @@ export function useComposerTrigger<T>(opts: {
       return false;
     }
     const plainSends = opts.sendsOnPlainEnter?.() ?? true;
-    if (e.key === "Enter" && !e.shiftKey && (plainSends || e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      opts.onCommit?.();
-      return true;
-    }
-    return false;
+    if (e.key !== "Enter") return false;
+    const mod = e.metaKey || e.ctrlKey;
+    if (plainSends ? e.shiftKey : !mod) return false;
+    e.preventDefault();
+    opts.onCommit?.({ opposite: plainSends ? mod : e.shiftKey });
+    return true;
   }
 
   return {

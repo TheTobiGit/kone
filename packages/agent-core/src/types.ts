@@ -813,6 +813,7 @@ import type { MessageSender } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
 import type { ContractTerms } from "@kone/protocol/contract";
 import type { ThreadAgentBinding } from "./rosterRecord.js";
+import type { ConversationStore } from "./ConversationStore.js";
 
 /** One imported transcript row, in the shape `writeForkThread` takes. */
 export type ForkImportedBlock = {
@@ -842,6 +843,8 @@ export type StoredBlock =
       /** Who said it. Absent = the user; an agent's brief, follow-up or
        *  message carries the agent and how it relates to this thread. */
       sender?: MessageSender;
+      /** Delivered into a turn that was already running, not a turn of its own. */
+      steered?: boolean;
     } & TurnStamp)
   | {
       id: string;
@@ -908,52 +911,35 @@ export type ProfileStats = {
 // AgentService owns the dispatch side — enqueueing on the busy intercept,
 // promoting on settlement, cancelling on stop.
 
-/** A queued follow-up for one thread. `userBlockId` is the store block id of
- *  the user prompt that was journaled for this turn, so the renderer can
- *  anchor its queued chip to the transcript block and the store can dedupe
- *  replayed enqueues on (thread_id, user_block_id). */
-export type QueuedTurnRow = {
-  queueId: string;
-  threadId: string;
-  userBlockId: string;
-  dispatchMode: "queue" | "steer";
-  state: "queued" | "promoting";
-  /** The user's prompt text. */
-  input: string;
-  /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
-  attachmentsJson: string | null;
-  /** Skills invoked on the turn, already resolved against the provider. The
-   *  store persists and returns them under this same parsed field. */
-  skills?: SkillReference[];
-  model: string | null;
-  mode: InteractionMode | null;
-  effort: string | null;
-  serviceTier: string | null;
-  contextWindow: string | null;
-  attemptCount: number;
-  createdAt: number;
-  updatedAt: number;
-  promotedAt: number | null;
-};
+/** A queued follow-up for one thread, as the store reads it back. Defined
+ *  beside the store (conversationStoreTypes) and re-exported here: the
+ *  service, the IPC and the renderer mirror all read the one shape the store
+ *  actually returns. */
+export type { QueuedTurnRow } from "./conversationStoreTypes.js";
 
-/** The store surface AgentService's queue slice drives. Implemented by
- *  ConversationStore (the store agent owns that class and its schema); the
- *  service is typed against this narrow contract so the two slices can land in
- *  parallel. `loadThread` is the one pre-existing store read the queue path
- *  needs (deriving the user block id for the row). */
-export type QueuedTurnStore = {
-  enqueueQueuedTurn(row: QueuedTurnRow): Promise<boolean>;
-  claimNextQueuedTurn(threadId: string): Promise<QueuedTurnRow | null>;
-  markQueuedTurnPromoted(queueId: string): Promise<boolean>;
-  releaseQueuedTurn(queueId: string): Promise<void>;
-  cancelQueuedTurn(queueId: string): Promise<boolean>;
-  cancelQueuedTurnsForThread(threadId: string): Promise<string[]>;
-  listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]>;
-  reorderQueuedTurns?(threadId: string, queueIds: string[]): Promise<boolean> | boolean;
-  latestUserBlockId?(threadId: string): string | null;
-  loadThread(threadId: string): StoredThread | null;
-  recoverStaleClaims?(staleTimeoutMs?: number): Promise<number> | number;
-};
+/** The store surface AgentService's queue slice drives: ConversationStore's
+ *  own methods, picked rather than restated, so the service is checked
+ *  against what the store really does — every call returns synchronously,
+ *  and a stand-in that doesn't is a type error, not a silent `.catch()` on
+ *  a boolean. `loadThread` is the one transcript read the queue path needs
+ *  (deriving the user block id for a row). */
+export type QueuedTurnStore = Pick<
+  ConversationStore,
+  | "enqueueQueuedTurn"
+  | "claimNextQueuedTurn"
+  | "claimQueuedTurn"
+  | "isQueuedTurnClaimed"
+  | "markQueuedTurnPromoted"
+  | "releaseQueuedTurn"
+  | "cancelQueuedTurn"
+  | "cancelQueuedTurnsForThread"
+  | "listQueuedTurns"
+  | "reorderQueuedTurns"
+  | "latestUserBlockId"
+  | "loadThread"
+  | "recoverStaleClaims"
+  | "markUserBlockSteered"
+>;
 
 // ── thread lineage & fork context (side chats) ───────────────────────────────
 // A side chat is a user-initiated child conversation forked from a parent
@@ -1852,10 +1838,11 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
-  // `turnId` is the live turn the message was steered into; `message` is the
-  // trimmed prompt text (absent for attachment-only steers — the event is
-  // then not emitted at all).
-  | (BaseEvent & { type: "turn.steered"; turnId: string; message: string })
+  // Emitted once, by the adapter that delivered it. `turnId` is the live turn
+  // the message was steered into; `message` is the trimmed prompt text (empty
+  // for an attachment- or skill-only steer); `userBlockId` names the journaled
+  // prompt block, so the transcript can mark that block as steered.
+  | (BaseEvent & { type: "turn.steered"; turnId: string; message: string; userBlockId?: string })
   // The durable turn-queue slice (AgentService): a follow-up was durably
   // enqueued because the thread has a live turn. `position` is the turn's
   // place in line within the queue (the first queued follow-up is #1).
@@ -1878,6 +1865,26 @@ export type RuntimeEvent =
        *  identically. */
       effort?: string;
       model?: string;
+      /** The permission mode the request will run in, for an Edit that hands
+       *  the row back to the composer. */
+      mode?: InteractionMode;
+      /** Every pending queue id on the thread in the order they will run,
+       *  this one included — a steer row claims ahead of plain follow-ups, so
+       *  arrival order is not run order. */
+      order?: string[];
+    })
+  // A pending queue row changed state without leaving the queue: claimed and
+  // on its way to the provider (`promoting`), released after a failed start
+  // with another try coming at `retryAt` (`queued`), or held after its tries
+  // ran out (`failed`, with `error`) — held rows pause the queue until the
+  // user sends or removes them.
+  | (BaseEvent & {
+      type: "turn.queued-updated";
+      queueId: string;
+      state: "queued" | "promoting" | "failed";
+      attemptCount: number;
+      retryAt?: number;
+      error?: string;
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was

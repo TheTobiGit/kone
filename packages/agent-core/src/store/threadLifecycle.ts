@@ -2,6 +2,7 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { removeThreadRows } from "./search.js";
+import { PENDING_QUEUE_STATES } from "./sql.js";
 
 /** Callback into the event ingest repo to drop cached ids for deleted threads. */
 export type ThreadLifecycleDeps = {
@@ -189,7 +190,7 @@ export class ThreadLifecycleRepo {
                SELECT 1 FROM queued_turns q
                JOIN subtree s ON q.thread_id = s.id
                WHERE s.root_id = t.thread_id
-                 AND q.state IN ('queued', 'promoting')
+                 AND q.state IN ${PENDING_QUEUE_STATES}
              )
              AND NOT EXISTS (
                SELECT 1 FROM blocks b

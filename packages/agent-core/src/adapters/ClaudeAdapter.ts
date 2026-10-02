@@ -874,10 +874,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     // shutdown, so a steer still parked here is dropped with it.
     session.prompt.push(userMessage);
 
-    const steerText = input.input.trim();
-    if (steerText) {
-      this.emit({ ...this.base(session), type: "turn.steered", turnId, message: steerText });
-    }
+    // The one announcement of this steer: the service relies on the adapter
+    // for it, since only the adapter knows the message went into a live turn.
+    const steered: Extract<RuntimeEvent, { type: "turn.steered" }> = {
+      ...this.base(session),
+      type: "turn.steered",
+      turnId,
+      message: input.input.trim(),
+    };
+    if (input.userBlockId) steered.userBlockId = input.userBlockId;
+    this.emit(steered);
     return { threadId: input.threadId, turnId };
   }
 

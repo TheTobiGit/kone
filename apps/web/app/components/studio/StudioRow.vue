@@ -1539,7 +1539,7 @@ async function onSend(
     const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     if (ok.length) attachments = ok;
   }
-  void agent.send({ text: draft.text, attachments, skills: draft.skills });
+  void agent.send({ text: draft.text, attachments, skills: draft.skills, steer: draft.steer });
 }
 /** Drop one durably queued follow-up (the composer strip's ✕). The backend
  *  emits turn.queued-cancelled; the strip clears on that event. */
@@ -1867,6 +1867,7 @@ useStudioRowView(registryPath, () =>
           :project-path="project.path"
           :provider="focusedThread?.provider.value ?? agent.provider.value"
           :send-rejection="focusedThread?.sendRejection.value"
+          :queue-return="focusedThread?.queueReturn.value"
           :project-name="project.name"
           :branch="composerBranch"
           :branch-switchable="threadIsBlank && !focusedIsSideChat"

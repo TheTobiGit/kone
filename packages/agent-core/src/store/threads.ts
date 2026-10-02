@@ -118,6 +118,21 @@ export class ThreadRepo {
     }
   }
 
+  /** Mark a journaled user block as steered into a running turn — written
+   *  once the provider took it, so reloads mark what the live view marked.
+   *  Only ever a user block: the flag means nothing on a turn. */
+  markUserBlockSteered(threadId: string, blockId: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE blocks SET steered = 1 WHERE thread_id = ? AND block_id = ? AND role = 'user'`,
+      ).run(threadId, blockId);
+    } catch (err) {
+      console.error("[conversation-store] markUserBlockSteered failed:", err);
+    }
+  }
+
   /** Read the thread's current working title, or null if unset / missing. */
   getTitle(threadId: string): string | null {
     const db = this.dbh.handle();

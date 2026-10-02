@@ -32,6 +32,9 @@ export type TurnDraft = {
   text: string;
   attachments?: ChatAttachment[];
   skills?: SkillReference[];
+  /** While a turn runs, deliver this into it instead of queueing it behind
+   *  it. Ignored on an idle thread, where every send starts a turn. */
+  steer?: boolean;
 };
 
 /** The naming source for a turn: prose first, then the invoked skill, then
@@ -61,6 +64,7 @@ export function normalizeTurnDraft(
     if (resolvedAttachments) draft.attachments = resolvedAttachments;
     const resolvedSkills = textOrDraft.skills ?? skills;
     if (resolvedSkills) draft.skills = resolvedSkills;
+    if (textOrDraft.steer) draft.steer = true;
     return draft;
   }
   const draft: TurnDraft = { text: textOrDraft };
@@ -76,6 +80,8 @@ export type ComposerDraft = {
   text: string;
   files?: File[];
   skills?: SkillReference[];
+  /** The composer chose to steer this into the running turn (see TurnDraft). */
+  steer?: boolean;
 };
 
 /** Whether a host send argument is already a composer draft object. */
@@ -95,6 +101,7 @@ export function normalizeComposerDraft(
     if (resolvedFiles) draft.files = resolvedFiles;
     const resolvedSkills = textOrDraft.skills ?? skills;
     if (resolvedSkills) draft.skills = resolvedSkills;
+    if (textOrDraft.steer) draft.steer = true;
     return draft;
   }
   const draft: ComposerDraft = { text: textOrDraft };
@@ -132,6 +139,9 @@ export type UserBlock = {
    *  notice carries `{ kind: "system" }`. Only the user's own words sit on the
    *  user's side of the conversation. */
   sender?: MessageSender;
+  /** Delivered into a turn that was already running rather than starting
+   *  one; set once the provider took it (turn.steered), and on reload. */
+  steered?: boolean;
 } & Historical;
 
 export type AssistantBlock = {
@@ -239,12 +249,18 @@ export type QueuedTurnRow = {
    *  for — the chip anchors to the transcript block via it. */
   userBlockId: string;
   dispatchMode: "queue" | "steer";
-  /** "promoting" = the backend claimed the row and handed it to the adapter. */
-  state: "queued" | "promoting";
+  /** "promoting" = the backend claimed the row and is handing it to the
+   *  provider; "failed" = it didn't start after its retries and is held,
+   *  pausing the queue behind it, until the user sends or removes it. */
+  state: "queued" | "promoting" | "failed";
   /** The user's prompt text (also derivable from the anchored block; kept so
    *  an optimistic chip can render before a block is ever matched). */
   input: string;
   createdAt: number;
+  /** Files/images queued with the request (metadata only). A stored row
+   *  arrives with these parsed; a live turn.queued row is parsed into them. */
+  attachments?: ChatAttachment[];
+  /** The serialized form turn.queued carries; read `attachments` instead. */
   attachmentsJson?: string | null;
   /** Skills invoked on the queued request — the row is the prompt until it is
    *  promoted, so they live here, not only on a block. */
@@ -255,6 +271,8 @@ export type QueuedTurnRow = {
    *  row was enqueued a second ago or drained from storage after a quit. */
   effort?: string;
   model?: string;
+  /** The permission mode it will run in — handed back to the composer on Edit. */
+  mode?: string;
 };
 
 /** A queued follow-up as the UI presents it — the bridge row plus the local
@@ -268,6 +286,23 @@ export type QueuedTurnEntry = QueuedTurnRow & {
    *  reads 2). Renumbered on every add/remove so a cancellation leaves no
    *  gaps. */
   position: number;
+  /** A start that failed and is waiting out its backoff: when the next try
+   *  runs. Cleared when the row is claimed again. */
+  retryAt?: number;
+  /** Why the last delivery failed — set on a held row or a refused Send now. */
+  error?: string;
+  /** The provider took it into the running turn (Send now); the promoted
+   *  block is marked steered. */
+  steered?: boolean;
+};
+
+/** Queued messages a Stop handed back to the composer, merged into one draft.
+ *  `at` is the cue: a new stamp means a new hand-back to restore. */
+export type QueueReturn = {
+  at: number;
+  text: string;
+  attachments: ChatAttachment[];
+  skills: SkillReference[];
 };
 
 /** The queue slice of the desktop bridge — queuedTurns / cancelQueuedTurn /
@@ -279,6 +314,7 @@ export type QueueBridge = {
   queuedTurns?: (threadId: string) => Promise<QueuedTurnRow[]>;
   cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  sendQueuedTurnNow?: (threadId: string, queueId: string) => Promise<boolean>;
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
 };
 

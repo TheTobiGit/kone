@@ -158,6 +158,11 @@ export class HandOffLifecycle {
       await this.deps.service.interruptTurn(threadId);
       return;
     }
+    // Nothing the user lined up starts on its own once they pressed Stop: the
+    // interrupt's abort would otherwise promote the next queued follow-up.
+    // The rows are cancelled with reason "stop", which hands their words back
+    // to the composer rather than discarding them.
+    await this.deps.service.cancelQueuedTurns(threadId);
     await this.deps.service.interruptTurn(threadId);
     try {
       await this.onUserStopped(threadId);

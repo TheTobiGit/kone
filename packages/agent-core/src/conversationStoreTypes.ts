@@ -211,6 +211,9 @@ export type BlockRow = {
   /** Skills invoked on a user-role block, as JSON; NULL = none. Absent on rows
    *  read through a projection that doesn't name it. */
   skills_json?: string | null;
+  /** 1 when a user-role block was steered into a running turn; NULL else.
+   *  Absent on rows read through a projection that doesn't name it. */
+  steered?: number | null;
 };
 
 /** An attachment's registry row — its metadata plus where the bytes live. */
@@ -299,10 +302,12 @@ export function serializeAttachments(attachments: ChatAttachment[] | undefined):
 export type QueuedTurnDispatchMode = "queue" | "steer";
 
 /** Lifecycle of a queued turn: 'queued' → 'promoting' (claimed) → 'promoted'
- *  (ran), 'promoting' → 'queued' (released after a failed drain), and either
- *  active state → 'cancelled' (stop/delete). Only the active states are
- *  pending; promoted/cancelled rows are inert history. */
-export type QueuedTurnState = "queued" | "promoting" | "promoted" | "cancelled";
+ *  (ran), 'promoting' → 'queued' (released after a failed drain, to retry),
+ *  'promoting' → 'failed' (held: its retries ran out, and it waits for the
+ *  user), and any pending state → 'cancelled' (stop/delete). queued,
+ *  promoting and failed are pending; promoted/cancelled rows are inert
+ *  history. */
+export type QueuedTurnState = "queued" | "promoting" | "promoted" | "failed" | "cancelled";
 
 /** The enqueue payload the service layer hands the store. `userBlockId` is the
  *  journaled user-prompt block UUID (recordUserBlock mints it) — the replay
@@ -723,6 +728,7 @@ export function assembleBlocks(
       if (b.source === "fork-import") block.source = "fork-import";
       const sender = parseMessageSender(b.sender_json);
       if (sender) block.sender = sender;
+      if (b.steered) block.steered = true;
       return block;
     }
     const block: StoredBlock = {

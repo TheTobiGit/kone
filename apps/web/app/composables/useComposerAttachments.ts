@@ -1,5 +1,5 @@
 import { computed, ref } from "vue";
-import type { AttachmentKind } from "~/types/desktop";
+import type { AttachmentKind, ChatAttachment } from "~/types/desktop";
 import { useSound } from "./useSound";
 
 export const MAX_ATTACHMENTS = 8;
@@ -47,6 +47,30 @@ export function useComposerAttachments(deps: {
     return (raw || "FILE").slice(0, 4).toUpperCase();
   }
 
+  function kindOf(file: File): AttachmentKind {
+    return file.type.startsWith("image/") ? "image" : "file";
+  }
+
+  function push(file: File): void {
+    const kind = kindOf(file);
+    attachments.value.push({
+      id: ++attachSeq,
+      file,
+      name: file.name,
+      kind,
+      sizeBytes: file.size,
+      ext: extFor(file),
+      previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined,
+    });
+  }
+
+  function settleAdded(added: number): void {
+    if (added === 0) return;
+    cue("toggle");
+    if (!isOpen()) void wake();
+    syncSoon();
+  }
+
   function addFiles(list: FileList | File[] | null | undefined) {
     if (!list) return;
     const incoming = Array.from(list);
@@ -57,28 +81,15 @@ export function useComposerAttachments(deps: {
         flash(`Up to ${MAX_ATTACHMENTS} attachments per message.`);
         break;
       }
-      const kind: AttachmentKind = file.type.startsWith("image/") ? "image" : "file";
-      const cap = kind === "image" ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+      const cap = kindOf(file) === "image" ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
       if (file.size > cap) {
         flash(`"${file.name}" is too large (max ${Math.round(cap / (1024 * 1024))} MB).`);
         continue;
       }
-      attachments.value.push({
-        id: ++attachSeq,
-        file,
-        name: file.name,
-        kind,
-        sizeBytes: file.size,
-        ext: extFor(file),
-        previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined,
-      });
+      push(file);
       added++;
     }
-    if (added > 0) {
-      cue("toggle");
-      if (!isOpen()) void wake();
-      syncSoon();
-    }
+    settleAdded(added);
   }
 
   function openFilePicker() {
@@ -138,6 +149,32 @@ export function useComposerAttachments(deps: {
     addFiles(e.dataTransfer?.files);
   }
 
+  /** Put files that were already sent once back on the draft — a queued
+   *  message handed back by Edit or Stop. Their bytes are read back from the
+   *  attachment store (`attachment://`), so the draft holds ordinary files
+   *  again and the next send uploads them like any other. They passed the
+   *  count and size caps when they were picked, so they aren't held to them
+   *  again: a Stop can hand back several messages' files at once, and those
+   *  rows are already cancelled, so a file turned away here would be lost.
+   *  Over the count the picker refuses more until some are removed. One that
+   *  can no longer be read is skipped, and the notice says so. */
+  async function restoreUploaded(list: readonly ChatAttachment[]): Promise<void> {
+    const files: File[] = [];
+    let missing = 0;
+    for (const att of list) {
+      try {
+        const res = await fetch(`attachment://${att.id}`);
+        if (!res.ok) throw new Error(String(res.status));
+        files.push(new File([await res.blob()], att.name, { type: att.mimeType }));
+      } catch {
+        missing++;
+      }
+    }
+    for (const file of files) push(file);
+    settleAdded(files.length);
+    if (missing > 0) flash(`${missing} attachment${missing > 1 ? "s" : ""} could not be brought back.`);
+  }
+
   const hasAttachments = computed(() => attachments.value.length > 0);
 
   return {
@@ -148,6 +185,7 @@ export function useComposerAttachments(deps: {
     hasAttachments,
     flash,
     addFiles,
+    restoreUploaded,
     openFilePicker,
     onFilePicked,
     removeAttachment,

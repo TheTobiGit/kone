@@ -65,6 +65,7 @@ import {
   queuedBlockIdsOf,
   sortQueuedByIds,
   parseQueuedAttachments,
+  mergeQueueReturn,
 } from "./session/sessionQueue";
 import { useSessionWorkspace } from "./session/sessionWorkspace";
 import { useSessionGates } from "./session/sessionGates";
@@ -312,12 +313,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     bridge: ctx.bridge,
     error,
     busy,
+    ensureSession: async () => {
+      await ensureStarted();
+      return session.value !== null;
+    },
     send,
     steerTurn,
   });
   const queuedTurnsRaw = queue.queuedTurnsRaw;
   const pendingQueueAnchors = queue.pendingQueueAnchors;
   const queuedTurns = queue.queuedTurns;
+  const queueReturn = queue.queueReturn;
   const anchorFor = queue.anchorFor;
   const seedQueuedTurns = queue.seedQueuedTurns;
   const cancelQueuedTurn = queue.cancelQueuedTurn;
@@ -345,6 +351,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     everRan,
     spawnedChildren,
     queuedTurnsRaw,
+    queueReturn,
+    mergeQueueReturn,
     pendingQueueAnchors,
     pendingUserInput,
     pendingApprovals,
@@ -747,7 +755,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  There is NO busy early-return: a send while a turn runs is durably
    *  enqueued by the service (it emits turn.queued and acks with the queue id
    *  as turnId). A busy send pushes nothing — the row in queuedTurnsRaw is the
-   *  only copy until turn.promoted rebuilds the block at the tail. */
+   *  only copy until turn.promoted rebuilds the block at the tail. A draft
+   *  marked `steer` goes to steerTurn instead while a turn runs. */
   async function send(draft: TurnDraft): Promise<void>;
   async function send(
     text: string,
@@ -760,6 +769,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     invoked?: SkillReference[],
   ): Promise<void> {
     const normalized = normalizeTurnDraft(textOrDraft, attachments, invoked);
+    if (normalized.steer && busy.value) return steerTurn(normalized);
     const trimmed = normalized.text.trim();
     const files = normalized.attachments ?? [];
     const skills = normalized.skills ?? [];
@@ -843,11 +853,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   /** Steer a mid-turn nudge into the RUNNING turn — same turn, no new
    *  boundary. The service routes it to the provider's live-steer channel
-   *  (emitting turn.steered), or — when the provider has none — durably
-   *  queues it to run first (a steer row claims ahead of plain follow-ups).
-   *  Without a live turn the backend treats a steer as a plain send. Mirrors
-   *  send(): pushes the user block immediately when idle and rides the same
-   *  per-turn knobs; a busy steer parks only the queue row. */
+   *  (the adapter emits turn.steered), or — when the provider has none —
+   *  durably queues it to run first (a steer row claims ahead of plain
+   *  follow-ups). Without a live turn the backend treats a steer as a plain
+   *  send. Unlike a busy send, the user block goes on screen at once, under
+   *  the renderer's id, which is the id the backend journals it by: the live
+   *  view and a reload agree on it, turn.steered marks it, and a steer that
+   *  fell back to the queue is anchored to it and hidden until it runs. */
   async function steerTurn(draft: TurnDraft): Promise<void>;
   async function steerTurn(
     text: string,
@@ -866,10 +878,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (!trimmed && files.length === 0 && skills.length === 0) return;
     touch();
     const blockId = uid();
-    const wasBusy = busy.value;
     retireWorkspaceSteps();
-    if (!wasBusy)
-      blocks.value = [...blocks.value, buildUserBlock(blockId, { text: trimmed, attachments: files, skills })];
+    blocks.value = [...blocks.value, buildUserBlock(blockId, { text: trimmed, attachments: files, skills })];
     if (!title.value) title.value = titleFromPrompt(turnLabel({ text: trimmed, attachments: files, skills }));
 
     const api = bridge();
@@ -1262,6 +1272,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     everRan,
     error,
     sendRejection,
+    // Queued messages a Stop handed back for the composer to restore.
+    queueReturn,
     warning,
     // Why a send would be refused right now, or null. The composer binds it to
     // keep the draft instead of dispatching into a provider that can't run it.
