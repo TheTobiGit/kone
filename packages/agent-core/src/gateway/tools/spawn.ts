@@ -636,7 +636,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       name: "agent_wait",
       agentsOnly: true,
       description:
-        `Wait for workers and agents you handed work to and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough.`,
+        `Wait for workers and agents you handed work to and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough. Waiting is optional: a result nobody is waiting for when it settles is delivered to you as a report from that agent, waking you if you are idle — so wait when your next step needs the result, and otherwise end your turn.`,
       inputSchema: WaitForResponsesInputSchema,
       jsonSchema: WAIT_FOR_RESPONSES_JSON_SCHEMA,
       permission: "allow",

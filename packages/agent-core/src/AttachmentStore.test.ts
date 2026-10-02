@@ -55,6 +55,7 @@ function fakeRegistry(): AttachmentRegistry {
       const list = rowsByThread.get(row.threadId) ?? [];
       list.push(row);
       rowsByThread.set(row.threadId, list);
+      return true;
     },
     forgetAttachment: (id: string) => {
       forgotten.push(id);
@@ -167,5 +168,63 @@ describe("AttachmentStore.deleteThreadFiles", () => {
     await store.deleteThreadFiles("parent-1");
 
     expect(existsSync(escapeFile)).toBe(true);
+  });
+});
+
+describe("AttachmentStore.save", () => {
+  test("a file uploaded before its thread has a row still resolves, and registers once it does", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    const threads = new Set<string>();
+    const registry = fakeRegistry();
+    const store = new AttachmentStore(tmp, {
+      ...registry,
+      registerAttachment: (r) => threads.has(r.threadId) && registry.registerAttachment(r),
+    });
+
+    const saved = await store.save({
+      threadId: "new-thread",
+      name: "shot.png",
+      mimeType: "image/png",
+      data: Buffer.from("png").toString("base64"),
+    });
+    expect(registry.getAttachment(saved.id)).toBeNull();
+
+    threads.add("new-thread");
+    const abs = store.resolveAbsPath(saved.id);
+    expect(abs).not.toBeNull();
+    expect(existsSync(abs!)).toBe(true);
+    expect(registry.getAttachment(saved.id)?.threadId).toBe("new-thread");
+  });
+
+  test("a held-back file is not swept as an orphan", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    const store = new AttachmentStore(tmp, { ...fakeRegistry(), registerAttachment: () => false });
+
+    const saved = await store.save({
+      threadId: "new-thread",
+      name: "shot.png",
+      mimeType: "image/png",
+      data: Buffer.from("png").toString("base64"),
+    });
+    await store.sweepOrphans();
+
+    expect(existsSync(store.resolveAbsPath(saved.id)!)).toBe(true);
+  });
+
+  test("deleting a thread removes its held-back files too", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    const store = new AttachmentStore(tmp, { ...fakeRegistry(), registerAttachment: () => false });
+
+    const saved = await store.save({
+      threadId: "new-thread",
+      name: "shot.png",
+      mimeType: "image/png",
+      data: Buffer.from("png").toString("base64"),
+    });
+    const abs = store.resolveAbsPath(saved.id)!;
+    await store.deleteThreadFiles("new-thread");
+
+    expect(existsSync(abs)).toBe(false);
+    expect(store.resolveAbsPath(saved.id)).toBeNull();
   });
 });

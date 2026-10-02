@@ -55,6 +55,7 @@ import type {
 import type { TurnSpan } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
+import type { ThreadAgentBinding } from "../../rosterRecord.js";
 import {
   ArchiveAppThreadInputSchema,
   ARCHIVE_APP_THREAD_JSON_SCHEMA,
@@ -118,7 +119,7 @@ export interface AppThreadsStore {
   getAgent(agentId: string): AgentRecord | null;
   /** Bind the new thread to the agent it was handed to, before its first turn
    *  dispatches, so its transcript carries that identity from the start. */
-  bindThreadAgent(threadId: string, agentId: string | null): void;
+  bindThreadAgent(threadId: string, agentId: string | null): ThreadAgentBinding | null;
   reserveGatewayOp(input: {
     threadId: string;
     turnId: string;
@@ -835,7 +836,21 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     await runner.startThread(sessionInput);
     // Bound after the row exists and before the first turn dispatches, so the
     // thread's transcript names who answered from its very first block.
-    if (agentId) store.bindThreadAgent(threadId, agentId);
+    if (agentId) {
+      const binding = store.bindThreadAgent(threadId, agentId);
+      // The renderer never made this binding, so it has to be told; otherwise
+      // the thread reads as a guest under a name rolled from its id.
+      if (binding) {
+        options.emit?.({
+          type: "thread.agent-bound",
+          threadId,
+          provider: target.provider,
+          at: Date.now(),
+          source: "kone.store",
+          binding,
+        });
+      }
+    }
 
     // The brief is this agent's, not the user's: the new thread is the user's
     // own, on their board, but its first words came from here.

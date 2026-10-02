@@ -180,8 +180,12 @@ export function hydrateAgentRows(presetIds: readonly string[]): Promise<void> {
 }
 
 async function runHydrate(presetIds: string[]): Promise<void> {
+  listenForBindings();
   const api = bridge();
-  if (api) applyRosterSnapshot(await api.hydrate({ presetIds }));
+  if (api) {
+    const askedAt = bindingsHeardSoFar();
+    applyRosterSnapshot(await api.hydrate({ presetIds }), askedAt);
+  }
   // The preset's index is its position: the same index `agents.ts` draws it at
   // before hydrate, so nothing moves when the real rows land.
   else presetIds.forEach((presetId, index) => ensureLocalRow(presetId, index));
@@ -204,8 +208,16 @@ async function runHydrate(presetIds: string[]): Promise<void> {
  * unclaimed — at which point the next send would settle it again, on whoever is
  * picked by then. For everything else the store's answer stands, since
  * write-once means what it holds is what actually settled.
+ *
+ * A binding the main process announced after the snapshot was asked for is the
+ * same case from the other side: the store wrote it after it answered, so the
+ * answer can't hold it. `askedAt` is `bindingsHeardSoFar()` read before asking;
+ * leaving it out means "asked just now", which keeps nothing back.
  */
-export function applyRosterSnapshot(snapshot: RosterSnapshot): void {
+export function applyRosterSnapshot(
+  snapshot: RosterSnapshot,
+  askedAt = bindingsHeardSoFar(),
+): void {
   // A store that failed to open answers with nothing at all — not even the
   // presets it was just asked to ensure. That is not an answer, so it must not
   // be mistaken for "you have no agents and no history": the cache is all there
@@ -217,6 +229,16 @@ export function applyRosterSnapshot(snapshot: RosterSnapshot): void {
     const local = threadBindings.value[threadId];
     if (local !== undefined) settled[threadId] = local;
   }
+  const kept = new Set(pendingBindings);
+  for (const [threadId, heardAt] of heardBindings) {
+    if (heardAt <= askedAt) {
+      heardBindings.delete(threadId);
+      continue;
+    }
+    const local = threadBindings.value[threadId];
+    if (local !== undefined) settled[threadId] = local;
+    kept.add(threadId);
+  }
   for (const binding of snapshot.bindings) {
     settled[binding.threadId] = binding.agentId ?? GUEST_BINDING;
   }
@@ -224,7 +246,7 @@ export function applyRosterSnapshot(snapshot: RosterSnapshot): void {
   // The routes ride on these same rows, so they reconcile against the same
   // answer and by the same rule — including the pending set, whose writes the
   // store cannot have yet.
-  applyJevRouteSnapshot(snapshot.bindings, pendingBindings);
+  applyJevRouteSnapshot(snapshot.bindings, kept);
   selectedAgentId.value = snapshot.selectedAgentId;
 }
 
@@ -341,7 +363,8 @@ async function reload(): Promise<void> {
   const presetIds = agentRows.value
     .map((row) => row.presetId)
     .filter((presetId): presetId is string => presetId !== null);
-  applyRosterSnapshot(await api.hydrate({ presetIds }));
+  const askedAt = bindingsHeardSoFar();
+  applyRosterSnapshot(await api.hydrate({ presetIds }), askedAt);
 }
 
 // ── who worked a thread, and who is up next ─────────────────────────────────
@@ -441,6 +464,49 @@ function applyBinding(threadId: string, binding: ThreadAgentBinding): void {
     [threadId]: binding.agentId ?? GUEST_BINDING,
   };
   applyJevRoute(threadId, binding.agentId, binding.route);
+}
+
+// ── bindings the main process settles ───────────────────────────────────────
+// A delegation binds its child where the child is made, in the main process,
+// and announces it as a `thread.agent-bound` event ahead of the child's first
+// event. Nothing in this window wrote it, so nothing would reconcile it, and a
+// thread with no binding here reads as a guest — under a name rolled from its
+// id — until the next full snapshot happens to come by.
+
+/** Each heard binding, by the count it was heard at — what lets a snapshot that
+ *  was asked for before the write tell "not written yet" from "deleted". */
+const heardBindings = new Map<string, number>();
+let heardCount = 0;
+
+/** How many bindings have been heard so far. Read it before asking the store
+ *  for a snapshot and hand it to `applyRosterSnapshot` with the reply. */
+export function bindingsHeardSoFar(): number {
+  return heardCount;
+}
+
+/**
+ * Take a binding the store announced. It is the store's settled answer, not a
+ * guess, so it is applied as the reply to a write would be: write-once already
+ * held at the far end, and what it reports is what stands.
+ */
+export function bindingHeard(binding: ThreadAgentBinding): void {
+  heardCount += 1;
+  heardBindings.set(binding.threadId, heardCount);
+  applyBinding(binding.threadId, binding);
+}
+
+let listening = false;
+
+/** Hear the store's announcements for as long as the window lives. Once per
+ *  window, from hydrate, since that runs wherever the roster is first read. */
+function listenForBindings(): void {
+  if (listening || !import.meta.client) return;
+  const events = window.koneDesktop?.agent;
+  if (!events?.onEvent) return;
+  listening = true;
+  events.onEvent((event) => {
+    if (event.type === "thread.agent-bound") bindingHeard(event.binding);
+  });
 }
 
 // ── each project's team ─────────────────────────────────────────────────────

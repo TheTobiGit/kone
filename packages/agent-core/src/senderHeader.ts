@@ -13,10 +13,12 @@
 // response to a delegator's plan you think is wrong is to say so, and the right
 // response to your user's is usually not.
 
-import type { AgentSender, MessageSender } from "./types.js";
+import { callSignFor, rootConversationId } from "@kone/protocol/agent-call-sign";
 
-/** The sender's name, or — for a guest agent, which has no stored name (the
- *  renderer derives one from its thread id) — who it is to this agent. */
+import type { AgentSender, ForkKind, MessageSender } from "./types.js";
+
+/** The sender's name, or — for a sender recorded before every agent carried
+ *  one — who it is to this agent. */
 function nameOf(sender: AgentSender): string {
   const name = sender.name?.trim();
   if (name) return name;
@@ -50,13 +52,13 @@ function guidanceFor(sender: AgentSender): string {
   const Name = capitalize(name);
   switch (sender.relationship) {
     case "delegator":
-      return `${Name} delegated this work to you. It is ${name}'s reading of what the user wants, and it can be wrong or missing something. If a part looks wrong or unclear, ask ${name} (agent_message, kind "question") or push back (kind "pushback") rather than acting on a guess; ${name} holds the user's context and asks the user when it has to. Your final reply goes back to ${name}.`;
+      return `${Name} delegated this work to you. It is ${name}'s reading of what the user wants, and it can be wrong or missing something. If a part looks wrong or unclear, ask ${name} (agent_message, kind "question") or push back (kind "pushback") rather than acting on a guess; ${name} holds the user's context and asks the user when it has to. When you finish, kone delivers your final reply to ${name} as your report, so write it to ${name}, not to the user: what you did, what you found, and what is left.`;
     case "contracting":
-      return `${Name} contracted you for this job. The brief is its reading of what the user wants, and it can be wrong or missing something. If a part looks wrong or unclear, ask ${name} (agent_message, kind "question") or push back (kind "pushback") rather than acting on a guess. Deliver what the contract asks for; your final reply goes back to ${name}.`;
+      return `${Name} contracted you for this job. The brief is its reading of what the user wants, and it can be wrong or missing something. If a part looks wrong or unclear, ask ${name} (agent_message, kind "question") or push back (kind "pushback") rather than acting on a guess. Deliver what the contract asks for. When you finish, kone delivers your final reply to ${name} as your report, so write it to ${name}, not to the user.`;
     case "parent":
-      return `${Name} started you as a worker for this one task. Do it and report: your final reply is the report ${name} collects. If you are blocked, say so in that reply instead of guessing.`;
+      return `${Name} started you as a worker for this one task. Do it and report: kone delivers your final reply to ${name} as your report, so write it to ${name}, not to the user. If you are blocked, say so in that reply instead of guessing.`;
     case "upstream":
-      return `${Name} is further up the chain that handed you this work — it brought in the agent that brought you in. Its ask can be wrong or missing something like any delegator's; if a part looks wrong or unclear, say so in your reply rather than acting on a guess. Your final reply goes back to ${name}.`;
+      return `${Name} is further up the chain that handed you this work — it brought in the agent that brought you in. Its ask can be wrong or missing something like any delegator's; if a part looks wrong or unclear, say so in your reply rather than acting on a guess. kone delivers your final reply to the agent you work for, so write it to that agent, not to the user.`;
     case "delegate":
     case "contractor":
     case "child":
@@ -92,18 +94,47 @@ export function renderSenderHeader(sender: MessageSender | undefined): string | 
 /** Where an agent's name and roster id are read from — structural, so the
  *  spawn engine's store and the real ConversationStore both satisfy it. */
 export interface SenderIdentitySource {
-  threadMeta?(threadId: string): { contract?: { name: string } } | null;
+  threadMeta?(threadId: string): {
+    contract?: { name: string };
+    sourceThreadId?: string;
+    forkContext?: { sourceThreadId: string; forkKind?: ForkKind };
+  } | null;
   getThreadAgent?(threadId: string): { agentId: string | null } | null;
   getAgent?(agentId: string): { name: string | null } | null;
 }
 
+/** The thread a side chat was forked from, or nothing for any other thread.
+ *  An edit fork or a handoff is a continuation — a new conversation that
+ *  carries the old one forward — so it rolls a name of its own. */
+function sideChatSourceOf(source: SenderIdentitySource, threadId: string): string | undefined {
+  const meta = source.threadMeta?.(threadId);
+  if (!meta) return undefined;
+  const kind = meta.forkContext?.forkKind;
+  if (kind === "edit" || kind === "handoff") return undefined;
+  return meta.sourceThreadId ?? meta.forkContext?.sourceThreadId;
+}
+
 /**
- * The sender for a message an agent's thread is sending. The name is a
- * snapshot of its contract name or the roster row as it stands — what the receiving model is told —
- * and the roster id rides along so the renderer can show the agent's current
- * name and face. A guest thread (bound to no agent) carries neither; the
- * renderer derives its call sign from `threadId`, the header names it by
- * relationship.
+ * What a thread's agent is called, everywhere it is named: its contract name
+ * for a contractor, its roster name for a thread bound to a teammate, and
+ * otherwise the call sign rolled from its root conversation's id — the same
+ * roll the renderer shows, so the name other agents are told is the one the
+ * user sees on the thread, for as long as the thread exists.
+ */
+export function threadAgentName(source: SenderIdentitySource, threadId: string): string {
+  const contractName = source.threadMeta?.(threadId)?.contract?.name.trim();
+  if (contractName) return contractName;
+  const agentId = source.getThreadAgent?.(threadId)?.agentId;
+  const rosterName = agentId ? source.getAgent?.(agentId)?.name?.trim() : undefined;
+  if (rosterName) return rosterName;
+  return callSignFor(rootConversationId(threadId, (id) => sideChatSourceOf(source, id)));
+}
+
+/**
+ * The sender for a message an agent's thread is sending. The name is what the
+ * receiving model is told: a snapshot of the contract name or roster row as it
+ * stands, or the guest's rolled call sign. The roster id rides along so the
+ * renderer can show the agent's current name and face.
  */
 export function agentSenderFor(
   source: SenderIdentitySource,
@@ -114,13 +145,7 @@ export function agentSenderFor(
   const sender: AgentSender = { kind: "agent", threadId, relationship };
   if (messageKind) sender.messageKind = messageKind;
   const agentId = source.getThreadAgent?.(threadId)?.agentId;
-  if (agentId) {
-    sender.agentId = agentId;
-    const name = source.getAgent?.(agentId)?.name?.trim();
-    if (name) sender.name = name;
-  }
-  // A contractor answers under its contract's name, bound to a roster agent or not.
-  const contractName = source.threadMeta?.(threadId)?.contract?.name.trim();
-  if (contractName) sender.name = contractName;
+  if (agentId) sender.agentId = agentId;
+  sender.name = threadAgentName(source, threadId);
   return sender;
 }

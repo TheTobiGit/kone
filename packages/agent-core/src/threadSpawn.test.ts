@@ -17,6 +17,9 @@ import {
   type SpawnRequest,
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
+import { IrcMailbox } from "./gateway/tools/irc.js";
+import { startIrcDelivery } from "./ircDelivery.js";
+import { createMailboxReportSink, type SettleReportSink } from "./settleReports.js";
 import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
 import type {
   InteractionMode,
@@ -123,7 +126,7 @@ class FakeStore implements SpawnEngineStore {
 
   bindThreadAgent(threadId: string, agentId: string) {
     this.bound.set(threadId, agentId);
-    return { threadId, agentId };
+    return { threadId, agentId, route: null };
   }
 
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
@@ -366,7 +369,7 @@ type EngineHarness = {
   bus: EventBus;
 };
 
-function makeEngine(): EngineHarness {
+function makeEngine(options: { reports?: (store: FakeStore) => SettleReportSink } = {}): EngineHarness {
   const store = new FakeStore();
   const providers = new FakeProviders();
   const dispatcher = new FakeDispatcher();
@@ -377,6 +380,7 @@ function makeEngine(): EngineHarness {
     dispatcher,
     emit: (event) => bus.emit(event),
     onEvents: (listener) => bus.on(listener),
+    reports: options.reports?.(store),
   });
   return { engine, store, providers, dispatcher, bus };
 }
@@ -499,7 +503,8 @@ describe("spawn engine", () => {
     expect(dispatcher.sent[0].input).toEqual({
       threadId: result.threadId,
       input: REQUEST.prompt,
-      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "brief" },
+      // An unbound parent is named by its rolled call sign.
+      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "brief", name: "Basalt" },
     });
     expect(dispatcher.sent[0].options).toEqual({
       title: buildPromptThreadTitleFallback(REQUEST.prompt),
@@ -718,6 +723,31 @@ describe("spawn engine", () => {
       relationship: "delegator",
       messageKind: "brief",
     });
+  });
+
+  test("a delegate's binding is announced before the child itself", async () => {
+    const { engine, store, providers, bus } = makeEngine();
+    setupParent(store, providers);
+
+    const result = await engine.spawn(CALLER, { ...REQUEST, delegateToAgentId: "agent-backend" });
+
+    // The renderer names the child from this, so it must land before the first
+    // event that puts the child on screen.
+    const order = bus.emitted.map((event) => event.type);
+    expect(order.indexOf("thread.agent-bound")).toBeLessThan(order.indexOf("thread.spawned"));
+    expect(bus.ofType("thread.agent-bound")[0]).toMatchObject({
+      threadId: result.threadId,
+      binding: { threadId: result.threadId, agentId: "agent-backend", route: null },
+    });
+  });
+
+  test("a worker has no binding to announce", async () => {
+    const { engine, store, providers, bus } = makeEngine();
+    setupParent(store, providers);
+
+    await engine.spawn(CALLER, REQUEST);
+
+    expect(bus.ofType("thread.agent-bound")).toHaveLength(0);
   });
 
   test("an explicit title wins over the prompt fallback", async () => {
@@ -1430,7 +1460,7 @@ describe("continueThread", () => {
     expect(h.dispatcher.sent[1]?.input).toEqual({
       threadId: child,
       input: "Also update the README to match.",
-      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "followup" },
+      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "followup", name: "Basalt" },
     });
     // The follow-up is the caller's turn speaking into the child: no rename,
     // and the child's events correlate back to the caller's turn (F10).
@@ -1467,6 +1497,7 @@ describe("continueThread", () => {
       threadId: CALLER.threadId,
       relationship: "upstream",
       messageKind: "followup",
+      name: "Basalt",
     });
   });
 
@@ -1598,3 +1629,274 @@ describe("continueThread", () => {
   });
 });
 
+// ── settle reports ───────────────────────────────────────────────────────────
+// A child's settled turn reaches its parent even when the parent is not
+// waiting: through the real mailbox and the real delivery, into a dispatcher
+// that records what the parent was sent.
+
+function turnAborted(threadId: string, turnId: string, at: number, reason: "interrupted" | "failed", message?: string): RuntimeEvent {
+  const event: RuntimeEvent = { type: "turn.aborted", threadId, provider: "opencode", at, source: "kone.store", turnId, reason };
+  if (message !== undefined) event.message = message;
+  return event;
+}
+
+type ReportHarness = EngineHarness & {
+  mailbox: IrcMailbox;
+  /** Turns the mailbox delivered to a parent, in order. */
+  delivered: Array<{ threadId: string; input: string; steered: boolean }>;
+  busy: Set<string>;
+  /** Run every armed delivery, after letting the engine's deferred report land. */
+  flush: () => Promise<void>;
+  stopDelivery: () => void;
+};
+
+function makeReportEngine(): ReportHarness {
+  const mailbox = new IrcMailbox();
+  const h = makeEngine({ reports: (store) => createMailboxReportSink({ mailbox, store }) });
+  const delivered: ReportHarness["delivered"] = [];
+  const busy = new Set<string>();
+  const armed: Array<() => void> = [];
+  const stopDelivery = startIrcDelivery({
+    mailbox,
+    dispatcher: {
+      sendThreadTurn: async (input) => {
+        delivered.push({ threadId: input.threadId, input: input.input, steered: false });
+        return { threadId: input.threadId, turnId: `wake-${delivered.length}` };
+      },
+      steerThreadTurn: async (input) => {
+        delivered.push({ threadId: input.threadId, input: input.input, steered: true });
+        return { threadId: input.threadId, turnId: `steer-${delivered.length}` };
+      },
+    },
+    isLive: () => true,
+    isBusy: (threadId) => busy.has(threadId),
+    schedule: (fn) => {
+      armed.push(fn);
+      return () => {
+        const i = armed.indexOf(fn);
+        if (i !== -1) armed.splice(i, 1);
+      };
+    },
+  });
+  const flush = async (): Promise<void> => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    while (armed.length > 0) armed.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  return { ...h, mailbox, delivered, busy, flush, stopDelivery };
+}
+
+const DELEGATION: SpawnRequest = {
+  requestId: "req-delegate",
+  prompt: "Build the endpoint",
+  target: { provider: "opencode", model: "deepseek-v4", effort: "high" },
+  delegateToAgentId: "agent-jonas",
+  persona: { name: "Jonas" },
+};
+
+async function delegate(h: ReportHarness, request: SpawnRequest = DELEGATION): Promise<string> {
+  setupParent(h.store, h.providers);
+  h.store.agents.set("agent-jonas", { name: "Jonas", instructions: null });
+  const { threadId } = await h.engine.spawn(CALLER, request);
+  h.bus.emit(sessionStarted(threadId, 10));
+  h.bus.emit(turnStarted(threadId, "t-1", 20));
+  return threadId;
+}
+
+describe("settle reports", () => {
+  test("a delegate that settles while its delegator is idle reports once, as a turn carrying its reply", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.store.texts.set(child, "Endpoint shipped: POST /v1/things, tests green.");
+
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    await h.flush();
+
+    expect(h.delivered).toHaveLength(1);
+    const [turn] = h.delivered;
+    expect(turn!.threadId).toBe(CALLER.threadId);
+    // Woken, not steered: the delegator had no turn running.
+    expect(turn!.steered).toBe(false);
+    expect(turn!.input).toContain("Endpoint shipped: POST /v1/things, tests green.");
+    expect(turn!.input).toContain("From `Jonas` (your delegate), report");
+    expect(turn!.input).toContain(`thread ${child}, turn t-1`);
+
+    // A repeated settle of the same turn is not a second report.
+    h.bus.emit(turnCompleted(child, "t-1", 40));
+    await h.flush();
+    expect(h.delivered).toHaveLength(1);
+
+    // And agent_wait still returns the result normally afterwards.
+    const out = await h.engine.waitFor({ threadIds: [child], scopeThreadId: CALLER.threadId, timeoutMs: 20 });
+    expect(out.allTerminal).toBe(true);
+    expect(out.threads[0]!.summary).toBe("Endpoint shipped: POST /v1/things, tests green.");
+    h.stopDelivery();
+  });
+
+  test("a delegator busy with other work has the report steered into its running turn", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.busy.add(CALLER.threadId);
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    await h.flush();
+    expect(h.delivered.map((d) => d.steered)).toEqual([true]);
+    h.stopDelivery();
+  });
+
+  test("a delegator parked in agent_wait collects the result itself — nothing is pushed", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.store.texts.set(child, "Done.");
+    const waiting = h.engine.waitFor({ threadIds: [child], scopeThreadId: CALLER.threadId, timeoutMs: 500 });
+
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    const out = await waiting;
+    await h.flush();
+
+    expect(out.threads[0]!.summary).toBe("Done.");
+    expect(h.delivered).toHaveLength(0);
+    expect(h.mailbox.getUnreadCount(CALLER.threadId)).toBe(0);
+    h.stopDelivery();
+  });
+
+  test("a wait still parked on another child holds the settled one's report, then collects it", async () => {
+    const h = makeReportEngine();
+    const first = await delegate(h);
+    const { threadId: second } = await h.engine.spawn(CALLER, { ...REQUEST, requestId: "req-worker" });
+    h.bus.emit(sessionStarted(second, 11));
+    h.bus.emit(turnStarted(second, "w-1", 21));
+    const waiting = h.engine.waitFor({ threadIds: [first, second], scopeThreadId: CALLER.threadId, timeoutMs: 500 });
+
+    h.bus.emit(turnCompleted(first, "t-1", 30));
+    await h.flush();
+    expect(h.delivered).toHaveLength(0);
+
+    h.bus.emit(turnCompleted(second, "w-1", 40));
+    await waiting;
+    await h.flush();
+    expect(h.delivered).toHaveLength(0);
+    h.stopDelivery();
+  });
+
+  test("a wait abandoned before it returns lets the held report go out", async () => {
+    const h = makeReportEngine();
+    const first = await delegate(h);
+    const { threadId: second } = await h.engine.spawn(CALLER, { ...REQUEST, requestId: "req-worker" });
+    h.bus.emit(sessionStarted(second, 11));
+    h.bus.emit(turnStarted(second, "w-1", 21));
+    const controller = new AbortController();
+    const waiting = h.engine
+      .waitFor({ threadIds: [first, second], scopeThreadId: CALLER.threadId, timeoutMs: 500, signal: controller.signal })
+      .catch(() => null);
+
+    h.bus.emit(turnCompleted(first, "t-1", 30));
+    await h.flush();
+    expect(h.delivered).toHaveLength(0);
+
+    controller.abort();
+    await waiting;
+    await h.flush();
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain(`thread ${first}, turn t-1`);
+    h.stopDelivery();
+  });
+
+  test("an agent_wait that lands after the settle but before delivery takes the report back", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    // Let the deferred report reach the mailbox, but run no delivery yet.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.mailbox.getUnreadCount(CALLER.threadId)).toBe(1);
+
+    const out = await h.engine.waitFor({ threadIds: [child], scopeThreadId: CALLER.threadId, timeoutMs: 20 });
+    expect(out.allTerminal).toBe(true);
+    await h.flush();
+    expect(h.delivered).toHaveLength(0);
+    h.stopDelivery();
+  });
+
+  test("a parked question or approval is not a settle", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.bus.emit(approvalRequested(child, 30));
+    await h.flush();
+    expect(h.delivered).toHaveLength(0);
+    h.stopDelivery();
+  });
+
+  test("a failed turn reports its error", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.bus.emit(turnAborted(child, "t-1", 30, "failed", "rate limited"));
+    await h.flush();
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain("This turn failed");
+    expect(h.delivered[0]!.input).toContain("rate limited");
+    h.stopDelivery();
+  });
+
+  test("a worker reports to the agent that started it, the same way", async () => {
+    const h = makeReportEngine();
+    setupParent(h.store, h.providers);
+    const { threadId } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(threadId, 10));
+    h.bus.emit(turnStarted(threadId, "w-1", 20));
+    h.store.texts.set(threadId, "Found it in sidebar.ts:42.");
+    h.bus.emit(turnCompleted(threadId, "w-1", 30));
+    await h.flush();
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain("(your worker), report");
+    expect(h.delivered[0]!.input).toContain("Found it in sidebar.ts:42.");
+    h.stopDelivery();
+  });
+
+  test("a child its parent stopped does not report the interruption, until the parent asks it again", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    await h.engine.cancelChild(CALLER, child);
+    h.bus.emit(turnAborted(child, "t-1", 30, "interrupted"));
+    await h.flush();
+    expect(h.delivered).toHaveLength(0);
+
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Pick it back up." });
+    h.bus.emit(turnStarted(child, "t-2", 40));
+    h.bus.emit(turnCompleted(child, "t-2", 50));
+    await h.flush();
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain("turn t-2");
+    h.stopDelivery();
+  });
+
+  test("an interruption nobody asked for reaches a busy parent, and waits for an idle one's next turn", async () => {
+    const queued: Array<{ threadId: string; text: string }> = [];
+    const mailbox = new IrcMailbox();
+    const busy = new Set<string>();
+    const h = makeEngine({
+      reports: (store) =>
+        createMailboxReportSink({
+          mailbox,
+          store,
+          isBusy: (threadId) => busy.has(threadId),
+          queueNotice: (threadId, text) => queued.push({ threadId, text }),
+        }),
+    });
+    setupParent(h.store, h.providers);
+    const { threadId } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(threadId, 10));
+    h.bus.emit(turnStarted(threadId, "w-1", 20));
+    h.bus.emit(turnAborted(threadId, "w-1", 30, "interrupted"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Idle: no wake — a stop is not news worth a turn of its own.
+    expect(mailbox.getUnreadCount(CALLER.threadId)).toBe(0);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.text).toContain("interrupted");
+
+    busy.add(CALLER.threadId);
+    h.bus.emit(sessionStarted(threadId, 35));
+    h.bus.emit(turnStarted(threadId, "w-2", 40));
+    h.bus.emit(turnAborted(threadId, "w-2", 50, "interrupted"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mailbox.getUnreadCount(CALLER.threadId)).toBe(1);
+  });
+});

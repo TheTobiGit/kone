@@ -26,6 +26,7 @@ import {
 } from "../modules/git/worktreeCleanup.js";
 import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
 import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
+import { createMailboxReportSink } from "@kone/agent-core/settleReports.js";
 import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
@@ -442,6 +443,14 @@ export function registerAgentIpc(): void {
       if (gated) broadcast(gated.event, false);
     },
     onEvents: (listener) => svc.onEvent(listener),
+    // A child's settled turn that nobody is waiting on is sent to its parent
+    // as a report, through the same mailbox and delivery as agent_message.
+    reports: createMailboxReportSink({
+      mailbox: getIrcMailbox(),
+      store,
+      isBusy: (threadId) => svc.isThreadBusy(threadId),
+      queueNotice: (threadId, text) => dispatcher.queueNotice(threadId, text),
+    }),
   });
 
   // What happens to handed-off work when the agent that handed it off is
@@ -511,6 +520,7 @@ export function registerAgentIpc(): void {
     "approval.resolved",
     "thread.spawned",
     "thread.spawn-updated",
+    "thread.agent-bound",
     "thread.archived",
     "thread.unarchived",
     "thread.done.updated",

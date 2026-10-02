@@ -14,7 +14,8 @@
 // Everything said to an agent here is said as kone (the `system` sender): it
 // describes what happened, it is not an instruction from the user.
 
-import { SpawnError } from "./threadSpawn.js";
+import { getSpawnEngine, SpawnError } from "./threadSpawn.js";
+import { threadAgentName } from "./senderHeader.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type {
   MessageSender,
@@ -179,6 +180,7 @@ export class HandOffLifecycle {
     const stopped: string[] = [];
     const walk = async (id: string): Promise<void> => {
       for (const child of this.deps.store.spawnedChildren(id)) await walk(child.threadId);
+      unreported(id);
       if (this.deps.service.hasLiveSession(id)) {
         await this.deps.service.stopSession(id);
         stopped.push(id);
@@ -239,6 +241,9 @@ export class HandOffLifecycle {
    * it did, and starts nothing new.
    */
   async withdraw(callerThreadId: string, threadId: string): Promise<"stopped" | "told"> {
+    // The caller has moved on: neither the stop nor the wrap-up note is worth
+    // waking it for. Both stay where agent_wait and agent_read find them.
+    unreported(threadId);
     const lineage = this.deps.store.threadLineage(threadId);
     if (lineage?.relationshipToParent !== "delegation") {
       await this.deps.service.stopSession(threadId);
@@ -309,6 +314,7 @@ export class HandOffLifecycle {
     // Workers are part of the agent: they stop with it, no questions asked.
     for (const child of children) {
       if (child.lineage?.relationshipToParent !== "subagent") continue;
+      unreported(child.threadId);
       if (this.deps.service.hasLiveSession(child.threadId)) await this.deps.service.stopSession(child.threadId);
     }
     const working = children.filter(
@@ -370,6 +376,7 @@ export class HandOffLifecycle {
   }
 
   private async stopDelegate(threadId: string, delegatorName: string): Promise<void> {
+    unreported(threadId);
     // Nothing it had lined up runs: the interrupt's abort would otherwise
     // promote its next queued follow-up and it would carry on working.
     await this.deps.service.cancelQueuedTurns(threadId);
@@ -398,15 +405,17 @@ export class HandOffLifecycle {
     this.deps.dispatcher.queueNotice(threadId, text);
   }
 
-  /** What an agent is called: its contract name, its roster name, or its
-   *  thread's title. */
+  /** What an agent is called — the same name every other surface uses. */
   private nameOf(threadId: string): string {
-    const meta = this.deps.store.threadMeta(threadId);
-    if (meta?.contract) return meta.contract.name;
-    const agentId = this.deps.store.getThreadAgent?.(threadId)?.agentId;
-    const rosterName = agentId ? this.deps.store.getAgent?.(agentId)?.name?.trim() : undefined;
-    return rosterName || meta?.title || "an agent";
+    return threadAgentName(this.deps.store, threadId);
   }
+}
+
+/** A thread stopped here was stopped by the agent it works for (or with it),
+ *  so how its turn ends is no news to that agent: the spawn engine is told not
+ *  to report it. */
+function unreported(threadId: string): void {
+  getSpawnEngine()?.muteReports(threadId);
 }
 
 let lifecycle: HandOffLifecycle | null = null;

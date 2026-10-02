@@ -1529,6 +1529,9 @@ export type RuntimeEvent =
   // child's raw turn events.
   | (AgentBaseEvent & { type: "thread.spawned"; spawned: SpawnedThread })
   | (AgentBaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
+  // The main process settled who a thread runs as, ahead of the thread's first
+  // event. Apply it with the roster's bindings; it is the store's final answer.
+  | (AgentBaseEvent & { type: "thread.agent-bound"; binding: ThreadAgentBinding })
   // kone wrote a message on the transcript on someone else's behalf — an
   // agent's brief, follow-up or message, or kone's own notice. The user's own
   // words never ride this: the renderer journals those itself as it sends.

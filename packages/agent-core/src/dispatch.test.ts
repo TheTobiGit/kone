@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { callSignFor } from "@kone/protocol/agent-call-sign";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -427,6 +428,13 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(FakeAdapter.startedAgents.at(-1)?.name).toBe("Frontend Auth");
     expect(FakeAdapter.startedAgents.at(-1)?.instructions).toContain("Frontend auth specialist");
     expect(FakeAdapter.startedAgents.at(-1)?.instructions).toContain("Keep components small.");
+  });
+
+  test("a guest's session wakes knowing the call sign other agents address it by", async () => {
+    const { dispatcher } = await harness();
+    FakeAdapter.startedAgents = [];
+    await dispatcher.startThread({ threadId: THREAD, provider: "codex", cwd: CWD });
+    expect(FakeAdapter.startedAgents.at(-1)).toEqual({ name: callSignFor(THREAD), guest: true });
   });
 
   test("a silent first turn does not name the thread after itself", async () => {

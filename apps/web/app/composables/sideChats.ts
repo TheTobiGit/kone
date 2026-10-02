@@ -4,6 +4,7 @@ import type {
   CreateSideChatTarget,
 } from "~/types/desktop";
 import { carryThreadAgent } from "~/utils/agents";
+import { rootConversationId } from "@kone/protocol/agent-call-sign";
 
 // Side chat creation, renderer side (docs/side-chat-design.md §5). The desktop
 // IPC channel (`agent:create-side-chat`) is one-shot and idempotent on the
@@ -56,15 +57,7 @@ export function rememberSideChatSource(threadId: string, sourceThreadId: string)
 /** Walk side chat sources back to the root conversation thread id. */
 export function resolveRootThreadId(threadId: string | null | undefined): string | null | undefined {
   if (!threadId) return threadId;
-  let current = threadId;
-  const visited = new Set<string>();
-  while (current && !visited.has(current)) {
-    visited.add(current);
-    const parent = getSideChatSource(current);
-    if (!parent) break;
-    current = parent;
-  }
-  return current;
+  return rootConversationId(threadId, getSideChatSource);
 }
 
 function uid(): string {

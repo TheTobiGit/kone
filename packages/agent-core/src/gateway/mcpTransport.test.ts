@@ -551,7 +551,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_message, agent_inbo
         }),
         writeSpawnedThread: () => true,
         threadLineage: () => null,
-        bindThreadAgent: () => {},
+        bindThreadAgent: () => null,
         spawnedChildren: () => [],
         spawnDepth: () => 0,
         liveSpawnedThreadIds: () => [],

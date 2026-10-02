@@ -267,8 +267,17 @@ describe("kone agent identity", () => {
     expect(renderAgentIdentity(MAYA)).toContain(KONE_AGENT_IDENTITY_MARKER);
   });
 
-  test("a guest is told nothing at all", () => {
+  test("a session with no persona is told nothing at all", () => {
     expect(renderAgentIdentity(undefined)).toBe("");
+  });
+
+  test("a guest learns only the label other agents address it by", () => {
+    const block = renderAgentIdentity({ name: "Crest", guest: true });
+    expect(block).toContain(KONE_AGENT_IDENTITY_MARKER);
+    expect(block).toContain("kone labels this conversation Crest");
+    expect(block).toContain("address you by it");
+    expect(block).not.toContain("you are");
+    expect(block).not.toContain("standing orders");
   });
 
   test("a nameless agent is told nothing either — no block that trails off", () => {

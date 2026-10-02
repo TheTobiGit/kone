@@ -19,6 +19,7 @@ import { createAvatar } from "@dicebear/core";
 import { thumbs } from "@dicebear/collection";
 import { agentForThread } from "~/utils/agents";
 import { resolveRootThreadId } from "~/composables/sideChats";
+import { callSignFor, callSignHash } from "@kone/protocol/agent-call-sign";
 
 export interface AgentIdentity {
   /** The id this identity was derived from. */
@@ -33,30 +34,6 @@ export interface AgentIdentity {
    *  stored, and a picture is the one part of an identity that has to be. */
   avatar?: string;
 }
-
-/**
- * Call signs. Concrete, quiet, and all one word — the name sits inline in a
- * speaker line next to a timestamp, so anything longer starts wrapping the row
- * on a narrow column. Nothing cute and nothing sci-fi: these read as names a
- * colleague could have, which is the point.
- */
-const NAMES = [
-  "Alder", "Ansel", "Arbor", "Ash", "Aster", "Basalt", "Beacon", "Birch",
-  "Bramble", "Brass", "Briar", "Cairn", "Canvas", "Cedar", "Chalk", "Cinder",
-  "Clay", "Clove", "Cobalt", "Compass", "Coral", "Cove", "Crest", "Cypress",
-  "Dune", "Ember", "Fable", "Fathom", "Fennel", "Fern", "Flint", "Forge",
-  "Gable", "Garnet", "Glade", "Gorse", "Granite", "Grove", "Harbor", "Hazel",
-  "Heron", "Hollow", "Indigo", "Ivory", "Juniper", "Kestrel", "Kiln", "Lantern",
-  "Larch", "Lark", "Ledger", "Linen", "Loam", "Lumen", "Marble", "Marlow",
-  "Meadow", "Meridian", "Mica", "Millet", "Mistral", "Moss", "Nettle", "Nimbus",
-  "Oak", "Onyx", "Opal", "Orchard", "Osprey", "Otter", "Pallas", "Pebble",
-  "Pine", "Plume", "Quarry", "Quill", "Rally", "Reed", "Relay", "Ridge",
-  "Rill", "Rook", "Rowan", "Rune", "Sable", "Sage", "Sand", "Sequoia",
-  "Shale", "Shore", "Sienna", "Slate", "Sorrel", "Spruce", "Stone", "Summit",
-  "Tally", "Tansy", "Teal", "Terrace", "Thicket", "Thistle", "Tide", "Timber",
-  "Trellis", "Tundra", "Umber", "Vale", "Vellum", "Verge", "Vesper", "Warden",
-  "Wick", "Willow", "Wren", "Yarrow", "Zephyr",
-] as const;
 
 /**
  * Bodies. Every one is mid-tone on purpose: the face has to hold its silhouette
@@ -99,16 +76,6 @@ function mix(a: string, b: string, t: number): string {
     .join("");
 }
 
-/** FNV-1a. Cheap, stable, and well spread across short id strings. */
-function hash(input: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
 /** A thread with no id yet — the blank column before its first send. */
 const ANONYMOUS: AgentIdentity = { seed: "", name: "kone", svg: "" };
 
@@ -137,11 +104,12 @@ export function agentIdentity(seed: string | null | undefined): AgentIdentity {
   const hit = cache.get(effectiveSeed);
   if (hit) return hit;
 
-  const h = hash(effectiveSeed);
-  // The name and the body are taken from different ends of the hash so two
-  // threads that happen to share a call sign don't also share a colour.
-  const name = NAMES[h % NAMES.length]!;
-  const body = BODIES[(h >>> 11) % BODIES.length]!;
+  // The name is the shared roll, so the main process names this thread the
+  // same way when it tells other agents who is talking. The body comes from
+  // the other end of the same hash, so two threads that happen to share a
+  // call sign don't also share a colour.
+  const name = callSignFor(effectiveSeed);
+  const body = BODIES[(callSignHash(effectiveSeed) >>> 11) % BODIES.length]!;
 
   const identity: AgentIdentity = {
     seed: effectiveSeed,

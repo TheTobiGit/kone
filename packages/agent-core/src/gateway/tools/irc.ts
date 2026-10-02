@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { AgentSender, ProviderKind, SenderRelationship, StoredThreadMeta, ThreadLineage } from "../../types.js";
-import { agentSenderFor } from "../../senderHeader.js";
+import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import type { AgentRecord } from "../../ConversationStore.js";
 import type {
   GatewayRecord,
@@ -82,6 +82,11 @@ export interface IrcPeer {
    *  received is known only from the store. */
   registered: boolean;
 }
+
+/** One agent_list row: a peer and whether it is running. A type alias rather
+ *  than an interface extending IrcPeer, because it has to pass as a gateway
+ *  value and only an alias carries the implicit index signature. */
+type PeerRow = { id: string; agentName?: string; unread: number; registered: boolean; live: boolean };
 
 export interface ThreadRegistration {
   threadId: string;
@@ -346,6 +351,21 @@ export class IrcMailbox {
             }
           }
           return [match.agentId];
+        }
+      }
+
+      // A thread bound to no teammate answers to the name the user sees on
+      // it — its contract name, or the call sign rolled from its id.
+      if (store.listThreads) {
+        const named = store
+          .listThreads(sender.projectPath)
+          .filter((t) => t.threadId !== sender.threadId && threadAgentName(store, t.threadId).toLowerCase() === lowered);
+        if (named.length === 1) return [named[0]!.threadId];
+        if (named.length > 1) {
+          throw new GatewayToolError(
+            "invalid_input",
+            `More than one agent on this project goes by "${trimmed}": ${named.map((t) => t.threadId).join(", ")}. Address the one you mean by its thread id.`,
+          );
         }
       }
     }
@@ -624,6 +644,25 @@ export class IrcMailbox {
     };
   }
 
+  /** Mark exactly these messages read — the ones a delivery handed over —
+   *  rather than the first N unread, which a message taken back in the
+   *  meantime would shift onto one the agent never saw. */
+  markRead(threadId: string, messageIds: readonly string[]): void {
+    const ids = new Set(messageIds);
+    for (const message of this.inboxes.get(threadId) ?? []) {
+      if (ids.has(message.id)) message.read = true;
+    }
+  }
+
+  /** Take back a message nobody has read yet. True when it was still unread —
+   *  false once it was delivered or read, when there is nothing to take back. */
+  retract(threadId: string, messageId: string): boolean {
+    const message = (this.inboxes.get(threadId) ?? []).find((m) => m.id === messageId);
+    if (!message || message.read) return false;
+    message.read = true;
+    return true;
+  }
+
   /**
    * Get the count of unread messages for a thread.
    */
@@ -752,7 +791,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       if (recipients.length !== 1 || recipients[0] !== parentThreadId || (kind !== "report" && kind !== "question")) {
         throw new GatewayToolError(
           "permission_denied",
-          "You are a worker: you may only message your `parent`, with kind report or question. Put anything else in your final reply — it is the report your parent collects.",
+          "You are a worker: you may only message your `parent`, with kind report or question. Put anything else in your final reply — kone delivers it to your parent as your report.",
         );
       }
     }
@@ -864,10 +903,16 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     }
     const sender: IrcPeerScope = { threadId: ctx.threadId, projectPath: ctx.cwd, rootThreadId };
     const peers = mailbox.listPeers(sender);
-    const rows = peers.map((peer) => ({
-      ...peer,
-      live: input.isThreadLive?.(peer.id) ?? false,
-    }));
+    const store = input.store;
+    const rows = peers.map((peer) => {
+      const row: PeerRow = {
+        ...peer,
+        live: input.isThreadLive?.(peer.id) ?? false,
+      };
+      const agentName = peer.agentName ?? (store ? threadAgentName(store, peer.id) : undefined);
+      if (agentName) row.agentName = agentName;
+      return row;
+    });
 
     const text =
       rows.length === 0

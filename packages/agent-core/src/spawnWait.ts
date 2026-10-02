@@ -30,6 +30,11 @@ export interface SpawnWaitDeps {
   store: SpawnEngineStore;
   snapshot: (threadId: string) => SpawnedThread | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
+  /** A wait returned a settled turn to the agent that waited — that agent has
+   *  the result, so nothing else need tell it. */
+  onCollected?: (scopeThreadId: string, threadId: string, turnId: string) => void;
+  /** A parked wait was cancelled before it returned anything. */
+  onAbandoned?: (scopeThreadId: string, threadIds: readonly string[]) => void;
 }
 
 /**
@@ -90,11 +95,22 @@ export class SpawnWaitCoordinator {
           this.waiters.splice(index, 1);
           clearTimeout(waiter.timeout);
           reject(abortWaitError());
+          this.deps.onAbandoned?.(waiter.scopeThreadId, waiter.ids);
         },
         { once: true },
       );
     }
     return promise;
+  }
+
+  /** Is `scopeThreadId` parked in a wait that will return this turn of
+   *  `threadId` — on that turn by id, or on whatever the child's latest is? */
+  isCollecting(scopeThreadId: string, threadId: string, turnId: string): boolean {
+    return this.waiters.some(
+      (waiter) =>
+        waiter.scopeThreadId === scopeThreadId &&
+        waiter.ids.some((id, i) => id === threadId && (waiter.turnIds?.[i] ?? turnId) === turnId),
+    );
   }
 
   checkWaiters(): void {
@@ -116,11 +132,17 @@ export class SpawnWaitCoordinator {
     this.waiters.splice(index, 1);
     clearTimeout(waiter.timeout);
     const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.turnIds?.[i]));
+    const turnIds = this.resolvedTurnIds(waiter);
     waiter.resolve({
       threads,
       allTerminal: threads.every((t) => t.terminal),
       timedOut,
-      turnIds: this.resolvedTurnIds(waiter),
+      turnIds,
+    });
+    // A timed-out wait still hands back every child that had settled by then.
+    waiter.ids.forEach((id, i) => {
+      const turnId = turnIds[i];
+      if (threads[i]!.terminal && turnId) this.deps.onCollected?.(waiter.scopeThreadId, id, turnId);
     });
   }
 

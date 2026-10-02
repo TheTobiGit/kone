@@ -19,7 +19,7 @@ export type AttachmentRegistry = {
   listSubtreeAttachments(threadId: string): StoredAttachment[];
   listAllAttachments(): StoredAttachment[];
   getAttachment(id: string): StoredAttachment | null;
-  registerAttachment(row: StoredAttachment): void;
+  registerAttachment(row: StoredAttachment): boolean;
   forgetAttachment(attachmentId: string): void;
 };
 
@@ -79,6 +79,11 @@ function cleanName(name: string): string {
 
 export class AttachmentStore {
   private dirPath: string | null = null;
+  /** Uploads whose registry row was refused, by id. A brand-new thread has no
+   *  row of its own until its session starts, which is after the first
+   *  message's files are uploaded — so those rows wait here, and land the
+   *  first time anything resolves them, by which point the thread exists. */
+  private readonly pending = new Map<string, StoredAttachment>();
 
   /** @param userDataDir per-user state dir; defaults to the one the host
    *  injected at startup (see userDataDir.ts). Tests pass a temp dir.
@@ -143,7 +148,7 @@ export class AttachmentStore {
       relPath,
       createdAt: Date.now(),
     };
-    this.conv().registerAttachment(stored);
+    if (!this.conv().registerAttachment(stored)) this.pending.set(id, stored);
 
     return { type, id, name, mimeType, sizeBytes: bytes.length };
   }
@@ -151,13 +156,23 @@ export class AttachmentStore {
   /** Resolve an attachment's on-disk absolute path via its registry row.
    *  Returns null when unknown or if the resolved path escapes the dir. */
   resolveAbsPath(id: string): string | null {
-    const row = this.conv().getAttachment(id);
+    const row = this.conv().getAttachment(id) ?? this.claimPending(id);
     if (!row) return null;
     const dir = this.dir();
     const abs = path.resolve(dir, row.relPath);
     // Traversal guard: the resolved path must stay inside the attachments dir.
     if (abs !== dir && !abs.startsWith(dir + path.sep)) return null;
     return abs;
+  }
+
+  /** A held-back upload, registered now if its thread has since been created.
+   *  It still resolves when the retry fails, so a send never loses a file the
+   *  user can see on their turn. */
+  private claimPending(id: string): StoredAttachment | null {
+    const row = this.pending.get(id);
+    if (!row) return null;
+    if (this.conv().registerAttachment(row)) this.pending.delete(id);
+    return row;
   }
 
   /** Read an attachment's bytes off disk (null if it can't be resolved/read). */
@@ -180,7 +195,12 @@ export class AttachmentStore {
    *  {@link sweepOrphans} instead of being claimed forever by a thread that no
    *  longer exists. */
   async deleteThreadFiles(threadId: string): Promise<void> {
-    const rows = this.conv().listSubtreeAttachments(threadId);
+    // A held-back upload has no thread row to hang children off, so only the
+    // thread itself can claim one. Released up front: a file that won't unlink
+    // is then left to the sweep, like a forgotten row.
+    const held = [...this.pending.values()].filter((row) => row.threadId === threadId);
+    for (const row of held) this.pending.delete(row.id);
+    const rows = [...this.conv().listSubtreeAttachments(threadId), ...held];
     const dir = this.dir();
     await Promise.all(
       rows.map(async (row) => {
@@ -210,7 +230,7 @@ export class AttachmentStore {
     const dir = this.dir();
     try {
       const referenced = new Set(
-        this.conv().listAllAttachments().map((a) => a.relPath),
+        [...this.conv().listAllAttachments(), ...this.pending.values()].map((a) => a.relPath),
       );
       const entries = await readdir(dir, { withFileTypes: true });
       const now = Date.now();

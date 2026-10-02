@@ -141,15 +141,18 @@ export type InteractionMode = "ask" | "accept-edits" | "full-access";
  * crosses this boundary is the name it answers to and its standing instructions
  * for how to work; the rest stays in the renderer.
  *
- * Absent means the thread is running as a guest, which is every thread that
- * predates the roster and every thread the user didn't hand to anybody. A guest
- * session is told nothing, so it behaves exactly as it did before agents
- * existed.
+ * A thread the user didn't hand to anybody runs as a guest: `guest` is set and
+ * `name` is the call sign rolled from its id. A guest is told the name other
+ * agents know it by and nothing more — no standing orders, no "you are".
  */
 export type AgentPersona = {
   /** The agent's name as the user has it. Renameable, so never assume the name
    *  the agent shipped with. */
   name: string;
+  /** A guest's call sign rather than a named agent's: the name is the
+   *  conversation's label, so the identity block only says that is how other
+   *  agents address it. */
+  guest?: true;
   /** The agent's standing instructions — how it should work, in its own words,
    *  rendered after the name in the identity block (renderAgentIdentity). Absent
    *  for an agent that is only a name. Behavioural only: it says how to act, not
@@ -809,6 +812,7 @@ export type {
 import type { MessageSender } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
 import type { ContractTerms } from "@kone/protocol/contract";
+import type { ThreadAgentBinding } from "./rosterRecord.js";
 
 /** One imported transcript row, in the shape `writeForkThread` takes. */
 export type ForkImportedBlock = {
@@ -1713,6 +1717,12 @@ export type RuntimeEvent =
   // applies these rather than re-deriving from the child's raw turn events.
   | (BaseEvent & { type: "thread.spawned"; spawned: SpawnedThread })
   | (BaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
+  // The main process settled who a thread runs as — a delegation binding its
+  // child, or a thread started for an agent. Sent ahead of the thread's first
+  // event, since a renderer that has not heard it shows the thread as a guest
+  // under a name rolled from its id. Carries the store's settled answer, which
+  // write-once makes final. Never journaled: the row is already written.
+  | (BaseEvent & { type: "thread.agent-bound"; binding: ThreadAgentBinding })
   // An agent gateway write landed on a project's scratchpad
   // (scratchpad_write). `projectPath` scopes it to the project the pad
   // belongs to (the board is project-scoped, not thread-scoped); `writer` is

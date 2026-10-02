@@ -57,18 +57,20 @@ type ResolvedAttachment = { att: ChatAttachment; absPath: string; bytes: Buffer 
  *  the order the user attached them in and the prompt has to read the same
  *  way.
  *
- *  Attachments that resolve to no path are dropped here — never uploaded, or
- *  garbage-collected since — so a caller only ever sees one it can name. A
- *  null `bytes` therefore means one thing to every caller: the file was
- *  wanted natively and could not be read, so it belongs in the path block. */
+ *  An attachment that resolves to no path fails the turn rather than being
+ *  left out: the user's turn shows the file, so sending without it would have
+ *  the agent answer something other than what was asked. A null `bytes`
+ *  therefore means one thing to every caller: the file was wanted natively
+ *  and could not be read, so it belongs in the path block. */
 async function resolveAttachments(
   attachments: ChatAttachment[] | undefined,
   wantsBytes: (att: ChatAttachment) => boolean,
 ): Promise<ResolvedAttachment[]> {
   const store = getAttachmentStore();
-  const located = (attachments ?? []).flatMap((att) => {
+  const located = (attachments ?? []).map((att) => {
     const absPath = store.resolveAbsPath(att.id);
-    return absPath ? [{ att, absPath }] : [];
+    if (!absPath) throw new Error(`Attachment "${att.name}" could not be found. Attach it again and resend.`);
+    return { att, absPath };
   });
   return Promise.all(
     located.map(async ({ att, absPath }) => ({
