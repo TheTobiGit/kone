@@ -72,6 +72,13 @@ import {
   type SpawnToolStore,
 } from "./spawnDispatch.js";
 import { mapSpawnError, requiredEngine, callerOf, withActiveTurn } from "./spawnToolContext.js";
+import {
+  AGENT_READ_RESPONSE_CHAR_CAP,
+  latestTurn,
+  renderFinal,
+  renderResponse,
+  type AgentReadScope,
+} from "../../agentRead.js";
 import { activeModelPreferences } from "../../modelPreference.js";
 
 export type { SpawnToolStore } from "./spawnDispatch.js";
@@ -494,7 +501,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
 
   const readResponseHandler = async (
     ctx: GatewayToolContext,
-    args: { threadId: string; limit?: number; maxTextChars?: number },
+    args: { threadId: string; scope?: AgentReadScope; limit?: number; maxTextChars?: number },
   ): Promise<GatewayToolResult> => {
     const engine = requiredEngine();
     // Scoped to the caller's subtree, and the same answer a nonexistent thread
@@ -510,6 +517,22 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       return gatewayToolErrorResult(
         new GatewayToolError("not_found", `No readable thread "${args.threadId}".`),
       );
+    }
+    const threadInfo = {
+      threadId: thread.threadId,
+      title: thread.title ?? null,
+      provider: thread.provider,
+      model: thread.model ?? null,
+    };
+    const scope = args.scope ?? "final";
+    if (scope !== "transcript") {
+      const turn = latestTurn(thread.blocks);
+      const name = `"${thread.title ?? args.threadId}"`;
+      const cap = args.maxTextChars ?? AGENT_READ_RESPONSE_CHAR_CAP;
+      const text = scope === "final" ? renderFinal(turn, name, cap) : renderResponse(turn, name, cap);
+      const structured: GatewayRecord = { thread: threadInfo, scope };
+      if (turn) structured.turn = { turnId: turn.turnId, state: turn.state };
+      return { content: [{ type: "text", text }], structuredContent: structured };
     }
     const limit = args.limit ?? 20;
     const maxTextChars = args.maxTextChars ?? 1500;
@@ -529,12 +552,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         },
       ],
       structuredContent: {
-        thread: {
-          threadId: thread.threadId,
-          title: thread.title ?? null,
-          provider: thread.provider,
-          model: thread.model ?? null,
-        },
+        thread: threadInfo,
+        scope,
         messages,
       },
     };
@@ -649,14 +668,14 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       name: "agent_read",
       agentsOnly: true,
       description:
-        "Read the full transcript of a worker or agent you handed work to, or one it started in turn: every message, in order, newest last. Use it when a reply is too thin to act on, when the work failed and you need to see where, or when you need the details it worked out rather than its conclusion. Scoped to your own subtree: threads you did not hand work to are not readable, and neither are the user's other conversations.",
+        "Read a worker or agent you handed work to, or one it started in turn, at the depth you need. scope final (the default) is the reply its latest turn ended on — the text after its last step, where it puts its report; read this first. scope response is the latest request and everything it wrote answering it, with any messages that arrived mid-turn in their place and one line naming what it did — for when the final reply is too thin to act on. scope transcript is the conversation itself, newest last, limit messages at a time — for when the work failed and you need to see where, or you need what it worked out earlier. None of them carry tool payloads. Scoped to your own subtree: threads you did not hand work to are not readable, and neither are the user's other conversations.",
       inputSchema: ReadResponseInputSchema,
       jsonSchema: READ_RESPONSE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       onDemand: true,
       promptSnippet:
-        "Read the full transcript of a worker or agent you handed work to when its reply is not enough.",
+        "Read a worker or agent you handed work to: its final reply (default), its whole latest response, or its transcript.",
       handler: readResponseHandler,
     },
   ];

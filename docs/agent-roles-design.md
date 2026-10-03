@@ -233,7 +233,7 @@ Only agents see the starting tools. Workers never do.
 |---|---|---|
 | `agent_followup` | Send a tracked turn to a delegate, contractor or worker | `agent_ask` |
 | `agent_wait` | Wait for them to settle or ask something | same |
-| `agent_read` | Read their full transcript | same |
+| `agent_read` | Read their final reply, their whole latest response (with a line of what they did), or their transcript | same |
 | `agent_withdraw` | Take the work back (delegate or contractor wraps up; a worker is stopped) | `agent_cancel` |
 | `agent_answer` | Answer a question or approval they are parked on | same, widened |
 | `agent_decline` | Decline an approval they are parked on | same |
