@@ -336,6 +336,12 @@ export type SendTurnInput = {
   /** The renderer-side user block id that triggered this turn, ensuring the
    *  journaled prompt and any queued turn share the same identity. */
   userBlockId?: string;
+  /** Every journaled block this one turn carries, in transcript order, when
+   *  it carries more than one — a batch of delivered agent messages, each its
+   *  own block, sent as a single turn. `userBlockId` is the last of them. A
+   *  steer names them all on turn.steered, so the reply splits above the
+   *  whole batch rather than above its last message alone. */
+  userBlockIds?: string[];
   /** The user's prompt text for this turn. Can be empty when `attachments`
    *  carries at least one file — an attachment-only turn is valid. */
   input: string;
@@ -1845,8 +1851,10 @@ export type RuntimeEvent =
   // Emitted once, by the adapter that delivered it. `turnId` is the live turn
   // the message was steered into; `message` is the trimmed prompt text (empty
   // for an attachment- or skill-only steer); `userBlockId` names the journaled
-  // prompt block, so the transcript can mark that block as steered.
-  | (BaseEvent & { type: "turn.steered"; turnId: string; message: string; userBlockId?: string })
+  // prompt block, so the transcript can mark that block as steered;
+  // `userBlockIds`, when the steer carried several blocks (SendTurnInput), names
+  // each of them in order, the last being `userBlockId`.
+  | (BaseEvent & { type: "turn.steered"; turnId: string; message: string; userBlockId?: string; userBlockIds?: string[] })
   // The durable turn-queue slice (AgentService): a follow-up was durably
   // enqueued because the thread has a live turn. `position` is the turn's
   // place in line within the queue (the first queued follow-up is #1).

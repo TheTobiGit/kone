@@ -1667,7 +1667,7 @@ export type RuntimeEvent =
   // the message was steered into; `message` is the trimmed prompt text (empty
   // for an attachment- or skill-only steer); `userBlockId` names the journaled
   // prompt block, so the transcript can mark that block as steered.
-  | (AgentBaseEvent & { type: "turn.steered"; turnId: string; message: string; userBlockId?: string })
+  | (AgentBaseEvent & { type: "turn.steered"; turnId: string; message: string; userBlockId?: string; userBlockIds?: string[] })
   // A follow-up was durably enqueued because the thread has a live turn.
   // `position` is the turn's place in line within the queue (the first queued
   // follow-up is #1). `dispatchMode` distinguishes a plain follow-up from a

@@ -60,9 +60,10 @@ export interface IrcMessageRecord {
    *  "teammate" to another. Absent when no store could say. A courier sender is
    *  kone's own agent carrying something, never another agent speaking. */
   sender?: AgentSender | CourierSender;
-  /** Set once the message is on the recipient's transcript, so a delivery
-   *  retried after a failed send does not write it twice. */
-  journaled?: boolean;
+  /** The transcript block it was written as, set once it is on the
+   *  recipient's transcript — so a delivery retried after a failed send does
+   *  not write it twice, and the turn that delivers it can name its block. */
+  blockId?: string;
 }
 
 /** Who is asking for a roster, and the scope they may see. */

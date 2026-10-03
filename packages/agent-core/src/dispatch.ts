@@ -167,8 +167,11 @@ export interface ThreadDispatcher {
   /** Put a message another agent (or kone) wrote on a thread's transcript
    *  without dispatching it — for a caller that delivers the words to the
    *  model some other way, as agent-message delivery batches several into one
-   *  turn. Announces it to renderers like any agent-sent block. */
-  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void;
+   *  turn. Announces it to renderers like any agent-sent block. Returns the
+   *  block's id — the caller hands it to the turn that delivers the words, so
+   *  a steer splits the reply where they landed — or null when nothing was
+   *  written. */
+  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): string | null;
   /** Tell a thread something without waking it: the notice goes on its
    *  transcript now (as kone's, or the courier's when it is carrying another
    *  agent's work) and rides in front of whatever its next turn is, so the
@@ -718,7 +721,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.pendingNotices.set(threadId, queued);
   }
 
-  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void {
+  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): string | null {
     const blockId = randomUUID();
     const count = this.store.recordUserBlock({
       blockId,
@@ -726,7 +729,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       text: input.text,
       sender: input.sender,
     });
-    if (count > 0) this.announceJournaled(input.threadId, blockId, input.text, input.sender);
+    if (count === 0) return null;
+    this.announceJournaled(input.threadId, blockId, input.text, input.sender);
+    return blockId;
   }
 
   /** Tell renderers a block kone wrote for someone else is on the transcript. */

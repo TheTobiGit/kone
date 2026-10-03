@@ -61,6 +61,7 @@ import { subagentWakePrompt } from "./subagentWake.js";
 // built after the service (it takes one), so at module load there is nothing to
 // bind to. Same lazy-lookup contract the gateway tools use.
 import { getThreadDispatcher } from "./dispatch.js";
+import { steeredBlockIds } from "@kone/protocol/steer-split";
 import type { GatewayHandle } from "./gateway/index.js";
 import { withViewBlock } from "./gateway/viewPreamble.js";
 import type {
@@ -1533,9 +1534,10 @@ export class AgentService {
       case "turn.steered":
         // The provider took the message into its running turn: the journaled
         // prompt is marked, with the turn it went into, so a reload shows it
-        // where the live view did.
-        if (event.userBlockId) {
-          this.queueStore.markUserBlockSteered(threadId, event.userBlockId, event.turnId, event.at);
+        // where the live view did — every block of a batch, in order, so they
+        // all read above the reply's continuation.
+        for (const blockId of steeredBlockIds(event)) {
+          this.queueStore.markUserBlockSteered(threadId, blockId, event.turnId, event.at);
         }
         break;
       case "turn.completed":

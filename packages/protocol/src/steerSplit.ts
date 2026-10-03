@@ -10,3 +10,13 @@
 export function steerContinuationId(turnId: string, userBlockId: string): string {
   return `${turnId}~steer~${userBlockId}`;
 }
+
+/** The blocks one steer carried, in transcript order: every block of a batch
+ *  when it names several (delivered agent messages ride one steer, each its
+ *  own block), else its single block, else none. The live reducer and the
+ *  store mark and split on each, so the batch reads above the continuation
+ *  together instead of its last message alone. */
+export function steeredBlockIds(event: { userBlockId?: string; userBlockIds?: string[] }): string[] {
+  if (event.userBlockIds?.length) return event.userBlockIds;
+  return event.userBlockId ? [event.userBlockId] : [];
+}

@@ -861,6 +861,35 @@ describe("AgentService durable turn queue + steering", () => {
     delete codexFake.steerTurn;
   });
 
+  test("a steer carrying several blocks marks each of them, in order", async () => {
+    const thread = "t-q-steer-batch";
+    await startBusyThread(thread, "live-10");
+    const codexFake = FakeAdapter.instances.find((a) => a.provider === "codex")!;
+    codexFake.steerTurn = async (input: SendTurnInput) => {
+      const steered: Extract<import("./types.js").RuntimeEvent, { type: "turn.steered" }> = {
+        ...codexBase,
+        threadId: input.threadId,
+        type: "turn.steered",
+        turnId: "live-10",
+        message: input.input,
+      };
+      if (input.userBlockId) steered.userBlockId = input.userBlockId;
+      if (input.userBlockIds) steered.userBlockIds = input.userBlockIds;
+      codexFake.emit(steered);
+      return { threadId: input.threadId, turnId: "steer-ack" };
+    };
+
+    await service.steerTurn({
+      threadId: thread,
+      input: "<agent_messages>…</agent_messages>",
+      userBlockId: "ub-m2",
+      userBlockIds: ["ub-m1", "ub-m2"],
+    });
+
+    expect(fakeStore.steeredBlocks).toEqual(["ub-m1", "ub-m2"]);
+    delete codexFake.steerTurn;
+  });
+
   test("steerTurn without a live turn is a plain send", async () => {
     const thread = "t-q-steer-idle";
     await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });

@@ -1,6 +1,7 @@
 import type { IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
 import { senderRelationshipLabel } from "@kone/protocol/message-sender";
 import type { ThreadDispatcher } from "./dispatch.js";
+import type { SendTurnInput } from "./types.js";
 import { renderCourierMessage } from "./senderHeader.js";
 
 // Delivery: the half that turns a mailbox into messaging.
@@ -64,10 +65,11 @@ export interface IrcDeliveryDeps {
    *  to hand over (tests) is not made to invent one. */
   onThreadLive?: (listener: (threadId: string) => void) => () => void;
   /** Put one message on the recipient's transcript as its sender's words, so
-   *  the thread shows who said what rather than a turn nobody started. The
-   *  model still reads the batch as one delivery. Optional: without it
+   *  the thread shows who said what rather than a turn nobody started, and
+   *  hand back the block it was written as (null when nothing was written).
+   *  The model still reads the batch as one delivery. Optional: without it
    *  messages reach the agent and leave no mark, as before senders existed. */
-  journal?: (threadId: string, message: IrcMessageRecord) => void;
+  journal?: (threadId: string, message: IrcMessageRecord) => string | null;
   schedule?: ScheduleDelivery;
 }
 
@@ -118,12 +120,18 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     // they prompt. Once each: a delivery retried after a failed send finds
     // them already on the transcript.
     for (const message of messages) {
-      if (message.journaled || !message.sender || !deps.journal) continue;
-      deps.journal(threadId, message);
-      message.journaled = true;
+      if (message.blockId || !message.sender || !deps.journal) continue;
+      const blockId = deps.journal(threadId, message);
+      if (blockId) message.blockId = blockId;
     }
 
-    const input = { threadId, input: renderIncoming(messages, remaining) };
+    // The turn names the blocks it carries. A steer lands mid-reply, and only
+    // the blocks it names move to where it landed: unnamed, they stay at the
+    // tail, under everything the agent goes on to write in answer to them.
+    const blockIds = messages.flatMap((m) => (m.blockId ? [m.blockId] : []));
+    const input: SendTurnInput = { threadId, input: renderIncoming(messages, remaining) };
+    if (blockIds.length > 0) input.userBlockId = blockIds[blockIds.length - 1];
+    if (blockIds.length > 1) input.userBlockIds = blockIds;
     // A running turn is steered rather than interrupted: the agent is working,
     // and a peer's message is context for that work, not a new assignment. An
     // idle one has no turn to steer, so it gets one.

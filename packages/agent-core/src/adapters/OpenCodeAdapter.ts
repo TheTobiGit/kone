@@ -735,6 +735,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       message: input.input.trim(),
     };
     if (input.userBlockId) steered.userBlockId = input.userBlockId;
+    if (input.userBlockIds?.length) steered.userBlockIds = input.userBlockIds;
     this.emit(steered);
     return result;
   }

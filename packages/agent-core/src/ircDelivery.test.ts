@@ -293,7 +293,10 @@ describe("irc delivery: the transcript", () => {
       dispatcher,
       isLive: () => true,
       isBusy: () => false,
-      journal: (threadId, message) => journaled.push({ threadId, message: message.message }),
+      journal: (threadId, message) => {
+        journaled.push({ threadId, message: message.message });
+        return `block-${journaled.length}`;
+      },
       schedule: clock.schedule,
     });
     // A store-backed send stamps a sender; this one stands in for it.
@@ -315,5 +318,63 @@ describe("irc delivery: the transcript", () => {
     await settle();
     expect(journaled).toHaveLength(1);
     expect(log.at(-1)?.input.input).toContain("Is OAuth in scope?");
+    // And still names the block it wrote the first time.
+    expect(log.at(-1)?.input.userBlockId).toBe("block-1");
+  });
+
+  /** Delivery with a journal that writes every message, as the app's does,
+   *  handing back the block each became. */
+  function journaledHarness(busy: boolean) {
+    const mailbox = new IrcMailbox();
+    const log: Dispatched[] = [];
+    const clock = fakeClock();
+    let blocks = 0;
+    startIrcDelivery({
+      mailbox,
+      dispatcher: fakeDispatcher(log),
+      isLive: () => true,
+      isBusy: () => busy,
+      journal: () => `block-${++blocks}`,
+      schedule: clock.schedule,
+    });
+    const store = {
+      threadLineage: (id: string) =>
+        id === "lead" ? null : { parentThreadId: "lead", relationshipToParent: "delegation" as const, rootThreadId: "lead" },
+    };
+    const send = (from: string, message: string) =>
+      mailbox.sendMessage({ threadId: from, projectPath: PROJECT }, { to: "lead", message }, store);
+    return { log, clock, send };
+  }
+
+  test("a steer names the block it carries, so the reply splits where it landed", async () => {
+    const { log, clock, send } = journaledHarness(true);
+    send("child", "Is OAuth in scope?");
+    clock.tick();
+    await settle();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.destination).toBe("steer");
+    expect(log[0]!.input.userBlockId).toBe("block-1");
+    expect(log[0]!.input.userBlockIds).toBeUndefined();
+  });
+
+  test("a batch steered as one turn names every block in it, in order", async () => {
+    const { log, clock, send } = journaledHarness(true);
+    send("child", "Is OAuth in scope?");
+    send("other-child", "The schema moved to v2.");
+    clock.tick();
+    await settle();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.input.userBlockIds).toEqual(["block-1", "block-2"]);
+    // The last of them is the turn's own block.
+    expect(log[0]!.input.userBlockId).toBe("block-2");
+  });
+
+  test("a wake names its blocks too, so the queue anchors to the message and not the user's last words", async () => {
+    const { log, clock, send } = journaledHarness(false);
+    send("child", "Done: the login screen is in.");
+    clock.tick();
+    await settle();
+    expect(log[0]!.destination).toBe("send");
+    expect(log[0]!.input.userBlockId).toBe("block-1");
   });
 });
