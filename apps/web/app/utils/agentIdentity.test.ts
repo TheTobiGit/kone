@@ -2,12 +2,18 @@ import { describe, expect, test } from "bun:test";
 
 import { rememberSideChatSource } from "~/composables/sideChats";
 import { agentIdentity } from "./agentIdentity";
-import { KONE, settleThreadAgent } from "./agents";
+import { createAgent, settleThreadAgent } from "./agents";
 
 let minted = 0;
 function threadId(): string {
   minted += 1;
   return `test-thread-${minted}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** A colleague to bind threads to: the build ships nobody you can pick. */
+async function colleague(): Promise<string> {
+  const made = await createAgent({ name: "Ada", bot: { form: "pebble", color: "teal", expression: "curious" } });
+  return made!.id;
 }
 
 describe("agentIdentity", () => {
@@ -17,21 +23,21 @@ describe("agentIdentity", () => {
     expect(agentIdentity(undefined).name).toBe("kone");
   });
 
-  test("a thread bound to a named agent returns the agent's name and svg", () => {
+  test("a thread bound to a named agent returns the agent's name and svg", async () => {
     const main = threadId();
-    settleThreadAgent(main, KONE.id);
+    settleThreadAgent(main, await colleague());
     const id = agentIdentity(main);
-    expect(id.name).toBe(KONE.name);
+    expect(id.name).toBe("Ada");
     expect(id.svg).toContain("<svg");
   });
 
-  test("a side chat of a named agent thread inherits the named agent identity", () => {
+  test("a side chat of a named agent thread inherits the named agent identity", async () => {
     const main = threadId();
     const side = threadId();
-    settleThreadAgent(main, KONE.id);
+    settleThreadAgent(main, await colleague());
     rememberSideChatSource(side, main);
     const sideId = agentIdentity(side);
-    expect(sideId.name).toBe(KONE.name);
+    expect(sideId.name).toBe("Ada");
     expect(sideId.svg).toContain("<svg");
   });
 

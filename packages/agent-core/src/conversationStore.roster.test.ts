@@ -47,7 +47,7 @@ beforeAll(async () => {
 /** Two preset ids, in the order the renderer asks for them. The store holds no
  *  preset definitions of its own — it takes the renderer's word for which ids
  *  exist — so any two ids exercise the ordering the same way. */
-const PRESETS = ["kone", "gideon"];
+const PRESETS = ["ada", "gideon"];
 
 /** Every creation in these tests names a bot: one is required, so a bot-less
  *  create is refused rather than stored. */
@@ -69,14 +69,14 @@ describe("the shipped presets", () => {
   // The whole point of an overlay row: it stores nothing until the user edits
   // something, so a later build's improved wording still reaches them.
   test("a row nobody has edited carries no values of its own", () => {
-    const kone = seeded().listAgents()[0]!;
-    expect(kone.name).toBeNull();
-    expect(kone.role).toBeNull();
-    expect(kone.instructions).toBeNull();
-    expect(kone.faceBody).toBeNull();
-    expect(kone.faceInk).toBeNull();
-    expect(kone.avatar).toBeNull();
-    expect(kone.bot).toBeNull();
+    const ada = seeded().listAgents()[0]!;
+    expect(ada.name).toBeNull();
+    expect(ada.role).toBeNull();
+    expect(ada.instructions).toBeNull();
+    expect(ada.faceBody).toBeNull();
+    expect(ada.faceInk).toBeNull();
+    expect(ada.avatar).toBeNull();
+    expect(ada.bot).toBeNull();
   });
 
   test("hydrating twice changes nothing", () => {
@@ -88,9 +88,9 @@ describe("the shipped presets", () => {
 
   test("an edit survives the next hydrate", () => {
     const store = seeded();
-    store.updateAgent("kone", { name: "Maya" });
+    store.updateAgent("ada", { name: "Maya" });
     store.ensurePresetAgents(PRESETS);
-    expect(store.getAgent("kone")?.name).toBe("Maya");
+    expect(store.getAgent("ada")?.name).toBe("Maya");
   });
 
   test("a built-in shipped by a later build gets its row without a migration", () => {
@@ -105,7 +105,7 @@ describe("the shipped presets", () => {
     const store = seeded();
     store.deleteAgent("gideon");
     store.ensurePresetAgents(PRESETS);
-    expect(store.listAgents().map((agent) => agent.agentId)).toEqual(["kone"]);
+    expect(store.listAgents().map((agent) => agent.agentId)).toEqual(["ada"]);
   });
 
   test("nothing to ensure is not an error", () => {
@@ -118,8 +118,8 @@ describe("the shipped presets", () => {
 describe("editing an agent", () => {
   test("a field left out of the patch is left alone", () => {
     const store = seeded();
-    store.updateAgent("kone", { name: "Maya", role: "Pair" });
-    const updated = store.updateAgent("kone", { role: "Reviewer" });
+    store.updateAgent("ada", { name: "Maya", role: "Pair" });
+    const updated = store.updateAgent("ada", { role: "Reviewer" });
     expect(updated?.name).toBe("Maya");
     expect(updated?.role).toBe("Reviewer");
   });
@@ -128,29 +128,29 @@ describe("editing an agent", () => {
   // shipped preset, '' is the user saying it is blank on purpose.
   test("null hands a field back to the preset; an empty string blanks it", () => {
     const store = seeded();
-    store.updateAgent("kone", { instructions: "Terse." });
-    expect(store.updateAgent("kone", { instructions: null })?.instructions).toBeNull();
+    store.updateAgent("ada", { instructions: "Terse." });
+    expect(store.updateAgent("ada", { instructions: null })?.instructions).toBeNull();
 
-    store.updateAgent("kone", { instructions: "" });
-    expect(store.getAgent("kone")?.instructions).toBe("");
+    store.updateAgent("ada", { instructions: "" });
+    expect(store.getAgent("ada")?.instructions).toBe("");
   });
 
   test("surrounding space is not part of a stored field", () => {
     const store = seeded();
-    expect(store.updateAgent("kone", { name: "  Maya  " })?.name).toBe("Maya");
+    expect(store.updateAgent("ada", { name: "  Maya  " })?.name).toBe("Maya");
   });
 
   test("a field longer than the row allows is clamped, not refused", () => {
     const store = seeded();
-    const updated = store.updateAgent("kone", { instructions: "p".repeat(9000) });
+    const updated = store.updateAgent("ada", { instructions: "p".repeat(9000) });
     expect(updated?.instructions?.length).toBe(4000);
   });
 
   test("an empty patch is a read, not a write", () => {
     const store = seeded();
-    const before = store.getAgent("kone");
-    expect(store.updateAgent("kone", {})).toEqual(before);
-    expect(store.getAgent("kone")?.updatedAt).toBe(before!.updatedAt);
+    const before = store.getAgent("ada");
+    expect(store.updateAgent("ada", {})).toEqual(before);
+    expect(store.getAgent("ada")?.updatedAt).toBe(before!.updatedAt);
   });
 
   test("editing somebody who isn't there reports it rather than inventing them", () => {
@@ -161,8 +161,8 @@ describe("editing an agent", () => {
 
   test("an edit bumps updated_at and leaves created_at alone", () => {
     const store = seeded();
-    const before = store.getAgent("kone")!;
-    const after = store.updateAgent("kone", { name: "Maya" })!;
+    const before = store.getAgent("ada")!;
+    const after = store.updateAgent("ada", { name: "Maya" })!;
     expect(after.createdAt).toBe(before.createdAt);
     expect(after.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
   });
@@ -246,7 +246,7 @@ describe("leaving the roster", () => {
 
   test("asking for the deleted ones back gets them, in roster order", () => {
     const store = seeded();
-    store.deleteAgent("kone");
+    store.deleteAgent("ada");
     expect(store.listAgents({ includeDeleted: true }).map((agent) => agent.agentId)).toEqual(
       PRESETS,
     );
@@ -254,8 +254,8 @@ describe("leaving the roster", () => {
 
   test("deleting twice changes nothing the second time", () => {
     const store = seeded();
-    expect(store.deleteAgent("kone")).toBe(true);
-    expect(store.deleteAgent("kone")).toBe(false);
+    expect(store.deleteAgent("ada")).toBe(true);
+    expect(store.deleteAgent("ada")).toBe(false);
   });
 
   test("deleting somebody who was never there is not a delete", () => {
@@ -266,9 +266,9 @@ describe("leaving the roster", () => {
   // door — the roster is what the user sees, so it has one entrance.
   test("a deleted agent cannot be edited", () => {
     const store = seeded();
-    store.deleteAgent("kone");
-    expect(store.updateAgent("kone", { name: "Maya" })).toBeNull();
-    expect(store.getAgent("kone")?.name).toBeNull();
+    store.deleteAgent("ada");
+    expect(store.updateAgent("ada", { name: "Maya" })).toBeNull();
+    expect(store.getAgent("ada")?.name).toBeNull();
   });
 });
 
@@ -295,11 +295,11 @@ describe("forking an agent", () => {
   // — and only the renderer holds the shipped text to read it from.
   test("a copy of a built-in takes the caller's resolved values for the gaps", () => {
     const store = seeded();
-    store.updateAgent("kone", { name: "Maya" });
+    store.updateAgent("ada", { name: "Maya" });
     const copy = store.duplicateAgent({
-      agentId: "kone",
+      agentId: "ada",
       newAgentId: "copy-1",
-      inherited: { name: "kone", role: "Agent assistant", instructions: "Calm.", bot: BOT },
+      inherited: { name: "ada", role: "Agent assistant", instructions: "Calm.", bot: BOT },
     })!;
     expect(copy.presetId).toBeNull();
     // The row's own value wins over what the preset would have said.
@@ -317,9 +317,9 @@ describe("forking an agent", () => {
   test("the copy sits straight after the agent it came from", () => {
     const store = seeded();
     store.createAgent({ agentId: "made-1", name: "Ama", bot: BOT });
-    store.duplicateAgent({ agentId: "kone", newAgentId: "copy-1", inherited: { name: "kone", bot: BOT } });
+    store.duplicateAgent({ agentId: "ada", newAgentId: "copy-1", inherited: { name: "ada", bot: BOT } });
     expect(store.listAgents().map((agent) => agent.agentId)).toEqual([
-      "kone",
+      "ada",
       "copy-1",
       "gideon",
       "made-1",
@@ -328,7 +328,7 @@ describe("forking an agent", () => {
 
   test("a copy with nothing to name it is refused", () => {
     const store = seeded();
-    expect(store.duplicateAgent({ agentId: "kone" })).toBeNull();
+    expect(store.duplicateAgent({ agentId: "ada" })).toBeNull();
     expect(store.listAgents().map((agent) => agent.agentId)).toEqual(PRESETS);
   });
 
@@ -344,9 +344,9 @@ describe("an agent's capabilities", () => {
   // Null all round is the overlay's "inherit": an unedited row leans on the
   // preset for its skills and its model just as it does for its name.
   test("an unedited row inherits every capability", () => {
-    const kone = seeded().listAgents()[0]!;
-    expect(kone.skills).toBeNull();
-    expect(kone.model).toBeNull();
+    const ada = seeded().listAgents()[0]!;
+    expect(ada.skills).toBeNull();
+    expect(ada.model).toBeNull();
   });
 
   test("a chain stores primary first and fallbacks as the tail", () => {
@@ -383,18 +383,18 @@ describe("an agent's capabilities", () => {
   // falls back to the preset. The overlay has to tell those apart.
   test("a pinned model is stored as an answer; null hands the field back", () => {
     const store = seeded();
-    store.updateAgent("kone", { model: { provider: "codex", model: "gpt-5" } });
-    expect(store.getAgent("kone")?.model).toEqual({ provider: "codex", model: "gpt-5" });
-    expect(store.updateAgent("kone", { model: null })?.model).toBeNull();
+    store.updateAgent("ada", { model: { provider: "codex", model: "gpt-5" } });
+    expect(store.getAgent("ada")?.model).toEqual({ provider: "codex", model: "gpt-5" });
+    expect(store.updateAgent("ada", { model: null })?.model).toBeNull();
   });
 
   test("a capability left out of a patch is left alone", () => {
     const store = seeded();
-    store.updateAgent("kone", {
+    store.updateAgent("ada", {
       skills: [{ path: "/s/a.md", name: "A", origin: "project" }],
       model: { provider: "codex", model: "gpt-5" },
     });
-    const after = store.updateAgent("kone", {
+    const after = store.updateAgent("ada", {
       skills: [{ path: "/s/b.md", name: "B", origin: "project" }],
     })!;
     expect(after.skills).toEqual([{ path: "/s/b.md", name: "B", origin: "project" }]);
@@ -432,12 +432,12 @@ describe("an agent's capabilities", () => {
   // resolved value the caller passes — but the row's own value still wins.
   test("a fork carries capabilities, the row's own winning over the preset's", () => {
     const store = seeded();
-    store.updateAgent("kone", { model: { provider: "codex", model: "gpt-5" } });
+    store.updateAgent("ada", { model: { provider: "codex", model: "gpt-5" } });
     const copy = store.duplicateAgent({
-      agentId: "kone",
+      agentId: "ada",
       newAgentId: "copy-1",
       inherited: {
-        name: "kone",
+        name: "ada",
         bot: BOT,
         model: { provider: "claudeAgent", model: "sonnet" },
       },
@@ -447,16 +447,16 @@ describe("an agent's capabilities", () => {
 
   test("capabilities survive a round trip through the database", () => {
     const store = seeded();
-    store.updateAgent("kone", {
+    store.updateAgent("ada", {
       skills: [{ path: "/s/a.md", name: "A", origin: "project" }],
       model: { provider: "codex", model: "gpt-5", label: "GPT-5" },
     });
     store.close();
 
     const reopened = new ConversationStoreCtor();
-    const kone = reopened.getAgent("kone")!;
-    expect(kone.skills).toEqual([{ path: "/s/a.md", name: "A", origin: "project" }]);
-    expect(kone.model).toEqual({ provider: "codex", model: "gpt-5", label: "GPT-5" });
+    const ada = reopened.getAgent("ada")!;
+    expect(ada.skills).toEqual([{ path: "/s/a.md", name: "A", origin: "project" }]);
+    expect(ada.model).toEqual({ provider: "codex", model: "gpt-5", label: "GPT-5" });
   });
 });
 
@@ -466,21 +466,21 @@ describe("how an agent looks", () => {
 
   test("an avatar and a bot are stored as answers; null hands each field back", () => {
     const store = seeded();
-    store.updateAgent("kone", { avatar: PICTURE, bot: BOT });
-    expect(store.getAgent("kone")!.avatar).toEqual(PICTURE);
-    expect(store.getAgent("kone")!.bot).toEqual(BOT);
+    store.updateAgent("ada", { avatar: PICTURE, bot: BOT });
+    expect(store.getAgent("ada")!.avatar).toEqual(PICTURE);
+    expect(store.getAgent("ada")!.bot).toEqual(BOT);
 
-    store.updateAgent("kone", { avatar: null, bot: null });
-    expect(store.getAgent("kone")!.avatar).toBeNull();
-    expect(store.getAgent("kone")!.bot).toBeNull();
+    store.updateAgent("ada", { avatar: null, bot: null });
+    expect(store.getAgent("ada")!.avatar).toBeNull();
+    expect(store.getAgent("ada")!.bot).toBeNull();
   });
 
   test("one left out of a patch is left alone", () => {
     const store = seeded();
-    store.updateAgent("kone", { avatar: PICTURE, bot: BOT });
-    store.updateAgent("kone", { bot: null });
-    expect(store.getAgent("kone")!.avatar).toEqual(PICTURE);
-    expect(store.getAgent("kone")!.bot).toBeNull();
+    store.updateAgent("ada", { avatar: PICTURE, bot: BOT });
+    store.updateAgent("ada", { bot: null });
+    expect(store.getAgent("ada")!.avatar).toEqual(PICTURE);
+    expect(store.getAgent("ada")!.bot).toBeNull();
   });
 
   test("a new agent keeps the appearance it was made with", () => {
@@ -501,21 +501,21 @@ describe("how an agent looks", () => {
   // paints a blank where a face used to be.
   test("an avatar or bot missing a field is no avatar or bot at all", () => {
     const store = seeded();
-    store.updateAgent("kone", {
+    store.updateAgent("ada", {
       avatar: { source: "generated", src: "  " },
       bot: { form: "pebble", color: "", expression: "curious" },
     });
-    expect(store.getAgent("kone")!.avatar).toBeNull();
-    expect(store.getAgent("kone")!.bot).toBeNull();
+    expect(store.getAgent("ada")!.avatar).toBeNull();
+    expect(store.getAgent("ada")!.bot).toBeNull();
   });
 
   test("a fork carries the appearance the source reads as", () => {
     const store = seeded();
-    store.updateAgent("kone", { bot: BOT });
+    store.updateAgent("ada", { bot: BOT });
     const copy = store.duplicateAgent({
-      agentId: "kone",
+      agentId: "ada",
       newAgentId: "copy-1",
-      inherited: { name: "kone", avatar: PICTURE, bot: { form: "circle", color: "ink", expression: "neutral" } },
+      inherited: { name: "ada", avatar: PICTURE, bot: { form: "circle", color: "ink", expression: "neutral" } },
     })!;
     // The row's own bot wins; the avatar it has none of comes from the preset.
     expect(copy.bot).toEqual(BOT);
@@ -524,12 +524,12 @@ describe("how an agent looks", () => {
 
   test("appearance survives a round trip through the database", () => {
     const store = seeded();
-    store.updateAgent("kone", { avatar: PICTURE, bot: BOT });
+    store.updateAgent("ada", { avatar: PICTURE, bot: BOT });
     store.close();
 
     const reopened = new ConversationStoreCtor();
-    expect(reopened.getAgent("kone")!.avatar).toEqual(PICTURE);
-    expect(reopened.getAgent("kone")!.bot).toEqual(BOT);
+    expect(reopened.getAgent("ada")!.avatar).toEqual(PICTURE);
+    expect(reopened.getAgent("ada")!.bot).toEqual(BOT);
   });
 
   // Bots saved before the form rename key their column JSON `shape`; the
@@ -548,8 +548,8 @@ describe("how an agent looks", () => {
   test("an avatar longer than the row allows is clamped, not refused", () => {
     const store = seeded();
     const huge = `data:image/jpeg;base64,${"A".repeat(600 * 1024)}`;
-    store.updateAgent("kone", { avatar: { source: "generated", src: huge } });
-    expect(store.getAgent("kone")!.avatar!.src.length).toBe(512 * 1024);
+    store.updateAgent("ada", { avatar: { source: "generated", src: huge } });
+    expect(store.getAgent("ada")!.avatar!.src.length).toBe(512 * 1024);
   });
 });
 
@@ -787,32 +787,32 @@ describe("a project's team", () => {
     const store = seeded();
     expect(store.listProjectAgents(project)).toEqual([]);
     expect(store.addAgentToProject(project, "gideon")).toBe(true);
-    expect(store.addAgentToProject(project, "kone")).toBe(true);
+    expect(store.addAgentToProject(project, "ada")).toBe(true);
     expect(store.listProjectAgents(project).map((agent) => agent.agentId)).toEqual([
       "gideon",
-      "kone",
+      "ada",
     ]);
   });
 
   test("adding the same agent twice leaves one seat", () => {
     const store = seeded();
-    store.addAgentToProject(project, "kone");
-    expect(store.addAgentToProject(project, "kone")).toBe(true);
+    store.addAgentToProject(project, "ada");
+    expect(store.addAgentToProject(project, "ada")).toBe(true);
     expect(store.listProjectAgents(project)).toHaveLength(1);
   });
 
   test("an agent belongs to as many projects as you add them to", () => {
     const store = seeded();
-    store.addAgentToProject(project, "kone");
-    store.addAgentToProject(other, "kone");
-    store.removeAgentFromProject(project, "kone");
+    store.addAgentToProject(project, "ada");
+    store.addAgentToProject(other, "ada");
+    store.removeAgentFromProject(project, "ada");
     expect(store.listProjectAgents(project)).toEqual([]);
-    expect(store.listProjectAgents(other).map((agent) => agent.agentId)).toEqual(["kone"]);
+    expect(store.listProjectAgents(other).map((agent) => agent.agentId)).toEqual(["ada"]);
   });
 
   test("removing somebody who isn't on the team is a no-op", () => {
     const store = seeded();
-    expect(() => store.removeAgentFromProject(project, "kone")).not.toThrow();
+    expect(() => store.removeAgentFromProject(project, "ada")).not.toThrow();
     expect(store.listProjectAgents(project)).toEqual([]);
   });
 
@@ -830,8 +830,8 @@ describe("a project's team", () => {
   // teams: the seats survive, ready for the agent to be restored into them.
   test("a deleted agent leaves every team without their seats being erased", () => {
     const store = seeded();
-    store.addAgentToProject(project, "kone");
-    store.deleteAgent("kone");
+    store.addAgentToProject(project, "ada");
+    store.deleteAgent("ada");
     expect(store.listProjectAgents(project)).toEqual([]);
 
     // SAFETY: the projection names one NOT NULL TEXT column of a table this
@@ -839,28 +839,28 @@ describe("a project's team", () => {
     const rows = rawDb()
       .prepare(`SELECT agent_id FROM project_agents WHERE project_path = ?`)
       .all(project) as Array<{ agent_id: string }>;
-    expect(rows.map((row) => row.agent_id)).toEqual(["kone"]);
+    expect(rows.map((row) => row.agent_id)).toEqual(["ada"]);
   });
 });
 
 describe("who worked a thread", () => {
   test("a thread handed to an agent reports that agent", () => {
     const store = seeded();
-    expect(store.bindThreadAgent("thread-1", "kone")).toEqual({
+    expect(store.bindThreadAgent("thread-1", "ada")).toEqual({
       threadId: "thread-1",
-      agentId: "kone",
+      agentId: "ada",
       route: null,
     });
-    expect(store.getThreadAgent("thread-1")?.agentId).toBe("kone");
+    expect(store.getThreadAgent("thread-1")?.agentId).toBe("ada");
   });
 
   // A transcript records who did the work, so a later send cannot rewrite who
   // wrote the lines already above it.
   test("who a thread was handed to is settled once and never revised", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone");
-    expect(store.bindThreadAgent("thread-1", "gideon")?.agentId).toBe("kone");
-    expect(store.getThreadAgent("thread-1")?.agentId).toBe("kone");
+    store.bindThreadAgent("thread-1", "ada");
+    expect(store.bindThreadAgent("thread-1", "gideon")?.agentId).toBe("ada");
+    expect(store.getThreadAgent("thread-1")?.agentId).toBe("ada");
   });
 
   // Running as a guest is a decision like any other, and recording it is what
@@ -868,7 +868,7 @@ describe("who worked a thread", () => {
   test("a thread that ran as a guest is recorded as one, not left blank", () => {
     const store = seeded();
     expect(store.bindThreadAgent("thread-1", null)?.agentId).toBeNull();
-    expect(store.bindThreadAgent("thread-1", "kone")?.agentId).toBeNull();
+    expect(store.bindThreadAgent("thread-1", "ada")?.agentId).toBeNull();
   });
 
   test("a thread nobody has started has no binding at all", () => {
@@ -879,17 +879,17 @@ describe("who worked a thread", () => {
   // written in the same insert and cannot drift apart.
   test("a routed thread records why, beside who", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 0.82 });
+    store.bindThreadAgent("thread-1", "ada", { outcome: "routed", confidence: 0.82 });
     expect(store.getThreadAgent("thread-1")).toEqual({
       threadId: "thread-1",
-      agentId: "kone",
+      agentId: "ada",
       route: { outcome: "routed", confidence: 0.82 },
     });
   });
 
   test("a thread settled by hand records no route, which is how it reads back", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
     expect(store.getThreadAgent("thread-1")?.route).toBeNull();
   });
 
@@ -897,11 +897,11 @@ describe("who worked a thread", () => {
   // reason cannot be revised onto a decision that was already made.
   test("a refused re-bind cannot slip a route onto a settled thread", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
     store.bindThreadAgent("thread-1", "gideon", { outcome: "routed", confidence: 0.9 });
     expect(store.getThreadAgent("thread-1")).toEqual({
       threadId: "thread-1",
-      agentId: "kone",
+      agentId: "ada",
       route: null,
     });
   });
@@ -910,7 +910,7 @@ describe("who worked a thread", () => {
   // having an opinion on the words.
   test("an outcome the store has never heard of is kept verbatim", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone", { outcome: "delegated", confidence: 0.4 });
+    store.bindThreadAgent("thread-1", "ada", { outcome: "delegated", confidence: 0.4 });
     expect(store.getThreadAgent("thread-1")?.route).toEqual({
       outcome: "delegated",
       confidence: 0.4,
@@ -923,7 +923,7 @@ describe("who worked a thread", () => {
   // read as hand-picked, which is a different thing from what happened.
   test("a carry asked for the whole identity brings the route with it", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 0.71 });
+    store.bindThreadAgent("thread-1", "ada", { outcome: "routed", confidence: 0.71 });
     expect(store.carryThreadAgent("thread-1", "thread-2", true)?.route).toEqual({
       outcome: "routed",
       confidence: 0.71,
@@ -936,10 +936,10 @@ describe("who worked a thread", () => {
   // reason copied onto it would claim the router read a request it never saw.
   test("a fork carries the colleague without the reason", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 0.71 });
+    store.bindThreadAgent("thread-1", "ada", { outcome: "routed", confidence: 0.71 });
     expect(store.carryThreadAgent("thread-1", "thread-2")).toEqual({
       threadId: "thread-2",
-      agentId: "kone",
+      agentId: "ada",
       route: null,
     });
   });
@@ -949,25 +949,25 @@ describe("who worked a thread", () => {
   // every reader downstream turns it into a percentage.
   test("a confidence off the 0–1 scale is clamped back onto it on the way out", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: 7.5 });
-    store.bindThreadAgent("thread-2", "kone", { outcome: "routed", confidence: -2 });
+    store.bindThreadAgent("thread-1", "ada", { outcome: "routed", confidence: 7.5 });
+    store.bindThreadAgent("thread-2", "ada", { outcome: "routed", confidence: -2 });
     expect(store.getThreadAgent("thread-1")?.route?.confidence).toBe(1);
     expect(store.getThreadAgent("thread-2")?.route?.confidence).toBe(0);
   });
 
   test("a confidence that is no number at all reads as no route", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone", { outcome: "routed", confidence: Number.NaN });
+    store.bindThreadAgent("thread-1", "ada", { outcome: "routed", confidence: Number.NaN });
     expect(store.getThreadAgent("thread-1")?.route).toBeNull();
   });
 
   test("every binding comes back in the order they settled", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
     store.bindThreadAgent("thread-2", null);
     store.bindThreadAgent("thread-3", "gideon");
     expect(store.listThreadAgents()).toEqual([
-      { threadId: "thread-1", agentId: "kone", route: null },
+      { threadId: "thread-1", agentId: "ada", route: null },
       { threadId: "thread-2", agentId: null, route: null },
       { threadId: "thread-3", agentId: "gideon", route: null },
     ]);
@@ -977,7 +977,7 @@ describe("who worked a thread", () => {
   // row, so it deliberately doesn't depend on one existing.
   test("a thread with no row of its own can still be bound", () => {
     const store = seeded();
-    expect(store.bindThreadAgent("never-persisted", "kone")?.agentId).toBe("kone");
+    expect(store.bindThreadAgent("never-persisted", "ada")?.agentId).toBe("ada");
   });
 
   // The point of the tombstone: deleting an agent takes them out of the roster
@@ -992,9 +992,9 @@ describe("who worked a thread", () => {
 
   test("a thread reborn under a new id keeps the same agent", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone");
-    expect(store.carryThreadAgent("thread-1", "thread-2")?.agentId).toBe("kone");
-    expect(store.getThreadAgent("thread-2")?.agentId).toBe("kone");
+    store.bindThreadAgent("thread-1", "ada");
+    expect(store.carryThreadAgent("thread-1", "thread-2")?.agentId).toBe("ada");
+    expect(store.getThreadAgent("thread-2")?.agentId).toBe("ada");
   });
 
   // The one that would go wrong quietly: a guest thread restarted must come
@@ -1003,7 +1003,7 @@ describe("who worked a thread", () => {
     const store = seeded();
     store.bindThreadAgent("thread-1", null);
     expect(store.carryThreadAgent("thread-1", "thread-2")?.agentId).toBeNull();
-    expect(store.bindThreadAgent("thread-2", "kone")?.agentId).toBeNull();
+    expect(store.bindThreadAgent("thread-2", "ada")?.agentId).toBeNull();
   });
 
   test("there is nothing to carry from a thread that never started", () => {
@@ -1014,7 +1014,7 @@ describe("who worked a thread", () => {
 
   test("a thread that already settled keeps what it settled on", () => {
     const store = seeded();
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
     store.bindThreadAgent("thread-2", null);
     expect(store.carryThreadAgent("thread-1", "thread-2")?.agentId).toBeNull();
   });
@@ -1024,7 +1024,7 @@ describe("a thread that is deleted", () => {
   test("takes its binding with it", () => {
     const store = seeded();
     store.ensureThread({ threadId: "thread-1", projectPath: "/p", provider: "opencode" });
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
 
     expect(store.deleteThread("thread-1")).toEqual({ ok: true });
 
@@ -1039,7 +1039,7 @@ describe("a thread that is deleted", () => {
     for (const threadId of ["thread-1", "thread-2"]) {
       store.ensureThread({ threadId, projectPath: "/p", provider: "opencode" });
     }
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
     store.bindThreadAgent("thread-2", "gideon");
 
     store.deleteThread("thread-1");
@@ -1074,7 +1074,7 @@ describe("a thread that is deleted", () => {
         rootThreadId: "parent-1",
       },
     });
-    store.bindThreadAgent("parent-1", "kone");
+    store.bindThreadAgent("parent-1", "ada");
     store.bindThreadAgent("child-1", "gideon");
 
     store.deleteThread("parent-1");
@@ -1085,7 +1085,7 @@ describe("a thread that is deleted", () => {
   test("the thread can be handed to somebody else if it comes back", () => {
     const store = seeded();
     store.ensureThread({ threadId: "thread-1", projectPath: "/p", provider: "opencode" });
-    store.bindThreadAgent("thread-1", "kone");
+    store.bindThreadAgent("thread-1", "ada");
     store.deleteThread("thread-1");
 
     // Write-once is a property of a *thread*, and that thread is gone. A new one
@@ -1106,15 +1106,15 @@ describe("who is up next", () => {
 
   test("the pick survives being read back", () => {
     const store = seeded();
-    store.writeSelectedAgent("kone");
-    expect(store.readSelectedAgent()).toBe("kone");
+    store.writeSelectedAgent("ada");
+    expect(store.readSelectedAgent()).toBe("ada");
     store.writeSelectedAgent("gideon");
     expect(store.readSelectedAgent()).toBe("gideon");
   });
 
   test("picking a guest is a pick, and reads back as nobody", () => {
     const store = seeded();
-    store.writeSelectedAgent("kone");
+    store.writeSelectedAgent("ada");
     store.writeSelectedAgent(null);
     expect(store.readSelectedAgent()).toBeNull();
   });
@@ -1130,14 +1130,14 @@ describe("who is up next", () => {
 
   test("somebody else leaving doesn't disturb the selection", () => {
     const store = seeded();
-    store.writeSelectedAgent("kone");
+    store.writeSelectedAgent("ada");
     store.deleteAgent("gideon");
-    expect(store.readSelectedAgent()).toBe("kone");
+    expect(store.readSelectedAgent()).toBe("ada");
   });
 
   test("only one row can ever hold the answer", () => {
     const store = seeded();
-    store.writeSelectedAgent("kone");
+    store.writeSelectedAgent("ada");
     store.writeSelectedAgent("gideon");
     // SAFETY: a COUNT(*) aggregate, which SQLite answers as one integer row
     // under the name asked for.
@@ -1248,5 +1248,86 @@ describe("model preferences", () => {
     db.prepare(`UPDATE app_state SET value = ? WHERE key = ?`).run("{not json", "model_preferences");
     db.close();
     expect(store.listModelPreferences().length).toBeGreaterThan(0);
+  });
+});
+
+// What an earlier development build left of two built-ins is cleared on
+// hydrate: the Orchestrator is gone, and kone is the courier, back to the bare
+// preset and holding nothing of anybody's.
+describe("clearing what earlier builds left", () => {
+  const project = "/tmp/kone-project";
+
+  /** A database an earlier build used: the Orchestrator, and a kone the user
+   *  edited, seated, selected and worked threads with — writes this build's
+   *  API refuses, so they go in by hand. */
+  function earlierBuild(): ConversationStoreType {
+    const store = freshStore();
+    store.ensurePresetAgents(["kone", "orchestrator"]);
+    const db = rawDb();
+    db.prepare(`UPDATE agents SET name = 'Maya', models = '[]', deleted_at = 1 WHERE agent_id = 'kone'`).run();
+    for (const agentId of ["kone", "orchestrator"]) {
+      db.prepare(`INSERT INTO project_agents (project_path, agent_id, sort_order, added_at) VALUES (?, ?, 0, 0)`).run(project, agentId);
+      db.prepare(`INSERT INTO thread_agents (thread_id, agent_id, settled_at) VALUES (?, ?, 0)`).run(`t-${agentId}`, agentId);
+    }
+    db.prepare(`INSERT INTO app_state (key, value, updated_at) VALUES ('selected_agent', 'orchestrator', 0)`).run();
+    return store;
+  }
+
+  test("the Orchestrator is removed with its seats, selection and threads", () => {
+    const store = earlierBuild();
+    store.ensurePresetAgents(["kone"]);
+    expect(store.getAgent("orchestrator")).toBeNull();
+    expect(store.readSelectedAgent()).toBeNull();
+    expect(store.getThreadAgent("t-orchestrator")?.agentId).toBeNull();
+    expect(rawDb().prepare(`SELECT agent_id FROM project_agents`).all()).toEqual([]);
+  });
+
+  test("kone is reset to the preset and holds no seat, thread or selection", () => {
+    const store = earlierBuild();
+    rawDb().prepare(`UPDATE app_state SET value = 'kone' WHERE key = 'selected_agent'`).run();
+    store.ensurePresetAgents(["kone"]);
+    const kone = store.getAgent("kone")!;
+    expect(kone.presetId).toBe("kone");
+    expect(kone.name).toBeNull();
+    expect(kone.model).toBeNull();
+    expect(kone.deletedAt).toBeNull();
+    expect(store.getThreadAgent("t-kone")?.agentId).toBeNull();
+    expect(store.readSelectedAgent()).toBeNull();
+    expect(store.listProjectAgents(project)).toEqual([]);
+  });
+
+  test("running it again changes nothing", () => {
+    const store = earlierBuild();
+    store.ensurePresetAgents(["kone"]);
+    const before = store.listAgents({ includeDeleted: true });
+    store.ensurePresetAgents(["kone"]);
+    expect(store.listAgents({ includeDeleted: true })).toEqual(before);
+  });
+});
+
+describe("the courier", () => {
+  const project = "/tmp/kone-project";
+
+  test("can never be put on a team, so agent_directory never offers it", () => {
+    const store = seeded();
+    store.ensurePresetAgents(["kone"]);
+    expect(store.addAgentToProject(project, "kone")).toBe(false);
+    expect(store.listProjectAgents(project)).toEqual([]);
+  });
+
+  // The renderer refuses these too, but the store is what IPC reaches: the
+  // rule holds for anything that writes the roster, not only the app's UI.
+  test("cannot be edited, deleted, forked, picked or handed a thread", () => {
+    const store = seeded();
+    store.ensurePresetAgents(["kone"]);
+    expect(store.updateAgent("kone", { name: "Maya" })).toBeNull();
+    expect(store.deleteAgent("kone")).toBe(false);
+    expect(store.duplicateAgent({ agentId: "kone", newAgentId: "copy-1", inherited: { name: "kone", bot: BOT } })).toBeNull();
+    store.writeSelectedAgent("gideon");
+    store.writeSelectedAgent("kone");
+    expect(store.readSelectedAgent()).toBe("gideon");
+    expect(store.bindThreadAgent("t-new", "kone")).toBeNull();
+    expect(store.getThreadAgent("t-new")).toBeNull();
+    expect(store.getAgent("kone")?.deletedAt).toBeNull();
   });
 });

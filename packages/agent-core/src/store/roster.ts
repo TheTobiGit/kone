@@ -2,7 +2,11 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
 import { withTransaction } from "../conversationMigrations.js";
+import { COURIER_AGENT_ID } from "@kone/protocol/message-sender";
 import { AGENT_COLUMNS, AGENT_NAME_MAX, AGENT_PAINT_MAX, AGENT_PROSE_MAX, AGENT_ROLE_MAX, clampAgentField, normalizeSkillRef, rowToAgent, serializeAgentAvatar, serializeAgentBot, serializeAgentList, serializeModelRef, type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type AgentRow, type ThreadAgentBinding, type ThreadAgentRoute } from "../rosterRecord.js";
+
+/** The Orchestrator's id, from the builds that shipped it. */
+const RETIRED_ORCHESTRATOR_ID = "orchestrator";
 
 /** The binding row as stored. The two route columns are NULL together or set
  *  together — nothing writes one without the other. */
@@ -55,14 +59,15 @@ export class RosterRepo {
    *  the only layer that knows which presets exist, so it is the layer that
    *  says so. A built-in that arrives that way appends like anything else,
    *  landing after the agents the user already had rather than inserting itself
-   *  above them. */
+   *  above them. What earlier builds left of two built-ins is cleared first —
+   *  see `retireShippedAgents`. */
   ensurePresetAgents(presetIds: readonly string[]): void {
     const db = this.dbh.handle();
     if (!db) return;
-    if (presetIds.length === 0) return;
     try {
       const now = Date.now();
       withTransaction(db, () => {
+        this.retireShippedAgents(db, now);
         const insert = db.prepare(
           `INSERT INTO agents (agent_id, preset_id, sort_order, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?)
@@ -78,6 +83,36 @@ export class RosterRepo {
     } catch (err) {
       console.error("[conversation-store] ensurePresetAgents failed:", err);
     }
+  }
+
+  /**
+   * Clear out what earlier development builds left of two built-ins. Idempotent.
+   *
+   * The Orchestrator is gone: its rows, seats and selection go with it, and
+   * the threads it worked become guest threads. kone is now the courier, whose
+   * identity is the build's and which nobody picks: its row is reset to the
+   * bare preset, and it holds no seat, no thread and no selection.
+   */
+  private retireShippedAgents(db: DatabaseSync, now: number): void {
+    for (const agentId of [RETIRED_ORCHESTRATOR_ID, COURIER_AGENT_ID]) {
+      db.prepare(`DELETE FROM project_agents WHERE agent_id = ?`).run(agentId);
+      db.prepare(`UPDATE thread_agents SET agent_id = NULL WHERE agent_id = ?`).run(agentId);
+      db.prepare(
+        `UPDATE app_state SET value = '', updated_at = ? WHERE key = 'selected_agent' AND value = ?`,
+      ).run(now, agentId);
+    }
+    db.prepare(`DELETE FROM agents WHERE agent_id = ? OR preset_id = ?`).run(
+      RETIRED_ORCHESTRATOR_ID,
+      RETIRED_ORCHESTRATOR_ID,
+    );
+    db.prepare(
+      `UPDATE agents
+          SET name = NULL, role = NULL, instructions = NULL, face_body = NULL, face_ink = NULL,
+              skills = NULL, models = NULL, avatar = NULL, bot = NULL, deleted_at = NULL, updated_at = ?
+        WHERE agent_id = ? AND (name IS NOT NULL OR role IS NOT NULL OR instructions IS NOT NULL
+              OR face_body IS NOT NULL OR face_ink IS NOT NULL OR skills IS NOT NULL OR models IS NOT NULL
+              OR avatar IS NOT NULL OR bot IS NOT NULL OR deleted_at IS NOT NULL)`,
+    ).run(now, COURIER_AGENT_ID);
   }
 
   /** The roster, in order. Deleted agents are left out unless asked for — the
@@ -173,6 +208,8 @@ export class RosterRepo {
   updateAgent(agentId: string, patch: AgentPatch): AgentRecord | null {
     const db = this.dbh.handle();
     if (!db) return null;
+    // The courier's identity is the build's, not a row anybody edits.
+    if (agentId === COURIER_AGENT_ID) return null;
     const edits: Array<[column: string, value: string | null]> = [];
     if (patch.name !== undefined) {
       edits.push(["name", clampAgentField(patch.name, AGENT_NAME_MAX)]);
@@ -236,6 +273,7 @@ export class RosterRepo {
   deleteAgent(agentId: string): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
+    if (agentId === COURIER_AGENT_ID) return false;
     try {
       const now = Date.now();
       let changes = 0;
@@ -283,6 +321,7 @@ export class RosterRepo {
   duplicateAgent(input: AgentDuplicateInput): AgentRecord | null {
     const db = this.dbh.handle();
     if (!db) return null;
+    if (input.agentId === COURIER_AGENT_ID) return null;
     const source = this.getAgent(input.agentId);
     if (!source || source.deletedAt !== null) return null;
     const inherited = input.inherited ?? {};
@@ -336,6 +375,9 @@ export class RosterRepo {
   addAgentToProject(projectPath: string, agentId: string): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
+    // The courier is in every project and works for none of them: nobody can
+    // hand it work, so it is never somebody a team holds.
+    if (agentId === COURIER_AGENT_ID) return false;
     try {
       const alive = db
         .prepare(`SELECT 1 FROM agents WHERE agent_id = ? AND deleted_at IS NULL`)
@@ -469,6 +511,8 @@ export class RosterRepo {
     agentId: string | null,
     route?: ThreadAgentRoute | null,
   ): ThreadAgentBinding | null {
+    // Nobody hands a thread to the courier.
+    if (agentId === COURIER_AGENT_ID) return null;
     const db = this.dbh.handle();
     if (!db) return null;
     try {
@@ -532,10 +576,12 @@ export class RosterRepo {
     }
   }
 
-  /** Point the next turn at an agent, or at a guest with null. */
+  /** Point the next turn at an agent, or at a guest with null. The courier is
+   *  nobody's to pick, so pointing at it is refused and the selection kept. */
   writeSelectedAgent(agentId: string | null): void {
     const db = this.dbh.handle();
     if (!db) return;
+    if (agentId === COURIER_AGENT_ID) return;
     try {
       db.prepare(
         `INSERT INTO app_state (key, value, updated_at)

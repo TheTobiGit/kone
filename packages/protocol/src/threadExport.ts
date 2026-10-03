@@ -7,6 +7,8 @@
 
 import { z } from "zod";
 
+import { MessageSenderSchema, type MessageSender } from "./messageSender.js";
+
 // ── format ────────────────────────────────────────────────────────────────────
 
 export type ThreadExportFormat = "markdown" | "json";
@@ -178,6 +180,9 @@ const ExportUserBlockSchema = z.object({
   effort: z.string().optional(),
   model: z.string().optional(),
   source: z.literal("fork-import").optional(),
+  /** Who said it, when it was not the user — another agent, kone, or kone's
+   *  courier carrying an agent's words. Absent means the user. */
+  sender: MessageSenderSchema.optional(),
 });
 
 const ExportAssistantBlockSchema = z.object({
@@ -212,6 +217,7 @@ export type ThreadExportBlock = {
   effort?: string;
   model?: string;
   source?: "fork-import";
+  sender?: MessageSender;
 } | {
   id: string;
   role: "assistant";

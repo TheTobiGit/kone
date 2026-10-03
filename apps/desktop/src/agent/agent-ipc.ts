@@ -431,13 +431,14 @@ export function registerAgentIpc(): void {
       if (gated) broadcast(gated.event, false);
     },
     onEvents: (listener) => svc.onEvent(listener),
-    // A child's settled turn that nobody is waiting on is sent to its parent
-    // as a report, through the same mailbox and delivery as agent_message.
+    // A child's settled turn that nobody is waiting on is carried to its
+    // parent by the courier, kone's own agent, as a report — through the same
+    // mailbox and delivery as agent_message.
     reports: createMailboxReportSink({
       mailbox: getIrcMailbox(),
       store,
       isBusy: (threadId) => svc.isThreadBusy(threadId),
-      queueNotice: (threadId, text) => dispatcher.queueNotice(threadId, text),
+      queueNotice: (threadId, text, sender) => dispatcher.queueNotice(threadId, text, sender),
     }),
   });
 

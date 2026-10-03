@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { senderRelationshipLabel } from "@kone/protocol/message-sender";
-import type { AgentSender } from "~/types/desktop";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import RosterFace from "~/components/agent/RosterFace.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
-import { agentIdentity } from "~/utils/agentIdentity";
-import { agentOrDeparted } from "~/utils/agents";
+import { messageSpeaker, type SpeakingSender } from "~/utils/messageSpeaker";
 
 // Words another agent wrote into this thread — a delegator's brief, a
-// follow-up, a question from a delegate, a worker's report.
+// follow-up, a question from a delegate, a worker's report — or that kone's
+// courier carried here for one.
 //
-// It sits on the agent's side of the conversation, with that agent's own face
+// It sits on the agent's side of the conversation, with the speaker's own face
 // and name, because it is not the user speaking: only the user's words take
 // the user's side. The relationship tag says who it is to this thread ("your
 // delegator", "your contractor") and, for a message with a purpose, what it is
 // for, so a question reads as waiting on an answer and a note as needing none.
+// The courier speaks as kone, never as the agent whose work it carries: that
+// agent is named in the tag, and the name opens its thread.
 //
 // It reuses the reply's speaker classes so every conversation style lays it out
 // the way it lays out an agent speaking, and each style then draws the words
@@ -23,7 +23,7 @@ import { agentOrDeparted } from "~/utils/agents";
 // rest in conversationStyles.css under "Another agent speaking".
 
 const props = defineProps<{
-  sender: AgentSender;
+  sender: SpeakingSender;
   text: string;
   /** Show a face beside the name — the style decides, as for replies. */
   showFace: boolean;
@@ -36,58 +36,41 @@ const emit = defineEmits<{
   "open-thread": [threadId: string];
 }>();
 
-/** A saved agent, while the roster still has it — renamed or not. */
-const rosterAgent = computed(() => agentOrDeparted(props.sender.agentId));
+const speaker = computed(() => messageSpeaker(props.sender));
 
-const name = computed(
-  () => rosterAgent.value?.name ?? props.sender.name ?? agentIdentity(props.sender.threadId).name,
-);
-
-const relation = computed(() => senderRelationshipLabel(props.sender.relationship));
-
-/** What the message is for, when that changes how to read it. A brief and a
- *  follow-up are what a hand-off is made of; a note is the default. */
-const purpose = computed(() => {
-  switch (props.sender.messageKind) {
-    case "question":
-      return "question";
-    case "pushback":
-      return "pushback";
-    case "report":
-      return "report";
-    case "answer":
-      return "answer";
-    case "brief":
-      return "brief";
-    default:
-      return null;
-  }
+/** Whose thread the name opens: the speaker's own, or for the courier, the
+ *  agent whose work it carried. */
+const opensTitle = computed(() => {
+  const s = speaker.value;
+  return s.about ? `Open ${s.about.name}'s thread` : `Open ${s.name}'s thread`;
 });
 </script>
 
 <template>
   <div class="speaker peer-head">
     <template v-if="showFace">
-      <RosterFace v-if="rosterAgent" :agent="rosterAgent" :size="faceSize" class="speaker__face" />
-      <AgentFace v-else :seed="sender.threadId" :size="faceSize" class="speaker__face" />
+      <RosterFace v-if="speaker.agent" :agent="speaker.agent" :size="faceSize" class="speaker__face" />
+      <AgentFace v-else :seed="speaker.seed" :size="faceSize" class="speaker__face" />
     </template>
     <div class="speaker__head">
       <button
+        v-if="speaker.opens"
         type="button"
         class="speaker__name peer-head__name"
-        :title="`Open ${name}'s thread`"
-        @click="emit('open-thread', sender.threadId)"
+        :title="opensTitle"
+        @click="emit('open-thread', speaker.opens)"
       >
-        {{ name }}
+        {{ speaker.name }}
       </button>
+      <span v-else class="speaker__name peer-head__name">{{ speaker.name }}</span>
       <!-- A brief's sender is already named on the thread's connected line. -->
-      <span v-if="purpose !== 'brief'" class="peer-head__tag" :data-kind="purpose ?? 'note'">{{ relation }}<template v-if="purpose"> · {{ purpose }}</template></span>
+      <span v-if="speaker.purpose !== 'brief'" class="peer-head__tag" :data-kind="speaker.purpose ?? 'note'">{{ speaker.relation }}<template v-if="speaker.purpose"> · {{ speaker.purpose }}</template></span>
       <span v-if="stamp" class="speaker__stamp">{{ stamp }}</span>
     </div>
   </div>
-  <div class="stack selectable peer-body" :data-kind="purpose ?? 'note'">
+  <div class="stack selectable peer-body" :data-kind="speaker.purpose ?? 'note'">
     <!-- The prompt style's line prefix: who is talking to whom. -->
-    <span class="peer-body__prefix" aria-hidden="true">[{{ name }} → you]</span>
+    <span class="peer-body__prefix" aria-hidden="true">[{{ speaker.name }} → you]</span>
     <MarkdownMessage class="answer" :source="text" :historical="historical ?? true" />
   </div>
 </template>

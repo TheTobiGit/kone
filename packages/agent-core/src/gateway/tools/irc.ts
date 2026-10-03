@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { COURIER_AGENT_ID, type CourierSender } from "@kone/protocol/message-sender";
 import type { AgentSender, ProviderKind, SenderRelationship, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import type { AgentRecord } from "../../ConversationStore.js";
@@ -56,8 +57,9 @@ export interface IrcMessageRecord {
   projectPath?: string;
   /** Who sent it, as THIS copy's recipient relates to them — each recipient
    *  gets its own copy, so a broadcast reads "your worker" to one agent and
-   *  "teammate" to another. Absent when no store could say. */
-  sender?: AgentSender;
+   *  "teammate" to another. Absent when no store could say. A courier sender is
+   *  kone's own agent carrying something, never another agent speaking. */
+  sender?: AgentSender | CourierSender;
   /** Set once the message is on the recipient's transcript, so a delivery
    *  retried after a failed send does not write it twice. */
   journaled?: boolean;
@@ -448,11 +450,6 @@ export class IrcMailbox {
     }
 
     for (const recipientId of recipients) {
-      let queue = this.inboxes.get(recipientId);
-      if (!queue) {
-        queue = [];
-        this.inboxes.set(recipientId, queue);
-      }
       const messageCopy: IrcMessageRecord = { ...record };
       if (store) {
         messageCopy.sender = agentSenderFor(
@@ -462,12 +459,6 @@ export class IrcMailbox {
           kind,
         );
       }
-      // Push a distinct record copy for independent read tracking if needed
-      queue.push(messageCopy);
-      // Oldest first: a backlog this deep means nobody has been reading, and the
-      // newest messages are the ones still worth acting on.
-      if (queue.length > MAX_INBOX_MESSAGES) queue.splice(0, queue.length - MAX_INBOX_MESSAGES);
-
       // Auto-register recipient if not present and no external store was given
       if (!this.threads.has(recipientId) && !store) {
         this.registerThread({
@@ -476,15 +467,7 @@ export class IrcMailbox {
         });
       }
 
-      // Notify delivery listeners with an immutable copy
-      const readOnlyCopy = Object.freeze({ ...messageCopy });
-      for (const listener of this.deliveryListeners) {
-        try {
-          listener(recipientId, readOnlyCopy);
-        } catch {
-          // Guard against listener failure
-        }
-      }
+      this.enqueue(recipientId, messageCopy);
     }
 
     return {
@@ -493,6 +476,62 @@ export class IrcMailbox {
       recipients,
       message: record,
     };
+  }
+
+  /**
+   * Put a message the courier wrote in one thread's inbox: kone's own agent
+   * carrying something an agent did not carry itself, such as a hand-off result
+   * nobody waited for.
+   *
+   * It rides the same inbox and delivery as agent_message — steering a running
+   * turn, waking an idle one, retractable until read — but none of the
+   * agent-to-agent rules apply. kone already knows the thread, so there is no
+   * recipient to resolve, and it is not half of a pair, so it neither counts
+   * toward nor resets a ping-pong between two agents.
+   */
+  sendCourierMessage(input: {
+    to: string;
+    projectPath: string;
+    message: string;
+    kind: AgentMessageKind;
+    sender: CourierSender;
+  }) {
+    const messageId = `msg_${randomUUID()}`;
+    this.enqueue(input.to, {
+      id: messageId,
+      from: COURIER_AGENT_ID,
+      to: input.to,
+      message: input.message,
+      kind: input.kind,
+      createdAt: Date.now(),
+      read: false,
+      projectPath: input.projectPath,
+      sender: input.sender,
+    });
+    return { messageId };
+  }
+
+  /** Add one copy to a recipient's inbox and tell the delivery listeners. */
+  private enqueue(recipientId: string, message: IrcMessageRecord): void {
+    let queue = this.inboxes.get(recipientId);
+    if (!queue) {
+      queue = [];
+      this.inboxes.set(recipientId, queue);
+    }
+    queue.push(message);
+    // Oldest first: a backlog this deep means nobody has been reading, and the
+    // newest messages are the ones still worth acting on.
+    if (queue.length > MAX_INBOX_MESSAGES) queue.splice(0, queue.length - MAX_INBOX_MESSAGES);
+
+    // Notify delivery listeners with an immutable copy
+    const readOnlyCopy = Object.freeze({ ...message });
+    for (const listener of this.deliveryListeners) {
+      try {
+        listener(recipientId, readOnlyCopy);
+      } catch {
+        // Guard against listener failure
+      }
+    }
   }
 
   /**

@@ -17,8 +17,8 @@ import {
   GUEST_LABEL,
   hydrateRoster,
   isOnProjectTeam,
+  courierAgent,
   KONE,
-  ORCHESTRATOR,
   projectTeam,
   removeAgentFromProject,
   renameAgent,
@@ -64,18 +64,30 @@ function rowFor(id: string) {
  *  without it is refused rather than stored bot-less. */
 const TEST_BOT = { form: "pebble", color: "teal", expression: "curious" } as const;
 
-beforeEach(() => {
+/** The colleague most tests hand work to. The build ships nobody you can pick
+ *  — its one built-in is the courier — so every test starts with an agent the
+ *  user made, under an id fixed so a test can name it before it is read. */
+const ADA = "ada";
+const ADA_DRAFT = {
+  id: ADA,
+  name: "Ada",
+  role: "Pair",
+  instructions: "Work carefully.",
+  bot: TEST_BOT,
+};
+
+beforeEach(async () => {
   agentRows.value = [];
   threadBindings.value = {};
   projectTeams.value = {};
   selectAgent(null);
+  await createAgent(ADA_DRAFT);
 });
 
 describe("the roster", () => {
-  test("ships with the built-ins and nobody else", () => {
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, ORCHESTRATOR.id]);
-    expect(agentById(KONE.id)?.name).toBe(KONE.name);
-    expect(agentById(ORCHESTRATOR.id)?.name).toBe(ORCHESTRATOR.name);
+  test("holds the agents the user made, and never the courier", () => {
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ADA]);
+    expect(agentById(ADA)?.name).toBe(ADA_DRAFT.name);
   });
 
   test("nobody is picked for you — a fresh app sends work to a default solo partner", () => {
@@ -92,81 +104,71 @@ describe("the roster", () => {
 
   // The pre-hydrate path and the stored one have to agree, or the roster would
   // reshuffle itself a moment after every launch.
-  test("hydrating gives every built-in a row and changes nothing on screen", async () => {
+  test("hydrating gives the built-in a row and changes nothing on screen", async () => {
     const before = agentRoster();
     await hydrateRoster();
-    expect(agentRows.value.map((row) => row.agentId)).toEqual([KONE.id, ORCHESTRATOR.id]);
+    expect(agentRows.value.map((row) => row.agentId).sort()).toEqual([ADA, KONE.id].sort());
     expect(agentRoster()).toEqual(before);
   });
 
-  // The failure this guards: rows-only resolution would show only the agents
-  // that happen to have rows, so making one agent would hide every built-in
-  // nobody has touched yet.
-  test("a made agent doesn't hide a built-in with no row of its own", async () => {
-    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
-    expect(agentRoster().map((agent) => agent.id)).toEqual([
-      KONE.id,
-      ORCHESTRATOR.id,
-      made!.id,
-    ]);
-  });
-
-  // The second half of the ordering guarantee: a made agent sorts after the
-  // built-ins on the first paint and stays there once hydrate writes the
-  // presets' own rows at their indexes.
-  test("a made agent stays last when hydrate lands after it", async () => {
-    const made = await createAgent({ name: "Ada", bot: TEST_BOT });
-    const before = agentRoster().map((agent) => agent.id);
-    expect(before).toEqual([KONE.id, ORCHESTRATOR.id, made!.id]);
+  test("a made agent lands after the ones already there", async () => {
+    const made = await createAgent({ name: "Bo", bot: TEST_BOT });
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ADA, made!.id]);
     await hydrateRoster();
-    expect(agentRoster().map((agent) => agent.id)).toEqual(before);
-    expect(rowFor(KONE.id).sortOrder).toBe(0);
-    expect(rowFor(ORCHESTRATOR.id).sortOrder).toBe(1);
-    expect(rowFor(made!.id).sortOrder).toBe(2);
-  });
-
-  // A row is a delta, not a copy: only the field that was edited is the row's,
-  // and the rest still comes from the build.
-  test("an edited field is the row's and the rest is still the preset's", async () => {
-    await updateAgent(KONE.id, { role: "Pair" });
-    const agent = agentById(KONE.id);
-    expect(agent?.role).toBe("Pair");
-    expect(agent?.name).toBe(KONE.name);
-    expect(agent?.instructions).toBe(KONE.instructions);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ADA, made!.id]);
   });
 
   // Emptying a field is a decision, and a different one from never touching it.
-  test("a field cleared to empty stays empty rather than reverting", async () => {
-    await updateAgent(KONE.id, { instructions: "" });
-    expect(agentById(KONE.id)?.instructions).toBeUndefined();
-    await updateAgent(KONE.id, { instructions: null });
-    expect(agentById(KONE.id)?.instructions).toBe(KONE.instructions);
+  test("a field cleared to empty stays empty", async () => {
+    await updateAgent(ADA, { instructions: "" });
+    expect(agentById(ADA)?.instructions).toBeUndefined();
+    expect(agentById(ADA)?.role).toBe(ADA_DRAFT.role);
+  });
+});
+
+// kone's own agent: it speaks in conversations, and nobody picks, edits,
+// deletes, forks or staffs it.
+describe("the courier", () => {
+  test("shows as itself, read from the build alone", () => {
+    const courier = courierAgent();
+    expect(courier.id).toBe(KONE.id);
+    expect(courier.name).toBe(KONE.name);
+    expect(courier.instructions).toBe(KONE.instructions);
+    expect(courier.avatar).toEqual(KONE.avatar!);
+    expect(courier.bot).toEqual(KONE.bot!);
   });
 
-  // The second preset resolves through the same overlay: an edit sticks, an
-  // empty stays empty, and null hands the field back to the preset.
-  test("orchestrator clears back to the preset like kone does", async () => {
-    await updateAgent(ORCHESTRATOR.id, { role: "Pair", instructions: "" });
-    expect(agentById(ORCHESTRATOR.id)?.role).toBe("Pair");
-    expect(agentById(ORCHESTRATOR.id)?.instructions).toBeUndefined();
-    await updateAgent(ORCHESTRATOR.id, { role: null, instructions: null });
-    expect(agentById(ORCHESTRATOR.id)?.role).toBe(ORCHESTRATOR.role);
-    expect(agentById(ORCHESTRATOR.id)?.instructions).toBe(ORCHESTRATOR.instructions);
+  test("is in no list you pick from", async () => {
+    await hydrateRoster();
+    expect(agentRoster().map((agent) => agent.id)).not.toContain(KONE.id);
+    expect(agentById(KONE.id)).toBeUndefined();
+    selectAgent(KONE.id);
+    expect(selectedAgent()).toBeUndefined();
+    const id = threadId();
+    expect(settleThreadAgent(id, KONE.id)).toBe(false);
+  });
+
+  test("cannot be edited, deleted, forked or put on a team", async () => {
+    await hydrateRoster();
+    expect(await updateAgent(KONE.id, { name: "Maya" })).toBeUndefined();
+    expect(await deleteAgent(KONE.id)).toBe(false);
+    expect(await duplicateAgent(KONE.id)).toBeUndefined();
+    expect(courierAgent().name).toBe(KONE.name);
   });
 });
 
 describe("who worked a thread", () => {
   test("a thread handed to an agent reports that agent", () => {
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
-    expect(agentForThread(id)?.id).toBe(KONE.id);
+    settleThreadAgent(id, ADA);
+    expect(agentForThread(id)?.id).toBe(ADA);
   });
 
   test("who a thread was handed to is settled once and never revised", () => {
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
+    settleThreadAgent(id, ADA);
     settleThreadAgent(id, null);
-    expect(agentForThread(id)?.id).toBe(KONE.id);
+    expect(agentForThread(id)?.id).toBe(ADA);
   });
 
   // Running as a guest is a decision like any other, and recording it is what
@@ -174,22 +176,22 @@ describe("who worked a thread", () => {
   test("a thread that started as a guest stays a guest", () => {
     const id = threadId();
     settleThreadAgent(id, null);
-    settleThreadAgent(id, KONE.id);
+    settleThreadAgent(id, ADA);
     expect(agentForThread(id)).toBeUndefined();
   });
 
   test("an unstarted thread has nobody, and picking an agent doesn't give it one", () => {
     const id = threadId();
     expect(agentForThread(id)).toBeUndefined();
-    selectAgent(KONE.id);
+    selectAgent(ADA);
     expect(agentForThread(id)).toBeUndefined();
   });
 
   test("changing who you work with leaves settled threads alone", () => {
     const guestThread = threadId();
     settleThreadAgent(guestThread, null);
-    selectAgent(KONE.id);
-    expect(selectedAgent()?.id).toBe(KONE.id);
+    selectAgent(ADA);
+    expect(selectedAgent()?.id).toBe(ADA);
     expect(agentForThread(guestThread)).toBeUndefined();
   });
 
@@ -198,8 +200,8 @@ describe("who worked a thread", () => {
     settleThreadAgent(id, "nobody");
     expect(agentForThread(id)).toBeUndefined();
     // Refused, not settled: the thread is still open to a real agent.
-    settleThreadAgent(id, KONE.id);
-    expect(agentForThread(id)?.id).toBe(KONE.id);
+    settleThreadAgent(id, ADA);
+    expect(agentForThread(id)?.id).toBe(ADA);
 
     selectAgent("nobody");
     expect(selectedAgent()).toBeUndefined();
@@ -218,8 +220,8 @@ describe("who worked a thread", () => {
   test("a thread with no id is nobody's, and settling one is a no-op", () => {
     expect(agentForThread(null)).toBeUndefined();
     expect(agentForThread(undefined)).toBeUndefined();
-    expect(() => settleThreadAgent(null, KONE.id)).not.toThrow();
-    expect(() => settleThreadAgent(undefined, KONE.id)).not.toThrow();
+    expect(() => settleThreadAgent(null, ADA)).not.toThrow();
+    expect(() => settleThreadAgent(undefined, ADA)).not.toThrow();
   });
 });
 
@@ -236,7 +238,7 @@ describe("threadSettled", () => {
 
   test("a thread settled on an agent has settled", () => {
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
+    settleThreadAgent(id, ADA);
     expect(threadSettled(id)).toBe(true);
   });
 
@@ -250,40 +252,28 @@ describe("threadSettled", () => {
     expect(agentForThread(id)).toBeUndefined();
   });
 
-  test("agrees with settleThreadAgent about which writes are refused", () => {
+  test("agrees with settleThreadAgent about which writes are refused", async () => {
+    const BO = (await createAgent({ name: "Bo", bot: TEST_BOT }))!.id;
     const id = threadId();
     expect(threadSettled(id)).toBe(false);
-    settleThreadAgent(id, KONE.id);
+    settleThreadAgent(id, ADA);
     expect(threadSettled(id)).toBe(true);
-    settleThreadAgent(id, ORCHESTRATOR.id);
-    expect(agentForThread(id)?.id).toBe(KONE.id);
+    settleThreadAgent(id, BO);
+    expect(agentForThread(id)?.id).toBe(ADA);
   });
 });
 
 describe("what the provider session is told", () => {
-  test("kone's thread carries its name and instructions", () => {
+  test("an agent's thread carries its name and instructions", () => {
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
+    settleThreadAgent(id, ADA);
     const persona = agentPersonaForThread(id);
     expect(persona).toEqual({
-      name: KONE.name,
-      instructions: KONE.instructions,
+      name: ADA_DRAFT.name,
+      instructions: ADA_DRAFT.instructions,
     });
     // These two and no more: the face, role and roster order are drawer-only,
     // so a third key here would mean a layer leaked across the boundary.
-    expect(Object.keys(persona!).sort()).toEqual(["instructions", "name"]);
-  });
-
-  // The second preset reaches the session through the same door: name plus
-  // instructions, and nothing drawer-only.
-  test("orchestrator's thread carries its name and instructions", () => {
-    const id = threadId();
-    settleThreadAgent(id, ORCHESTRATOR.id);
-    const persona = agentPersonaForThread(id);
-    expect(persona).toEqual({
-      name: ORCHESTRATOR.name,
-      instructions: ORCHESTRATOR.instructions,
-    });
     expect(Object.keys(persona!).sort()).toEqual(["instructions", "name"]);
   });
 
@@ -310,15 +300,15 @@ describe("what the provider session is told", () => {
   // settled: what the user sees in the drawer is what the agent gets told.
   test("a rename reaches a thread that already settled on that agent", async () => {
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
-    await renameAgent(KONE.id, "Maya");
+    settleThreadAgent(id, ADA);
+    await renameAgent(ADA, "Maya");
     expect(agentPersonaForThread(id)?.name).toBe("Maya");
   });
 
   test("picking somebody else points the next thread at them, not this one", () => {
     const id = threadId();
     settleThreadAgent(id, null);
-    selectAgent(KONE.id);
+    selectAgent(ADA);
     expect(agentPersonaForThread(id)).toBeUndefined();
   });
 });
@@ -327,9 +317,9 @@ describe("a thread reborn under a new id", () => {
   test("the same work continuing keeps the same agent", () => {
     const from = threadId();
     const to = threadId();
-    settleThreadAgent(from, KONE.id);
+    settleThreadAgent(from, ADA);
     carryThreadAgent(from, to);
-    expect(agentForThread(to)?.id).toBe(KONE.id);
+    expect(agentForThread(to)?.id).toBe(ADA);
   });
 
   // The one that would go wrong quietly: a guest thread restarted must come
@@ -338,11 +328,11 @@ describe("a thread reborn under a new id", () => {
     const from = threadId();
     const to = threadId();
     settleThreadAgent(from, null);
-    selectAgent(KONE.id);
+    selectAgent(ADA);
     carryThreadAgent(from, to);
     expect(agentForThread(to)).toBeUndefined();
     // And it is settled, not merely unclaimed.
-    settleThreadAgent(to, KONE.id);
+    settleThreadAgent(to, ADA);
     expect(agentForThread(to)).toBeUndefined();
   });
 
@@ -350,14 +340,14 @@ describe("a thread reborn under a new id", () => {
     const from = threadId();
     const to = threadId();
     carryThreadAgent(from, to);
-    settleThreadAgent(to, KONE.id);
-    expect(agentForThread(to)?.id).toBe(KONE.id);
+    settleThreadAgent(to, ADA);
+    expect(agentForThread(to)?.id).toBe(ADA);
   });
 
   test("a thread that already settled keeps what it settled on", () => {
     const from = threadId();
     const to = threadId();
-    settleThreadAgent(from, KONE.id);
+    settleThreadAgent(from, ADA);
     settleThreadAgent(to, null);
     carryThreadAgent(from, to);
     expect(agentForThread(to)).toBeUndefined();
@@ -365,7 +355,7 @@ describe("a thread reborn under a new id", () => {
 
   test("a missing id at either end is a no-op", () => {
     const from = threadId();
-    settleThreadAgent(from, KONE.id);
+    settleThreadAgent(from, ADA);
     expect(() => carryThreadAgent(from, null)).not.toThrow();
     expect(() => carryThreadAgent(null, threadId())).not.toThrow();
     expect(() => carryThreadAgent(undefined, undefined)).not.toThrow();
@@ -376,20 +366,20 @@ describe("a side chat forked from a thread", () => {
   test("inherits the named agent from the source thread", () => {
     const main = threadId();
     const side = threadId();
-    settleThreadAgent(main, KONE.id);
+    settleThreadAgent(main, ADA);
     rememberSideChatSource(side, main);
-    expect(agentForThread(side)?.id).toBe(KONE.id);
-    expect(agentPersonaForThread(side)?.name).toBe(KONE.name);
+    expect(agentForThread(side)?.id).toBe(ADA);
+    expect(agentPersonaForThread(side)?.name).toBe(ADA_DRAFT.name);
   });
 
   test("carrying the thread agent explicitly also resolves the named agent", () => {
     const main = threadId();
     const side = threadId();
-    settleThreadAgent(main, KONE.id);
+    settleThreadAgent(main, ADA);
     rememberSideChatSource(side, main);
     carryThreadAgent(main, side);
-    expect(agentForThread(side)?.id).toBe(KONE.id);
-    expect(agentPersonaForThread(side)?.name).toBe(KONE.name);
+    expect(agentForThread(side)?.id).toBe(ADA);
+    expect(agentPersonaForThread(side)?.name).toBe(ADA_DRAFT.name);
   });
 
   test("inherits a guest binding when the source was a guest", () => {
@@ -405,37 +395,25 @@ describe("a side chat forked from a thread", () => {
 
 describe("renaming an agent", () => {
   test("the new name is what the roster reports", async () => {
-    await renameAgent(KONE.id, "Maya");
-    expect(agentById(KONE.id)?.name).toBe("Maya");
-  });
-
-  test("clearing the name gives back the one they shipped with", async () => {
-    await renameAgent(KONE.id, "Maya");
-    await renameAgent(KONE.id, "");
-    expect(agentById(KONE.id)?.name).toBe(KONE.name);
-
-    await renameAgent(KONE.id, "   ");
-    expect(agentById(KONE.id)?.name).toBe(KONE.name);
-
-    await renameAgent(KONE.id, KONE.name);
-    expect(agentById(KONE.id)?.name).toBe(KONE.name);
+    await renameAgent(ADA, "Maya");
+    expect(agentById(ADA)?.name).toBe("Maya");
   });
 
   test("surrounding space is not part of a name", async () => {
-    await renameAgent(KONE.id, "  Maya  ");
-    expect(agentById(KONE.id)?.name).toBe("Maya");
+    await renameAgent(ADA, "  Maya  ");
+    expect(agentById(ADA)?.name).toBe("Maya");
   });
 
   // The ceiling is the store's, so a name that fits in a row is the same name
   // everywhere it is read.
   test("a name has a length a row can hold", async () => {
-    await renameAgent(KONE.id, "M".repeat(200));
-    expect(agentById(KONE.id)?.name.length).toBe(64);
+    await renameAgent(ADA, "M".repeat(200));
+    expect(agentById(ADA)?.name.length).toBe(64);
   });
 
   test("renaming somebody who isn't in the roster changes nothing", async () => {
     await renameAgent("nobody", "Maya");
-    expect(agentById(KONE.id)?.name).toBe(KONE.name);
+    expect(agentById(ADA)?.name).toBe(ADA_DRAFT.name);
     expect(agentById("nobody")).toBeUndefined();
   });
 
@@ -460,11 +438,7 @@ describe("an agent you made yourself", () => {
     expect(made?.name).toBe("Ada");
     expect(made?.role).toBe("Reviewer");
     expect(made?.instructions).toBe("Exacting.");
-    expect(agentRoster().map((agent) => agent.id)).toEqual([
-      KONE.id,
-      ORCHESTRATOR.id,
-      made!.id,
-    ]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ADA, made!.id]);
   });
 
   test("a name is the one thing it can't do without", async () => {
@@ -477,8 +451,8 @@ describe("an agent you made yourself", () => {
   test("a bot is the other thing it can't do without", async () => {
     // SAFETY: deliberately omitting the required bot — the test asserts the
     // create is refused.
-    expect(await createAgent({ name: "Ada" } as never)).toBeUndefined();
-    expect(agentRoster().some((agent) => agent.name === "Ada")).toBe(false);
+    expect(await createAgent({ name: "Zed" } as never)).toBeUndefined();
+    expect(agentRoster().some((agent) => agent.name === "Zed")).toBe(false);
   });
 
   test("it can be handed a thread like anybody else", async () => {
@@ -492,15 +466,15 @@ describe("an agent you made yourself", () => {
 describe("an agent who leaves the roster", () => {
   test("is gone from everywhere you could pick them", async () => {
     await hydrateRoster();
-    expect(await deleteAgent(KONE.id)).toBe(true);
-    expect(agentRoster().map((agent) => agent.id)).toEqual([ORCHESTRATOR.id]);
-    expect(agentById(KONE.id)).toBeUndefined();
+    expect(await deleteAgent(ADA)).toBe(true);
+    expect(agentRoster()).toEqual([]);
+    expect(agentById(ADA)).toBeUndefined();
 
-    selectAgent(KONE.id);
+    selectAgent(ADA);
     expect(selectedAgent()).toBeUndefined();
     // And a thread starting now can't be settled on them either.
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
+    settleThreadAgent(id, ADA);
     expect(agentForThread(id)).toBeUndefined();
   });
 
@@ -509,91 +483,86 @@ describe("an agent who leaves the roster", () => {
   test("still names the threads they worked", async () => {
     await hydrateRoster();
     const id = threadId();
-    settleThreadAgent(id, KONE.id);
-    await deleteAgent(KONE.id);
-    expect(agentForThread(id)?.name).toBe(KONE.name);
-    expect(agentPersonaForThread(id)?.name).toBe(KONE.name);
+    settleThreadAgent(id, ADA);
+    await deleteAgent(ADA);
+    expect(agentForThread(id)?.name).toBe(ADA_DRAFT.name);
+    expect(agentPersonaForThread(id)?.name).toBe(ADA_DRAFT.name);
   });
 
   test("the selection doesn't point at them afterwards", async () => {
     await hydrateRoster();
-    selectAgent(KONE.id);
-    await deleteAgent(KONE.id);
+    selectAgent(ADA);
+    await deleteAgent(ADA);
     expect(selectedAgent()).toBeUndefined();
     // Cleared where it is kept, not merely unresolvable on the way out.
     expect(selectedAgentId.value).toBeNull();
   });
 
-  test("a built-in stays dismissed rather than coming back on hydrate", async () => {
+  test("stays gone rather than coming back on hydrate", async () => {
     await hydrateRoster();
-    await deleteAgent(KONE.id);
+    await deleteAgent(ADA);
     await hydrateRoster();
-    expect(agentRoster().map((agent) => agent.id)).toEqual([ORCHESTRATOR.id]);
+    expect(agentRoster()).toEqual([]);
   });
 
   test("leaving twice, or leaving when you were never here, is a no", async () => {
     await hydrateRoster();
-    expect(await deleteAgent(KONE.id)).toBe(true);
-    expect(await deleteAgent(KONE.id)).toBe(false);
+    expect(await deleteAgent(ADA)).toBe(true);
+    expect(await deleteAgent(ADA)).toBe(false);
     expect(await deleteAgent("nobody")).toBe(false);
   });
 
   test("a departed agent cannot be edited back into the roster", async () => {
     await hydrateRoster();
-    await deleteAgent(KONE.id);
-    expect(await renameAgent(KONE.id, "Maya")).toBeUndefined();
-    expect(agentById(KONE.id)).toBeUndefined();
+    await deleteAgent(ADA);
+    expect(await renameAgent(ADA, "Maya")).toBeUndefined();
+    expect(agentById(ADA)).toBeUndefined();
   });
 });
 
 describe("forking an agent", () => {
-  // Deliberate: a fork sits directly below its source even when that splits the
-  // presets — [KONE, copy, ORCHESTRATOR]. Presets are not a pinned block; the
+  // Deliberate: a fork sits directly below its source, not at the end — the
   // roster is one order and a fork takes the position below what it copied.
   test("the copy reads like the original and sits straight below it", async () => {
     await hydrateRoster();
-    const copy = await duplicateAgent(KONE.id, "kone copy");
-    expect(copy?.name).toBe("kone copy");
-    // A fork keeps no inheritance, so the preset's words are copied onto it.
-    expect(copy?.instructions).toBe(KONE.instructions);
-    expect(copy?.role).toBe(KONE.role);
-    expect(agentRoster().map((agent) => agent.id)).toEqual([
-      KONE.id,
-      copy!.id,
-      ORCHESTRATOR.id,
-    ]);
+    const bo = await createAgent({ name: "Bo", bot: TEST_BOT });
+    const copy = await duplicateAgent(ADA, "Ada copy");
+    expect(copy?.name).toBe("Ada copy");
+    expect(copy?.instructions).toBe(ADA_DRAFT.instructions);
+    expect(copy?.role).toBe(ADA_DRAFT.role);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ADA, copy!.id, bo!.id]);
   });
 
   test("an edit to the original doesn't reach the copy", async () => {
     await hydrateRoster();
-    const copy = await duplicateAgent(KONE.id, "kone copy");
-    await updateAgent(KONE.id, { instructions: "Something else." });
-    expect(agentById(copy!.id)?.instructions).toBe(KONE.instructions);
+    const copy = await duplicateAgent(ADA, "Ada copy");
+    await updateAgent(ADA, { instructions: "Something else." });
+    expect(agentById(copy!.id)?.instructions).toBe(ADA_DRAFT.instructions);
   });
 
   test("with no name given, the copy carries the original's", async () => {
     await hydrateRoster();
-    const copy = await duplicateAgent(KONE.id);
-    expect(copy?.name).toBe(KONE.name);
-    expect(copy?.id).not.toBe(KONE.id);
+    const copy = await duplicateAgent(ADA);
+    expect(copy?.name).toBe(ADA_DRAFT.name);
+    expect(copy?.id).not.toBe(ADA);
   });
 
   test("there is nothing to fork in somebody who isn't here", async () => {
     await hydrateRoster();
     expect(await duplicateAgent("nobody")).toBeUndefined();
-    await deleteAgent(KONE.id);
-    expect(await duplicateAgent(KONE.id)).toBeUndefined();
+    await deleteAgent(ADA);
+    expect(await duplicateAgent(ADA)).toBeUndefined();
   });
 });
 
 describe("an agent's capabilities", () => {
-  // Resolved capabilities are always concrete, never gaps: the presets ship
-  // none, so an unedited built-in reads with no skills and no model pinned.
-  test("an unedited built-in resolves to empties, not gaps", () => {
-    const kone = agentById(KONE.id)!;
-    expect(kone.capabilities.skills).toEqual([]);
-    expect(kone.capabilities.model).toBeNull();
-    expect(kone.capabilities.modelFallbacks).toEqual([]);
+  // Resolved capabilities are always concrete, never gaps: an agent made with
+  // none reads with no skills and no model pinned.
+  test("an agent made without capabilities resolves to empties, not gaps", () => {
+    const ada = agentById(ADA)!;
+    expect(ada.capabilities.skills).toEqual([]);
+    expect(ada.capabilities.model).toBeNull();
+    expect(ada.capabilities.modelFallbacks).toEqual([]);
   });
 
   test("a new agent keeps the capabilities it was made with", async () => {
@@ -618,46 +587,42 @@ describe("an agent's capabilities", () => {
     expect(made?.capabilities.skills).toEqual([]);
   });
 
-  // A pinned model is a stored answer on the row; null is the absence that hands
-  // the field back to the preset. Only the row shows the difference — both read
-  // as `null` on a built-in whose preset names no model.
-  test("a pinned model is a stored answer; null hands the field back", async () => {
-    await updateAgent(KONE.id, { model: { provider: "codex", model: "gpt-5" } });
-    expect(rowFor(KONE.id).model).toEqual({ provider: "codex", model: "gpt-5" });
+  // A pinned model is a stored answer on the row; null unsets it.
+  test("a pinned model is a stored answer; null unsets it", async () => {
+    await updateAgent(ADA, { model: { provider: "codex", model: "gpt-5" } });
+    expect(rowFor(ADA).model).toEqual({ provider: "codex", model: "gpt-5" });
 
-    await updateAgent(KONE.id, { model: null });
-    expect(rowFor(KONE.id).model).toBeNull();
+    await updateAgent(ADA, { model: null });
+    expect(rowFor(ADA).model).toBeNull();
   });
 
   test("clearing the model drops the fallback chain", async () => {
-    await updateAgent(KONE.id, {
+    await updateAgent(ADA, {
       model: { provider: "codex", model: "gpt-5" },
       modelFallbacks: [{ provider: "claudeAgent", model: "opus" }],
     });
-    await updateAgent(KONE.id, { model: null });
-    expect(rowFor(KONE.id).modelFallbacks).toBeNull();
+    await updateAgent(ADA, { model: null });
+    expect(rowFor(ADA).modelFallbacks).toBeNull();
   });
 
   test("a capability left out of an edit is left alone", async () => {
-    await updateAgent(KONE.id, {
+    await updateAgent(ADA, {
       model: { provider: "codex", model: "gpt-5" },
       skills: [{ path: "/s/a.md", name: "A", origin: "project" }],
     });
-    await updateAgent(KONE.id, { skills: [{ path: "/s/b.md", name: "B", origin: "project" }] });
-    const kone = agentById(KONE.id)!;
-    expect(kone.capabilities.skills).toEqual([{ path: "/s/b.md", name: "B", origin: "project" }]);
-    expect(kone.capabilities.model).toEqual({ provider: "codex", model: "gpt-5" });
+    await updateAgent(ADA, { skills: [{ path: "/s/b.md", name: "B", origin: "project" }] });
+    const ada = agentById(ADA)!;
+    expect(ada.capabilities.skills).toEqual([{ path: "/s/b.md", name: "B", origin: "project" }]);
+    expect(ada.capabilities.model).toEqual({ provider: "codex", model: "gpt-5" });
   });
 
-  // A fork keeps no inheritance, so a built-in's capabilities are copied onto
-  // the row rather than left to resolve against a preset it no longer overlays.
   test("a fork carries the capabilities the source reads as", async () => {
     await hydrateRoster();
-    await updateAgent(KONE.id, {
+    await updateAgent(ADA, {
       model: { provider: "codex", model: "gpt-5" },
       modelFallbacks: [{ provider: "claudeAgent", model: "opus" }],
     });
-    const copy = await duplicateAgent(KONE.id, "kone copy");
+    const copy = await duplicateAgent(ADA, "Ada copy");
     expect(copy?.capabilities.model).toEqual({ provider: "codex", model: "gpt-5" });
     expect(copy?.capabilities.modelFallbacks).toEqual([{ provider: "claudeAgent", model: "opus" }]);
   });
@@ -666,12 +631,6 @@ describe("an agent's capabilities", () => {
 describe("how an agent looks", () => {
   const PICTURE = { source: "generated", src: "data:image/jpeg;base64,AAAA" } as const;
   const BOT = { form: "pebble", color: "teal", expression: "curious" } as const;
-
-  test("kone ships with a picture of itself and a bot", () => {
-    const kone = agentById(KONE.id)!;
-    expect(kone.avatar).toEqual(KONE.avatar!);
-    expect(kone.bot).toEqual(KONE.bot!);
-  });
 
   // No picture falls back to the drawn face: an agent with no picture is
   // identified by the face it has always had. The bot has no such fallback on
@@ -715,14 +674,14 @@ describe("how an agent looks", () => {
     expect(made?.bot).toEqual(BOT);
   });
 
-  test("an edit sets it, and null hands the field back to the preset", async () => {
-    await updateAgent(KONE.id, { avatar: PICTURE, bot: BOT });
-    expect(agentById(KONE.id)?.avatar).toEqual(PICTURE);
-    expect(agentById(KONE.id)?.bot).toEqual(BOT);
+  test("an edit sets it, and null takes the picture away", async () => {
+    await updateAgent(ADA, { avatar: PICTURE, bot: BOT });
+    expect(agentById(ADA)?.avatar).toEqual(PICTURE);
+    expect(agentById(ADA)?.bot).toEqual(BOT);
 
-    await updateAgent(KONE.id, { avatar: null, bot: null });
-    expect(agentById(KONE.id)?.avatar).toEqual(KONE.avatar!);
-    expect(agentById(KONE.id)?.bot).toEqual(KONE.bot!);
+    await updateAgent(ADA, { avatar: null });
+    expect(agentById(ADA)?.avatar).toBeNull();
+    expect(agentById(ADA)?.bot).toEqual(BOT);
   });
 
   // A bot stored by a build that offered a shape this one dropped still draws:
@@ -773,11 +732,10 @@ describe("how an agent looks", () => {
 
   test("a fork carries the appearance the source reads as", async () => {
     await hydrateRoster();
-    await updateAgent(KONE.id, { bot: BOT });
-    const copy = await duplicateAgent(KONE.id, "kone copy");
-    // The row's own bot, and the preset's picture the row never overrode.
+    await updateAgent(ADA, { avatar: PICTURE, bot: BOT });
+    const copy = await duplicateAgent(ADA, "Ada copy");
     expect(copy?.bot).toEqual(BOT);
-    expect(copy?.avatar).toEqual(KONE.avatar!);
+    expect(copy?.avatar).toEqual(PICTURE);
   });
 });
 
@@ -810,46 +768,46 @@ describe("the store's answer arriving", () => {
 
   test("the bindings it names are what the roster holds", () => {
     applyRosterSnapshot({
-      agents: [row(KONE.id, KONE.id, null)],
+      agents: [row(ADA, null, ADA_DRAFT.name)],
       bindings: [
-        { threadId: "thread-a", agentId: KONE.id, route: null },
+        { threadId: "thread-a", agentId: ADA, route: null },
         { threadId: "thread-b", agentId: null, route: null },
       ],
-      selectedAgentId: KONE.id,
+      selectedAgentId: ADA,
     });
 
-    expect(threadBindings.value["thread-a"]).toBe(KONE.id);
+    expect(threadBindings.value["thread-a"]).toBe(ADA);
     // A NULL on the way in is a guest on the way out, in the renderer's spelling.
     expect(threadBindings.value["thread-b"]).toBe(GUEST_BINDING);
-    expect(selectedAgentId.value).toBe(KONE.id);
+    expect(selectedAgentId.value).toBe(ADA);
   });
 
   test("a binding for a thread that no longer exists is dropped", () => {
-    threadBindings.value = { "thread-gone": KONE.id, "thread-kept": KONE.id };
+    threadBindings.value = { "thread-gone": ADA, "thread-kept": ADA };
 
     applyRosterSnapshot({
-      agents: [row(KONE.id, KONE.id, null)],
-      bindings: [{ threadId: "thread-kept", agentId: KONE.id, route: null }],
+      agents: [row(ADA, null, ADA_DRAFT.name)],
+      bindings: [{ threadId: "thread-kept", agentId: ADA, route: null }],
       selectedAgentId: null,
     });
 
     // Deleting a thread takes its binding with it, so the mirror shrinks with
     // the history rather than keeping every thread id ever opened.
     expect(threadBindings.value["thread-gone"]).toBeUndefined();
-    expect(threadBindings.value["thread-kept"]).toBe(KONE.id);
+    expect(threadBindings.value["thread-kept"]).toBe(ADA);
   });
 
   test("a store that couldn't open is not mistaken for an empty roster", async () => {
     await hydrateRoster();
     const made = await createAgent({ name: "Ama", bot: TEST_BOT });
-    threadBindings.value = { "thread-a": KONE.id };
+    threadBindings.value = { "thread-a": ADA };
 
     // No agents at all, not even the presets it was asked to ensure — nothing
     // answered, so the cache is all there is and it has to survive.
     applyRosterSnapshot({ agents: [], bindings: [], selectedAgentId: null });
 
     expect(agentById(made?.id)?.name).toBe("Ama");
-    expect(threadBindings.value["thread-a"]).toBe(KONE.id);
+    expect(threadBindings.value["thread-a"]).toBe(ADA);
   });
 });
 
@@ -858,8 +816,8 @@ describe("a binding the main process settled", () => {
     const now = Date.now();
     return {
       agentId,
-      presetId: agentId,
-      name: null,
+      presetId: null,
+      name: ADA_DRAFT.name,
       role: null,
       instructions: null,
       faceBody: null,
@@ -883,32 +841,32 @@ describe("a binding the main process settled", () => {
     const id = threadId();
     expect(agentForThread(id)).toBeUndefined();
 
-    bindingHeard({ threadId: id, agentId: KONE.id, route: null });
+    bindingHeard({ threadId: id, agentId: ADA, route: null });
 
-    expect(agentForThread(id)?.id).toBe(KONE.id);
-    expect(agentIdentity(id).name).toBe(KONE.name);
+    expect(agentForThread(id)?.id).toBe(ADA);
+    expect(agentIdentity(id).name).toBe(ADA_DRAFT.name);
   });
 
   test("survives a snapshot that was asked for before it was written", () => {
     const id = threadId();
     const askedAt = bindingsHeardSoFar();
-    bindingHeard({ threadId: id, agentId: KONE.id, route: null });
+    bindingHeard({ threadId: id, agentId: ADA, route: null });
 
     // The store answered before the spawn wrote the row, and the reply landed after.
     applyRosterSnapshot(
-      { agents: [row(KONE.id)], bindings: [], selectedAgentId: null },
+      { agents: [row(ADA)], bindings: [], selectedAgentId: null },
       askedAt,
     );
 
-    expect(agentForThread(id)?.id).toBe(KONE.id);
+    expect(agentForThread(id)?.id).toBe(ADA);
   });
 
   test("is dropped by a snapshot asked for after it, like any other row", () => {
     const id = threadId();
-    bindingHeard({ threadId: id, agentId: KONE.id, route: null });
+    bindingHeard({ threadId: id, agentId: ADA, route: null });
 
     // Asked for after the binding was heard, so its absence means the thread is gone.
-    applyRosterSnapshot({ agents: [row(KONE.id)], bindings: [], selectedAgentId: null });
+    applyRosterSnapshot({ agents: [row(ADA)], bindings: [], selectedAgentId: null });
 
     expect(threadBindings.value[id]).toBeUndefined();
   });
@@ -919,32 +877,32 @@ describe("project teams", () => {
 
   test("a fresh project's team is empty — nobody is on it until added", () => {
     expect(projectTeam(PROJECT)).toEqual([]);
-    expect(isOnProjectTeam(PROJECT, KONE.id)).toBe(false);
+    expect(isOnProjectTeam(PROJECT, ADA)).toBe(false);
   });
 
   test("an agent added is on the team, and members hold their add order", async () => {
     const made = await createAgent({ name: "Ada", bot: TEST_BOT });
     expect(await addAgentToProject(PROJECT, made!.id)).toBe(true);
-    await addAgentToProject(PROJECT, KONE.id);
-    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([made!.id, KONE.id]);
-    expect(isOnProjectTeam(PROJECT, KONE.id)).toBe(true);
+    await addAgentToProject(PROJECT, ADA);
+    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([made!.id, ADA]);
+    expect(isOnProjectTeam(PROJECT, ADA)).toBe(true);
   });
 
   test("adding the same agent twice keeps one membership", async () => {
-    await addAgentToProject(PROJECT, KONE.id);
-    await addAgentToProject(PROJECT, KONE.id);
-    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([KONE.id]);
+    await addAgentToProject(PROJECT, ADA);
+    await addAgentToProject(PROJECT, ADA);
+    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([ADA]);
   });
 
   test("membership is per project — an agent can be on many, off others", async () => {
     const other = "/tmp/other";
     const made = await createAgent({ name: "Ada", bot: TEST_BOT });
-    await addAgentToProject(PROJECT, KONE.id);
+    await addAgentToProject(PROJECT, ADA);
     await addAgentToProject(PROJECT, made!.id);
-    await addAgentToProject(other, KONE.id);
-    await removeAgentFromProject(PROJECT, KONE.id);
+    await addAgentToProject(other, ADA);
+    await removeAgentFromProject(PROJECT, ADA);
     expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([made!.id]);
-    expect(isOnProjectTeam(other, KONE.id)).toBe(true);
+    expect(isOnProjectTeam(other, ADA)).toBe(true);
   });
 
   test("an agent who leaves the roster drops out of a team and can't be re-added", async () => {

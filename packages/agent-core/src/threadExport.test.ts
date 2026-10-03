@@ -434,6 +434,48 @@ describe("json export", () => {
   });
 });
 
+// ── who said it ───────────────────────────────────────────────────────────────
+
+// A message the user did not write is exported as who said it — another
+// agent, or kone's courier carrying an agent's words — in both documents, so
+// neither reads it as the user's.
+describe("a message somebody else said", () => {
+  const COURIER = {
+    kind: "courier",
+    messageKind: "report",
+    about: { threadId: "t-maya", agentId: "maya", name: "Maya", relationship: "delegate" },
+  } as const;
+  const AGENT = { kind: "agent", threadId: "t-lead", name: "Lead", relationship: "delegator", messageKind: "brief" } as const;
+
+  function seedSenders(store: ConversationStoreType): void {
+    seedGoldenThread(store);
+    store.recordUserBlock({ blockId: "u-agent", threadId: GOLDEN_THREAD, text: "Do the thing.", at: T0 + 5000, sender: AGENT });
+    store.recordUserBlock({ blockId: "u-courier", threadId: GOLDEN_THREAD, text: "Maya finished.", at: T0 + 6000, sender: COURIER });
+  }
+
+  test("is headed with who said it in Markdown, the courier keeping its frame", () => {
+    const store = freshStore();
+    seedSenders(store);
+    const md = markdownOf(store);
+    expect(md).toContain("## Lead (agent, your delegator, brief) ·");
+    expect(md).toContain("## kone (courier, carrying Maya's report; your delegate, thread t-maya) ·");
+    expect(md).toContain("## User ·");
+  });
+
+  test("carries its sender through JSON", () => {
+    const store = freshStore();
+    seedSenders(store);
+    const decoded = decodeThreadExportJson(jsonOf(store));
+    const byId = new Map(decoded?.blocks.map((b) => [b.id, b]));
+    const courier = byId.get("u-courier");
+    const agent = byId.get("u-agent");
+    expect(courier?.role === "user" ? courier.sender : undefined).toEqual(COURIER);
+    expect(agent?.role === "user" ? agent.sender : undefined).toEqual(AGENT);
+    const first = byId.get("u-golden-1");
+    expect(first?.role === "user" ? first.sender : "missing").toBeUndefined();
+  });
+});
+
 // ── file outcome ──────────────────────────────────────────────────────────────
 
 describe("exportThread", () => {
