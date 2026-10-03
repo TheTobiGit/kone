@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { agentSenderFor, renderSenderHeader } from "./senderHeader.js";
+import { agentSenderFor, renderCourierMessage, renderSenderHeader } from "./senderHeader.js";
 
 describe("agentSenderFor", () => {
   test("a contractor is named by its contract, not left to its relationship", () => {
@@ -46,5 +46,25 @@ describe("agentSenderFor", () => {
     expect(agentSenderFor(source, "side", "peer").name).toBe("Crest");
     // An edit fork is a new conversation, not the same agent stepping aside.
     expect(agentSenderFor(source, "edit-fork-1", "peer").name).toBe("Rook");
+  });
+
+  test("the courier's header says kone carried it and whose words it carries", () => {
+    const header =
+      renderSenderHeader({
+        kind: "courier",
+        messageKind: "report",
+        about: { threadId: "t-ada", name: "Ada", relationship: "child" },
+      }) ?? "";
+    expect(header).toContain('<kone_notice from="kone" kind="report" about="Ada" relationship="child" thread="t-ada">');
+    expect(header).toContain("kone, the app you run in, carried this to you");
+    expect(header).toContain("Ada is your worker");
+    expect(header).not.toContain("<from_agent");
+  });
+
+  test("a courier message is framed whole, with the payload inside the notice", () => {
+    const framed = renderCourierMessage({ kind: "courier" }, "Something you should know.");
+    expect(framed.startsWith('<kone_notice from="kone">')).toBe(true);
+    expect(framed).toContain("speaking as its courier");
+    expect(framed.endsWith("Something you should know.\n</kone_notice>")).toBe(true);
   });
 });

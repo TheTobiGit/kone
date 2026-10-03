@@ -14,7 +14,7 @@ import {
   type QuitResumeThreadSnapshot,
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
-import { renderSenderHeader, threadAgentName } from "./senderHeader.js";
+import { renderCourierMessage, renderSenderHeader, threadAgentName } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
 import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
 import {
@@ -36,6 +36,7 @@ import type {
   TurnStartResult,
 } from "./types.js";
 import { turnLabel } from "./types.js";
+import type { CourierSender } from "@kone/protocol/message-sender";
 import {
   describeCopiedFiles,
   freshenBase,
@@ -44,6 +45,9 @@ import {
   type ReleaseThreadWorkspace,
   type RenameThreadWorkspaceBranch,
 } from "./workspaceBuild.js";
+
+/** Who may sign a queued notice: kone the app, or its courier. */
+type SystemOrCourierSender = { kind: "system" } | CourierSender;
 
 export type {
   FreshenThreadWorkspaceBase,
@@ -166,9 +170,10 @@ export interface ThreadDispatcher {
    *  turn. Announces it to renderers like any agent-sent block. */
   recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): void;
   /** Tell a thread something without waking it: the notice goes on its
-   *  transcript now (as kone's) and rides in front of whatever its next turn
-   *  is, so the agent reads it the next time it runs. */
-  queueNotice(threadId: string, text: string): void;
+   *  transcript now (as kone's, or the courier's when it is carrying another
+   *  agent's work) and rides in front of whatever its next turn is, so the
+   *  agent reads it the next time it runs. */
+  queueNotice(threadId: string, text: string, sender?: SystemOrCourierSender): void;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -262,7 +267,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private readonly cancelledWorkspaces = new Set<string>();
   /** Notices queued for a thread's next turn (queueNotice) — kone telling an
    *  idle agent something it should know but need not be woken for. */
-  private readonly pendingNotices = new Map<string, string[]>();
+  private readonly pendingNotices = new Map<string, Array<{ text: string; sender: SystemOrCourierSender }>>();
 
   // Threads whose live provider session came up with none of the thread's
   // context — no stored resume id to offer, or the provider refused the one we
@@ -698,10 +703,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       : this.service.sendTurn(dispatched);
   }
 
-  queueNotice(threadId: string, text: string): void {
-    this.recordAgentMessage({ threadId, text, sender: { kind: "system" } });
+  queueNotice(threadId: string, text: string, sender: SystemOrCourierSender = { kind: "system" }): void {
+    this.recordAgentMessage({ threadId, text, sender });
     const queued = this.pendingNotices.get(threadId) ?? [];
-    queued.push(text);
+    queued.push({ text, sender });
     this.pendingNotices.set(threadId, queued);
   }
 
@@ -1189,6 +1194,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const queued = this.pendingNotices.get(threadId);
     if (!queued?.length) return null;
     this.pendingNotices.delete(threadId);
-    return queued.map((text) => `<kone_notice>\n${text}\n</kone_notice>`).join("\n\n");
+    return queued
+      .map(({ text, sender }) =>
+        sender.kind === "courier" ? renderCourierMessage(sender, text) : `<kone_notice>\n${text}\n</kone_notice>`,
+      )
+      .join("\n\n");
   }
 }

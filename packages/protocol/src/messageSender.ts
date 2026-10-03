@@ -10,6 +10,13 @@
 //
 // Absent means the user. Every block written before senders existed was typed
 // by a person, and that stays the default so nothing old changes meaning.
+//
+// Three speakers besides the user: another agent, kone the app (a "system"
+// notice, drawn as a line across the thread), and the courier — kone's own
+// agent, which carries words between agents when they did not carry them
+// themselves. The courier is a speaker with a face and a name, not a notice:
+// what it says is a message, and whose work the message is about rides along
+// so neither the reader nor the receiving agent mistakes kone for its author.
 
 import { z } from "zod";
 
@@ -65,13 +72,42 @@ export const AgentSenderSchema = z.object({
   messageKind: z.enum(MESSAGE_KINDS).optional(),
 });
 
-const MessageSenderSchema = z.discriminatedUnion("kind", [
+/** kone's built-in courier agent: its roster id, and the name it speaks
+ *  under. It is in every project and on no team, and nobody can pick it to
+ *  run, delegate to or contract — it only ever speaks. The renderer's preset
+ *  carries the same id (apps/web/app/utils/agents.ts). */
+export const COURIER_AGENT_ID = "kone";
+export const COURIER_NAME = "kone";
+
+/** Whether a roster id is the courier's — the one agent no picker offers. */
+export function isCourierAgentId(agentId: string | null | undefined): boolean {
+  return agentId === COURIER_AGENT_ID;
+}
+
+export const CourierSenderSchema = z.object({
+  kind: z.literal("courier"),
+  messageKind: z.enum(MESSAGE_KINDS).optional(),
+  /** The agent whose words the courier is carrying, as it relates to the
+   *  receiving thread: whose work this is, and the thread to follow it up on. */
+  about: z
+    .object({
+      threadId: z.string().min(1),
+      name: z.string().min(1).optional(),
+      agentId: z.string().min(1).optional(),
+      relationship: z.enum(SENDER_RELATIONSHIPS),
+    })
+    .optional(),
+});
+
+export const MessageSenderSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("user") }),
   AgentSenderSchema,
   z.object({ kind: z.literal("system") }),
+  CourierSenderSchema,
 ]);
 
 export type AgentSender = z.infer<typeof AgentSenderSchema>;
+export type CourierSender = z.infer<typeof CourierSenderSchema>;
 export type MessageSender = z.infer<typeof MessageSenderSchema>;
 
 /** The sender a stored block holds, or undefined for the user. A malformed or
@@ -118,4 +154,25 @@ export function senderRelationshipLabel(relationship: SenderRelationship): strin
     case "peer":
       return "teammate";
   }
+}
+
+/**
+ * Who said a message, in one line for a transcript read outside the app — a
+ * recovered context, an export. The user is "User"; anybody else is named with
+ * what they are, so nothing they said reads as the user's. The courier keeps
+ * its frame: kone carrying another agent's words, with whose and from where.
+ */
+export function senderLabel(sender: MessageSender | undefined): string {
+  if (!sender || sender.kind === "user") return "User";
+  if (sender.kind === "system") return `${COURIER_NAME} (notice)`;
+  if (sender.kind === "agent") {
+    const relation = senderRelationshipLabel(sender.relationship);
+    const kind = sender.messageKind ? `, ${sender.messageKind}` : "";
+    return `${sender.name?.trim() || "Agent"} (agent, ${relation}${kind})`;
+  }
+  const about = sender.about;
+  if (!about) return `${COURIER_NAME} (courier)`;
+  const whose = about.name ?? "an agent";
+  const what = sender.messageKind ?? "message";
+  return `${COURIER_NAME} (courier, carrying ${whose}'s ${what}; ${senderRelationshipLabel(about.relationship)}, thread ${about.threadId})`;
 }

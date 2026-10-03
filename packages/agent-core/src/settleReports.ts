@@ -7,14 +7,17 @@
 // sent nothing else. The report sat in the delegate's thread, read by the user
 // and never by the agent it was for.
 //
-// So a settled turn nobody collected is sent on as a message from the child,
-// kind "report", through the same mailbox agent_message uses: it steers the
-// parent's running turn or wakes it idle, lands on its transcript in the
-// child's name, and is held to the same guards as any message. When to send is
-// the spawn engine's call (it knows who is waiting); this module is what gets
-// sent and how.
+// So a settled turn nobody collected is carried to the parent by the courier,
+// kone's own agent, kind "report", through the same mailbox agent_message
+// uses: it steers the parent's running turn or wakes it idle, and lands on its
+// transcript in kone's name. kone wrote the message, so kone signs it; the
+// child's reply is the quoted payload, with the child's name and thread beside
+// it so the parent knows whose work it is and where to follow it up. When to
+// send is the spawn engine's call (it knows who is waiting); this module is
+// what gets sent and how.
 
-import type { IrcMailbox, IrcToolStore } from "./gateway/tools/irc.js";
+import type { CourierSender } from "@kone/protocol/message-sender";
+import { relationshipOf, type IrcMailbox, type IrcToolStore } from "./gateway/tools/irc.js";
 import { threadAgentName } from "./senderHeader.js";
 import type { HandOffKind, SpawnedThreadStatus } from "./types.js";
 
@@ -44,25 +47,49 @@ export interface SettleReportSink {
   retract(parentThreadId: string, messageId: string): void;
 }
 
-/** The report's text, as the parent reads it inside the message from its child. */
-export function renderSettleReport(report: SettledTurnReport): string {
+/** A reply set off as a quotation, so the words the child wrote read apart
+ *  from the words kone wrote around them. */
+function quote(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"))
+    .join("\n");
+}
+
+/** The report's text, as kone writes it: who worked, how the turn ended, and
+ *  the child's reply quoted underneath. `childName` is the name the parent
+ *  knows the child by. */
+export function renderSettleReport(report: SettledTurnReport, childName: string): string {
   const where = `thread ${report.childThreadId}, turn ${report.turnId}`;
   const reply = report.summary?.trim();
   const lines: string[] = [];
   if (report.status === "failed") {
-    lines.push(`This turn failed (${where})${report.detail ? `: ${report.detail}` : "."}`);
-    if (reply) lines.push("", "Its last reply:", "", reply);
+    lines.push(`${childName}'s turn failed (${where})${report.detail ? `: ${report.detail}` : "."}`);
+    if (reply) lines.push("", "Its last reply:", "", quote(reply));
   } else if (report.status === "interrupted") {
-    lines.push(`This turn was interrupted before it finished (${where}).`);
-    if (reply) lines.push("", "Its last reply:", "", reply);
+    lines.push(`${childName}'s turn was interrupted before it finished (${where}).`);
+    if (reply) lines.push("", "Its last reply:", "", quote(reply));
   } else {
-    lines.push(`This turn finished (${where}). Its final reply:`, "", reply || "(It ended without a reply.)");
+    lines.push(`${childName} finished the work you handed it (${where}). Its final reply:`, "", reply ? quote(reply) : "(It ended without a reply.)");
   }
   lines.push(
     "",
-    "kone sent this on because nobody was waiting for it. agent_wait on this thread returns the same result, so there is nothing left to wait for; ask it more with agent_followup.",
+    `Nobody was waiting for this result, so kone carried it to you. agent_wait on thread ${report.childThreadId} returns the same result, so there is nothing left to wait for; ask ${childName} more with agent_followup on that thread.`,
   );
   return lines.join("\n");
+}
+
+/** The courier's sender for a report on a child's work: kone speaking, about
+ *  the child, as the child relates to the parent receiving it. */
+export function courierReportSender(store: IrcToolStore, report: SettledTurnReport): CourierSender {
+  const about: NonNullable<CourierSender["about"]> = {
+    threadId: report.childThreadId,
+    name: threadAgentName(store, report.childThreadId),
+    relationship: relationshipOf(store, report.childThreadId, report.parentThreadId),
+  };
+  const agentId = store.getThreadAgent?.(report.childThreadId)?.agentId;
+  if (agentId) about.agentId = agentId;
+  return { kind: "courier", messageKind: "report", about };
 }
 
 export interface MailboxReportSinkDeps {
@@ -70,8 +97,9 @@ export interface MailboxReportSinkDeps {
   store: IrcToolStore;
   /** Is the parent mid-turn? Only an interruption asks: see below. */
   isBusy?: (threadId: string) => boolean;
-  /** Put kone's words in front of the parent's next turn without starting one. */
-  queueNotice?: (threadId: string, text: string) => void;
+  /** Put kone's words in front of the parent's next turn without starting one,
+   *  signed by the courier. */
+  queueNotice?: (threadId: string, text: string, sender: CourierSender) => void;
 }
 
 /**
@@ -88,27 +116,22 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
     deliver(report) {
       const meta = deps.store.threadMeta?.(report.childThreadId);
       if (!meta) return null;
-      const text = renderSettleReport(report);
+      const sender = courierReportSender(deps.store, report);
+      const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId);
       if (report.status === "interrupted" && deps.isBusy && !deps.isBusy(report.parentThreadId)) {
-        const name = threadAgentName(deps.store, report.childThreadId);
-        deps.queueNotice?.(report.parentThreadId, `From ${name}, who is working for you:\n${text}`);
+        deps.queueNotice?.(report.parentThreadId, text, sender);
         return null;
       }
-      const lineage = deps.store.threadLineage?.(report.childThreadId);
       try {
-        const sent = deps.mailbox.sendMessage(
-          {
-            threadId: report.childThreadId,
-            projectPath: meta.projectPath,
-            parentThreadId: report.parentThreadId,
-            rootThreadId: lineage?.rootThreadId,
-          },
-          { to: report.parentThreadId, message: text, kind: "report" },
-          deps.store,
-        );
+        const sent = deps.mailbox.sendCourierMessage({
+          to: report.parentThreadId,
+          projectPath: meta.projectPath,
+          message: text,
+          kind: "report",
+          sender,
+        });
         return sent.messageId;
       } catch (err) {
-        // A guard said no — most often the pair has traded too many messages.
         // Nothing is lost: the result is still what agent_wait returns.
         console.warn(`[agent] could not report ${report.childThreadId}'s settled turn:`, err);
         return null;

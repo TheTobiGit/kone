@@ -17,7 +17,8 @@ import {
   type SpawnRequest,
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
-import { IrcMailbox } from "./gateway/tools/irc.js";
+import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
+import type { CourierSender } from "@kone/protocol/message-sender";
 import { startIrcDelivery } from "./ircDelivery.js";
 import { createMailboxReportSink, type SettleReportSink } from "./settleReports.js";
 import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
@@ -1644,6 +1645,8 @@ type ReportHarness = EngineHarness & {
   mailbox: IrcMailbox;
   /** Turns the mailbox delivered to a parent, in order. */
   delivered: Array<{ threadId: string; input: string; steered: boolean }>;
+  /** Messages put on a parent's transcript, with who they are signed by. */
+  journaled: Array<{ threadId: string; text: string; sender: IrcMessageRecord["sender"] }>;
   busy: Set<string>;
   /** Run every armed delivery, after letting the engine's deferred report land. */
   flush: () => Promise<void>;
@@ -1654,6 +1657,7 @@ function makeReportEngine(): ReportHarness {
   const mailbox = new IrcMailbox();
   const h = makeEngine({ reports: (store) => createMailboxReportSink({ mailbox, store }) });
   const delivered: ReportHarness["delivered"] = [];
+  const journaled: ReportHarness["journaled"] = [];
   const busy = new Set<string>();
   const armed: Array<() => void> = [];
   const stopDelivery = startIrcDelivery({
@@ -1670,6 +1674,7 @@ function makeReportEngine(): ReportHarness {
     },
     isLive: () => true,
     isBusy: (threadId) => busy.has(threadId),
+    journal: (threadId, message) => journaled.push({ threadId, text: message.message, sender: message.sender }),
     schedule: (fn) => {
       armed.push(fn);
       return () => {
@@ -1683,7 +1688,7 @@ function makeReportEngine(): ReportHarness {
     while (armed.length > 0) armed.shift()!();
     await new Promise((resolve) => setTimeout(resolve, 0));
   };
-  return { ...h, mailbox, delivered, busy, flush, stopDelivery };
+  return { ...h, mailbox, delivered, journaled, busy, flush, stopDelivery };
 }
 
 const DELEGATION: SpawnRequest = {
@@ -1717,8 +1722,8 @@ describe("settle reports", () => {
     expect(turn!.threadId).toBe(CALLER.threadId);
     // Woken, not steered: the delegator had no turn running.
     expect(turn!.steered).toBe(false);
-    expect(turn!.input).toContain("Endpoint shipped: POST /v1/things, tests green.");
-    expect(turn!.input).toContain("From `Jonas` (your delegate), report");
+    expect(turn!.input).toContain("> Endpoint shipped: POST /v1/things, tests green.");
+    expect(turn!.input).toContain(`<kone_notice from="kone" kind="report" about="Jonas"`);
     expect(turn!.input).toContain(`thread ${child}, turn t-1`);
 
     // A repeated settle of the same turn is not a second report.
@@ -1730,6 +1735,32 @@ describe("settle reports", () => {
     const out = await h.engine.waitFor({ threadIds: [child], scopeThreadId: CALLER.threadId, timeoutMs: 20 });
     expect(out.allTerminal).toBe(true);
     expect(out.threads[0]!.summary).toBe("Endpoint shipped: POST /v1/things, tests green.");
+    h.stopDelivery();
+  });
+
+  test("the report is kone's courier speaking, with the child's name and thread in it", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.store.texts.set(child, "Endpoint shipped.");
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    await h.flush();
+
+    // Journaled in the courier's name, never the child's.
+    expect(h.journaled).toHaveLength(1);
+    expect(h.journaled[0]!.sender).toEqual({
+      kind: "courier",
+      messageKind: "report",
+      about: { threadId: child, name: "Jonas", agentId: "agent-jonas", relationship: "delegate" },
+    });
+    expect(h.journaled[0]!.text).toContain(`Jonas finished the work you handed it (thread ${child}, turn t-1)`);
+    expect(h.journaled[0]!.text).toContain(`agent_followup on that thread`);
+
+    // Prompted as kone's notice, not as a message from another agent.
+    const input = h.delivered[0]!.input;
+    expect(input).toContain(`<kone_notice from="kone" kind="report" about="Jonas" relationship="delegate" thread="${child}">`);
+    expect(input).toContain("Jonas did not send it");
+    expect(input).not.toContain("<agent_messages>");
+    expect(input).not.toContain("From `Jonas`");
     h.stopDelivery();
   });
 
@@ -1831,7 +1862,7 @@ describe("settle reports", () => {
     h.bus.emit(turnAborted(child, "t-1", 30, "failed", "rate limited"));
     await h.flush();
     expect(h.delivered).toHaveLength(1);
-    expect(h.delivered[0]!.input).toContain("This turn failed");
+    expect(h.delivered[0]!.input).toContain("Jonas's turn failed");
     expect(h.delivered[0]!.input).toContain("rate limited");
     h.stopDelivery();
   });
@@ -1846,7 +1877,8 @@ describe("settle reports", () => {
     h.bus.emit(turnCompleted(threadId, "w-1", 30));
     await h.flush();
     expect(h.delivered).toHaveLength(1);
-    expect(h.delivered[0]!.input).toContain("(your worker), report");
+    expect(h.delivered[0]!.input).toContain('relationship="child"');
+    expect(h.delivered[0]!.input).toContain("is your worker");
     expect(h.delivered[0]!.input).toContain("Found it in sidebar.ts:42.");
     h.stopDelivery();
   });
@@ -1869,7 +1901,7 @@ describe("settle reports", () => {
   });
 
   test("an interruption nobody asked for reaches a busy parent, and waits for an idle one's next turn", async () => {
-    const queued: Array<{ threadId: string; text: string }> = [];
+    const queued: Array<{ threadId: string; text: string; sender: CourierSender }> = [];
     const mailbox = new IrcMailbox();
     const busy = new Set<string>();
     const h = makeEngine({
@@ -1878,7 +1910,7 @@ describe("settle reports", () => {
           mailbox,
           store,
           isBusy: (threadId) => busy.has(threadId),
-          queueNotice: (threadId, text) => queued.push({ threadId, text }),
+          queueNotice: (threadId, text, sender) => queued.push({ threadId, text, sender }),
         }),
     });
     setupParent(h.store, h.providers);
@@ -1891,6 +1923,8 @@ describe("settle reports", () => {
     expect(mailbox.getUnreadCount(CALLER.threadId)).toBe(0);
     expect(queued).toHaveLength(1);
     expect(queued[0]!.text).toContain("interrupted");
+    expect(queued[0]!.sender.kind).toBe("courier");
+    expect(queued[0]!.sender.about?.threadId).toBe(threadId);
 
     busy.add(CALLER.threadId);
     h.bus.emit(sessionStarted(threadId, 35));

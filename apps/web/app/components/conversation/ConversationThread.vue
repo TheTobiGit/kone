@@ -47,6 +47,7 @@ import KoneNoticeMark from "~/components/conversation/KoneNoticeMark.vue";
 import HandOffOriginMark from "~/components/conversation/HandOffOriginMark.vue";
 import { useThreadContract } from "~/composables/useThreadContract";
 import type { AgentSender } from "~/types/desktop";
+import { isSpeakingSender, type SpeakingSender } from "~/utils/messageSpeaker";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import ReplyRef from "~/components/conversation/ReplyRef.vue";
@@ -251,7 +252,7 @@ const speakerName = computed(() => threadContract.value?.name ?? agent.value.nam
  *  peer, and a kone notice spans the thread as a line. */
 function turnSide(block: ThreadBlock): string {
   if (block.role === "assistant") return "turn--kone";
-  if (block.sender?.kind === "agent") return "turn--kone turn--peer";
+  if (isSpeakingSender(block.sender)) return "turn--kone turn--peer";
   if (block.sender?.kind === "system") return "turn--notice";
   return "turn--you";
 }
@@ -425,8 +426,9 @@ type EnrichedExchange = {
   key: string;
   blocks: ThreadBlock[];
   requestText: string;
-  /** The agent that wrote the request, when it was not the user. */
-  requestFrom: AgentSender | null;
+  /** The agent that wrote the request, or the courier that carried it, when
+   *  it was not the user. */
+  requestFrom: SpeakingSender | null;
   /** The request is kone telling the thread something, which no reply
    *  quotes. */
   requestIsNotice: boolean;
@@ -693,7 +695,7 @@ const allExchanges = computed<EnrichedExchange[]>(() => {
         key: b.id,
         blocks: [b],
         requestText: b.role === "user" ? b.text : "",
-        requestFrom: b.role === "user" && b.sender?.kind === "agent" ? b.sender : null,
+        requestFrom: b.role === "user" && isSpeakingSender(b.sender) ? b.sender : null,
         requestIsNotice: b.role === "user" && b.sender?.kind === "system",
         reply: undefined,
         receipt: "sent",
@@ -1297,8 +1299,9 @@ watch(
         block.id === searchFlash ? 'turn--search-flash' : '',
       ]"
     >
-      <!-- ── Another agent speaking — the agent's side, never the user's ── -->
-      <template v-if="block.role === 'user' && block.sender?.kind === 'agent'">
+      <!-- ── Another agent, or kone's courier, speaking — the agent's side,
+           never the user's ── -->
+      <template v-if="block.role === 'user' && isSpeakingSender(block.sender)">
         <AgentMessageTurn
           :sender="block.sender"
           :text="block.text"

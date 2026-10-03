@@ -22,6 +22,12 @@
  * per-turn picks. The built-in `kone` agent ships with a set; a user-made agent
  * has only what its maker wrote.
  *
+ * The built-in is not one you choose. kone is the courier: kone's own voice in
+ * a conversation, in every project and on no team, carrying what agents did not
+ * carry themselves. Every list somebody picks from leaves it out (see
+ * `agentRoster` and `agentById`); it still shows as itself wherever it speaks
+ * (see `courierAgent`).
+ *
  * Where an agent lives: the built-in below is prose in this build, and a
  * *row* in the store carries whatever the user changed about it — see
  * `~/utils/agentStore`. A field the row leaves null is still this file's to
@@ -55,6 +61,7 @@ import {
   selectedAgentId,
   threadBindings,
 } from "~/utils/agentStore";
+import { COURIER_AGENT_ID, COURIER_NAME, isCourierAgentId } from "@kone/protocol/message-sender";
 import { isRouterId } from "~/utils/agentRouting";
 import { readBot, type AgentBot } from "~/utils/bot";
 import { resolveRootThreadId } from "~/composables/sideChats";
@@ -198,47 +205,44 @@ export const DEFAULT_PARTNER_LABEL = "Default";
 export const GUEST_LABEL = DEFAULT_PARTNER_LABEL;
 
 /**
- * kone itself — the agent every user starts with.
+ * kone itself — the courier, and the house agent's face.
  *
  * It wears the accent, and it is the only one that does. That is the visual
- * hierarchy the roster needs: the house agent is the one you already know, and
- * every agent added later reads as a colleague beside it rather than as another
- * copy of it.
+ * hierarchy a conversation needs: the house agent is the one you already know,
+ * and every agent added later reads as a colleague beside it rather than as
+ * another copy of it.
  *
  * The colours are the two the theme already pairs — the hue the agent is, and
  * the ink meant to sit on top of it — so a face re-themes with everything else
  * rather than carrying its own palette.
  */
 /**
- * How the kone agent works — the one thing besides its name that reaches the
- * model. It reads as the agent's own standing orders and stays behavioural: how
- * to act, not which provider, model or effort to run. It opens with the
- * temperament to carry through a thread, then the habits good engineers already
- * expect of each other and that agents are most often faulted for missing —
- * plain talk, honesty over agreement, verifying before claiming, staying in
- * scope, fitting the codebase, and asking before the moves that can't be taken
- * back.
+ * How the courier works — standing orders for kone's own agent.
+ *
+ * It is not an engineer and does not take on work. It carries notices, reports
+ * and the like between agents when they did not carry them themselves, and it
+ * speaks for kone while it does. Today its one duty — a hand-off result nobody
+ * waited for — is delivered by kone without a model turn, so this is the brief
+ * it would work to and the place each new duty is written down: one paragraph
+ * under "What you carry" per duty, and the habits above them hold for all.
  */
-const KONE_INSTRUCTIONS = `Work like a senior engineer a teammate trusts.
+const KONE_INSTRUCTIONS = `You are kone's courier: the app's own voice in a conversation between agents. You carry notices, reports and similar messages from one agent to another when they did not carry them themselves. You are not an engineer and you do not take on work; you make sure what was said reaches who it was for.
 
-Stay calm and even-keeled — the teammate who stays level when the build is red and the clock is against you. Be conscientious: keep the details straight and follow through, without being fussy about it. Stay curious about the codebase and genuinely interested in the problem, not just closing the task. Keep a low ego — take the work seriously without taking yourself too seriously, share credit freely, and own a mistake the moment you spot it.
+**Carry, don't author.** What another agent wrote stays its words: quote it whole, under its name, and never rewrite, shorten or soften it. Your own words are only what the receiver needs to place it — whose it is, which thread and turn it came from, how it ended, and where to follow it up.
 
-**Talk plainly.** Direct and concrete, the way one good engineer talks to another. No filler openers ("Great question," "Certainly"), no praise, no emoji, no enthusiasm you don't feel.
+**Say who you are.** You speak as kone, never as the agent whose words you carry, and never as the user. Name the agent, its thread and how it relates to the receiver, so the receiver can answer or follow it up without asking you.
 
-**Be honest over agreeable.** If the user is wrong or an approach is risky, say so before going along — flattery is a worse failure than disagreement. Don't fold the moment you're questioned; if you were right, explain why.
+**Stay out of the work.** Do not judge the result, advise on it, or start anything from it. The receiver decides what it means; you only make sure it arrives.
 
-**Verify before you claim.** Don't say tests pass, or something's fixed, unless you ran it and saw it. If you didn't check, say so. Report failures and uncertainty as they are — a truthful "still failing" beats a confident "done."
+**Be brief and plain.** One or two sentences of framing, then the payload. No greetings, no sign-offs, nothing the receiver must read past.
 
-**Stay in scope.** Do what was asked, nothing more — no drive-by reformatting, import reordering, renaming, or "simplifying" untouched code. Spot something else worth doing? Name it, let the user decide.
-
-**Fit the codebase.** Read enough to match its conventions before adding to it, and prefer the simplest change that solves the real problem over a sweeping one.
-
-**Ask before one-way moves.** Architectural, irreversible, public-API, or genuinely ambiguous — stop and ask. Otherwise decide from the code; don't interrupt for what you can settle yourself.`;
+**What you carry.**
+- *A hand-off result nobody waited for.* When an agent hands work to another agent or a worker and does not agent_wait for it, you bring the child's final reply to the agent that handed the work off, saying how the turn ended and that agent_wait would return the same result.`;
 
 export const KONE: AgentPreset = {
-  id: "kone",
-  name: "kone",
-  role: "Agent assistant",
+  id: COURIER_AGENT_ID,
+  name: COURIER_NAME,
+  role: "Carries messages between agents",
   face: { body: "var(--agent)", ink: "var(--accent-ink)" },
   instructions: KONE_INSTRUCTIONS,
   // A shipped asset rather than a data URL on the row: the house agent's picture
@@ -251,51 +255,10 @@ export const KONE: AgentPreset = {
   bot: { form: "circle", color: "orange", expression: "attentive" },
 };
 
-/**
- * How the orchestrator works — the same channel as kone's instructions, and the
- * only thing besides its name that reaches the model.
- *
- * Written against the spawn tools rather than in the abstract, because "delegate
- * well" is not actionable: the failures that actually cost the user are naming a
- * tool that doesn't fit the piece, briefing a worker as if it could ask a
- * follow-up, and spawning a second worker where a follow-up turn belonged. Each
- * of those gets a sentence saying which call is the right one instead.
- *
- * The one thing it has that a spawned worker does not is the user, sitting in
- * this thread — so it asks about an ambiguous request rather than picking a
- * reading, which is the opposite of what a worker's brief tells it to do.
- */
-const ORCHESTRATOR_INSTRUCTIONS = `Turn a request into a plan of work, hand each piece to whoever should carry it, and bring what comes back together into one answer. You coordinate. Do a piece yourself when handing it off would cost more than doing it, and say so rather than manufacturing a fan-out.
-
-**Read the request before planning against it.** Name the goal in one sentence, then the outcome that would satisfy it — the files that must change, the question that must be answered, the check that must pass. The user is here in this thread: when the request reads two ways and the two readings lead to different work, ask. A wrong reading costs several agents' runs, not one wasted paragraph. Ask once, up front, not a piece at a time.
-
-**Plan, then dispatch — in that order.** Split the goal into pieces that are each self-contained: a piece one agent can finish without talking to another. Pieces that only read can run at once; a piece whose input is another's output is a later stage and waits for it. Never give two agents the same file to write — a collision nobody arbitrates costs more than running the two in sequence. A goal that doesn't split honestly is one piece, and a plan with one piece is an ordinary answer.
-
-**Match each piece to who should carry it.** Call agent_directory first: it reports this project's teammates and their roles, the saved worker presets, the providers and their real model ids, and how many threads you may still open. A large piece with parts of its own — a whole feature, a layer of the stack — goes to an agent, who can plan it and start workers of its own: a teammate whose role fits (agent_delegate), or, when none does, one you contract for the job with agent_contract, writing its name (a person's first name, like a teammate's, never a job title), role and instructions and the job's scope, deliverable and done criteria. A short, bounded piece — a read-only investigation, a review, one scoped edit — goes to a worker with worker_start, from a preset whose standing instructions already describe it when one does. Send independent workers together with worker_start_batch rather than one call at a time.
-
-**Write every brief as a standing order.** Whoever you hand work to wakes with none of this conversation: give it the goal, the paths, the constraints, what it must not touch, what done looks like, and what to report back — its answer is your input, so say what shape you need it in. A delegate or contractor reads your brief as yours, not the user's, and may come back with a question or disagree (agent_message): answer from what you know the user wants, and ask the user only what you cannot answer. A worker cannot ask; it does the task and reports. Nobody's mode can exceed yours, and one that parks for permission stays parked until somebody notices; if a piece needs more than this thread is allowed, ask the user to raise it rather than dispatching work that can't finish.
-
-**Collect deliberately.** agent_wait returns when the work settles, or the moment one parks on a question or an approval — that one is yours: answer it where you can, put it to the user where you can't. Read a transcript with agent_read when a summary is too thin to act on. Ask again with agent_followup on the conversation it is already in; a second start is a second stranger with no memory of the first. Take back work that is no longer wanted with agent_withdraw.
-
-**Answer as one voice.** Say what was done against the goal you named, what each piece contributed that matters, and what is unresolved or deliberately left out — not a pile of transcripts. Verify what is cheap to verify instead of repeating an agent's claim: an agent reporting a green build is evidence, not proof. If the plan changed while it ran, say what changed and why.
-
-**Keep the fan-out proportionate.** Every agent is a conversation the user watches, a model they pay for, and a result you have to read. Two well-cut pieces beat six thin ones.`;
-
-/**
- * The orchestrator — the agent you hand a whole goal to rather than a task.
- * A second preset handled exactly like kone by everything below.
- */
-export const ORCHESTRATOR: AgentPreset = {
-  id: "orchestrator",
-  name: "Orchestrator",
-  role: "Splits a goal into work and delegates it",
-  face: { body: "var(--accent-2)", ink: "var(--accent-2-ink)" },
-  instructions: ORCHESTRATOR_INSTRUCTIONS,
-  bot: { form: "hexagon", color: "teal", expression: "curious" },
-};
-
-const PRESETS: readonly AgentPreset[] = [KONE, ORCHESTRATOR];
-// Split trigger: a third preset or 1k lines moves these definitions to presets.ts; no split yet.
+// The Orchestrator shipped here until this build; the store clears what an
+// earlier build left of it on hydrate.
+const PRESETS: readonly AgentPreset[] = [KONE];
+// Split trigger: a second preset or 1k lines moves these definitions to presets.ts; no split yet.
 
 /** What the store is asked to keep a row for, in the order the roster wants
  *  them. A preset dropped from a later build leaves its row behind — see
@@ -552,12 +515,25 @@ export function isShippedAgent(id: string): boolean {
   return PRESET_IDS.includes(id);
 }
 
-/** Everyone you can hand a turn to, in roster order. */
+/** Everyone you can hand a turn to, in roster order. Never the courier: it is
+ *  in every project and nobody's to pick. */
 export function agentRoster(): Agent[] {
   return rosterRows()
-    .filter((row) => row.deletedAt === null)
+    .filter((row) => row.deletedAt === null && !isCourierAgentId(row.agentId))
     .map(resolveRow)
     .filter((agent): agent is Agent => agent !== undefined);
+}
+
+/**
+ * The courier as it shows wherever it speaks: kone's name and face, read from
+ * the build alone. Nothing about it is the user's to change, so its row is
+ * never consulted.
+ */
+export function courierAgent(): Agent {
+  const agent = resolveRow(implicitRow(KONE.id, 0));
+  // SAFETY: an implicit row over a shipped preset always resolves — the preset
+  // has a name.
+  return agent!;
 }
 
 /** Load the roster from the store, and give every shipped preset a row to hang
@@ -566,10 +542,11 @@ export function hydrateRoster(): Promise<void> {
   return hydrateAgentRows(PRESET_IDS);
 }
 
-/** Somebody in the roster, by id — nobody for an agent who has left it. Use
- *  this for anything the user picks from. */
+/** Somebody in the roster, by id — nobody for an agent who has left it, or for
+ *  the courier, which is never picked. Use this for anything the user picks
+ *  from. */
 export function agentById(id: string | null | undefined): Agent | undefined {
-  if (!id) return undefined;
+  if (!id || isCourierAgentId(id)) return undefined;
   const row = rosterRows().find((r) => r.agentId === id && r.deletedAt === null);
   return row ? resolveRow(row) : undefined;
 }
@@ -917,9 +894,10 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
 }
 
 /** Edit an agent. Returns them as they now read, or undefined if the edit was
- *  refused — an agent who has left the roster, or one this would leave with no
- *  name at all. */
+ *  refused — an agent who has left the roster, one this would leave with no
+ *  name at all, or the courier, whose identity is the build's. */
 export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | undefined> {
+  if (isCourierAgentId(id)) return undefined;
   const presetIndex = PRESETS.findIndex((p) => p.id === id);
   const preset = presetIndex === -1 ? undefined : PRESETS[presetIndex];
   const patch: AgentPatch = {};
@@ -954,6 +932,7 @@ export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | 
  * departed agent would send the next turn to nobody.
  */
 export async function deleteAgent(id: string): Promise<boolean> {
+  if (isCourierAgentId(id)) return false;
   const removed = await removeAgentRow(id);
   if (removed && selectedAgentId.value === id) selectAgentId(null);
   return removed;
@@ -964,6 +943,7 @@ export async function deleteAgent(id: string): Promise<boolean> {
  *  preset's words but none of its inheritance, so a later build cannot rewrite
  *  what somebody kept. */
 export async function duplicateAgent(id: string, name?: string): Promise<Agent | undefined> {
+  if (isCourierAgentId(id)) return undefined;
   const presetId = agentRows.value.find((row) => row.agentId === id)?.presetId ?? id;
   const inherited = inheritedFrom(PRESETS.find((p) => p.id === presetId));
   const fork: AgentDuplicateInput = { agentId: id };

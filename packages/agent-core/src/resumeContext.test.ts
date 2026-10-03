@@ -52,6 +52,40 @@ describe("buildResumeContext", () => {
     expect(context).not.toContain("secret internal deliberation");
   });
 
+  // After a restart with no provider context, this is all the model has: an
+  // agent's words or a courier report must not come back as the user's.
+  test("names who said a message the user did not write", () => {
+    const context = buildResumeContext({
+      blocks: [
+        {
+          id: "u-agent",
+          role: "user",
+          text: "Review the parser.",
+          at: 1,
+          sender: { kind: "agent", threadId: "t-lead", name: "Lead", relationship: "delegator", messageKind: "brief" },
+        },
+        assistant([item({ kind: "assistant_text", text: "Started." })], "completed", 2),
+        {
+          id: "u-courier",
+          role: "user",
+          text: "Maya finished: parser fixed.",
+          at: 3,
+          sender: {
+            kind: "courier",
+            messageKind: "report",
+            about: { threadId: "t-maya", name: "Maya", relationship: "delegate" },
+          },
+        },
+        assistant([item({ kind: "assistant_text", text: "Noted." })], "completed", 4),
+      ],
+    });
+    expect(context).toContain("Lead (agent, your delegator, brief): Review the parser.");
+    expect(context).toContain(
+      "kone (courier, carrying Maya's report; your delegate, thread t-maya): Maya finished: parser fixed.",
+    );
+    expect(context).not.toContain("user: Maya finished");
+  });
+
   test("frames itself as history, not as the user's instructions", () => {
     const context = buildResumeContext({ blocks: [user("hi")] }) ?? "";
     expect(context.startsWith("<recovered-transcript>")).toBe(true);

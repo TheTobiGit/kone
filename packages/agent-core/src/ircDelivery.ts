@@ -1,6 +1,7 @@
 import type { IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
 import { senderRelationshipLabel } from "@kone/protocol/message-sender";
 import type { ThreadDispatcher } from "./dispatch.js";
+import { renderCourierMessage } from "./senderHeader.js";
 
 // Delivery: the half that turns a mailbox into messaging.
 //
@@ -178,11 +179,33 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
  * peer wants nothing. It says plainly when no reply is owed, because the
  * default failure of agent messaging is two of them being polite at each other
  * until somebody runs out of money.
+ *
+ * What the courier carries is kone speaking, not another agent, so it is framed
+ * as kone's on its own rather than counted among the agents' messages.
  */
 export function renderIncoming(messages: IrcMessageRecord[], remaining = 0): string {
+  const carried: string[] = [];
+  const fromAgents: IrcMessageRecord[] = [];
+  for (const m of messages) {
+    if (m.sender?.kind === "courier") carried.push(renderCourierMessage(m.sender, m.message));
+    else fromAgents.push(m);
+  }
+  // Said rather than left implicit: past the batch cap the rest are still in the
+  // inbox, and an agent told "3 messages arrived" while forty wait is being
+  // given a wrong number to reason about.
+  const overflow =
+    remaining > 0
+      ? `${remaining} more ${remaining === 1 ? "message is" : "messages are"} still in your inbox.`
+      : "";
+  if (fromAgents.length === 0) return [...carried, overflow].filter(Boolean).join("\n\n");
+  return [...carried, renderAgentMessages(fromAgents, overflow)].join("\n\n");
+}
+
+/** Messages other agents sent, as one tagged block. */
+function renderAgentMessages(messages: IrcMessageRecord[], overflow: string): string {
   const lines = messages.map((m) => {
-    const who = m.sender?.name ?? m.from;
-    const relation = m.sender ? ` (${senderRelationshipLabel(m.sender.relationship)})` : "";
+    const who = (m.sender?.kind === "agent" ? m.sender.name : undefined) ?? m.from;
+    const relation = m.sender?.kind === "agent" ? ` (${senderRelationshipLabel(m.sender.relationship)})` : "";
     const kind = m.kind && m.kind !== "note" ? `, ${m.kind}` : "";
     const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
     return `[${m.id}] From \`${who}\`${relation}${kind}${replyTo}:\n${m.message}`;
@@ -191,16 +214,17 @@ export function renderIncoming(messages: IrcMessageRecord[], remaining = 0): str
     messages.length === 1
       ? "A message from another agent arrived while you were working:"
       : `${messages.length} messages from other agents arrived while you were working:`;
-  // Said rather than left implicit: past the batch cap the rest are still in the
-  // inbox, and an agent told "3 messages arrived" while forty wait is being
-  // given a wrong number to reason about.
-  const overflow =
-    remaining > 0
-      ? `\n\n${remaining} more ${remaining === 1 ? "message is" : "messages are"} still in your inbox.`
-      : "";
   const asked = messages.some((m) => m.kind === "question" || m.kind === "pushback");
   const closing = asked
     ? "The user did not say this — other agents did. A question or pushback is waiting on you: answer it with agent_message (kind \"answer\", replyTo its id) from what you know of the user's intent, asking the user only what you cannot answer. Anything else here needs no reply."
     : "The user did not say this — other agents did, and nobody is waiting on a reply. Fold anything useful into what you are already doing; a bare acknowledgement costs the sender a whole turn and tells them nothing.";
-  return ["<agent_messages>", header + overflow, "", lines.join("\n\n"), "", closing, "</agent_messages>"].join("\n");
+  return [
+    "<agent_messages>",
+    header + (overflow ? `\n\n${overflow}` : ""),
+    "",
+    lines.join("\n\n"),
+    "",
+    closing,
+    "</agent_messages>",
+  ].join("\n");
 }

@@ -394,6 +394,23 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(journaledEvents.map((b) => b.text)).toEqual(["Is OAuth in scope?"]);
   });
 
+  test("a notice the courier queues is journaled as the courier's and rides in front of the next turn as kone's", async () => {
+    const { store, dispatcher } = await harness();
+    const sender = {
+      kind: "courier" as const,
+      messageKind: "report" as const,
+      about: { threadId: "t-child", name: "Ada", relationship: "delegate" as const },
+    };
+    dispatcher.queueNotice(THREAD, "Ada's turn was interrupted before it finished (thread t-child, turn 1).", sender);
+    const block = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
+    expect(block?.role === "user" ? block.sender : undefined).toEqual(sender);
+
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "carry on" });
+    expect(FakeAdapter.sent[0]).toContain('<kone_notice from="kone" kind="report" about="Ada" relationship="delegate" thread="t-child">');
+    expect(FakeAdapter.sent[0]).toContain("Ada's turn was interrupted");
+    expect(FakeAdapter.sent[0]).toEndWith("carry on");
+  });
+
   test("a user turn reads back with no sender", async () => {
     const { store, dispatcher } = await harness();
     await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello" });

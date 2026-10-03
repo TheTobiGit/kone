@@ -1,3 +1,5 @@
+import { senderLabel } from "@kone/protocol/message-sender";
+
 import type { PlanTask, RuntimeItem, StoredBlock, StoredThread } from "./types.js";
 
 // Last-resort context recovery for a thread whose provider session came up
@@ -68,7 +70,10 @@ function renderBlock(block: StoredBlock, textCap = TEXT_CAP): string | null {
     const files = block.attachments?.length
       ? ` [attached: ${block.attachments.map((a) => a.name).join(", ")}]`
       : "";
-    return text || files ? `user: ${text}${files}` : null;
+    // Somebody other than the user is named as who they are, so a recovered
+    // thread never reads another agent's words, or kone's, as the user's.
+    const who = block.sender ? senderLabel(block.sender) : "user";
+    return text || files ? `${who}: ${text}${files}` : null;
   }
   const narrative = condense(
     block.items

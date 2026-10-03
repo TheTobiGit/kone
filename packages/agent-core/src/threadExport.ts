@@ -16,6 +16,7 @@
 import { closeSync, openSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
 
+import { senderLabel } from "@kone/protocol/message-sender";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
 import {
   THREAD_EXPORT_JSON_VERSION,
@@ -279,7 +280,7 @@ function renderExportItems(items: RuntimeItem[], level: number): string {
 }
 
 function renderUserBlock(block: Extract<StoredBlock, { role: "user" }>): string {
-  const lines = [`## User · ${isoDate(block.at)}`, "", block.text];
+  const lines = [`## ${senderLabel(block.sender)} · ${isoDate(block.at)}`, "", block.text];
   if (block.attachments && block.attachments.length > 0) {
     lines.push(
       "",
@@ -424,6 +425,7 @@ function toExportBlock(block: StoredBlock): ThreadExportBlock {
     }
     copyTurnStamp(block, userBlock);
     if (block.source === "fork-import") userBlock.source = "fork-import";
+    if (block.sender) userBlock.sender = block.sender;
     return userBlock;
   }
   const assistantBlock: Extract<ThreadExportBlock, { role: "assistant" }> = {
