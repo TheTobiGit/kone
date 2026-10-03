@@ -177,14 +177,49 @@ export class TranscriptRepo {
       // user-anchored window boundary; a fan-out run of assistant blocks
       // between prompts rides along). The maxRaw ceiling bounds pathological
       // fan-out — a walk cut by it simply pages an unanchored slice and keeps
-      // going, capped by the raw fanout limit.
+      // going, capped by the raw fanout limit. A steered prompt is never the
+      // boundary: it went into a turn already under way, whose reply is split
+      // around it on read (assembleBlocks), so the walk carries on to that
+      // turn's opening prompt and keeps the pieces on one page.
       const kept: BlockRow[] = [];
       let userSeen = 0;
       for (const row of candidates) {
         kept.push(row);
-        if (row.role === "user") {
+        if (row.role === "user" && !row.steered) {
           userSeen += 1;
           if (userSeen >= limit) break;
+        }
+      }
+      // The raw ceiling can still cut a steered turn off from its opening: a
+      // prompt kept here whose turn's reply sits older than the cut pulls the
+      // walk back to that reply, so assembleBlocks has every piece to split.
+      const keptTurns = new Set(kept.filter((r) => r.role === "assistant").map((r) => r.turn_id));
+      const strandedTurns = new Set<string>();
+      for (const r of kept) {
+        if (r.role === "user" && r.steered && r.turn_id && !keptTurns.has(r.turn_id)) {
+          strandedTurns.add(r.turn_id);
+        }
+      }
+      const cutSeq = kept.at(-1)?.seq;
+      if (strandedTurns.size > 0 && cutSeq !== undefined) {
+        // SAFETY: aggregate MIN returns a single row with one nullable number.
+        const replyRow = db
+          .prepare(
+            `SELECT MIN(seq) AS seq FROM blocks
+              WHERE thread_id = ? AND role = 'assistant' AND seq < ?
+                AND turn_id IN (${[...strandedTurns].map(() => "?").join(",")})`,
+          )
+          .get(threadId, cutSeq, ...strandedTurns) as { seq: number | null } | undefined;
+        if (replyRow?.seq != null) {
+          // SAFETY: `SELECT *` of blocks — exactly BlockRow.
+          const reach = db
+            .prepare(
+              `SELECT * FROM blocks
+                WHERE thread_id = ? AND seq >= ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
+                ORDER BY seq DESC`,
+            )
+            .all(threadId, replyRow.seq, cutSeq) as BlockRow[];
+          kept.push(...reach);
         }
       }
       if (kept.length === 0) {

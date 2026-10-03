@@ -856,6 +856,10 @@ export type StoredBlock =
       at: number;
       endedAt?: number;
       source?: BlockSource;
+      /** On the piece of a turn that follows a message steered into it: the
+       *  id of the turn's first piece. Absent on a turn's first (or only)
+       *  piece. */
+      continues?: string;
     };
 
 /** A thread reloaded from disk: metadata plus its blocks in arrival order. */

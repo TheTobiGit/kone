@@ -561,10 +561,20 @@ function addToScratchpad(block: AssistantBlock) {
 // a pre-turn snapshot for its turn id. The control itself previews and
 // confirms — this is only the mount gate, keyed by turn id (not block id:
 // re-sent retries share nothing, while one turn's blocks share its snapshot).
+// A message steered into a turn splits its reply into pieces; the restore
+// belongs to the turn, so only its last piece offers it.
 function hasCheckpoint(block: AssistantBlock): boolean {
   if (!props.threadId) return false;
+  if (lastPieceOfTurn.value.get(block.turnId) !== block.id) return false;
   return (props.checkpoints ?? []).some((c) => c.turnId === block.turnId);
 }
+const lastPieceOfTurn = computed(() => {
+  const m = new Map<string, string>();
+  for (const b of props.blocks) {
+    if (b.role === "assistant") m.set(b.turnId, b.id);
+  }
+  return m;
+});
 
 // ── retry / edit-and-resend / load-failure ────────────────────────────────────
 // All of these reach the session through the host (ThreadStrip forwards them):

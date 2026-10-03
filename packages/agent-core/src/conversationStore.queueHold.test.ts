@@ -6,6 +6,8 @@ import { Database } from "bun:sqlite";
 
 import { setUserDataDir } from "./userDataDir.js";
 import { migrationEntries } from "./conversationMigrations.js";
+import { steerContinuationId } from "@kone/protocol/steer-split";
+import type { StoredBlock as StoredBlockType } from "./types.js";
 
 // ConversationStore imports node:sqlite, which bun can't load: stand it in
 // with bun:sqlite and import the store only once the stub is in place.
@@ -187,5 +189,195 @@ describe("steered user blocks", () => {
       ["ub-plain", undefined],
       ["ub-steer", true],
     ]);
+  });
+  /** A turn under way: its assistant block, then items as the provider
+   *  streams them, the way the event journal writes them. */
+  function startTurn(store: ConversationStoreType, turnId: string, at: number): void {
+    store.applyEvent({ type: "turn.started", threadId: "t", provider: "codex", turnId, at });
+  }
+  function item(store: ConversationStoreType, turnId: string, itemId: string, text: string): void {
+    store.applyEvent({
+      type: "item.completed",
+      threadId: "t",
+      provider: "codex",
+      turnId,
+      item: { itemId, kind: "assistant_text", status: "completed", text },
+      at: 0,
+    });
+  }
+  function readingOrder(blocks: StoredBlockType[]): string[] {
+    return blocks.map((b) =>
+      b.role === "user" ? `user: ${b.text}` : `assistant: ${b.items.map((i) => i.itemId).join(",")}`,
+    );
+  }
+
+  test("split the reply on reload where the provider took them in", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Let me look");
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1");
+    item(store, "turn-1", "i-2", "| path |");
+    store.applyEvent({ type: "turn.completed", threadId: "t", provider: "codex", turnId: "turn-1", at: 400 });
+
+    const blocks = new ConversationStoreCtor().loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual([
+      "user: what is this?",
+      "assistant: i-1",
+      "user: in a table",
+      "assistant: i-2",
+    ]);
+    const [, first, , rest] = blocks;
+    expect(first?.role === "assistant" && [first.state, first.endedAt]).toEqual(["completed", 200]);
+    expect(rest?.role === "assistant" && [rest.id, rest.continues, rest.endedAt]).toEqual([
+      steerContinuationId("turn-1", "ub-steer"),
+      first?.id,
+      400,
+    ]);
+  });
+
+  test("read above the reply when taken in before it said anything", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1");
+    item(store, "turn-1", "i-1", "| path |");
+
+    const blocks = new ConversationStoreCtor().loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual(["user: what is this?", "user: in a table", "assistant: i-1"]);
+  });
+
+  test("read above a running reply that has said nothing yet", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1", 210);
+
+    // A renderer reload reads through the live store, the turn still running.
+    const blocks = store.loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual(["user: what is this?", "user: in a table", "assistant: "]);
+  });
+
+  test("leave the reply whole when nothing came after them", () => {
+    const store = freshStore();
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Done");
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1");
+
+    const blocks = new ConversationStoreCtor().loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual(["assistant: i-1", "user: in a table"]);
+  });
+
+  test("keep an empty piece below them while the turn is still running", () => {
+    const store = freshStore();
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Let me look");
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1", 210);
+
+    // A renderer reload reads through the live store, the turn still running.
+    const blocks = store.loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual(["assistant: i-1", "user: in a table", "assistant: "]);
+    const rest = blocks[2];
+    expect(rest?.role === "assistant" && [rest.id, rest.state]).toEqual([
+      steerContinuationId("turn-1", "ub-steer"),
+      "running",
+    ]);
+  });
+
+  test("settle the piece above at the moment the provider took them in, not the send", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Let me look");
+    // Queued at 50, delivered with Send now at 300.
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 50 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1", 300);
+    item(store, "turn-1", "i-2", "| path |");
+
+    const blocks = new ConversationStoreCtor().loadThread("t")?.blocks ?? [];
+    const [, first, , rest] = blocks;
+    expect(first?.role === "assistant" && first.endedAt).toBe(300);
+    expect(rest?.at).toBe(300);
+  });
+
+  test("taken in one after another at the same point, both read before what followed", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Let me look");
+    store.recordUserBlock({ blockId: "ub-s1", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-s1", "turn-1", 200);
+    store.recordUserBlock({ blockId: "ub-s2", threadId: "t", text: "and short", at: 210 });
+    store.markUserBlockSteered("t", "ub-s2", "turn-1", 210);
+    item(store, "turn-1", "i-2", "| path |");
+
+    const blocks = new ConversationStoreCtor().loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual([
+      "user: what is this?",
+      "assistant: i-1",
+      "user: in a table",
+      "user: and short",
+      "assistant: i-2",
+    ]);
+  });
+
+  test("keep a split turn on one page", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-0", threadId: "t", text: "earlier", at: 50 });
+    startTurn(store, "turn-0", 60);
+    item(store, "turn-0", "i-0", "Hi");
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Let me look");
+    store.recordUserBlock({ blockId: "ub-steer", threadId: "t", text: "in a table", at: 200 });
+    store.markUserBlockSteered("t", "ub-steer", "turn-1", 200);
+    item(store, "turn-1", "i-2", "| path |");
+
+    const reader = new ConversationStoreCtor();
+    const newest = reader.loadThreadPage("t", { limit: 1 });
+    expect(readingOrder(newest?.blocks ?? [])).toEqual([
+      "user: what is this?",
+      "assistant: i-1",
+      "user: in a table",
+      "assistant: i-2",
+    ]);
+    const older = reader.loadThreadPage("t", { limit: 1, cursor: newest?.nextCursor ?? undefined });
+    expect(readingOrder(older?.blocks ?? [])).toEqual(["user: earlier", "assistant: i-0"]);
+  });
+
+  test("keep a split turn on one page past the raw row ceiling", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-0", threadId: "t", text: "earlier", at: 50 });
+    startTurn(store, "turn-0", 60);
+    item(store, "turn-0", "i-0", "Hi");
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "what is this?", at: 100 });
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Let me look");
+    for (let n = 1; n <= 4; n++) {
+      store.recordUserBlock({ blockId: `ub-s${n}`, threadId: "t", text: `steer ${n}`, at: 200 + n });
+      store.markUserBlockSteered("t", `ub-s${n}`, "turn-1", 200 + n);
+      item(store, "turn-1", `i-s${n}`, `after ${n}`);
+    }
+
+    const reader = new ConversationStoreCtor();
+    const newest = reader.loadThreadPage("t", { limit: 1, maxRaw: 2 });
+    expect(readingOrder(newest?.blocks ?? [])).toEqual([
+      "assistant: i-1",
+      "user: steer 1",
+      "assistant: i-s1",
+      "user: steer 2",
+      "assistant: i-s2",
+      "user: steer 3",
+      "assistant: i-s3",
+      "user: steer 4",
+      "assistant: i-s4",
+    ]);
+    const older = reader.loadThreadPage("t", { limit: 1, cursor: newest?.nextCursor ?? undefined });
+    expect(readingOrder(older?.blocks ?? [])).toEqual(["user: what is this?"]);
   });
 });

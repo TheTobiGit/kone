@@ -111,8 +111,8 @@ export class ConversationStore implements CheckpointStore {
   }
 
   /** @see ThreadRepo */
-  markUserBlockSteered(threadId: string, blockId: string): void {
-    this.threads.markUserBlockSteered(threadId, blockId);
+  markUserBlockSteered(threadId: string, blockId: string, turnId?: string, at?: number): void {
+    this.threads.markUserBlockSteered(threadId, blockId, turnId, at);
   }
 
   /** @see AttachmentRowRepo */

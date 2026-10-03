@@ -18,6 +18,7 @@ import { copyTurnStamp } from "./types.js";
 import { ProviderKindSchema, SkillReferenceListSchema } from "./types.js";
 import { parseMessageSender } from "@kone/protocol/message-sender";
 import { parseContractTerms } from "@kone/protocol/contract";
+import { steerContinuationId } from "@kone/protocol/steer-split";
 import { threadEnvMode } from "./threadWorkspace.js";
 import { priceTurnUsage } from "./usage/storeUsage.js";
 import type { ThreadEnvMode, ThreadWorkspace } from "./threadWorkspace.js";
@@ -214,6 +215,12 @@ export type BlockRow = {
   /** 1 when a user-role block was steered into a running turn; NULL else.
    *  Absent on rows read through a projection that doesn't name it. */
   steered?: number | null;
+  /** On a steered block: the last top-level item its turn had produced when
+   *  the provider took it; NULL = before any. Absent on rows read through a
+   *  projection that doesn't name it. */
+  steer_after_item?: string | null;
+  /** On a steered block: when the provider took it in; NULL = unknown. */
+  steered_at?: number | null;
 };
 
 /** An attachment's registry row — its metadata plus where the bytes live. */
@@ -712,39 +719,114 @@ export function assembleBlocks(
     }
   }
 
-  return blockRows.map((b) => {
-    if (b.role === "user") {
-      const block: StoredBlock = {
-        id: b.block_id,
-        role: "user",
-        text: b.text ?? "",
-        at: b.at,
-      };
-      const attachments = parseAttachments(b.attachments_json);
-      if (attachments?.length) block.attachments = attachments;
-      const skills = parseSkillReferences(b.skills_json);
-      if (skills) block.skills = skills;
-      copyTurnStamp(b, block);
-      if (b.source === "fork-import") block.source = "fork-import";
-      const sender = parseMessageSender(b.sender_json);
-      if (sender) block.sender = sender;
-      if (b.steered) block.steered = true;
-      return block;
+  // A steered prompt went into a turn already under way, so the reply it
+  // shaped is split where it landed: what came before stays above it, and the
+  // rest continues below it as the same turn. `segments` holds, per turn, the
+  // latest piece still open for items, and `cuts` the item each turn was last
+  // split after.
+  const segments = new Map<string, Extract<StoredBlock, { role: "assistant" }>>();
+  const cuts = new Map<string, string>();
+  const out: StoredBlock[] = [];
+  for (const b of blockRows) {
+    const block = toStoredBlock(b, itemsByTurn);
+    out.push(block);
+    if (block.role === "assistant") {
+      segments.set(block.turnId, block);
+      continue;
     }
+    const turnId = b.steered ? b.turn_id : null;
+    const open = turnId ? segments.get(turnId) : undefined;
+    if (!turnId || !open) continue;
+    // Taken in at the boundary an earlier message already split, before the
+    // turn said anything more: it reads ahead of that continuation, where the
+    // live view placed it.
+    if (b.steer_after_item && open.continues && cuts.get(turnId) === b.steer_after_item) {
+      out.pop();
+      out.splice(out.indexOf(open), 0, block);
+      continue;
+    }
+    const cut = b.steer_after_item
+      ? open.items.findIndex((i) => i.itemId === b.steer_after_item) + 1
+      : 0;
+    // The marker isn't in this piece (a reply read in part): nothing to split.
+    if (b.steer_after_item && cut === 0) continue;
+    // Taken in before the turn had said anything: the whole reply answers it,
+    // so the prompt simply reads above the reply — already said or still to
+    // come.
+    if (cut === 0 && open === out.at(-2)) {
+      out.splice(out.length - 2, 2, block, open);
+      continue;
+    }
+    // Taken in after the turn's last item: nothing came after it to move —
+    // unless the turn is still running, whose next words belong below the
+    // message, so it keeps the empty piece the live view opened for them (the
+    // live view folds it away if the turn settles without saying more).
+    if (cut <= 0 || (cut >= open.items.length && open.state !== "running")) continue;
+    // It splits at the moment the provider took it, not when it was sent.
+    const rest = splitSteeredTurn(open, block.id, b.steered_at ?? b.at, cut);
+    out.push(rest);
+    segments.set(turnId, rest);
+    if (b.steer_after_item) cuts.set(turnId, b.steer_after_item);
+  }
+  return out;
+}
+
+/** Cut a turn's reply at `cut`: the piece already shown settles at the moment
+ *  the steer landed, and the returned continuation carries the rest of the
+ *  items and the turn's own outcome. Its id is derived the same way the live
+ *  reducer derives it, so a reload and the live view agree. */
+function splitSteeredTurn(
+  open: Extract<StoredBlock, { role: "assistant" }>,
+  userBlockId: string,
+  at: number,
+  cut: number,
+): Extract<StoredBlock, { role: "assistant" }> {
+  const rest: Extract<StoredBlock, { role: "assistant" }> = {
+    ...open,
+    id: steerContinuationId(open.turnId, userBlockId),
+    items: open.items.slice(cut),
+    at,
+    continues: open.continues ?? open.id,
+  };
+  open.items = open.items.slice(0, cut);
+  open.state = "completed";
+  open.endedAt = at;
+  delete open.error;
+  return rest;
+}
+
+function toStoredBlock(b: BlockRow, itemsByTurn: Map<string, RuntimeItem[]>): StoredBlock {
+  if (b.role === "user") {
     const block: StoredBlock = {
       id: b.block_id,
-      role: "assistant",
-      turnId: b.turn_id ?? b.block_id,
-      items: itemsByTurn.get(b.turn_id ?? "") ?? [],
-      // SAFETY: state column is written only from StoredAssistantState.
-      state: (b.state as StoredAssistantState | null) ?? "completed",
-      error: b.error ?? undefined,
+      role: "user",
+      text: b.text ?? "",
       at: b.at,
-      endedAt: b.ended_at ?? undefined,
     };
+    const attachments = parseAttachments(b.attachments_json);
+    if (attachments?.length) block.attachments = attachments;
+    const skills = parseSkillReferences(b.skills_json);
+    if (skills) block.skills = skills;
+    copyTurnStamp(b, block);
     if (b.source === "fork-import") block.source = "fork-import";
+    const sender = parseMessageSender(b.sender_json);
+    if (sender) block.sender = sender;
+    if (b.steered) block.steered = true;
     return block;
-  });
+  }
+  const block: StoredBlock = {
+    id: b.block_id,
+    role: "assistant",
+    turnId: b.turn_id ?? b.block_id,
+    items: itemsByTurn.get(b.turn_id ?? "") ?? [],
+    // SAFETY: state column is written only from StoredAssistantState.
+    state: (b.state as StoredAssistantState | null) ?? "completed",
+    error: b.error ?? undefined,
+    at: b.at,
+    endedAt: b.ended_at ?? undefined,
+  };
+  if (b.source === "fork-import") block.source = "fork-import";
+  return block;
 }
 
 // ── full-text conversation search ───────────────────────────────────────────

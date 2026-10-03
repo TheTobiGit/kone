@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 21;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1010,6 +1010,29 @@ function migration0018BlockSteered(db: DatabaseSync): void {
 }
 
 /**
+ * Where in its turn a steered message landed: the last top-level item the
+ * turn had produced when the provider took it (NULL = before any). The reply
+ * is split there on read, so what the agent wrote after taking the message in
+ * reads below it, the way the live view showed it. The steered block's
+ * turn_id names the turn it went into.
+ */
+function migration0020BlockSteerPoint(db: DatabaseSync): void {
+  if (!hasTable(db, "blocks")) return;
+  addColumn(db, "blocks", "steer_after_item", "TEXT");
+}
+
+/**
+ * When the provider took a steered message in — not when it was sent: a row
+ * queued earlier and delivered with Send now lands later than its `at`. The
+ * reply splits at this instant on read, as the live view split it (NULL =
+ * unknown, fall back to `at`).
+ */
+function migration0021BlockSteeredAt(db: DatabaseSync): void {
+  if (!hasTable(db, "blocks")) return;
+  addColumn(db, "blocks", "steered_at", "INTEGER");
+}
+
+/**
  * One pending row per prompt, held rows included. The (thread_id,
  * user_block_id) index used to cover only waiting and claimed rows, so a
  * replayed send of a held ('failed') prompt queued a second copy, and sending
@@ -1058,6 +1081,8 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 17, name: "BlockSkills", run: migration0017BlockSkills },
   { id: 18, name: "BlockSteered", run: migration0018BlockSteered },
   { id: 19, name: "PendingUserBlockIndex", run: migration0019PendingUserBlockIndex },
+  { id: 20, name: "BlockSteerPoint", run: migration0020BlockSteerPoint },
+  { id: 21, name: "BlockSteeredAt", run: migration0021BlockSteeredAt },
 ];
 
 export interface MigrationOptions {

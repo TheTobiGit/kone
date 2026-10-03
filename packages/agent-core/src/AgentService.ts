@@ -1532,8 +1532,11 @@ export class AgentService {
         break;
       case "turn.steered":
         // The provider took the message into its running turn: the journaled
-        // prompt is marked so a reload shows it the way the live view did.
-        if (event.userBlockId) this.queueStore.markUserBlockSteered(threadId, event.userBlockId);
+        // prompt is marked, with the turn it went into, so a reload shows it
+        // where the live view did.
+        if (event.userBlockId) {
+          this.queueStore.markUserBlockSteered(threadId, event.userBlockId, event.turnId, event.at);
+        }
         break;
       case "turn.completed":
       case "turn.aborted":

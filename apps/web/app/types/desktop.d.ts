@@ -2088,6 +2088,9 @@ export type StoredBlock =
       at: number;
       endedAt?: number;
       source?: BlockSource;
+      /** On the piece of a turn that follows a message steered into it: the
+       *  id of the turn's first piece. */
+      continues?: string;
     };
 
 export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
