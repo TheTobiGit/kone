@@ -155,6 +155,10 @@ export type AssistantBlock = {
   at: number;
   /** When the turn settled (completed/failed/interrupted) — drives "replied in Xs". */
   endedAt?: number;
+  /** A message steered into the turn splits its reply where it landed: this
+   *  piece follows that message, and names the turn's first piece. Absent on
+   *  a turn's first (or only) piece. Every piece shares the turn's `turnId`. */
+  continues?: string;
 } & Historical;
 
 export type ThreadBlock = UserBlock | AssistantBlock;
@@ -294,6 +298,8 @@ export type QueuedTurnEntry = QueuedTurnRow & {
   /** The provider took it into the running turn (Send now); the promoted
    *  block is marked steered. */
   steered?: boolean;
+  /** When the provider took it in (turn.steered) — where the reply splits. */
+  steeredAt?: number;
 };
 
 /** Queued messages a Stop handed back to the composer, merged into one draft.

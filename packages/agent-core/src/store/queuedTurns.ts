@@ -22,6 +22,39 @@ const QUEUED_TURN_ORDER = `CASE WHEN sort_key IS NULL THEN 1 ELSE 0 END ASC,
 export class QueuedTurnRepo {
   constructor(private readonly dbh: ConversationDb) {}
 
+  /** Move a claimed row's user block to the end of its thread's block order, so
+   *  the prompt sits immediately before the assistant turn about to be
+   *  journaled for it.
+   *
+   *  This belongs at CLAIM time, not at settle. The service dispatches to the
+   *  provider first — and the adapter emits turn.started from inside sendTurn,
+   *  which journals the assistant block — settling the row only afterwards. A
+   *  re-sequencing done at settle therefore reads MAX(seq) with the assistant
+   *  block already in place and lands the prompt AFTER its own reply, which is
+   *  the order the transcript reads in until the thread is reloaded. A claimed
+   *  row is committed to run next (one live turn per thread, deliveries
+   *  serialized), so claiming is the last moment the block is still free to
+   *  move. `at` is left alone — it stays the original send instant, which is
+   *  the user-visible time.
+   *
+   *  A delivery that fails after this releases the row back to 'queued', where
+   *  the block is hidden from the timeline anyway and the next claim moves it
+   *  again; no undo is needed. */
+  private moveBlockToTail(threadId: string, blockId: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    // SAFETY: aggregate MAX returns a single number
+    const maxSeqRow = db
+      .prepare(`SELECT COALESCE(MAX(seq), 0) AS max_seq FROM blocks WHERE thread_id = ?`)
+      .get(threadId) as { max_seq: number } | undefined;
+    const nextSeq = (maxSeqRow?.max_seq ?? 0) + 1;
+    db.prepare(`UPDATE blocks SET seq = ? WHERE thread_id = ? AND block_id = ?`).run(
+      nextSeq,
+      threadId,
+      blockId,
+    );
+  }
+
   // A follow-up sent while a turn runs is durably enqueued here, claimed by
   // the service layer when the live turn settles, and cancelled when the
   // thread is deleted. Lifecycle: 'queued' → 'promoting' → 'promoted'
@@ -119,7 +152,12 @@ export class QueuedTurnRepo {
            RETURNING *`,
         )
         .get(now, threadId) as QueuedTurnDbRow | undefined;
-      return row ? rowToQueuedTurn(row) : null;
+      if (!row) return null;
+      const queued = rowToQueuedTurn(row);
+      // Ahead of the dispatch that journals this row's assistant turn, never
+      // behind it — see moveBlockToTail.
+      if (queued.userBlockId) this.moveBlockToTail(threadId, queued.userBlockId);
+      return queued;
     } catch (err) {
       console.error("[conversation-store] claimNextQueuedTurn failed:", err);
       return null;
@@ -152,7 +190,12 @@ export class QueuedTurnRepo {
              RETURNING *`,
           )
           .get(Date.now(), queueId, prior.state) as QueuedTurnDbRow | undefined;
-        if (row) claimed = { row: rowToQueuedTurn(row), from: prior.state };
+        if (row) {
+          const queued = rowToQueuedTurn(row);
+          // Same placement as the drain's claim — see moveBlockToTail.
+          if (queued.userBlockId) this.moveBlockToTail(row.thread_id, queued.userBlockId);
+          claimed = { row: queued, from: prior.state };
+        }
       });
       return claimed;
     } catch (err) {
@@ -227,19 +270,9 @@ export class QueuedTurnRepo {
           )
           .run(now, now, queueId);
         promoted = Number(result.changes) > 0;
-        if (promoted) {
-          // Re-sequence the user block to the current head of the thread's blocks
-          // so its arrival order in the transcript matches its promotion order.
-          // `at` stays the original send instant — it is the user-visible time.
-          // SAFETY: aggregate MAX returns a single number
-          const maxSeqRow = db
-            .prepare(`SELECT COALESCE(MAX(seq), 0) AS max_seq FROM blocks WHERE thread_id = ?`)
-            .get(row.thread_id) as { max_seq: number } | undefined;
-          const nextSeq = (maxSeqRow?.max_seq ?? 0) + 1;
-          db.prepare(
-            `UPDATE blocks SET seq = ? WHERE thread_id = ? AND block_id = ?`,
-          ).run(nextSeq, row.thread_id, row.user_block_id);
-        }
+        // No block re-sequencing here: the prompt was placed ahead of its turn
+        // when the row was claimed, which is the only moment it still could be
+        // (see moveBlockToTail). By now the assistant block is journaled.
       });
       return promoted;
     } catch (err) {

@@ -15,6 +15,7 @@ import type {
 import { originSubagentOfApproval } from "../agentPrefetch";
 import { canonicalizeItem } from "~/utils/toolName";
 import { isEffortTier } from "~/utils/modelCatalog";
+import { steerContinuationId } from "@kone/protocol/steer-split";
 import type {
   AssistantBlock,
   PendingApproval,
@@ -122,6 +123,96 @@ export function useSessionReducer(deps: SessionReducerDeps) {
       if (b && b.role === "assistant" && b.turnId === turnId) return b;
     }
     return undefined;
+  }
+
+  /** The piece of a turn that holds `itemId` — a message steered into the
+   *  turn splits its reply, and an item already under way when it landed
+   *  keeps streaming into the piece above it. A new item goes to the latest
+   *  piece. */
+  function pieceHolding(turnId: string, itemId: string): AssistantBlock | undefined {
+    for (const b of blocks.value) {
+      if (b.role === "assistant" && b.turnId === turnId && b.items.some((i) => i.itemId === itemId)) {
+        return b;
+      }
+    }
+    return currentAssistant(turnId);
+  }
+
+  /** The piece of a turn whose items carry the nested run `toolUseId` (or
+   *  its parent tool call), else the latest piece. */
+  function pieceWithRun(turnId: string, toolUseId: string, parentItemId?: string): AssistantBlock | undefined {
+    for (const b of blocks.value) {
+      if (b.role !== "assistant" || b.turnId !== turnId) continue;
+      if (findRun(b, toolUseId)) return b;
+      if (parentItemId && b.items.some((i) => i.itemId === parentItemId)) return b;
+    }
+    return currentAssistant(turnId);
+  }
+
+  /** A message the provider took into its running turn: the reply so far
+   *  settles above it, and what the agent writes from here on continues below
+   *  it as the same turn — so the words the message shaped read after it, not
+   *  before. Taken in before the turn said anything, the message simply moves
+   *  above the reply. The store splits a reloaded thread at the same point
+   *  (assembleBlocks), under the same continuation id. */
+  function splitAtSteer(userBlockId: string, turnId: string, at: number): void {
+    const user = blocks.value.find((b) => b.role === "user" && b.id === userBlockId);
+    const open = currentAssistant(turnId);
+    if (!user || !open || open.state !== "running") return;
+    const continuationId = steerContinuationId(turnId, userBlockId);
+    if (blocks.value.some((b) => b.id === continuationId)) return;
+    const without = blocks.value.filter((b) => b !== user);
+    const idx = without.indexOf(open);
+    if (open.items.length === 0) {
+      blocks.value = [...without.slice(0, idx), user, ...without.slice(idx)];
+      return;
+    }
+    const rest: AssistantBlock = {
+      id: continuationId,
+      role: "assistant",
+      turnId,
+      items: [],
+      state: "running",
+      at,
+      continues: open.continues ?? open.id,
+    };
+    open.state = "completed";
+    open.endedAt = at;
+    blocks.value = [...without.slice(0, idx + 1), user, rest, ...without.slice(idx + 1)];
+  }
+
+  /** A turn settling with nothing said after the last message steered into
+   *  it: the empty piece goes, and the one above it takes the turn's outcome
+   *  back — the reply never continued, so it reads as it ended. The store
+   *  never splits such a turn, so a reload agrees. Returns the piece that now
+   *  carries the outcome. */
+  function foldEmptyContinuation(turnId: string): AssistantBlock | undefined {
+    const last = currentAssistant(turnId);
+    if (!last?.continues || last.items.length > 0) return last;
+    blocks.value = blocks.value.filter((b) => b !== last);
+    return currentAssistant(turnId);
+  }
+
+  /** The prompt a queued row carries, as a timeline block. The row IS the
+   *  prompt — the block is rebuilt from its input + attachments every time,
+   *  including re-seeded rows that never had a block here. What the turn
+   *  runs with is on the row itself — the same fields the backend journals
+   *  for it — so a promoted turn is stamped identically whether the row was
+   *  enqueued a second ago or drained from storage after a quit. An unknown
+   *  tier degrades to unstamped rather than being read as one. */
+  function userBlockOf(row: QueuedTurnEntry): UserBlock {
+    const block: UserBlock = {
+      id: row.userBlockId,
+      role: "user",
+      text: row.input,
+      at: row.createdAt,
+    };
+    if (row.attachments?.length) block.attachments = row.attachments;
+    if (row.steered) block.steered = true;
+    if (row.skills?.length) block.skills = row.skills;
+    if (isEffortTier(row.effort)) block.effort = row.effort;
+    if (row.model) block.model = row.model;
+    return block;
   }
 
   function upsertItem(block: AssistantBlock, item: RuntimeItem): void {
@@ -338,7 +429,9 @@ export function useSessionReducer(deps: SessionReducerDeps) {
       case "item.started":
       case "item.updated":
       case "item.completed": {
-        const block = currentAssistant(event.turnId);
+        const block = event.subagentToolUseId
+          ? pieceWithRun(event.turnId, event.subagentToolUseId)
+          : pieceHolding(event.turnId, event.item.itemId);
         if (!block) break;
         // An item produced inside a nested run belongs to that run's transcript,
         // not the parent turn's body.
@@ -363,12 +456,12 @@ export function useSessionReducer(deps: SessionReducerDeps) {
       case "subagent.started":
       case "subagent.updated":
       case "subagent.completed": {
-        const block = currentAssistant(event.turnId);
+        const block = pieceWithRun(event.turnId, event.subagent.toolUseId, event.subagent.parentItemId);
         if (block) upsertRun(block, event.subagent);
         break;
       }
       case "turn.completed": {
-        const block = currentAssistant(event.turnId);
+        const block = foldEmptyContinuation(event.turnId);
         if (block) {
           block.state = "completed";
           block.endedAt = event.at;
@@ -377,7 +470,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         break;
       }
       case "turn.aborted": {
-        const block = currentAssistant(event.turnId);
+        const block = foldEmptyContinuation(event.turnId);
         if (block) {
           block.state = event.reason === "interrupted" ? "interrupted" : "failed";
           block.error = event.message;
@@ -521,34 +614,36 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         // never had a block here.
         const promo = queuedTurnsRaw.value.find((q) => q.queueId === event.queueId);
 
-        let userBlock: UserBlock | undefined;
-        if (promo) {
-          userBlock = {
-            id: promo.userBlockId,
-            role: "user",
-            text: promo.input,
-            at: promo.createdAt,
-          };
-          if (promo.attachments?.length) userBlock.attachments = promo.attachments;
-          if (promo.steered) userBlock.steered = true;
-          if (promo.skills?.length) userBlock.skills = promo.skills;
-          // What the turn runs with is on the row itself — the same fields the
-          // backend journals for it — so a promoted turn is stamped identically
-          // whether the row was enqueued a second ago or drained from storage
-          // after a quit. An unknown tier degrades to unstamped rather than
-          // being read as one.
-          if (isEffortTier(promo.effort)) userBlock.effort = promo.effort;
-          if (promo.model) userBlock.model = promo.model;
-        }
+        const userBlock = promo ? userBlockOf(promo) : undefined;
 
         if (userBlock) {
-          // Re-place this user block at the current tail of blocks.value
-          // so its order precedes its assistant reply (turn.started),
-          // strictly following all settled turns.
-          blocks.value = [
-            ...blocks.value.filter((b) => b.id !== userBlock!.id),
-            userBlock,
-          ];
+          // Land this prompt immediately BEFORE the assistant turn it belongs
+          // to. turn.started arrives ahead of turn.promoted — the adapter
+          // announces it from inside sendTurn, and the row only settles once
+          // the provider has taken it — so by now this turn's reply already
+          // holds the tail, and appending there reads as an answer to a
+          // question that hasn't been asked yet. The tail stays the fallback
+          // for a promotion whose assistant block hasn't folded yet, and the
+          // only place for a steer: its turnId names the LIVE turn, whose
+          // reply was already under way before these words were sent.
+          // A steer whose block is already on screen was placed (and the
+          // reply split) when turn.steered landed — it keeps that place.
+          const placed = userBlock.steered
+            ? blocks.value.findIndex((b) => b.role === "user" && b.id === userBlock.id)
+            : -1;
+          if (placed !== -1) {
+            blocks.value = blocks.value.map((b, i) => (i === placed ? userBlock : b));
+          } else {
+            const without = blocks.value.filter((b) => b.id !== userBlock.id);
+            const replyIndex = event.turnId && !userBlock.steered
+              ? without.findIndex((b) => b.role === "assistant" && b.turnId === event.turnId)
+              : -1;
+            const at = replyIndex === -1 ? without.length : replyIndex;
+            blocks.value = [...without.slice(0, at), userBlock, ...without.slice(at)];
+            if (userBlock.steered && event.turnId) {
+              splitAtSteer(userBlock.id, event.turnId, promo?.steeredAt ?? event.at);
+            }
+          }
         }
 
         queuedTurnsRaw.value = queuedTurnsRaw.value.filter(
@@ -571,11 +666,19 @@ export function useSessionReducer(deps: SessionReducerDeps) {
           blocks.value = blocks.value.map((b) =>
             b.role === "user" && b.id === steeredId ? { ...b, steered: true } : b,
           );
+          splitAtSteer(steeredId, event.turnId, event.at);
         }
-        if (queuedTurnsRaw.value.some((q) => q.userBlockId === steeredId)) {
-          queuedTurnsRaw.value = queuedTurnsRaw.value.map((q) =>
-            q.userBlockId === steeredId ? { ...q, steered: true } : q,
-          );
+        const row = queuedTurnsRaw.value.find((q) => q.userBlockId === steeredId);
+        if (row) {
+          const marked = { ...row, steered: true, steeredAt: event.at };
+          queuedTurnsRaw.value = queuedTurnsRaw.value.map((q) => (q === row ? marked : q));
+          // A row with no block on screen (one restored after a reopen) gets
+          // its block now, so the reply splits where the provider took it in
+          // rather than wherever it has got to by turn.promoted.
+          if (!blocks.value.some((b) => b.role === "user" && b.id === steeredId)) {
+            blocks.value = [...blocks.value, userBlockOf(marked)];
+            splitAtSteer(steeredId, event.turnId, event.at);
+          }
         }
         break;
       }

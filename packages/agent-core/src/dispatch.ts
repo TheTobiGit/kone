@@ -482,6 +482,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (thread) {
       for (const block of thread.blocks) {
         if (block.role !== "assistant") continue;
+        // A message steered into a turn splits its reply into pieces; the
+        // turn is one turn, and its last piece carries how it ended.
+        const earlier = block.continues ? turns.find((t) => t.turnId === block.turnId) : undefined;
+        if (earlier) {
+          earlier.state = block.state;
+          earlier.endedAt = block.endedAt ?? null;
+          continue;
+        }
         turns.push({
           turnId: block.turnId,
           state: block.state,

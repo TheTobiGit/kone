@@ -120,14 +120,29 @@ export class ThreadRepo {
 
   /** Mark a journaled user block as steered into a running turn — written
    *  once the provider took it, so reloads mark what the live view marked.
-   *  Only ever a user block: the flag means nothing on a turn. */
-  markUserBlockSteered(threadId: string, blockId: string): void {
+   *  Only ever a user block: the flag means nothing on a turn. With the turn
+   *  it went into, the block also keeps where in that turn it landed — the
+   *  turn's latest top-level item at this moment (NULL = before any) — so a
+   *  reload splits the reply at the same point the live view did, at `at`,
+   *  the moment the provider took it in. */
+  markUserBlockSteered(threadId: string, blockId: string, turnId?: string, at?: number): void {
     const db = this.dbh.handle();
     if (!db) return;
     try {
+      if (!turnId) {
+        db.prepare(
+          `UPDATE blocks SET steered = 1 WHERE thread_id = ? AND block_id = ? AND role = 'user'`,
+        ).run(threadId, blockId);
+        return;
+      }
       db.prepare(
-        `UPDATE blocks SET steered = 1 WHERE thread_id = ? AND block_id = ? AND role = 'user'`,
-      ).run(threadId, blockId);
+        `UPDATE blocks SET steered = 1, turn_id = ?, steered_at = ?,
+                steer_after_item = (
+                  SELECT item_id FROM items
+                   WHERE thread_id = ? AND turn_id = ? AND subagent_tool_use_id IS NULL
+                   ORDER BY seq DESC LIMIT 1)
+          WHERE thread_id = ? AND block_id = ? AND role = 'user'`,
+      ).run(turnId, at ?? null, threadId, turnId, threadId, blockId);
     } catch (err) {
       console.error("[conversation-store] markUserBlockSteered failed:", err);
     }
