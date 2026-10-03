@@ -99,10 +99,10 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Collected agent replies",
     "Stopped waiting on agents",
   ]),
-  agent_read: kone(Note01Icon, "Agent transcript", "read", [
-    "Reading an agent's transcript",
-    "Read an agent's transcript",
-    "Couldn't read an agent's transcript",
+  agent_read: kone(Note01Icon, "Agent's work", "read", [
+    "Reading an agent's work",
+    "Read an agent's work",
+    "Couldn't read an agent's work",
   ]),
   agent_withdraw: kone(Cancel01Icon, "Withdraw", "del", [
     "Withdrawing work",

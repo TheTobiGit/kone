@@ -1107,6 +1107,7 @@ describe("spawn gateway tools", () => {
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
     const res = await registry.call(ctx, "agent_read", {
       threadId: "child-1",
+      scope: "transcript",
       limit: 2,
       maxTextChars: 200,
     });
@@ -1126,7 +1127,7 @@ describe("spawn gateway tools", () => {
     expect(JSON.stringify(res.structuredContent)).not.toContain("SECRET_PAYLOAD_DO_NOT_LEAK");
   });
 
-  test("agent_read defaults to the last 20 blocks", async () => {
+  test("agent_read's transcript defaults to the last 20 blocks", async () => {
     currentEngine = makeEngine({ isInSubtree: () => true });
     const blocks = Array.from({ length: 25 }, (_, i) => ({
       id: `b${i}`,
@@ -1144,7 +1145,7 @@ describe("spawn gateway tools", () => {
       blocks,
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "agent_read", { threadId: "child-1" });
+    const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope: "transcript" });
     const sc = res.structuredContent;
     const messages =
       sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
@@ -1196,7 +1197,7 @@ describe("spawn gateway tools", () => {
       ],
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "agent_read", { threadId: "child-1" });
+    const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope: "transcript" });
     const text = res.content[0]?.text ?? "";
     expect(text).toContain('Read 3 messages from "Ask Maya about teammates", oldest first:');
     expect(text).toContain("[user] what teammates do you have?");
@@ -1219,8 +1220,60 @@ describe("spawn gateway tools", () => {
       blocks: [],
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
-    const res = await registry.call(ctx, "agent_read", { threadId: "child-1" });
+    const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope: "transcript" });
     expect(res.content[0]?.text).toBe('"Child one" has no messages yet.');
+  });
+
+  /** A child whose one turn read files, said something, ran tests, and
+   *  reported. */
+  function reportingChild(): StoredThread {
+    return {
+      threadId: "child-1",
+      projectPath: "/proj",
+      provider: "codex",
+      createdAt: 1,
+      updatedAt: 2,
+      title: "Login UI",
+      blocks: [
+        { id: "u1", role: "user", text: "Build the login screen.", at: 1 },
+        {
+          id: "a1",
+          role: "assistant",
+          turnId: "t1",
+          state: "completed",
+          at: 2,
+          items: [
+            { itemId: "i1", kind: "assistant_text", status: "completed", text: "Looking at the auth module." },
+            { itemId: "i2", kind: "tool_call", status: "completed", text: "src/auth.ts", name: "Read", detail: "SECRET_PAYLOAD" },
+            { itemId: "i3", kind: "tool_call", status: "failed", text: "bun test", name: "Bash" },
+            { itemId: "i4", kind: "assistant_text", status: "completed", text: "Done: the login screen is in." },
+          ],
+        },
+      ],
+    };
+  }
+
+  test("agent_read reads the final reply by default", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const registry = createRegistry(createSpawnTools({ store: makeStore([reportingChild()]) }));
+    const res = await registry.call(ctx, "agent_read", { threadId: "child-1" });
+    const text = res.content[0]?.text ?? "";
+    expect(text).toContain('Final reply in "Login UI" (turn t1, completed):');
+    expect(text).toContain("Done: the login screen is in.");
+    expect(text).not.toContain("Looking at the auth module.");
+    expect(res.structuredContent).toMatchObject({ scope: "final", turn: { turnId: "t1", state: "completed" } });
+  });
+
+  test("agent_read's response scope carries the request, the whole reply and what it did", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const registry = createRegistry(createSpawnTools({ store: makeStore([reportingChild()]) }));
+    const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope: "response" });
+    const text = res.content[0]?.text ?? "";
+    expect(text).toContain("Latest request, from the user:\nBuild the login screen.");
+    expect(text).toContain("Looking at the auth module.");
+    expect(text).toContain("Done: the login screen is in.");
+    expect(text).toContain("What it did: Read(src/auth.ts), Bash(bun test) failed");
+    expect(text).not.toContain("SECRET_PAYLOAD");
   });
 });
 

@@ -352,9 +352,15 @@ export const WaitForResponsesInputSchema = z.object({
 
 export const ReadResponseInputSchema = z.object({
   threadId: z.string().min(1),
-  /** Blocks to return, newest last. Default 20. */
+  /** How much to read (agentRead.ts): the latest turn's final reply, the
+   *  latest request and the whole response to it, or the transcript. Default
+   *  final. */
+  scope: z.enum(["final", "response", "transcript"]).optional(),
+  /** Transcript only: blocks to return, newest last. Default 20. */
   limit: z.number().int().min(1).max(100).optional(),
-  /** Per-message text cap; truncated with a visible marker. Default 1500. */
+  /** Text cap — per message for the transcript (default 1500), on the whole
+   *  read for final and response (default 48000); truncated with a visible
+   *  marker. */
   maxTextChars: z.number().int().min(200).optional(),
 });
 
@@ -541,8 +547,17 @@ export const READ_RESPONSE_JSON_SCHEMA = {
   type: "object",
   properties: {
     threadId: { type: "string" },
-    limit: { type: "integer" },
-    maxTextChars: { type: "integer" },
+    scope: {
+      type: "string",
+      enum: ["final", "response", "transcript"],
+      description:
+        "final (default): the reply its latest turn ended on — where it puts its report. response: the latest request and everything it wrote answering it, with what it did. transcript: the conversation, newest last.",
+    },
+    limit: { type: "integer", description: "transcript only: messages to return, newest last. Default 20." },
+    maxTextChars: {
+      type: "integer",
+      description: "Text cap: per message for transcript (default 1500), on the whole read for final and response (default 48000).",
+    },
   },
   required: ["threadId"],
 } satisfies GatewayRecord;

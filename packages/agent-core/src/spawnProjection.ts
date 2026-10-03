@@ -209,7 +209,7 @@ export function threadGateFor(
 /** Appended to a summary that exceeded SPAWN_SUMMARY_CHAR_CAP, on its own
  *  line, so the reader knows the rest exists and where to find it. */
 export const SPAWN_SUMMARY_TRUNCATION_MARKER =
-  "\n— the rest of the reply is in the child's transcript; read it with agent_read —";
+  "\n— the rest of the reply is in the child's thread; read it whole with agent_read —";
 
 /** Project the raw facts about a spawned child into the single snapshot both
  *  the wait tool and the UI consume. Pure: no store, no I/O, never throws —
