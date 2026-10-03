@@ -405,7 +405,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         content: [
           {
             type: "text",
-            text: `Follow-up sent to ${result.threadId} as turn ${result.turnId}${resumed}. Collect the response with agent_wait, passing threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"] to pin it to this turn.`,
+            text: `Follow-up sent to ${result.threadId} as turn ${result.turnId}${resumed}. Its response comes to you when it settles; to wait for it before going on, agent_wait with threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"] to pin it to this turn.`,
           },
         ],
         structuredContent: { continuation: result },
@@ -580,7 +580,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "worker_start" satisfies SpawnToolName,
       description:
-        "Start a worker: a kone thread that does one short, bounded task and reports back. It has no name or role of its own, cannot start agents or workers itself, and shows under your conversation rather than as a thread of its own. It starts with no memory of this conversation, so write task as a complete brief: the goal, the paths, the constraints, and what done looks like. Name a saved preset (agent_directory lists them) to lay its standing instructions and model chain under the task. Name the kind of work (agent_directory lists the user's model preferences) to run it on the model and effort the user chose for that kind; otherwise it runs on your own provider and model. Use target only when the user asked for a specific model. why is one short clause, in your own voice, that the user reads where you started it. mode is what it may do unattended and is clamped to yours (a wider request is refused, not downgraded). Pass a stable requestId so a retry returns the same worker. Returns once it starts, with its threadId and first turn id: collect the result with agent_wait (pass that id as turnIds) and ask it again with agent_followup, never a second start.",
+        "Start a worker: a kone thread that does one short, bounded task and reports back. It has no name or role of its own, cannot start agents or workers itself, and shows under your conversation rather than as a thread of its own. It starts with no memory of this conversation, so write task as a complete brief: the goal, the paths, the constraints, and what done looks like. Name a saved preset (agent_directory lists them) to lay its standing instructions and model chain under the task. Name the kind of work (agent_directory lists the user's model preferences) to run it on the model and effort the user chose for that kind; otherwise it runs on your own provider and model. Use target only when the user asked for a specific model. why is one short clause, in your own voice, that the user reads where you started it. mode is what it may do unattended and is clamped to yours (a wider request is refused, not downgraded). Pass a stable requestId so a retry returns the same worker. Returns once it starts, with its threadId and first turn id. Its result comes to you when it settles, so keep working meanwhile; agent_wait (pass that id as turnIds) only when you need it before going on, and ask it again with agent_followup, never a second start.",
       inputSchema: WorkerStartInputSchema,
       jsonSchema: WORKER_START_JSON_SCHEMA,
       permission: "allow",
@@ -596,7 +596,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_delegate" satisfies SpawnToolName,
       description:
-        "Delegate a large piece of work to a teammate: a named kone agent on this project's team (agent_directory lists them with their roles). It runs as that agent — under its name, instructions and model chain (when it names none, the user's model for kind, else yours) — in a thread of its own the user can open, and it can plan the work and start workers of its own. It starts with no memory of this conversation, so write task as the whole ask. It reads your brief as yours, not the user's, and may come back with a question or disagree: answer from what you know of the user's intent, or ask the user. Pass model only when the user asked for a specific one. why, mode and requestId work as in worker_start. Collect the result with agent_wait; follow up with agent_followup.",
+        "Delegate a large piece of work to a teammate: a named kone agent on this project's team (agent_directory lists them with their roles). It runs as that agent — under its name, instructions and model chain (when it names none, the user's model for kind, else yours) — in a thread of its own the user can open, and it can plan the work and start workers of its own. It starts with no memory of this conversation, so write task as the whole ask. It reads your brief as yours, not the user's, and may come back with a question or disagree: answer from what you know of the user's intent, or ask the user. Pass model only when the user asked for a specific one. why, mode and requestId work as in worker_start. Its result comes to you when it settles; agent_wait only when you need it before going on; follow up with agent_followup.",
       inputSchema: DelegateToTeammateInputSchema,
       jsonSchema: DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
       permission: "allow",
@@ -609,7 +609,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_contract" satisfies SpawnToolName,
       description:
-        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a person's first name (never a job title; the role says what it does), a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. It is not saved to the team: when the job is done the contract ends, and only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, kind, target and requestId work as in worker_start. Collect the deliverable with agent_wait; follow up with agent_followup.",
+        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a person's first name (never a job title; the role says what it does), a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. It is not saved to the team: when the job is done the contract ends, and only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, kind, target and requestId work as in worker_start. The deliverable comes to you when it settles; agent_wait only when you need it before going on; follow up with agent_followup.",
       inputSchema: ContractAgentInputSchema,
       jsonSchema: CONTRACT_AGENT_JSON_SCHEMA,
       permission: "allow",
@@ -622,7 +622,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "worker_start_batch" satisfies SpawnToolName,
       description:
-        "Start several independent workers in one call. Each item is a worker_start: a complete task, its own why, and optionally a preset, a kind or a target. Teammates are not workers — delegate to them with agent_delegate. Returns each worker's threadId for agent_wait; follow up on any of them with agent_followup.",
+        "Start several independent workers in one call. Each item is a worker_start: a complete task, its own why, and optionally a preset, a kind or a target. Teammates are not workers — delegate to them with agent_delegate. Returns each worker's threadId; their results come to you as each settles (agent_wait when you need them before going on), and agent_followup asks any of them again.",
       inputSchema: WorkerStartBatchInputSchema,
       jsonSchema: WORKER_START_BATCH_JSON_SCHEMA,
       permission: "allow",
@@ -634,7 +634,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_followup",
       description:
-        "Queue a follow-up turn on a worker or agent you handed work to (or one started under it). This is the only way to ask it again: every start tool opens a new thread. It keeps its full context, so reference its earlier work rather than restating it; it runs on its own provider and mode, and reads the follow-up as yours, not the user's. A busy one takes it after its current turn; a settled one is brought back up first. Pass a stable requestId so a retry does not run it twice. Returns the new turn id: pass it with the threadId to agent_wait.",
+        "Queue a follow-up turn on a worker or agent you handed work to (or one started under it). This is the only way to ask it again: every start tool opens a new thread. It keeps its full context, so reference its earlier work rather than restating it; it runs on its own provider and mode, and reads the follow-up as yours, not the user's. A busy one takes it after its current turn; a settled one is brought back up first. Pass a stable requestId so a retry does not run it twice. Returns the new turn id; the response comes to you when it settles, or pass the id with the threadId to agent_wait when you need it before going on.",
       inputSchema: ContinueThreadInputSchema,
       jsonSchema: CONTINUE_THREAD_JSON_SCHEMA,
       permission: "allow",
@@ -655,13 +655,16 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       name: "agent_wait",
       agentsOnly: true,
       description:
-        `Wait for workers and agents you handed work to and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough. Waiting is optional: a result nobody is waiting for when it settles is delivered to you as a report from that agent, waking you if you are idle — so wait when your next step needs the result, and otherwise end your turn.`,
+        `Wait for workers and agents you handed work to and collect each one's final message (capped). Returns when every named agent has settled, or as soon as one parks on a question or approval that needs a human. The wait caps at ${SPAWN_WAIT_MAX_MS / 1000}s — pass timeoutMs below the cap and loop until all settle; if the call itself times out at the transport, lower timeoutMs and call again. A timeout only reports progress and cancels nothing. Pair turnIds with threadIds to pin each wait to a specific turn, so a newer turn cannot swap the response you collect. agent_read opens the full transcript when the summary is not enough. Waiting is optional, and it holds you while it lasts. A result nobody is waiting for comes to you on its own: put into your turn if you are still working, waking you if you have stopped. So after handing work off, do whatever does not depend on it first; agent_wait only when your next step cannot start without the result, and end your turn only when nothing is left that you can do without it.`,
       inputSchema: WaitForResponsesInputSchema,
       jsonSchema: WAIT_FOR_RESPONSES_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
         "Collect the replies of workers and agents you handed work to; returns early when one parks on a question or approval.",
+      promptGuidelines: [
+        "Handing work off returns at once, and its result comes back on its own — into your turn while you work, or as a wake once you stop. Keep doing whatever does not depend on it; agent_wait only when your next step needs the result, and end your turn only when nothing else is left.",
+      ],
       handler: waitForResponsesHandler,
     },
     {
