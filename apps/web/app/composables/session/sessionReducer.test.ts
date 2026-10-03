@@ -282,3 +282,86 @@ describe("a message steered into a running turn splits the reply where it landed
     ]);
   });
 });
+
+describe("messages delivered from other agents read where they arrived", () => {
+  const ada = { kind: "agent", threadId: "t-ada", name: "Ada", relationship: "contractor" } as const;
+
+  /** kone writing another agent's message on this thread, as delivery does. */
+  function journaled(id: string, text: string, at: number): RuntimeEvent {
+    return { ...base, type: "thread.message-journaled", at, block: { id, role: "user", text, at, sender: ada } };
+  }
+
+  function batchSteered(turnId: string, ids: string[], at: number): RuntimeEvent {
+    return { ...base, type: "turn.steered", turnId, message: "", userBlockId: ids.at(-1)!, userBlockIds: ids, at };
+  }
+
+  function workingSession() {
+    const session = makeSession();
+    pushUser(session, "ub-1", "build the login", 100);
+    session.reduce(turnStarted("turn-1", 110));
+    session.reduce(itemEvent("turn-1", "i-1", "Contracting Ada"));
+    return session;
+  }
+
+  test("a message steered into the running turn splits the reply, with what followed below it", () => {
+    const session = workingSession();
+    session.reduce(journaled("ub-m1", "Is OAuth in scope?", 200));
+    session.reduce(steered("turn-1", "ub-m1", 210));
+    session.reduce(itemEvent("turn-1", "i-2", "Answering Ada"));
+    expect(pieces(session.blocks)).toEqual([
+      "user: build the login",
+      "assistant: i-1",
+      "user: Is OAuth in scope?",
+      "assistant: i-2",
+    ]);
+  });
+
+  test("a batch steered in as one turn reads together, in order, above what followed", () => {
+    const session = workingSession();
+    session.reduce(journaled("ub-m1", "Is OAuth in scope?", 200));
+    session.reduce(journaled("ub-m2", "And SSO?", 201));
+    session.reduce(batchSteered("turn-1", ["ub-m1", "ub-m2"], 210));
+    session.reduce(itemEvent("turn-1", "i-2", "Answering Ada"));
+    // A second delivery later in the same turn splits it again.
+    session.reduce(journaled("ub-m3", "Done.", 300));
+    session.reduce(steered("turn-1", "ub-m3", 310));
+    session.reduce(itemEvent("turn-1", "i-3", "Ada is done"));
+    expect(pieces(session.blocks)).toEqual([
+      "user: build the login",
+      "assistant: i-1",
+      "user: Is OAuth in scope?",
+      "user: And SSO?",
+      "assistant: i-2",
+      "user: Done.",
+      "assistant: i-3",
+    ]);
+  });
+
+  test("a message that waited in the queue keeps its words and who said it when its turn runs", () => {
+    const session = workingSession();
+    session.reduce(journaled("ub-m1", "Is OAuth in scope?", 200));
+    // A provider that can't steer: the delivery waits as a row, whose input is
+    // the prompt the agent is sent, not the words on the transcript.
+    session.reduce({
+      ...base,
+      type: "turn.queued",
+      queueId: "q-1",
+      userBlockId: "ub-m1",
+      dispatchMode: "steer",
+      position: 1,
+      input: "<agent_messages>\nIs OAuth in scope?\n</agent_messages>",
+      at: 205,
+    });
+    session.reduce({ ...base, type: "turn.completed", turnId: "turn-1", at: 220 });
+    session.reduce(turnStarted("turn-2", 230));
+    session.reduce(turnPromoted(240, "turn-2"));
+    const message = session.blocks.value.find((b) => b.id === "ub-m1");
+    expect(message?.role === "user" && [message.text, message.sender]).toEqual(["Is OAuth in scope?", ada]);
+    expect(timeline(session.blocks)).toEqual([
+      "user: build the login",
+      "assistant: turn-1",
+      "user: Is OAuth in scope?",
+      "assistant: turn-2",
+    ]);
+  });
+});

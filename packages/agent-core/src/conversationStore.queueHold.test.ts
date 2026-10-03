@@ -326,6 +326,40 @@ describe("steered user blocks", () => {
     ]);
   });
 
+  test("delivered agent messages split the reply where each delivery landed, keeping who said them", () => {
+    const store = freshStore();
+    const ada = { kind: "agent" as const, threadId: "t-ada", name: "Ada", relationship: "contractor" as const };
+    store.recordUserBlock({ blockId: "ub-ask", threadId: "t", text: "build the login", at: 100 });
+    startTurn(store, "turn-1", 110);
+    item(store, "turn-1", "i-1", "Contracting Ada");
+    // One delivery carrying two messages, steered in together.
+    store.recordUserBlock({ blockId: "ub-m1", threadId: "t", text: "Is OAuth in scope?", at: 200, sender: ada });
+    store.recordUserBlock({ blockId: "ub-m2", threadId: "t", text: "And SSO?", at: 201, sender: ada });
+    store.markUserBlockSteered("t", "ub-m1", "turn-1", 205);
+    store.markUserBlockSteered("t", "ub-m2", "turn-1", 205);
+    item(store, "turn-1", "i-2", "Answering Ada");
+    // A second delivery later in the same turn.
+    store.recordUserBlock({ blockId: "ub-m3", threadId: "t", text: "Done.", at: 300, sender: ada });
+    store.markUserBlockSteered("t", "ub-m3", "turn-1", 305);
+    item(store, "turn-1", "i-3", "Ada is done");
+
+    const blocks = new ConversationStoreCtor().loadThread("t")?.blocks ?? [];
+    expect(readingOrder(blocks)).toEqual([
+      "user: build the login",
+      "assistant: i-1",
+      "user: Is OAuth in scope?",
+      "user: And SSO?",
+      "assistant: i-2",
+      "user: Done.",
+      "assistant: i-3",
+    ]);
+    expect(blocks.filter((b) => b.role === "user" && b.sender).map((b) => b.role === "user" && b.sender?.kind)).toEqual([
+      "agent",
+      "agent",
+      "agent",
+    ]);
+  });
+
   test("keep a split turn on one page", () => {
     const store = freshStore();
     store.recordUserBlock({ blockId: "ub-0", threadId: "t", text: "earlier", at: 50 });

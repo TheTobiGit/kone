@@ -1097,6 +1097,7 @@ export class CodexAdapter implements ProviderAdapter {
       message: text,
     };
     if (input.userBlockId) steered.userBlockId = input.userBlockId;
+    if (input.userBlockIds?.length) steered.userBlockIds = input.userBlockIds;
     this.emit(steered);
 
     return { threadId: input.threadId, turnId };

@@ -15,7 +15,7 @@ import type {
 import { originSubagentOfApproval } from "../agentPrefetch";
 import { canonicalizeItem } from "~/utils/toolName";
 import { isEffortTier } from "~/utils/modelCatalog";
-import { steerContinuationId } from "@kone/protocol/steer-split";
+import { steerContinuationId, steeredBlockIds } from "@kone/protocol/steer-split";
 import type {
   AssistantBlock,
   PendingApproval,
@@ -213,6 +213,17 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     if (isEffortTier(row.effort)) block.effort = row.effort;
     if (row.model) block.model = row.model;
     return block;
+  }
+
+  /** A promoted row's block, keeping who spoke. A row's input is what the
+   *  agent is sent, and for words kone wrote on someone else's behalf — a
+   *  delivered agent message, a follow-up — that is the framed prompt, not
+   *  what they said. The block already on screen has their words and their
+   *  name, so it keeps both; the row still decides the rest. */
+  function speakerKept(block: UserBlock): UserBlock {
+    const shown = blocks.value.find((b): b is UserBlock => b.role === "user" && b.id === block.id);
+    if (!shown?.sender || shown.sender.kind === "user") return block;
+    return { ...block, text: shown.text, sender: shown.sender };
   }
 
   function upsertItem(block: AssistantBlock, item: RuntimeItem): void {
@@ -614,7 +625,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         // never had a block here.
         const promo = queuedTurnsRaw.value.find((q) => q.queueId === event.queueId);
 
-        const userBlock = promo ? userBlockOf(promo) : undefined;
+        const userBlock = promo ? speakerKept(userBlockOf(promo)) : undefined;
 
         if (userBlock) {
           // Land this prompt immediately BEFORE the assistant turn it belongs
@@ -660,24 +671,27 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         // mark into the block turn.promoted builds next. (A steer that fell
         // back to the queue arrives as turn.queued instead.)
         pendingQueueAnchors.delete(event.turnId);
-        const steeredId = event.userBlockId;
-        if (!steeredId) break;
-        if (blocks.value.some((b) => b.role === "user" && b.id === steeredId)) {
-          blocks.value = blocks.value.map((b) =>
-            b.role === "user" && b.id === steeredId ? { ...b, steered: true } : b,
-          );
-          splitAtSteer(steeredId, event.turnId, event.at);
-        }
-        const row = queuedTurnsRaw.value.find((q) => q.userBlockId === steeredId);
-        if (row) {
-          const marked = { ...row, steered: true, steeredAt: event.at };
-          queuedTurnsRaw.value = queuedTurnsRaw.value.map((q) => (q === row ? marked : q));
-          // A row with no block on screen (one restored after a reopen) gets
-          // its block now, so the reply splits where the provider took it in
-          // rather than wherever it has got to by turn.promoted.
-          if (!blocks.value.some((b) => b.role === "user" && b.id === steeredId)) {
-            blocks.value = [...blocks.value, userBlockOf(marked)];
+        // Every block the steer carried, in order — a batch of delivered agent
+        // messages rides one steer — so they read together above the
+        // continuation rather than the last alone.
+        for (const steeredId of steeredBlockIds(event)) {
+          if (blocks.value.some((b) => b.role === "user" && b.id === steeredId)) {
+            blocks.value = blocks.value.map((b) =>
+              b.role === "user" && b.id === steeredId ? { ...b, steered: true } : b,
+            );
             splitAtSteer(steeredId, event.turnId, event.at);
+          }
+          const row = queuedTurnsRaw.value.find((q) => q.userBlockId === steeredId);
+          if (row) {
+            const marked = { ...row, steered: true, steeredAt: event.at };
+            queuedTurnsRaw.value = queuedTurnsRaw.value.map((q) => (q === row ? marked : q));
+            // A row with no block on screen (one restored after a reopen) gets
+            // its block now, so the reply splits where the provider took it in
+            // rather than wherever it has got to by turn.promoted.
+            if (!blocks.value.some((b) => b.role === "user" && b.id === steeredId)) {
+              blocks.value = [...blocks.value, userBlockOf(marked)];
+              splitAtSteer(steeredId, event.turnId, event.at);
+            }
           }
         }
         break;

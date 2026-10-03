@@ -385,13 +385,16 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     const { store, dispatcher } = await harness();
     await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello" });
     journaledEvents = [];
-    dispatcher.recordAgentMessage({
+    const blockId = dispatcher.recordAgentMessage({
       threadId: THREAD,
       text: "Is OAuth in scope?",
       sender: { kind: "agent", threadId: "t-child", relationship: "delegate", messageKind: "question" },
     });
     expect(userTexts(store)).toEqual(["hello", "Is OAuth in scope?"]);
     expect(journaledEvents.map((b) => b.text)).toEqual(["Is OAuth in scope?"]);
+    // The id it hands back is the block's, so the turn that delivers the words
+    // can name it.
+    expect(blockId).toBe(journaledEvents[0]!.id);
   });
 
   test("a notice the courier queues is journaled as the courier's and rides in front of the next turn as kone's", async () => {
