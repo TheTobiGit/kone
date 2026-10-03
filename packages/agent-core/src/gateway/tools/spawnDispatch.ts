@@ -517,7 +517,7 @@ function preferenceSentence(note: PreferenceNote | undefined): string {
 }
 
 /** The sentence the model reads for one dispatch: what opened, from what, where
- *  it runs, and how to collect it. */
+ *  it runs, and that the result comes back on its own. */
 export function spawnSentence(result: SpawnThreadResult, meta: DispatchMeta): string {
   const handed =
     meta.kind === "delegation"
@@ -528,7 +528,7 @@ export function spawnSentence(result: SpawnThreadResult, meta: DispatchMeta): st
           ? `Started worker "${result.title}" from preset ${meta.preset}`
           : `Started worker "${result.title}"`;
   const place = `${result.provider}${result.model ? `/${result.model}` : ""}`;
-  return `${handed} on ${place} as ${result.threadId}.${preferenceSentence(meta.preference)}${failoverNote(result)} Collect its response with agent_wait.`;
+  return `${handed} on ${place} as ${result.threadId}.${preferenceSentence(meta.preference)}${failoverNote(result)} Its response comes to you when it settles — carry on with whatever does not depend on it, and agent_wait only when your next step needs it.`;
 }
 
 /** The single tools' structured result: the thread, plus the preset or teammate

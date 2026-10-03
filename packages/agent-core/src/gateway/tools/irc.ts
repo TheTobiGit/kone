@@ -763,7 +763,7 @@ export function resetIrcMailbox(): void {
 const IRC_SEND_DESCRIPTION = [
   "Message another kone agent, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). It arrives headed as yours, with how you relate to the reader, so it is never mistaken for the user. Every message costs the reader a turn.",
   "",
-  "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say; set wait to hold for the answer. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question, with replyTo set to its message id.",
+  "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say. The answer reaches you on its own, so keep working on what does not depend on it; set wait only when you cannot go on without it. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question, with replyTo set to its message id.",
   "",
   "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `all` broadcasts to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
   "",

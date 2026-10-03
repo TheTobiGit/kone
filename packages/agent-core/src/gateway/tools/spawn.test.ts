@@ -807,7 +807,7 @@ describe("spawn gateway tools", () => {
           why: "the suite is slow and I can keep refactoring meanwhile",
         },
       ],
-      summary: 'Started worker "Fix tests" on codex/gpt-5 as child-1. Collect its response with agent_wait.',
+      summary: 'Started worker "Fix tests" on codex/gpt-5 as child-1. Its response comes to you when it settles — carry on with whatever does not depend on it, and agent_wait only when your next step needs it.',
     });
     // The why is the thread's to show, not the child's to read.
     expect(capturedRequest).not.toHaveProperty("why");
@@ -1383,7 +1383,7 @@ describe("agent_spawn_preset", () => {
           why: "I need the map before I touch the middleware",
         },
       ],
-      summary: 'Started worker "Look around" from preset Explorer on claudeAgent/haiku as child-1. Collect its response with agent_wait.',
+      summary: 'Started worker "Look around" from preset Explorer on claudeAgent/haiku as child-1. Its response comes to you when it settles — carry on with whatever does not depend on it, and agent_wait only when your next step needs it.',
     });
     expect(capturedRequest).not.toHaveProperty("why");
   });
@@ -2160,7 +2160,7 @@ describe("agent_delegate", () => {
           why: "the API layer is theirs",
         },
       ],
-      summary: 'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Collect its response with agent_wait.',
+      summary: 'Delegated "Build /users" to Backend on codex/gpt-5 as child-op-1. Its response comes to you when it settles — carry on with whatever does not depend on it, and agent_wait only when your next step needs it.',
     });
     expect(res.structuredContent).toMatchObject({ agent: "Backend", delegation: { threadId: "child-op-1" } });
   });

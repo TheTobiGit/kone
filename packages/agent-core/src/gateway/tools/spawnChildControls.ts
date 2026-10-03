@@ -48,7 +48,7 @@ export function createCancelWorkerTool(): ToolEntry {
                 text:
                   outcome === "stopped"
                     ? `Stopped worker ${args.threadId}. Its transcript stays readable with agent_read.`
-                    : `Told ${args.threadId} the task is withdrawn; it is wrapping up and will reply with what it did. Collect that with agent_wait.`,
+                    : `Told ${args.threadId} the task is withdrawn; it is wrapping up and will reply with what it did, which comes to you when it settles (agent_wait if you need it before going on).`,
               },
             ],
             structuredContent: { withdrawal: { threadId: args.threadId, outcome } },
@@ -181,7 +181,7 @@ export function createDeclineChildGateTool(): ToolEntry {
           content: [
             {
               type: "text",
-              text: `Declined the parked approval ${result.requestId} on agent ${result.threadId}. It stays running and tries an alternative — collect its next response with agent_wait.`,
+              text: `Declined the parked approval ${result.requestId} on agent ${result.threadId}. It stays running and tries an alternative; its next response comes to you when it settles (agent_wait if you need it before going on).`,
             },
           ],
           structuredContent: { decline: result },
@@ -218,7 +218,7 @@ export function createAnswerChildInputTool(): ToolEntry {
           requestId: args.requestId,
           answers: args.answers,
         });
-        const baseText = `Answered the parked question ${result.requestId} on agent ${result.threadId}. Its turn continues — collect its response with agent_wait.`;
+        const baseText = `Answered the parked question ${result.requestId} on agent ${result.threadId}. Its turn continues; its response comes to you when it settles (agent_wait if you need it before going on).`;
         const text =
           result.followUp !== undefined ? `${baseText}\nFollow-up: ${result.followUp}` : baseText;
         return {
