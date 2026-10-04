@@ -975,3 +975,63 @@ describe("agent_inbox", () => {
     expect(seen.map((m) => m.message)).toEqual(["first"]);
   });
 });
+
+// An inbox whose writes can be made to fail, as a full disk or a held write
+// lock makes them.
+class FlakyInbox extends MemoryAgentInbox {
+  failWrites = false;
+  override settleInboxDelivery(deliveryId: string, turnId: string | null): number | null {
+    return this.failWrites ? null : super.settleInboxDelivery(deliveryId, turnId);
+  }
+  override releaseInboxDelivery(deliveryId: string): number | null {
+    return this.failWrites ? null : super.releaseInboxDelivery(deliveryId);
+  }
+}
+
+const settleTick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+describe("a settle or release the store could not write", () => {
+  const sender = { kind: "agent" as const, threadId: "lead", relationship: "delegator" as const, messageKind: "followup" as const };
+
+  test("a turn the store could not record keeps its job claimed, stands for it, and is written once the store recovers", async () => {
+    const inbox = new FlakyInbox();
+    const mailbox = new IrcMailbox(inbox, { storeRetryMs: [5] });
+    const { messageId } = mailbox.postJob({ to: "child", projectPath: PROJECT_A, message: "do it", sender });
+    const claim = mailbox.claimJob("child")!;
+    let heard = 0;
+    mailbox.onDeliverySettled(() => heard++);
+
+    inbox.failWrites = true;
+    mailbox.settleDelivery(claim.deliveryId, "turn-1");
+
+    // Not handed over a second time, and the job's id already names the turn.
+    expect(mailbox.claimJob("child")).toBeNull();
+    expect(mailbox.jobTurn(messageId)).toEqual({ recipient: "child", handedOver: true, turnId: "turn-1" });
+    expect(heard).toBe(1);
+
+    inbox.failWrites = false;
+    await settleTick();
+    expect(inbox.inboxMessage(messageId)).toMatchObject({ state: "seen", turnId: "turn-1" });
+    expect(heard).toBe(2);
+    mailbox.clear();
+  });
+
+  test("a release the store could not write lands later, and says the mail waits again", async () => {
+    const inbox = new FlakyInbox();
+    const mailbox = new IrcMailbox(inbox, { storeRetryMs: [5] });
+    mailbox.postJob({ to: "child", projectPath: PROJECT_A, message: "do it", sender });
+    const claim = mailbox.claimJob("child")!;
+    const released: string[] = [];
+    mailbox.onDeliveryReleased((recipient) => released.push(recipient));
+
+    inbox.failWrites = true;
+    mailbox.releaseDelivery(claim.deliveryId);
+    expect(mailbox.jobCount("child")).toBe(0);
+
+    inbox.failWrites = false;
+    await settleTick();
+    expect(mailbox.jobCount("child")).toBe(1);
+    expect(released).toEqual(["child"]);
+    mailbox.clear();
+  });
+});

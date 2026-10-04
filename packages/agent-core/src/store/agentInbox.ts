@@ -103,11 +103,12 @@ export interface AgentInboxStore {
    *  answers first and then oldest; null when there are none. */
   claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null;
   /** The provider took the turn: the batch is seen, carried by `turnId`.
-   *  Returns how many rows it settled. */
-  settleInboxDelivery(deliveryId: string, turnId: string | null): number;
+   *  Returns how many rows it settled — 0 when the delivery has none left —
+   *  or null when the store could not write it. */
+  settleInboxDelivery(deliveryId: string, turnId: string | null): number | null;
   /** The send failed: the batch is unseen again, block ids kept. Returns how
-   *  many rows it released. */
-  releaseInboxDelivery(deliveryId: string): number;
+   *  many rows it released, or null when the store could not write it. */
+  releaseInboxDelivery(deliveryId: string): number | null;
   setInboxBlockId(inboxId: string, blockId: string): void;
   /** Mark these unseen messages seen, and return the ids that actually were
    *  unseen — a message already claimed or seen is left as it is. */
@@ -356,9 +357,9 @@ export class AgentInboxRepo implements AgentInboxStore {
     }
   }
 
-  settleInboxDelivery(deliveryId: string, turnId: string | null): number {
+  settleInboxDelivery(deliveryId: string, turnId: string | null): number | null {
     const db = this.dbh.handle();
-    if (!db) return 0;
+    if (!db) return null;
     let settled: string[] = [];
     try {
       this.dbh.durably(db, () => {
@@ -374,14 +375,15 @@ export class AgentInboxRepo implements AgentInboxStore {
       });
     } catch (err) {
       console.error("[conversation-store] settleInboxDelivery failed:", err);
+      return null;
     }
     this.changed(settled);
     return settled.length;
   }
 
-  releaseInboxDelivery(deliveryId: string): number {
+  releaseInboxDelivery(deliveryId: string): number | null {
     const db = this.dbh.handle();
-    if (!db) return 0;
+    if (!db) return null;
     try {
       // SAFETY: RETURNING one TEXT column.
       const rows = db
@@ -395,7 +397,7 @@ export class AgentInboxRepo implements AgentInboxStore {
       return rows.length;
     } catch (err) {
       console.error("[conversation-store] releaseInboxDelivery failed:", err);
-      return 0;
+      return null;
     }
   }
 

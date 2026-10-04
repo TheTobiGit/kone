@@ -6,7 +6,7 @@ import { describeRecipientState, formatSince, recipientState, type RecipientStat
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import { deliveryReceipt } from "../../inboxDelivery.js";
 import type { AgentRecord } from "../../ConversationStore.js";
-import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRow, type InboxSender, type SystemSender } from "../../store/agentInbox.js";
+import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRing, type InboxRow, type InboxSender, type SystemSender } from "../../store/agentInbox.js";
 import type {
   GatewayRecord,
   GatewayToolContext,
@@ -107,6 +107,10 @@ type PeerRow = {
  *  nobody is waiting on; past this they are counted, not listed, and stay
  *  addressable by name or id. */
 const ROSTER_MAX = 30;
+
+/** How long to wait before writing a settle or release the store refused
+ *  again; the last delay repeats until it lands. */
+const STORE_RETRY_MS: readonly number[] = [250, 1_000, 5_000, 15_000, 30_000];
 
 /** How much history agent_inbox shows on request. */
 const INBOX_HISTORY_MAX = 20;
@@ -214,7 +218,10 @@ export interface IrcDeliveryClaim {
 export class IrcMailbox {
   /** @param inbox where messages are kept; the app passes the conversation
    *  store, tests and a store-less process get an in-memory one. */
-  constructor(private readonly inbox: AgentInboxStore = new MemoryAgentInbox()) {}
+  constructor(
+    private readonly inbox: AgentInboxStore = new MemoryAgentInbox(),
+    private readonly options: { storeRetryMs?: readonly number[] } = {},
+  ) {}
 
   /** Threads parked in agent_message's wait, on whom, since when. */
   private readonly replyWaits = new Map<string, Array<{ threadIds: string[]; since: number }>>();
@@ -259,6 +266,16 @@ export class IrcMailbox {
   private agentToThread = new Map<string, string>();
   private deliveryListeners = new Set<(recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void>();
   private readonly settleListeners = new Set<() => void>();
+  private readonly releaseListeners = new Set<(recipient: string) => void>();
+  /** Who each open hand-over is for, by delivery id. */
+  private readonly claimedFor = new Map<string, string>();
+  /** Hand-overs a provider took whose settle the store has yet to write, with
+   *  the turn that took them. */
+  private readonly unsettled = new Map<string, { turnId: string | null }>();
+  /** Store writes that failed, per delivery: how many times, and the timer
+   *  that tries again. */
+  private readonly writeAttempts = new Map<string, number>();
+  private readonly retryTimers = new Map<string, () => void>();
   /** Consecutive messages traded between a pair with nobody else involved —
    *  the ping-pong counter MAX_PAIR_EXCHANGES cuts off. Keyed by unordered
    *  pair; an exchange involving anyone else resets it (see recordExchange). */
@@ -833,21 +850,26 @@ export class IrcMailbox {
     };
   }
 
+  /** One hand-over's claim, remembered with whom it is for until it is
+   *  settled or released. */
+  private claim(threadId: string, limit: number, which: InboxRing): IrcDeliveryClaim | null {
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, which);
+    if (!claim) return null;
+    this.claimedFor.set(claim.deliveryId, threadId);
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
   /** Claim up to `limit` unseen messages for one hand-over. Null when there
    *  are none. Until the claim is settled or released no other hand-over,
    *  inbox read or waiting sender can take them. */
   claimDelivery(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "ringing");
-    if (!claim) return null;
-    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+    return this.claim(threadId, limit, "ringing");
   }
 
   /** Claim up to `limit` of the held messages — the ones waiting for the
    *  thread's next turn — for the turn starting now. Null when there are none. */
   claimHeld(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "held");
-    if (!claim) return null;
-    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+    return this.claim(threadId, limit, "held");
   }
 
   /** How many held messages are waiting for the thread's next turn. */
@@ -858,24 +880,18 @@ export class IrcMailbox {
   /** Claim up to `limit` of everything unseen — answers first, then oldest —
    *  for a turn starting now. */
   claimForTurn(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "messages");
-    if (!claim) return null;
-    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+    return this.claim(threadId, limit, "messages");
   }
 
   /** Claim up to `limit` urgent messages, for the turn running now. */
   claimUrgent(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "urgent-messages");
-    if (!claim) return null;
-    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+    return this.claim(threadId, limit, "urgent-messages");
   }
 
   /** Claim the oldest waiting job — only an urgent one when `urgent` — for a
    *  turn of its own. Null when there is none. */
   claimJob(threadId: string, urgent = false): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, 1, urgent ? "urgent-job" : "job");
-    if (!claim) return null;
-    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+    return this.claim(threadId, 1, urgent ? "urgent-job" : "job");
   }
 
   /** How many jobs wait unseen. */
@@ -923,6 +939,9 @@ export class IrcMailbox {
   jobTurn(inboxId: string): { recipient: string; handedOver: boolean; turnId: string | null } | null {
     const row = this.inbox.inboxMessage(inboxId);
     if (!row || row.kind !== "job") return null;
+    // Taken by a turn whose settle the store has yet to write.
+    const pending = row.state === "handing" && row.deliveryId ? this.unsettled.get(row.deliveryId) : undefined;
+    if (pending) return { recipient: row.recipientThreadId, handedOver: true, turnId: pending.turnId };
     return { recipient: row.recipientThreadId, handedOver: row.state === "seen", turnId: row.turnId };
   }
 
@@ -940,9 +959,24 @@ export class IrcMailbox {
   }
 
   /** The provider took the turn carrying this hand-over: its messages are
-   *  seen, and remember the turn. */
+   *  seen, and remember the turn. When the store cannot write that, the turn
+   *  is remembered here and the write retried: the rows stay claimed, so
+   *  nothing hands them over again, and a job's id already stands for the
+   *  turn that took it. */
   settleDelivery(deliveryId: string, turnId: string | null): void {
-    if (this.inbox.settleInboxDelivery(deliveryId, turnId) === 0) return;
+    const settled = this.inbox.settleInboxDelivery(deliveryId, turnId);
+    if (settled === null) {
+      const pending = this.unsettled.has(deliveryId);
+      this.unsettled.set(deliveryId, { turnId });
+      this.retryLater(deliveryId, () => this.settleDelivery(deliveryId, turnId));
+      // Waits hear once, when the turn first stands for the hand-over.
+      if (pending) return;
+    } else {
+      this.unsettled.delete(deliveryId);
+      this.claimedFor.delete(deliveryId);
+      this.writeAttempts.delete(deliveryId);
+      if (settled === 0) return;
+    }
     for (const listener of this.settleListeners) {
       try {
         listener();
@@ -950,6 +984,22 @@ export class IrcMailbox {
         console.warn("[agent] an inbox settle listener failed:", err);
       }
     }
+  }
+
+  /** Run a store write that failed again later, later each time: the store
+   *  is full or locked, which passes. */
+  private retryLater(deliveryId: string, write: () => void): void {
+    const attempt = this.writeAttempts.get(deliveryId) ?? 0;
+    this.writeAttempts.set(deliveryId, attempt + 1);
+    const delays = this.options.storeRetryMs ?? STORE_RETRY_MS;
+    const ms = delays[Math.min(attempt, delays.length - 1)] ?? 0;
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(deliveryId);
+      write();
+    }, ms);
+    timer.unref?.();
+    this.retryTimers.get(deliveryId)?.();
+    this.retryTimers.set(deliveryId, () => clearTimeout(timer));
   }
 
   /** Hear when a hand-over is settled with its turn — when a job's id comes
@@ -960,9 +1010,33 @@ export class IrcMailbox {
   }
 
   /** The hand-over's send failed: its messages are unseen again, and keep the
-   *  block each was written as. */
+   *  block each was written as. When the store cannot write that, the write
+   *  is retried; once it lands, whoever hands messages over hears the
+   *  recipient has mail again. */
   releaseDelivery(deliveryId: string): void {
-    this.inbox.releaseInboxDelivery(deliveryId);
+    const released = this.inbox.releaseInboxDelivery(deliveryId);
+    if (released === null) {
+      this.retryLater(deliveryId, () => this.releaseDelivery(deliveryId));
+      return;
+    }
+    const recipient = this.claimedFor.get(deliveryId);
+    this.claimedFor.delete(deliveryId);
+    this.writeAttempts.delete(deliveryId);
+    if (released === 0 || !recipient) return;
+    for (const listener of this.releaseListeners) {
+      try {
+        listener(recipient);
+      } catch (err) {
+        console.warn("[agent] an inbox release listener failed:", err);
+      }
+    }
+  }
+
+  /** Hear when a hand-over's messages wait again for `recipient`. Returns the
+   *  unsubscribe. */
+  onDeliveryReleased(listener: (recipient: string) => void): () => void {
+    this.releaseListeners.add(listener);
+    return () => this.releaseListeners.delete(listener);
   }
 
   /** Remember the transcript block a message was written as. */
@@ -1007,6 +1081,11 @@ export class IrcMailbox {
       this.threads.clear();
       this.agentToThread.clear();
       this.pairExchanges.clear();
+      for (const cancel of this.retryTimers.values()) cancel();
+      this.retryTimers.clear();
+      this.writeAttempts.clear();
+      this.unsettled.clear();
+      this.claimedFor.clear();
     }
   }
 }
