@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1097,6 +1097,17 @@ function migration0022AgentInbox(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * Whether an inbox row rings. A ringing row is handed over on its own — a
+ * running turn steered, an idle one woken. A held one (`rings = 0`) is never
+ * the reason for a turn: it waits and rides in front of whatever turn the
+ * recipient runs next. Every row stored before this rang, so the default keeps
+ * them as they were.
+ */
+function migration0023InboxRings(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE agent_inbox ADD COLUMN rings INTEGER NOT NULL DEFAULT 1`);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1120,6 +1131,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 20, name: "BlockSteerPoint", run: migration0020BlockSteerPoint },
   { id: 21, name: "BlockSteeredAt", run: migration0021BlockSteeredAt },
   { id: 22, name: "AgentInbox", run: migration0022AgentInbox },
+  { id: 23, name: "InboxRings", run: migration0023InboxRings },
 ];
 
 export interface MigrationOptions {

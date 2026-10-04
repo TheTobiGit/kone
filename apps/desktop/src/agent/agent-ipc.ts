@@ -166,6 +166,7 @@ export function registerAgentIpc(): void {
   const dispatcher = initThreadDispatcher({
     service: svc,
     store,
+    mailbox,
     broadcast,
     // Git lives out here, so the dispatcher is handed the capability rather
     // than reaching for it. A thread that asks for its own branch gets a
@@ -445,7 +446,6 @@ export function registerAgentIpc(): void {
       mailbox,
       store,
       isBusy: (threadId) => svc.isThreadBusy(threadId),
-      queueNotice: (threadId, text, sender) => dispatcher.queueNotice(threadId, text, sender),
     }),
   });
 

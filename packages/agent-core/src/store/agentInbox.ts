@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { AgentSenderSchema, CourierSenderSchema, type AgentSender, type CourierSender } from "@kone/protocol/message-sender";
+import { z } from "zod";
 import type { ConversationDb } from "./ConversationDb.js";
 import type { DatabaseSync } from "../sqlite.js";
 
@@ -17,12 +18,22 @@ import type { DatabaseSync } from "../sqlite.js";
 // block instead of writing a second one. Settle and release both match on the
 // delivery id AND the handing state: a delivery that lost its rows (the boot
 // reset, a reply taken by a waiting sender) changes nothing.
+//
+// A row either rings or is held. A ringing row is the reason for a hand-over
+// of its own; a held one never is: it waits, and the next turn the recipient
+// runs — whatever starts it — claims it and carries it in front.
 
 export const INBOX_KINDS = ["note", "question", "pushback", "answer", "report", "notice", "job"] as const;
 export type InboxKind = (typeof INBOX_KINDS)[number];
 export type InboxState = "unseen" | "handing" | "seen" | "retracted";
 export type InboxSeenVia = "turn" | "inbox" | "wait";
-export type InboxSender = AgentSender | CourierSender;
+/** kone itself, writing a notice of its own. */
+export type SystemSender = { kind: "system" };
+export type InboxSender = AgentSender | CourierSender | SystemSender;
+/** Which unseen rows a hand-over takes: the ones that ring, handed over on
+ *  their own, or the held ones, which ride in front of the recipient's next
+ *  turn whatever starts it. */
+export type InboxRing = "ringing" | "held";
 
 export interface InboxRow {
   inboxId: string;
@@ -33,6 +44,8 @@ export interface InboxRow {
   sender: InboxSender | null;
   kind: InboxKind;
   urgent: boolean;
+  /** False for a held row, which waits for the recipient's next turn. */
+  rings: boolean;
   replyTo: string | null;
   body: string;
   state: InboxState;
@@ -53,6 +66,8 @@ export interface InboxInsert {
   sender: InboxSender | null;
   kind: InboxKind;
   urgent?: boolean;
+  /** Default true. False holds it for the recipient's next turn. */
+  rings?: boolean;
   replyTo?: string | null;
   body: string;
   dedupeKey?: string | null;
@@ -74,9 +89,9 @@ export interface InboxClaim {
  *  in-memory stand-in with the same rules where there is no store. */
 export interface AgentInboxStore {
   insertInboxMessage(input: InboxInsert): InboxInsertResult;
-  /** Take up to `limit` unseen messages for one hand-over; null when there
-   *  are none. */
-  claimInbox(recipientThreadId: string, limit: number): InboxClaim | null;
+  /** Take up to `limit` unseen messages of one sort for one hand-over; null
+   *  when there are none. */
+  claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null;
   /** The provider took the turn: the batch is seen, carried by `turnId`.
    *  Returns how many rows it settled. */
   settleInboxDelivery(deliveryId: string, turnId: string | null): number;
@@ -92,11 +107,12 @@ export interface AgentInboxStore {
   listUnseenInbox(recipientThreadId: string, limit?: number): InboxRow[];
   /** Seen messages, newest first. */
   inboxHistory(recipientThreadId: string, limit: number): InboxRow[];
-  unseenInboxCount(recipientThreadId: string): number;
+  /** Unseen messages, of one sort or (without `which`) all of them. */
+  unseenInboxCount(recipientThreadId: string, which?: InboxRing): number;
 }
 
 const INBOX_COLUMNS = `inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind,
-                       urgent, reply_to, body, state, delivery_id, block_id, turn_id,
+                       urgent, rings, reply_to, body, state, delivery_id, block_id, turn_id,
                        seen_via, dedupe_key, project_path, created_at, seen_at`;
 
 /** Arrival order. rowid settles two messages written in the same millisecond,
@@ -112,6 +128,7 @@ type InboxDbRow = {
   sender_json: string;
   kind: InboxKind;
   urgent: number;
+  rings: number;
   reply_to: string | null;
   body: string;
   state: InboxState;
@@ -127,6 +144,8 @@ type InboxDbRow = {
   row_seq?: number;
 };
 
+const SystemSenderSchema = z.object({ kind: z.literal("system") });
+
 /** The stored sender, or null when it is the JSON null or no longer parses. */
 function parseInboxSender(json: string): InboxSender | null {
   let value: unknown;
@@ -138,7 +157,8 @@ function parseInboxSender(json: string): InboxSender | null {
   const agent = AgentSenderSchema.safeParse(value);
   if (agent.success) return agent.data;
   const courier = CourierSenderSchema.safeParse(value);
-  return courier.success ? courier.data : null;
+  if (courier.success) return courier.data;
+  return SystemSenderSchema.safeParse(value).success ? { kind: "system" } : null;
 }
 
 function rowToInbox(row: InboxDbRow): InboxRow {
@@ -149,6 +169,7 @@ function rowToInbox(row: InboxDbRow): InboxRow {
     sender: parseInboxSender(row.sender_json),
     kind: row.kind,
     urgent: row.urgent !== 0,
+    rings: row.rings !== 0,
     replyTo: row.reply_to,
     body: row.body,
     state: row.state,
@@ -185,9 +206,9 @@ export class AgentInboxRepo implements AgentInboxStore {
         const run = db
           .prepare(
             `INSERT INTO agent_inbox (inbox_id, recipient_thread_id, sender_thread_id, sender_json,
-                                      kind, urgent, reply_to, body, state, dedupe_key,
+                                      kind, urgent, rings, reply_to, body, state, dedupe_key,
                                       project_path, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
              ON CONFLICT (dedupe_key) DO NOTHING`,
           )
           .run(
@@ -197,6 +218,7 @@ export class AgentInboxRepo implements AgentInboxStore {
             JSON.stringify(input.sender),
             input.kind,
             input.urgent ? 1 : 0,
+            input.rings === false ? 0 : 1,
             input.replyTo ?? null,
             input.body,
             input.dedupeKey ?? null,
@@ -212,7 +234,7 @@ export class AgentInboxRepo implements AgentInboxStore {
     return result;
   }
 
-  claimInbox(recipientThreadId: string, limit: number): InboxClaim | null {
+  claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null {
     const db = this.dbh.handle();
     if (!db) return null;
     const deliveryId = `dlv_${randomUUID()}`;
@@ -224,12 +246,12 @@ export class AgentInboxRepo implements AgentInboxStore {
           `UPDATE agent_inbox SET state = 'handing', delivery_id = ?
             WHERE inbox_id IN (
               SELECT inbox_id FROM agent_inbox
-               WHERE recipient_thread_id = ? AND state = 'unseen'
+               WHERE recipient_thread_id = ? AND state = 'unseen' AND rings = ?
                ORDER BY ${INBOX_ORDER}
                LIMIT ?)
             RETURNING ${INBOX_COLUMNS}, rowid AS row_seq`,
         )
-        .all(deliveryId, recipientThreadId, Math.max(1, limit)) as InboxDbRow[];
+        .all(deliveryId, recipientThreadId, which === "ringing" ? 1 : 0, Math.max(1, limit)) as InboxDbRow[];
       if (rows.length === 0) return null;
       rows.sort((a, b) => a.created_at - b.created_at || (a.row_seq ?? 0) - (b.row_seq ?? 0));
       return { deliveryId, rows: rows.map(rowToInbox) };
@@ -361,13 +383,14 @@ export class AgentInboxRepo implements AgentInboxStore {
     }
   }
 
-  unseenInboxCount(recipientThreadId: string): number {
+  unseenInboxCount(recipientThreadId: string, which?: InboxRing): number {
     const db = this.dbh.handle();
     if (!db) return 0;
     try {
+      const ring = which === undefined ? "" : ` AND rings = ${which === "ringing" ? 1 : 0}`;
       // SAFETY: an aggregate COUNT answers one row with one integer column.
       const row = db
-        .prepare(`SELECT COUNT(*) AS n FROM agent_inbox WHERE recipient_thread_id = ? AND state = 'unseen'`)
+        .prepare(`SELECT COUNT(*) AS n FROM agent_inbox WHERE recipient_thread_id = ? AND state = 'unseen'${ring}`)
         .get(recipientThreadId) as { n: number } | undefined;
       return row?.n ?? 0;
     } catch (err) {
@@ -399,6 +422,7 @@ export class MemoryAgentInbox implements AgentInboxStore {
       sender: input.sender,
       kind: input.kind,
       urgent: input.urgent ?? false,
+      rings: input.rings !== false,
       replyTo: input.replyTo ?? null,
       body: input.body,
       state: "unseen",
@@ -414,8 +438,8 @@ export class MemoryAgentInbox implements AgentInboxStore {
     return "inserted";
   }
 
-  claimInbox(recipientThreadId: string, limit: number): InboxClaim | null {
-    const batch = this.unseen(recipientThreadId).slice(0, Math.max(1, limit));
+  claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null {
+    const batch = this.unseen(recipientThreadId, which).slice(0, Math.max(1, limit));
     if (batch.length === 0) return null;
     const deliveryId = `dlv_${randomUUID()}`;
     for (const row of batch) {
@@ -482,8 +506,8 @@ export class MemoryAgentInbox implements AgentInboxStore {
       .map((r) => ({ ...r }));
   }
 
-  unseenInboxCount(recipientThreadId: string): number {
-    return this.unseen(recipientThreadId).length;
+  unseenInboxCount(recipientThreadId: string, which?: InboxRing): number {
+    return this.unseen(recipientThreadId, which).length;
   }
 
   /** Forget one thread's messages, or all of them — the stand-in for a
@@ -499,8 +523,13 @@ export class MemoryAgentInbox implements AgentInboxStore {
   }
 
   /** Rows are pushed in arrival order, so insertion order is arrival order. */
-  private unseen(recipientThreadId: string): InboxRow[] {
-    return this.rows.filter((r) => r.recipientThreadId === recipientThreadId && r.state === "unseen");
+  private unseen(recipientThreadId: string, which?: InboxRing): InboxRow[] {
+    return this.rows.filter(
+      (r) =>
+        r.recipientThreadId === recipientThreadId &&
+        r.state === "unseen" &&
+        (which === undefined || r.rings === (which === "ringing")),
+    );
   }
 
   private handing(deliveryId: string): InboxRow[] {

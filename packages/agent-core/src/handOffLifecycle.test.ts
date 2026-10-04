@@ -34,7 +34,9 @@ class TreeStore {
   }
 }
 
-type Said = { threadId: string; how: "steer" | "send" | "notice"; text: string; sender?: string };
+/** How something reached a thread: a turn sent or steered, or a notice put in
+ *  its inbox, ringing or held for its next turn. */
+type Said = { threadId: string; how: "steer" | "send" | "rings" | "held"; text: string; sender?: string };
 
 function harness() {
   const store = new TreeStore();
@@ -49,6 +51,8 @@ function harness() {
   const live = new Set(["backend", "frontend", "docs", "search", "api-worker", "main"]);
   const stopped: string[] = [];
   const interrupted: string[] = [];
+  /** Threads whose session was brought back up. */
+  const ensured: string[] = [];
   const said: Said[] = [];
   /** Every stop-shaped call, in order, so tests can check what came first. */
   const calls: string[] = [];
@@ -90,13 +94,19 @@ function harness() {
         said.push(steered);
         return { threadId: input.threadId, turnId: `turn-${++turn}` };
       },
-      queueNotice: (threadId: string, text: string) => {
-        said.push({ threadId, how: "notice", text });
+      queueNotice: (threadId: string, text: string, options?: { rings?: boolean }) => {
+        said.push({ threadId, how: options?.rings ? "rings" : "held", text });
+        return `msg_${said.length}`;
       },
-      ensureThreadSession: async () => {},
+      ensureThreadSession: async (threadId: string) => {
+        ensured.push(threadId);
+        return null;
+      },
     },
   };
-  return { lifecycle: new HandOffLifecycle(deps), store, busy, stopped, interrupted, said, calls, failures };
+  /** The id the last turn sent or steered answered with. */
+  const lastTurnId = () => `turn-${turn}`;
+  return { lifecycle: new HandOffLifecycle(deps), store, busy, live, stopped, interrupted, ensured, said, calls, failures, lastTurnId };
 }
 
 let h: ReturnType<typeof harness>;
@@ -110,11 +120,11 @@ describe("when the user stops an agent", () => {
 
     expect(result.decisionTurn).toBe(true);
     expect(h.stopped).toEqual(["search"]);
-    // Only the two still working are told, into their running turns.
+    // Only the two still working are told, with a notice that rings.
     const toDelegates = h.said.filter((s) => s.threadId !== "main");
     expect(toDelegates.map((s) => [s.threadId, s.how])).toEqual([
-      ["backend", "steer"],
-      ["frontend", "steer"],
+      ["backend", "rings"],
+      ["frontend", "rings"],
     ]);
     expect(toDelegates[0]?.text).toContain("deciding whether you carry on");
 
@@ -139,7 +149,7 @@ describe("when the user stops an agent", () => {
     expect(h.lifecycle.isDeciding("main")).toBe(true);
     h.lifecycle.onTurnSettled("main", "turn-old");
     expect(h.lifecycle.isDeciding("main")).toBe(true);
-    const decisionTurn = `turn-${h.said.length}`;
+    const decisionTurn = h.lastTurnId();
     h.lifecycle.onTurnSettled("main", decisionTurn);
     expect(h.lifecycle.isDeciding("main")).toBe(false);
   });
@@ -153,7 +163,7 @@ describe("when the user stops an agent", () => {
   test("a queued decision promoted without a turn id is the next turn to start", async () => {
     // The send answers with a queue id: the stopped turn had not aborted yet.
     await h.lifecycle.onUserStopped("main");
-    const queueId = `turn-${h.said.length}`;
+    const queueId = h.lastTurnId();
     const base = { threadId: "main", provider: "codex", source: "kone.store", at: 1 } as const;
     const events: RuntimeEvent[] = [
       { ...base, type: "turn.aborted", turnId: "turn-old" },
@@ -220,15 +230,27 @@ describe("the decisions", () => {
       ["Heron", "stop"],
       ["Beacon", "ask_user"],
     ]);
-    expect(h.said.find((s) => s.threadId === "frontend")?.text).toContain("carry on");
+    // Still working, the one carrying on hears now.
+    expect(h.said.find((s) => s.threadId === "frontend")).toMatchObject({
+      how: "rings",
+      text: expect.stringContaining("carry on"),
+    });
     // The stopped delegate is interrupted, hears why, and its own worker stops
     // with it — the stop travelled one link further.
     expect(h.interrupted).toContain("backend");
     // Its queued follow-ups go first, or the interrupt's abort would promote one.
     expect(h.calls.indexOf("cancel-queue:backend")).toBeLessThan(h.calls.indexOf("interrupt:backend"));
-    expect(h.said.find((s) => s.threadId === "backend")?.how).toBe("notice");
+    expect(h.said.find((s) => s.threadId === "backend")?.how).toBe("held");
     expect(h.stopped).toContain("api-worker");
     expect(h.said.some((s) => s.threadId === "docs")).toBe(false);
+  });
+
+  test("a delegate that finished meanwhile hears it may carry on at its next turn, not woken for it", async () => {
+    await h.lifecycle.onUserStopped("main");
+    h.busy.delete("frontend");
+    h.said.length = 0;
+    await h.lifecycle.decide("main", [{ threadId: "frontend", decision: "continue" }]);
+    expect(h.said).toEqual([{ threadId: "frontend", how: "held", text: expect.stringContaining("carry on") }]);
   });
 
   test("only the caller's own delegates and contractors can be decided about", async () => {
@@ -249,33 +271,41 @@ describe("withdrawing work", () => {
     h.busy.delete("docs");
     expect(await h.lifecycle.withdraw("main", "docs")).toBe("told");
     const told = h.said.find((s) => s.threadId === "docs");
-    expect(told?.how).toBe("send");
+    expect(told?.how).toBe("rings");
     expect(told?.text).toContain("withdrew this task");
     expect(h.stopped).not.toContain("docs");
+    expect(h.ensured).toEqual([]);
+  });
+
+  test("a delegate whose session is closed is brought back up to hear it", async () => {
+    h.live.delete("docs");
+    expect(await h.lifecycle.withdraw("main", "docs")).toBe("told");
+    expect(h.said.find((s) => s.threadId === "docs")?.how).toBe("rings");
+    expect(h.ensured).toEqual(["docs"]);
   });
 });
 
 describe("the user speaking to a delegate directly", () => {
-  test("its delegator hears about it — quietly when idle, in its turn when running", async () => {
-    await h.lifecycle.onUserSpokeTo("frontend", "Use magic links instead of passwords.");
+  test("its delegator hears about it quietly, on its next turn, running or not", async () => {
+    h.lifecycle.onUserSpokeTo("frontend", "Use magic links instead of passwords.");
     expect(h.said).toEqual([
       {
         threadId: "main",
-        how: "notice",
+        how: "held",
         text: expect.stringContaining('The user spoke to Frontend Auth directly: "Use magic links instead of passwords."'),
       },
     ]);
 
     h.busy.add("main");
-    await h.lifecycle.onUserSpokeTo("backend", "Rate-limit the login route.");
-    expect(h.said.at(-1)).toMatchObject({ threadId: "main", how: "steer" });
+    h.lifecycle.onUserSpokeTo("backend", "Rate-limit the login route.");
+    expect(h.said.at(-1)).toMatchObject({ threadId: "main", how: "held" });
   });
 
   test("a steer the user types is dispatched as theirs, and the delegator hears of it", async () => {
     // A sender smuggled in with typed words is dropped: they are the user's.
     await h.lifecycle.userSteers({ threadId: "frontend", input: "Drop the SMS fallback.", sender: { kind: "system" } });
     expect(h.said[0]).toEqual({ threadId: "frontend", how: "steer", text: "Drop the SMS fallback." });
-    expect(h.said[1]).toMatchObject({ threadId: "main", how: "notice" });
+    expect(h.said[1]).toMatchObject({ threadId: "main", how: "held" });
     expect(h.said[1]?.text).toContain('"Drop the SMS fallback."');
   });
 
@@ -288,8 +318,8 @@ describe("the user speaking to a delegate directly", () => {
   });
 
   test("nothing is said for a worker or a thread nobody handed over", async () => {
-    await h.lifecycle.onUserSpokeTo("search", "hi");
-    await h.lifecycle.onUserSpokeTo("main", "hi");
+    h.lifecycle.onUserSpokeTo("search", "hi");
+    h.lifecycle.onUserSpokeTo("main", "hi");
     expect(h.said).toEqual([]);
   });
 });

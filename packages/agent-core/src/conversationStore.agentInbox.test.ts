@@ -71,12 +71,12 @@ describe("the agent inbox store", () => {
       return m.inboxId;
     });
 
-    const first = store.claimInbox("t", 2);
+    const first = store.claimInbox("t", 2, "ringing");
     expect(first?.rows.map((r) => r.inboxId)).toEqual(ids.slice(0, 2));
     expect(first?.rows.every((r) => r.state === "handing" && r.deliveryId === first.deliveryId)).toBe(true);
-    const second = store.claimInbox("t", 8);
+    const second = store.claimInbox("t", 8, "ringing");
     expect(second?.rows.map((r) => r.inboxId)).toEqual([ids[2]]);
-    expect(store.claimInbox("t", 8)).toBeNull();
+    expect(store.claimInbox("t", 8, "ringing")).toBeNull();
     expect(store.unseenInboxCount("t")).toBe(0);
   });
 
@@ -84,7 +84,7 @@ describe("the agent inbox store", () => {
     const { store } = freshStore();
     const m = message();
     store.insertInboxMessage(m);
-    const claim = store.claimInbox("t", 8)!;
+    const claim = store.claimInbox("t", 8, "ringing")!;
 
     expect(store.settleInboxDelivery(claim.deliveryId, "turn-1")).toBe(1);
     const [seen] = store.inboxHistory("t", 10);
@@ -98,7 +98,7 @@ describe("the agent inbox store", () => {
     const { store } = freshStore();
     const m = message();
     store.insertInboxMessage(m);
-    const claim = store.claimInbox("t", 8)!;
+    const claim = store.claimInbox("t", 8, "ringing")!;
     store.setInboxBlockId(m.inboxId, "blk-1");
 
     expect(store.releaseInboxDelivery(claim.deliveryId)).toBe(1);
@@ -106,7 +106,7 @@ describe("the agent inbox store", () => {
     expect(again).toMatchObject({ inboxId: m.inboxId, state: "unseen", deliveryId: null, blockId: "blk-1" });
     // The released delivery no longer owns it: its late settle is a no-op.
     expect(store.settleInboxDelivery(claim.deliveryId, "turn-1")).toBe(0);
-    expect(store.claimInbox("t", 8)?.rows[0]?.blockId).toBe("blk-1");
+    expect(store.claimInbox("t", 8, "ringing")?.rows[0]?.blockId).toBe("blk-1");
   });
 
   test("markSeen takes only what is unseen, so a claimed message cannot be taken twice", () => {
@@ -114,12 +114,12 @@ describe("the agent inbox store", () => {
     const claimed = message();
     const free = message();
     store.insertInboxMessage(claimed);
-    store.claimInbox("t", 1);
+    store.claimInbox("t", 1, "ringing");
     store.insertInboxMessage(free);
 
     expect(store.markInboxSeen([claimed.inboxId, free.inboxId], "wait")).toEqual([free.inboxId]);
     expect(store.inboxHistory("t", 10)[0]).toMatchObject({ inboxId: free.inboxId, seenVia: "wait" });
-    expect(store.claimInbox("t", 8)).toBeNull();
+    expect(store.claimInbox("t", 8, "ringing")).toBeNull();
   });
 
   test("retract takes back only an unseen message", () => {
@@ -127,7 +127,7 @@ describe("the agent inbox store", () => {
     const a = message();
     const b = message();
     store.insertInboxMessage(a);
-    store.claimInbox("t", 1);
+    store.claimInbox("t", 1, "ringing");
     store.insertInboxMessage(b);
 
     expect(store.retractInboxMessage(a.inboxId)).toBe(false);
@@ -140,7 +140,7 @@ describe("the agent inbox store", () => {
     const { store, dir } = freshStore();
     const m = message();
     store.insertInboxMessage(m);
-    const claim = store.claimInbox("t", 8)!;
+    const claim = store.claimInbox("t", 8, "ringing")!;
     store.setInboxBlockId(m.inboxId, "blk-9");
 
     const reopened = new ConversationStoreCtor(dir);
@@ -153,7 +153,7 @@ describe("the agent inbox store", () => {
   test("resetInboxHandingAtBoot releases what a dead hand-over held", () => {
     const { store } = freshStore();
     store.insertInboxMessage(message());
-    store.claimInbox("t", 8);
+    store.claimInbox("t", 8, "ringing");
     store.resetInboxHandingAtBoot();
     expect(store.unseenInboxCount("t")).toBe(1);
   });
@@ -188,13 +188,30 @@ describe("the agent inbox store", () => {
     expect(store.listUnseenInbox("t")).toEqual([]);
   });
 
+  test("a held message is claimed only as held, and a ringing one only as ringing", () => {
+    const { store } = freshStore();
+    const ringing = message();
+    const held = message({ kind: "notice", rings: false, sender: { kind: "system" }, senderThreadId: null });
+    store.insertInboxMessage(ringing);
+    store.insertInboxMessage(held);
+
+    expect(store.unseenInboxCount("t")).toBe(2);
+    expect(store.unseenInboxCount("t", "ringing")).toBe(1);
+    expect(store.unseenInboxCount("t", "held")).toBe(1);
+    const heldClaim = store.claimInbox("t", 8, "held");
+    expect(heldClaim?.rows.map((r) => r.inboxId)).toEqual([held.inboxId]);
+    expect(heldClaim?.rows[0]).toMatchObject({ rings: false, sender: { kind: "system" } });
+    expect(store.claimInbox("t", 8, "held")).toBeNull();
+    expect(store.claimInbox("t", 8, "ringing")?.rows.map((r) => r.inboxId)).toEqual([ringing.inboxId]);
+  });
+
   test("history lists seen messages, newest first, and leaves out retracted ones", () => {
     const { store } = freshStore();
     const [a, b, c] = [message(), message(), message()];
     for (const m of [a!, b!, c!]) store.insertInboxMessage(m);
     store.markInboxSeen([a!.inboxId], "inbox");
     store.retractInboxMessage(b!.inboxId);
-    const claim = store.claimInbox("t", 8)!;
+    const claim = store.claimInbox("t", 8, "ringing")!;
     store.settleInboxDelivery(claim.deliveryId, "turn-1");
 
     const history = store.inboxHistory("t", 10).map((r) => r.inboxId);

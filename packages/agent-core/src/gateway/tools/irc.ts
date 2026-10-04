@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type CourierSender } from "@kone/protocol/message-sender";
-import type { AgentSender, ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
+import type { ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import type { AgentRecord } from "../../ConversationStore.js";
-import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRow } from "../../store/agentInbox.js";
+import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRow, type InboxSender, type SystemSender } from "../../store/agentInbox.js";
 import type {
   GatewayRecord,
   GatewayToolContext,
@@ -54,7 +54,7 @@ export interface IrcMessageRecord {
    *  gets its own copy, so a broadcast reads "your worker" to one agent and
    *  "teammate" to another. Absent when no store could say. A courier sender is
    *  kone's own agent carrying something, never another agent speaking. */
-  sender?: AgentSender | CourierSender;
+  sender?: InboxSender;
   /** The transcript block it was written as, set once it is on the
    *  recipient's transcript — so a delivery retried after a failed send does
    *  not write it twice, and the turn that delivers it can name its block. */
@@ -171,6 +171,8 @@ export interface IrcToolInput {
   /** The children a thread is parked in agent_wait on. */
   waitingOn?: (threadId: string) => { threadIds: string[]; since: number } | null;
 }
+
+const SYSTEM_SENDER: SystemSender = { kind: "system" };
 
 /** A stored inbox row as the mailbox's message record. */
 function recordFromRow(row: InboxRow): IrcMessageRecord {
@@ -603,6 +605,34 @@ export class IrcMailbox {
     /** Names what is being carried, so carrying it twice — a settled turn
      *  reported again — stores nothing the second time. */
     dedupeKey?: string;
+    /** False holds it for the recipient's next turn instead of handing it
+     *  over on its own. Default true. */
+    rings?: boolean;
+  }): { messageId: string } | null {
+    return this.postFromKone(input);
+  }
+
+  /**
+   * Put a notice kone writes itself — describing something that happened, not
+   * carrying anyone's words — in one thread's inbox. A ringing notice is handed
+   * over like any message; a held one waits for whatever turn the thread runs
+   * next and rides in front of it. Throws when it could not be stored.
+   */
+  sendNotice(input: { to: string; projectPath: string; message: string; rings: boolean }): { messageId: string } {
+    const sent = this.postFromKone({ ...input, kind: "notice", sender: SYSTEM_SENDER });
+    // A notice carries no dedupe key, so null here means it was not stored.
+    if (!sent) throw new GatewayToolError("internal", `kone could not store the notice for "${input.to}".`);
+    return sent;
+  }
+
+  private postFromKone(input: {
+    to: string;
+    projectPath: string;
+    message: string;
+    kind: InboxKind;
+    sender: CourierSender | SystemSender;
+    dedupeKey?: string;
+    rings?: boolean;
   }): { messageId: string } | null {
     const messageId = `msg_${randomUUID()}`;
     const record: IrcMessageRecord = {
@@ -616,19 +646,20 @@ export class IrcMailbox {
       projectPath: input.projectPath,
       sender: input.sender,
     };
-    if (!this.enqueue(input.to, record, input.dedupeKey)) return null;
+    if (!this.enqueue(input.to, record, input.dedupeKey, input.rings ?? true)) return null;
     return { messageId };
   }
 
-  /** Store one copy in a recipient's inbox and tell the delivery listeners.
+  /** Store one copy in a recipient's inbox and, when it rings, tell the
+   *  delivery listeners — a held one is nobody's cue to hand anything over.
    *  False when its dedupe key says it was stored already. Throws when it
    *  could not be stored at all: a message nobody will ever see must fail
    *  where its sender can still act on that. */
-  private enqueue(recipientId: string, message: IrcMessageRecord, dedupeKey?: string): boolean {
+  private enqueue(recipientId: string, message: IrcMessageRecord, dedupeKey?: string, rings = true): boolean {
     const result = this.inbox.insertInboxMessage({
       inboxId: message.id,
       recipientThreadId: recipientId,
-      senderThreadId: message.sender?.kind === "courier" ? null : message.from,
+      senderThreadId: message.sender?.kind === "agent" || !message.sender ? message.from : null,
       sender: message.sender ?? null,
       kind: message.kind ?? "note",
       replyTo: message.replyTo ?? null,
@@ -636,11 +667,13 @@ export class IrcMailbox {
       dedupeKey: dedupeKey ?? null,
       projectPath: message.projectPath ?? "",
       createdAt: message.createdAt,
+      rings,
     });
     if (result === "duplicate") return false;
     if (result === "failed") {
       throw new GatewayToolError("internal", `kone could not store the message for "${recipientId}"; it was not sent.`);
     }
+    if (!rings) return true;
 
     // Notify delivery listeners with an immutable copy
     const readOnlyCopy = Object.freeze({ ...message });
@@ -789,9 +822,22 @@ export class IrcMailbox {
    *  are none. Until the claim is settled or released no other hand-over,
    *  inbox read or waiting sender can take them. */
   claimDelivery(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit);
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "ringing");
     if (!claim) return null;
     return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
+  /** Claim up to `limit` of the held messages — the ones waiting for the
+   *  thread's next turn — for the turn starting now. Null when there are none. */
+  claimHeld(threadId: string, limit: number): IrcDeliveryClaim | null {
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "held");
+    if (!claim) return null;
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
+  /** How many held messages are waiting for the thread's next turn. */
+  heldCount(threadId: string): number {
+    return this.inbox.unseenInboxCount(threadId, "held");
   }
 
   /** The provider took the turn carrying this hand-over: its messages are
@@ -822,6 +868,12 @@ export class IrcMailbox {
    */
   getUnreadCount(threadId: string): number {
     return this.inbox.unseenInboxCount(threadId);
+  }
+
+  /** How many unseen messages are waiting to be handed over on their own —
+   *  the held ones wait for whatever turn comes next, so nothing is owed them. */
+  ringingCount(threadId: string): number {
+    return this.inbox.unseenInboxCount(threadId, "ringing");
   }
 
   /**

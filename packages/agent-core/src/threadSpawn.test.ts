@@ -18,7 +18,6 @@ import {
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
-import type { CourierSender } from "@kone/protocol/message-sender";
 import { startIrcDelivery } from "./ircDelivery.js";
 import { createMailboxReportSink, type SettleReportSink } from "./settleReports.js";
 import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
@@ -1914,9 +1913,10 @@ describe("settle reports", () => {
     h.stopDelivery();
   });
 
-  test("an interruption nobody asked for reaches a busy parent, and waits for an idle one's next turn", async () => {
-    const queued: Array<{ threadId: string; text: string; sender: CourierSender }> = [];
+  test("an interruption nobody asked for reaches a busy parent, and is held for an idle one's next turn", async () => {
     const mailbox = new IrcMailbox();
+    const rang: string[] = [];
+    mailbox.onMessageDelivered((recipient) => rang.push(recipient));
     const busy = new Set<string>();
     const h = makeEngine({
       reports: (store) =>
@@ -1924,7 +1924,6 @@ describe("settle reports", () => {
           mailbox,
           store,
           isBusy: (threadId) => busy.has(threadId),
-          queueNotice: (threadId, text, sender) => queued.push({ threadId, text, sender }),
         }),
     });
     setupParent(h.store, h.providers);
@@ -1934,17 +1933,21 @@ describe("settle reports", () => {
     h.bus.emit(turnAborted(threadId, "w-1", 30, "interrupted"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     // Idle: no wake — a stop is not news worth a turn of its own.
-    expect(mailbox.getUnreadCount(CALLER.threadId)).toBe(0);
-    expect(queued).toHaveLength(1);
-    expect(queued[0]!.text).toContain("interrupted");
-    expect(queued[0]!.sender.kind).toBe("courier");
-    expect(queued[0]!.sender.about?.threadId).toBe(threadId);
+    expect(rang).toEqual([]);
+    expect(mailbox.ringingCount(CALLER.threadId)).toBe(0);
+    const held = mailbox.claimHeld(CALLER.threadId, 8)!;
+    expect(held.messages).toHaveLength(1);
+    expect(held.messages[0]!.kind).toBe("report");
+    expect(held.messages[0]!.message).toContain("interrupted");
+    const sender = held.messages[0]!.sender;
+    expect(sender?.kind === "courier" ? sender.about?.threadId : null).toBe(threadId);
 
     busy.add(CALLER.threadId);
     h.bus.emit(sessionStarted(threadId, 35));
     h.bus.emit(turnStarted(threadId, "w-2", 40));
     h.bus.emit(turnAborted(threadId, "w-2", 50, "interrupted"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mailbox.getUnreadCount(CALLER.threadId)).toBe(1);
+    expect(rang).toEqual([CALLER.threadId]);
+    expect(mailbox.ringingCount(CALLER.threadId)).toBe(1);
   });
 });

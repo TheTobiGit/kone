@@ -84,3 +84,25 @@ describe("migration 22: AgentInbox", () => {
     db.close();
   });
 });
+
+// Migration 23 marks whether a row rings. Every row stored before it rang, so
+// each keeps doing so.
+describe("migration 23: InboxRings", () => {
+  test("rows stored before it ring; a new row may be held", () => {
+    const { db, file } = v21Database();
+    migrate(db, file, { toMigrationInclusive: 22 });
+    insert(db, { inbox_id: "'msg_old'" });
+    migrate(db, file);
+    insert(db, { inbox_id: "'msg_held'", rings: "0" });
+    // SAFETY: the projection is two columns, TEXT and INTEGER.
+    const rows = db.prepare("SELECT inbox_id, rings FROM agent_inbox ORDER BY inbox_id").all() as Array<{
+      inbox_id: string;
+      rings: number;
+    }>;
+    expect(rows).toEqual([
+      { inbox_id: "msg_held", rings: 0 },
+      { inbox_id: "msg_old", rings: 1 },
+    ]);
+    db.close();
+  });
+});

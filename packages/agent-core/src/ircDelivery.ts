@@ -2,7 +2,7 @@ import type { IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
 import { senderRelationshipLabel } from "@kone/protocol/message-sender";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type { SendTurnInput } from "./types.js";
-import { renderCourierMessage } from "./senderHeader.js";
+import { renderCourierMessage, renderKoneNotice } from "./senderHeader.js";
 
 // Delivery: the half that turns a mailbox into messaging.
 //
@@ -39,6 +39,15 @@ export const IRC_DELIVERY_DEBOUNCE_MS = 400;
  *  round — a wake carrying forty messages is not a wake, it is a context
  *  dump. */
 export const IRC_DELIVERY_BATCH_MAX = 8;
+
+/** How long a released batch waits before it is tried again, by attempt.
+ *
+ *  A send that throws — a session reaped under it, a provider refusing the
+ *  steer — may be over in a second or may not be over at all, and nothing else
+ *  is coming to try again: the senders' events have fired. So each failure
+ *  arms its own retry, a little later each time, and after the last one the
+ *  batch waits in the inbox for the next message or the thread coming back. */
+export const IRC_DELIVERY_RETRY_MS: readonly number[] = [1_000, 5_000, 15_000, 60_000];
 
 /** The two turn entry points delivery needs. Narrower than the whole dispatcher
  *  on purpose: everything else it owns — thread lifecycle, titles, repo stats —
@@ -88,10 +97,26 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
       return () => clearTimeout(handle);
     });
   const armed = new Map<string, () => void>();
+  /** Failed sends in a row, per thread; cleared by the next one that lands. */
+  const failures = new Map<string, number>();
 
-  function arm(threadId: string): void {
+  function arm(threadId: string, ms = IRC_DELIVERY_DEBOUNCE_MS): void {
     armed.get(threadId)?.();
-    armed.set(threadId, schedule(() => deliver(threadId), IRC_DELIVERY_DEBOUNCE_MS));
+    armed.set(threadId, schedule(() => deliver(threadId), ms));
+  }
+
+  /** Arm the retry for a batch that was just released, or give up for now. */
+  function retry(threadId: string): void {
+    const attempt = failures.get(threadId) ?? 0;
+    const ms = IRC_DELIVERY_RETRY_MS[attempt];
+    if (ms === undefined) {
+      failures.delete(threadId);
+      return;
+    }
+    failures.set(threadId, attempt + 1);
+    // A message arriving meanwhile re-arms on the short debounce, which is
+    // fine: it is one more attempt, and the count carries over.
+    if (!armed.has(threadId)) arm(threadId, ms);
   }
 
   function deliver(threadId: string): void {
@@ -110,7 +135,9 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     const claim = deps.mailbox.claimDelivery(threadId, IRC_DELIVERY_BATCH_MAX);
     if (!claim) return;
     const { deliveryId, messages } = claim;
-    const remaining = deps.mailbox.getUnreadCount(threadId);
+    // Only what rings is left over: held messages ride in front of the turn
+    // this sends, so they are not waiting on another round.
+    const remaining = deps.mailbox.ringingCount(threadId);
 
     // Journaled before the turn goes out, so the messages sit above the reply
     // they prompt. Once each: the block is stored with the message the moment
@@ -146,8 +173,10 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
         // next delivery — or the agent's own inbox read — should still find it.
         deps.mailbox.releaseDelivery(deliveryId);
         console.warn(`[agent] irc delivery to ${threadId} failed:`, err);
+        retry(threadId);
         return;
       }
+      failures.delete(threadId);
       // Delivered. Settle exactly what was claimed, so a message that arrived
       // while the turn was starting is still unseen and still gets its own
       // delivery.
@@ -156,7 +185,7 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
       // come along for them — the senders' events have already fired — so the
       // overflow arms its own round rather than waiting for a message that may
       // never be sent.
-      if (deps.mailbox.getUnreadCount(threadId) > 0) arm(threadId);
+      if (deps.mailbox.ringingCount(threadId) > 0) arm(threadId);
     })();
   }
 
@@ -164,7 +193,7 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
   // A thread that was away while mail arrived has an inbox nothing is scheduled
   // to read. Coming back is the second thing that arms a delivery.
   const unsubscribeLive = deps.onThreadLive?.((threadId) => {
-    if (deps.mailbox.getUnreadCount(threadId) > 0) arm(threadId);
+    if (deps.mailbox.ringingCount(threadId) > 0) arm(threadId);
   });
 
   return () => {
@@ -172,6 +201,7 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     unsubscribeLive?.();
     for (const cancel of armed.values()) cancel();
     armed.clear();
+    failures.clear();
   };
 }
 
@@ -186,14 +216,16 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
  * default failure of agent messaging is two of them being polite at each other
  * until somebody runs out of money.
  *
- * What the courier carries is kone speaking, not another agent, so it is framed
- * as kone's on its own rather than counted among the agents' messages.
+ * What the courier carries, and kone's own notices, are kone speaking, not
+ * another agent, so each is framed as kone's on its own rather than counted
+ * among the agents' messages.
  */
 export function renderIncoming(messages: IrcMessageRecord[], remaining = 0): string {
   const carried: string[] = [];
   const fromAgents: IrcMessageRecord[] = [];
   for (const m of messages) {
     if (m.sender?.kind === "courier") carried.push(renderCourierMessage(m.sender, m.message));
+    else if (m.sender?.kind === "system") carried.push(renderKoneNotice(m.message));
     else fromAgents.push(m);
   }
   // Said rather than left implicit: past the batch cap the rest are still in the
