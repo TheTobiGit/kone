@@ -520,8 +520,8 @@ export type TrackedChild = {
    *  the events have said. Cleared by an event for that turn, or by the
    *  session ending or failing. */
   awaitingTurn?: { turnId: string; at: number };
-  /** When the child's session last ended or failed, by its event. */
-  sessionEndedAt?: number;
+  /** How and when the child's session last ended or failed, by its event. */
+  sessionEnd?: SessionEnd;
 };
 
 /** Does `event` end the wait for the turn the provider took? An event for
@@ -537,6 +537,9 @@ function endsAwaiting(event: RuntimeEvent, turnId: string): boolean {
       return endsSession(event);
   }
 }
+
+/** How a child's session ended: when, how a turn it cut off settles, and why. */
+type SessionEnd = { at: number; state: "failed" | "interrupted"; error: string };
 
 /** Does `event` say the child's session ended or failed? */
 function endsSession(event: RuntimeEvent): boolean {
@@ -1075,8 +1078,8 @@ class SpawnEngineImpl implements SpawnEngine {
   private onEvent(event: RuntimeEvent): void {
     const child = this.tracked.get(event.threadId);
     if (!child) return;
-    if (endsSession(event)) child.sessionEndedAt = event.at;
-    if (child.awaitingTurn && endsAwaiting(event, child.awaitingTurn.turnId)) delete child.awaitingTurn;
+    const awaiting = child.awaitingTurn;
+    if (awaiting && endsAwaiting(event, awaiting.turnId)) delete child.awaitingTurn;
     switch (event.type) {
       case "turn.started":
         child.turns.push({ turnId: event.turnId, state: "running", at: event.at });
@@ -1109,20 +1112,21 @@ class SpawnEngineImpl implements SpawnEngine {
         child.gate = null;
         break;
       case "session.started":
-      case "session.state.changed":
         child.hasLiveSession = true;
         break;
-      case "session.exited":
-        child.hasLiveSession = false;
-        if (child.turns.length === 0) {
-          child.turns.push({
-            turnId: "<session-exited>",
-            state: "failed",
-            at: event.at,
-            endedAt: event.at,
-            error: "The child's session exited before its first turn started.",
-          });
+      case "session.state.changed":
+        if (!endsSession(event)) {
+          child.hasLiveSession = true;
+          break;
         }
+        this.endSession(child, awaiting, {
+          at: event.at,
+          state: event.state === "error" ? "failed" : "interrupted",
+          error: event.message ?? (event.state === "error" ? "The child's session failed." : "The child's session was stopped."),
+        });
+        break;
+      case "session.exited":
+        this.endSession(child, awaiting, { at: event.at, state: "failed", error: "The child's session exited." });
         break;
       case "thread.token-usage.updated":
         if (event.usage.total !== undefined) child.tokens = event.usage.total;
@@ -1140,9 +1144,31 @@ class SpawnEngineImpl implements SpawnEngine {
    *  sent — those events came before the mark and will not come again. */
   private markAwaitingTurn(child: TrackedChild, turnId: string, since: number): void {
     if (child.turns.some((t) => t.turnId === turnId)) return;
-    if (child.sessionEndedAt !== undefined && child.sessionEndedAt >= since) return;
+    const end = child.sessionEnd;
+    if (end && end.at >= since) {
+      // The session went before the turn could start: the turn ends with it,
+      // and is reported like any other.
+      this.settleTurn(child, turnId, end.state, end.at, `${end.error} Its turn never started.`);
+      this.recompute(child);
+      this.scheduleReport(child);
+      return;
+    }
     child.awaitingTurn = { turnId, at: Date.now() };
     this.recompute(child);
+  }
+
+  /** The child's session ended or failed. A turn the provider took that had
+   *  not started yet ends with it — failed, or interrupted for a stop — and
+   *  is reported like any other; a child that never turned at all ends on a
+   *  placeholder, as a spawn that never got going. */
+  private endSession(child: TrackedChild, awaiting: TrackedChild["awaitingTurn"], end: SessionEnd): void {
+    child.hasLiveSession = false;
+    child.sessionEnd = end;
+    if (awaiting && !child.turns.some((t) => t.turnId === awaiting.turnId)) {
+      this.settleTurn(child, awaiting.turnId, end.state, end.at, `${end.error} Its turn never started.`);
+    } else if (child.turns.length === 0) {
+      this.settleTurn(child, "<session-exited>", end.state, end.at, `${end.error} Its first turn never started.`);
+    }
   }
 
   private settleTurn(
