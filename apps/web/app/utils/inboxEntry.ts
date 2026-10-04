@@ -28,6 +28,8 @@ export function inboxStateLabel(entry: Pick<InboxEntry, "state" | "rings" | "see
       return "Handing over";
     case "retracted":
       return "Taken back";
+    case "uncertain":
+      return "May not have arrived";
     case "seen":
       switch (entry.seenVia) {
         case "inbox":

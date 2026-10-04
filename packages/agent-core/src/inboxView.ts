@@ -22,6 +22,9 @@ export interface InboxEntry {
   /** False for a message held for the recipient's next turn. */
   rings: boolean;
   state: InboxState;
+  /** Set while the message is uncertain: kone was handing it over when it
+   *  restarted, so it may not have arrived. */
+  uncertain?: true;
   sender: InboxSender | null;
   body: string;
   replyTo: string | null;
@@ -51,7 +54,7 @@ function excerpt(body: string): string {
 
 export function inboxEntryOf(row: InboxRow, lookup: (inboxId: string) => InboxRow | null): InboxEntry {
   const quoted = row.replyTo ? lookup(row.replyTo) : null;
-  return {
+  const entry: InboxEntry = {
     inboxId: row.inboxId,
     kind: row.kind,
     urgent: row.urgent,
@@ -68,9 +71,12 @@ export function inboxEntryOf(row: InboxRow, lookup: (inboxId: string) => InboxRo
     seenVia: row.seenVia,
     turnId: row.turnId,
   };
+  if (row.state === "uncertain") entry.uncertain = true;
+  return entry;
 }
 
-/** What waits for a thread, oldest first: unseen, and being handed over. */
+/** What waits for a thread, oldest first: unseen, being handed over, and
+ *  uncertain — a message nobody can say arrived still waits on someone. */
 export function waitingInbox(source: InboxViewSource, threadId: string): InboxEntry[] {
   const lookup = (id: string) => source.inboxMessage(id);
   return source.listWaitingInbox(threadId).map((row) => inboxEntryOf(row, lookup));

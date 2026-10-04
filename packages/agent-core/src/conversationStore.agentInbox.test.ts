@@ -323,6 +323,17 @@ describe("what the app hears about an inbox", () => {
     expect(stateOf(store, m.inboxId)).toBe("unseen");
   });
 
+  test("waiting lists a message a restart left uncertain", () => {
+    const { store } = freshStore();
+    const m = message();
+    store.insertInboxMessage(m);
+    const claim = store.claimInbox("t", 8, "all")!;
+    store.markInboxSending(claim.deliveryId);
+    store.resetInboxHandingAtBoot();
+
+    expect(store.listWaitingInbox("t").find((r) => r.inboxId === m.inboxId)?.state).toBe("uncertain");
+  });
+
   test("waiting lists unseen and handing, oldest first, and nothing seen", () => {
     const { store } = freshStore();
     const first = message();

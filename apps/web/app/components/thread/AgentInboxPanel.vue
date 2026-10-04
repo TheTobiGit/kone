@@ -218,6 +218,11 @@ const sections = computed(() => [
   color: color-mix(in srgb, var(--accent) 70%, var(--ink));
   font-weight: 550;
 }
+/* A message kone may never have handed over reads as a failure does, not as
+   something on its way. */
+.aip__msg[data-state="uncertain"] .aip__state {
+  color: var(--danger, #d9544f);
+}
 .aip__empty {
   margin: 2px 0 4px;
   font-size: 12px;

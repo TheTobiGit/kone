@@ -133,6 +133,7 @@ describe("deriveDelegates — spawned thread projection", () => {
       ["failed", "failed", false],
       ["stillborn", "failed", false],
       ["interrupted", "failed", false],
+      ["uncertain", "failed", false],
       ["idle", "idle", false],
     ];
     for (const [status, state, live] of cases) {
