@@ -503,14 +503,31 @@ A final re-review closed 2, 1 (with `delivery.v2` off) and 8, and held `delivery
 
 | Finding | Fix | Commit |
 |---|---|---|
-| 3a. A hand-over whose sent marker failed to write still reached the provider | The marker is the gate: when the store cannot write it, the send is refused before the provider is contacted, and the claim is released to the ringer's backoff. A user's turn that carries inbox mail is refused the same way and retried by the queue's backoff | `a8dbf083` |
+| 3a. A hand-over whose sent marker failed to write still reached the provider | The marker is the gate: when the store cannot write it, the send is refused before the provider is contacted, and the claim is released. A user's turn that carries inbox mail is refused the same way. What retries each is in the retry table below; as first committed, a queued turn whose release failed in the same outage was left claimed with nothing to retry it (fixed in `59ef8e87`) | `a8dbf083` |
 | 3b. A sent row a restart cut off was released, and so could run twice | Migration 25 adds the `uncertain` state. At boot a sent row is seen only through the link written when the provider accepted it: its inbox block's `turn_id`. Every other sent row turns `uncertain`, and delivery skips it. The recipient gets one held notice naming the messages, with no bodies. An agent sender gets one held notice saying to send it again, and, for a job, to send `agent_followup` again with a new requestId. Both are deduplicated across restarts. `agent_inbox` lists uncertain rows flagged and marks them seen there. `agent_wait` on an uncertain job settles with `status: "uncertain"` and `handedOver: false` | `c3a453a8`, `aa7cbab4` |
 | 3c. Boot reconciliation could settle a row to an unrelated turn, the first one after `sent_at` | Timestamps are no longer read. Only the acceptance link settles a row | `aa7cbab4` |
 | Overlay: with symlinks refused, a codex database was copied without its write-ahead log | A database the overlay cannot link is copied with `VACUUM INTO` from a read-only connection, so changes committed to the log are kept. Sidecars are never copied, and databases are placed before their sidecars. A database the overlay created itself keeps its sidecars local, as before | `49193fe6` |
 
+A further re-review closed `a8dbf083`, `c3a453a8` and `49193fe6`, and held `delivery.v2` back on three more:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| Reading an uncertain job erased its uncertainty: `jobTurn` reported it handed over, and a pinned wait went back to `starting` | Migration 26 adds `uncertain_at`, set when recovery holds a row and kept when the inbox read marks it seen. `jobTurn` and the inbox record honour it, so the wait still settles `uncertain` with `handedOver: false`, in this process and the next | `dd5d5d29` |
+| A boot recovery that could not be written left its rows `handing` until the next restart | The orphaned ids are read at the first open. If settling them fails, the same ids are retried on a backoff until it lands; a hand-over started since is never touched. A late recovery tells the inbox listeners, so mail that went back to unseen rings | `64273a0f` |
+| A queued turn refused for its marker, whose release also failed, stayed claimed with no timer | `releaseQueuedTurn` answers null for a write that failed, apart from false for a cancelled row. A failed release is retried on the queue's backoff until it lands, and the turn then runs | `59ef8e87` |
+
+What retries what, and when it stops:
+
+| Write or send | Retried | Stops |
+|---|---|---|
+| A settle or release the mailbox could not write | 250 ms, 1 s, 5 s, 15 s, then every 30 s | When it lands, or when the process ends; boot recovery then settles the row |
+| A hand-over the provider refused, or whose marker failed | The ringer's backoff: 1 s, 5 s, 15 s, 60 s | After those four tries. The mail stays unseen until something else rings: new mail, a session starting, a turn ending |
+| A queued turn the provider refused, or whose marker failed | 1 s, 5 s, 15 s | Then it is held for the user to send now or remove |
+| The release of that queued turn | The same delays, the last repeating | When it lands, or when the thread is stopped or deleted |
+| Boot recovery of rows a dead process was handing over | 1 s, 5 s, 15 s, then every 60 s | When it lands. If even reading which rows were orphaned fails, the database open fails and is retried after its cooldown |
+
 Still open:
 - The window inside the provider's own send, before it answers. A crash there leaves the row `uncertain`, which now reports the problem instead of replaying the message. Closing the window needs an idempotent provider request.
-- The renderer's copy of `SpawnedThreadStatus` still lacks `"uncertain"`.
 - A database copied into the overlay is a snapshot. Codex's writes there do not reach the real home, and a later build does not refresh it.
 
 ## 13. Shipped while this was worked out
