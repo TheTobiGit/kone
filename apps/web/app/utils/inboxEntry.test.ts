@@ -19,6 +19,7 @@ describe("inbox entry labels", () => {
     expect(inboxStateLabel({ state: "seen", rings: true, seenVia: "inbox" })).toBe("Read");
     expect(inboxStateLabel({ state: "seen", rings: true, seenVia: "wait" })).toBe("Answered a wait");
     expect(inboxStateLabel({ state: "retracted", rings: true, seenVia: null })).toBe("Taken back");
+    expect(inboxStateLabel({ state: "uncertain", rings: true, seenVia: null })).toBe("May not have arrived");
   });
 
   test("the stamp counts from when it was seen, else when it arrived", () => {

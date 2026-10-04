@@ -668,8 +668,8 @@ export class AgentInboxRepo implements AgentInboxStore {
     }
   }
 
-  /** What still waits for a thread: unseen, and being handed over right
-   *  now, oldest first. */
+  /** What still waits for a thread: unseen, being handed over right now, and
+   *  uncertain, oldest first. */
   listWaitingInbox(recipientThreadId: string): InboxRow[] {
     const db = this.dbh.handle();
     if (!db) return [];
@@ -678,7 +678,7 @@ export class AgentInboxRepo implements AgentInboxStore {
       const rows = db
         .prepare(
           `SELECT ${INBOX_COLUMNS} FROM agent_inbox
-            WHERE recipient_thread_id = ? AND state IN ('unseen', 'handing')
+            WHERE recipient_thread_id = ? AND state IN ('unseen', 'handing', 'uncertain')
             ORDER BY ${INBOX_ORDER}`,
         )
         .all(recipientThreadId) as InboxDbRow[];

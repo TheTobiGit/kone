@@ -84,6 +84,13 @@ describe("inbox view", () => {
     expect(entry?.answers).toBeNull();
   });
 
+  test("an uncertain message waits, flagged", () => {
+    const [entry] = waitingInbox(source([row({ state: "uncertain" })]), "t");
+    expect(entry?.state).toBe("uncertain");
+    expect(entry?.uncertain).toBe(true);
+    expect(waitingInbox(source([row({})]), "t")[0]).not.toHaveProperty("uncertain");
+  });
+
   test("history takes a sane limit", () => {
     const src = source([row({ state: "seen" })]);
     inboxHistoryView(src, "t");

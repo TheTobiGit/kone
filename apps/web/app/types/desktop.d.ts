@@ -1051,7 +1051,9 @@ export type QueuedTurnRow = {
 // and stays as history once seen. These are the rows the inbox panel reads.
 export type InboxKind = "note" | "question" | "pushback" | "answer" | "report" | "notice" | "job";
 /** `handing` is a message being handed over in a turn right now. */
-export type InboxState = "unseen" | "handing" | "seen" | "retracted";
+/** `uncertain` is a message kone was handing over when it restarted: nothing
+ *  says whether it arrived, and nothing will hand it over again. */
+export type InboxState = "unseen" | "handing" | "seen" | "retracted" | "uncertain";
 /** How a seen message was seen: carried by a turn, read with the inbox tool,
  *  or returned to a sender parked waiting on it. */
 export type InboxSeenVia = "turn" | "inbox" | "wait";
@@ -1073,6 +1075,8 @@ export type InboxEntry = {
   /** False for a message held for the recipient's next turn. */
   rings: boolean;
   state: InboxState;
+  /** Set while the message is uncertain: it may not have arrived. */
+  uncertain?: true;
   sender: InboxSender | null;
   body: string;
   replyTo: string | null;
@@ -2065,7 +2069,11 @@ export type SpawnedThreadStatus =
   | "stillborn"
   | "completed"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  // Only on a wait pinned to a job kone was handing over when it restarted:
+  // nothing on record says whether the child got it, and nothing will hand
+  // it over again.
+  | "uncertain";
 
 /** One spawned child, projected for both the parent agent's wait tool and the
  *  UI — one shape, one source (trap #10: no second view model). */

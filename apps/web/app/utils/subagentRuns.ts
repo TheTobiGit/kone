@@ -159,7 +159,8 @@ export type DelegatesState = { rows: DelegateRow[]; running: number; streaming: 
 // are "parked", not terminal: the child is paused on the one thing that needs
 // the user, so it still counts as live and keeps the dock open. An interrupted
 // child stopped mid-flight, the same way the dock already renders a `stopped`
-// run — so it reads "failed", not a state of its own.
+// run — so it reads "failed", not a state of its own. So does an uncertain
+// one: its job may never have arrived, and nothing will hand it over again.
 const THREAD_STATUS_TO_STATE = {
   starting: "working",
   working: "working",
@@ -169,6 +170,7 @@ const THREAD_STATUS_TO_STATE = {
   failed: "failed",
   interrupted: "failed",
   stillborn: "failed",
+  uncertain: "failed",
   idle: "idle",
 } satisfies Record<SpawnedThreadStatus, DelegateState>;
 
@@ -229,6 +231,8 @@ function threadHint(thread: SpawnedThread): DelegateRowHint {
       return failedThreadHint(thread);
     case "interrupted":
       return { hint: "" };
+    case "uncertain":
+      return { hint: "kone restarted while handing this over" };
     case "idle":
       return { hint: "" };
   }
@@ -257,6 +261,8 @@ function threadStatusText(thread: SpawnedThread): string {
       return "Failed to start";
     case "interrupted":
       return "Interrupted";
+    case "uncertain":
+      return "May not have arrived";
     case "idle":
       return "Queued";
   }
