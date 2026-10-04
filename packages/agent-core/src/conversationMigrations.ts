@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1161,6 +1161,16 @@ function migration0025InboxUncertain(db: DatabaseSync): void {
   `);
 }
 
+/** When a row turned uncertain, kept apart from its state: reading it from
+ *  the inbox marks it seen, and that must not erase that nothing records
+ *  whether it was delivered. */
+function migration0026InboxUncertainAt(db: DatabaseSync): void {
+  db.exec(`
+    ALTER TABLE agent_inbox ADD COLUMN uncertain_at INTEGER;
+    UPDATE agent_inbox SET uncertain_at = COALESCE(sent_at, created_at) WHERE state = 'uncertain';
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1187,6 +1197,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 23, name: "InboxRings", run: migration0023InboxRings },
   { id: 24, name: "InboxSentAt", run: migration0024InboxSentAt },
   { id: 25, name: "InboxUncertain", run: migration0025InboxUncertain },
+  { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
 ];
 
 export interface MigrationOptions {

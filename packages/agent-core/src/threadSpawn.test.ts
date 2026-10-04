@@ -1747,6 +1747,23 @@ describe("continueThread under the ringer", () => {
     expect(out.threads[0]).toMatchObject({ status: "uncertain", terminal: true, handedOver: false });
     expect(out.threads[0]!.detail).toContain("agent_followup again with a new requestId");
   });
+
+  test("an uncertain job the child has read in its inbox still settles a wait uncertain", async () => {
+    const inbox = new MemoryAgentInbox();
+    const mailbox = new IrcMailbox(inbox);
+    const h = makeEngine({ jobs: mailbox });
+    setupParent(h.store, h.providers);
+    const child = await busyChild(h);
+    const { turnId: jobId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Now add tests." });
+    mailbox.sendingDelivery(mailbox.claimJob(child)!.deliveryId);
+    inbox.recoverAsAfterRestart();
+    expect(mailbox.getInbox(child).messages.map((m) => m.id)).toContain(jobId);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: [jobId], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "uncertain", terminal: true, handedOver: false });
+  });
 });
 
 // ── settle reports ───────────────────────────────────────────────────────────

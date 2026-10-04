@@ -73,6 +73,9 @@ export interface InboxRow {
   /** When the hand-over carrying it went to the provider. Set only while it
    *  is being handed over: a crash after this may have delivered it. */
   sentAt: number | null;
+  /** When a restart left it uncertain: handed to the provider with nothing
+   *  on record to say whether it arrived. Stays once the row is read. */
+  uncertainAt: number | null;
 }
 
 export interface InboxInsert {
@@ -143,7 +146,7 @@ export interface AgentInboxStore {
 
 const INBOX_COLUMNS = `inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind,
                        urgent, rings, reply_to, body, state, delivery_id, block_id, turn_id,
-                       seen_via, dedupe_key, project_path, created_at, seen_at, sent_at`;
+                       seen_via, dedupe_key, project_path, created_at, seen_at, sent_at, uncertain_at`;
 
 /** Arrival order. rowid settles two messages written in the same millisecond,
  *  which a broadcast does routinely. */
@@ -219,6 +222,7 @@ type InboxDbRow = {
   created_at: number;
   seen_at: number | null;
   sent_at: number | null;
+  uncertain_at: number | null;
   /** Present on RETURNING rows, which come back in no promised order. */
   row_seq?: number;
 };
@@ -261,6 +265,7 @@ function rowToInbox(row: InboxDbRow): InboxRow {
     createdAt: row.created_at,
     seenAt: row.seen_at,
     sentAt: row.sent_at,
+    uncertainAt: row.uncertain_at,
   };
 }
 
@@ -318,12 +323,12 @@ function reconcileOrphanedInboxClaims(db: DatabaseSync, now: number): void {
   // SAFETY: RETURNING names exactly UncertainRow's columns.
   const uncertain = db
     .prepare(
-      `UPDATE agent_inbox SET state = 'uncertain', delivery_id = NULL
+      `UPDATE agent_inbox SET state = 'uncertain', uncertain_at = ?, delivery_id = NULL
         WHERE state = 'handing'
         RETURNING inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, project_path,
                   (SELECT title FROM threads WHERE thread_id = agent_inbox.recipient_thread_id) AS recipient_title`,
     )
-    .all() as UncertainRow[];
+    .all(now) as UncertainRow[];
   if (uncertain.length === 0) return;
   const insert = db.prepare(
     `INSERT INTO agent_inbox (inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, urgent, rings,
@@ -777,6 +782,7 @@ export class MemoryAgentInbox implements AgentInboxStore {
       createdAt: input.createdAt ?? Date.now(),
       seenAt: null,
       sentAt: null,
+      uncertainAt: null,
     });
     return "inserted";
   }
@@ -857,6 +863,7 @@ export class MemoryAgentInbox implements AgentInboxStore {
     for (const row of this.rows) {
       if (row.state !== "handing") continue;
       row.state = row.sentAt === null ? "unseen" : "uncertain";
+      if (row.state === "uncertain") row.uncertainAt = Date.now();
       row.deliveryId = null;
     }
   }

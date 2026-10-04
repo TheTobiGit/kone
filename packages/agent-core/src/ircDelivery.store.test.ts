@@ -438,6 +438,24 @@ describe("recovery of a hand-over that was on its way", () => {
     expect(second.mailbox.getInbox("parent").messages.find((m) => m.id === id)).toBeUndefined();
   });
 
+  // Reading says the recipient saw it, not that it ran: whoever waits on the
+  // job must still learn it may never have arrived, in this process and the
+  // next.
+  test("reading an uncertain job leaves it uncertain to whoever waits on it", () => {
+    const dir = freshDir();
+    const first = processOn(dir, { live: false });
+    const { id } = jobOnItsWay(first, "Revert the migration.");
+    first.stop();
+
+    const second = processOn(dir, { live: false });
+    second.mailbox.getInbox("parent");
+    const uncertain = { recipient: "parent", handedOver: false, turnId: null, uncertain: true };
+    expect(second.mailbox.jobTurn(id)).toEqual(uncertain);
+    second.stop();
+
+    expect(processOn(dir, { live: false }).mailbox.jobTurn(id)).toEqual(uncertain);
+  });
+
   test("a hand-over never marked sent goes back to unseen and is handed over again", () => {
     const dir = freshDir();
     const first = processOn(dir, { live: false });
