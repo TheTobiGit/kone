@@ -448,3 +448,52 @@ describe("Send now, against the real store", () => {
     expect(stateOf(thread, held)).toBe("failed");
   });
 });
+
+describe("a steer on a provider that can't steer, against the real store", () => {
+  const steerRows = (threadId: string) =>
+    store.listQueuedTurns(threadId).filter((r) => r.dispatchMode === "steer" && r.state === "queued");
+
+  function park(threadId: string, requestId: string): void {
+    adapter.emit({
+      ...base(threadId),
+      type: "approval.requested",
+      requestId,
+      turnId: "live",
+      approval: { kind: "command", title: "rm -rf build" },
+    });
+  }
+
+  test("a turn parked on the user's approval is not interrupted; the steer waits", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    park(thread, "req-1");
+
+    await service.steerTurn({ threadId: thread, input: "a note from Ada" });
+
+    expect(steerRows(thread)).toHaveLength(1);
+    expect(adapter.interrupted).toEqual([]);
+  });
+
+  test("once the approval is answered, the next steer interrupts", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    park(thread, "req-1");
+    await service.steerTurn({ threadId: thread, input: "first" });
+    adapter.emit({ ...base(thread), type: "approval.resolved", requestId: "req-1", decision: "allow-once" });
+
+    await service.steerTurn({ threadId: thread, input: "second" });
+
+    expect(steerRows(thread)).toHaveLength(2);
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+
+  test("a turn not parked is interrupted as before", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+
+    await service.steerTurn({ threadId: thread, input: "now" });
+
+    expect(steerRows(thread)).toHaveLength(1);
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+});
