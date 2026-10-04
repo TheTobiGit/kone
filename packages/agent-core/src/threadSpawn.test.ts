@@ -19,6 +19,7 @@ import {
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
+import { MemoryAgentInbox } from "./store/agentInbox.js";
 import { startIrcDelivery } from "./ircDelivery.js";
 import { createMailboxReportSink, renderSettleReport, type SettledTurnReport, type SettleReportSink } from "./settleReports.js";
 import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
@@ -1726,6 +1727,25 @@ describe("continueThread under the ringer", () => {
     expect(out.timedOut).toBe(false);
     expect(out.allTerminal).toBe(true);
     expect(out.turnIds).toEqual(["turn-b"]);
+  });
+
+  test("agent_wait on a job kone was handing over when it restarted settles uncertain, never handed over", async () => {
+    const inbox = new MemoryAgentInbox();
+    const mailbox = new IrcMailbox(inbox);
+    const h = makeEngine({ jobs: mailbox });
+    setupParent(h.store, h.providers);
+    const child = await busyChild(h);
+    const { turnId: jobId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Now add tests." });
+    const claim = mailbox.claimJob(child)!;
+    mailbox.sendingDelivery(claim.deliveryId);
+    inbox.recoverAsAfterRestart();
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: [jobId], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.allTerminal).toBe(true);
+    expect(out.threads[0]).toMatchObject({ status: "uncertain", terminal: true, handedOver: false });
+    expect(out.threads[0]!.detail).toContain("agent_followup again with a new requestId");
   });
 });
 

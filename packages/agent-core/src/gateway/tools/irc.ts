@@ -62,6 +62,18 @@ export interface IrcMessageRecord {
    *  recipient's transcript — so a delivery retried after a failed send does
    *  not write it twice, and the turn that delivers it can name its block. */
   blockId?: string;
+  /** kone restarted while handing it over, and nothing on record says whether
+   *  the recipient got it: it may already be in the recipient's context. */
+  uncertain?: true;
+}
+
+/** Where a job stands, for a wait pinned to it. */
+export interface JobTurn {
+  recipient: string;
+  handedOver: boolean;
+  turnId: string | null;
+  /** kone restarted while handing it over; nothing says whether it arrived. */
+  uncertain?: true;
 }
 
 /** Who is asking for a roster, and the scope they may see. */
@@ -200,6 +212,7 @@ function recordFromRow(row: InboxRow): IrcMessageRecord {
   if (row.urgent) record.urgent = true;
   if (row.sender) record.sender = row.sender;
   if (row.blockId) record.blockId = row.blockId;
+  if (row.state === "uncertain") record.uncertain = true;
   return record;
 }
 
@@ -829,20 +842,24 @@ export class IrcMailbox {
   /**
    * Read incoming messages from the thread's inbox. A read marks what it
    * returns seen; a peek leaves it unseen. A message a hand-over is carrying
-   * right now is in neither: it is on its way into a turn.
+   * right now is in neither: it is on its way into a turn. What kone was
+   * handing over when it restarted, uncertain, comes first, flagged: nothing
+   * hands it over again, so this read is where it is seen.
    */
   getInbox(
     threadId: string,
     options?: { peek?: boolean; limit?: number },
   ) {
     const limit = options?.limit && options.limit > 0 ? options.limit : undefined;
-    const unseen = this.inbox.listUnseenInbox(threadId, limit);
+    const uncertain = this.inbox.listUncertainInbox(threadId);
+    const unseen = [...uncertain, ...this.inbox.listUnseenInbox(threadId, limit)].slice(0, limit);
     if (options?.peek === true) {
       return { messages: unseen.map(recordFromRow), unreadCount: this.inbox.unseenInboxCount(threadId) };
     }
     // A job is work handed over as a turn of its own, and its sender's handle
-    // on that turn: reading the inbox never takes it.
-    const readable = unseen.filter((row) => row.kind !== "job");
+    // on that turn: reading the inbox never takes it — unless it is uncertain,
+    // which no turn will carry.
+    const readable = unseen.filter((row) => row.kind !== "job" || row.state === "uncertain");
     const taken = new Set(this.inbox.markInboxSeen(readable.map((row) => row.inboxId), "inbox"));
     return {
       messages: readable.filter((row) => taken.has(row.inboxId)).map((row) => ({ ...recordFromRow(row), read: true })),
@@ -940,10 +957,15 @@ export class IrcMailbox {
   }
 
   /** Where a job stands: who it is for, whether it was handed over yet, and
-   *  the turn that carried it once it was. Null when there is no such job. */
-  jobTurn(inboxId: string): { recipient: string; handedOver: boolean; turnId: string | null } | null {
+   *  the turn that carried it once it was. An uncertain job was not handed
+   *  over as far as anything on record says, and never will be on its own.
+   *  Null when there is no such job. */
+  jobTurn(inboxId: string): JobTurn | null {
     const row = this.inbox.inboxMessage(inboxId);
     if (!row || row.kind !== "job") return null;
+    if (row.state === "uncertain") {
+      return { recipient: row.recipientThreadId, handedOver: false, turnId: null, uncertain: true };
+    }
     // Taken by a turn whose settle the store has yet to write.
     const pending = row.state === "handing" && row.deliveryId ? this.unsettled.get(row.deliveryId) : undefined;
     if (pending) return { recipient: row.recipientThreadId, handedOver: true, turnId: pending.turnId };
@@ -969,6 +991,8 @@ export class IrcMailbox {
    *  nothing hands them over again, and a job's id already stands for the
    *  turn that took it. */
   settleDelivery(deliveryId: string, turnId: string | null): void {
+    // The link first, apart from the settle: recovery settles by it alone.
+    if (turnId !== null) this.inbox.linkInboxDelivery(deliveryId, turnId);
     const settled = this.inbox.settleInboxDelivery(deliveryId, turnId);
     if (settled === null) {
       const pending = this.unsettled.has(deliveryId);
@@ -1189,7 +1213,8 @@ function renderInboxLine(m: IrcMessageRecord, now: number): string {
   const kind = m.kind ?? "note";
   const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
   const ago = formatSince(m.createdAt, now);
-  return `[${m.id}] ${kind} from ${m.sender ? senderLabel(m.sender) : m.from}${replyTo}, ${ago} ago:\n${m.message}`;
+  const flag = m.uncertain ? " (uncertain: kone restarted while handing it to you — it may already be in your context)" : "";
+  return `[${m.id}] ${kind} from ${m.sender ? senderLabel(m.sender) : m.from}${replyTo}, ${ago} ago${flag}:\n${m.message}`;
 }
 
 /** One message as agent_inbox returns it in structured form. */
@@ -1204,6 +1229,7 @@ function inboxEntry(m: IrcMessageRecord): GatewayRecord {
     message: m.message,
   };
   if (m.sender?.kind === "agent") entry.relationship = m.sender.relationship;
+  if (m.uncertain) entry.uncertain = true;
   return entry;
 }
 

@@ -1269,7 +1269,11 @@ export type SpawnedThreadStatus =
   | "stillborn"
   | "completed"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  // Only on a wait pinned to a job kone was handing over when it restarted:
+  // nothing on record says whether the child got it, and nothing will hand
+  // it over again.
+  | "uncertain";
 
 /** A top-level thread's rolled-up state, as the assistant sees it. Derived at
  *  read time from the parked gate, the newest assistant block and whether a
@@ -1318,6 +1322,9 @@ export type SpawnedThread = {
   status: SpawnedThreadStatus;
   /** True once the child has settled and will not move again on its own. */
   terminal: boolean;
+  /** On a wait pinned to a job: false when the job was never handed over as
+   *  far as anything on record says (status `uncertain`). */
+  handedOver?: boolean;
   createdAt: number;
   updatedAt: number;
   /** Wall-clock millis the child's turns have been running, for "replied in 52s". */
