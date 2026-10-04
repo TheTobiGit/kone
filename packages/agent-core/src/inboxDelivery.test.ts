@@ -51,6 +51,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
   const kicks: string[] = [];
   const steers: { input: SendTurnInput; options?: StartThreadTurnOptions }[] = [];
   const restarts: string[] = [];
+  const interrupts: string[] = [];
   const journaled: { id: string; before: string | undefined }[] = [];
   const placedLast: string[] = [];
   const listeners = new Set<(event: RuntimeEvent) => void>();
@@ -59,6 +60,9 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
     service: {
       threadRuntime: () => rt,
       kickTurnSlot: (threadId) => kicks.push(threadId),
+      interruptTurn: async (threadId) => {
+        interrupts.push(threadId);
+      },
       onEvent: (listener) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -116,6 +120,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
     kicks,
     steers,
     restarts,
+    interrupts,
     journaled,
     placedLast,
     send,
@@ -195,7 +200,7 @@ describe("the ringer", () => {
   });
 
   test("urgent goes into a running turn, and settles with the steered turn", async () => {
-    const { clock, steers, send, mailbox } = harness({ busy: true });
+    const { clock, steers, send, mailbox } = harness({ busy: true, turnStartedAt: 1 });
     send("a", "stop — that file is being rewritten", { urgent: true });
     send("c", "a plain question", { kind: "question" });
     clock.tick();
@@ -309,7 +314,7 @@ describe("jobs", () => {
   });
 
   test("an urgent job goes into the running turn; a plain one waits for it to end", async () => {
-    const h = harness({ busy: true });
+    const h = harness({ busy: true, turnStartedAt: 1 });
     h.job("plain job");
     h.clock.tick();
     await flush();
@@ -322,6 +327,47 @@ describe("jobs", () => {
     expect(h.steers[0]!.input.input).toContain("stop and revert");
     expect(h.steers[0]!.input.input).not.toContain("plain job");
     expect(h.mailbox.jobCount("b")).toBe(1);
+  });
+
+  // A provider that cannot take a message mid-turn: a steer would only queue
+  // it, and settle the job with the queue's id, which no turn ever carries.
+  test("an urgent job to a provider that cannot steer ends the turn, and waits for the next one, unseen", async () => {
+    const h = harness({ busy: true, turnStartedAt: 1, steers: false });
+    const id = h.job("stop and revert", true);
+    h.clock.tick();
+    await flush();
+    expect(h.steers).toHaveLength(0);
+    expect(h.interrupts).toEqual(["b"]);
+    expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: false, turnId: null });
+
+    // Ringing again in the same turn does not interrupt it twice.
+    h.send("a", "and this", { urgent: true });
+    h.clock.tick();
+    await flush();
+    expect(h.interrupts).toEqual(["b"]);
+
+    // The next turn is the job's own, ahead of anything the user queued, and
+    // it settles with the turn the provider started.
+    h.set({});
+    expect(h.delivery.cutsIn?.("b")).toBe(true);
+    const turn = h.delivery.carry("b", null)!;
+    expect(turn.input.input).toContain("stop and revert");
+    turn.settle("turn-2");
+    expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: true, turnId: "turn-2" });
+  });
+
+  test("urgent mail waits for a starting turn to announce itself, then goes in", async () => {
+    const h = harness({ busy: true, turnStartedAt: null });
+    h.job("stop and revert", true);
+    h.clock.tick();
+    await flush();
+    expect(h.steers).toHaveLength(0);
+
+    h.set({ busy: true, turnStartedAt: 5 });
+    h.emit({ ...base, type: "turn.started", turnId: "turn-1" });
+    h.clock.tick();
+    await flush();
+    expect(h.steers).toHaveLength(1);
   });
 
   test("a job to a parked thread is held until the user answers", () => {
