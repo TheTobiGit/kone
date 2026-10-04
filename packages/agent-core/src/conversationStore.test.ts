@@ -1959,6 +1959,21 @@ describe("queued turns schema", () => {
         updated_at INTEGER NOT NULL,
         promoted_at INTEGER
       );
+      -- The queue read joins each row's block, and the baseline creates this.
+      CREATE TABLE blocks (
+        seq              INTEGER PRIMARY KEY,
+        block_id         TEXT NOT NULL UNIQUE,
+        thread_id        TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+        role             TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        turn_id          TEXT,
+        text             TEXT,
+        state            TEXT CHECK (state IS NULL OR state IN ('running', 'completed', 'failed', 'interrupted')),
+        error            TEXT,
+        at               INTEGER NOT NULL,
+        ended_at         INTEGER,
+        attachments_json TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json)),
+        source           TEXT NOT NULL DEFAULT 'native' CHECK (source IN ('native', 'fork-import'))
+      );
       -- Not read by this test, but the row below claims the v1 baseline ran,
       -- and the baseline creates this table. Later rungs add columns to it, so
       -- a fixture that skipped it would be claiming a lineage it doesn't have.

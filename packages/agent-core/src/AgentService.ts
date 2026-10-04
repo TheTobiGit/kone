@@ -2310,7 +2310,9 @@ export class AgentService {
       return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
-    const pending = await this.pendingQueueIds(input.threadId);
+    const rows = await this.pendingQueueRows(input.threadId);
+    const pending = rows ? rows.map((r) => r.queueId) : null;
+    const sender = rows?.find((r) => r.queueId === queueId)?.sender;
     const queued: Extract<RuntimeEvent, { type: "turn.queued" }> = {
       type: "turn.queued",
       threadId: input.threadId,
@@ -2325,6 +2327,7 @@ export class AgentService {
       attachmentsJson: row.attachments ? JSON.stringify(row.attachments) : null,
     };
     if (pending) queued.order = pending;
+    if (sender) queued.sender = sender;
     if (row.skills?.length) queued.skills = row.skills;
     // The stamps the row was journaled with, so the renderer can mark the
     // promoted turn without waiting for a re-read of the queue.
@@ -2334,13 +2337,14 @@ export class AgentService {
     return { threadId: input.threadId, turnId: queueId };
   }
 
-  /** Every pending queue id on the thread, in the order they will run — what
-   *  a new row's position and turn.queued's `order` are read from. Null when
-   *  the store read fails; positions then fall back to the in-memory mirror. */
-  private async pendingQueueIds(threadId: string): Promise<string[] | null> {
+  /** Every pending queue row on the thread, in the order they will run — what
+   *  a new row's position, turn.queued's `order` and its `sender` are read
+   *  from. Null when the store read fails; positions then fall back to the
+   *  in-memory mirror. */
+  private async pendingQueueRows(threadId: string): Promise<QueuedTurnRow[] | null> {
     const store = this.queueStore;
     try {
-      return (await store.listQueuedTurns(threadId)).map((r) => r.queueId);
+      return await store.listQueuedTurns(threadId);
     } catch {
       return null;
     }
