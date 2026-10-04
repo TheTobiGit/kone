@@ -129,8 +129,11 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
           message: text,
           kind: "report",
           sender,
+          // One report per settled turn: the same turn reported again is
+          // already in the parent's inbox.
+          dedupeKey: `report:${report.childThreadId}:${report.turnId}`,
         });
-        return sent.messageId;
+        return sent?.messageId ?? null;
       } catch (err) {
         // Nothing is lost: the result is still what agent_wait returns.
         console.warn(`[agent] could not report ${report.childThreadId}'s settled turn:`, err);

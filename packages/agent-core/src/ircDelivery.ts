@@ -19,9 +19,10 @@ import { renderCourierMessage } from "./senderHeader.js";
 //                 already happening rather than queueing behind it;
 //   · idle      → wake it with a turn of its own.
 //
-// Either way the message is drained from the inbox as it goes, so the agent
-// reads it once and the inbox tool stays what it is: a way to catch up on what
-// arrived while nobody could reach you.
+// Either way the batch is claimed from the inbox before it goes and settled
+// once the provider takes the turn, so the agent reads it once and the inbox
+// tool stays what it is: a way to catch up on what arrived while nobody could
+// reach you.
 //
 // Both are silent turns. Nobody said them, so no user block is journaled — the
 // transcript shows an agent being interrupted by a peer, which is what happened.
@@ -34,9 +35,9 @@ import { renderCourierMessage } from "./senderHeader.js";
  *  fanning out across a fleet. */
 export const IRC_DELIVERY_DEBOUNCE_MS = 400;
 
-/** How many messages ride one delivery. Past this the rest stay in the inbox
- *  for the recipient to drain deliberately — a wake carrying forty messages is
- *  not a wake, it is a context dump. */
+/** How many messages ride one delivery. Past this the rest wait for the next
+ *  round — a wake carrying forty messages is not a wake, it is a context
+ *  dump. */
 export const IRC_DELIVERY_BATCH_MAX = 8;
 
 /** The two turn entry points delivery needs. Narrower than the whole dispatcher
@@ -100,29 +101,27 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     // where a thread that comes back later should find them — and coming back
     // is what re-arms this.
     if (!deps.isLive(threadId)) return;
-    // Peeked, not drained. Reading a batch out of the inbox is the only record
-    // that it existed, so taking it before the turn is accepted means a send
-    // that throws — a reaped session, a provider that refused the steer — has
-    // silently eaten the messages: gone from the inbox, never seen by the
-    // agent, and nothing left anywhere to notice. The drain happens below,
-    // after the turn is on its way.
-    const { messages, unreadCount } = deps.mailbox.getInbox(threadId, {
-      peek: true,
-      limit: IRC_DELIVERY_BATCH_MAX,
-    });
-    if (messages.length === 0) return;
-    // A peek reports the whole unread pile, not what is left after the batch —
-    // it took nothing, so nothing is left over yet. The overflow is the
-    // difference.
-    const remaining = Math.max(0, unreadCount - messages.length);
+    // Claimed, not drained. The claim takes the batch away from every other
+    // hand-over, inbox read and waiting sender, but only settles once the turn
+    // is accepted: a send that throws — a reaped session, a provider that
+    // refused the steer — releases it to unseen, where the next delivery finds
+    // it. A crash in between leaves it claimed, and the store's first open puts
+    // it back.
+    const claim = deps.mailbox.claimDelivery(threadId, IRC_DELIVERY_BATCH_MAX);
+    if (!claim) return;
+    const { deliveryId, messages } = claim;
+    const remaining = deps.mailbox.getUnreadCount(threadId);
 
     // Journaled before the turn goes out, so the messages sit above the reply
-    // they prompt. Once each: a delivery retried after a failed send finds
-    // them already on the transcript.
+    // they prompt. Once each: the block is stored with the message the moment
+    // it is written, so a delivery retried after a failed send — or after a
+    // restart — finds it already on the transcript and names the same block.
     for (const message of messages) {
       if (message.blockId || !message.sender || !deps.journal) continue;
       const blockId = deps.journal(threadId, message);
-      if (blockId) message.blockId = blockId;
+      if (!blockId) continue;
+      message.blockId = blockId;
+      deps.mailbox.setBlockId(message.id, blockId);
     }
 
     // The turn names the blocks it carries. A steer lands mid-reply, and only
@@ -135,25 +134,24 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     // A running turn is steered rather than interrupted: the agent is working,
     // and a peer's message is context for that work, not a new assignment. An
     // idle one has no turn to steer, so it gets one.
-    const send = deps.isBusy(threadId)
-      ? deps.dispatcher.steerThreadTurn(input, { silent: true })
-      : deps.dispatcher.sendThreadTurn(input, { silent: true });
     void (async () => {
+      let turnId: string | null;
       try {
-        await send;
+        const result = await (deps.isBusy(threadId)
+          ? deps.dispatcher.steerThreadTurn(input, { silent: true })
+          : deps.dispatcher.sendThreadTurn(input, { silent: true }));
+        turnId = result.turnId;
       } catch (err) {
-        // Left unread on purpose: the batch never reached the agent, so the
+        // Back to unseen on purpose: the batch never reached the agent, so the
         // next delivery — or the agent's own inbox read — should still find it.
+        deps.mailbox.releaseDelivery(deliveryId);
         console.warn(`[agent] irc delivery to ${threadId} failed:`, err);
         return;
       }
-      // Delivered. Drain exactly what was handed over, so a message that
-      // arrived while the turn was starting is still unread and still gets its
-      // own delivery.
-      deps.mailbox.markRead(
-        threadId,
-        messages.map((m) => m.id),
-      );
+      // Delivered. Settle exactly what was claimed, so a message that arrived
+      // while the turn was starting is still unseen and still gets its own
+      // delivery.
+      deps.mailbox.settleDelivery(deliveryId, turnId);
       // Past the batch cap the rest stayed behind. Nothing else is going to
       // come along for them — the senders' events have already fired — so the
       // overflow arms its own round rather than waiting for a message that may

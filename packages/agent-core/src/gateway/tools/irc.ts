@@ -4,6 +4,7 @@ import { COURIER_AGENT_ID, type CourierSender } from "@kone/protocol/message-sen
 import type { AgentSender, ProviderKind, SenderRelationship, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import type { AgentRecord } from "../../ConversationStore.js";
+import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRow } from "../../store/agentInbox.js";
 import type {
   GatewayRecord,
   GatewayToolContext,
@@ -22,13 +23,6 @@ import {
   IRC_SEND_JSON_SCHEMA,
 } from "../schemas.js";
 
-/** How many messages one inbox holds before the oldest is dropped.
- *
- *  A mailbox nobody drains is a leak, and a thread that has been away long
- *  enough to bank fifty messages is not going to be helped by the first one.
- *  The newest are the ones still worth acting on. */
-const MAX_INBOX_MESSAGES = 50;
-
 /** How many messages one pair may trade with nobody else involved before the
  *  bus refuses the next.
  *
@@ -43,14 +37,14 @@ const MAX_PAIR_EXCHANGES = 16;
 /** What an agent_message is for. */
 export type AgentMessageKind = "note" | "question" | "pushback" | "report" | "answer";
 
-/** In-memory representation of a queued inter-agent message. */
+/** One inter-agent message, as the mailbox hands it out. */
 export interface IrcMessageRecord {
   id: string;
   from: string;
   to: string;
   message: string;
   /** Absent on a message from before kinds existed; reads as a note. */
-  kind?: AgentMessageKind;
+  kind?: InboxKind;
   replyTo?: string;
   createdAt: number;
   read: boolean;
@@ -145,12 +139,41 @@ export interface IrcToolInput {
   isThreadLive?: (threadId: string) => boolean;
 }
 
+/** A stored inbox row as the mailbox's message record. */
+function recordFromRow(row: InboxRow): IrcMessageRecord {
+  const record: IrcMessageRecord = {
+    id: row.inboxId,
+    from: row.senderThreadId ?? COURIER_AGENT_ID,
+    to: row.recipientThreadId,
+    message: row.body,
+    kind: row.kind,
+    createdAt: row.createdAt,
+    read: row.state === "seen" || row.state === "retracted",
+    projectPath: row.projectPath,
+  };
+  if (row.replyTo) record.replyTo = row.replyTo;
+  if (row.sender) record.sender = row.sender;
+  if (row.blockId) record.blockId = row.blockId;
+  return record;
+}
+
+/** One hand-over's batch, claimed under `deliveryId`. */
+export interface IrcDeliveryClaim {
+  deliveryId: string;
+  messages: IrcMessageRecord[];
+}
+
 /**
- * In-memory thread mailbox allowing agents in the same project/parent tree
- * to send direct messages and check their inboxes.
+ * Thread mailbox allowing agents in the same project/parent tree to send
+ * direct messages and check their inboxes. The messages themselves live in
+ * the inbox store, so they outlive the process; who is registered under what
+ * name, and the ping-pong counter, are this process's alone.
  */
 export class IrcMailbox {
-  private inboxes = new Map<string, IrcMessageRecord[]>();
+  /** @param inbox where messages are kept; the app passes the conversation
+   *  store, tests and a store-less process get an in-memory one. */
+  constructor(private readonly inbox: AgentInboxStore = new MemoryAgentInbox()) {}
+
   private threads = new Map<string, ThreadRegistration>();
   private agentToThread = new Map<string, string>();
   private deliveryListeners = new Set<(recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void>();
@@ -450,8 +473,13 @@ export class IrcMailbox {
       record.replyTo = input.replyTo;
     }
 
+    // Each recipient's copy is its own stored message, so each has its own id:
+    // one recipient's copy can be seen or retracted without touching another's.
+    // A lone recipient's copy keeps the id the sender is told.
+    const copyIds: string[] = [];
     for (const recipientId of recipients) {
-      const messageCopy: IrcMessageRecord = { ...record };
+      const copyId = recipients.length === 1 ? messageId : `msg_${randomUUID()}`;
+      const messageCopy: IrcMessageRecord = { ...record, id: copyId };
       if (store) {
         messageCopy.sender = agentSenderFor(
           store,
@@ -469,10 +497,14 @@ export class IrcMailbox {
       }
 
       this.enqueue(recipientId, messageCopy);
+      copyIds.push(copyId);
     }
 
     return {
       messageId,
+      /** The id each recipient's copy carries, in `recipients` order — what
+       *  an answer from any of them names as its replyTo. */
+      copyIds,
       delivered: recipients.length > 0,
       recipients,
       message: record,
@@ -496,9 +528,12 @@ export class IrcMailbox {
     message: string;
     kind: AgentMessageKind;
     sender: CourierSender;
-  }) {
+    /** Names what is being carried, so carrying it twice — a settled turn
+     *  reported again — stores nothing the second time. */
+    dedupeKey?: string;
+  }): { messageId: string } | null {
     const messageId = `msg_${randomUUID()}`;
-    this.enqueue(input.to, {
+    const record: IrcMessageRecord = {
       id: messageId,
       from: COURIER_AGENT_ID,
       to: input.to,
@@ -508,21 +543,32 @@ export class IrcMailbox {
       read: false,
       projectPath: input.projectPath,
       sender: input.sender,
-    });
+    };
+    if (!this.enqueue(input.to, record, input.dedupeKey)) return null;
     return { messageId };
   }
 
-  /** Add one copy to a recipient's inbox and tell the delivery listeners. */
-  private enqueue(recipientId: string, message: IrcMessageRecord): void {
-    let queue = this.inboxes.get(recipientId);
-    if (!queue) {
-      queue = [];
-      this.inboxes.set(recipientId, queue);
+  /** Store one copy in a recipient's inbox and tell the delivery listeners.
+   *  False when its dedupe key says it was stored already. Throws when it
+   *  could not be stored at all: a message nobody will ever see must fail
+   *  where its sender can still act on that. */
+  private enqueue(recipientId: string, message: IrcMessageRecord, dedupeKey?: string): boolean {
+    const result = this.inbox.insertInboxMessage({
+      inboxId: message.id,
+      recipientThreadId: recipientId,
+      senderThreadId: message.sender?.kind === "courier" ? null : message.from,
+      sender: message.sender ?? null,
+      kind: message.kind ?? "note",
+      replyTo: message.replyTo ?? null,
+      body: message.message,
+      dedupeKey: dedupeKey ?? null,
+      projectPath: message.projectPath ?? "",
+      createdAt: message.createdAt,
+    });
+    if (result === "duplicate") return false;
+    if (result === "failed") {
+      throw new GatewayToolError("internal", `kone could not store the message for "${recipientId}"; it was not sent.`);
     }
-    queue.push(message);
-    // Oldest first: a backlog this deep means nobody has been reading, and the
-    // newest messages are the ones still worth acting on.
-    if (queue.length > MAX_INBOX_MESSAGES) queue.splice(0, queue.length - MAX_INBOX_MESSAGES);
 
     // Notify delivery listeners with an immutable copy
     const readOnlyCopy = Object.freeze({ ...message });
@@ -533,6 +579,7 @@ export class IrcMailbox {
         // Guard against listener failure
       }
     }
+    return true;
   }
 
   /**
@@ -582,20 +629,22 @@ export class IrcMailbox {
    *
    * The answer is consumed here, as it is returned: it becomes the asking
    * tool call's result, so the delivery that would otherwise steer it into the
-   * same turn a moment later finds nothing left to deliver.
+   * same turn a moment later finds nothing left to deliver. Taking it is one
+   * conditional write — unseen to seen — so a hand-over that claimed it first
+   * keeps it, and one that comes after finds it gone.
    */
   waitForReply(
     threadId: string,
-    messageId: string,
+    messageIds: string | readonly string[],
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<IrcMessageRecord | null> {
+    const asked = new Set([messageIds].flat());
     const take = (): IrcMessageRecord | null => {
-      const queue = this.inboxes.get(threadId) ?? [];
-      const reply = queue.find((m) => !m.read && m.replyTo === messageId);
+      const reply = this.inbox.listUnseenInbox(threadId).find((row) => row.replyTo !== null && asked.has(row.replyTo));
       if (!reply) return null;
-      reply.read = true;
-      return reply;
+      if (this.inbox.markInboxSeen([reply.inboxId], "wait").length === 0) return null;
+      return { ...recordFromRow(reply), read: true };
     };
     const already = take();
     if (already) return Promise.resolve(already);
@@ -611,7 +660,7 @@ export class IrcMailbox {
       };
       const onAbort = (): void => finish(null);
       const unsubscribe = this.onMessageDelivered((recipient, message) => {
-        if (recipient === threadId && message.replyTo === messageId) finish(take());
+        if (recipient === threadId && message.replyTo !== undefined && asked.has(message.replyTo)) finish(take());
       });
       const timer = setTimeout(() => finish(null), Math.min(timeoutMs, AGENT_MESSAGE_WAIT_MAX_MS));
       if (signal?.aborted) finish(null);
@@ -644,86 +693,80 @@ export class IrcMailbox {
   }
 
   /**
-   * Read incoming messages from the thread's inbox.
+   * Read incoming messages from the thread's inbox. A read marks what it
+   * returns seen; a peek leaves it unseen. A message a hand-over is carrying
+   * right now is in neither: it is on its way into a turn.
    */
   getInbox(
     threadId: string,
     options?: { peek?: boolean; limit?: number },
   ) {
-    const queue = this.inboxes.get(threadId) ?? [];
-    const peek = options?.peek === true;
     const limit = options?.limit && options.limit > 0 ? options.limit : undefined;
-
-    // Filter unread messages
-    const unreadIndices: number[] = [];
-    const unreadMessages: IrcMessageRecord[] = [];
-
-    for (let i = 0; i < queue.length; i++) {
-      if (!queue[i]!.read) {
-        unreadIndices.push(i);
-        unreadMessages.push(queue[i]!);
-      }
+    const unseen = this.inbox.listUnseenInbox(threadId, limit);
+    if (options?.peek === true) {
+      return { messages: unseen.map(recordFromRow), unreadCount: this.inbox.unseenInboxCount(threadId) };
     }
-
-    const countToTake = limit !== undefined ? Math.min(limit, unreadMessages.length) : unreadMessages.length;
-    const selectedMessages = unreadMessages.slice(0, countToTake);
-
-    if (!peek) {
-      // Mark selected messages as read
-      for (let i = 0; i < countToTake; i++) {
-        const idx = unreadIndices[i]!;
-        queue[idx]!.read = true;
-      }
-    }
-
-    const remainingUnread = unreadMessages.length - (peek ? 0 : countToTake);
-
+    const taken = new Set(this.inbox.markInboxSeen(unseen.map((row) => row.inboxId), "inbox"));
     return {
-      messages: selectedMessages,
-      unreadCount: remainingUnread,
+      messages: unseen.filter((row) => taken.has(row.inboxId)).map((row) => ({ ...recordFromRow(row), read: true })),
+      unreadCount: this.inbox.unseenInboxCount(threadId),
     };
   }
 
-  /** Mark exactly these messages read — the ones a delivery handed over —
-   *  rather than the first N unread, which a message taken back in the
-   *  meantime would shift onto one the agent never saw. */
-  markRead(threadId: string, messageIds: readonly string[]): void {
-    const ids = new Set(messageIds);
-    for (const message of this.inboxes.get(threadId) ?? []) {
-      if (ids.has(message.id)) message.read = true;
-    }
+  /** Claim up to `limit` unseen messages for one hand-over. Null when there
+   *  are none. Until the claim is settled or released no other hand-over,
+   *  inbox read or waiting sender can take them. */
+  claimDelivery(threadId: string, limit: number): IrcDeliveryClaim | null {
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit);
+    if (!claim) return null;
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
   }
 
-  /** Take back a message nobody has read yet. True when it was still unread —
-   *  false once it was delivered or read, when there is nothing to take back. */
-  retract(threadId: string, messageId: string): boolean {
-    const message = (this.inboxes.get(threadId) ?? []).find((m) => m.id === messageId);
-    if (!message || message.read) return false;
-    message.read = true;
-    return true;
+  /** The provider took the turn carrying this hand-over: its messages are
+   *  seen, and remember the turn. */
+  settleDelivery(deliveryId: string, turnId: string | null): void {
+    this.inbox.settleInboxDelivery(deliveryId, turnId);
+  }
+
+  /** The hand-over's send failed: its messages are unseen again, and keep the
+   *  block each was written as. */
+  releaseDelivery(deliveryId: string): void {
+    this.inbox.releaseInboxDelivery(deliveryId);
+  }
+
+  /** Remember the transcript block a message was written as. */
+  setBlockId(messageId: string, blockId: string): void {
+    this.inbox.setInboxBlockId(messageId, blockId);
+  }
+
+  /** Take back a message nobody has seen yet. True when it was still unseen —
+   *  false once it was handed over, read, or is being handed over now. */
+  retract(_threadId: string, messageId: string): boolean {
+    return this.inbox.retractInboxMessage(messageId);
   }
 
   /**
    * Get the count of unread messages for a thread.
    */
   getUnreadCount(threadId: string): number {
-    const queue = this.inboxes.get(threadId) ?? [];
-    return queue.filter((m) => !m.read).length;
+    return this.inbox.unseenInboxCount(threadId);
   }
 
   /**
-   * Clear inbox or all state.
+   * Forget a thread's registration, or every registration. Stored messages go
+   * with their thread, not with this; an in-memory inbox is cleared alongside.
    */
   clear(threadId?: string): void {
+    const memory = this.inbox instanceof MemoryAgentInbox ? this.inbox : null;
     if (threadId) {
       const reg = this.threads.get(threadId);
       if (reg?.agentName) {
         this.agentToThread.delete(this.agentKey(reg.projectPath, reg.agentName));
       }
-      this.inboxes.delete(threadId);
+      memory?.clear(threadId);
       this.threads.delete(threadId);
     } else {
-      this.inboxes.clear();
+      memory?.clear();
       this.threads.clear();
       this.agentToThread.clear();
       this.pairExchanges.clear();
@@ -738,6 +781,14 @@ export function getIrcMailbox(): IrcMailbox {
   if (!defaultMailbox) {
     defaultMailbox = new IrcMailbox();
   }
+  return defaultMailbox;
+}
+
+/** Make the default mailbox one that keeps its messages in `inbox`. The app
+ *  calls this once, before anything reads the default, so every tool,
+ *  delivery and courier shares the stored inbox. */
+export function configureIrcMailbox(inbox: AgentInboxStore): IrcMailbox {
+  defaultMailbox = new IrcMailbox(inbox);
   return defaultMailbox;
 }
 
@@ -856,7 +907,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     if (parsed.wait === true) {
       const reply = await mailbox.waitForReply(
         ctx.threadId,
-        result.messageId,
+        result.copyIds,
         parsed.timeoutMs ?? AGENT_MESSAGE_WAIT_MAX_MS,
         ctx.signal,
       );
