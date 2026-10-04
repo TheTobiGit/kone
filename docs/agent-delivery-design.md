@@ -371,7 +371,7 @@ Each phase ships on its own and leaves the app working and tested.
 | 4 | Jobs: `agent_followup` and `app_send_to_thread` | Built (`3a1c55f5`), behind `delivery.v2`, off by default |
 | 5 | kone steer | Not started |
 | 6 | The inbox in the app | Done (`1bb49544`, `04100edf`, `0b071123`) |
-| 7 | "Still out" on reports | Not started |
+| 7 | "Still out" on reports | Done (`71567947`) |
 
 ### Phase 0: never interrupt a thread parked on the user
 
@@ -442,6 +442,7 @@ Each phase ships on its own and leaves the app working and tested.
 - **Change:** a report that rings names the work still out (§8).
 - **Files:** `settleReports.ts`; `spawnControl.ts`.
 - **Tests:** a report with delegates and workers still running names them; one with none adds nothing.
+- **As built:** in `settleReports.ts` and `threadSpawn.ts`; `spawnControl.ts` needed no change. Still out means the parent's other hand-offs the spawn engine tracks whose current turn has not settled (running, starting, or parked on a question or approval). An agent idle between turns is not out. Under `delivery.v2`, neither is a follow-up job still waiting in its inbox. Only the courier's settle reports carry the line, and only when they ring: a held interruption leaves it off because it would be stale. A delegate's own `agent_message` report does not carry it.
 
 ## 13. Shipped while this was worked out
 
