@@ -63,6 +63,7 @@ import { useSessionReducer } from "./session/sessionReducer";
 import {
   useSessionQueue,
   queuedBlockIdsOf,
+  usersOwnQueuedRows,
   sortQueuedByIds,
   parseQueuedAttachments,
   mergeQueueReturn,
@@ -358,6 +359,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     pendingApprovals,
     anchorFor,
     queuedBlockIdsOf,
+    usersOwnQueuedRows,
     sortQueuedByIds,
     parseQueuedAttachments,
     noteCompactedBoundary,
