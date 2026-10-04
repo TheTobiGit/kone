@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import type { CourierSender } from "@kone/protocol/message-sender";
 import { setUserDataDir } from "./userDataDir.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
-import { IRC_DELIVERY_BATCH_MAX, startIrcDelivery } from "./ircDelivery.js";
+import { IRC_DELIVERY_BATCH_MAX, IRC_DELIVERY_DEBOUNCE_MS, IRC_DELIVERY_RETRY_MS, startIrcDelivery } from "./ircDelivery.js";
 import type { IrcTurnDispatcher } from "./ircDelivery.js";
 import type { SendTurnInput, TurnStartResult } from "./types.js";
 
@@ -60,6 +60,8 @@ function processOn(dir: string, opts: { live?: boolean; send?: (input: SendTurnI
   const sent: SendTurnInput[] = [];
   const journaled: string[] = [];
   const pending = new Set<() => void>();
+  /** The delay every arming asked for, in order. */
+  const delays: number[] = [];
   const liveListeners = new Set<(threadId: string) => void>();
   let live = opts.live ?? true;
   const send = async (input: SendTurnInput): Promise<TurnStartResult> => {
@@ -81,7 +83,8 @@ function processOn(dir: string, opts: { live?: boolean; send?: (input: SendTurnI
       journaled.push(message.id);
       return `blk-${message.id}`;
     },
-    schedule: (fn) => {
+    schedule: (fn, ms) => {
+      delays.push(ms);
       pending.add(fn);
       return () => pending.delete(fn);
     },
@@ -98,6 +101,7 @@ function processOn(dir: string, opts: { live?: boolean; send?: (input: SendTurnI
       for (const fn of due) fn();
     },
     armed: () => pending.size,
+    delays,
     report: (text: string) =>
       mailbox.sendCourierMessage({ to: "parent", projectPath: "/repo", message: text, kind: "report", sender: COURIER }),
     /** session.started for a thread. */
@@ -156,6 +160,69 @@ describe("delivery on the stored inbox", () => {
     expect(proc.journaled).toEqual([sent!.messageId]);
     expect(proc.sent.map((s) => s.userBlockId)).toEqual([`blk-${sent!.messageId}`, `blk-${sent!.messageId}`]);
     expect(proc.mailbox.getUnreadCount("parent")).toBe(0);
+  });
+
+  test("a released batch is tried again on its own, later each time, until the tries run out", async () => {
+    const dir = freshDir();
+    const proc = processOn(dir, {
+      send: async () => {
+        throw new Error("provider refused");
+      },
+    });
+    proc.report("result");
+    for (let i = 0; i <= IRC_DELIVERY_RETRY_MS.length; i++) {
+      proc.tick();
+      await settle();
+    }
+    expect(proc.sent).toHaveLength(IRC_DELIVERY_RETRY_MS.length + 1);
+    expect(proc.delays).toEqual([IRC_DELIVERY_DEBOUNCE_MS, ...IRC_DELIVERY_RETRY_MS]);
+    // Out of tries: it waits in the inbox for the next message or the thread
+    // coming back.
+    expect(proc.armed()).toBe(0);
+    expect(proc.mailbox.getUnreadCount("parent")).toBe(1);
+  });
+
+  test("a retry that lands starts the count over", async () => {
+    const dir = freshDir();
+    let fail = true;
+    const proc = processOn(dir, {
+      send: async (input) => {
+        if (fail) throw new Error("provider refused");
+        return { threadId: input.threadId, turnId: "turn-ok" };
+      },
+    });
+    proc.report("one");
+    proc.tick();
+    await settle();
+    fail = false;
+    proc.tick();
+    await settle();
+    expect(proc.mailbox.getUnreadCount("parent")).toBe(0);
+
+    fail = true;
+    proc.report("two");
+    proc.tick();
+    await settle();
+    expect(proc.delays.at(-1)).toBe(IRC_DELIVERY_RETRY_MS[0]);
+  });
+
+  test("a held notice arms nothing: it waits for whatever turn comes next", async () => {
+    const dir = freshDir();
+    const proc = processOn(dir);
+    proc.mailbox.sendNotice({ to: "parent", projectPath: "/repo", message: "The user spoke to Ada.", rings: false });
+    expect(proc.armed()).toBe(0);
+    proc.comeBack("parent");
+    expect(proc.armed()).toBe(0);
+    expect(proc.mailbox.heldCount("parent")).toBe(1);
+
+    // A ringing notice is handed over like any message.
+    proc.mailbox.sendNotice({ to: "parent", projectPath: "/repo", message: "Stop here.", rings: true });
+    proc.tick();
+    await settle();
+    expect(proc.sent).toHaveLength(1);
+    expect(proc.sent[0]!.input).toBe("<kone_notice>\nStop here.\n</kone_notice>");
+    expect(proc.journaled).toHaveLength(1);
+    expect(proc.mailbox.heldCount("parent")).toBe(1);
   });
 
   test("mail sent while the recipient was away survives a restart and goes out on session.started", async () => {

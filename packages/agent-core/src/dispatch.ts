@@ -14,7 +14,7 @@ import {
   type QuitResumeThreadSnapshot,
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
-import { renderCourierMessage, renderSenderHeader, threadAgentName } from "./senderHeader.js";
+import { renderSenderHeader, threadAgentName } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
 import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
 import {
@@ -36,7 +36,8 @@ import type {
   TurnStartResult,
 } from "./types.js";
 import { turnLabel } from "./types.js";
-import type { CourierSender } from "@kone/protocol/message-sender";
+import { getIrcMailbox, type IrcMailbox } from "./gateway/tools/irc.js";
+import { IRC_DELIVERY_BATCH_MAX, renderIncoming } from "./ircDelivery.js";
 import {
   describeCopiedFiles,
   freshenBase,
@@ -45,9 +46,6 @@ import {
   type ReleaseThreadWorkspace,
   type RenameThreadWorkspaceBranch,
 } from "./workspaceBuild.js";
-
-/** Who may sign a queued notice: kone the app, or its courier. */
-type SystemOrCourierSender = { kind: "system" } | CourierSender;
 
 export type {
   FreshenThreadWorkspaceBase,
@@ -82,6 +80,9 @@ export interface ThreadDispatcherDeps {
   releaseWorkspace?: ReleaseThreadWorkspace;
   freshenWorkspaceBase?: FreshenThreadWorkspaceBase;
   renameWorkspaceBranch?: RenameThreadWorkspaceBranch;
+  /** The inbox kone's notices are kept in until a turn carries them. Absent,
+   *  the app's mailbox, resolved when first needed. */
+  mailbox?: IrcMailbox;
 }
 
 export interface StartThreadOptions {
@@ -172,11 +173,13 @@ export interface ThreadDispatcher {
    *  a steer splits the reply where they landed — or null when nothing was
    *  written. */
   recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): string | null;
-  /** Tell a thread something without waking it: the notice goes on its
-   *  transcript now (as kone's, or the courier's when it is carrying another
-   *  agent's work) and rides in front of whatever its next turn is, so the
-   *  agent reads it the next time it runs. */
-  queueNotice(threadId: string, text: string, sender?: SystemOrCourierSender): void;
+  /** Tell a thread something as kone. The notice is stored in its inbox, and
+   *  this returns once it is. Held (the default), it never starts a turn: it
+   *  rides in front of whatever turn the thread runs next, and is written to
+   *  the transcript then. Ringing, it is handed over on its own, as any
+   *  message is. Returns the notice's inbox id; throws when it could not be
+   *  stored. */
+  queueNotice(threadId: string, text: string, options?: { rings?: boolean }): string;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -268,9 +271,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  awaited, and the directory it produces is then removed. The alternative is
    *  a worktree nobody asked for, owned by a thread that never started. */
   private readonly cancelledWorkspaces = new Set<string>();
-  /** Notices queued for a thread's next turn (queueNotice) — kone telling an
-   *  idle agent something it should know but need not be woken for. */
-  private readonly pendingNotices = new Map<string, Array<{ text: string; sender: SystemOrCourierSender }>>();
+  private readonly mailboxDep: IrcMailbox | undefined;
 
   // Threads whose live provider session came up with none of the thread's
   // context — no stored resume id to offer, or the provider refused the one we
@@ -297,6 +298,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.service = deps.service;
     this.store = deps.store;
     this.broadcast = deps.broadcast;
+    this.mailboxDep = deps.mailbox;
     this.provisionWorkspace = deps.provisionWorkspace;
     this.releaseWorkspace = deps.releaseWorkspace;
     this.freshenWorkspaceBase = deps.freshenWorkspaceBase;
@@ -637,14 +639,52 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   ): Promise<TurnStartResult> {
     // An agent-sent turn is announced to renderers by block id, so the id has
     // to exist before the journal write rather than be minted inside it.
-    const input =
+    const named =
       requested.sender && requested.sender.kind !== "user" && !requested.userBlockId && !options?.silent
         ? { ...requested, userBlockId: randomUUID() }
         : requested;
-    if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
+    if (options?.parentTurnId) this.spawnParentTurnIds.set(named.threadId, options.parentTurnId);
+    // The replay is read before anything below is journaled, so the digest
+    // ends at the last thing the agent actually saw.
+    const replay = this.takeReplay(named.threadId);
+    // Then what was held for this turn: claimed now, written to the
+    // transcript above the turn's own words, and seen only once the provider
+    // takes the turn.
+    const held = this.claimHeld(named.threadId);
+    try {
+      const input = held ? withBlocks(named, held.blockIds, options?.silent === true) : named;
+      const started = this.dispatchComposed(
+        input,
+        destination,
+        [replay, held?.text].filter((part): part is string => Boolean(part)).join("\n\n") || null,
+        options,
+      );
+      if (!held) return started;
+      const mailbox = this.mailbox();
+      // Accepted: the held messages were in it. Refused: they were not, so
+      // they wait for the next turn, their blocks kept so nothing is written
+      // twice.
+      void started.then(
+        (result) => mailbox.settleDelivery(held.deliveryId, result.turnId),
+        () => mailbox.releaseDelivery(held.deliveryId),
+      );
+      return started;
+    } catch (error) {
+      if (held) this.mailbox().releaseDelivery(held.deliveryId);
+      throw error;
+    }
+  }
+
+  /** Journal a turn whose preamble is settled, and hand it to the service. */
+  private dispatchComposed(
+    input: SendTurnInput,
+    destination: "send" | "steer",
+    preamble: string | null,
+    options?: StartThreadTurnOptions,
+  ): Promise<TurnStartResult> {
     const delivery = composeTurnDelivery({
       message: input.input,
-      preamble: this.replayPreamble(input.threadId),
+      preamble,
       sender: input.sender,
       silent: options?.silent,
     });
@@ -714,11 +754,39 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       : this.service.sendTurn(dispatched);
   }
 
-  queueNotice(threadId: string, text: string, sender: SystemOrCourierSender = { kind: "system" }): void {
-    this.recordAgentMessage({ threadId, text, sender });
-    const queued = this.pendingNotices.get(threadId) ?? [];
-    queued.push({ text, sender });
-    this.pendingNotices.set(threadId, queued);
+  queueNotice(threadId: string, text: string, options?: { rings?: boolean }): string {
+    return this.mailbox().sendNotice({
+      to: threadId,
+      projectPath: this.store.threadProjectPath(threadId) ?? "",
+      message: text,
+      rings: options?.rings ?? false,
+    }).messageId;
+  }
+
+  private mailbox(): IrcMailbox {
+    return this.mailboxDep ?? getIrcMailbox();
+  }
+
+  /** Claim what is held for a thread's next turn, write each message to the
+   *  transcript under its sender (once: a message released by a refused turn
+   *  keeps the block it was written as), and render the lot for the turn's
+   *  preamble. Null when nothing is held. */
+  private claimHeld(threadId: string): { deliveryId: string; text: string; blockIds: string[] } | null {
+    const mailbox = this.mailbox();
+    const claim = mailbox.claimHeld(threadId, IRC_DELIVERY_BATCH_MAX);
+    if (!claim) return null;
+    for (const message of claim.messages) {
+      if (message.blockId || !message.sender) continue;
+      const blockId = this.recordAgentMessage({ threadId, text: message.message, sender: message.sender });
+      if (!blockId) continue;
+      message.blockId = blockId;
+      mailbox.setBlockId(message.id, blockId);
+    }
+    return {
+      deliveryId: claim.deliveryId,
+      text: renderIncoming(claim.messages, mailbox.heldCount(threadId)),
+      blockIds: claim.messages.flatMap((m) => (m.blockId ? [m.blockId] : [])),
+    };
   }
 
   recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): string | null {
@@ -766,7 +834,6 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   forgetThread(threadId: string): void {
-    this.pendingNotices.delete(threadId);
     this.threadsNeedingReplay.delete(threadId);
     this.spawnParentTurnIds.delete(threadId);
     this.dispatchTails.delete(threadId);
@@ -1192,25 +1259,26 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   /** The recovered-transcript preamble for a thread whose session came up blank,
-   *  or null. Read before the new prompt is journaled, so the digest ends at the
-   *  last thing the agent actually saw. Consumed once. */
-  private replayPreamble(threadId: string): string | null {
-    const notices = this.takeNotices(threadId);
-    if (!this.threadsNeedingReplay.delete(threadId)) return notices;
+   *  or null. Read before anything of the new turn is journaled, so the digest
+   *  ends at the last thing the agent actually saw. Consumed once. */
+  private takeReplay(threadId: string): string | null {
+    if (!this.threadsNeedingReplay.delete(threadId)) return null;
     const thread = this.store.loadThread(threadId);
-    const replay = thread ? buildResumeContext(thread) : null;
-    return [replay, notices].filter((part): part is string => Boolean(part)).join("\n\n") || null;
+    return thread ? buildResumeContext(thread) : null;
   }
+}
 
-  /** The notices queued for a thread's next turn, rendered, and forgotten. */
-  private takeNotices(threadId: string): string | null {
-    const queued = this.pendingNotices.get(threadId);
-    if (!queued?.length) return null;
-    this.pendingNotices.delete(threadId);
-    return queued
-      .map(({ text, sender }) =>
-        sender.kind === "courier" ? renderCourierMessage(sender, text) : `<kone_notice>\n${text}\n</kone_notice>`,
-      )
-      .join("\n\n");
-  }
+/** The turn, naming the held blocks it carries in front of its own. A steer
+ *  moves only the blocks it names to where it landed, so the held messages
+ *  move with the words they were carried in front of. */
+function withBlocks(input: SendTurnInput, held: readonly string[], silent: boolean): SendTurnInput {
+  if (held.length === 0) return input;
+  // A turn that journals its own words needs its own block id now: unnamed,
+  // it would take the last held block's, and be written over it.
+  const ownId = input.userBlockId ?? (silent ? undefined : randomUUID());
+  const own = input.userBlockIds ?? (ownId ? [ownId] : []);
+  const all = [...held, ...own];
+  const named: SendTurnInput = { ...input, userBlockId: all[all.length - 1] };
+  if (all.length > 1) named.userBlockIds = all;
+  return named;
 }

@@ -11,7 +11,7 @@ import { ModelPreferenceRepo } from "./store/modelPreferences.js";
 import type { ModelPreference } from "./modelPreference.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
-import { AgentInboxRepo, type AgentInboxStore, type InboxClaim, type InboxInsert, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
+import { AgentInboxRepo, type AgentInboxStore, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
@@ -273,8 +273,8 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see AgentInboxRepo */
-  claimInbox(recipientThreadId: string, limit: number): InboxClaim | null {
-    return this.agentInbox.claimInbox(recipientThreadId, limit);
+  claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null {
+    return this.agentInbox.claimInbox(recipientThreadId, limit, which);
   }
 
   /** @see AgentInboxRepo */
@@ -313,8 +313,8 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see AgentInboxRepo */
-  unseenInboxCount(recipientThreadId: string): number {
-    return this.agentInbox.unseenInboxCount(recipientThreadId);
+  unseenInboxCount(recipientThreadId: string, which?: InboxRing): number {
+    return this.agentInbox.unseenInboxCount(recipientThreadId, which);
   }
 
   /** @see AgentInboxRepo */

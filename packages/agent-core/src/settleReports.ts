@@ -97,9 +97,6 @@ export interface MailboxReportSinkDeps {
   store: IrcToolStore;
   /** Is the parent mid-turn? Only an interruption asks: see below. */
   isBusy?: (threadId: string) => boolean;
-  /** Put kone's words in front of the parent's next turn without starting one,
-   *  signed by the courier. */
-  queueNotice?: (threadId: string, text: string, sender: CourierSender) => void;
 }
 
 /**
@@ -109,7 +106,8 @@ export interface MailboxReportSinkDeps {
  * idle parent. An interruption is not: somebody stopped the child, and when
  * that was the user, waking the parent invites it to start the work up again
  * over the user's head. So an interruption reaches a parent that is running,
- * and otherwise waits as a notice on its next turn.
+ * and otherwise is held in its inbox for its next turn. Held or not, it is
+ * the same stored report, retractable until it is seen.
  */
 export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleReportSink {
   return {
@@ -118,10 +116,7 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
       if (!meta) return null;
       const sender = courierReportSender(deps.store, report);
       const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId);
-      if (report.status === "interrupted" && deps.isBusy && !deps.isBusy(report.parentThreadId)) {
-        deps.queueNotice?.(report.parentThreadId, text, sender);
-        return null;
-      }
+      const rings = !(report.status === "interrupted" && deps.isBusy && !deps.isBusy(report.parentThreadId));
       try {
         const sent = deps.mailbox.sendCourierMessage({
           to: report.parentThreadId,
@@ -132,6 +127,7 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
           // One report per settled turn: the same turn reported again is
           // already in the parent's inbox.
           dedupeKey: `report:${report.childThreadId}:${report.turnId}`,
+          rings,
         });
         return sent?.messageId ?? null;
       } catch (err) {

@@ -225,10 +225,12 @@ export class HandOffLifecycle {
       }
       const name = this.nameOf(threadId);
       if (decision === "continue") {
-        await this.tell(
+        // Still working, it hears now. Finished meanwhile, it hears on its
+        // next turn rather than being woken to carry on with nothing.
+        this.tell(
           threadId,
           `${callerName} was stopped by the user and decided you should carry on. Keep working; your report goes to ${callerName} when you are done.`,
-          { wake: false },
+          { rings: this.deps.service.isThreadBusy(threadId) },
         );
       } else if (decision === "stop") {
         await this.stopDelegate(threadId, callerName);
@@ -255,10 +257,10 @@ export class HandOffLifecycle {
       return "stopped";
     }
     const callerName = this.nameOf(callerThreadId);
-    await this.tell(
+    this.tell(
       threadId,
       `${callerName} withdrew this task. Stop here: start nothing new, stop any workers you started, and reply with a short note of what you did and what is left.`,
-      { wake: true },
+      { rings: true },
     );
     return "told";
   }
@@ -275,19 +277,19 @@ export class HandOffLifecycle {
 
   /**
    * The user typed into a delegate's or contractor's thread directly. Its
-   * delegator is told — quietly, on its next turn, unless it is running now —
-   * so it does not keep coordinating on plans the user just changed.
+   * delegator is told quietly, on its next turn, so it does not keep
+   * coordinating on plans the user just changed.
    */
-  async onUserSpokeTo(threadId: string, text: string): Promise<void> {
+  onUserSpokeTo(threadId: string, text: string): void {
     const lineage = this.deps.store.threadLineage(threadId);
     const delegator = lineage?.parentThreadId;
     if (!delegator || lineage.relationshipToParent !== "delegation") return;
     const said = text.trim().replace(/\s+/g, " ");
     const quote = said.length > 280 ? `${said.slice(0, 279)}…` : said;
-    await this.tell(
+    this.tell(
       delegator,
       `The user spoke to ${this.nameOf(threadId)} directly: "${quote}". What it was asked may have changed; check in with it (agent_message) if that matters to what you are coordinating.`,
-      { wake: false },
+      { rings: false },
     );
   }
 
@@ -304,7 +306,7 @@ export class HandOffLifecycle {
     const { sender: _sender, ...typed } = input;
     const result = await dispatch(typed);
     try {
-      await this.onUserSpokeTo(typed.threadId, typed.input);
+      this.onUserSpokeTo(typed.threadId, typed.input);
     } catch (err) {
       console.warn("[agent] could not tell the delegator the user spoke directly:", err);
     }
@@ -330,10 +332,10 @@ export class HandOffLifecycle {
 
     const name = this.nameOf(threadId);
     for (const child of working) {
-      await this.tell(
+      this.tell(
         child.threadId,
         `${name}, who handed you this work, was stopped by ${by}. Keep working for now: ${name} is deciding whether you carry on, and you will be told if you should stop.`,
-        { wake: false },
+        { rings: true },
       );
     }
 
@@ -386,28 +388,29 @@ export class HandOffLifecycle {
     // promote its next queued follow-up and it would carry on working.
     await this.deps.service.cancelQueuedTurns(threadId);
     if (this.deps.service.isThreadBusy(threadId)) await this.deps.service.interruptTurn(threadId);
-    // It hears why before anything else, then decides for its own delegates.
-    this.deps.dispatcher.queueNotice(
+    // It hears why before anything else, in front of its next turn — the
+    // decision turn, when it has agents of its own to decide for.
+    this.tell(
       threadId,
       `${delegatorName} stopped this task after the user stopped ${delegatorName}. Start nothing new.`,
+      { rings: false },
     );
     await this.onStopped(threadId, delegatorName);
   }
 
-  /** Say something to an agent as kone: into its running turn if it has one,
-   *  otherwise as a turn of its own when it should act now, otherwise queued
-   *  for whenever it next runs. */
-  private async tell(threadId: string, text: string, options: { wake: boolean }): Promise<void> {
-    if (this.deps.service.isThreadBusy(threadId)) {
-      await this.deps.dispatcher.steerThreadTurn({ threadId, input: text, sender: SYSTEM });
-      return;
-    }
-    if (options.wake) {
-      await this.deps.dispatcher.ensureThreadSession(threadId, { resume: true });
-      await this.deps.dispatcher.sendThreadTurn({ threadId, input: text, sender: SYSTEM }, { generateTitle: false });
-      return;
-    }
-    this.deps.dispatcher.queueNotice(threadId, text);
+  /** Say something to an agent as kone. It goes in the agent's inbox, and
+   *  this returns once it is stored (it throws when it could not be). A
+   *  ringing notice is handed over on its own — into the running turn, or as
+   *  a turn of its own — with a closed session brought back up for it first.
+   *  A held one starts nothing: it rides in front of whatever turn the agent
+   *  runs next. */
+  private tell(threadId: string, text: string, options: { rings: boolean }): void {
+    this.deps.dispatcher.queueNotice(threadId, text, { rings: options.rings });
+    if (!options.rings || this.deps.service.hasLiveSession(threadId)) return;
+    // The session coming up is what hands it over.
+    void this.deps.dispatcher.ensureThreadSession(threadId, { resume: true }).catch((err) => {
+      console.warn(`[agent] could not bring ${threadId} back up to tell it something:`, err);
+    });
   }
 
   /** What an agent is called — the same name every other surface uses. */

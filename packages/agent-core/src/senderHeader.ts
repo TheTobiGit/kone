@@ -97,6 +97,11 @@ export function renderCourierMessage(sender: CourierSender, text: string): strin
   return [courierOpenTag(sender), courierIntro(sender), "", text, "</kone_notice>"].join("\n");
 }
 
+/** A notice kone wrote itself, framed whole for the agent receiving it. */
+export function renderKoneNotice(text: string): string {
+  return `<kone_notice>\n${text}\n</kone_notice>`;
+}
+
 /** The header for a turn `sender` said, or null for the user's own words —
  *  which need none, being what every turn used to be. */
 export function renderSenderHeader(sender: MessageSender | undefined): string | null {
