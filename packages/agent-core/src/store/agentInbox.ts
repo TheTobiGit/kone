@@ -31,9 +31,10 @@ export type InboxSeenVia = "turn" | "inbox" | "wait";
 export type SystemSender = { kind: "system" };
 export type InboxSender = AgentSender | CourierSender | SystemSender;
 /** Which unseen rows a hand-over takes: the ones that ring, handed over on
- *  their own, or the held ones, which ride in front of the recipient's next
- *  turn whatever starts it. */
-export type InboxRing = "ringing" | "held";
+ *  their own; the held ones, which ride in front of the recipient's next turn
+ *  whatever starts it; all of them, for a turn starting now; or only the
+ *  urgent ones, for a running turn. */
+export type InboxRing = "ringing" | "held" | "all" | "urgent";
 
 export interface InboxRow {
   inboxId: string;
@@ -89,8 +90,8 @@ export interface InboxClaim {
  *  in-memory stand-in with the same rules where there is no store. */
 export interface AgentInboxStore {
   insertInboxMessage(input: InboxInsert): InboxInsertResult;
-  /** Take up to `limit` unseen messages of one sort for one hand-over; null
-   *  when there are none. */
+  /** Take up to `limit` unseen messages of one sort for one hand-over,
+   *  answers first and then oldest; null when there are none. */
   claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null;
   /** The provider took the turn: the batch is seen, carried by `turnId`.
    *  Returns how many rows it settled. */
@@ -109,6 +110,8 @@ export interface AgentInboxStore {
   inboxHistory(recipientThreadId: string, limit: number): InboxRow[];
   /** Unseen messages, of one sort or (without `which`) all of them. */
   unseenInboxCount(recipientThreadId: string, which?: InboxRing): number;
+  /** One message, whatever its state; null when there is none. */
+  inboxMessage(inboxId: string): InboxRow | null;
 }
 
 const INBOX_COLUMNS = `inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind,
@@ -118,6 +121,38 @@ const INBOX_COLUMNS = `inbox_id, recipient_thread_id, sender_thread_id, sender_j
 /** Arrival order. rowid settles two messages written in the same millisecond,
  *  which a broadcast does routinely. */
 const INBOX_ORDER = `created_at ASC, rowid ASC`;
+
+/** Hand-over order: answers first, since their askers may be parked on them,
+ *  then arrival. */
+const HANDOVER_ORDER = `(kind = 'answer') DESC, ${INBOX_ORDER}`;
+
+/** The SQL filter for one selection. */
+function selectClause(which: InboxRing | undefined): string {
+  switch (which) {
+    case "ringing":
+      return " AND rings = 1";
+    case "held":
+      return " AND rings = 0";
+    case "urgent":
+      return " AND urgent = 1";
+    default:
+      return "";
+  }
+}
+
+/** The same filter, for rows in memory. */
+function selects(row: InboxRow, which: InboxRing | undefined): boolean {
+  switch (which) {
+    case "ringing":
+      return row.rings;
+    case "held":
+      return !row.rings;
+    case "urgent":
+      return row.urgent;
+    default:
+      return true;
+  }
+}
 
 /** A type alias, not an interface: only an alias carries the implicit index
  *  signature a driver's row record converts to. */
@@ -246,14 +281,19 @@ export class AgentInboxRepo implements AgentInboxStore {
           `UPDATE agent_inbox SET state = 'handing', delivery_id = ?
             WHERE inbox_id IN (
               SELECT inbox_id FROM agent_inbox
-               WHERE recipient_thread_id = ? AND state = 'unseen' AND rings = ?
-               ORDER BY ${INBOX_ORDER}
+               WHERE recipient_thread_id = ? AND state = 'unseen'${selectClause(which)}
+               ORDER BY ${HANDOVER_ORDER}
                LIMIT ?)
             RETURNING ${INBOX_COLUMNS}, rowid AS row_seq`,
         )
-        .all(deliveryId, recipientThreadId, which === "ringing" ? 1 : 0, Math.max(1, limit)) as InboxDbRow[];
+        .all(deliveryId, recipientThreadId, Math.max(1, limit)) as InboxDbRow[];
       if (rows.length === 0) return null;
-      rows.sort((a, b) => a.created_at - b.created_at || (a.row_seq ?? 0) - (b.row_seq ?? 0));
+      rows.sort(
+        (a, b) =>
+          Number(b.kind === "answer") - Number(a.kind === "answer") ||
+          a.created_at - b.created_at ||
+          (a.row_seq ?? 0) - (b.row_seq ?? 0),
+      );
       return { deliveryId, rows: rows.map(rowToInbox) };
     } catch (err) {
       console.error("[conversation-store] claimInbox failed:", err);
@@ -387,15 +427,31 @@ export class AgentInboxRepo implements AgentInboxStore {
     const db = this.dbh.handle();
     if (!db) return 0;
     try {
-      const ring = which === undefined ? "" : ` AND rings = ${which === "ringing" ? 1 : 0}`;
       // SAFETY: an aggregate COUNT answers one row with one integer column.
       const row = db
-        .prepare(`SELECT COUNT(*) AS n FROM agent_inbox WHERE recipient_thread_id = ? AND state = 'unseen'${ring}`)
+        .prepare(
+          `SELECT COUNT(*) AS n FROM agent_inbox WHERE recipient_thread_id = ? AND state = 'unseen'${selectClause(which)}`,
+        )
         .get(recipientThreadId) as { n: number } | undefined;
       return row?.n ?? 0;
     } catch (err) {
       console.error("[conversation-store] unseenInboxCount failed:", err);
       return 0;
+    }
+  }
+
+  inboxMessage(inboxId: string): InboxRow | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection is the column list InboxDbRow is declared from.
+      const row = db.prepare(`SELECT ${INBOX_COLUMNS} FROM agent_inbox WHERE inbox_id = ?`).get(inboxId) as
+        | InboxDbRow
+        | undefined;
+      return row ? rowToInbox(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] inboxMessage failed:", err);
+      return null;
     }
   }
 
@@ -439,7 +495,11 @@ export class MemoryAgentInbox implements AgentInboxStore {
   }
 
   claimInbox(recipientThreadId: string, limit: number, which: InboxRing): InboxClaim | null {
-    const batch = this.unseen(recipientThreadId, which).slice(0, Math.max(1, limit));
+    const unseen = this.unseen(recipientThreadId, which);
+    const batch = [...unseen.filter((r) => r.kind === "answer"), ...unseen.filter((r) => r.kind !== "answer")].slice(
+      0,
+      Math.max(1, limit),
+    );
     if (batch.length === 0) return null;
     const deliveryId = `dlv_${randomUUID()}`;
     for (const row of batch) {
@@ -510,6 +570,11 @@ export class MemoryAgentInbox implements AgentInboxStore {
     return this.unseen(recipientThreadId, which).length;
   }
 
+  inboxMessage(inboxId: string): InboxRow | null {
+    const row = this.rows.find((r) => r.inboxId === inboxId);
+    return row ? { ...row } : null;
+  }
+
   /** Forget one thread's messages, or all of them — the stand-in for a
    *  thread's rows going with it. */
   clear(recipientThreadId?: string): void {
@@ -528,7 +593,7 @@ export class MemoryAgentInbox implements AgentInboxStore {
       (r) =>
         r.recipientThreadId === recipientThreadId &&
         r.state === "unseen" &&
-        (which === undefined || r.rings === (which === "ringing")),
+        selects(r, which),
     );
   }
 

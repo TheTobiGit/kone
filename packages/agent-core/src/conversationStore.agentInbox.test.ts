@@ -219,3 +219,40 @@ describe("the agent inbox store", () => {
     expect(stateOf(store, b!.inboxId)).toBe("other");
   });
 });
+
+describe("what a turn takes from the inbox", () => {
+  test("answers first, then oldest, held and ringing alike", () => {
+    const { store } = freshStore();
+    const held = message({ rings: false });
+    const ringing = message({ kind: "question" });
+    const answer = message({ kind: "answer" });
+    for (const m of [held, ringing, answer]) store.insertInboxMessage(m);
+
+    expect(store.unseenInboxCount("t", "ringing")).toBe(2);
+    expect(store.unseenInboxCount("t", "held")).toBe(1);
+    const claim = store.claimInbox("t", 8, "all");
+    expect(claim?.rows.map((r) => r.inboxId)).toEqual([answer.inboxId, held.inboxId, ringing.inboxId]);
+  });
+
+  test("urgent is claimed on its own, and always rings", () => {
+    const { store } = freshStore();
+    const plain = message({ kind: "question" });
+    const urgent = message({ urgent: true, rings: true });
+    for (const m of [plain, urgent]) store.insertInboxMessage(m);
+
+    expect(store.unseenInboxCount("t", "urgent")).toBe(1);
+    expect(store.claimInbox("t", 8, "urgent")?.rows.map((r) => r.inboxId)).toEqual([urgent.inboxId]);
+    expect(stateOf(store, plain.inboxId)).toBe("unseen");
+  });
+
+  test("one message reads back by id whatever its state", () => {
+    const { store } = freshStore();
+    const m = message({ kind: "question" });
+    store.insertInboxMessage(m);
+    const claim = store.claimInbox("t", 8, "all")!;
+    store.settleInboxDelivery(claim.deliveryId, "turn-1");
+
+    expect(store.inboxMessage(m.inboxId)).toMatchObject({ inboxId: m.inboxId, kind: "question", state: "seen" });
+    expect(store.inboxMessage("msg_nope")).toBeNull();
+  });
+});

@@ -147,6 +147,9 @@ export interface GatewayInput {
    *  agent_list reads to tell a sender what a message would do. */
   threadRuntime?: (threadId: string) => ThreadRuntime | null;
   providerSteers?: (provider: ProviderKind) => boolean;
+  /** Whether the ringer delivers agent mail — what agent_message refuses,
+   *  rings and promises, and what agent_list says a message would do. */
+  deliveryV2?: boolean;
   /** What a thread is parked on, if anything — what the thread list reads to
    *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
    *  from one that is merely idle. Absent, no thread reads as parked, which
@@ -229,6 +232,7 @@ function ircToolInput(input: GatewayInput): IrcToolInput {
   if (input.isThreadLive) tools.isThreadLive = input.isThreadLive;
   if (input.threadRuntime) tools.threadRuntime = input.threadRuntime;
   if (input.providerSteers) tools.providerSteers = input.providerSteers;
+  if (input.deliveryV2) tools.deliveryV2 = true;
   return tools;
 }
 

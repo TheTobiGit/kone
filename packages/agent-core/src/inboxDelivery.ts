@@ -1,0 +1,426 @@
+import { senderRelationshipLabel } from "@kone/protocol/message-sender";
+import type { IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
+import type { ThreadDispatcher } from "./dispatch.js";
+import { IRC_DELIVERY_BATCH_MAX, IRC_DELIVERY_DEBOUNCE_MS, IRC_DELIVERY_RETRY_MS, type ScheduleDelivery } from "./ircDelivery.js";
+import { formatSince, type RecipientState, type ThreadRuntime } from "./recipientState.js";
+import { renderCourierMessage, renderKoneNotice, renderUserHeader } from "./senderHeader.js";
+import type { MessageSender, RuntimeEvent, SendTurnInput } from "./types.js";
+
+// The ringer: one place that decides whether, when and how a message waiting
+// in an agent's inbox is handed over.
+//
+// Everything waits in the inbox. What rings — a question, an answer, a report,
+// a notice kone marks — is handed over by the turn slot: when the recipient's
+// running turn ends, or at once when it is idle, the next turn carries every
+// waiting message in front of whatever starts it (the user's queued message
+// last). What does not ring — a note, an unmarked notice — never starts a turn;
+// it rides in front of the next one, whatever starts it. Only an urgent
+// message goes into a running turn.
+//
+// What the recipient is doing is read when it rings, not when the message was
+// sent: a thread parked on the user holds everything until the user answers; a
+// thread starting or compacting takes its messages as soon as it can; a closed
+// one is brought back up for a message that rings, and for nothing else.
+
+/** The service's side of the turn slot: what is waiting is folded into the
+ *  next turn to start, and settled with that turn once the provider takes it. */
+export interface TurnInbox {
+  /**
+   * Claim what is waiting for a turn starting now on `threadId` and fold it in
+   * front of `turn`. With `turn` null there is nothing else to run, so this
+   * claims only when something rings, and the turn it returns carries nothing
+   * but the inbox. Null when nothing is carried.
+   *
+   * `ownBlockId` is the transcript block of the turn's own words, when it has
+   * one: the user's own words are headed as theirs and go last.
+   */
+  carry(threadId: string, turn: SendTurnInput | null, ownBlockId?: string): CarriedTurn | null;
+}
+
+/** A turn with the inbox folded in, and how to settle what it carries. */
+export interface CarriedTurn {
+  input: SendTurnInput;
+  /** The provider took the turn: what it carries is seen, with that turn. */
+  settle(turnId: string): void;
+  /** It did not: what it carried waits again, its blocks kept. */
+  release(): void;
+}
+
+export interface InboxDeliveryDeps {
+  mailbox: IrcMailbox;
+  service: {
+    threadRuntime(threadId: string): ThreadRuntime;
+    /** Let the turn slot run: it starts a turn for what rings when the thread
+     *  is free, and does nothing when it is not. */
+    kickTurnSlot(threadId: string): void;
+    onEvent(listener: (event: RuntimeEvent) => void): () => void;
+  };
+  dispatcher: Pick<ThreadDispatcher, "steerThreadTurn" | "ensureThreadSession" | "takeReplayPreamble">;
+  /** Put one message on the recipient's transcript under its sender, and hand
+   *  back the block it was written as (null when nothing was written). */
+  journal: (threadId: string, message: IrcMessageRecord) => string | null;
+  /** Who wrote a block on the thread's transcript; null when unknown. */
+  blockSender?: (threadId: string, blockId: string) => MessageSender | null;
+  schedule?: ScheduleDelivery;
+}
+
+export interface InboxDelivery extends TurnInbox {
+  /** Unsubscribe and drop every armed ring. */
+  stop(): void;
+}
+
+/** Start the ringer. Hand its `carry` to the service as the turn slot's
+ *  inbox, and `stop` it on teardown. */
+export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
+  const schedule: ScheduleDelivery =
+    deps.schedule ??
+    ((fn, ms) => {
+      const handle = setTimeout(fn, ms);
+      return () => clearTimeout(handle);
+    });
+  const { mailbox } = deps;
+  const armed = new Map<string, () => void>();
+  /** Failed urgent steers in a row, per thread. */
+  const failures = new Map<string, number>();
+  /** Threads being brought back up for a message that rings. */
+  const restarting = new Set<string>();
+
+  function arm(threadId: string, ms = IRC_DELIVERY_DEBOUNCE_MS): void {
+    armed.get(threadId)?.();
+    armed.set(threadId, schedule(() => ring(threadId), ms));
+  }
+
+  /** Decide, from what the thread is doing now, what a ring does. */
+  function ring(threadId: string): void {
+    armed.delete(threadId);
+    if (mailbox.ringingCount(threadId) === 0) return;
+    const rt = deps.service.threadRuntime(threadId);
+    // Nothing reaches a thread parked on the user, urgent included: the user
+    // answering is what rings again.
+    if (rt.parked) return;
+    // It takes messages shortly: the session coming up, or the compaction
+    // ending, lets the turn slot run.
+    if (rt.starting || rt.compacting) return;
+    if (!rt.live) {
+      restart(threadId);
+      return;
+    }
+    if (rt.busy) {
+      // Only urgent goes into a running turn; the rest is next, when the turn
+      // ends and the turn slot carries it.
+      if (mailbox.urgentCount(threadId) > 0) steerUrgent(threadId);
+      return;
+    }
+    deps.service.kickTurnSlot(threadId);
+  }
+
+  /** Bring a closed session back up. Its start lets the turn slot run, which
+   *  carries what rang. */
+  function restart(threadId: string): void {
+    if (restarting.has(threadId)) return;
+    restarting.add(threadId);
+    void deps.dispatcher
+      .ensureThreadSession(threadId, { resume: true })
+      .catch((err) => console.warn(`[agent] could not bring ${threadId} back up for its inbox:`, err))
+      .finally(() => restarting.delete(threadId));
+  }
+
+  /** Put the urgent messages into the running turn. */
+  function steerUrgent(threadId: string): void {
+    const claim = mailbox.claimUrgent(threadId, IRC_DELIVERY_BATCH_MAX);
+    if (!claim) return;
+    const blockIds = journalAll(threadId, claim.messages);
+    const input: SendTurnInput = {
+      threadId,
+      input: renderInboxTurn(claim.messages, mailbox.urgentCount(threadId)),
+    };
+    nameBlocks(input, blockIds);
+    void (async () => {
+      try {
+        const result = await deps.dispatcher.steerThreadTurn(input, { silent: true });
+        mailbox.settleDelivery(claim.deliveryId, result.turnId);
+        failures.delete(threadId);
+      } catch (err) {
+        mailbox.releaseDelivery(claim.deliveryId);
+        console.warn(`[agent] urgent delivery to ${threadId} failed:`, err);
+        retry(threadId);
+        return;
+      }
+      if (mailbox.urgentCount(threadId) > 0) arm(threadId);
+    })();
+  }
+
+  /** Arm the retry for urgent mail whose steer failed, later each time. */
+  function retry(threadId: string): void {
+    const attempt = failures.get(threadId) ?? 0;
+    const ms = IRC_DELIVERY_RETRY_MS[attempt];
+    if (ms === undefined) {
+      failures.delete(threadId);
+      return;
+    }
+    failures.set(threadId, attempt + 1);
+    if (!armed.has(threadId)) arm(threadId, ms);
+  }
+
+  /** Write each message to the transcript once, and return the blocks. */
+  function journalAll(threadId: string, messages: IrcMessageRecord[]): string[] {
+    for (const message of messages) {
+      if (message.blockId || !message.sender) continue;
+      const blockId = deps.journal(threadId, message);
+      if (!blockId) continue;
+      message.blockId = blockId;
+      mailbox.setBlockId(message.id, blockId);
+    }
+    return messages.flatMap((m) => (m.blockId ? [m.blockId] : []));
+  }
+
+  function carry(threadId: string, turn: SendTurnInput | null, ownBlockId?: string): CarriedTurn | null {
+    // Nothing else to run: only what rings is worth a turn of its own.
+    if (turn === null && mailbox.ringingCount(threadId) === 0) return null;
+    const claim = mailbox.claimForTurn(threadId, IRC_DELIVERY_BATCH_MAX);
+    if (!claim) return null;
+    const carried = journalAll(threadId, claim.messages);
+    const inbox = renderInboxTurn(claim.messages, mailbox.getUnreadCount(threadId));
+    let input: SendTurnInput;
+    let blockIds: string[];
+    if (turn) {
+      const own = ownBlockId ? (deps.blockSender?.(threadId, ownBlockId) ?? null) : null;
+      // The user's words come last, headed as the user's, so the agent can
+      // tell where the messages end and the person it works for begins.
+      const words = own?.kind === "user" ? `${renderUserHeader()}\n\n${turn.input}` : turn.input;
+      input = { ...turn, input: `${inbox}\n\n${words}` };
+      blockIds = [...carried, ...(turn.userBlockIds ?? (ownBlockId ? [ownBlockId] : []))];
+    } else {
+      // A session that came up blank gets its transcript back first, as any
+      // turn would.
+      const replay = deps.dispatcher.takeReplayPreamble(threadId);
+      input = { threadId, input: replay ? `${replay}\n\n${inbox}` : inbox };
+      blockIds = carried;
+    }
+    nameBlocks(input, blockIds);
+    return {
+      input,
+      settle: (turnId) => {
+        mailbox.settleDelivery(claim.deliveryId, turnId);
+      },
+      release: () => {
+        mailbox.releaseDelivery(claim.deliveryId);
+      },
+    };
+  }
+
+  const unsubscribeMail = mailbox.onMessageDelivered((threadId) => arm(threadId));
+  const unsubscribeEvents = deps.service.onEvent((event) => {
+    switch (event.type) {
+      // The user answered: whatever was held for them rings again.
+      case "approval.resolved":
+      case "user-input.resolved":
+      // A session came up: anything urgent that waited for it rings now.
+      case "session.started":
+        if (mailbox.ringingCount(event.threadId) > 0) arm(event.threadId);
+        return;
+      default:
+        return;
+    }
+  });
+
+  return {
+    carry,
+    stop() {
+      unsubscribeMail();
+      unsubscribeEvents();
+      for (const cancel of armed.values()) cancel();
+      armed.clear();
+      failures.clear();
+    },
+  };
+}
+
+/** Name the blocks a turn carries: a steer moves only the blocks it names to
+ *  where it landed. */
+function nameBlocks(input: SendTurnInput, blockIds: readonly string[]): void {
+  if (blockIds.length === 0) return;
+  input.userBlockId = blockIds[blockIds.length - 1];
+  if (blockIds.length > 1) input.userBlockIds = [...blockIds];
+}
+
+/**
+ * How a batch handed over from the inbox reads to the agent receiving it.
+ *
+ * kone's own words — a notice, or the courier carrying another agent's work —
+ * are each framed as kone's. What other agents sent is one tagged block with
+ * one header per sender, so a burst from one agent reads as that agent
+ * speaking, not as several strangers. It says plainly when nobody is waiting
+ * on a reply, which is what keeps two agents from thanking each other.
+ */
+export function renderInboxTurn(messages: IrcMessageRecord[], remaining = 0): string {
+  const kone: string[] = [];
+  const fromAgents: IrcMessageRecord[] = [];
+  for (const m of messages) {
+    if (m.sender?.kind === "courier") kone.push(renderCourierMessage(m.sender, m.message));
+    else if (m.sender?.kind === "system") kone.push(renderKoneNotice(m.message));
+    else fromAgents.push(m);
+  }
+  const overflow =
+    remaining > 0 ? `${remaining} more ${remaining === 1 ? "message is" : "messages are"} still in your inbox.` : "";
+  if (fromAgents.length === 0) return [...kone, overflow].filter(Boolean).join("\n\n");
+  return [...kone, renderAgentSections(fromAgents, overflow)].join("\n\n");
+}
+
+/** Other agents' messages, grouped under one header per sender. */
+function renderAgentSections(messages: IrcMessageRecord[], overflow: string): string {
+  const bySender = new Map<string, IrcMessageRecord[]>();
+  for (const m of messages) {
+    const list = bySender.get(m.from) ?? [];
+    list.push(m);
+    bySender.set(m.from, list);
+  }
+  const sections = [...bySender.values()].map((list) => {
+    const first = list[0]!;
+    const who = (first.sender?.kind === "agent" ? first.sender.name : undefined) ?? first.from;
+    const relation = first.sender?.kind === "agent" ? ` (${senderRelationshipLabel(first.sender.relationship)})` : "";
+    const lines = list.map((m) => {
+      const kind = m.kind && m.kind !== "note" ? ` ${m.kind}` : "";
+      const urgent = m.urgent ? ", urgent" : "";
+      const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
+      return `[${m.id}]${kind}${urgent}${replyTo}:\n${m.message}`;
+    });
+    return [`From \`${who}\`${relation}:`, ...lines].join("\n\n");
+  });
+  const header =
+    messages.length === 1
+      ? "A message from another agent is waiting for you:"
+      : `${messages.length} messages from other agents are waiting for you:`;
+  const asked = messages.some((m) => m.kind === "question" || m.kind === "pushback");
+  const closing = asked
+    ? "The user did not say this — other agents did. A question or pushback is waiting on you: answer it with agent_message (kind \"answer\", replyTo its id) from what you know of the user's intent, asking the user only what you cannot answer. Anything else here needs no reply."
+    : "The user did not say this — other agents did, and nobody is waiting on a reply. Fold anything useful into what you are doing; a bare acknowledgement costs the sender a turn and tells them nothing.";
+  return [
+    "<agent_messages>",
+    header + (overflow ? `\n\n${overflow}` : ""),
+    "",
+    sections.join("\n\n"),
+    "",
+    closing,
+    "</agent_messages>",
+  ].join("\n");
+}
+
+// ── what a send reports ─────────────────────────────────────────────────────
+
+/** What happened to a message, as its sender is told. */
+export type DeliveryOutcome =
+  /** Into the running turn. */
+  | "delivered"
+  /** Its provider cannot take it mid-turn: the running turn is interrupted
+   *  and it lands as the next one. */
+  | "interrupts"
+  /** Next, when the running turn ends. */
+  | "next"
+  /** The recipient was idle: it is taking it now. */
+  | "waking"
+  /** In the inbox, for the recipient's next turn; it starts none. */
+  | "inbox"
+  /** Held: the recipient is waiting on the user. */
+  | "held"
+  /** Starting or compacting: it takes it as soon as it can. */
+  | "soon"
+  /** Its session was closed and is being brought back up for it. */
+  | "restarting"
+  /** The recipient was parked waiting on exactly this answer. */
+  | "returned";
+
+export interface DeliveryReceipt {
+  outcome: DeliveryOutcome;
+  text: string;
+}
+
+export interface DeliveryReceiptInput {
+  /** The recipient as the sender knows it. */
+  name: string;
+  state: RecipientState;
+  /** It rings (handed over on its own) rather than waiting for a turn. */
+  rings: boolean;
+  urgent: boolean;
+  /** An answer the recipient is parked waiting on. */
+  returned: boolean;
+  /** Delivery as the ringer does it; false describes the older routing, where
+   *  every message is steered into a running turn or wakes an idle one. */
+  v2: boolean;
+  now: number;
+}
+
+/**
+ * What a send reports, read from the recipient's state at the moment it was
+ * sent. State can change before the message lands; the ringer reads it again
+ * when it rings.
+ */
+export function deliveryReceipt(input: DeliveryReceiptInput): DeliveryReceipt {
+  const { name, state } = input;
+  if (input.returned) return { outcome: "returned", text: `Returned to ${name}, who was waiting on this answer.` };
+  if (state.state === "waiting-on-user") {
+    if (!input.v2 && state.steers !== false) {
+      return { outcome: "delivered", text: `Delivered into ${name}'s running turn; ${name} is waiting on the user.` };
+    }
+    return {
+      outcome: "held",
+      text: `Held: ${name} is ${state.activity ?? "waiting on the user"}. Nothing reaches ${name} until the user answers — ask the user if you need this sooner.`,
+    };
+  }
+  const notLive = state.state === "closed" || state.state === "ended";
+  if (!input.v2) return legacyReceipt(name, state, notLive);
+  if (!input.rings) {
+    if (notLive) {
+      return { outcome: "inbox", text: `In ${name}'s inbox. ${name}'s session is closed, so it waits until ${name} runs again.` };
+    }
+    if (state.state === "idle") {
+      return { outcome: "inbox", text: `In ${name}'s inbox. ${name} is idle, so it waits until something else starts a turn there.` };
+    }
+    return { outcome: "inbox", text: `In ${name}'s inbox. It reaches ${name} at the start of the next turn ${name} runs.` };
+  }
+  if (state.state === "starting" || state.state === "compacting") {
+    return { outcome: "soon", text: `In ${name}'s inbox: ${name} is ${state.state} and takes it as soon as it can.` };
+  }
+  if (notLive) {
+    return {
+      outcome: "restarting",
+      text: `${name}'s session was closed; kone is bringing it back up, and ${name} takes it then.`,
+    };
+  }
+  if (state.state === "idle") return { outcome: "waking", text: `Delivered: ${name} was idle and is taking it now.` };
+  // Working, or waiting on another agent inside a running turn.
+  if (input.urgent) {
+    if (state.steers === false) {
+      return {
+        outcome: "interrupts",
+        text: `${name}'s provider cannot take a message mid-turn, so kone interrupts ${name}'s turn and this lands as the next one.`,
+      };
+    }
+    return { outcome: "delivered", text: `Delivered into ${name}'s running turn.` };
+  }
+  const doing = state.activity ? `is ${state.state === "working" ? `on ${state.activity}` : state.activity}` : "is working";
+  const since = formatSince(state.since, input.now);
+  return {
+    outcome: "next",
+    text: `Next for ${name}: ${name} ${doing}${since ? ` (${since})` : ""} and takes it when that turn ends.`,
+  };
+}
+
+/** The older routing: a running turn is steered (or, without a steer, cut
+ *  short), an idle thread woken, a closed one left to find it later. */
+function legacyReceipt(name: string, state: RecipientState, notLive: boolean): DeliveryReceipt {
+  if (notLive) {
+    return { outcome: "inbox", text: `In ${name}'s inbox. ${name}'s session is closed, so it waits until ${name} runs again.` };
+  }
+  if (state.state === "starting" || state.state === "compacting") {
+    return { outcome: "soon", text: `In ${name}'s inbox: ${name} is ${state.state} and takes it as soon as it can.` };
+  }
+  if (state.state === "idle") return { outcome: "waking", text: `Delivered: ${name} was idle and is taking it now.` };
+  if (state.steers === false) {
+    return {
+      outcome: "interrupts",
+      text: `${name}'s provider cannot take a message mid-turn, so kone interrupts ${name}'s turn and this lands as the next one.`,
+    };
+  }
+  return { outcome: "delivered", text: `Delivered into ${name}'s running turn.` };
+}

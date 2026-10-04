@@ -667,6 +667,10 @@ export const IrcSendInputSchema = z
     /** What the message is for. Absent reads as a note. */
     kind: z.enum(AGENT_MESSAGE_KINDS).optional(),
     replyTo: z.string().min(1).optional(),
+    /** Seen now, even at the cost of disrupting: into the recipient's running
+     *  turn. Only along a hand-off or from the main agent; never on a
+     *  broadcast, never from a worker. */
+    urgent: z.boolean().optional(),
     /** With a question: park until the answer arrives (up to the cap) and get
      *  it back as this call's result. Off by default — the answer otherwise
      *  reaches you like any message. */
@@ -710,6 +714,11 @@ export const IRC_SEND_JSON_SCHEMA = {
     replyTo: {
       type: "string",
       description: "The message id this answers.",
+    },
+    urgent: {
+      type: "boolean",
+      description:
+        "It must be seen now, even if that disrupts them: it goes into their running turn instead of waiting for it to end. Only to an agent you handed work to or work for, or from the main agent; never on a broadcast, never from a worker.",
     },
     wait: {
       type: "boolean",

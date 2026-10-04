@@ -102,6 +102,16 @@ export function renderKoneNotice(text: string): string {
   return `<kone_notice>\n${text}\n</kone_notice>`;
 }
 
+/** The head of the user's own words in a turn that also carries messages
+ *  from others, so the agent can tell where the user starts. */
+export function renderUserHeader(): string {
+  return [
+    "<from_user>",
+    "What follows is the user's own message. The messages above were waiting for you when it arrived; the user's words outrank them.",
+    "</from_user>",
+  ].join("\n");
+}
+
 /** The header for a turn `sender` said, or null for the user's own words —
  *  which need none, being what every turn used to be. */
 export function renderSenderHeader(sender: MessageSender | undefined): string | null {

@@ -23,6 +23,7 @@ import {
 import { threadWorkingDir } from "./threadWorkspace.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import type { ThreadRuntime } from "./recipientState.js";
+import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
@@ -303,6 +304,8 @@ export class AgentService {
    *  live, each startSession mints a per-session bearer token and stopSession
    *  revokes it — agents reach kone tools over loopback. */
   private gateway: GatewayHandle | null = null;
+  /** What waits in each thread's inbox, carried by the next turn to start. */
+  private turnInbox: TurnInbox | null = null;
   private warming: Promise<void> | null = null;
   /** The discovery round in flight, so concurrent callers share one set of CLI
    *  spawns instead of racing their own. */
@@ -872,7 +875,7 @@ export class AgentService {
     if (this.isBusy(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
-    return this.dispatchToAdapter(input.threadId, routed);
+    return this.dispatchToAdapter(input.threadId, routed, input.userBlockId);
   }
 
   /** Is this thread already running (or about to run) a turn? True while a
@@ -986,7 +989,30 @@ export class AgentService {
     return block ? { ...input, input: withViewBlock(input.input, block) } : input;
   }
 
+  /** Hand one turn to the adapter, with what waits in the thread's inbox
+   *  folded in front of it when the turn slot carries the inbox. What it
+   *  carries is settled with the turn the provider starts, and waits again
+   *  when the provider refuses it. `carried` is a turn the inbox already
+   *  built — one that carries nothing else. */
   private async dispatchToAdapter(
+    threadId: string,
+    turn: SendTurnInput,
+    ownBlockId?: string,
+    carried?: CarriedTurn,
+  ): Promise<TurnStartResult> {
+    const carry = carried ?? this.turnInbox?.carry(threadId, turn, ownBlockId) ?? null;
+    let result: TurnStartResult;
+    try {
+      result = await this.sendToAdapter(threadId, carry ? carry.input : turn);
+    } catch (error) {
+      carry?.release();
+      throw error;
+    }
+    carry?.settle(result.turnId);
+    return result;
+  }
+
+  private async sendToAdapter(
     threadId: string,
     turn: SendTurnInput,
   ): Promise<TurnStartResult> {
@@ -2010,7 +2036,7 @@ export class AgentService {
         }
         return true;
       }
-      const result = await this.dispatchToAdapter(threadId, input);
+      const result = await this.dispatchToAdapter(threadId, input, row.userBlockId);
       if (!this.settlePromoted(threadId, queueId, result.turnId)) {
         // Stopped while the provider was taking it: the words are already
         // back in the composer, so the turn it started is stopped too.
@@ -2353,14 +2379,17 @@ export class AgentService {
       // whatever turn event happens to come first.
       if (this.queueRetries.has(threadId)) return;
       const row = store.claimNextQueuedTurn(threadId);
-      if (!row) return;
+      if (!row) {
+        await this.runInboxTurn(threadId);
+        return;
+      }
       const generation = this.sessionGeneration(threadId);
       this.announceQueuedState(threadId, row, "promoting");
       try {
         const input = this.turnInputFromQueuedRow(row);
         // Stopped or deleted since the claim: the cancel already announced it.
         if (!store.isQueuedTurnClaimed(row.queueId)) return;
-        const result = await this.dispatchToAdapter(threadId, input);
+        const result = await this.dispatchToAdapter(threadId, input, row.userBlockId);
         // Stopped while the provider was taking it: stop the turn it started.
         if (!this.settlePromoted(threadId, row.queueId, result?.turnId)) {
           this.stopOrphanedDelivery(threadId, generation, result?.turnId);
@@ -2372,6 +2401,33 @@ export class AgentService {
     } catch (err) {
       console.error(`[agent] queue drain for ${threadId} failed:`, err);
     }
+  }
+
+  /** With nothing of the user's queued, what rings in the inbox starts a turn
+   *  of its own. A refused one puts the messages back; they ring again when
+   *  something next lets the turn slot run. */
+  private async runInboxTurn(threadId: string): Promise<void> {
+    if (!this.routing.has(threadId) || !this.turnInbox) return;
+    const carried = this.turnInbox.carry(threadId, null);
+    if (!carried) return;
+    try {
+      await this.dispatchToAdapter(threadId, carried.input, undefined, carried);
+    } catch (err) {
+      console.warn(`[agent] a turn for ${threadId}'s inbox did not start:`, err);
+    }
+  }
+
+  /** Let the turn slot run for `threadId`: when the thread is free it starts
+   *  the next turn — the user's next queued message, or one for what rings in
+   *  its inbox — and when it is not, the turn ending does. */
+  kickTurnSlot(threadId: string): void {
+    this.promoteQueuedTurns(threadId);
+  }
+
+  /** Have every turn this service starts carry what waits in the thread's
+   *  inbox. Null hands the inbox back to the dispatcher's own delivery. */
+  setTurnInbox(inbox: TurnInbox | null): void {
+    this.turnInbox = inbox;
   }
 
   /** Settle a claimed row that the provider accepted: mark it promoted and

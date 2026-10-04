@@ -1,0 +1,266 @@
+import { describe, expect, test } from "bun:test";
+import { IrcMailbox } from "./gateway/tools/irc.js";
+import { renderInboxTurn, startInboxDelivery } from "./inboxDelivery.js";
+import type { ThreadRuntime } from "./recipientState.js";
+import type { RuntimeEvent } from "./types.js";
+import type { SendTurnInput, StartThreadTurnOptions } from "./dispatch.js";
+
+const PROJECT = "/tmp/kone-ringer";
+
+function runtime(over: Partial<ThreadRuntime> = {}): ThreadRuntime {
+  return {
+    live: true,
+    starting: false,
+    busy: false,
+    turnStartedAt: null,
+    parked: null,
+    parkedSince: null,
+    compacting: false,
+    steers: true,
+    activeTool: null,
+    lastActivityAt: null,
+    ...over,
+  };
+}
+
+/** A hand-cranked clock, so a ring fires when the test says. */
+function fakeClock() {
+  const pending = new Set<() => void>();
+  return {
+    schedule: (fn: () => void) => {
+      pending.add(fn);
+      return () => pending.delete(fn);
+    },
+    tick: () => {
+      const due = [...pending];
+      pending.clear();
+      for (const fn of due) fn();
+    },
+    armed: () => pending.size,
+  };
+}
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+}
+
+function harness(initial: Partial<ThreadRuntime> = {}) {
+  const mailbox = new IrcMailbox();
+  const clock = fakeClock();
+  let rt = runtime(initial);
+  const kicks: string[] = [];
+  const steers: { input: SendTurnInput; options?: StartThreadTurnOptions }[] = [];
+  const restarts: string[] = [];
+  const listeners = new Set<(event: RuntimeEvent) => void>();
+  const delivery = startInboxDelivery({
+    mailbox,
+    service: {
+      threadRuntime: () => rt,
+      kickTurnSlot: (threadId) => kicks.push(threadId),
+      onEvent: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    dispatcher: {
+      steerThreadTurn: async (input, options) => {
+        const entry: (typeof steers)[number] = { input };
+        if (options) entry.options = options;
+        steers.push(entry);
+        return { threadId: input.threadId, turnId: `steered-${steers.length}` };
+      },
+      ensureThreadSession: async (threadId) => {
+        restarts.push(threadId);
+      },
+      takeReplayPreamble: () => null,
+    },
+    journal: (_threadId, message) => `blk-${message.id}`,
+    blockSender: (_threadId, blockId) => (blockId === "blk-user" ? { kind: "user" } : null),
+    schedule: clock.schedule,
+  });
+  /** Under the ringer a note is kept quiet; everything else rings. */
+  const send = (
+    from: string,
+    message: string,
+    over: { kind?: "note" | "question" | "answer" | "pushback"; urgent?: boolean; replyTo?: string } = {},
+  ) => {
+    const kind = over.kind ?? "note";
+    const input = over.replyTo ? { to: "b", message, kind, replyTo: over.replyTo } : { to: "b", message, kind };
+    return mailbox.sendMessage({ threadId: from, projectPath: PROJECT }, input, undefined, {
+      rings: kind !== "note" || over.urgent === true,
+      urgent: over.urgent === true,
+    });
+  };
+  const emit = (event: RuntimeEvent) => {
+    for (const listener of listeners) listener(event);
+  };
+  return {
+    mailbox,
+    clock,
+    delivery,
+    kicks,
+    steers,
+    restarts,
+    send,
+    emit,
+    set: (over: Partial<ThreadRuntime>) => {
+      rt = runtime(over);
+    },
+  };
+}
+
+const base = { threadId: "b", provider: "codex", at: 0, source: "codex.app-server" } as const;
+const approvalResolved: RuntimeEvent = { ...base, type: "approval.resolved", requestId: "r-1", decision: "allow-once" };
+const sessionStarted: RuntimeEvent = { ...base, type: "session.started" };
+
+describe("the ringer", () => {
+  test("a note never starts a turn; it rides the next one", () => {
+    const { clock, delivery, kicks, send } = harness();
+    send("a", "the config moved");
+    clock.tick();
+
+    expect(kicks).toHaveLength(0);
+    expect(delivery.carry("b", null)).toBeNull();
+
+    const carried = delivery.carry("b", { threadId: "b", input: "next step" });
+    expect(carried?.input.input).toContain("the config moved");
+    expect(carried?.input.input.endsWith("next step")).toBe(true);
+  });
+
+  test("a question to an idle agent lets the turn slot run", () => {
+    const { clock, delivery, kicks, send } = harness();
+    send("a", "which branch?", { kind: "question" });
+    clock.tick();
+
+    expect(kicks).toEqual(["b"]);
+    const carried = delivery.carry("b", null);
+    expect(carried?.input.input).toContain("which branch?");
+    expect(carried?.input.input).toContain("A question or pushback is waiting on you");
+  });
+
+  test("a question to a busy agent waits, then rides in front of the user's message, headed", () => {
+    const { clock, delivery, kicks, steers, send, mailbox } = harness({ busy: true });
+    send("a", "which branch?", { kind: "question" });
+    // kone's own notices carry a sender even without a store, so this one is
+    // written to the transcript and names a block.
+    const notice = mailbox.sendNotice({ to: "b", projectPath: PROJECT, message: "your hand-off finished", rings: false });
+    clock.tick();
+    expect(kicks).toHaveLength(0);
+    expect(steers).toHaveLength(0);
+
+    const carried = delivery.carry("b", { threadId: "b", input: "ship it", userBlockId: "blk-user" }, "blk-user");
+    const text = carried!.input.input;
+    expect(text.indexOf("which branch?")).toBeLessThan(text.indexOf("<from_user>"));
+    expect(text.endsWith("ship it")).toBe(true);
+    // The carried block first, the user's own last: one turn, in reading order.
+    expect(carried!.input.userBlockIds).toEqual([`blk-${notice.messageId}`, "blk-user"]);
+    expect(carried!.input.userBlockId).toBe("blk-user");
+
+    carried!.settle("turn-7");
+    expect(mailbox.getUnreadCount("b")).toBe(0);
+  });
+
+  test("an agent's own words are not headed as the user's", () => {
+    const { delivery, send } = harness();
+    send("a", "fyi");
+    const carried = delivery.carry("b", { threadId: "b", input: "from the courier" }, "blk-other");
+    expect(carried!.input.input).not.toContain("<from_user>");
+  });
+
+  test("a release puts what was carried back, unseen", () => {
+    const { delivery, send, mailbox } = harness();
+    send("a", "which branch?", { kind: "question" });
+    const carried = delivery.carry("b", null);
+    expect(mailbox.getUnreadCount("b")).toBe(0);
+    carried!.release();
+    expect(mailbox.getUnreadCount("b")).toBe(1);
+  });
+
+  test("urgent goes into a running turn, and settles with the steered turn", async () => {
+    const { clock, steers, send, mailbox } = harness({ busy: true });
+    send("a", "stop — that file is being rewritten", { urgent: true });
+    send("c", "a plain question", { kind: "question" });
+    clock.tick();
+    await flush();
+
+    expect(steers).toHaveLength(1);
+    expect(steers[0]!.options?.silent).toBe(true);
+    expect(steers[0]!.input.input).toContain("that file is being rewritten");
+    expect(steers[0]!.input.input).not.toContain("a plain question");
+    // Only the urgent one was seen; the question waits for the next turn.
+    expect(mailbox.getUnreadCount("b")).toBe(1);
+  });
+
+  test("a parked agent holds everything, urgent included, until the user answers", () => {
+    const h = harness({ parked: "approval", busy: true });
+    h.send("a", "now!", { urgent: true });
+    h.clock.tick();
+    expect(h.steers).toHaveLength(0);
+    expect(h.kicks).toHaveLength(0);
+
+    h.set({});
+    h.emit(approvalResolved);
+    h.clock.tick();
+    expect(h.kicks).toEqual(["b"]);
+  });
+
+  test("a session starting or compacting holds, and rings again once it is up", () => {
+    const h = harness({ starting: true, live: false });
+    h.send("a", "which branch?", { kind: "question" });
+    h.clock.tick();
+    expect(h.kicks).toHaveLength(0);
+    expect(h.restarts).toHaveLength(0);
+
+    h.set({});
+    h.emit(sessionStarted);
+    h.clock.tick();
+    expect(h.kicks).toEqual(["b"]);
+  });
+
+  test("a closed session is brought back for what rings, never for a note", async () => {
+    const h = harness({ live: false });
+    h.send("a", "fyi");
+    h.clock.tick();
+    expect(h.restarts).toHaveLength(0);
+
+    h.send("a", "which branch?", { kind: "question" });
+    h.clock.tick();
+    h.send("c", "and which base?", { kind: "question" });
+    h.clock.tick();
+    expect(h.restarts).toEqual(["b"]);
+    await flush();
+  });
+
+  test("answers go first, then oldest, at most eight to a turn", () => {
+    const { delivery, send, mailbox } = harness();
+    for (let i = 0; i < 9; i++) send(`s${i}`, `note ${i}`);
+    send("z", "the answer", { kind: "answer" });
+
+    const carried = delivery.carry("b", { threadId: "b", input: "go" });
+    const text = carried!.input.input;
+    expect(text.indexOf("the answer")).toBeLessThan(text.indexOf("note 0"));
+    expect(text).toContain("note 6");
+    expect(text).not.toContain("note 7");
+    expect(text).toContain("2 more messages are still in your inbox.");
+    expect(mailbox.getUnreadCount("b")).toBe(2);
+  });
+});
+
+describe("renderInboxTurn", () => {
+  test("one header per sender, each message under it", () => {
+    const mailbox = new IrcMailbox();
+    const from = (threadId: string, message: string) =>
+      mailbox.sendMessage({ threadId, projectPath: PROJECT }, { to: "b", message });
+    from("a", "one");
+    from("a", "two");
+    from("c", "three");
+    const claim = mailbox.claimForTurn("b", 8)!;
+    const text = renderInboxTurn(claim.messages);
+
+    expect(text.match(/From `a`/g)).toHaveLength(1);
+    expect(text.match(/From `c`/g)).toHaveLength(1);
+    expect(text).toContain("3 messages from other agents are waiting for you:");
+    expect(text.indexOf("one")).toBeLessThan(text.indexOf("two"));
+    expect(text).toContain("nobody is waiting on a reply");
+  });
+});

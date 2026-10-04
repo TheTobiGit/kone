@@ -134,21 +134,32 @@ export function formatSince(since: number | null, now: number): string | null {
 }
 
 /** One roster line's state, as the sender reads it: what it is doing, and
- *  what a message to it would do as delivery works today. */
-export function describeRecipientState(state: RecipientState, now: number): string {
+ *  what a message to it would do — under the ringer when `v2`, else as
+ *  delivery steers or wakes today. */
+export function describeRecipientState(state: RecipientState, now: number, v2 = false): string {
   const since = formatSince(state.since, now);
   const forHow = since ? ` (${since})` : "";
   switch (state.state) {
     case "working": {
       const on = state.activity ? `: ${state.activity}` : "";
-      const lands =
-        state.steers === false
-          ? "a message interrupts its turn and lands as the next one"
-          : "a message goes into its running turn";
+      let lands: string;
+      if (v2) {
+        lands =
+          state.steers === false
+            ? "a message that rings takes its next turn; urgent interrupts this one"
+            : "a message that rings takes its next turn; urgent goes into this one";
+      } else {
+        lands =
+          state.steers === false
+            ? "a message interrupts its turn and lands as the next one"
+            : "a message goes into its running turn";
+      }
       return `working${forHow}${on}; ${lands}`;
     }
     case "idle":
-      return `idle${since ? ` for ${since}` : ""}; a message wakes it with a turn`;
+      return `idle${since ? ` for ${since}` : ""}; ${
+        v2 ? "a message that rings wakes it, a note waits for its next turn" : "a message wakes it with a turn"
+      }`;
     case "waiting-on-user":
       return `${state.activity ?? "waiting on the user"}${forHow}; a message waits until the user answers`;
     case "waiting-on-agent":
@@ -158,8 +169,12 @@ export function describeRecipientState(state: RecipientState, now: number): stri
     case "compacting":
       return "compacting its context; it takes messages shortly";
     case "closed":
-      return "session closed; a message waits until it is opened again";
+      return v2
+        ? "session closed; a message that rings brings it back up, a note waits until it runs again"
+        : "session closed; a message waits until it is opened again";
     case "ended":
-      return `${state.activity ?? "its work is over"}; a message waits until it is opened again — follow up on it instead`;
+      return v2
+        ? `${state.activity ?? "its work is over"}; messages to it are refused — follow up on it instead`
+        : `${state.activity ?? "its work is over"}; a message waits until it is opened again — follow up on it instead`;
   }
 }

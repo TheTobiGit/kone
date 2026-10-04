@@ -83,6 +83,10 @@ export interface ThreadDispatcherDeps {
   /** The inbox kone's notices are kept in until a turn carries them. Absent,
    *  the app's mailbox, resolved when first needed. */
   mailbox?: IrcMailbox;
+  /** The service's turn slot carries what waits in the inbox (the ringer), so
+   *  a send here claims nothing held: a send that ends up queued would
+   *  otherwise settle it before the turn that carries it has run. */
+  inboxRidesTurnSlot?: boolean;
 }
 
 export interface StartThreadOptions {
@@ -180,6 +184,10 @@ export interface ThreadDispatcher {
    *  message is. Returns the notice's inbox id; throws when it could not be
    *  stored. */
   queueNotice(threadId: string, text: string, options?: { rings?: boolean }): string;
+  /** The recovered-transcript preamble for a thread whose session came up
+   *  blank, consumed — for a turn started somewhere other than here, which
+   *  should carry it as any turn would. Null when none is owed. */
+  takeReplayPreamble(threadId: string): string | null;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -272,6 +280,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  a worktree nobody asked for, owned by a thread that never started. */
   private readonly cancelledWorkspaces = new Set<string>();
   private readonly mailboxDep: IrcMailbox | undefined;
+  private readonly inboxRidesTurnSlot: boolean;
 
   // Threads whose live provider session came up with none of the thread's
   // context — no stored resume id to offer, or the provider refused the one we
@@ -299,6 +308,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.store = deps.store;
     this.broadcast = deps.broadcast;
     this.mailboxDep = deps.mailbox;
+    this.inboxRidesTurnSlot = deps.inboxRidesTurnSlot ?? false;
     this.provisionWorkspace = deps.provisionWorkspace;
     this.releaseWorkspace = deps.releaseWorkspace;
     this.freshenWorkspaceBase = deps.freshenWorkspaceBase;
@@ -650,7 +660,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // Then what was held for this turn: claimed now, written to the
     // transcript above the turn's own words, and seen only once the provider
     // takes the turn.
-    const held = this.claimHeld(named.threadId);
+    const held = this.inboxRidesTurnSlot ? null : this.claimHeld(named.threadId);
     try {
       const input = held ? withBlocks(named, held.blockIds, options?.silent === true) : named;
       const started = this.dispatchComposed(
@@ -1261,6 +1271,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   /** The recovered-transcript preamble for a thread whose session came up blank,
    *  or null. Read before anything of the new turn is journaled, so the digest
    *  ends at the last thing the agent actually saw. Consumed once. */
+  takeReplayPreamble(threadId: string): string | null {
+    return this.takeReplay(threadId);
+  }
+
   private takeReplay(threadId: string): string | null {
     if (!this.threadsNeedingReplay.delete(threadId)) return null;
     const thread = this.store.loadThread(threadId);

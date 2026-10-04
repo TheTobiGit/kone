@@ -317,6 +317,16 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     return this.agentInbox.unseenInboxCount(recipientThreadId, which);
   }
 
+  inboxMessage(inboxId: string): InboxRow | null {
+    return this.agentInbox.inboxMessage(inboxId);
+  }
+
+  /** Who wrote one of a thread's user blocks: `{ kind: "user" }` for the
+   *  user's own words, null when there is no such block. */
+  userBlockSender(threadId: string, blockId: string): MessageSender | null {
+    return this.threads.userBlockSender(threadId, blockId);
+  }
+
   /** @see AgentInboxRepo */
   resetInboxHandingAtBoot(): void {
     this.agentInbox.resetHandingAtBoot();
