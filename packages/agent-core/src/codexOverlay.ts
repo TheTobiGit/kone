@@ -1,9 +1,12 @@
 import {
+  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   statSync,
   symlinkSync,
@@ -23,6 +26,8 @@ import {
   stripCodexManagedRegion,
 } from "./gateway/injection.js";
 import { resolveCodexHome } from "./codexHome.js";
+import type { DatabaseSync } from "./sqlite.js";
+import { openDatabaseReadOnly } from "./sqliteReadOnly.js";
 import { userDataPath } from "./userDataDir.js";
 
 // kone's private CODEX_HOME overlay for Codex sessions that carry the gateway.
@@ -56,6 +61,9 @@ export type CodexOverlayInput = {
    *  per-user data directory. */
   sourceHome?: string;
   overlayHome?: string;
+  /** Stands in for the symlink call, so a test can refuse links the way
+   *  Windows does without elevated rights. */
+  symlink?: (sourcePath: string, targetPath: string, type: "file" | "junction") => void;
 };
 
 /** The files SQLite keeps beside a database, named after it. */
@@ -106,22 +114,67 @@ function unlinkForeignSidecars(overlayHome: string): void {
   }
 }
 
-function linkEntry(sourcePath: string, targetPath: string, entryType: "file" | "dir"): void {
+/** The first bytes of every SQLite database file. */
+const SQLITE_HEADER = "SQLite format 3\0";
+
+function isSqliteDatabase(filePath: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    const header = Buffer.alloc(SQLITE_HEADER.length);
+    return readSync(fd, header, 0, header.length, 0) === header.length && header.toString("latin1") === SQLITE_HEADER;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** A consistent copy of a live database: SQLite reads it together with its
+ *  write-ahead log and writes one self-contained file, so changes codex has
+ *  committed to the log but not yet folded into the file are kept. Copying
+ *  the file's bytes alone would drop them. The source is opened read-only. */
+function snapshotDatabase(sourcePath: string, targetPath: string): void {
+  let db: DatabaseSync | undefined;
+  try {
+    db = openDatabaseReadOnly(sourcePath);
+    db.prepare("VACUUM INTO ?").run(targetPath);
+  } catch (err) {
+    // No copy beats a partial one: codex starts that database afresh here.
+    console.warn(`[agent] could not copy the codex database ${sourcePath} into the overlay:`, err);
+  } finally {
+    db?.close();
+  }
+}
+
+function linkEntry(
+  sourcePath: string,
+  targetPath: string,
+  entryType: "file" | "dir",
+  symlink: NonNullable<CodexOverlayInput["symlink"]>,
+): void {
   // Windows needs elevated rights for real symlinks; junctions cover
   // directories without them. Files that cannot be linked are copied instead —
   // auth.json is the one that matters and it is tiny.
   try {
-    symlinkSync(sourcePath, targetPath, process.platform === "win32" && entryType === "dir" ? "junction" : "file");
+    symlink(sourcePath, targetPath, process.platform === "win32" && entryType === "dir" ? "junction" : "file");
     return;
   } catch {
     // Fall through for files; directories can be created lazily by codex.
   }
-  if (entryType === "file") {
-    try {
-      copyFileSync(sourcePath, targetPath);
-    } catch {
-      // A missing optional file (history, logs) costs nothing.
-    }
+  if (entryType !== "file") return;
+  // A sidecar is only ever linked: its database's copy below already holds
+  // everything in it, and a copied log beside that copy would be replayed
+  // onto a file it was never written for.
+  if (sidecarDatabase(path.basename(sourcePath)) !== null) return;
+  if (isSqliteDatabase(sourcePath)) {
+    snapshotDatabase(sourcePath, targetPath);
+    return;
+  }
+  try {
+    copyFileSync(sourcePath, targetPath);
+  } catch {
+    // A missing optional file (history, logs) costs nothing.
   }
 }
 
@@ -141,7 +194,14 @@ export function prepareCodexHomeOverlay(input: CodexOverlayInput): string {
     // No real home yet (fresh machine): the overlay stands alone and codex
     // creates whatever it needs inside it.
   }
-  for (const entry of entries) {
+  // Databases before their sidecars, so a database copied rather than linked
+  // is already the overlay's own when its sidecars come up.
+  const ordered = [
+    ...entries.filter((entry) => sidecarDatabase(entry) === null),
+    ...entries.filter((entry) => sidecarDatabase(entry) !== null),
+  ];
+  const symlink = input.symlink ?? symlinkSync;
+  for (const entry of ordered) {
     if (entry === "config.toml") continue;
     const targetPath = path.join(overlayHome, entry);
     if (existsSync(targetPath)) continue;
@@ -154,7 +214,7 @@ export function prepareCodexHomeOverlay(input: CodexOverlayInput): string {
     } catch {
       continue;
     }
-    linkEntry(sourcePath, targetPath, type);
+    linkEntry(sourcePath, targetPath, type, symlink);
   }
 
   let sourceConfig = "";
