@@ -139,7 +139,11 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     restarting.add(threadId);
     void deps.dispatcher
       .ensureThreadSession(threadId, { resume: true })
-      .catch((err) => console.warn(`[agent] could not bring ${threadId} back up for its inbox:`, err))
+      .catch((err) => {
+        console.warn(`[agent] could not bring ${threadId} back up for its inbox:`, err);
+        restarting.delete(threadId);
+        retry(threadId);
+      })
       .finally(() => restarting.delete(threadId));
   }
 
@@ -191,7 +195,9 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     })();
   }
 
-  /** Arm the retry for urgent mail whose steer failed, later each time. */
+  /** Arm the retry for mail whose hand-over failed — a steer, a turn of its
+   *  own, a session that would not come back up — later each time, and give
+   *  up after the last delay until something else rings. */
   function retry(threadId: string): void {
     const attempt = failures.get(threadId) ?? 0;
     const ms = IRC_DELIVERY_RETRY_MS[attempt];
@@ -251,7 +257,19 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     const body = renderHandOver(split.messages, split.job, messagesLeft(threadId));
     const input: SendTurnInput = { threadId, input: replay ? `${replay}\n\n${body}` : body };
     nameBlocks(input, blockIds);
-    return carriedTurn(input, handOver);
+    // Nothing else is owed this turn: when the provider refuses it, the ringer
+    // tries again on its backoff.
+    return {
+      input,
+      settle: (turnId) => {
+        failures.delete(threadId);
+        handOver.settle(turnId);
+      },
+      release: () => {
+        handOver.release();
+        retry(threadId);
+      },
+    };
   }
 
   /** Messages still waiting once this hand-over is out, jobs aside. */

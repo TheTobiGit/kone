@@ -1017,7 +1017,8 @@ export class IrcMailbox {
   /** The hand-over's send failed: its messages are unseen again, and keep the
    *  block each was written as. When the store cannot write that, the write
    *  is retried; once it lands, whoever hands messages over hears the
-   *  recipient has mail again. */
+   *  recipient has mail again — a release that landed at once was the
+   *  caller's own, which knows already. */
   releaseDelivery(deliveryId: string): void {
     const released = this.inbox.releaseInboxDelivery(deliveryId);
     if (released === null) {
@@ -1025,9 +1026,10 @@ export class IrcMailbox {
       return;
     }
     const recipient = this.claimedFor.get(deliveryId);
+    const late = this.writeAttempts.has(deliveryId);
     this.claimedFor.delete(deliveryId);
     this.writeAttempts.delete(deliveryId);
-    if (released === 0 || !recipient) return;
+    if (released === 0 || !recipient || !late) return;
     for (const listener of this.releaseListeners) {
       try {
         listener(recipient);
