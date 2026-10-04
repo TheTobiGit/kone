@@ -233,6 +233,10 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
   }
 
   const unsubscribeMail = mailbox.onMessageDelivered((threadId) => arm(threadId));
+  // A release the store wrote late puts mail back with nothing else to ring it.
+  const unsubscribeReleased = mailbox.onDeliveryReleased((threadId) => {
+    if (!armed.has(threadId)) arm(threadId);
+  });
   const unsubscribeEvents = deps.service.onEvent((event) => {
     switch (event.type) {
       // The user answered: whatever was held for them rings again.
@@ -251,6 +255,7 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     carry,
     stop() {
       unsubscribeMail();
+      unsubscribeReleased();
       unsubscribeEvents();
       for (const cancel of armed.values()) cancel();
       armed.clear();

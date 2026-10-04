@@ -278,12 +278,12 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see AgentInboxRepo */
-  settleInboxDelivery(deliveryId: string, turnId: string | null): number {
+  settleInboxDelivery(deliveryId: string, turnId: string | null): number | null {
     return this.agentInbox.settleInboxDelivery(deliveryId, turnId);
   }
 
   /** @see AgentInboxRepo */
-  releaseInboxDelivery(deliveryId: string): number {
+  releaseInboxDelivery(deliveryId: string): number | null {
     return this.agentInbox.releaseInboxDelivery(deliveryId);
   }
 
