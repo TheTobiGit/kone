@@ -65,6 +65,9 @@ export class AntigravityAdapter implements ProviderAdapter {
     // ACP reports subagent invocations as ordinary tool calls; the print
     // fallback tracks native runs, but the facade advertises the primary.
     supportsSubagents: false,
+    // The primary is unprobed, so the facade cannot promise it, whatever the
+    // print fallback does.
+    cancelKeepsCompletedTools: false,
   };
 
   private readonly print: AntigravityPrintAdapter;

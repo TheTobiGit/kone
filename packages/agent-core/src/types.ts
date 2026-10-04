@@ -2064,6 +2064,15 @@ export type AdapterCapabilities = {
    *  that can drift from the mechanism, and surface rows derive the flag at
    *  read time instead of persisting it. */
   compaction?: ThreadCompactionCapability;
+  /** Whether a tool call that finished before its turn was cancelled is still
+   *  in the model's context on the next turn. Set from the cancel probe
+   *  (scripts/cancelProbe.ts), never assumed: kone steer interrupts a turn
+   *  right after a tool call completes, which is only safe when the result
+   *  survives. A resume that drops the result counts against it; one that
+   *  drops the whole conversation, cancelled or not, says nothing about the
+   *  cancel. Absent reads as false; a provider with `steerTurn` never needs
+   *  it. */
+  cancelKeepsCompletedTools?: boolean;
 };
 
 /** What answering a parked question settled. `owned` tells whether this call
