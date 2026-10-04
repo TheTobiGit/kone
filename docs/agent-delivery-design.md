@@ -522,8 +522,8 @@ What retries what, and when it stops:
 |---|---|---|
 | A settle or release the mailbox could not write | 250 ms, 1 s, 5 s, 15 s, then every 30 s | When it lands, or when the process ends; boot recovery then settles the row |
 | A hand-over the provider refused, or whose marker failed | The ringer's backoff: 1 s, 5 s, 15 s, 60 s | After those four tries. The mail stays unseen until something else rings: new mail, a session starting, a turn ending |
-| A queued turn the provider refused, or whose marker failed | 1 s, 5 s, 15 s | Then it is held for the user to send now or remove |
-| The release of that queued turn | The same delays, the last repeating | When it lands, or when the thread is stopped or deleted |
+| A queued turn the provider refused, or whose marker failed | 1 s, 5 s, 15 s | Then it is held for the user to send now or remove. A Send now the provider refused goes back to where it was, and the drain is woken: a waiting row is then tried as a queued one, while a held one stays held |
+| The release of a claimed queued turn: after a refusal, or after Send now moved it to the front of a busy thread or failed | Per row, each on its own timer: the same delays, the last repeating. While any is pending, the drain claims nothing on that thread | When it lands, or when the thread is stopped or deleted. A release that lands late finishes what it was for — the move to the front and the stop of the running turn, if that turn is still running, or the announcement — and then wakes the drain |
 | Boot recovery of rows a dead process was handing over | 1 s, 5 s, 15 s, then every 60 s | When it lands. If even reading which rows were orphaned fails, the database open fails and is retried after its cooldown |
 
 Still open:
