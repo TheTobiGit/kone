@@ -155,7 +155,7 @@ export interface AppThreadsStore {
   /** Flip a thread's queued + promoting rows to cancelled, returning their
    *  ids. The delete fallback calls this when present so a dropped thread's
    *  follow-ups cannot resurrect it. */
-  cancelQueuedTurnsForThread?(threadId: string): string[];
+  cancelQueuedTurnsForThread?(threadId: string): string[] | null;
 }
 
 /** The thread-driving half of the dispatcher — the same two calls the renderer's

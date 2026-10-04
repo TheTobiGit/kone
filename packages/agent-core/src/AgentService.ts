@@ -371,6 +371,13 @@ export class AgentService {
   /** Releases the store could not write, per row, each waiting out its own
    *  backoff: a thread can have several rows claimed by hand at once. */
   private readonly pendingReleases = new Map<string, { threadId: string; timer: ReturnType<typeof setTimeout> }>();
+  /** A stop, delete or archive whose cancellation the store could not write,
+   *  per thread: the rows it was cancelling (null: all of them), retried
+   *  until it lands. Until then none of them may go out. */
+  private readonly pendingCancels = new Map<
+    string,
+    { queueIds: ReadonlySet<string> | null; timer: ReturnType<typeof setTimeout> }
+  >();
   /** Bumped every time a thread's session starts or stops, so a delivery that
    *  outlived its session can tell the session it is looking at is not the
    *  one it delivered into. */
@@ -2065,6 +2072,8 @@ export class AgentService {
       throw new Error("Wait for context compaction to finish before sending another message.");
     }
     if (!this.routing.has(threadId)) throw new Error(`No agent session for thread ${threadId}`);
+    // Stopped already, though the store has yet to write it.
+    if (this.cancelOwed(threadId, queueId)) return false;
     const claimed = store.claimQueuedTurn(queueId);
     if (!claimed) return false;
     const { row, from } = claimed;
@@ -2077,8 +2086,9 @@ export class AgentService {
       const adapter = this.adapterForThread(threadId);
       const liveTurnId = this.activeTurns.get(threadId);
       // Last thing before the provider: a stop or delete since the claim
-      // cancelled it and handed the words back, so it must not go out too.
-      if (!store.isQueuedTurnClaimed(queueId)) return false;
+      // cancelled it and handed the words back, so it must not go out too —
+      // nor when that cancellation is still waiting to be written.
+      if (!store.isQueuedTurnClaimed(queueId) || this.cancelOwed(threadId, queueId)) return false;
       if (liveTurnId && adapter.steerTurn) {
         const result = await adapter.steerTurn({ ...input, userBlockId: row.userBlockId });
         // A steer can fall back to a fresh turn when the one it aimed at ended
@@ -2468,7 +2478,9 @@ export class AgentService {
       if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
       // A row waiting out its backoff is retried by its own timer, not by
       // whatever turn event happens to come first.
-      if (this.queueRetries.has(threadId) || this.hasPendingRelease(threadId)) return;
+      if (this.queueRetries.has(threadId) || this.hasPendingRelease(threadId) || this.pendingCancels.has(threadId)) {
+        return;
+      }
       if (this.turnInbox?.cutsIn?.(threadId)) {
         await this.runInboxTurn(threadId);
         return;
@@ -2482,8 +2494,9 @@ export class AgentService {
       this.announceQueuedState(threadId, row, "promoting");
       try {
         const input = this.turnInputFromQueuedRow(row);
-        // Stopped or deleted since the claim: the cancel already announced it.
-        if (!store.isQueuedTurnClaimed(row.queueId)) return;
+        // Stopped or deleted since the claim: the cancel already announced it,
+        // or will once the store can write it.
+        if (!store.isQueuedTurnClaimed(row.queueId) || this.cancelOwed(threadId, row.queueId)) return;
         let promoted = false;
         const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, {
           onAccepted: (turnId) => {
@@ -2787,13 +2800,62 @@ export class AgentService {
     reason: "stop" | "thread-deleted" | "archive",
   ): void {
     this.clearQueueRetry(threadId);
+    // A release still owed would put a cancelled row back in line.
     this.clearPendingReleases(threadId);
-    const resolved = provider ?? this.historyStore?.threadMeta(threadId)?.provider ?? null;
+    // The rows this cancels: what is pending now, plus any an earlier cancel
+    // is still owed. Read first, so a retry never takes rows queued later.
+    let queueIds: string[] | null = null;
     try {
-      const queueIds = this.queueStore.cancelQueuedTurnsForThread(threadId);
-      if (queueIds.length) this.dropQueuedCount(threadId, queueIds.length);
-      if (!resolved) return;
-      for (const queueId of queueIds) {
+      const pending = this.queueStore.listQueuedTurns(threadId).map((r) => r.queueId);
+      // Empty reads the same as unreadable: with nothing pending the cancel
+      // writes nothing and needs no retry, so only a failed read lands here
+      // and is retried against every pending row.
+      if (pending.length > 0) queueIds = pending;
+    } catch {
+      // Unreadable: the retry cancels all the thread's pending rows.
+    }
+    const owed = this.pendingCancels.get(threadId);
+    if (owed) {
+      clearTimeout(owed.timer);
+      this.pendingCancels.delete(threadId);
+      queueIds = owed.queueIds && queueIds ? [...new Set([...owed.queueIds, ...queueIds])] : null;
+    }
+    this.cancelRows(threadId, provider, reason, queueIds, 0);
+  }
+
+  /** Cancel `queueIds` (null: every pending row) and announce each. A
+   *  cancellation the store could not write is kept and retried on the
+   *  queue's backoff, the last delay repeating, until it lands; meanwhile the
+   *  drain claims nothing on the thread and no delivery sends those rows. One
+   *  that lands late wakes the drain for whatever was queued after. */
+  private cancelRows(
+    threadId: string,
+    provider: ProviderKind | null,
+    reason: "stop" | "thread-deleted" | "archive",
+    queueIds: readonly string[] | null,
+    tries: number,
+  ): void {
+    let cancelled: string[] | null = null;
+    try {
+      cancelled = this.queueStore.cancelQueuedTurnsForThread(threadId, queueIds ?? undefined);
+    } catch (err) {
+      console.error(`[agent] cancelQueuedTurnsForThread(${threadId}) failed:`, err);
+    }
+    if (cancelled === null) {
+      const delays = this.options.queueRetryDelaysMs ?? QUEUE_RETRY_DELAYS_MS;
+      const retryIn = delays[Math.min(tries, delays.length - 1)] ?? 1_000;
+      const timer = setTimeout(() => {
+        this.pendingCancels.delete(threadId);
+        this.cancelRows(threadId, provider, reason, queueIds, tries + 1);
+      }, retryIn);
+      timer.unref?.();
+      this.pendingCancels.set(threadId, { queueIds: queueIds ? new Set(queueIds) : null, timer });
+      return;
+    }
+    if (cancelled.length) this.dropQueuedCount(threadId, cancelled.length);
+    const resolved = provider ?? this.historyStore?.threadMeta(threadId)?.provider ?? null;
+    if (resolved) {
+      for (const queueId of cancelled) {
         this.dispatch({
           type: "turn.queued-cancelled",
           threadId,
@@ -2804,9 +2866,14 @@ export class AgentService {
           source: "kone.store",
         });
       }
-    } catch (err) {
-      console.error(`[agent] cancelQueuedTurnsForThread(${threadId}) failed:`, err);
     }
+    if (tries > 0) this.promoteQueuedTurns(threadId);
+  }
+
+  /** Is `queueId` cancelled in intent, its cancellation not yet written? */
+  private cancelOwed(threadId: string, queueId: string): boolean {
+    const owed = this.pendingCancels.get(threadId);
+    return owed !== undefined && (owed.queueIds === null || owed.queueIds.has(queueId));
   }
 
   /** Decrement the in-memory queued-count mirror (position fallback only). */
@@ -2888,6 +2955,8 @@ export class AgentService {
     this.queueRetries.clear();
     for (const pending of this.pendingReleases.values()) clearTimeout(pending.timer);
     this.pendingReleases.clear();
+    for (const owed of this.pendingCancels.values()) clearTimeout(owed.timer);
+    this.pendingCancels.clear();
     this.lastActivity.clear();
   }
 }

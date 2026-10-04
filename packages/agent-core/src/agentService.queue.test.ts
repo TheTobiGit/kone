@@ -290,6 +290,62 @@ function failReleases(): () => void {
   };
 }
 
+/** Make every cancellation of a queue row fail until the returned call ends
+ *  the outage. */
+function failCancels(): () => void {
+  const outage = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+  outage.exec(`CREATE TRIGGER cancel_fails BEFORE UPDATE OF state ON queued_turns
+                WHEN NEW.state = 'cancelled'
+                BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+  return () => {
+    outage.exec("DROP TRIGGER cancel_fails");
+    outage.close();
+  };
+}
+
+// A Stop is the user taking their words back. When the store cannot write
+// the cancellation, it is kept and retried: the rows never go out meanwhile,
+// and once writes come back they are cancelled, not back in line.
+describe("Stop whose cancellation could not be written", () => {
+  test("a stopped row never runs while its cancellation waits, and is cancelled once writes come back", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "take it back");
+    const recover = failCancels();
+
+    await service.cancelQueuedTurns(thread);
+    expect(stateOf(thread, q1)).toBe("queued");
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(adapter.attempts).toHaveLength(0);
+
+    recover();
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => [c.queueId, c.reason])).toEqual([[q1, "stop"]]);
+    expect(adapter.attempts).toHaveLength(0);
+  });
+
+  test("a row sent now whose release was owed is cancelled, not put back, when Stop lands late", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "take it back");
+    const recoverReleases = failReleases();
+    expect(await service.sendQueuedTurnNow(thread, q1)).toBe(false);
+    const recoverCancels = failCancels();
+
+    await service.cancelQueuedTurns(thread);
+    expect(stateOf(thread, q1)).toBe("promoting");
+
+    recoverReleases();
+    recoverCancels();
+    await waitFor(() => ofType(thread, "turn.queued-cancelled").length === 1);
+    expect(stateOf(thread, q1)).toBe("gone");
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(adapter.attempts).toHaveLength(0);
+  });
+});
+
 // Send now on a busy thread with no steer channel releases the row to the
 // front of the line. When the store cannot write that release, the row is
 // still claimed: each must be released once writes come back, and then run.

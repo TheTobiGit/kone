@@ -422,11 +422,14 @@ export class QueuedTurnRepo {
    *  user cancelled. Rows that never started ('queued'/'failed') take their
    *  journaled prompt with them, exactly like cancelQueuedTurn — a claimed row
    *  ('promoting') may already have a running turn behind it, so its prompt
-   *  stays, the same way a single cancel refuses a claimed row. Returns the
-   *  cancelled queue ids, in queue order. */
-  cancelQueuedTurnsForThread(threadId: string): string[] {
+   *  stays, the same way a single cancel refuses a claimed row. `only` narrows
+   *  it to those rows. Returns the cancelled queue ids, in queue order; null
+   *  when the store could not write it, nothing cancelled. */
+  cancelQueuedTurnsForThread(threadId: string, only?: readonly string[]): string[] | null {
     const db = this.dbh.handle();
-    if (!db) return [];
+    if (!db) return null;
+    const among = only ? ` AND queue_id IN (SELECT value FROM json_each(?))` : "";
+    const args: string[] = only ? [threadId, JSON.stringify(only)] : [threadId];
     try {
       let queueIds: string[] = [];
       this.dbh.durably(db, () => {
@@ -435,10 +438,10 @@ export class QueuedTurnRepo {
         const active = db
           .prepare(
             `SELECT queue_id, thread_id, user_block_id, state FROM queued_turns
-              WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}
+              WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}
               ORDER BY ${QUEUED_TURN_ORDER}`,
           )
-          .all(threadId) as Array<{
+          .all(...args) as Array<{
           queue_id: string;
           thread_id: string;
           user_block_id: string;
@@ -447,8 +450,8 @@ export class QueuedTurnRepo {
         if (active.length === 0) return;
         db.prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`,
-        ).run(Date.now(), threadId);
+            WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+        ).run(Date.now(), ...args);
         for (const row of active) {
           // Only 'queued'/'failed' rows provably never started; a 'promoting'
           // row was claimed by a drain and may own a live turn, so its prompt
@@ -461,7 +464,7 @@ export class QueuedTurnRepo {
       return queueIds;
     } catch (err) {
       console.error("[conversation-store] cancelQueuedTurnsForThread failed:", err);
-      return [];
+      return null;
     }
   }
 
