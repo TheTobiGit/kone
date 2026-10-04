@@ -545,6 +545,26 @@ Still open:
 - Only `agent_followup` takes a child from before a restart back on. A turn started on it any other way, such as the user typing into it, is not followed live or reported to the parent.
 - A wait pinned to an older turn from the store reads that turn's state, but its summary is still the thread's newest answer.
 
+### Picking this up
+
+Where the work stands at `b4090f62`: agent-core passes 2536 tests and the web app 1436.
+
+**`delivery.v2` is not yet cleared to turn on.** The last review, at `58c88391`, held it back on two findings. `2b8af79f` (a failed or stopped child session) and `1e3eb14d` (a Stop that could not read the queue) fix them, with regression tests, but nobody has reviewed them yet. `c409144b` is not reviewed either: it makes a pinned turn kone has no record of read "Outcome unknown" in the delegate dock, instead of "May not have arrived".
+
+Next, in order:
+1. **Review `58c88391..b4090f62`.** Use fault injection against the real store, not only the tests that came with the fixes. Look hard at:
+   - whether `2b8af79f` can report a child twice, or end a turn the provider never took;
+   - whether `1e3eb14d`'s same-millisecond exception is airtight.
+2. **If that review clears it, try `delivery.v2` by hand.** Set `{"v2": true}` in `delivery-settings.json` in the app's userData directory; it is read once at boot. Exercise a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
+3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
+4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
+
+Smaller items found along the way:
+- `agent_list` shows `activity: null` for an agent that is working.
+- Cline does not resume a session cleanly; it needs its own ticket.
+- A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). This goes when Phase 5 takes agent messages out of the turn queue.
+- Everything under "Still open" above, and the cancel intent kept only in memory (see the retry table).
+
 ## 13. Shipped while this was worked out
 
 | Commit | What |
