@@ -738,6 +738,94 @@ describe("a live-only steer, against the real store", () => {
 });
 
 describe("threadRuntime: what a thread is doing, for a sender", () => {
+  test("a tool call first reported under way is the one in progress, under the target an update names", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    adapter.emit({
+      ...base(thread),
+      type: "item.updated",
+      turnId: "live",
+      item: { itemId: "c-1", kind: "tool_call", status: "in-progress", text: "", name: "bash" },
+    });
+    expect(service.threadRuntime(thread).activeTool).toMatchObject({ name: "bash", text: "" });
+    adapter.emit({
+      ...base(thread),
+      type: "item.updated",
+      turnId: "live",
+      item: { itemId: "c-1", kind: "tool_call", status: "in-progress", text: "Run the test suite", name: "bash" },
+    });
+    expect(service.threadRuntime(thread).activeTool).toMatchObject({ name: "bash", text: "Run the test suite" });
+
+    adapter.emit({
+      ...base(thread),
+      type: "item.updated",
+      turnId: "live",
+      item: { itemId: "c-1", kind: "tool_call", status: "completed", text: "Run the test suite", name: "bash" },
+    });
+    expect(service.threadRuntime(thread).activeTool).toBeNull();
+  });
+
+  test("of two tool calls open at once, the one still open stays when the other ends", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    for (const [itemId, text] of [["a", "src/one.ts"], ["b", "src/two.ts"]]) {
+      adapter.emit({
+        ...base(thread),
+        type: "item.started",
+        turnId: "live",
+        item: { itemId: itemId!, kind: "tool_call", status: "in-progress", text: text!, name: "read" },
+      });
+    }
+    adapter.emit({
+      ...base(thread),
+      type: "item.completed",
+      turnId: "live",
+      item: { itemId: "b", kind: "tool_call", status: "completed", text: "src/two.ts", name: "read" },
+    });
+    expect(service.threadRuntime(thread).activeTool).toMatchObject({ name: "read", text: "src/one.ts" });
+  });
+
+  test("between tool calls, the step its turn is on; nothing open says nothing", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    expect(service.threadRuntime(thread)).toMatchObject({ activeTool: null, step: null });
+    adapter.emit({
+      ...base(thread),
+      type: "item.started",
+      turnId: "live",
+      item: { itemId: "r-1", kind: "reasoning_text", status: "in-progress", text: "Let me look" },
+    });
+    expect(service.threadRuntime(thread).step).toBe("reasoning_text");
+    adapter.emit({
+      ...base(thread),
+      type: "item.completed",
+      turnId: "live",
+      item: { itemId: "r-1", kind: "reasoning_text", status: "completed", text: "Let me look" },
+    });
+    expect(service.threadRuntime(thread).step).toBeNull();
+
+    // A reply never reported closed is over once a tool call starts after it.
+    adapter.emit({
+      ...base(thread),
+      type: "item.started",
+      turnId: "live",
+      item: { itemId: "t-1", kind: "assistant_text", status: "in-progress", text: "Checking." },
+    });
+    adapter.emit({
+      ...base(thread),
+      type: "item.started",
+      turnId: "live",
+      item: { itemId: "c-1", kind: "tool_call", status: "in-progress", text: "a.ts", name: "read" },
+    });
+    adapter.emit({
+      ...base(thread),
+      type: "item.completed",
+      turnId: "live",
+      item: { itemId: "c-1", kind: "tool_call", status: "completed", text: "a.ts", name: "read" },
+    });
+    expect(service.threadRuntime(thread)).toMatchObject({ activeTool: null, step: null });
+  });
+
   test("reads the live turn, the tool in progress, the parked ask and the steer channel", async () => {
     const thread = await openThread();
     expect(service.threadRuntime(thread)).toMatchObject({ live: true, busy: false, parked: null, steers: false });

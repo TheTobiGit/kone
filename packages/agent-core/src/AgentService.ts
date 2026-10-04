@@ -93,6 +93,8 @@ import type {
   TurnStartResult,
   UserInputAnswers,
   UserInputRespondResult,
+  RuntimeItem,
+  RuntimeItemKind,
 } from "./types.js";
 
 /** How often the wedge watchdog sweeps live sessions (module constants so the
@@ -353,9 +355,14 @@ export class AgentService {
   private readonly openItems = new Map<string, Set<string>>();
   /** When each live turn started — how long a thread has been working. */
   private readonly turnStartedAt = new Map<string, number>();
-  /** The tool call each thread is in the middle of, if any — what it is
-   *  working on, for a sender deciding whether to disturb it. */
-  private readonly activeTool = new Map<string, { itemId: string; name: string; text: string; startedAt: number }>();
+  /** The tool calls each thread has open, by item id — what it is working
+   *  on, for a sender deciding whether to disturb it. A provider may first
+   *  report a call already under way, and name its target only later, so
+   *  both the start and every update of a call feed this. */
+  private readonly openTools = new Map<string, Map<string, { name: string; text: string; startedAt: number }>>();
+  /** The newest open item that is not a tool call, per thread: the thinking,
+   *  reply or plan its turn is on between tool calls. */
+  private readonly openStep = new Map<string, { itemId: string; kind: Exclude<RuntimeItemKind, "tool_call"> }>();
   /** Threads whose session is being started right now. */
   private readonly startingSessions = new Set<string>();
   /** Per-thread tail of queued-row deliveries — the drain and Send now share
@@ -936,7 +943,10 @@ export class AgentService {
       if (gate !== "approval") gate = ask.kind;
       parkedSince = Math.min(parkedSince ?? ask.event.at, ask.event.at);
     }
-    const tool = this.activeTool.get(threadId);
+    let tool: { name: string; text: string; startedAt: number } | undefined;
+    for (const open of this.openTools.get(threadId)?.values() ?? []) {
+      if (!tool || open.startedAt >= tool.startedAt) tool = open;
+    }
     return {
       live: provider !== null,
       starting: this.startingSessions.has(threadId),
@@ -947,6 +957,7 @@ export class AgentService {
       compacting: this.isCompacting(threadId),
       steers: provider ? this.providerSteers(provider) : null,
       activeTool: tool ? { name: tool.name, text: tool.text, startedAt: tool.startedAt } : null,
+      step: this.openStep.get(threadId)?.kind ?? null,
       lastActivityAt: this.lastActivity.get(threadId) ?? null,
     };
   }
@@ -1666,19 +1677,15 @@ export class AgentService {
           this.openItems.set(threadId, items);
         }
         items.add(event.item.itemId);
-        if (event.item.kind === "tool_call" && !event.subagentToolUseId) {
-          this.activeTool.set(threadId, {
-            itemId: event.item.itemId,
-            name: event.item.name ?? "tool",
-            text: event.item.text,
-            startedAt: event.at,
-          });
-        }
+        if (!event.subagentToolUseId) this.noteItemProgress(threadId, event.item, event.at);
         break;
       }
+      case "item.updated":
+        if (!event.subagentToolUseId) this.noteItemProgress(threadId, event.item, event.at);
+        break;
       case "item.completed":
         this.openItems.get(threadId)?.delete(event.item.itemId);
-        if (this.activeTool.get(threadId)?.itemId === event.item.itemId) this.activeTool.delete(threadId);
+        this.closeItem(threadId, event.item.itemId);
         break;
       case "turn.steered":
         // The provider took the message into its running turn: the journaled
@@ -1694,7 +1701,8 @@ export class AgentService {
         this.activeTurns.delete(threadId);
         this.openItems.delete(threadId);
         this.turnStartedAt.delete(threadId);
-        this.activeTool.delete(threadId);
+        this.openTools.delete(threadId);
+        this.openStep.delete(threadId);
         // A turn settling frees the one-live-turn slot: promote the next
         // queued follow-up (fire-and-forget; drain is serialized per thread
         // and sends at most one turn, so the next settlement drains again).
@@ -1802,6 +1810,40 @@ export class AgentService {
     this.parkedByThread.delete(threadId);
   }
 
+  /** An item started or moved on: an open tool call is recorded under its
+   *  newest name and target, any other open item becomes the turn's step.
+   *  One reported settled is closed. */
+  private noteItemProgress(threadId: string, item: RuntimeItem, at: number): void {
+    if (item.status === "completed" || item.status === "failed") {
+      this.closeItem(threadId, item.itemId);
+      return;
+    }
+    if (item.kind !== "tool_call") {
+      this.openStep.set(threadId, { itemId: item.itemId, kind: item.kind });
+      return;
+    }
+    // A turn's steps run in order: a tool call starting ends the thinking or
+    // reply before it, which a provider may never report closed.
+    this.openStep.delete(threadId);
+    let tools = this.openTools.get(threadId);
+    if (!tools) {
+      tools = new Map();
+      this.openTools.set(threadId, tools);
+    }
+    const known = tools.get(item.itemId);
+    tools.set(item.itemId, {
+      name: item.name || known?.name || "tool",
+      text: item.text || known?.text || "",
+      startedAt: known?.startedAt ?? at,
+    });
+  }
+
+  private closeItem(threadId: string, itemId: string): void {
+    const tools = this.openTools.get(threadId);
+    if (tools?.delete(itemId) && tools.size === 0) this.openTools.delete(threadId);
+    if (this.openStep.get(threadId)?.itemId === itemId) this.openStep.delete(threadId);
+  }
+
   private forgetThreadState(threadId: string): void {
     this.parkedByThread.delete(threadId);
     this.activeTurns.delete(threadId);
@@ -1811,7 +1853,8 @@ export class AgentService {
     this.compactingThreads.delete(threadId);
     this.openItems.delete(threadId);
     this.turnStartedAt.delete(threadId);
-    this.activeTool.delete(threadId);
+    this.openTools.delete(threadId);
+    this.openStep.delete(threadId);
     this.lastActivity.delete(threadId);
     this.clearQueueRetry(threadId);
   }
