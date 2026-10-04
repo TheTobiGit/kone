@@ -37,6 +37,24 @@ describe("recipientState", () => {
     expect(describeRecipientState(s, NOW)).toBe("working (4 min): Bash: bun test; a message goes into its running turn");
   });
 
+  test("between tool calls a running turn says the step it is on, and nothing when none is known", () => {
+    const on = (step: ThreadRuntime["step"]) =>
+      state({ runtime: runtime({ busy: true, step }), unseen: 0, oldestUnseenAt: null }).activity;
+    expect(on("reasoning_text")).toBe("thinking");
+    expect(on("assistant_text")).toBe("writing a reply");
+    expect(on("plan_text")).toBe("updating its plan");
+    expect(on(null)).toBeNull();
+  });
+
+  test("an open tool call outranks the step", () => {
+    const s = state({
+      runtime: runtime({ busy: true, step: "reasoning_text", activeTool: { name: "read", text: "a.ts", startedAt: NOW } }),
+      unseen: 0,
+      oldestUnseenAt: null,
+    });
+    expect(s.activity).toBe("read: a.ts");
+  });
+
   test("a provider that cannot steer says a message interrupts", () => {
     const s = state({ runtime: runtime({ busy: true, steers: false }), unseen: 0, oldestUnseenAt: null });
     expect(describeRecipientState(s, NOW)).toContain("interrupts its turn");

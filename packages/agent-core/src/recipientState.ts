@@ -1,4 +1,4 @@
-import type { SpawnedThreadStatus } from "./types.js";
+import type { RuntimeItemKind, SpawnedThreadStatus } from "./types.js";
 
 // What a recipient is doing, as a sender sees it before deciding whether a
 // message is worth sending, and whether it should disturb. Pure: every fact
@@ -20,8 +20,11 @@ export interface ThreadRuntime {
   /** Whether its provider takes a message into a running turn. Null when no
    *  session says which provider it runs on. */
   steers: boolean | null;
-  /** The tool call it is in the middle of. */
+  /** The tool call it is in the middle of: the newest one open. */
   activeTool: { name: string; text: string; startedAt: number } | null;
+  /** Between tool calls, what its turn is on: the newest open item that is
+   *  not a tool call. Null when none is open, or nothing said. */
+  step?: Exclude<RuntimeItemKind, "tool_call"> | null;
   lastActivityAt: number | null;
 }
 
@@ -73,6 +76,12 @@ function describeTool(tool: NonNullable<ThreadRuntime["activeTool"]>): string {
   return `${tool.name}: ${target.length > 80 ? `${target.slice(0, 77)}...` : target}`;
 }
 
+const STEP = {
+  reasoning_text: "thinking",
+  assistant_text: "writing a reply",
+  plan_text: "updating its plan",
+} satisfies Record<Exclude<RuntimeItemKind, "tool_call">, string>;
+
 /**
  * The ladder, first match wins. Parked on the user outranks everything: nothing
  * lands until the user acts. A wait on another agent happens inside a running
@@ -111,7 +120,7 @@ export function recipientState(input: RecipientStateInput): RecipientState {
       ...base,
       state: "working",
       since: rt.turnStartedAt,
-      activity: rt.activeTool ? describeTool(rt.activeTool) : null,
+      activity: rt.activeTool ? describeTool(rt.activeTool) : rt.step ? STEP[rt.step] : null,
     };
   }
   if (rt?.live) return { ...base, state: "idle", since: rt.lastActivityAt, activity: null };
