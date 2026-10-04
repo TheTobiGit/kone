@@ -12,6 +12,7 @@ import { useSessionReducer } from "./sessionReducer";
 import type { QueuedTurnEntry, ThreadBlock } from "../agentTypes";
 import type {
   CompactionRecord,
+  MessageSender,
   RuntimeEvent,
   RuntimeSessionState,
   SpawnedThread,
@@ -371,8 +372,27 @@ describe("messages delivered from other agents read where they arrived", () => {
 });
 
 describe("an agent's message waiting in the queue", () => {
-  function queued(queueId: string, userBlockId: string, input: string, at: number): RuntimeEvent {
-    return { ...base, type: "turn.queued", queueId, userBlockId, dispatchMode: "steer", position: 1, input, at };
+  const ada = { kind: "agent", threadId: "ada", name: "Ada", relationship: "peer" } as const;
+
+  function queued(
+    queueId: string,
+    userBlockId: string,
+    input: string,
+    at: number,
+    sender?: MessageSender,
+  ): RuntimeEvent {
+    const event: Extract<RuntimeEvent, { type: "turn.queued" }> = {
+      ...base,
+      type: "turn.queued",
+      queueId,
+      userBlockId,
+      dispatchMode: "steer",
+      position: 1,
+      input,
+      at,
+    };
+    if (sender) event.sender = sender;
+    return event;
   }
 
   /** A busy thread on a provider that cannot take a message mid-turn: the
@@ -390,11 +410,11 @@ describe("an agent's message waiting in the queue", () => {
         role: "user",
         text: "<agent_messages>from Ada</agent_messages>",
         at: 110,
-        sender: { kind: "agent", threadId: "ada", name: "Ada", relationship: "peer" },
+        sender: ada,
       },
     });
-    session.reduce(queued("q-agent", "ub-agent", "<agent_messages>from Ada</agent_messages>", 111));
-    session.reduce(queued("q-mine", "ub-mine", "and then this", 120));
+    session.reduce(queued("q-agent", "ub-agent", "<agent_messages>from Ada</agent_messages>", 111, ada));
+    session.reduce(queued("q-mine", "ub-mine", "and then this", 120, { kind: "user" }));
     return session;
   }
 
@@ -415,10 +435,24 @@ describe("an agent's message waiting in the queue", () => {
       at: 110,
       block: { id: "ub-agent", role: "user", text: "x", at: 110, sender: { kind: "courier" } },
     });
-    session.reduce(queued("q-agent", "ub-agent", "x", 111));
+    session.reduce(queued("q-agent", "ub-agent", "x", 111, { kind: "courier" }));
     session.reduce({ ...base, type: "turn.queued-cancelled", queueId: "q-agent", reason: "stop", at: 200 });
 
     expect(session.queueReturn.value).toBeNull();
+  });
+
+  test("is told apart by its row's sender when its block is not loaded", () => {
+    // A reopened thread: the agent's message waits behind an approval and its
+    // block is not in the loaded page, so only the row says who wrote it. A
+    // row with no sender has no block on record and is not the user's either.
+    const session = makeSession();
+    session.reduce(turnStarted("turn-1", 100));
+    session.reduce(queued("q-agent", "ub-agent", "<agent_messages>from Ada</agent_messages>", 111, ada));
+    session.reduce(queued("q-orphan", "ub-orphan", "no block on record", 112));
+    session.reduce(queued("q-mine", "ub-mine", "and then this", 120, { kind: "user" }));
+    session.reduce({ ...base, type: "turn.queued-cancelled", queueId: "q-agent", reason: "stop", at: 200 });
+
+    expect(session.queueReturn.value?.text).toBe("and then this");
   });
 
   test("keeps its sender when it runs", () => {
