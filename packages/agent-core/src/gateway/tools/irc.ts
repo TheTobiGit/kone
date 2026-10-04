@@ -67,6 +67,14 @@ export interface IrcMessageRecord {
   uncertain?: true;
 }
 
+/** A hand-over the provider took: whose it was, when it was claimed, and the
+ *  turn that took it (null when it settled with none). */
+export interface DeliverySettled {
+  recipient: string | null;
+  claimedAt: number | null;
+  turnId: string | null;
+}
+
 /** Where a job stands, for a wait pinned to it. */
 export interface JobTurn {
   recipient: string;
@@ -278,10 +286,10 @@ export class IrcMailbox {
   private threads = new Map<string, ThreadRegistration>();
   private agentToThread = new Map<string, string>();
   private deliveryListeners = new Set<(recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void>();
-  private readonly settleListeners = new Set<() => void>();
+  private readonly settleListeners = new Set<(settled: DeliverySettled) => void>();
   private readonly releaseListeners = new Set<(recipient: string) => void>();
-  /** Who each open hand-over is for, by delivery id. */
-  private readonly claimedFor = new Map<string, string>();
+  /** Who each open hand-over is for, and when it was claimed, by delivery id. */
+  private readonly claimedFor = new Map<string, { threadId: string; at: number }>();
   /** Hand-overs a provider took whose settle the store has yet to write, with
    *  the turn that took them. */
   private readonly unsettled = new Map<string, { turnId: string | null }>();
@@ -872,7 +880,7 @@ export class IrcMailbox {
   private claim(threadId: string, limit: number, which: InboxRing): IrcDeliveryClaim | null {
     const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, which);
     if (!claim) return null;
-    this.claimedFor.set(claim.deliveryId, threadId);
+    this.claimedFor.set(claim.deliveryId, { threadId, at: Date.now() });
     return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
   }
 
@@ -992,6 +1000,7 @@ export class IrcMailbox {
    *  nothing hands them over again, and a job's id already stands for the
    *  turn that took it. */
   settleDelivery(deliveryId: string, turnId: string | null): void {
+    const claimed = this.claimedFor.get(deliveryId);
     // The link first, apart from the settle: recovery settles by it alone.
     if (turnId !== null) this.inbox.linkInboxDelivery(deliveryId, turnId);
     const settled = this.inbox.settleInboxDelivery(deliveryId, turnId);
@@ -1009,7 +1018,7 @@ export class IrcMailbox {
     }
     for (const listener of this.settleListeners) {
       try {
-        listener();
+        listener({ recipient: claimed?.threadId ?? null, claimedAt: claimed?.at ?? null, turnId });
       } catch (err) {
         console.warn("[agent] an inbox settle listener failed:", err);
       }
@@ -1034,7 +1043,7 @@ export class IrcMailbox {
 
   /** Hear when a hand-over is settled with its turn — when a job's id comes
    *  to stand for a turn. Returns the unsubscribe. */
-  onDeliverySettled(listener: () => void): () => void {
+  onDeliverySettled(listener: (settled: DeliverySettled) => void): () => void {
     this.settleListeners.add(listener);
     return () => this.settleListeners.delete(listener);
   }
@@ -1050,7 +1059,7 @@ export class IrcMailbox {
       this.retryLater(deliveryId, () => this.releaseDelivery(deliveryId));
       return;
     }
-    const recipient = this.claimedFor.get(deliveryId);
+    const recipient = this.claimedFor.get(deliveryId)?.threadId;
     const late = this.writeAttempts.has(deliveryId);
     this.claimedFor.delete(deliveryId);
     this.writeAttempts.delete(deliveryId);

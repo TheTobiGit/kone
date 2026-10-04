@@ -291,6 +291,10 @@ class FakeDispatcher implements ThreadDispatcher {
    *  simulates the live stream having already delivered a session + running
    *  turn before the provider refuses the turn (the partial-dispatch shape). */
   emitBeforeFailSend?: (threadId: string) => void = undefined;
+  /** When set, invoked with the child id and the turn id right before
+   *  sendThreadTurn resolves — the turn's events coming through before the
+   *  caller hears the provider took it. */
+  emitBeforeSent?: (threadId: string, turnId: string) => void = undefined;
 
   async startThread(input: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
     this.started.push(input);
@@ -318,7 +322,9 @@ class FakeDispatcher implements ThreadDispatcher {
       throw new Error("provider refused the turn");
     }
     this.sent.push({ input, options });
-    return { threadId: input.threadId, turnId: `turn-${this.sent.length}` };
+    const turnId = `turn-${this.sent.length}`;
+    this.emitBeforeSent?.(input.threadId, turnId);
+    return { threadId: input.threadId, turnId };
   }
 
   /** The parent turn each follow-up sent as a job stamped on its child. */
@@ -2074,12 +2080,12 @@ describe("settle reports", () => {
     await h.flush();
     expect(h.delivered).toHaveLength(0);
 
-    await h.engine.continueThread(CALLER, { threadId: child, message: "Pick it back up." });
-    h.bus.emit(turnStarted(child, "t-2", 40));
-    h.bus.emit(turnCompleted(child, "t-2", 50));
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Pick it back up." });
+    h.bus.emit(turnStarted(child, turnId, 40));
+    h.bus.emit(turnCompleted(child, turnId, 50));
     await h.flush();
     expect(h.delivered).toHaveLength(1);
-    expect(h.delivered[0]!.input).toContain("turn t-2");
+    expect(h.delivered[0]!.input).toContain(`turn ${turnId}`);
     h.stopDelivery();
   });
 
@@ -2201,5 +2207,77 @@ describe("a child from before a restart", () => {
 
     await expect(h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." })).rejects.toThrow();
     expect(h.engine.snapshot(child)).toMatchObject({ status: "interrupted", terminal: true });
+  });
+});
+
+// ── the turn a follow-up started, before its events ─────────────────────────
+// Once the provider takes a follow-up, the child reads as running that turn
+// until an event for it comes through — never as the turn before. The mark
+// answers only to its own turn, and gives way to a session that ended.
+
+function sessionState(threadId: string, state: "error" | "stopped", at: number): RuntimeEvent {
+  return { type: "session.state.changed", threadId, provider: "opencode", at, source: "kone.store", state };
+}
+
+describe("the turn a follow-up started", () => {
+  test("a job taken before its turn.started: a wait on it is not the interrupted turn from before the restart", async () => {
+    const mailbox = new IrcMailbox();
+    const h = makeEngine({ jobs: mailbox });
+    const child = childFromBeforeRestart(h);
+    const { turnId: jobId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    // The ringer hands the job over; the provider takes it as turn "new",
+    // whose turn.started has not come through.
+    mailbox.settleDelivery(mailbox.claimJob(child)!.deliveryId, "new");
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: [jobId], timeoutMs: 30, scopeThreadId: CALLER.threadId });
+    expect(out.timedOut).toBe(true);
+    expect(out.threads[0]).toMatchObject({ status: "working", terminal: false });
+    expect(out.turnIds).toEqual(["new"]);
+  });
+
+  test("a turn that started and finished before the send returned stays finished", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    h.dispatcher.emitBeforeSent = (threadId, turnId) => {
+      h.bus.emit(turnStarted(threadId, turnId, 40));
+      h.bus.emit(turnCompleted(threadId, turnId, 50));
+    };
+
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "completed", terminal: true });
+  });
+
+  test("a session that failed before the send returned leaves no turn under way", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    h.dispatcher.emitBeforeSent = (threadId) => h.bus.emit(sessionState(threadId, "error", Date.now()));
+
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    expect(h.engine.snapshot(child)!.status).not.toBe("working");
+  });
+
+  test("a session that fails after the provider took the turn ends it", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    expect(h.engine.snapshot(child)!.status).toBe("working");
+
+    h.bus.emit(sessionState(child, "error", Date.now()));
+
+    expect(h.engine.snapshot(child)!.status).not.toBe("working");
+  });
+
+  test("an event for another turn does not end it", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    // The turn from before the restart, its end landing late.
+    h.bus.emit(turnAborted(child, "turn-from-before", 30, "interrupted"));
+
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
   });
 });

@@ -23,7 +23,7 @@ import {
 import { SpawnFailoverRunner, type FallbackAdmissionCounts } from "./spawnFailover.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { getHandOffLifecycle } from "./handOffLifecycle.js";
-import type { JobTurn } from "./gateway/tools/irc.js";
+import type { DeliverySettled, JobTurn } from "./gateway/tools/irc.js";
 import type { SettledTurnReport, SettleReportSink, StillOut } from "./settleReports.js";
 import {
   isSpawnedRelationship,
@@ -196,7 +196,7 @@ export interface SpawnJobs {
   }): { messageId: string; duplicate: boolean };
   jobTurn(inboxId: string): JobTurn | null;
   /** Hear when a hand-over is settled with its turn. */
-  onDeliverySettled(listener: () => void): () => void;
+  onDeliverySettled(listener: (settled: DeliverySettled) => void): () => void;
 }
 
 /** The parent session asking to spawn. Every field is server-derived from the
@@ -508,9 +508,32 @@ export type TrackedChild = {
    *  not in `turns`, only in the store. */
   adopted?: true;
   /** A follow-up the provider took whose turn has not started yet, as far as
-   *  the events have said. Cleared by the next turn or session event. */
+   *  the events have said. Cleared by an event for that turn, or by the
+   *  session ending or failing. */
   awaitingTurn?: { turnId: string; at: number };
+  /** When the child's session last ended or failed, by its event. */
+  sessionEndedAt?: number;
 };
+
+/** Does `event` end the wait for the turn the provider took? An event for
+ *  that turn does, and so does the session ending or failing under it; an
+ *  event for another turn says nothing about this one. */
+function endsAwaiting(event: RuntimeEvent, turnId: string): boolean {
+  switch (event.type) {
+    case "turn.started":
+    case "turn.completed":
+    case "turn.aborted":
+      return event.turnId === turnId;
+    default:
+      return endsSession(event);
+  }
+}
+
+/** Does `event` say the child's session ended or failed? */
+function endsSession(event: RuntimeEvent): boolean {
+  if (event.type === "session.exited") return true;
+  return event.type === "session.state.changed" && (event.state === "error" || event.state === "stopped");
+}
 
 /** What has become of each settled turn's report, for one child. */
 type ChildReports = {
@@ -572,7 +595,14 @@ class SpawnEngineImpl implements SpawnEngine {
     this.waitCoordinator = new SpawnWaitCoordinator(waitDeps);
     // A job handed over turns a wait pinned to its id into a wait on a turn,
     // which may already have settled.
-    this.unsubscribeJobs = jobs?.onDeliverySettled(() => this.waitCoordinator.checkWaiters()) ?? null;
+    // A turn that took a hand-over is under way from that moment, though its
+    // turn.started may still be on its way.
+    this.unsubscribeJobs =
+      jobs?.onDeliverySettled(({ recipient, claimedAt, turnId }) => {
+        const child = recipient ? this.tracked.get(recipient) : undefined;
+        if (child && turnId) this.markAwaitingTurn(child, turnId, claimedAt ?? Date.now());
+        this.waitCoordinator.checkWaiters();
+      }) ?? null;
 
     const continuationDeps: SpawnContinuationDeps = {
       store: this.store,
@@ -581,6 +611,7 @@ class SpawnEngineImpl implements SpawnEngine {
       tracked: this.tracked,
       liveChildren: this.liveChildren,
       recompute: (child) => this.recompute(child),
+      markAwaitingTurn: (child, turnId, since) => this.markAwaitingTurn(child, turnId, since),
       adopt: (threadId, parentTurnId, hasLiveSession) => this.adopt(threadId, parentTurnId, hasLiveSession),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
     };
@@ -1022,14 +1053,8 @@ class SpawnEngineImpl implements SpawnEngine {
   private onEvent(event: RuntimeEvent): void {
     const child = this.tracked.get(event.threadId);
     if (!child) return;
-    if (
-      event.type === "turn.started" ||
-      event.type === "turn.completed" ||
-      event.type === "turn.aborted" ||
-      event.type === "session.exited"
-    ) {
-      delete child.awaitingTurn;
-    }
+    if (endsSession(event)) child.sessionEndedAt = event.at;
+    if (child.awaitingTurn && endsAwaiting(event, child.awaitingTurn.turnId)) delete child.awaitingTurn;
     switch (event.type) {
       case "turn.started":
         child.turns.push({ turnId: event.turnId, state: "running", at: event.at });
@@ -1084,6 +1109,17 @@ class SpawnEngineImpl implements SpawnEngine {
         return;
     }
     child.updatedAt = Math.max(child.updatedAt, event.at);
+    this.recompute(child);
+  }
+
+  /** The provider took `turnId`, sent at `since`: until an event for it
+   *  comes through, the child reads as running it. Nothing to mark when its
+   *  events are already in, or when the session ended or failed since it was
+   *  sent — those events came before the mark and will not come again. */
+  private markAwaitingTurn(child: TrackedChild, turnId: string, since: number): void {
+    if (child.turns.some((t) => t.turnId === turnId)) return;
+    if (child.sessionEndedAt !== undefined && child.sessionEndedAt >= since) return;
+    child.awaitingTurn = { turnId, at: Date.now() };
     this.recompute(child);
   }
 

@@ -2,7 +2,7 @@ import type { SpawnEngineStore, TrackedChild } from "./threadSpawn.js";
 import { SPAWN_WAIT_DEFAULT_MS, SPAWN_WAIT_MAX_MS, SpawnError } from "./threadSpawn.js";
 import type { JobTurn } from "./gateway/tools/irc.js";
 import type { SpawnedThread } from "./types.js";
-import { projectSpawnedThread } from "./spawnProjection.js";
+import { projectSpawnedThread, type SpawnProjectionTurn } from "./spawnProjection.js";
 
 /** The rejection a cancelled wait settles with — named AbortError so the
  *  gateway transport can tell a client-cancelled call from a tool failure. */
@@ -229,7 +229,9 @@ export class SpawnWaitCoordinator {
         const stored = this.deps.storedSnapshot?.(threadId);
         if (stored) return stored;
       }
-      const pinnedTurns = pin ? [pin] : [];
+      // The provider took the turn; its events have yet to say so.
+      const awaiting = tracked.awaitingTurn?.turnId === turnId ? tracked.awaitingTurn : undefined;
+      const pinnedTurns: SpawnProjectionTurn[] = pin ? [pin] : awaiting ? [{ turnId, state: "running", at: awaiting.at }] : [];
       return projectSpawnedThread({
         thread: {
           threadId: tracked.threadId,
