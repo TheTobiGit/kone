@@ -197,6 +197,30 @@ describe("deriveDelegates — spawned thread projection", () => {
     });
   });
 
+  test("an uncertain job whose hand-over was cut off may not have arrived", () => {
+    const row = deriveDelegates(
+      [],
+      [spawn("c1", "uncertain", 1, { terminal: true, handedOver: false, detail: "kone restarted while handing this job over" })],
+    ).rows[0];
+    expect(row).toMatchObject({
+      state: "failed",
+      statusText: "May not have arrived",
+      hint: "kone restarted while handing this over",
+    });
+  });
+
+  test("an uncertain turn the store has no record of reads as outcome unknown", () => {
+    const row = deriveDelegates(
+      [],
+      [spawn("c1", "uncertain", 1, { terminal: true, detail: "kone has no record of how turn t9 on this thread went" })],
+    ).rows[0];
+    expect(row).toMatchObject({
+      state: "failed",
+      statusText: "Outcome unknown",
+      hint: "kone has no record of how this turn went",
+    });
+  });
+
   test("a failed thread reads its detail when there is one", () => {
     const row = deriveDelegates([], [spawn("c1", "failed", 1, { detail: "quota exceeded" })]).rows[0];
     expect(row?.hint).toBe("quota exceeded");

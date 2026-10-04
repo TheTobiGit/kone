@@ -2095,6 +2095,9 @@ export type SpawnedThread = {
   status: SpawnedThreadStatus;
   /** True once the child has settled and will not move again on its own. */
   terminal: boolean;
+  /** On a snapshot pinned to a job: false when the job was never handed over
+   *  as far as anything on record says (status `uncertain`). */
+  handedOver?: boolean;
   createdAt: number;
   updatedAt: number;
   /** Wall-clock millis the child's turns have run, for "replied in 52s". */
