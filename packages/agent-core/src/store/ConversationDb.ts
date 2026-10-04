@@ -6,12 +6,16 @@ import type { RelationshipToParent } from "../types.js";
 import { readAntigravityConversationUsage, resolveAntigravityContextWindow } from "../usage/local/antigravityScan.js";
 import { getUserDataDir } from "../userDataDir.js";
 import { REOPEN_COOLDOWN_MS, UnsupportedSchemaError, assistantBlockId, migrate } from "../conversationMigrations.js";
-import { releaseOrphanedInboxClaims } from "./agentInbox.js";
+import { orphanedInboxClaims, releaseOrphanedInboxClaims } from "./agentInbox.js";
 
 /** Max cached prepared statements per connection (FIFO eviction). 200 covers
  *  the static query set with room to spare, and is small enough that dynamic
  *  SQL can't grow the map without limit. */
 const STATEMENT_CACHE_MAX = 200;
+
+/** How long a boot inbox recovery that could not be written waits before
+ *  each next try; the last delay repeats until one lands. */
+const INBOX_RECOVERY_RETRY_MS: readonly number[] = [1_000, 5_000, 15_000, 60_000];
 
 /** Host-scaled SQLite page-cache + mmap budget. Small machines stay lean;
  *  large ones let the event log sit in memory instead of hitting ext4/btrfs
@@ -40,6 +44,13 @@ export class ConversationDb {
   private retryOpenAfter = 0;
 
   private readonly statements = new Map<string, StatementSync>();
+
+  /** Inbox rows a dead process left being handed over that boot recovery
+   *  could not settle yet, and the retry that will. */
+  private inboxOrphans: string[] = [];
+  private inboxRecoveryTries = 0;
+  private inboxRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly inboxRecoveredListeners = new Set<(threadIds: readonly string[]) => void>();
 
   /** @param userDataDir per-user state dir; defaults to the one the host
    *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
@@ -123,10 +134,12 @@ export class ConversationDb {
       // is orphaned by definition and waiting out a lease would only delay
       // the queue.
       this.releaseOrphanedJobClaims(db);
-      // Sixth pass: inbox messages a dead process was handing over go back to
-      // unseen, keeping the block they were written as, so the next hand-over
-      // carries them again without writing them twice.
-      releaseOrphanedInboxClaims(db);
+      // Sixth pass: inbox messages a dead process was handing over are
+      // settled (see releaseOrphanedInboxClaims). Which ones is read now, while
+      // nothing is live; if settling them cannot be written, it is retried
+      // until it is, and only those rows are touched then.
+      this.inboxOrphans = orphanedInboxClaims(db);
+      this.recoverInbox(db, false);
       // Fourth pass: populate token totals for stored Antigravity threads whose
       // tokens were not backfilled at turn run time.
       this.backfillAntigravityTokens(db);
@@ -416,8 +429,43 @@ export class ConversationDb {
     }
   }
 
+  /** Hear which threads' inboxes a late recovery changed. */
+  onInboxRecovered(listener: (threadIds: readonly string[]) => void): void {
+    this.inboxRecoveredListeners.add(listener);
+  }
+
+  /** Settle the orphaned inbox rows, or try again on the backoff. At boot
+   *  nothing is live to tell; a later recovery tells the listeners. */
+  private recoverInbox(db: DatabaseSync, announce: boolean): void {
+    if (this.inboxOrphans.length === 0) return;
+    const changed = releaseOrphanedInboxClaims(db, this.inboxOrphans);
+    if (changed === null) {
+      const delay = INBOX_RECOVERY_RETRY_MS[Math.min(this.inboxRecoveryTries, INBOX_RECOVERY_RETRY_MS.length - 1)];
+      this.inboxRecoveryTries += 1;
+      this.inboxRecoveryTimer = setTimeout(() => {
+        this.inboxRecoveryTimer = null;
+        if (this.db) this.recoverInbox(this.db, true);
+      }, delay);
+      this.inboxRecoveryTimer.unref?.();
+      return;
+    }
+    this.inboxOrphans = [];
+    this.inboxRecoveryTries = 0;
+    if (!announce || changed.length === 0) return;
+    const unique = [...new Set(changed)];
+    for (const listener of this.inboxRecoveredListeners) {
+      try {
+        listener(unique);
+      } catch (err) {
+        console.error("[conversation-store] inbox recovery listener failed:", err);
+      }
+    }
+  }
+
   /** Close the open database connection, if any. */
   close(): void {
+    if (this.inboxRecoveryTimer) clearTimeout(this.inboxRecoveryTimer);
+    this.inboxRecoveryTimer = null;
     if (this.db) {
       try {
         this.db.close();

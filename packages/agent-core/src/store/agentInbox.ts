@@ -269,8 +269,20 @@ function rowToInbox(row: InboxDbRow): InboxRow {
   };
 }
 
-/** Settle what a dead process was handing over. Safe only at the first open
- *  of a fresh process, when no hand-over is live.
+/** The rows a dead process left being handed over. Read at the first open
+ *  of a fresh process, when no hand-over is live, so every one is orphaned;
+ *  later, live claims are in the same state, and only these ids may be
+ *  settled as orphans. */
+export function orphanedInboxClaims(db: DatabaseSync): string[] {
+  // SAFETY: the projection is one TEXT column.
+  const rows = db.prepare(`SELECT inbox_id FROM agent_inbox WHERE state = 'handing'`).all() as Array<{
+    inbox_id: string;
+  }>;
+  return rows.map((r) => r.inbox_id);
+}
+
+/** Settle what a dead process was handing over: the rows `orphans` names
+ *  that are still being handed over.
  *
  *  A row never marked sent never reached a provider: it goes back to unseen,
  *  keeping its block, and is handed over again. A row marked sent may have
@@ -279,21 +291,25 @@ function rowToInbox(row: InboxDbRow): InboxRow {
  *  turn when the provider accepted it, or steered into it — never on when
  *  some turn happened to start. Anything else is uncertain: delivery skips
  *  it, its recipient and its sender are each told once, and the recipient's
- *  inbox read shows it. One transaction, so a crash part-way leaves the rows
- *  handing for the next open, and the notices' dedupe keys keep a rerun from
- *  telling anyone twice. */
-export function releaseOrphanedInboxClaims(db: DatabaseSync): void {
+ *  inbox read shows it. One transaction, so a failure part-way changes
+ *  nothing, and the notices' dedupe keys keep a rerun from telling anyone
+ *  twice. Returns the threads whose inboxes changed, or null when it could
+ *  not be written and must be tried again. */
+export function releaseOrphanedInboxClaims(db: DatabaseSync, orphans: readonly string[]): string[] | null {
+  if (orphans.length === 0) return [];
   try {
     db.exec("BEGIN");
     try {
-      reconcileOrphanedInboxClaims(db, Date.now());
+      const changed = reconcileOrphanedInboxClaims(db, JSON.stringify(orphans), Date.now());
       db.exec("COMMIT");
+      return changed;
     } catch (err) {
       db.exec("ROLLBACK");
       throw err;
     }
   } catch (err) {
     console.error("[conversation-store] could not release orphaned inbox claims:", err);
+    return null;
   }
 }
 
@@ -308,28 +324,38 @@ type UncertainRow = {
   recipient_title: string | null;
 };
 
-function reconcileOrphanedInboxClaims(db: DatabaseSync, now: number): void {
-  db.prepare(
-    `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
-      WHERE state = 'handing' AND sent_at IS NULL`,
-  ).run();
+function reconcileOrphanedInboxClaims(db: DatabaseSync, orphansJson: string, now: number): string[] {
+  const orphaned = `state = 'handing' AND inbox_id IN (SELECT value FROM json_each(?))`;
+  // SAFETY: RETURNING one TEXT column.
+  const unsent = db
+    .prepare(
+      `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
+        WHERE ${orphaned} AND sent_at IS NULL
+        RETURNING recipient_thread_id`,
+    )
+    .all(orphansJson) as Array<{ recipient_thread_id: string }>;
   const linked = `(SELECT b.turn_id FROM blocks b
                     WHERE b.block_id = agent_inbox.block_id AND b.role = 'user' AND b.turn_id IS NOT NULL)`;
-  db.prepare(
-    `UPDATE agent_inbox
-        SET state = 'seen', seen_via = 'turn', seen_at = ?, delivery_id = NULL, turn_id = ${linked}
-      WHERE state = 'handing' AND ${linked} IS NOT NULL`,
-  ).run(now);
+  // SAFETY: RETURNING one TEXT column.
+  const delivered = db
+    .prepare(
+      `UPDATE agent_inbox
+          SET state = 'seen', seen_via = 'turn', seen_at = ?, delivery_id = NULL, turn_id = ${linked}
+        WHERE ${orphaned} AND ${linked} IS NOT NULL
+        RETURNING recipient_thread_id`,
+    )
+    .all(now, orphansJson) as Array<{ recipient_thread_id: string }>;
   // SAFETY: RETURNING names exactly UncertainRow's columns.
   const uncertain = db
     .prepare(
       `UPDATE agent_inbox SET state = 'uncertain', uncertain_at = ?, delivery_id = NULL
-        WHERE state = 'handing'
+        WHERE ${orphaned}
         RETURNING inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, project_path,
                   (SELECT title FROM threads WHERE thread_id = agent_inbox.recipient_thread_id) AS recipient_title`,
     )
-    .all(now) as UncertainRow[];
-  if (uncertain.length === 0) return;
+    .all(now, orphansJson) as UncertainRow[];
+  const changed = [...unsent, ...delivered, ...uncertain].map((r) => r.recipient_thread_id);
+  if (uncertain.length === 0) return changed;
   const insert = db.prepare(
     `INSERT INTO agent_inbox (inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, urgent, rings,
                               body, state, dedupe_key, project_path, created_at)
@@ -340,6 +366,7 @@ function reconcileOrphanedInboxClaims(db: DatabaseSync, now: number): void {
   const tell = (to: string, body: string, key: string, projectPath: string): void => {
     if (!exists.get(to)) return;
     insert.run(`msg_${randomUUID()}`, to, body, key, projectPath, now);
+    changed.push(to);
   };
   for (const [recipient, rows] of groupBy(uncertain, (r) => r.recipient_thread_id)) {
     tell(recipient, uncertainRecipientNotice(rows), uncertainKey("recipient", recipient, rows), rows[0]!.project_path);
@@ -348,6 +375,7 @@ function reconcileOrphanedInboxClaims(db: DatabaseSync, now: number): void {
   for (const [sender, rows] of groupBy(fromAgents, (r) => r.sender_thread_id!)) {
     tell(sender, uncertainSenderNotice(rows), uncertainKey("sender", sender, rows), rows[0]!.project_path);
   }
+  return changed;
 }
 
 function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[]> {
@@ -407,7 +435,11 @@ export type InboxChangeListener = (recipientThreadIds: readonly string[]) => voi
 export class AgentInboxRepo implements AgentInboxStore {
   private readonly listeners = new Set<InboxChangeListener>();
 
-  constructor(private readonly dbh: ConversationDb) {}
+  constructor(private readonly dbh: ConversationDb) {
+    // Orphans a failed boot recovery left are settled later, outside any
+    // write of this repo's: the ringer must hear of what went back to unseen.
+    dbh.onInboxRecovered((threadIds) => this.changed(threadIds));
+  }
 
   /** Hear about every change to anyone's inbox. Returns the unsubscribe. */
   onChanged(listener: InboxChangeListener): () => void {
@@ -750,7 +782,7 @@ export class AgentInboxRepo implements AgentInboxStore {
    *  kept. What the first open of a process does; exposed for tests. */
   resetHandingAtBoot(): void {
     const db = this.dbh.handle();
-    if (db) releaseOrphanedInboxClaims(db);
+    if (db) releaseOrphanedInboxClaims(db, orphanedInboxClaims(db));
   }
 }
 

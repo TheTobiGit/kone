@@ -456,6 +456,48 @@ describe("recovery of a hand-over that was on its way", () => {
     expect(processOn(dir, { live: false }).mailbox.jobTurn(id)).toEqual(uncertain);
   });
 
+  // Recovery is one transaction: when its notices cannot be written, nothing
+  // of it is. The rows it was settling must not wait for another restart:
+  // once writes come back they are settled, and only they — a hand-over this
+  // process started meanwhile is live and left alone.
+  test("a boot recovery that could not be written is finished once writes come back", async () => {
+    const dir = freshDir();
+    const first = processOn(dir, { live: false });
+    const { id: sent } = jobOnItsWay(first, "Revert the migration.");
+    const unsent = first.mailbox.postJob({ to: "parent", projectPath: "/repo", message: "Add tests.", sender: LEAD })
+      .messageId;
+    first.store.ensureThread({ threadId: "other", projectPath: "/repo", provider: "codex" });
+    const live = first.mailbox.postJob({ to: "other", projectPath: "/repo", message: "Lint.", sender: LEAD }).messageId;
+    expect(first.mailbox.claimJob("parent")?.messages.map((m) => m.id)).toEqual([unsent]);
+    first.stop();
+    const outage = new Database(path.join(dir, "kone.sqlite"));
+    outage.exec(`CREATE TRIGGER notices_fail BEFORE INSERT ON agent_inbox WHEN NEW.kind = 'notice'
+                  BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+
+    const second = processOn(dir, { live: false });
+    expect(second.store.inboxMessage(sent)?.state).toBe("handing");
+    expect(second.store.inboxMessage(unsent)?.state).toBe("handing");
+    const told: string[] = [];
+    second.store.onInboxChanged((threadIds) => told.push(...threadIds));
+    const claim = second.mailbox.claimJob("other");
+    expect(claim?.messages.map((m) => m.id)).toEqual([live]);
+    outage.exec("DROP TRIGGER notices_fail");
+    outage.close();
+
+    const start = Date.now();
+    while (second.store.inboxMessage(sent)?.state === "handing" && Date.now() - start < 3_000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(second.mailbox.jobTurn(sent)).toEqual({ recipient: "parent", handedOver: false, turnId: null, uncertain: true });
+    expect(second.store.inboxMessage(unsent)?.state).toBe("unseen");
+    expect(second.store.listUnseenInbox("lead").filter((r) => r.kind === "notice")).toHaveLength(1);
+    // The ringer hears of what went back to unseen.
+    expect(told).toContain("parent");
+    // This process's own hand-over is still its own.
+    expect(second.store.inboxMessage(live)?.state).toBe("handing");
+    expect(second.store.inboxMessage(live)?.deliveryId).toBe(claim!.deliveryId);
+  });
+
   test("a hand-over never marked sent goes back to unseen and is handed over again", () => {
     const dir = freshDir();
     const first = processOn(dir, { live: false });
