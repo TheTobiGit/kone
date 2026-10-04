@@ -475,6 +475,22 @@ Each phase ships on its own and leaves the app working and tested.
 - **Tests:** a report with delegates and workers still running names them; one with none adds nothing.
 - **As built:** in `settleReports.ts` and `threadSpawn.ts`; `spawnControl.ts` needed no change. Still out means the parent's other hand-offs the spawn engine tracks whose current turn has not settled (running, starting, or parked on a question or approval). An agent idle between turns is not out. Under `delivery.v2`, neither is a follow-up job still waiting in its inbox. Only the courier's settle reports carry the line, and only when they ring: a held interruption leaves it off because it would be stale. A delegate's own `agent_message` report does not carry it.
 
+### Review fixes
+
+A review of everything since Phase 0 held `delivery.v2` back until findings 1–4 were fixed. Each fix has a regression test for its failure window.
+
+| Finding | Fix | Commit |
+|---|---|---|
+| 1. A delivery the provider accepted could run twice after a crash during the checkpoint | The adapter's acceptance settles the carried inbox rows and the queued row at once; the checkpoint follows. The window inside the provider's own send, before it answers, remains: closing it needs an idempotent provider request | `029054fe` |
+| 2. Urgent mail settled with a queue id on a provider that cannot steer | The ringer steers only into an announced turn on a provider that steers, and waits for `turn.started` otherwise. On a provider that cannot steer, it ends the running turn once and leaves the mail unseen for the next turn, which settles it with a real turn id. An urgent job's turn runs ahead of the user's queued messages | `087c0c6e` |
+| 3. A settle or release the store could not write stranded rows in `handing` | The store answers null on a failed write. The mailbox keeps the turn and retries the write on a backoff, without resending; meanwhile a job's id already stands for its turn. A late release rings again | `eb9367ea` |
+| 4. A refused inbox-only turn, or a failed restart, was never retried | Both arm the ringer's backoff (1 s, 5 s, 15 s, 60 s), then wait for something else to ring | `b3a35c0d` |
+| 5. A crash could journal a message twice | A message's block id is derived from its inbox id; a retry links the block already written | `b4272778` |
+| 6. Carried mail reverses queued prompts | Not reproduced. A queued row's block moves to the tail when it is claimed, so a later prompt follows the earlier one's turn. A test pins this order | `622a6f01` (test) |
+| 7. Block moves collided on `blocks.seq` | Moves take one past the highest seq of any thread. The queue claim had the same collision: its row was left `promoting` until the stale timeout. It is fixed too, and now runs as one transaction with its block move | `622a6f01` |
+| 8. Agent mail reads as the user's queued text on reload | Backend half: `QueuedTurnRow.sender` and `turn.queued.sender`, read from the row's block. The renderer half is Maya's | `3f923e98` |
+| `agent_read` final/response looked empty to providers that read the structured half | The rendered reply is in `structuredContent.text` too | `4ae5551b` |
+
 ## 13. Shipped while this was worked out
 
 | Commit | What |
