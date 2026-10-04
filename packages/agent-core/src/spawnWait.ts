@@ -21,6 +21,8 @@ export type Waiter = {
   /** Positionally paired with `ids`; undefined = wait on the child's latest. */
   turnIds?: (string | undefined)[];
   scopeThreadId: string;
+  /** When the wait began. */
+  since: number;
   resolve: (out: WaiterResult) => void;
   timeout?: NodeJS.Timeout;
 };
@@ -80,6 +82,7 @@ export class SpawnWaitCoordinator {
       ids: [...input.threadIds],
       turnIds: input.turnIds ? [...input.turnIds] : undefined,
       scopeThreadId: input.scopeThreadId,
+      since: Date.now(),
       resolve,
     };
     waiter.timeout = setTimeout(() => this.finishWaiter(waiter, true), timeoutMs);
@@ -111,6 +114,17 @@ export class SpawnWaitCoordinator {
         waiter.scopeThreadId === scopeThreadId &&
         waiter.ids.some((id, i) => id === threadId && (waiter.turnIds?.[i] ?? turnId) === turnId),
     );
+  }
+
+  /** The threads `scopeThreadId` is parked waiting on, and since when; null
+   *  when it is not waiting. */
+  waitingOn(scopeThreadId: string): { threadIds: string[]; since: number } | null {
+    const mine = this.waiters.filter((w) => w.scopeThreadId === scopeThreadId);
+    if (mine.length === 0) return null;
+    return {
+      threadIds: [...new Set(mine.flatMap((w) => w.ids))],
+      since: Math.min(...mine.map((w) => w.since)),
+    };
   }
 
   checkWaiters(): void {

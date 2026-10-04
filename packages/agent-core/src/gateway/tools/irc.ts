@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import { COURIER_AGENT_ID, type CourierSender } from "@kone/protocol/message-sender";
-import type { AgentSender, ProviderKind, SenderRelationship, StoredThreadMeta, ThreadLineage } from "../../types.js";
+import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type CourierSender } from "@kone/protocol/message-sender";
+import type { AgentSender, ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
+import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import type { AgentRecord } from "../../ConversationStore.js";
 import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRow } from "../../store/agentInbox.js";
@@ -80,10 +81,32 @@ export interface IrcPeer {
   registered: boolean;
 }
 
-/** One agent_list row: a peer and whether it is running. A type alias rather
- *  than an interface extending IrcPeer, because it has to pass as a gateway
- *  value and only an alias carries the implicit index signature. */
-type PeerRow = { id: string; agentName?: string; unread: number; registered: boolean; live: boolean };
+/** One agent_list row: a peer, how it relates to the caller, and what it is
+ *  doing. A type alias rather than an interface, because it has to pass as a
+ *  gateway value and only an alias carries the implicit index signature. */
+type PeerRow = {
+  id: string;
+  agentName?: string;
+  provider?: string;
+  relationship: SenderRelationship;
+  state: RecipientState["state"];
+  since: number | null;
+  activity: string | null;
+  steers: boolean | null;
+  waitingOn: string[];
+  ended: RecipientState["ended"];
+  unseen: number;
+  oldestUnseenAt: number | null;
+  live: boolean;
+};
+
+/** How many agents one roster lists. A project's long tail is closed threads
+ *  nobody is waiting on; past this they are counted, not listed, and stay
+ *  addressable by name or id. */
+const ROSTER_MAX = 30;
+
+/** How much history agent_inbox shows on request. */
+const INBOX_HISTORY_MAX = 20;
 
 export interface ThreadRegistration {
   threadId: string;
@@ -137,6 +160,16 @@ export interface IrcToolInput {
    *  nothing until it returns. The roster says which, because that difference
    *  is the whole economics of sending. */
   isThreadLive?: (threadId: string) => boolean;
+  /** What a thread is doing right now. Absent, a live peer reads as idle and
+   *  every other as closed. */
+  threadRuntime?: (threadId: string) => ThreadRuntime | null;
+  /** Whether a provider takes messages into a running turn, for a peer with
+   *  no live session to ask. */
+  providerSteers?: (provider: ProviderKind) => boolean;
+  /** A hand-off's status, for a thread some agent handed work to. */
+  spawnedStatus?: (threadId: string) => SpawnedThreadStatus | null;
+  /** The children a thread is parked in agent_wait on. */
+  waitingOn?: (threadId: string) => { threadIds: string[]; since: number } | null;
 }
 
 /** A stored inbox row as the mailbox's message record. */
@@ -173,6 +206,45 @@ export class IrcMailbox {
   /** @param inbox where messages are kept; the app passes the conversation
    *  store, tests and a store-less process get an in-memory one. */
   constructor(private readonly inbox: AgentInboxStore = new MemoryAgentInbox()) {}
+
+  /** Threads parked in agent_message's wait, on whom, since when. */
+  private readonly replyWaits = new Map<string, Array<{ threadIds: string[]; since: number }>>();
+
+  /** Mark `threadId` as parked waiting on `recipients`' answer; returns the
+   *  call that ends it. */
+  trackWait(threadId: string, recipients: readonly string[]): () => void {
+    const entry = { threadIds: [...recipients], since: Date.now() };
+    const list = this.replyWaits.get(threadId) ?? [];
+    list.push(entry);
+    this.replyWaits.set(threadId, list);
+    return () => {
+      const current = this.replyWaits.get(threadId);
+      if (!current) return;
+      const at = current.indexOf(entry);
+      if (at !== -1) current.splice(at, 1);
+      if (current.length === 0) this.replyWaits.delete(threadId);
+    };
+  }
+
+  /** Who `threadId` is parked waiting on for an answer, and since when. */
+  waitingOn(threadId: string): { threadIds: string[]; since: number } | null {
+    const list = this.replyWaits.get(threadId);
+    if (!list?.length) return null;
+    return {
+      threadIds: [...new Set(list.flatMap((w) => w.threadIds))],
+      since: Math.min(...list.map((w) => w.since)),
+    };
+  }
+
+  /** The thread's seen messages, newest first. */
+  history(threadId: string, limit: number): IrcMessageRecord[] {
+    return this.inbox.inboxHistory(threadId, limit).map(recordFromRow);
+  }
+
+  /** When the oldest message still unseen in the thread's inbox arrived. */
+  oldestUnseenAt(threadId: string): number | null {
+    return this.inbox.listUnseenInbox(threadId, 1)[0]?.createdAt ?? null;
+  }
 
   private threads = new Map<string, ThreadRegistration>();
   private agentToThread = new Map<string, string>();
@@ -822,14 +894,63 @@ const IRC_SEND_DESCRIPTION = [
 ].join("\n");
 
 const IRC_LIST_DESCRIPTION = [
-  "List the kone agents you can message on this project: their ids, whether each is running, and how many unread messages each has. A running agent will be interrupted, an away one won't see you until it returns, and one with a pile of unread messages is not reading.",
+  "List the kone agents on this project you can message, and what each is doing: working (on what, for how long), idle, waiting on the user, waiting on another agent, starting, compacting, session closed, or its hand-off ended. Each row says how you relate to it, what a message to it would do right now, and how many messages wait unseen in its inbox and for how long.",
+  "",
+  "Look before you send: a message to an agent waiting on the user waits with it, and one to a busy agent on a provider that cannot steer interrupts its turn.",
 ].join("\n");
 
 const IRC_INBOX_DESCRIPTION = [
-  "Read messages other agents sent you.",
+  "Read the messages waiting unseen in your inbox, with who sent each, what kind it is and what it replies to. Reading marks them seen. history: true adds the last 20 you have already seen.",
   "",
-  "You do not need to poll this. A message delivered while you are running is folded into your turn, and one that arrives while you are idle wakes you with it. This is for catching up deliberately — what came in while you could not be reached, or a second look at something already delivered.",
+  "Open it between steps of long work to see whether a note changes what to do next, before ending your turn to make sure nothing waiting should be acted on now, and after your context was compacted to re-read what fell out of it.",
+  "",
+  "Never open it to wait for an answer or a result: those reach you on their own. Never open it in a loop: nothing arrives faster for checking.",
 ].join("\n");
+
+/** One message as agent_inbox lists it. */
+function renderInboxLine(m: IrcMessageRecord, now: number): string {
+  const kind = m.kind ?? "note";
+  const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
+  const ago = formatSince(m.createdAt, now);
+  return `[${m.id}] ${kind} from ${m.sender ? senderLabel(m.sender) : m.from}${replyTo}, ${ago} ago:\n${m.message}`;
+}
+
+/** One message as agent_inbox returns it in structured form. */
+function inboxEntry(m: IrcMessageRecord): GatewayRecord {
+  const entry: GatewayRecord = {
+    id: m.id,
+    from: m.from,
+    kind: m.kind ?? "note",
+    sender: m.sender ? senderLabel(m.sender) : m.from,
+    replyTo: m.replyTo ?? null,
+    createdAt: m.createdAt,
+    message: m.message,
+  };
+  if (m.sender?.kind === "agent") entry.relationship = m.sender.relationship;
+  return entry;
+}
+
+/** One roster row as text. */
+function renderPeerLine(p: PeerRow, now: number): string {
+  const name = p.agentName ? `${p.agentName} ` : "";
+  const provider = p.provider ? `, ${p.provider}` : "";
+  const state = describeRecipientState(
+    {
+      state: p.state,
+      since: p.since,
+      activity: p.activity,
+      steers: p.steers,
+      waitingOn: p.waitingOn,
+      ended: p.ended,
+      unseen: p.unseen,
+      oldestUnseenAt: p.oldestUnseenAt,
+    },
+    now,
+  );
+  const unseen =
+    p.unseen > 0 ? ` ${p.unseen} unseen in its inbox, oldest ${formatSince(p.oldestUnseenAt, now) ?? "just now"}.` : "";
+  return `${name}\`${p.id}\` (${senderRelationshipLabel(p.relationship)}${provider}) — ${state}.${unseen}`;
+}
 
 /**
  * Creates the messaging gateway tools: `agent_message`, `agent_list` and
@@ -905,12 +1026,10 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     };
 
     if (parsed.wait === true) {
-      const reply = await mailbox.waitForReply(
-        ctx.threadId,
-        result.copyIds,
-        parsed.timeoutMs ?? AGENT_MESSAGE_WAIT_MAX_MS,
-        ctx.signal,
-      );
+      const stopWaiting = mailbox.trackWait(ctx.threadId, result.recipients);
+      const reply = await mailbox
+        .waitForReply(ctx.threadId, result.copyIds, parsed.timeoutMs ?? AGENT_MESSAGE_WAIT_MAX_MS, ctx.signal)
+        .finally(stopWaiting);
       if (reply) {
         structured.answer = { messageId: reply.id, from: reply.from, message: reply.message };
         return {
@@ -950,76 +1069,104 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     args: GatewayRecord,
   ): Promise<GatewayToolResult> => {
     const parsed = IrcInboxInputSchema.parse(args);
-    const result = mailbox.getInbox(ctx.threadId, {
-      peek: parsed.peek,
-      limit: parsed.limit,
-    });
+    const now = Date.now();
+    // History first, so it holds what was seen before this read, not the
+    // messages this read is about to return.
+    const history = parsed.history === true ? mailbox.history(ctx.threadId, Math.min(parsed.limit ?? INBOX_HISTORY_MAX, INBOX_HISTORY_MAX)) : [];
+    const result = mailbox.getInbox(ctx.threadId, { limit: parsed.limit });
 
-    const text =
-      result.messages.length === 0
-        ? "Inbox is empty (0 unread messages)."
-        : `Retrieved ${result.messages.length} message${
-            result.messages.length === 1 ? "" : "s"
-          } (unread remaining: ${result.unreadCount}):\n` +
-          result.messages
-            .map(
-              (m) =>
-                `[${m.id}] From: ${m.from}${
-                  m.replyTo ? ` (replyTo: ${m.replyTo})` : ""
-                } at ${new Date(m.createdAt).toISOString()}:\n${m.message}`,
-            )
-            .join("\n\n");
+    const parts: string[] = [];
+    if (result.messages.length === 0) parts.push("Nothing unseen in your inbox.");
+    else {
+      const more = result.unreadCount > 0 ? ` ${result.unreadCount} more still unseen.` : "";
+      parts.push(
+        `${result.messages.length} unseen message${result.messages.length === 1 ? "" : "s"}, now marked seen.${more}\n\n` +
+          result.messages.map((m) => renderInboxLine(m, now)).join("\n\n"),
+      );
+    }
+    if (parsed.history === true) {
+      parts.push(
+        history.length === 0
+          ? "No history: you have not seen any messages yet."
+          : `Seen before, newest first:\n\n${history.map((m) => renderInboxLine(m, now)).join("\n\n")}`,
+      );
+    }
 
-    return {
-      content: [{ type: "text", text }],
-      structuredContent: {
-        messages: result.messages.map((m) => ({
-          id: m.id,
-          from: m.from,
-          to: m.to,
-          message: m.message,
-          replyTo: m.replyTo ?? null,
-          createdAt: m.createdAt,
-        })),
-        count: result.messages.length,
-        unreadRemaining: result.unreadCount,
-      },
+    const structured: GatewayRecord = {
+      messages: result.messages.map(inboxEntry),
+      count: result.messages.length,
+      unseenRemaining: result.unreadCount,
     };
+    if (parsed.history === true) structured.history = history.map(inboxEntry);
+    return { content: [{ type: "text", text: parts.join("\n\n") }], structuredContent: structured };
   };
 
   const listHandler = async (ctx: GatewayToolContext): Promise<GatewayToolResult> => {
-    let rootThreadId: string | undefined;
-    if (input.store?.threadLineage) {
-      rootThreadId = input.store.threadLineage(ctx.threadId)?.rootThreadId;
-    }
-    const sender: IrcPeerScope = { threadId: ctx.threadId, projectPath: ctx.cwd, rootThreadId };
-    const peers = mailbox.listPeers(sender);
     const store = input.store;
-    const rows = peers.map((peer) => {
+    const rootThreadId = store?.threadLineage?.(ctx.threadId)?.rootThreadId;
+    const now = Date.now();
+    // Every agent on the project, from the store, newest activity first —
+    // plus anyone the mailbox knows that the store does not (a store-less
+    // process, a thread from another project in the same tree).
+    const ids: string[] = [];
+    const seen = new Set<string>([ctx.threadId]);
+    const add = (id: string) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      ids.push(id);
+    };
+    for (const meta of store?.listThreads?.(ctx.cwd) ?? []) add(meta.threadId);
+    for (const peer of mailbox.listPeers({ threadId: ctx.threadId, projectPath: ctx.cwd, rootThreadId })) add(peer.id);
+
+    const rows = ids.map((id): PeerRow => {
+      const meta = store?.threadMeta?.(id) ?? null;
+      const runtime = input.threadRuntime?.(id) ?? (input.isThreadLive?.(id) ? liveOnly() : null);
+      const agentWait = input.waitingOn?.(id) ?? null;
+      const replyWait = mailbox.waitingOn(id);
+      const waitingOn = mergeWaits(agentWait, replyWait);
+      const steersWhenClosed = meta && input.providerSteers ? input.providerSteers(meta.provider) : null;
+      const state = recipientState({
+        runtime,
+        spawned: input.spawnedStatus?.(id) ?? null,
+        waitingOn,
+        providerSteers: steersWhenClosed,
+        unseen: mailbox.getUnreadCount(id),
+        oldestUnseenAt: mailbox.oldestUnseenAt(id),
+      });
       const row: PeerRow = {
-        ...peer,
-        live: input.isThreadLive?.(peer.id) ?? false,
+        id,
+        relationship: relationshipOf(store, ctx.threadId, id),
+        state: state.state,
+        since: state.since,
+        activity: state.activity,
+        steers: state.steers,
+        waitingOn: state.waitingOn,
+        ended: state.ended,
+        unseen: state.unseen,
+        oldestUnseenAt: state.oldestUnseenAt,
+        live: runtime?.live ?? false,
       };
-      const agentName = peer.agentName ?? (store ? threadAgentName(store, peer.id) : undefined);
+      const agentName = mailbox.getThread(id)?.agentName ?? (store ? threadAgentName(store, id) : undefined);
       if (agentName) row.agentName = agentName;
+      if (meta) row.provider = meta.provider;
       return row;
     });
 
-    const text =
-      rows.length === 0
-        ? "No peers — you are the only active agent in this thread tree right now."
-        : rows
-            .map(
-              (p) =>
-                `${p.agentName ? `${p.agentName} ` : ""}\`${p.id}\` — ${
-                  p.live ? "running (a message interrupts it)" : "away (a message waits)"
-                }, ${p.unread} unread`,
-            )
-            .join("\n");
+    // Reachable agents first; the closed tail is what gets cut.
+    const reachable = rows.filter((r) => r.state !== "closed" && r.state !== "ended");
+    const rest = rows.filter((r) => r.state === "closed" || r.state === "ended");
+    const listed = [...reachable, ...rest].slice(0, Math.max(ROSTER_MAX, reachable.length));
+    const hidden = rows.length - listed.length;
+
+    const lines = listed.map((p) => renderPeerLine(p, now));
+    if (hidden > 0) {
+      lines.push(`${hidden} more agent${hidden === 1 ? "" : "s"} on this project with closed sessions, not listed; address one by name or id.`);
+    }
+    const text = listed.length === 0 ? "No other agents on this project." : lines.join("\n");
 
     return {
       content: [{ type: "text", text }],
-      structuredContent: { peers: rows, count: rows.length },
+      structuredContent: { peers: listed, count: listed.length, notListed: hidden },
     };
   };
 
@@ -1050,7 +1197,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       permission: "allow",
       requiresActiveTurn: false,
       promptSnippet:
-        "See the kone agents on this project you can message, and which are running.",
+        "See every kone agent on this project you can message, what each is doing, and what a message to it would do.",
       handler: listHandler,
     },
     {
@@ -1062,8 +1209,34 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       requiresActiveTurn: false,
       onDemand: true,
       promptSnippet:
-        "Catch up on messages other agents sent you; delivered ones already reach your turn, so never poll it.",
+        "Read what waits unseen in your inbox between steps, before ending your turn, or after compaction; answers and results reach you on their own, so never poll it.",
       handler: inboxHandler,
     },
   ];
+}
+
+/** A runtime for a thread known only to be live: nothing else is known. */
+function liveOnly(): ThreadRuntime {
+  return {
+    live: true,
+    starting: false,
+    busy: false,
+    turnStartedAt: null,
+    parked: null,
+    parkedSince: null,
+    compacting: false,
+    steers: null,
+    activeTool: null,
+    lastActivityAt: null,
+  };
+}
+
+/** The two kinds of wait — on a hand-off, on an answer — as one. */
+function mergeWaits(
+  a: { threadIds: string[]; since: number } | null,
+  b: { threadIds: string[]; since: number } | null,
+): { threadIds: string[]; since: number } | null {
+  if (!a) return b;
+  if (!b) return a;
+  return { threadIds: [...new Set([...a.threadIds, ...b.threadIds])], since: Math.min(a.since, b.since) };
 }

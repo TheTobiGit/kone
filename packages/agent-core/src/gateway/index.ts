@@ -24,7 +24,9 @@ import { createAstTools } from "./tools/ast.js";
 import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
-import { createIrcTools } from "./tools/irc.js";
+import { createIrcTools, type IrcToolInput } from "./tools/irc.js";
+import type { ThreadRuntime } from "../recipientState.js";
+import { getSpawnEngine } from "../threadSpawn.js";
 import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 import {
   createAppThemeTools,
@@ -141,6 +143,10 @@ export interface GatewayInput {
    *  to tell a sender whether a message interrupts a peer or waits for it.
    *  Absent, every peer reads as away, which is the safe way to be wrong. */
   isThreadLive?: (threadId: string) => boolean;
+  /** What a thread is doing right now, and whether a provider steers — what
+   *  agent_list reads to tell a sender what a message would do. */
+  threadRuntime?: (threadId: string) => ThreadRuntime | null;
+  providerSteers?: (provider: ProviderKind) => boolean;
   /** What a thread is parked on, if anything — what the thread list reads to
    *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
    *  from one that is merely idle. Absent, no thread reads as parked, which
@@ -212,6 +218,20 @@ export interface GatewayInput {
   readTerminalScreen?: (terminalId: string, maxLines: number) => Promise<TerminalScreenReading | null>;
 }
 
+/** What the messaging tools read about other agents. The spawn engine is
+ *  resolved per call: it is built after the gateway. */
+function ircToolInput(input: GatewayInput): IrcToolInput {
+  const tools: IrcToolInput = {
+    store: input.store,
+    spawnedStatus: (threadId) => getSpawnEngine()?.snapshot(threadId)?.status ?? null,
+    waitingOn: (threadId) => getSpawnEngine()?.waitingOn(threadId) ?? null,
+  };
+  if (input.isThreadLive) tools.isThreadLive = input.isThreadLive;
+  if (input.threadRuntime) tools.threadRuntime = input.threadRuntime;
+  if (input.providerSteers) tools.providerSteers = input.providerSteers;
+  return tools;
+}
+
 export function createGateway(input: GatewayInput): GatewayHandle {
   // Both readers are optional and stay omitted rather than undefined: the theme
   // tools distinguish "the app has not reported this" from "nobody wired a
@@ -271,11 +291,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const workerTools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
-    ...createIrcTools(
-      input.isThreadLive
-        ? { store: input.store, isThreadLive: input.isThreadLive }
-        : { store: input.store },
-    ),
+    ...createIrcTools(ircToolInput(input)),
     ...createLaunchTools({ supervisor: launchSupervisor }),
     ...createLspTools({ manager: lspManager }),
   ].map((tool) => ({ ...tool, target: "worker" as const }));
