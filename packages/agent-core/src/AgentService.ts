@@ -1842,7 +1842,11 @@ export class AgentService {
       const provider = this.routing.get(threadId);
       if (provider) {
         const enqueued = await this.enqueueTurn(input, "steer", provider);
-        if (liveTurnId) {
+        // A turn parked on the user is not interrupted: on several providers
+        // an interrupt drains the parked approvals, so the nudge would decline
+        // the user's approval for them. The row waits; once the user answers
+        // and the turn ends, it claims first.
+        if (liveTurnId && !this.parkedByThread.get(threadId)?.size) {
           void this.interruptTurn(threadId).catch((err) => {
             console.warn(`[agent] interrupt on fallback steer failed for ${threadId}:`, err);
           });
