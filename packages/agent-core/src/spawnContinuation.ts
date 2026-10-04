@@ -26,6 +26,9 @@ export interface SpawnContinuationDeps {
   tracked: Map<string, TrackedChild>;
   liveChildren: Set<string>;
   recompute: (child: TrackedChild) => void;
+  /** The provider took `turnId` for `child`, sent at `since`; its events
+   *  may still be on their way. */
+  markAwaitingTurn?: (child: TrackedChild, turnId: string, since: number) => void;
   /** Take a child from before a restart back on; null when it is no
    *  spawned child. */
   adopt?: (threadId: string, parentTurnId: string, hasLiveSession: boolean) => TrackedChild | null;
@@ -184,16 +187,14 @@ export class ThreadContinuationManager {
       if (this.deps.jobs) {
         result = finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true);
       } else {
+        const sentAt = Date.now();
         const sent = await this.deps.dispatcher.sendThreadTurn(
           { threadId: request.threadId, input: message, sender },
           { generateTitle: false, parentTurnId: caller.turnId },
         );
         // The provider took the turn: until its turn.started comes through,
         // the child reads as starting it, not as the turn before.
-        if (tracked && !sent.queued) {
-          tracked.awaitingTurn = { turnId: sent.turnId, at: Date.now() };
-          this.deps.recompute(tracked);
-        }
+        if (tracked && !sent.queued) this.deps.markAwaitingTurn?.(tracked, sent.turnId, sentAt);
         result = finish(sent.turnId);
       }
       if (tracked) {
