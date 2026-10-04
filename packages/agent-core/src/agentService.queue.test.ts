@@ -592,7 +592,7 @@ describe("the turn slot carries the inbox, against the real store", () => {
   /** An inbox that folds one line in front of every turn and records how what
    *  it carried was settled. `rings` is whether anything waits that is worth a
    *  turn of its own. */
-  function fakeInbox(rings = false) {
+  function fakeInbox(rings = false, options: { markerFails?: boolean } = {}) {
     type Carried = {
       turn: string | null;
       own: string | undefined;
@@ -611,6 +611,7 @@ describe("the turn slot carries the inbox, against the real store", () => {
         return {
           input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
           sending: () => {
+            if (options.markerFails) throw new Error("database is locked");
             entry.sentBefore = adapter.sent.length;
           },
           settle: (turnId: string) => {
@@ -746,6 +747,18 @@ describe("the turn slot carries the inbox, against the real store", () => {
     await waitFor(() => log[0]?.settled !== null && log[0]?.settled !== undefined);
     expect(log[0]?.sentBefore).toBe(0);
     expect(adapter.sent).toHaveLength(1);
+  });
+
+  // A marker the store could not write: a crash after the send would read as
+  // never sent and hand the mail over twice, so the provider is not contacted.
+  test("a turn whose carried mail could not be marked sent never reaches the provider", async () => {
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox(true, { markerFails: true });
+    service.setTurnInbox(inbox);
+    service.kickTurnSlot(thread);
+    await waitFor(() => log[0]?.released === true);
+    expect(adapter.attempts).toHaveLength(0);
+    expect(log[0]?.settled).toBeNull();
   });
 
   test("a message sent straight to an idle thread carries the inbox too", async () => {

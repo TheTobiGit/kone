@@ -1049,10 +1049,13 @@ export class IrcMailbox {
   /** The hand-over is going to the provider now. Recorded so a process that
    *  dies from here on leaves it uncertain, not unsent: the next one settles
    *  it from the transcript, or holds it, rather than handing it over again.
-   *  A write the store refuses is not retried — by then the provider has the
-   *  turn or refused it, and settle or release says which. */
+   *  Throws when the store could not write that: the turn must not go out,
+   *  since a crash after it would read as never sent and hand it over twice.
+   *  The caller's refusal path releases the hand-over and tries again later. */
   sendingDelivery(deliveryId: string): void {
-    this.inbox.markInboxSending(deliveryId);
+    if (!this.inbox.markInboxSending(deliveryId)) {
+      throw new Error(`Could not record hand-over ${deliveryId} as sent; not sending it.`);
+    }
   }
 
   /** Remember the transcript block a message was written as. */
