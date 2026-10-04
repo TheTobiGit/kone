@@ -497,7 +497,21 @@ A re-review found 4, 5 and 7 fixed and withdrew 6; three fixes were partial:
 |---|---|---|
 | 2. A steer that found the announced turn ended, while the next send was on its way, was queued and the job settled with the queue id | The ringer's steer is live only: `steerTurn` refuses it rather than queue it, and the mail stays unseen for the backoff. A queued result says `queued: true`, and `onAccepted` never runs for one | `048b2144` |
 | 1. With `delivery.v2` off, legacy delivery and held notices settled after the checkpoint | Both settle through `onAccepted`, before the checkpoint. A turn the service queued still settles to its row, which carries the messages from there | `dc9bfbf0` |
-| 3. A failed settle followed by a crash replayed accepted mail at boot | Each hand-over marks its rows `sent_at` right before the provider gets the turn. At boot a row never sent is handed over again; a sent one is settled with the turn the transcript shows took it — the turn its block was steered into, or the first turn that started once it was sent. A sent row the transcript cannot settle is still released for now; holding it instead is the open question | `d2369971` |
+| 3. A failed settle followed by a crash replayed accepted mail at boot | Each hand-over marks its rows `sent_at` right before the provider gets the turn. At boot a row never sent is handed over again; a sent one is settled with the turn the transcript shows took it — the turn its block was steered into, or the first turn that started once it was sent. A sent row the transcript cannot settle is still released for now; holding it instead is the open question | `d2369971` (superseded below) |
+
+A final re-review closed 2, 1 (with `delivery.v2` off) and 8, and held `delivery.v2` back on three more:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| 3a. A hand-over whose sent marker failed to write still reached the provider | The marker is the gate: when the store cannot write it, the send is refused before the provider is contacted, and the claim is released to the ringer's backoff. A user's turn that carries inbox mail is refused the same way and retried by the queue's backoff | `a8dbf083` |
+| 3b. A sent row a restart cut off was released, and so could run twice | Migration 25 adds the `uncertain` state. At boot a sent row is seen only through the link written when the provider accepted it: its inbox block's `turn_id`. Every other sent row turns `uncertain`, and delivery skips it. The recipient gets one held notice naming the messages, with no bodies. An agent sender gets one held notice saying to send it again, and, for a job, to send `agent_followup` again with a new requestId. Both are deduplicated across restarts. `agent_inbox` lists uncertain rows flagged and marks them seen there. `agent_wait` on an uncertain job settles with `status: "uncertain"` and `handedOver: false` | `c3a453a8`, `aa7cbab4` |
+| 3c. Boot reconciliation could settle a row to an unrelated turn, the first one after `sent_at` | Timestamps are no longer read. Only the acceptance link settles a row | `aa7cbab4` |
+| Overlay: with symlinks refused, a codex database was copied without its write-ahead log | A database the overlay cannot link is copied with `VACUUM INTO` from a read-only connection, so changes committed to the log are kept. Sidecars are never copied, and databases are placed before their sidecars. A database the overlay created itself keeps its sidecars local, as before | `49193fe6` |
+
+Still open:
+- The window inside the provider's own send, before it answers. A crash there leaves the row `uncertain`, which now reports the problem instead of replaying the message. Closing the window needs an idempotent provider request.
+- The renderer's copy of `SpawnedThreadStatus` still lacks `"uncertain"`.
+- A database copied into the overlay is a snapshot. Codex's writes there do not reach the real home, and a later build does not refresh it.
 
 ## 13. Shipped while this was worked out
 
