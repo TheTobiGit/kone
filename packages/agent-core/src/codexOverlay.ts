@@ -1,4 +1,15 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 import {
@@ -47,6 +58,54 @@ export type CodexOverlayInput = {
   overlayHome?: string;
 };
 
+/** The files SQLite keeps beside a database, named after it. */
+const SQLITE_SIDECARS = ["-wal", "-shm", "-journal"] as const;
+
+/** The database a SQLite sidecar belongs to, or null for any other entry. */
+function sidecarDatabase(entry: string): string | null {
+  for (const suffix of SQLITE_SIDECARS) {
+    if (entry.endsWith(suffix) && entry.length > suffix.length) return entry.slice(0, -suffix.length);
+  }
+  return null;
+}
+
+/** A real file of the overlay's own, not a link into the real home. */
+function isLocalFile(entryPath: string): boolean {
+  try {
+    return lstatSync(entryPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** A database and its write-ahead log and shared memory are one thing to
+ *  SQLite: the log only makes sense against the file it was written for. A
+ *  database codex created in the overlay — one the real home did not have
+ *  when the overlay was built — stays the overlay's own, and so must its
+ *  sidecars: linked to the real home's, they pair it with another database's
+ *  log, and codex cannot open it. Drop any such link (the overlay's own; the
+ *  file it points at is untouched) and never make one. A linked database needs
+ *  nothing here: SQLite follows the link and keeps its sidecars beside the
+ *  file it points at. */
+function unlinkForeignSidecars(overlayHome: string): void {
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(overlayHome);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const database = sidecarDatabase(entry);
+    if (database === null || !isLocalFile(path.join(overlayHome, database))) continue;
+    const sidecarPath = path.join(overlayHome, entry);
+    try {
+      if (lstatSync(sidecarPath).isSymbolicLink()) unlinkSync(sidecarPath);
+    } catch (err) {
+      console.warn(`[agent] could not drop the codex overlay's link ${sidecarPath}:`, err);
+    }
+  }
+}
+
 function linkEntry(sourcePath: string, targetPath: string, entryType: "file" | "dir"): void {
   // Windows needs elevated rights for real symlinks; junctions cover
   // directories without them. Files that cannot be linked are copied instead —
@@ -73,6 +132,7 @@ export function prepareCodexHomeOverlay(input: CodexOverlayInput): string {
   const sourceHome = input.sourceHome ?? resolveCodexHome();
   const overlayHome = input.overlayHome ?? userDataPath("codex-home-overlay");
   mkdirSync(overlayHome, { recursive: true });
+  unlinkForeignSidecars(overlayHome);
 
   let entries: string[] = [];
   try {
@@ -85,6 +145,8 @@ export function prepareCodexHomeOverlay(input: CodexOverlayInput): string {
     if (entry === "config.toml") continue;
     const targetPath = path.join(overlayHome, entry);
     if (existsSync(targetPath)) continue;
+    const database = sidecarDatabase(entry);
+    if (database !== null && isLocalFile(path.join(overlayHome, database))) continue;
     const sourcePath = path.join(sourceHome, entry);
     let type: "file" | "dir";
     try {
