@@ -370,7 +370,7 @@ Each phase ships on its own and leaves the app working and tested.
 | 3b | One ringer | Built (`1d47a55e`), behind `delivery.v2`, off by default |
 | 4 | Jobs: `agent_followup` and `app_send_to_thread` | Not started |
 | 5 | kone steer | Not started |
-| 6 | The inbox in the app | Not started |
+| 6 | The inbox in the app | Done (`1bb49544`, `04100edf`, `0b071123`) |
 | 7 | "Still out" on reports | Not started |
 
 ### Phase 0: never interrupt a thread parked on the user
@@ -434,6 +434,7 @@ Each phase ships on its own and leaves the app working and tested.
 - **Change:** IPC to list an agent's inbox and history, and an event when it changes. A per-agent inbox panel. The queue strip shows only rows the user wrote.
 - **Files:** `apps/desktop/src/agent/agent-ipc.ts`; `apps/web/app/composables/session/sessionQueue.ts`; `sessionReducer.ts`; a new inbox panel component; `apps/web/app/types/desktop.d.ts`.
 - **Tests:** `sessionReducer.test.ts`, `useAgent.test.ts`.
+- **As built:** `agent:inbox:list` (unseen and handing) and `agent:inbox:history` (seen, newest first, 20 by default, 200 at most), shaped by `inboxView.ts`: an answer carries a one-line quote of what it replies to. The inbox store tells listeners whose inbox moved after every write that changed a row; the IPC layer streams that as `thread.inbox-changed`, never journaled. The panel is an Inbox tab in the thread-info drop-down (`AgentInboxPanel.vue`, `useAgentInbox.ts`), read-only. The strip filters on the queued row's block sender, so the raw queue still holds an agent's message back from the transcript until it runs, and a Stop hands back only the user's words. Still open: a Stop drops a queued agent message's block although its inbox row already reads seen; that goes when Phase 5 takes agent messages out of the turn queue.
 
 ### Phase 7: "still out" on reports
 
