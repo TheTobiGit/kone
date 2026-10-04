@@ -429,7 +429,7 @@ export function registerAgentIpc(): void {
       dispatcher,
       journal: (threadId, message, beforeBlockId) =>
         message.sender
-          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, beforeBlockId })
+          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, beforeBlockId, inboxId: message.id })
           : null,
       blockSender: (threadId, blockId) => store.userBlockSender(threadId, blockId),
       placeLast: (threadId, blockId) => store.moveBlockToEnd(threadId, blockId),
@@ -457,7 +457,7 @@ export function registerAgentIpc(): void {
       // nowhere.
       journal: (threadId, message) =>
         message.sender
-          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender })
+          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, inboxId: message.id })
           : null,
     });
   }
