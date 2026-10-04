@@ -32,6 +32,8 @@ export interface SpawnWaitDeps {
   tracked: Map<string, TrackedChild>;
   store: SpawnEngineStore;
   snapshot: (threadId: string) => SpawnedThread | null;
+  /** The child as the store has it, for a turn the live record does not hold. */
+  storedSnapshot?: (threadId: string) => SpawnedThread | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
   /** A wait returned a settled turn to the agent that waited — that agent has
    *  the result, so nothing else need tell it. */
@@ -221,6 +223,12 @@ export class SpawnWaitCoordinator {
     const tracked = this.deps.tracked.get(threadId);
     if (tracked && turnId) {
       const pin = tracked.turns.find((t) => t.turnId === turnId);
+      // A child taken back on after a restart holds only its turns since; a
+      // turn from before is read from the store.
+      if (!pin && tracked.adopted && tracked.awaitingTurn?.turnId !== turnId) {
+        const stored = this.deps.storedSnapshot?.(threadId);
+        if (stored) return stored;
+      }
       const pinnedTurns = pin ? [pin] : [];
       return projectSpawnedThread({
         thread: {

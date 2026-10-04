@@ -2121,3 +2121,85 @@ describe("settle reports", () => {
     expect(mailbox.ringingCount(CALLER.threadId)).toBe(1);
   });
 });
+
+// ── children from before a restart ───────────────────────────────────────────
+// The engine follows the children it spawned in memory. After a restart a
+// child is only in the store; a follow-up takes it back on, so its turns are
+// read live and reported to the parent again.
+
+/** A delegate written by an earlier run, its last turn sealed interrupted
+ *  by the boot sweep. */
+function childFromBeforeRestart(h: EngineHarness, threadId = "old-1"): string {
+  setupParent(h.store, h.providers);
+  h.store.writeSpawnedThread({
+    threadId,
+    projectPath: CALLER.cwd,
+    provider: "opencode",
+    createdAt: 5,
+    title: "Review",
+    lineage: { parentThreadId: CALLER.threadId, relationshipToParent: "delegation", rootThreadId: CALLER.threadId },
+  });
+  h.store.spans.set(threadId, { startedAt: 10, endedAt: 20, runningTurns: 0, lastState: "interrupted" });
+  return threadId;
+}
+
+describe("a child from before a restart", () => {
+  test("a follow-up takes it back on: its next settled turn is reported to the parent", async () => {
+    const h = makeReportEngine();
+    const child = childFromBeforeRestart(h);
+
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    h.bus.emit(turnStarted(child, turnId, 40));
+    h.bus.emit(turnCompleted(child, turnId, 50));
+    await h.flush();
+
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain(`turn ${turnId}`);
+    h.stopDelivery();
+  });
+
+  test("a wait right after the follow-up reads the turn it started, not the interrupted one before", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    // The provider took the turn; its turn.started has not come through yet.
+    const latest = await h.engine.waitFor({ threadIds: [child], timeoutMs: 30, scopeThreadId: CALLER.threadId });
+    expect(latest.timedOut).toBe(true);
+    expect(latest.threads[0]!.terminal).toBe(false);
+    const pinned = h.engine.waitFor({ threadIds: [child], turnIds: [turnId], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    h.bus.emit(turnStarted(child, turnId, 40));
+    expect(h.engine.snapshot(child)!.status).toBe("working");
+    h.bus.emit(turnCompleted(child, turnId, 50));
+
+    const out = await pinned;
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "completed", terminal: true });
+    expect(out.turnIds).toEqual([turnId]);
+  });
+
+  test("a wait pinned to a turn from before the restart reads it from the store", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    const out = await h.engine.waitFor({
+      threadIds: [child],
+      turnIds: ["turn-from-before"],
+      timeoutMs: 2_000,
+      scopeThreadId: CALLER.threadId,
+    });
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "interrupted", terminal: true });
+  });
+
+  test("a follow-up that could not be sent leaves it as the store has it", async () => {
+    const h = makeEngine();
+    const child = childFromBeforeRestart(h);
+    h.dispatcher.failSend = true;
+
+    await expect(h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." })).rejects.toThrow();
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "interrupted", terminal: true });
+  });
+});
