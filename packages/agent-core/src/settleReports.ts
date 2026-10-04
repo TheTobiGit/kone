@@ -34,7 +34,25 @@ export type SettledTurnReport = {
   summary?: string;
   /** Why a failed turn failed. */
   detail?: string;
+  /** The parent's other hand-offs still at work when this one settled. */
+  stillOut?: StillOut;
 };
+
+/** What a parent handed off and has not had back: delegates and contractors
+ *  by name and what they were given, workers counted. */
+export type StillOut = {
+  agents: { name: string; title: string }[];
+  workers: number;
+};
+
+/** The one line naming the work still out — "Still out: Ada (login UI), 1
+ *  worker." — or null when nothing is. */
+export function renderStillOut(stillOut: StillOut | undefined): string | null {
+  if (!stillOut) return null;
+  const parts = stillOut.agents.map(({ name, title }) => (title && title !== name ? `${name} (${title})` : name));
+  if (stillOut.workers > 0) parts.push(`${stillOut.workers} worker${stillOut.workers === 1 ? "" : "s"}`);
+  return parts.length > 0 ? `Still out: ${parts.join(", ")}.` : null;
+}
 
 /** Where the engine sends a report, and how it takes one back. */
 export interface SettleReportSink {
@@ -58,8 +76,10 @@ function quote(text: string): string {
 
 /** The report's text, as kone writes it: who worked, how the turn ended, and
  *  the child's reply quoted underneath. `childName` is the name the parent
- *  knows the child by. */
-export function renderSettleReport(report: SettledTurnReport, childName: string): string {
+ *  knows the child by. A report that rings ends on the work still out, so the
+ *  parent knows whether to wait for more before acting; a held one leaves it
+ *  off, since it would be stale by the time it is read. */
+export function renderSettleReport(report: SettledTurnReport, childName: string, rings = true): string {
   const where = `thread ${report.childThreadId}, turn ${report.turnId}`;
   const reply = report.summary?.trim();
   const lines: string[] = [];
@@ -76,6 +96,8 @@ export function renderSettleReport(report: SettledTurnReport, childName: string)
     "",
     `Nobody was waiting for this result, so kone carried it to you. agent_wait on thread ${report.childThreadId} returns the same result, so there is nothing left to wait for; ask ${childName} more with agent_followup on that thread.`,
   );
+  const stillOut = rings ? renderStillOut(report.stillOut) : null;
+  if (stillOut) lines.push("", stillOut);
   return lines.join("\n");
 }
 
@@ -115,8 +137,8 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
       const meta = deps.store.threadMeta?.(report.childThreadId);
       if (!meta) return null;
       const sender = courierReportSender(deps.store, report);
-      const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId);
       const rings = !(report.status === "interrupted" && deps.isBusy && !deps.isBusy(report.parentThreadId));
+      const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId, rings);
       try {
         const sent = deps.mailbox.sendCourierMessage({
           to: report.parentThreadId,

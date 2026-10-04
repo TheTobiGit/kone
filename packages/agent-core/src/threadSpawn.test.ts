@@ -20,7 +20,7 @@ import {
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
 import { startIrcDelivery } from "./ircDelivery.js";
-import { createMailboxReportSink, type SettleReportSink } from "./settleReports.js";
+import { createMailboxReportSink, renderSettleReport, type SettledTurnReport, type SettleReportSink } from "./settleReports.js";
 import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
 import type {
   InteractionMode,
@@ -1808,6 +1808,53 @@ async function delegate(h: ReportHarness, request: SpawnRequest = DELEGATION): P
 }
 
 describe("settle reports", () => {
+  test("a report that rings names the work still out: delegates by name, workers counted", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    const ada = await delegate(h, { ...DELEGATION, requestId: "req-ada", persona: { name: "Ada" }, title: "login UI" });
+    const { threadId: worker } = await h.engine.spawn(CALLER, { ...REQUEST, requestId: "req-worker" });
+    h.bus.emit(sessionStarted(worker, 11));
+    h.bus.emit(turnStarted(worker, "w-1", 21));
+    // A hand-off that already settled is not out.
+    const { threadId: done } = await h.engine.spawn(CALLER, { ...REQUEST, requestId: "req-done" });
+    h.bus.emit(sessionStarted(done, 12));
+    h.bus.emit(turnStarted(done, "d-1", 22));
+    h.bus.emit(turnCompleted(done, "d-1", 23));
+    await h.flush();
+    h.delivered.length = 0;
+
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    await h.flush();
+
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain("Still out: Ada (login UI), 1 worker.");
+    expect(h.delivered[0]!.input).not.toContain(ada);
+    h.stopDelivery();
+  });
+
+  test("a held report leaves the still-out line off: it would be stale when read", () => {
+    const report: SettledTurnReport = {
+      childThreadId: "c",
+      parentThreadId: "p",
+      turnId: "t-1",
+      handOff: "delegation",
+      status: "interrupted",
+      stillOut: { agents: [{ name: "Ada", title: "login UI" }], workers: 2 },
+    };
+    expect(renderSettleReport(report, "Jonas")).toContain("Still out: Ada (login UI), 2 workers.");
+    expect(renderSettleReport(report, "Jonas", false)).not.toContain("Still out");
+  });
+
+  test("a report with nothing else out adds no still-out line", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    await h.flush();
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).not.toContain("Still out");
+    h.stopDelivery();
+  });
+
   test("a delegate that settles while its delegator is idle reports once, as a turn carrying its reply", async () => {
     const h = makeReportEngine();
     const child = await delegate(h);
