@@ -16,7 +16,7 @@ import type {
 } from "./types.js";
 import { copyTurnStamp } from "./types.js";
 import { ProviderKindSchema, SkillReferenceListSchema } from "./types.js";
-import { parseMessageSender } from "@kone/protocol/message-sender";
+import { parseMessageSender, type MessageSender } from "@kone/protocol/message-sender";
 import { parseContractTerms } from "@kone/protocol/contract";
 import { steerContinuationId } from "@kone/protocol/steer-split";
 import { threadEnvMode } from "./threadWorkspace.js";
@@ -367,6 +367,11 @@ export type QueuedTurnRow = {
    *  never reordered — the row drains in the default steer-first then FIFO
    *  order. A set key wins over dispatch mode and creation time. */
   sortKey?: number;
+  /** Who wrote the row's words, read from the transcript block it was
+   *  journaled as: `{ kind: "user" }` for the user, an agent or kone
+   *  otherwise. Absent when the row has no block on record, which a user's
+   *  send always has — so absent is never the user's. */
+  sender?: MessageSender;
 };
 
 export type QueuedTurnDbRow = {
@@ -389,6 +394,10 @@ export type QueuedTurnDbRow = {
   updated_at: number;
   promoted_at: number | null;
   sort_key: number | null;
+  /** The row's block's sender, on reads that join it; `has_block` says
+   *  whether there was a block at all. */
+  sender_json?: string | null;
+  has_block?: number | null;
 };
 
 export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
@@ -414,6 +423,7 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   if (row.context_window) queued.contextWindow = row.context_window;
   if (row.promoted_at !== null) queued.promotedAt = row.promoted_at;
   if (row.sort_key !== null && row.sort_key !== undefined) queued.sortKey = row.sort_key;
+  if (row.has_block) queued.sender = parseMessageSender(row.sender_json ?? null) ?? { kind: "user" };
   return queued;
 }
 

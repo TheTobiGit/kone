@@ -693,3 +693,29 @@ describe("the turn slot carries the inbox, against the real store", () => {
     expect(log[0]).toMatchObject({ own: "ub-direct", settled: result.turnId });
   });
 });
+
+// The transcript hides a row's block while the row waits, so the renderer
+// cannot tell the user's queued words from an agent's by looking for it.
+describe("a queued row says who wrote it", () => {
+  test("the queue read and turn.queued carry the row's sender: the user's, or the agent's", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const agent = { kind: "agent" as const, threadId: "lead", name: "Vera", relationship: "delegator" as const, messageKind: "note" as const };
+    store.recordUserBlock({ blockId: "ub-agent", threadId: thread, text: "a note", sender: agent });
+    await service.sendTurn({ threadId: thread, input: "a note", userBlockId: "ub-agent", sender: agent });
+    store.recordUserBlock({ blockId: "ub-user", threadId: thread, text: "mine" });
+    await service.sendTurn({ threadId: thread, input: "mine", userBlockId: "ub-user" });
+
+    const rows = store.listQueuedTurns(thread);
+    expect(rows.map((r) => r.sender)).toEqual([agent, { kind: "user" }]);
+    expect(ofType(thread, "turn.queued").map((e) => e.sender)).toEqual([agent, { kind: "user" }]);
+  });
+
+  test("a row with no block on record has no sender, so it never reads as the user's", () => {
+    const queueId = `q-${++seq}`;
+    store.ensureThread({ threadId: "t-bare", projectPath: "/repo", provider: "codex" });
+    store.enqueueQueuedTurn({ queueId, threadId: "t-bare", userBlockId: "ub-none", input: "silent" });
+    expect(store.listQueuedTurns("t-bare")[0]?.sender).toBeUndefined();
+  });
+});
+

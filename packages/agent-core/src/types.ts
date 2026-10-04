@@ -1891,6 +1891,10 @@ export type RuntimeEvent =
        *  this one included — a steer row claims ahead of plain follow-ups, so
        *  arrival order is not run order. */
       order?: string[];
+      /** Who wrote the row's words, as the queue read gives it
+       *  (QueuedTurnRow.sender): `{ kind: "user" }` for the user. Absent when
+       *  the row has no block on record, which is never the user's. */
+      sender?: MessageSender;
     })
   // A pending queue row changed state without leaving the queue: claimed and
   // on its way to the provider (`promoting`), released after a failed start

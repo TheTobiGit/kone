@@ -474,10 +474,17 @@ export class QueuedTurnRepo {
     if (!db) return [];
     try {
       // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow — the
-      // columns this schema creates.
+      // columns this schema creates — plus its block's sender columns.
+      // Who wrote each row is read from its block, which is durable and hidden
+      // from the transcript while the row waits.
       const rows = db
         .prepare(
-          `SELECT * FROM queued_turns
+          `SELECT queued_turns.*,
+                  (SELECT b.sender_json FROM blocks b
+                    WHERE b.thread_id = queued_turns.thread_id AND b.block_id = queued_turns.user_block_id) AS sender_json,
+                  EXISTS (SELECT 1 FROM blocks b
+                    WHERE b.thread_id = queued_turns.thread_id AND b.block_id = queued_turns.user_block_id) AS has_block
+             FROM queued_turns
             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}
             ORDER BY ${QUEUED_TURN_ORDER}`,
         )
