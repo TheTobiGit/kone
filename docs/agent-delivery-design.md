@@ -1,8 +1,8 @@
 # Delivering messages between agents
 
-Status: proposed. §1–§9 are the design; §10 maps it onto the code; §11 lists
-what has to be settled or tested before building; §12 is what already shipped
-while this was being worked out.
+Status: being built. §1–§9 are the design; §10 maps it onto the code; §11
+records the decisions that were open; §12 is the build plan, phase by phase;
+§13 is what already shipped while this was being worked out.
 
 Builds on `docs/agent-roles-design.md`, which fixes who may message whom.
 This document is about how a message gets there.
@@ -12,28 +12,40 @@ the doorbell when it matters.
 
 ## 0. Where it stands today
 
-Five paths put words into another agent's thread. Each decides delivery on its
+Six paths put words into another agent's thread. Each decides delivery on its
 own and keeps waiting messages in its own place:
 
 | Path | Who uses it | How it decides | Where it waits |
 |---|---|---|---|
-| `agent_message`, courier reports | Agents, kone | Steer if the recipient is busy, wake it if idle, 400 ms batching (`ircDelivery.ts`) | In-memory mailbox |
-| `agent_followup`, briefs | Agents | Always a normal send: queued behind a running turn (`spawnContinuation.ts`) | Durable turn queue |
-| kone notices (`tell`) | kone | Steer if busy, else wake or hold, per call (`handOffLifecycle.ts`) | Steer / queue / in memory |
-| `queueNotice` | kone | Always held for the next turn (`dispatch.ts`) | In memory |
-| `app_send_to_thread` | The assistant | Queue, or steer when the caller passes `steer: true` | Durable turn queue |
+| `agent_message`, courier reports | Agents, kone | Steer if the recipient is busy, wake it if idle, 400 ms batching, at most 8 per delivery (`ircDelivery.ts`) | In-memory mailbox, 50 per inbox, oldest dropped |
+| Courier report of an interrupted child, parent idle | kone | Held for the parent's next turn (`settleReports.ts` → `queueNotice`) | In memory |
+| `agent_followup` | Agents | Always a normal send: queued behind a running turn (`spawnContinuation.ts`) | Durable turn queue |
+| kone notices (`tell`) | kone | Steer if busy, else wake or hold, by a per-call `wake` flag (`handOffLifecycle.ts`) | Steer / queue / in memory |
+| `queueNotice` | kone | Always held for the next turn, but written to the transcript at once (`dispatch.ts`) | In memory |
+| `app_send_to_thread` | The assistant | Queue, or steer when the caller passes `steer: true`. Refused while the thread waits on the user | Durable turn queue |
+
+A courier report can also be taken back: when the parent collects the same
+result through `agent_wait` before the report is read, it is retracted.
 
 What that costs:
 
-- **Three places to wait, five sets of rules.** A fix on one path does not reach the others; the bug fixed in `f5fe93f` (§12) lived on one path only.
-- **Mail is lost on quit.** The mailbox and `pendingNotices` live in memory.
-- **Agents send blind.** `agent_list` returns each peer's id, name, unread count and a running/away flag, nothing about what it is doing or whether a message can land.
-- **"Steer" means interrupt on four providers.** Cursor, Droid, Cline and Antigravity cannot take a message mid-turn, so `AgentService.steerTurn` queues it at the front and interrupts the running turn, mid-action if need be.
+- **Three places to wait, six sets of rules.** A fix on one path does not reach the others; the bug fixed in `f5fe93f` (§13) lived on one path only.
+- **Mail is lost on quit, and dropped when it piles up.** The mailbox and `pendingNotices` live in memory, and the mailbox drops the oldest unread message past 50.
+- **Messages decline the user's approvals.** On a provider that cannot steer, `AgentService.steerTurn` queues the message and interrupts the running turn. Droid's and Cline's `interruptTurn` declines every pending approval first. So a message, a courier report or a `tell` reaching a thread parked on the user's approval cancels that approval. Phase 0 (§12) fixes this.
+- **Agents send blind.** `agent_list` lists only the threads the mailbox has seen send a message since the app started, with an unread count and a running/away flag. Nothing about what a peer is doing or whether a message can land.
+- **"Steer" means interrupt on four providers.** Cursor, Droid, Cline and Antigravity cannot take a message mid-turn, so `steerTurn` interrupts the running turn, mid-action if need be. `tell` steers even its quiet notices, so those interrupt too.
+- **A follow-up to a busy agent loses its handle.** `agent_followup` returns the turn id `agent_wait` pins to, but a send that lands on a busy thread returns the queue row's id, which never matches a turn.
 - **The inbox is mostly empty.** Delivery drains it as it goes, so `agent_inbox` only ever holds what could not be delivered, and agents that reached for it found nothing.
+
+**Not messages, and staying that way.** Some turns are kone driving a
+thread's own work rather than someone writing to it: a hand-off's brief, the
+decision turn after a stop, the wake when background subagents finish late
+(`subagentWake.ts`), and the continuation after a quit (`quitResume.ts`).
+They stay outside the inbox.
 
 ## 1. The inbox is the one place
 
-Every message to an agent lands in its inbox first, with no exceptions:
+Every message one agent or kone sends to another lands in its inbox first:
 
 | What | From | Kind |
 |---|---|---|
@@ -43,10 +55,25 @@ Every message to an agent lands in its inbox first, with no exceptions:
 | A follow-up job ("now add tests") | The agent that handed the work off (`agent_followup`) | `job` |
 | A message from the assistant (`app_send_to_thread`) | kone's assistant | `job` |
 
-The inbox is stored on disk. A message stays in it until it is **seen**, then
-stays as history. A message is seen when kone hands it over (§3) or when the
-agent opens its inbox (§4), whichever comes first. Seen once, never handed over
-twice.
+A `job` is handed over as a turn of its own, never batched with another job.
+Its inbox id is the handle the sender gets back, and `agent_wait` resolves it
+to the turn that carried it.
+
+The inbox is stored on disk. Each message moves through these states:
+
+| State | Means |
+|---|---|
+| Unseen | Waiting in the inbox |
+| Being handed over | Claimed by one hand-over, which is on its way to the provider |
+| Seen | Handed over in a turn, read with `agent_inbox`, or returned to a sender parked on it (`wait`) |
+| Retracted | Taken back while unseen (a courier report whose result was collected with `agent_wait`) |
+
+A hand-over claims its messages before it sends. When the provider accepts
+the turn they become seen, with the turn that carried them. When the send
+fails they go back to unseen. A message is written to the transcript once:
+a retry carries the block it was already written as. After a crash, anything
+still being handed over goes back to unseen. Seen once, never handed over
+twice. Seen messages stay as history.
 
 **Not in the inbox: the user's own messages.** What the user types in a thread
 is the user talking directly, not a coworker leaving a note. It keeps the
@@ -57,7 +84,8 @@ no inbox to wait in yet. They go out as the thread's first turn, as today.
 
 ## 2. What the sender decides: `kind`
 
-The sender marks what the message is. That is all it decides.
+The sender marks what the message is. For an agent, that and `urgent` are
+all it decides.
 
 | `kind` | Means | Rings? | Who sends it |
 |---|---|---|---|
@@ -66,8 +94,11 @@ The sender marks what the message is. That is all it decides.
 | `pushback` | Disagrees with the task, proposes something else | Yes | Agents |
 | `answer` | Replies to a question (`replyTo` required) | Yes, first | Agents |
 | `report` | Results or a deliverable | Yes | Agents, the courier |
-| `notice` | kone describing the situation | No — waits in the inbox | kone |
+| `notice` | kone describing the situation | Only when kone marks it | kone |
 | `job` | Work to do | Yes | Agents (`agent_followup`), the assistant |
+
+kone marks its own notices: a withdrawal rings ("stop here"); "the user spoke
+to Ada directly" waits for the next turn.
 
 Why `kind` stays, not inferred from the text:
 
@@ -77,13 +108,27 @@ Why `kind` stays, not inferred from the text:
 - **The app can show it.** Questions, pushback and answers can each read differently; an answer can quote what it answers.
 - **It decides whether kone rings.** No second setting for the sender to get wrong.
 
+An `answer` whose `replyTo` is not a question sent to the answerer is
+delivered as a `note`.
+
 **`urgent`** is the one override: "this needs to be seen now, even if it
 disrupts them". It makes kone ring at once (§3) instead of waiting for a free
-moment. Default false. Interrupting someone is a deliberate choice.
+moment. Default false. Interrupting someone is a deliberate choice, so it is
+limited:
+
+- Only along a hand-off (either direction) or from the main agent. Peers cannot send `urgent`.
+- Never from a worker. A worker puts it in its final reply.
+- Never on a broadcast.
 
 **`wait`** is separate and unchanged: the sender parks until its question is
 answered. A sender that is not waiting keeps working; the answer reaches it on
-its own (shipped as guidance in `90bc2f6`, §8).
+its own (shipped as guidance in `90bc2f6`, §8). An answer to a parked sender
+is returned to its wait directly and never rings. A `wait` question to an
+agent that is itself parked waiting on the sender is refused: "Ada is already
+waiting on you — answer her first."
+
+**Broadcasts** (`to: all`, main agent only) are notes. They never ring and
+never bring a closed session back up.
 
 ## 3. When kone rings
 
@@ -91,27 +136,33 @@ A message that rings is handed over. How depends on what the recipient is doing:
 
 | Recipient | Rings | Rings, `urgent` |
 |---|---|---|
-| Working, provider steers natively | Next, behind the running turn | Into the running turn (steer) |
-| Working, provider cannot steer | Next, behind the running turn | After its current step finishes (kone steer, §7) |
+| Working, provider steers natively | Next, when the running turn ends | Into the running turn (steer) |
+| Working, provider cannot steer | Next, when the running turn ends | After its current step finishes (kone steer, §7) |
 | Idle | Woken with a turn | Woken with a turn |
 | Waiting on the user | When the user answers | When the user answers; the sender is told (§6) |
 | Starting or compacting | As soon as it can take a turn | As soon as it can take a turn |
 | Session closed | Brought back up, then woken | Brought back up, then woken |
 | Finished, withdrawn or failed | Refused, with what to do instead | Same |
 
-An `answer` rings ahead of everything else waiting, since its asker may be
-parked on it.
+**Next, when the running turn ends**: messages waiting for the turn to end
+ride in front of the user's next queued message, as one turn, with the user's
+message last. With nothing of the user's queued, they start a turn of their
+own. They never sit in the user's turn queue.
 
-A message that does not ring (`note`, `notice`) waits in the inbox and is
-handed over **in front of the recipient's next turn**, whatever starts that
-turn. It never starts a turn of its own, so a note costs nobody a turn.
+A message that does not ring (`note`, an unmarked `notice`) waits in the
+inbox and is handed over **in front of the recipient's next turn**, whatever
+starts that turn. It never starts a turn of its own and never brings a closed
+session back up, so a note costs nobody a turn. A note to an idle agent waits
+until something else wakes it, and the send says so.
 
-Several messages waiting at once are handed over together, in one turn,
-oldest first.
+Several messages waiting at once are handed over together, in one turn:
+answers first, since their askers may be parked on them, then oldest first.
+At most 8 go in one turn; the turn says how many are still waiting. Nothing is
+dropped. An agent with 200 unseen messages refuses new notes with "inbox full".
 
 Every message handed over is written to the recipient's transcript once, under
-its sender, and the turn that carries it names its blocks (§12), so it reads
-where it landed whatever the mechanism.
+its sender, when it is handed over, and the turn that carries it names its
+blocks (§13), so it reads where it landed whatever the mechanism.
 
 ## 4. When an agent opens its inbox
 
@@ -130,7 +181,7 @@ Never open it:
 - **In a loop.** Nothing arrives faster for checking.
 
 `agent_inbox` returns unseen messages (marking them seen) and, on request, the
-recent history.
+last 20 of its history.
 
 ## 5. Who is speaking
 
@@ -143,10 +194,13 @@ Every message carries its sender, set by kone, never by the sender:
 | `system` | kone describing the situation, never an instruction |
 | `courier` | kone carrying another agent's work |
 
+A turn that carries both waiting messages and the user's own words heads each
+sender's part separately, and the user's comes last.
+
 ## 6. Seeing the recipient, and what a send reports
 
-Before sending, `agent_list` shows each agent the sender can message and what
-it is doing:
+Before sending, `agent_list` shows every agent on the project the sender can
+message — not only those that have sent mail — and what it is doing:
 
 | State | What it tells the sender |
 |---|---|
@@ -158,23 +212,29 @@ it is doing:
 | Session closed | Ringing restarts it, which costs a start-up |
 | Finished / withdrawn / failed | Its work is over: follow up or ask someone else |
 
-Plus whether `urgent` interrupts it: "Ada (Cursor): urgent waits for her
-current step, then interrupts her turn" (§7). Sources: `SpawnedThreadStatus`
-for threads the sender handed work to; the service's live turn, parked asks
-and compaction state for any thread; the latest tool item for "on what".
+Plus whether `urgent` interrupts it — "Ada (Cursor): urgent waits for her
+current step, then interrupts her turn" (§7) — and how many notes wait unseen
+in its inbox, and for how long. Sources: `SpawnedThreadStatus` for threads the
+sender handed work to; the service's live turn, parked asks and compaction
+state for any thread; the latest tool item for "on what".
 
 Every send says what happened:
 
 - "In Ada's inbox. She sees it at the start of her next turn." (a note)
+- "In Ada's inbox. She is idle, so it waits until something else wakes her." (a note)
 - "Delivered into Ada's running turn." (urgent, steer)
 - "Next for Ada: she is running the migration tests (4 min) and takes it when that turn ends."
 - "Waiting for Ada to finish editing `auth.ts`; it lands right after." (urgent, kone steer)
+- "Next for Ada: her provider loses work if interrupted mid-turn, so this lands when her turn ends." (urgent, provider without kone steer)
 - "Held: Ada is waiting on the user's approval. Nothing reaches her until the user answers — ask the user if you need this sooner."
 - "Delivered: Ada was idle and is answering now."
 
 State can change between looking and sending. It informs the sender's choice
 of `urgent`; kone reads it again when it rings, and the result says what
 actually happened.
+
+`app_send_to_thread` follows the same rules. A thread waiting on the user is
+held, not refused as before.
 
 ## 7. kone steer, for providers that cannot steer
 
@@ -183,15 +243,20 @@ running turn. Instead of interrupting at once, kone waits for the gap between
 two actions.
 
 1. An urgent message rings for a working thread whose adapter has no
-   `steerTurn`.
-2. No tool call in progress → interrupt now; at worst some streaming text is
+   `steerTurn`, and whose provider passed the cancel probe (§11).
+2. Parked on the user's approval or answer → hold, whatever else is running.
+   Ring when the user answers.
+3. No tool call in progress → interrupt now; at worst some streaming text is
    cut.
-3. A tool call in progress → the send reports "lands after the current step",
+4. A tool call in progress → the send reports "lands after the current step",
    and kone waits.
-4. On that tool call's `item.completed`, interrupt.
-5. The message goes in as the next turn, preceded by one line: "Your previous
+5. On that tool call's `item.completed`, interrupt.
+6. The message goes in as the next turn, preceded by one line: "Your previous
    turn was interrupted only to deliver this. That task is not finished — take
    this into account and carry on with it."
+
+A provider that has not passed the probe gets no kone steer: urgent rings when
+the turn ends, and the send says why.
 
 `AgentService` already tracks each thread's open items (`openItems`, fed by
 `item.started` / `item.completed`); only tool calls count here.
@@ -201,7 +266,7 @@ two actions.
 | A long tool call (a 10-minute test run) | From the user: after 30 s, show "waiting for Ada to finish running tests" with **Interrupt now**. From an agent: keep waiting |
 | Parked on an approval | Do not interrupt: cancelling declines the approval (`drainApprovals`). Ring when it is answered |
 | The model starts its next tool call between `item.completed` and the cancel | Milliseconds wide; the cancel catches the call as it starts |
-| Antigravity print mode | Interrupts by killing the process tree (`killTree`). Treat as interrupt-at-once until tested (§11) |
+| Antigravity print mode | Interrupts by killing the process tree (`killTree`). No kone steer until it passes the probe |
 
 ## 8. Working while waiting
 
@@ -214,8 +279,8 @@ Still to do:
 
 - **Outstanding work, said where it helps.** A report that rings carries one
   line naming what is still out: "Still out: Ada (login UI), 1 worker."
-- **kone steer** (§7), so a result ringing mid-work does not cut an action short
-  on the four providers that cannot steer.
+- **kone steer** (§7), so an urgent result does not cut an action short on the
+  four providers that cannot steer.
 
 ## 9. The inbox in the app
 
@@ -224,8 +289,9 @@ The inbox is stored, so it can be shown:
 - **Per agent**: what is waiting for it, what it has seen, who sent what and of
   what kind. Today a message not yet delivered is invisible.
 - **On the transcript**: a message that rang reads where it landed, under its
-  sender (as now). A note still waiting shows nowhere on the transcript until it
-  is handed over or read.
+  sender (as now). A note or notice still waiting shows nowhere on the
+  transcript until it is handed over or read. This changes kone's notices,
+  which today are written to the transcript the moment they are queued.
 - **Not in the composer's queue strip.** That strip is the user's own queued
   messages. Today a queued agent message shows there as an editable row with the
   raw `<agent_messages>` prompt as its text, on providers that cannot steer.
@@ -234,32 +300,124 @@ The inbox is stored, so it can be shown:
 
 | Area | Today | Change |
 |---|---|---|
-| Storage | `IrcMailbox` maps, `pendingNotices` map, turn-queue rows for follow-ups | One stored inbox table: message, sender, kind, `replyTo`, urgent, seen, the block it was written as (migration) |
-| Sending | `ircDelivery.ts`, `spawnContinuation.ts`, `handOffLifecycle.ts` `tell`, `dispatch.queueNotice`, `appThreads.ts` send | Each writes an inbox row; one ringer (new `inboxDelivery.ts`) decides whether and how to hand it over |
-| Handing over | Batches via `dispatcher.sendThreadTurn` / `steerThreadTurn` | Same calls, from the ringer; held rows ride in front of the next turn (what `queueNotice` does today) |
+| Storage | `IrcMailbox` maps, `pendingNotices` map, turn-queue rows for follow-ups | One stored inbox table, `agent_inbox` (migration 22): recipient, sender, kind, urgent, `replyTo`, body, state, the hand-over claim, the block it was written as, the turn that carried it, a dedupe key |
+| Sending | `ircDelivery.ts`, `settleReports.ts`, `spawnContinuation.ts`, `handOffLifecycle.ts` `tell`, `dispatch.queueNotice`, `appThreads.ts` send | Each writes an inbox row; one ringer (new `inboxDelivery.ts`) decides whether and how to hand it over |
+| Handing over | Batches via `dispatcher.sendThreadTurn` / `steerThreadTurn`, read and drained in memory | Same calls, from the ringer; claimed before the send, seen once the provider accepts |
+| Turn slot | The queue drain and delivery race for an idle thread | `AgentService.drainQueuedTurns` asks the inbox for waiting messages when the slot frees: they ride in front of the user's queued row, or start a turn of their own |
 | Turn queue | Holds follow-ups and user messages | Holds the user's messages only; agent and kone rows move to the inbox |
-| Steer fallback | `AgentService.steerTurn` queues + interrupts at once | kone steer: wait for open tool items, then interrupt; carry-on preamble |
-| Recipient state | `agent_list`: id, name, unread, live | State, activity, steer capability (§6); every send's result says what happened |
+| Steer fallback | `AgentService.steerTurn` queues + interrupts at once, even while parked | Never interrupts while parked (Phase 0); then kone steer: wait for open tool items, then interrupt; carry-on preamble |
+| Recipient state | `agent_list`: threads the mailbox has seen, unread, live | Every agent on the project from the store; state, activity, steer capability, unseen notes (§6); every send's result says what happened |
 | `agent_message` | `kind`, `wait` | `kind`, `urgent`, `wait` |
+| `agent_followup` | Returns a turn id, or a queue id when the child is busy | Returns the job's inbox id, which `agent_wait` resolves to its turn |
 | `agent_inbox` | Unread messages, drained on read | Unseen messages and recent history; guidance per §4 |
-| `app_send_to_thread` | `steer: boolean` | `urgent` |
+| `app_send_to_thread` | `steer: boolean`; refuses a thread waiting on the user | `urgent` (`steer` kept as an alias); held while the thread waits on the user |
 | Queue strip | Every queued row shown as the user's | The user's rows only |
 
-## 11. To settle or test before building
+## 11. Decisions
 
-- **Do providers keep finished tool results when a turn is cancelled?** kone
-  steer assumes the agent remembers the file it just read. Per provider
-  (Cursor, Droid, Cline, Antigravity ACP and print): start a read, cancel right
-  after `item.completed`, then ask "what did you just read?".
-- **The user-facing wait cap** for kone steer: 30 s proposed.
-- **A `report` from a worker to its parent**: rings like any report, or urgent
-  by default?
-- **Broadcasts** (`to: all`): notes only?
-- **How long the inbox keeps history**: the thread's lifetime, or a window.
-- **The user's inbox**: a result whose delegator is gone goes "to the user's
-  inbox" (`agent-roles-design.md` §7). Same table, with the user as recipient?
+| Question | Decision |
+|---|---|
+| Do providers keep finished tool results when a turn is cancelled? | Tested per provider by a cancel probe (below). A provider that fails gets no kone steer: urgent rings when the turn ends, and the send says why. The user's **Interrupt now** stays |
+| The user-facing wait cap for kone steer | 30 s, then **Interrupt now** is offered, never taken on its own. A message from an agent has no cap; the send says what it waits for |
+| A `report` from a worker to its parent | Rings like any report. Never urgent: workers cannot send `urgent` |
+| Broadcasts (`to: all`) | Notes only: no `urgent`, no questions, never brings a closed session back up |
+| How long the inbox keeps history | The thread's lifetime. Rows go when the thread is deleted. `agent_inbox` shows the last 20 |
+| The user's inbox | Not in this table. A delegator cannot disappear mid-work (`agent-roles-design.md` §13), so nothing sends there. If it is ever needed it is the app's own inbox, not an agent's |
 
-## 12. Shipped while this was worked out
+**The cancel probe.** A development script drives the real adapters through
+`AgentService`, five runs per provider: Cursor, Droid, Cline, Antigravity ACP
+and Antigravity print. Each run writes a file holding a random word, asks the
+agent to read the file with its file tool and then run `sleep 60`, and cancels
+the turn on the read's `item.completed`. Then it asks, without tools: "What
+word was in the file you just read?" A provider passes when all five runs
+answer correctly, and again after the session is closed and resumed. The
+result is recorded as a provider capability that kone steer checks.
+
+## 12. Build plan
+
+Each phase ships on its own and leaves the app working and tested.
+
+| Phase | What | Status |
+|---|---|---|
+| 0 | Never interrupt a thread parked on the user | In progress |
+| 0.5 | The cancel probe (§11) | Not started |
+| 1 | The stored inbox, behind today's mailbox | In progress |
+| 2 | An honest `agent_list` and a readable `agent_inbox` | Not started |
+| 3a | kone's notices move into the inbox | Not started |
+| 3b | One ringer | Not started |
+| 4 | Jobs: `agent_followup` and `app_send_to_thread` | Not started |
+| 5 | kone steer | Not started |
+| 6 | The inbox in the app | Not started |
+| 7 | "Still out" on reports | Not started |
+
+### Phase 0: never interrupt a thread parked on the user
+
+- **Change:** in the `AgentService.steerTurn` fallback, a thread with a parked approval or question gets the steer row queued, and no interrupt. "Send now" from the user's own queue strip is unchanged.
+- **Files:** `AgentService.ts`.
+- **Tests** (`agentService.queue.test.ts`, an adapter without `steerTurn`): parked → steer row queued, no interrupt; after the approval resolves, a steer interrupts; not parked → interrupts as before.
+- **Risk:** low. Fixes the declined-approval bug (§0) for every path at once.
+
+### Phase 0.5: the cancel probe
+
+- **Change:** the probe script (§11), run by hand, never in CI. Results go into the provider capability table.
+- **Files:** a new script under `packages/agent-core/scripts/`, the provider capability table.
+
+### Phase 1: the stored inbox, behind today's mailbox
+
+- **Schema (migration 22, `agent_inbox`):** `inbox_id` (the `msg_` id agents already see), `recipient_thread_id` (cascades with the thread), `sender_thread_id`, `sender_json`, `kind`, `urgent`, `reply_to`, `body`, `state` (unseen, handing, seen, retracted), `delivery_id`, `block_id`, `turn_id`, `seen_via` (turn, inbox, wait), `dedupe_key` (unique: a courier report keys on the child's turn, a job on the caller's turn and request id), `project_path`, `created_at`, `seen_at`. Index on recipient, state, created_at.
+- **Change:** `IrcMailbox` keeps its API and stores in the table. Delivery claims, settles and releases instead of peek and mark-read. On boot, rows still being handed over go back to unseen with their block kept. No more dropping past 50. Routing is unchanged: steer if busy, wake if idle.
+- **Files:** new `store/agentInbox.ts`; `conversationMigrations.ts`; `ConversationStore.ts`; `gateway/tools/irc.ts`; `ircDelivery.ts`; `apps/desktop/src/agent/agent-ipc.ts`.
+- **Tests:** claim/settle/release are atomic; boot reset; the dedupe key refuses a second courier report; rows go with their thread; migration test; a delivery retried after a restart reuses its block and writes no second one; mail survives a restart and goes out on `session.started`; overflow past 8 re-arms; `waitForReply` takes its answer in one step, so a concurrent hand-over cannot deliver it too.
+- **Risk:** medium, the persistence change. Mail in memory at upgrade is lost as on any quit today; nothing is backfilled.
+
+### Phase 2: an honest `agent_list` and a readable `agent_inbox`
+
+- **Change:** the roster comes from the store's threads and lineage, not the mailbox's registrations. Each row gains state, activity, how long, steer capability, unseen notes and their age (§6). `agent_inbox` takes `history` and `limit`, drops `peek`, and returns kind, sender and `replyTo`.
+- **Files:** `gateway/tools/irc.ts`; new `recipientState.ts`; `AgentService.ts` (read-only accessors for parked, compacting and the open tool item); `gateway/schemas.ts`.
+- **Tests:** an agent that never sent mail is listed; each state maps; inbox history and marking seen.
+- **Risk:** low.
+
+### Phase 3a: kone's notices move into the inbox
+
+- **Change:** `queueNotice` writes a `notice` row and no longer writes the transcript; `pendingNotices` goes. The next turn claims held rows, writes them to the transcript under that turn, and settles them once the provider accepts it. The interrupted child's report to an idle parent becomes a held `report`. `tell` writes a row, ringing or not, and returns once it is stored; its `wake` flag goes.
+- **Files:** `dispatch.ts`; `settleReports.ts`; `handOffLifecycle.ts`.
+- **Tests:** a notice survives a restart; it is consumed only when its turn is accepted; a rejected turn keeps it; the lifecycle tests for withdraw, stop and "the user spoke directly".
+- **Risk:** medium: notices reach the transcript at a different moment.
+
+### Phase 3b: one ringer
+
+- **Change:** `inboxDelivery.ts` replaces `ircDelivery.ts` and applies §2–§3: kind and `urgent`, answers first, at most 8, held while parked (re-checked when the user answers), re-checked on session start and when compaction ends, closed sessions brought back only for ringing kinds. `AgentService.drainQueuedTurns` asks the inbox for waiting messages when the turn slot frees; they ride in front of the user's queued row or start a turn. `agent_message` gains `urgent` and returns what happened (§6). The refusals in §2 land here: peer urgent, worker urgent, broadcast questions, two agents waiting on each other, an answer to nothing.
+- **Files:** new `inboxDelivery.ts`; `AgentService.ts`; `dispatch.ts` (a turn with several senders); `senderHeader.ts`; `gateway/tools/irc.ts`; `gateway/schemas.ts`; `apps/desktop/src/agent/agent-ipc.ts`. `ircDelivery.ts` is deleted.
+- **Tests:** a note never starts a turn; a question to a busy agent lands when its turn ends, in front of the user's queued message, in one turn; urgent steers on a native provider; a parked agent holds until the user answers; answers go first; a note to a closed session does not restart it; each refusal; each send result.
+- **Risk:** high. Non-urgent messages stop arriving mid-turn on Claude, Codex and OpenCode. Ships behind a setting for one release.
+
+### Phase 4: jobs
+
+- **Change:** `agent_followup` and `app_send_to_thread` write `job` rows. A job rings as its own turn. `agent_followup` returns the inbox id, and `agent_wait` resolves it to the turn once handed over. `app_send_to_thread` takes `urgent` (`steer` stays as an alias) and holds a thread waiting on the user.
+- **Files:** `spawnContinuation.ts`; `spawnWait.ts`; `threadSpawn.ts`; `gateway/tools/appThreads.ts`; `gateway/schemas.ts`.
+- **Tests:** a follow-up to a busy child, then `agent_wait` on the returned id, settles with that turn; `app_send_to_thread` held while parked, steered when urgent.
+- **Risk:** medium.
+
+### Phase 5: kone steer
+
+- **Change:** §7, for providers that passed the probe. The completed tool item is recorded before the interrupt. The user's 30 s **Interrupt now** is an IPC call and a pill above the composer.
+- **Files:** `AgentService.ts`; the provider capability table; `inboxDelivery.ts`; the renderer's composer.
+- **Tests:** interrupts only after `item.completed`; never while parked; a provider that failed the probe lands at turn end.
+- **Risk:** medium.
+
+### Phase 6: the inbox in the app
+
+- **Change:** IPC to list an agent's inbox and history, and an event when it changes. A per-agent inbox panel. The queue strip shows only rows the user wrote.
+- **Files:** `apps/desktop/src/agent/agent-ipc.ts`; `apps/web/app/composables/session/sessionQueue.ts`; `sessionReducer.ts`; a new inbox panel component; `apps/web/app/types/desktop.d.ts`.
+- **Tests:** `sessionReducer.test.ts`, `useAgent.test.ts`.
+
+### Phase 7: "still out" on reports
+
+- **Change:** a report that rings names the work still out (§8).
+- **Files:** `settleReports.ts`; `spawnControl.ts`.
+- **Tests:** a report with delegates and workers still running names them; one with none adds nothing.
+
+## 13. Shipped while this was worked out
 
 | Commit | What |
 |---|---|

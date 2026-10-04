@@ -180,6 +180,10 @@ stops, its own workers stop with it.
 All three arrive as `system` messages. The delegate decides what to do: finish,
 wrap up with partial results, or ask.
 
+The "archived or deleted" row cannot happen while archive and delete refuse a
+subtree with any agent mid-turn (§13), so no user's inbox is built
+(`agent-delivery-design.md` §11).
+
 ### The stop chain
 
 When the user stops an agent **that has delegates or contractors running**:
