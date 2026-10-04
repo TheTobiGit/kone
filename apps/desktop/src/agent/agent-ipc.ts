@@ -29,6 +29,7 @@ import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
 import { startInboxDelivery } from "@kone/agent-core/inboxDelivery.js";
 import { isDeliveryV2Enabled } from "@kone/agent-core/deliverySettings.js";
 import { createMailboxReportSink } from "@kone/agent-core/settleReports.js";
+import { inboxHistoryView, waitingInbox } from "@kone/agent-core/inboxView.js";
 import { configureIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
@@ -561,6 +562,7 @@ export function registerAgentIpc(): void {
     "app.strip_mutation",
     "app.typography_mutation",
     "bench.job-changed",
+    "thread.inbox-changed",
   ]);
 
   // Fan the merged event stream out to every subscribed renderer, and journal
@@ -593,6 +595,17 @@ export function registerAgentIpc(): void {
           ? { status: "cancelled" }
           : { status: "failed", error: event.message ?? "The turn failed." },
       );
+    }
+  });
+
+  // Any move in an agent's inbox reaches the renderers as a nudge for that
+  // thread, so an open inbox panel reads it again rather than going stale.
+  // Never journaled: the inbox table is already the record.
+  store.onInboxChanged((threadIds) => {
+    for (const threadId of threadIds) {
+      const provider = store.threadMeta(threadId)?.provider;
+      if (!provider) continue;
+      broadcast({ type: "thread.inbox-changed", threadId, provider, at: Date.now(), source: "kone.store" }, false);
     }
   });
 
@@ -790,6 +803,13 @@ export function registerAgentIpc(): void {
   // accepted; the resulting events flow through agent:event.
   ipcMain.handle("agent:queued-turns", (_event, threadId: string) =>
     svc.listQueuedTurns(threadId),
+  );
+  // An agent's inbox, for the panel that shows it: what still waits for it
+  // (unseen, or being handed over), and what it has seen, newest first. Every
+  // move in anyone's inbox streams as thread.inbox-changed for its recipient.
+  ipcMain.handle("agent:inbox:list", (_event, threadId: string) => waitingInbox(store, threadId));
+  ipcMain.handle("agent:inbox:history", (_event, threadId: string, limit?: number) =>
+    inboxHistoryView(store, threadId, limit),
   );
   ipcMain.handle("agent:queue-cancel", (_event, threadId: string, queueId: string) =>
     svc.cancelQueuedTurn(threadId, queueId),

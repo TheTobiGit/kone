@@ -229,13 +229,40 @@ export function releaseOrphanedInboxClaims(db: DatabaseSync): void {
   }
 }
 
+/** Told which recipients' inboxes just moved: a row written, claimed,
+ *  settled, released, marked seen or retracted. */
+export type InboxChangeListener = (recipientThreadIds: readonly string[]) => void;
+
 export class AgentInboxRepo implements AgentInboxStore {
+  private readonly listeners = new Set<InboxChangeListener>();
+
   constructor(private readonly dbh: ConversationDb) {}
+
+  /** Hear about every change to anyone's inbox. Returns the unsubscribe. */
+  onChanged(listener: InboxChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** After the write, never inside it: a listener that throws or reads the
+   *  inbox back must not touch the statement that changed it. */
+  private changed(recipientThreadIds: readonly string[]): void {
+    if (recipientThreadIds.length === 0 || this.listeners.size === 0) return;
+    const unique = [...new Set(recipientThreadIds)];
+    for (const listener of this.listeners) {
+      try {
+        listener(unique);
+      } catch (err) {
+        console.error("[conversation-store] inbox change listener failed:", err);
+      }
+    }
+  }
 
   insertInboxMessage(input: InboxInsert): InboxInsertResult {
     const db = this.dbh.handle();
     if (!db) return "failed";
     let result: InboxInsertResult = "failed";
+    let inserted = false;
     try {
       this.dbh.durably(db, () => {
         const run = db
@@ -260,12 +287,14 @@ export class AgentInboxRepo implements AgentInboxStore {
             input.projectPath,
             input.createdAt ?? Date.now(),
           );
-        result = Number(run.changes) > 0 ? "inserted" : "duplicate";
+        inserted = Number(run.changes) > 0;
+        result = inserted ? "inserted" : "duplicate";
       });
     } catch (err) {
       console.error("[conversation-store] insertInboxMessage failed:", err);
       return "failed";
     }
+    if (inserted) this.changed([input.recipientThreadId]);
     return result;
   }
 
@@ -294,6 +323,7 @@ export class AgentInboxRepo implements AgentInboxStore {
           a.created_at - b.created_at ||
           (a.row_seq ?? 0) - (b.row_seq ?? 0),
       );
+      this.changed(rows.map((r) => r.recipient_thread_id));
       return { deliveryId, rows: rows.map(rowToInbox) };
     } catch (err) {
       console.error("[conversation-store] claimInbox failed:", err);
@@ -304,34 +334,40 @@ export class AgentInboxRepo implements AgentInboxStore {
   settleInboxDelivery(deliveryId: string, turnId: string | null): number {
     const db = this.dbh.handle();
     if (!db) return 0;
-    let settled = 0;
+    let settled: string[] = [];
     try {
       this.dbh.durably(db, () => {
-        const run = db
+        // SAFETY: RETURNING one TEXT column.
+        const rows = db
           .prepare(
             `UPDATE agent_inbox SET state = 'seen', seen_via = 'turn', turn_id = ?, seen_at = ?
-              WHERE delivery_id = ? AND state = 'handing'`,
+              WHERE delivery_id = ? AND state = 'handing'
+              RETURNING recipient_thread_id`,
           )
-          .run(turnId, Date.now(), deliveryId);
-        settled = Number(run.changes);
+          .all(turnId, Date.now(), deliveryId) as Array<{ recipient_thread_id: string }>;
+        settled = rows.map((r) => r.recipient_thread_id);
       });
     } catch (err) {
       console.error("[conversation-store] settleInboxDelivery failed:", err);
     }
-    return settled;
+    this.changed(settled);
+    return settled.length;
   }
 
   releaseInboxDelivery(deliveryId: string): number {
     const db = this.dbh.handle();
     if (!db) return 0;
     try {
-      const run = db
+      // SAFETY: RETURNING one TEXT column.
+      const rows = db
         .prepare(
           `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
-            WHERE delivery_id = ? AND state = 'handing'`,
+            WHERE delivery_id = ? AND state = 'handing'
+            RETURNING recipient_thread_id`,
         )
-        .run(deliveryId);
-      return Number(run.changes);
+        .all(deliveryId) as Array<{ recipient_thread_id: string }>;
+      this.changed(rows.map((r) => r.recipient_thread_id));
+      return rows.length;
     } catch (err) {
       console.error("[conversation-store] releaseInboxDelivery failed:", err);
       return 0;
@@ -353,14 +389,15 @@ export class AgentInboxRepo implements AgentInboxStore {
     if (!db || inboxIds.length === 0) return [];
     try {
       const placeholders = inboxIds.map(() => "?").join(", ");
-      // SAFETY: RETURNING one TEXT column.
+      // SAFETY: RETURNING two TEXT columns.
       const rows = db
         .prepare(
           `UPDATE agent_inbox SET state = 'seen', seen_via = ?, seen_at = ?
             WHERE inbox_id IN (${placeholders}) AND state = 'unseen'
-            RETURNING inbox_id`,
+            RETURNING inbox_id, recipient_thread_id`,
         )
-        .all(via, Date.now(), ...inboxIds) as Array<{ inbox_id: string }>;
+        .all(via, Date.now(), ...inboxIds) as Array<{ inbox_id: string; recipient_thread_id: string }>;
+      this.changed(rows.map((r) => r.recipient_thread_id));
       const flipped = new Set(rows.map((r) => r.inbox_id));
       return inboxIds.filter((id) => flipped.has(id));
     } catch (err) {
@@ -373,10 +410,15 @@ export class AgentInboxRepo implements AgentInboxStore {
     const db = this.dbh.handle();
     if (!db) return false;
     try {
-      const run = db
-        .prepare(`UPDATE agent_inbox SET state = 'retracted' WHERE inbox_id = ? AND state = 'unseen'`)
-        .run(inboxId);
-      return Number(run.changes) > 0;
+      // SAFETY: RETURNING one TEXT column.
+      const rows = db
+        .prepare(
+          `UPDATE agent_inbox SET state = 'retracted' WHERE inbox_id = ? AND state = 'unseen'
+            RETURNING recipient_thread_id`,
+        )
+        .all(inboxId) as Array<{ recipient_thread_id: string }>;
+      this.changed(rows.map((r) => r.recipient_thread_id));
+      return rows.length > 0;
     } catch (err) {
       console.error("[conversation-store] retractInboxMessage failed:", err);
       return false;
@@ -399,6 +441,27 @@ export class AgentInboxRepo implements AgentInboxStore {
       return rows.map(rowToInbox);
     } catch (err) {
       console.error("[conversation-store] listUnseenInbox failed:", err);
+      return [];
+    }
+  }
+
+  /** What still waits for a thread: unseen, and being handed over right
+   *  now, oldest first. */
+  listWaitingInbox(recipientThreadId: string): InboxRow[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection is the column list InboxDbRow is declared from.
+      const rows = db
+        .prepare(
+          `SELECT ${INBOX_COLUMNS} FROM agent_inbox
+            WHERE recipient_thread_id = ? AND state IN ('unseen', 'handing')
+            ORDER BY ${INBOX_ORDER}`,
+        )
+        .all(recipientThreadId) as InboxDbRow[];
+      return rows.map(rowToInbox);
+    } catch (err) {
+      console.error("[conversation-store] listWaitingInbox failed:", err);
       return [];
     }
   }

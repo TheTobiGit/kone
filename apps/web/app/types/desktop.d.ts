@@ -3,7 +3,7 @@
 export {};
 
 import type { StudioLayout } from "~/types/studio";
-import type { MessageSender } from "@kone/protocol/message-sender";
+import type { AgentSender, CourierSender, MessageSender } from "@kone/protocol/message-sender";
 import type { ContractTerms } from "@kone/protocol/contract";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
@@ -1041,6 +1041,44 @@ export type QueuedTurnRow = {
   promotedAt?: number;
 };
 
+// ── agent inbox (mirror packages/agent-core/src/inboxView.ts) ─────────────────
+// Every message another agent or kone sends a thread lands in its inbox first,
+// and stays as history once seen. These are the rows the inbox panel reads.
+export type InboxKind = "note" | "question" | "pushback" | "answer" | "report" | "notice" | "job";
+/** `handing` is a message being handed over in a turn right now. */
+export type InboxState = "unseen" | "handing" | "seen" | "retracted";
+/** How a seen message was seen: carried by a turn, read with the inbox tool,
+ *  or returned to a sender parked waiting on it. */
+export type InboxSeenVia = "turn" | "inbox" | "wait";
+/** kone's own notice is `system`; null when nobody could say who sent it. */
+export type InboxSender = AgentSender | CourierSender | { kind: "system" };
+
+export type InboxQuote = {
+  inboxId: string;
+  kind: InboxKind;
+  sender: InboxSender | null;
+  /** One line of the quoted message, cut short. */
+  excerpt: string;
+};
+
+export type InboxEntry = {
+  inboxId: string;
+  kind: InboxKind;
+  urgent: boolean;
+  /** False for a message held for the recipient's next turn. */
+  rings: boolean;
+  state: InboxState;
+  sender: InboxSender | null;
+  body: string;
+  replyTo: string | null;
+  /** What `replyTo` names, when that message is still stored. */
+  answers: InboxQuote | null;
+  createdAt: number;
+  seenAt: number | null;
+  seenVia: InboxSeenVia | null;
+  turnId: string | null;
+};
+
 // ── side chat creation (mirror packages/agent-core/src/types.ts) ──────────────
 // A side chat is a root thread with a fork pointer back at its source: the
 // renderer mints the threadId + requestId, the desktop side validates + imports
@@ -1660,6 +1698,9 @@ export type RuntimeEvent =
       jobId?: string;
       status?: JobStatus;
     })
+  // Something in this thread's agent inbox moved. Carries no rows: a panel
+  // showing the inbox reads it again.
+  | (AgentBaseEvent & { type: "thread.inbox-changed" })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
@@ -2968,6 +3009,12 @@ export type KoneAgentApi = {
   /** Queue a mid-task message for a running nested subagent. Delivered on the
    *  child's next tool call. */
   steerSubagent: (threadId: string, toolUseId: string, message: string) => Promise<void>;
+  /** What waits in a thread's agent inbox, oldest first: unseen, and being
+   *  handed over. */
+  inboxList: (threadId: string) => Promise<InboxEntry[]>;
+  /** What a thread has seen from its inbox, newest first. `limit` defaults
+   *  to 20. */
+  inboxHistory: (threadId: string, limit?: number) => Promise<InboxEntry[]>;
   /** The thread's durably enqueued follow-ups, in execution order (steers
    *  first, then FIFO) — the queue UI reads this to render its chips. */
   queuedTurns: (threadId: string) => Promise<QueuedTurnRow[]>;

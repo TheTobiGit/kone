@@ -1845,6 +1845,10 @@ export type RuntimeEvent =
       /** What the job moved to, when the change was a status move. */
       status?: JobStatus;
     })
+  // Something in this thread's agent inbox moved: a message arrived, was
+  // claimed, handed over, put back, read, or taken back. It carries no rows;
+  // a panel that shows the inbox reads it again.
+  | (BaseEvent & { type: "thread.inbox-changed" })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.

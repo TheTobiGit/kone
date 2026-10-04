@@ -11,7 +11,7 @@ import { ModelPreferenceRepo } from "./store/modelPreferences.js";
 import type { ModelPreference } from "./modelPreference.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
-import { AgentInboxRepo, type AgentInboxStore, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
+import { AgentInboxRepo, type AgentInboxStore, type InboxChangeListener, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
@@ -308,6 +308,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see AgentInboxRepo */
+  listWaitingInbox(recipientThreadId: string): InboxRow[] {
+    return this.agentInbox.listWaitingInbox(recipientThreadId);
+  }
+
+  /** @see AgentInboxRepo */
   inboxHistory(recipientThreadId: string, limit: number): InboxRow[] {
     return this.agentInbox.inboxHistory(recipientThreadId, limit);
   }
@@ -325,6 +330,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
    *  user's own words, null when there is no such block. */
   userBlockSender(threadId: string, blockId: string): MessageSender | null {
     return this.threads.userBlockSender(threadId, blockId);
+  }
+
+  /** @see AgentInboxRepo.onChanged */
+  onInboxChanged(listener: InboxChangeListener): () => void {
+    return this.agentInbox.onChanged(listener);
   }
 
   /** @see AgentInboxRepo */
