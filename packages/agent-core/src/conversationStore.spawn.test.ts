@@ -374,4 +374,26 @@ describe("spawn store surface (thread spawning, v16)", () => {
       lastState: "completed",
     });
   });
+
+  test("turnSpan reads one turn, not the newest", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "child-1", projectPath: "/tmp/proj", provider: "opencode" });
+    store.applyEvent(turnStarted("child-1", "turn-1", 100));
+    store.applyEvent(turnCompleted("child-1", "turn-1", 150));
+    store.applyEvent(turnStarted("child-1", "turn-2", 200));
+
+    expect(store.turnSpan("child-1", "turn-1")).toEqual({
+      startedAt: 100,
+      endedAt: 150,
+      runningTurns: 0,
+      lastState: "completed",
+    });
+    expect(store.turnSpan("child-1", "turn-2")).toEqual({
+      startedAt: 200,
+      endedAt: null,
+      runningTurns: 1,
+      lastState: "running",
+    });
+    expect(store.turnSpan("child-1", "turn-3")).toBeNull();
+  });
 });

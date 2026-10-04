@@ -681,6 +681,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see TranscriptRepo */
+  turnSpan(threadId: string, turnId: string): TurnSpan | null {
+    return this.transcript.turnSpan(threadId, turnId);
+  }
+
+  /** @see TranscriptRepo */
   threadTurnSpans(threadIds: readonly string[]): Map<string, TurnSpan> {
     return this.transcript.threadTurnSpans(threadIds);
   }
