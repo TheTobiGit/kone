@@ -256,3 +256,85 @@ describe("what a turn takes from the inbox", () => {
     expect(store.inboxMessage("msg_nope")).toBeNull();
   });
 });
+
+describe("what the app hears about an inbox", () => {
+  test("every state move tells the listener whose inbox moved", () => {
+    const { store } = freshStore();
+    store.ensureThread({ threadId: "u", projectPath: "/repo", provider: "codex" });
+    const heard: string[][] = [];
+    const off = store.onInboxChanged((ids) => heard.push([...ids]));
+
+    const a = message();
+    const b = message({ recipientThreadId: "u" });
+    expect(store.insertInboxMessage(a)).toBe("inserted");
+    store.insertInboxMessage(b);
+    expect(heard).toEqual([["t"], ["u"]]);
+
+    heard.length = 0;
+    const claim = store.claimInbox("t", 8, "all")!;
+    store.releaseInboxDelivery(claim.deliveryId);
+    const again = store.claimInbox("t", 8, "all")!;
+    store.settleInboxDelivery(again.deliveryId, "turn-1");
+    expect(heard).toEqual([["t"], ["t"], ["t"], ["t"]]);
+
+    heard.length = 0;
+    store.markInboxSeen([b.inboxId], "inbox");
+    const c = message({ recipientThreadId: "u" });
+    store.insertInboxMessage(c);
+    store.retractInboxMessage(c.inboxId);
+    expect(heard).toEqual([["u"], ["u"], ["u"]]);
+
+    off();
+    store.insertInboxMessage(message());
+    expect(heard).toHaveLength(3);
+  });
+
+  test("nothing that changed nothing is announced", () => {
+    const { store } = freshStore();
+    const m = message({ dedupeKey: "k" });
+    store.insertInboxMessage(m);
+    const heard: string[][] = [];
+    store.onInboxChanged((ids) => heard.push([...ids]));
+
+    expect(store.insertInboxMessage(message({ dedupeKey: "k" }))).toBe("duplicate");
+    expect(store.settleInboxDelivery("dlv_nope", null)).toBe(0);
+    expect(store.releaseInboxDelivery("dlv_nope")).toBe(0);
+    expect(store.claimInbox("t", 8, "urgent")).toBeNull();
+    store.markInboxSeen([m.inboxId], "inbox");
+    heard.length = 0;
+    expect(store.markInboxSeen([m.inboxId], "inbox")).toEqual([]);
+    expect(store.retractInboxMessage(m.inboxId)).toBe(false);
+    expect(heard).toEqual([]);
+  });
+
+  test("a listener that throws does not undo the write", () => {
+    const { store } = freshStore();
+    store.onInboxChanged(() => {
+      throw new Error("boom");
+    });
+    const m = message();
+    const errors = console.error;
+    console.error = () => {};
+    try {
+      expect(store.insertInboxMessage(m)).toBe("inserted");
+    } finally {
+      console.error = errors;
+    }
+    expect(stateOf(store, m.inboxId)).toBe("unseen");
+  });
+
+  test("waiting lists unseen and handing, oldest first, and nothing seen", () => {
+    const { store } = freshStore();
+    const first = message();
+    const second = message();
+    const third = message();
+    for (const m of [first, second, third]) store.insertInboxMessage(m);
+    store.markInboxSeen([third.inboxId], "inbox");
+    store.claimInbox("t", 1, "all");
+
+    expect(store.listWaitingInbox("t").map((r) => [r.inboxId, r.state])).toEqual([
+      [first.inboxId, "handing"],
+      [second.inboxId, "unseen"],
+    ]);
+  });
+});

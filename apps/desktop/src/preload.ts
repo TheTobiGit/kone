@@ -28,6 +28,7 @@ import type { QuotaCapableProvider } from "@kone/agent-core/quota/index.js";
 import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
 import type { ThreadExportOutcome } from "@kone/agent-core/threadExport.js";
+import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type {
   ThreadExportDialogResult,
   ThreadExportFormat,
@@ -552,6 +553,11 @@ const api = {
     // active queue, drop one entry (cancels with reason "user"), or steer a
     // mid-turn message into the live turn (falls back to the queue when the
     // provider has no live-steer channel).
+    // An agent's inbox: what waits for it, and what it has seen (newest
+    // first). thread.inbox-changed on the event stream says when to re-read.
+    inboxList: (threadId: string): Promise<InboxEntry[]> => ipcRenderer.invoke("agent:inbox:list", threadId),
+    inboxHistory: (threadId: string, limit?: number): Promise<InboxEntry[]> =>
+      ipcRenderer.invoke("agent:inbox:history", threadId, limit),
     queuedTurns: (threadId: string): Promise<QueuedTurnRow[]> =>
       ipcRenderer.invoke("agent:queued-turns", threadId),
     cancelQueuedTurn: (threadId: string, queueId: string): Promise<boolean> =>
