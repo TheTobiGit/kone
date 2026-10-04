@@ -21,8 +21,15 @@
 //   2. asks the agent to read it with its file tool, then run `sleep 60`;
 //   3. on the read's `item.completed`, deletes the file (so a later answer can
 //      only come from the transcript) and interrupts the turn;
-//   4. asks, without tools, what the nonce was;
-//   5. stops the session, resumes it from its conversation id, and asks again.
+//   4. checks the turn really ended as `turn.aborted`; a turn that finished on
+//      its own, or an interrupt the provider refused, is `not-cancelled` and
+//      proves nothing;
+//   5. live runs ask straight away, without tools, what the nonce was. Resume
+//      runs first stop the session and reopen it from its conversation id, so
+//      the question is the first time the nonce is asked for: an earlier
+//      answer would put it back into the conversation.
+//
+// Each provider gets PROBE_RUNS live runs and as many resume runs.
 //
 // Every wait has a timeout: a provider that never settles is recorded as
 // `hung` and the run moves on. Results print as a table and land as JSON in
@@ -133,8 +140,9 @@ type Answer = {
 
 type RunResult = {
   run: number;
+  mode: "live" | "resume";
   nonce: string;
-  outcome: "pass" | "fail" | "hung" | "no-read" | "error";
+  outcome: "pass" | "fail" | "hung" | "no-read" | "not-cancelled" | "error";
   detail?: string;
   readTool?: string;
   /** Whether the read's own result, as kone saw it, held the nonce. */
@@ -144,8 +152,8 @@ type RunResult = {
   /** Whether the `sleep` tool call had started before the interrupt landed. */
   sleepStarted?: boolean;
   answer?: Answer;
+  /** The conversation the reopened session adopted; absent means it came up blank. */
   resumedFrom?: string;
-  resume?: Answer;
   /** The thread's events in short form, kept when a run did not pass. */
   trace?: string[];
 };
@@ -261,16 +269,17 @@ async function probeRun(
   logs: Map<string, ThreadLog>,
   target: Target,
   run: number,
+  mode: RunResult["mode"],
 ): Promise<RunResult> {
   const nonce = `kp${randomBytes(5).toString("hex")}`;
   const cwd = mkdtempSync(path.join(tmpdir(), `kone-cancel-probe-${target.id}-`));
   const fileName = "probe-note.txt";
   const filePath = path.join(cwd, fileName);
   writeFileSync(filePath, `The nonce is ${nonce}.\n`);
-  const threadId = `cancel-probe-${target.id}-${run}-${randomBytes(3).toString("hex")}`;
+  const threadId = `cancel-probe-${target.id}-${mode}-${run}-${randomBytes(3).toString("hex")}`;
   const log = new ThreadLog();
   logs.set(threadId, log);
-  const result: RunResult = { run, nonce, outcome: "error" };
+  const result: RunResult = { run, mode, nonce, outcome: "error" };
   const start: SessionStartInput = { threadId, provider: target.provider, cwd, mode: "full-access" };
   if (target.model) start.model = target.model;
   if (target.effort) start.effort = target.effort;
@@ -318,66 +327,71 @@ async function probeRun(
     result.readTool = itemSummary(first).slice(0, 160);
     result.readSawNonce = (first.item.detail ?? first.item.text).includes(nonce);
     const readIndex = log.events.indexOf(first);
+    let interruptRefused = false;
     if (!CONTROL) {
       await withTimeout(service.interruptTurn(threadId), SETTLE_TIMEOUT_MS, "interruptTurn").catch((error) => {
+        interruptRefused = true;
         result.detail = `interruptTurn: ${String(error)}`;
       });
     }
+    let settled: RuntimeEvent;
     try {
-      const settled = await log.waitFor(
+      settled = await log.waitFor(
         isTurnEnd,
         readIndex,
         CONTROL ? READ_TIMEOUT_MS : SETTLE_TIMEOUT_MS,
         "interrupted turn to settle",
       );
-      result.interruptSettle = settled.type === "turn.aborted" ? `turn.aborted (${settled.reason})` : settled.type;
     } catch {
       result.interruptSettle = "hung";
       result.outcome = "hung";
       return result;
     }
+    result.interruptSettle = settled.type === "turn.aborted" ? `turn.aborted (${settled.reason})` : settled.type;
     result.sleepStarted = log.events
       .slice(readIndex)
       .some((e) => e.type === "item.started" && e.item.kind === "tool_call" && itemSummary(e).includes("sleep"));
+    // Only a turn the interrupt actually cut short says anything about a cancel.
+    const cancelled = !interruptRefused && settled.type === "turn.aborted" && settled.reason === "interrupted";
+    if (!CONTROL && !cancelled) {
+      result.outcome = "not-cancelled";
+      return result;
+    }
 
+    if (mode === "resume") {
+      for (const e of log.events) {
+        const id = e.refs?.conversationId ?? (e.type === "turn.completed" ? e.conversationId : undefined);
+        if (id) conversationId = id;
+      }
+      if (!conversationId) {
+        result.detail = "no conversation id to resume";
+        return result;
+      }
+      await stopQuietly(service, threadId);
+      const resumed = await withTimeout(
+        service.startSession({ ...start, resume: conversationId }),
+        START_TIMEOUT_MS,
+        "resume startSession",
+      );
+      result.resumedFrom = resumed.resumedFrom;
+    }
     result.answer = await ask(
       service,
       log,
       threadId,
-      "Without using any tools, what nonce was in the file you just read?",
+      mode === "live"
+        ? "Without using any tools, what nonce was in the file you just read?"
+        : "Without using any tools, what nonce was in the file you read earlier in this conversation?",
       nonce,
     );
     result.outcome = result.answer.outcome;
-
-    for (const e of log.events) {
-      const id = e.refs?.conversationId ?? (e.type === "turn.completed" ? e.conversationId : undefined);
-      if (id) conversationId = id;
-    }
-    if (!conversationId) {
-      result.resume = { outcome: "error", text: "", toolCalls: [], detail: "no conversation id to resume" };
-      return result;
-    }
-    await stopQuietly(service, threadId);
-    const resumed = await withTimeout(
-      service.startSession({ ...start, resume: conversationId }),
-      START_TIMEOUT_MS,
-      "resume startSession",
-    );
-    result.resumedFrom = resumed.resumedFrom;
-    result.resume = await ask(
-      service,
-      log,
-      threadId,
-      "Without using any tools, what nonce was in the file you read earlier in this conversation?",
-      nonce,
-    );
     return result;
   } catch (error) {
     result.outcome = error instanceof Timeout ? "hung" : "error";
     result.detail = [result.detail, String(error)].filter(Boolean).join("; ");
     return result;
   } finally {
-    if (result.outcome !== "pass" || result.resume?.outcome !== "pass") result.trace = traceOf(log);
+    if (result.outcome !== "pass") result.trace = traceOf(log);
     await stopQuietly(service, threadId);
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -416,10 +430,12 @@ async function probeTarget(target: Target): Promise<TargetResult> {
   if (!status.available || status.authStatus === "unauthenticated") {
     return { ...result, status: "unavailable", detail: `${status.readiness}: ${status.message ?? ""}`.trim() };
   }
-  for (let run = 1; run <= RUNS; run++) {
-    const r = await probeRun(service, logs, target, run);
-    console.log(`[${target.id}] run ${run}: ${r.outcome}, resume ${r.resume?.outcome ?? "-"}`);
-    result.runs.push(r);
+  for (const mode of ["live", "resume"] as const) {
+    for (let run = 1; run <= RUNS; run++) {
+      const r = await probeRun(service, logs, target, run, mode);
+      console.log(`[${target.id}] ${mode} run ${run}: ${r.outcome} (${r.interruptSettle ?? "-"})`);
+      result.runs.push(r);
+    }
   }
   await withTimeout(service.stopAll(), STOP_TIMEOUT_MS, "stopAll").catch(() => {});
   return result;
@@ -441,7 +457,9 @@ for (const r of results) {
     console.log(`| ${r.id} | ${r.model} | ${r.status}: ${r.detail ?? ""} | - |`);
     continue;
   }
-  console.log(`| ${r.id} | ${r.model} | ${count(r.runs, (x) => x.outcome)} | ${count(r.runs, (x) => x.resume?.outcome)} |`);
+  const live = r.runs.filter((x) => x.mode === "live");
+  const resume = r.runs.filter((x) => x.mode === "resume");
+  console.log(`| ${r.id} | ${r.model} | ${count(live, (x) => x.outcome)} | ${count(resume, (x) => x.outcome)} |`);
 }
 const out = path.join(tmpdir(), `kone-cancel-probe-${CONTROL ? "control-" : ""}${Date.now()}.json`);
 writeFileSync(out, JSON.stringify(results, null, 2));
