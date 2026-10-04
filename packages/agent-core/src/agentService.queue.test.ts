@@ -499,6 +499,51 @@ describe("a steer on a provider that can't steer, against the real store", () =>
   });
 });
 
+// Urgent mail is settled with the turn that took it. A steer that arrives
+// after the announced turn ended, while the next send is still on its way to
+// the provider, would otherwise be queued and acked with the queue row's id.
+describe("a live-only steer, against the real store", () => {
+  test("is refused, not queued, while a send is on its way and no turn is announced", async () => {
+    const thread = await openThread();
+    let open = (): void => {};
+    adapter.gate = new Promise((resolve) => {
+      open = resolve;
+    });
+    const sending = service.sendTurn({ threadId: thread, input: "the user's next message" });
+    expect(service.isThreadBusy(thread)).toBe(true);
+
+    const accepted: string[] = [];
+    await expect(
+      service.steerTurn(
+        { threadId: thread, input: "urgent: stop" },
+        { liveOnly: true, onAccepted: (turnId) => accepted.push(turnId) },
+      ),
+    ).rejects.toThrow("No running turn");
+    expect(store.listQueuedTurns(thread)).toHaveLength(0);
+    expect(accepted).toEqual([]);
+
+    // Without liveOnly the same steer is queued, and says so.
+    const queued = await service.steerTurn({ threadId: thread, input: "a plain steer" });
+    expect(queued.queued).toBe(true);
+    open();
+    await sending;
+  });
+
+  test("into a turn the provider announced, reports the turn that took it", async () => {
+    const thread = await openThread();
+    adapter.steerTurn = async (input) => ({ threadId: input.threadId, turnId: "live" });
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+
+    const accepted: string[] = [];
+    const result = await service.steerTurn(
+      { threadId: thread, input: "urgent: stop" },
+      { liveOnly: true, onAccepted: (turnId) => accepted.push(turnId) },
+    );
+    expect(result.queued).toBeUndefined();
+    expect(accepted).toEqual(["live"]);
+  });
+});
+
 describe("threadRuntime: what a thread is doing, for a sender", () => {
   test("reads the live turn, the tool in progress, the parked ask and the steer channel", async () => {
     const thread = await openThread();

@@ -33,6 +33,7 @@ import type {
   SendTurnInput,
   Session,
   SessionStartInput,
+  TurnSendOptions,
   TurnStartResult,
 } from "./types.js";
 import { turnLabel } from "./types.js";
@@ -118,6 +119,13 @@ export interface StartThreadTurnOptions {
    *  the app's own voice. Same discipline as the replay preamble below, which
    *  rides the dispatched prompt and stays out of the journaled block. */
   silent?: boolean;
+  /** Runs once, when the provider takes the turn: before the checkpoint on a
+   *  turn the service starts, or as the dispatch resolves on a path that has
+   *  nothing slow after the provider. Never for a turn the service queued. */
+  onAccepted?: (turnId: string) => void;
+  /** Steer only: refused rather than queued when no announced turn can take
+   *  it (AgentService.steerTurn). */
+  liveOnly?: boolean;
 }
 
 export interface ThreadDispatcher {
@@ -777,9 +785,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const { sender: _sender, ...forService } = input;
     const dispatched =
       delivery.dispatch === input.input ? forService : { ...forService, input: delivery.dispatch };
+    const handOff: TurnSendOptions = {};
+    if (options?.onAccepted) handOff.onAccepted = options.onAccepted;
+    if (options?.liveOnly) handOff.liveOnly = true;
     return destination === "steer"
-      ? this.service.steerTurn(dispatched)
-      : this.service.sendTurn(dispatched);
+      ? this.service.steerTurn(dispatched, handOff)
+      : this.service.sendTurn(dispatched, handOff);
   }
 
   queueNotice(threadId: string, text: string, options?: { rings?: boolean }): string {
