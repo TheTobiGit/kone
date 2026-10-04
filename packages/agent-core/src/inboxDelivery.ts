@@ -40,6 +40,10 @@ export interface TurnInbox {
    * one: the user's own words are headed as theirs and go last.
    */
   carry(threadId: string, turn: SendTurnInput | null, ownBlockId?: string): CarriedTurn | null;
+  /** An urgent job waits: the next turn is its own, ahead of the user's
+   *  queued messages, as it would have gone into the running turn on a
+   *  provider that takes one there. */
+  cutsIn?(threadId: string): boolean;
 }
 
 /** A turn with the inbox folded in, and how to settle what it carries. */
@@ -58,6 +62,8 @@ export interface InboxDeliveryDeps {
     /** Let the turn slot run: it starts a turn for what rings when the thread
      *  is free, and does nothing when it is not. */
     kickTurnSlot(threadId: string): void;
+    /** End the running turn, so the turn slot carries what is urgent next. */
+    interruptTurn(threadId: string): Promise<void>;
     onEvent(listener: (event: RuntimeEvent) => void): () => void;
   };
   dispatcher: Pick<ThreadDispatcher, "steerThreadTurn" | "ensureThreadSession" | "takeReplayPreamble">;
@@ -93,6 +99,9 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
   const failures = new Map<string, number>();
   /** Threads being brought back up for a message that rings. */
   const restarting = new Set<string>();
+  /** The running turn (by when it started) each thread was interrupted in for
+   *  urgent mail its provider cannot take mid-turn — once a turn is enough. */
+  const interrupted = new Map<string, number>();
 
   function arm(threadId: string, ms = IRC_DELIVERY_DEBOUNCE_MS): void {
     armed.get(threadId)?.();
@@ -117,7 +126,7 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     if (rt.busy) {
       // Only urgent goes into a running turn; the rest is next, when the turn
       // ends and the turn slot carries it.
-      if (mailbox.urgentCount(threadId) > 0) steerUrgent(threadId);
+      if (mailbox.urgentCount(threadId) > 0) urgentInto(threadId, rt);
       return;
     }
     deps.service.kickTurnSlot(threadId);
@@ -132,6 +141,24 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
       .ensureThreadSession(threadId, { resume: true })
       .catch((err) => console.warn(`[agent] could not bring ${threadId} back up for its inbox:`, err))
       .finally(() => restarting.delete(threadId));
+  }
+
+  /** Urgent mail for a busy thread. It is settled only with a turn the
+   *  provider really started, so a job's id always comes to stand for one:
+   *  into the running turn when the provider takes it there and that turn has
+   *  announced itself; otherwise the running turn is ended, and the turn slot
+   *  carries the mail next, its rows unseen until then. */
+  function urgentInto(threadId: string, rt: ThreadRuntime): void {
+    if (rt.turnStartedAt === null) return; // turn.started rings again
+    if (rt.steers) {
+      steerUrgent(threadId);
+      return;
+    }
+    if (interrupted.get(threadId) === rt.turnStartedAt) return;
+    interrupted.set(threadId, rt.turnStartedAt);
+    void deps.service.interruptTurn(threadId).catch((err) => {
+      console.warn(`[agent] could not end ${threadId}'s turn for urgent mail:`, err);
+    });
   }
 
   /** Put the urgent messages, and at most one urgent job, into the running
@@ -211,7 +238,7 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
    *  in front of it, or — with no job — what rings. Null when nothing is owed
    *  a turn. */
   function carryOwnTurn(threadId: string): CarriedTurn | null {
-    const job = mailbox.claimJob(threadId);
+    const job = mailbox.claimJob(threadId, true) ?? mailbox.claimJob(threadId);
     if (!job && mailbox.ringingCount(threadId) === 0) return null;
     const handOver = joinClaims(mailbox, [mailbox.claimForTurn(threadId, IRC_DELIVERY_BATCH_MAX), job]);
     if (!handOver) return null;
@@ -246,6 +273,10 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
       case "session.started":
         if (mailbox.ringingCount(event.threadId) > 0) arm(event.threadId);
         return;
+      // A turn announced itself: urgent mail that waited for it goes in now.
+      case "turn.started":
+        if (mailbox.urgentCount(event.threadId) > 0) arm(event.threadId);
+        return;
       default:
         return;
     }
@@ -253,6 +284,7 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
 
   return {
     carry,
+    cutsIn: (threadId) => mailbox.unseenJobs(threadId, true) > 0,
     stop() {
       unsubscribeMail();
       unsubscribeReleased();
@@ -260,6 +292,7 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
       for (const cancel of armed.values()) cancel();
       armed.clear();
       failures.clear();
+      interrupted.clear();
     },
   };
 }

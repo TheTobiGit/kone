@@ -896,7 +896,12 @@ export class IrcMailbox {
 
   /** How many jobs wait unseen. */
   jobCount(threadId: string): number {
-    return this.inbox.unseenInboxCount(threadId, "job");
+    return this.unseenJobs(threadId);
+  }
+
+  /** How many jobs wait unseen — only the urgent ones when `urgent`. */
+  unseenJobs(threadId: string, urgent = false): number {
+    return this.inbox.unseenInboxCount(threadId, urgent ? "urgent-job" : "job");
   }
 
   /**

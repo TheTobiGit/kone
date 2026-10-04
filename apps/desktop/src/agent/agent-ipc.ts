@@ -424,6 +424,7 @@ export function registerAgentIpc(): void {
       service: {
         threadRuntime: (threadId) => svc.threadRuntime(threadId),
         kickTurnSlot: (threadId) => svc.kickTurnSlot(threadId),
+        interruptTurn: (threadId) => svc.interruptTurn(threadId),
         onEvent: (listener) => svc.onEvent(listener),
       },
       dispatcher,

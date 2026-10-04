@@ -2409,6 +2409,10 @@ export class AgentService {
       // A row waiting out its backoff is retried by its own timer, not by
       // whatever turn event happens to come first.
       if (this.queueRetries.has(threadId)) return;
+      if (this.turnInbox?.cutsIn?.(threadId)) {
+        await this.runInboxTurn(threadId);
+        return;
+      }
       const row = store.claimNextQueuedTurn(threadId);
       if (!row) {
         await this.runInboxTurn(threadId);

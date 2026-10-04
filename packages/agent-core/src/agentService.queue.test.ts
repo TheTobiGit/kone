@@ -597,6 +597,27 @@ describe("the turn slot carries the inbox, against the real store", () => {
     expect(log[0]!.settled).toBe("turn-1");
   });
 
+  test("an urgent job waiting runs as its own turn ahead of the user's queued message", async () => {
+    const thread = await openThread();
+    const { inbox } = fakeInbox(true);
+    let urgent = true;
+    service.setTurnInbox({
+      carry: inbox.carry,
+      cutsIn: () => {
+        const was = urgent;
+        urgent = false;
+        return was;
+      },
+    });
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const row = queueRow(thread, "ship it");
+
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await waitFor(() => adapter.sent.length === 1);
+    expect(adapter.sent[0]!.input).toBe("INBOX");
+    expect(stateOf(thread, row)).toBe("queued");
+  });
+
   test("nothing ringing, nothing queued: the slot stays empty", async () => {
     const thread = await openThread();
     service.setTurnInbox(fakeInbox().inbox);
