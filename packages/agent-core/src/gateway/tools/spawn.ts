@@ -532,7 +532,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       const name = `"${thread.title ?? args.threadId}"`;
       const cap = args.maxTextChars ?? AGENT_READ_RESPONSE_CHAR_CAP;
       const text = scope === "final" ? renderFinal(turn, name, cap) : renderResponse(turn, name, cap);
-      const structured: GatewayRecord = { thread: threadInfo, scope };
+      // The reply rides in both halves: a provider that reads the structured
+      // half in place of the text would otherwise see no reply at all.
+      const structured: GatewayRecord = { thread: threadInfo, scope, text };
       if (turn) structured.turn = { turnId: turn.turnId, state: turn.state };
       return { content: [{ type: "text", text }], structuredContent: structured };
     }
