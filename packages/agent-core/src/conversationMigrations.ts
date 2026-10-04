@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1108,6 +1108,15 @@ function migration0023InboxRings(db: DatabaseSync): void {
   db.exec(`ALTER TABLE agent_inbox ADD COLUMN rings INTEGER NOT NULL DEFAULT 1`);
 }
 
+/**
+ * When a hand-over went to the provider. A row a dead process was handing
+ * over without it never reached a provider and is handed over again; one with
+ * it may have, and is settled from the transcript or held, never resent.
+ */
+function migration0024InboxSentAt(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE agent_inbox ADD COLUMN sent_at INTEGER`);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1132,6 +1141,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 21, name: "BlockSteeredAt", run: migration0021BlockSteeredAt },
   { id: 22, name: "AgentInbox", run: migration0022AgentInbox },
   { id: 23, name: "InboxRings", run: migration0023InboxRings },
+  { id: 24, name: "InboxSentAt", run: migration0024InboxSentAt },
 ];
 
 export interface MigrationOptions {

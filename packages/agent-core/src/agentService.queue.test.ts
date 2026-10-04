@@ -593,7 +593,14 @@ describe("the turn slot carries the inbox, against the real store", () => {
    *  it carried was settled. `rings` is whether anything waits that is worth a
    *  turn of its own. */
   function fakeInbox(rings = false) {
-    type Carried = { turn: string | null; own: string | undefined; settled: string | null; released: boolean };
+    type Carried = {
+      turn: string | null;
+      own: string | undefined;
+      settled: string | null;
+      released: boolean;
+      /** How many sends the provider had seen when it was marked sending. */
+      sentBefore?: number;
+    };
     const log: Carried[] = [];
     const inbox = {
       carry(threadId: string, turn: SendTurnInput | null, own?: string) {
@@ -603,6 +610,9 @@ describe("the turn slot carries the inbox, against the real store", () => {
         log.push(entry);
         return {
           input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
+          sending: () => {
+            entry.sentBefore = adapter.sent.length;
+          },
           settle: (turnId: string) => {
             entry.settled = turnId;
           },
@@ -626,7 +636,7 @@ describe("the turn slot carries the inbox, against the real store", () => {
     await waitFor(() => stateOf(thread, row) === "gone");
 
     expect(adapter.sent.map((s) => s.input)).toEqual(["INBOX\n\nship it"]);
-    expect(log).toEqual([{ turn: "ship it", own: `ub-${row}`, settled: "turn-1", released: false }]);
+    expect(log).toEqual([{ turn: "ship it", own: `ub-${row}`, settled: "turn-1", released: false, sentBefore: 0 }]);
   });
 
   test("with nothing queued, what rings starts a turn of its own", async () => {
@@ -724,6 +734,18 @@ describe("the turn slot carries the inbox, against the real store", () => {
     await waitFor(() => atCheckpoint.length === 1);
 
     expect(atCheckpoint[0]).toEqual({ inbox: "turn-1", row: "gone" });
+  });
+
+  // A crash after this mark leaves the hand-over uncertain, not unsent: it is
+  // written before the provider can have the turn, never after.
+  test("what a turn carries is marked sending before the provider has it", async () => {
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox(true);
+    service.setTurnInbox(inbox);
+    service.kickTurnSlot(thread);
+    await waitFor(() => log[0]?.settled !== null && log[0]?.settled !== undefined);
+    expect(log[0]?.sentBefore).toBe(0);
+    expect(adapter.sent).toHaveLength(1);
   });
 
   test("a message sent straight to an idle thread carries the inbox too", async () => {

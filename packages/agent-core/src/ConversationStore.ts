@@ -288,6 +288,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see AgentInboxRepo */
+  markInboxSending(deliveryId: string): boolean {
+    return this.agentInbox.markInboxSending(deliveryId);
+  }
+
+  /** @see AgentInboxRepo */
   setInboxBlockId(inboxId: string, blockId: string): void {
     this.agentInbox.setInboxBlockId(inboxId, blockId);
   }

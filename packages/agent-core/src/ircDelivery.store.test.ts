@@ -171,6 +171,43 @@ describe("delivery on the stored inbox", () => {
     expect(sent).toBeDefined();
   });
 
+  // The settle never landed — the process died first — but the batch had
+  // gone to the provider, and the provider started a turn. The transcript
+  // says so, and the next process settles it with that turn instead of
+  // handing it over again.
+  test("a batch sent before a restart is settled from the turn the transcript shows took it", async () => {
+    const dir = freshDir();
+    let started: (() => void) | null = null;
+    const first = processOn(dir, {
+      send: (_input, options) => {
+        options?.onSending?.();
+        started?.();
+        return new Promise<TurnStartResult>(() => {});
+      },
+    });
+    started = () =>
+      first.store.applyEvent({
+        type: "turn.started",
+        threadId: "parent",
+        provider: "codex",
+        turnId: "turn-9",
+        at: Date.now(),
+        source: "codex.app-server",
+      });
+    first.report("result");
+    first.tick();
+    await settle();
+    first.stop();
+
+    const second = processOn(dir, { live: false });
+    expect(second.mailbox.getUnreadCount("parent")).toBe(0);
+    expect(second.store.inboxHistory("parent", 10)[0]).toMatchObject({ state: "seen", turnId: "turn-9" });
+    second.comeBack("parent");
+    second.tick();
+    await settle();
+    expect(second.sent).toHaveLength(0);
+  });
+
   test("a send that throws releases the batch; the retry names the same block", async () => {
     const dir = freshDir();
     let fail = true;

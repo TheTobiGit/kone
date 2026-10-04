@@ -173,7 +173,11 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     };
     void (async () => {
       try {
-        const options = { silent: true, onAccepted: settle };
+        const options = {
+          silent: true,
+          onAccepted: settle,
+          onSending: () => deps.mailbox.sendingDelivery(deliveryId),
+        };
         const result = await (deps.isBusy(threadId)
           ? deps.dispatcher.steerThreadTurn(input, options)
           : deps.dispatcher.sendThreadTurn(input, options));
