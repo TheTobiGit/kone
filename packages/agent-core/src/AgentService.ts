@@ -293,6 +293,11 @@ function failedCheckpoint(cause: unknown): FailedCheckpoint {
 // Kept plain-TS and framework-free to match kone's git/fs modules — no Effect,
 // no DI container. One instance per app, created in main.ts.
 
+/** The rows an owed cancellation takes: the ones read as pending when it was
+ *  asked, or — when that read failed — every row queued up to `upTo`, apart
+ *  from those queued after it, named in `spared` as they arrive. */
+type CancelScope = { queueIds: ReadonlySet<string> } | { upTo: number; spared: Set<string> };
+
 export class AgentService {
   private readonly adapters = new Map<ProviderKind, ProviderAdapter>();
   /** threadId → provider, so thread-scoped calls find the right adapter. */
@@ -372,12 +377,9 @@ export class AgentService {
    *  backoff: a thread can have several rows claimed by hand at once. */
   private readonly pendingReleases = new Map<string, { threadId: string; timer: ReturnType<typeof setTimeout> }>();
   /** A stop, delete or archive whose cancellation the store could not write,
-   *  per thread: the rows it was cancelling (null: all of them), retried
-   *  until it lands. Until then none of them may go out. */
-  private readonly pendingCancels = new Map<
-    string,
-    { queueIds: ReadonlySet<string> | null; timer: ReturnType<typeof setTimeout> }
-  >();
+   *  per thread: the rows it was cancelling, retried until it lands. Until
+   *  then none of them may go out. */
+  private readonly pendingCancels = new Map<string, { scope: CancelScope; timer: ReturnType<typeof setTimeout> }>();
   /** Bumped every time a thread's session starts or stops, so a delivery that
    *  outlived its session can tell the session it is looking at is not the
    *  one it delivered into. */
@@ -2376,6 +2378,9 @@ export class AgentService {
       return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
+    // Queued after a Stop whose cancellation is still owed: not one it takes.
+    const owed = this.pendingCancels.get(input.threadId);
+    if (owed && "spared" in owed.scope) owed.scope.spared.add(queueId);
     const rows = await this.pendingQueueRows(input.threadId);
     const pending = rows ? rows.map((r) => r.queueId) : null;
     const sender = rows?.find((r) => r.queueId === queueId)?.sender;
@@ -2802,28 +2807,34 @@ export class AgentService {
     this.clearQueueRetry(threadId);
     // A release still owed would put a cancelled row back in line.
     this.clearPendingReleases(threadId);
-    // The rows this cancels: what is pending now, plus any an earlier cancel
-    // is still owed. Read first, so a retry never takes rows queued later.
-    let queueIds: string[] | null = null;
+    // The rows this cancels: what is pending now. Read first, so a retry
+    // never takes rows queued later. When the read fails, the rows queued up
+    // to now are cancelled instead, apart from any queued after this — the
+    // queue's own clock draws the line, and the ones queued after are named.
+    let pending: string[] | null = null;
     try {
-      const pending = this.queueStore.listQueuedTurns(threadId).map((r) => r.queueId);
-      // Empty reads the same as unreadable: with nothing pending the cancel
-      // writes nothing and needs no retry, so only a failed read lands here
-      // and is retried against every pending row.
-      if (pending.length > 0) queueIds = pending;
+      pending = this.queueStore.pendingQueueIds(threadId);
     } catch {
-      // Unreadable: the retry cancels all the thread's pending rows.
+      // Unreadable, the same as a null answer.
     }
+    let scope: CancelScope = pending ? { queueIds: new Set(pending) } : { upTo: Date.now(), spared: new Set() };
+    // Rows an earlier cancel is still owed are pending, so this one's read
+    // has them, and its line is later than theirs. Its ids are kept anyway,
+    // for a read that missed them.
     const owed = this.pendingCancels.get(threadId);
     if (owed) {
       clearTimeout(owed.timer);
       this.pendingCancels.delete(threadId);
-      queueIds = owed.queueIds && queueIds ? [...new Set([...owed.queueIds, ...queueIds])] : null;
+      if ("queueIds" in scope && "queueIds" in owed.scope) {
+        scope = { queueIds: new Set([...owed.scope.queueIds, ...scope.queueIds]) };
+      }
     }
-    this.cancelRows(threadId, provider, reason, queueIds, 0);
+    // Nothing pending: nothing to write, and nothing to retry.
+    if ("queueIds" in scope && scope.queueIds.size === 0) return;
+    this.cancelRows(threadId, provider, reason, scope, 0);
   }
 
-  /** Cancel `queueIds` (null: every pending row) and announce each. A
+  /** Cancel the rows `scope` names and announce each. A
    *  cancellation the store could not write is kept and retried on the
    *  queue's backoff, the last delay repeating, until it lands; meanwhile the
    *  drain claims nothing on the thread and no delivery sends those rows. One
@@ -2832,12 +2843,18 @@ export class AgentService {
     threadId: string,
     provider: ProviderKind | null,
     reason: "stop" | "thread-deleted" | "archive",
-    queueIds: readonly string[] | null,
+    scope: CancelScope,
     tries: number,
   ): void {
     let cancelled: string[] | null = null;
     try {
-      cancelled = this.queueStore.cancelQueuedTurnsForThread(threadId, queueIds ?? undefined);
+      cancelled =
+        "queueIds" in scope
+          ? this.queueStore.cancelQueuedTurnsForThread(threadId, [...scope.queueIds])
+          : this.queueStore.cancelQueuedTurnsForThread(threadId, undefined, {
+              at: scope.upTo,
+              except: [...scope.spared],
+            });
     } catch (err) {
       console.error(`[agent] cancelQueuedTurnsForThread(${threadId}) failed:`, err);
     }
@@ -2846,10 +2863,10 @@ export class AgentService {
       const retryIn = delays[Math.min(tries, delays.length - 1)] ?? 1_000;
       const timer = setTimeout(() => {
         this.pendingCancels.delete(threadId);
-        this.cancelRows(threadId, provider, reason, queueIds, tries + 1);
+        this.cancelRows(threadId, provider, reason, scope, tries + 1);
       }, retryIn);
       timer.unref?.();
-      this.pendingCancels.set(threadId, { queueIds: queueIds ? new Set(queueIds) : null, timer });
+      this.pendingCancels.set(threadId, { scope, timer });
       return;
     }
     if (cancelled.length) this.dropQueuedCount(threadId, cancelled.length);
@@ -2873,7 +2890,8 @@ export class AgentService {
   /** Is `queueId` cancelled in intent, its cancellation not yet written? */
   private cancelOwed(threadId: string, queueId: string): boolean {
     const owed = this.pendingCancels.get(threadId);
-    return owed !== undefined && (owed.queueIds === null || owed.queueIds.has(queueId));
+    if (!owed) return false;
+    return "queueIds" in owed.scope ? owed.scope.queueIds.has(queueId) : !owed.scope.spared.has(queueId);
   }
 
   /** Decrement the in-memory queued-count mirror (position fallback only). */

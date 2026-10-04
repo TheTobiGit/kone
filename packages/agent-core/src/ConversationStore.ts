@@ -258,13 +258,22 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see QueuedTurnRepo */
-  cancelQueuedTurnsForThread(threadId: string, only?: readonly string[]): string[] | null {
-    return this.queuedTurns.cancelQueuedTurnsForThread(threadId, only);
+  cancelQueuedTurnsForThread(
+    threadId: string,
+    only?: readonly string[],
+    upTo?: { at: number; except: readonly string[] },
+  ): string[] | null {
+    return this.queuedTurns.cancelQueuedTurnsForThread(threadId, only, upTo);
   }
 
   /** @see QueuedTurnRepo */
   listQueuedTurns(threadId: string): QueuedTurnRow[] {
     return this.queuedTurns.listQueuedTurns(threadId);
+  }
+
+  /** @see QueuedTurnRepo */
+  pendingQueueIds(threadId: string): string[] | null {
+    return this.queuedTurns.pendingQueueIds(threadId);
   }
 
   /** @see AgentInboxRepo */

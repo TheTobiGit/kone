@@ -276,6 +276,10 @@ class FakeQueueStore {
     return this.rows.filter((r) => r.threadId === threadId).map((r) => ({ ...r }));
   }
 
+  pendingQueueIds(threadId: string): string[] {
+    return this.rows.filter((r) => r.threadId === threadId).map((r) => r.queueId);
+  }
+
   recoverStaleClaims(): number {
     return 0;
   }
