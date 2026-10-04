@@ -368,6 +368,9 @@ export class AgentService {
    *  for its timer — a provider that reports the failed turn as aborted
    *  before rejecting the send would otherwise kick an immediate re-drain. */
   private readonly queueRetries = new Map<string, { queueId: string; timer: ReturnType<typeof setTimeout> }>();
+  /** Releases the store could not write, per row, each waiting out its own
+   *  backoff: a thread can have several rows claimed by hand at once. */
+  private readonly pendingReleases = new Map<string, { threadId: string; timer: ReturnType<typeof setTimeout> }>();
   /** Bumped every time a thread's session starts or stops, so a delivery that
    *  outlived its session can tell the session it is looking at is not the
    *  one it delivered into. */
@@ -2086,19 +2089,28 @@ export class AgentService {
         return true;
       }
       if (this.isBusy(threadId)) {
+        // To the front of the line, then the running turn is stopped so it
+        // goes next. A release the store could not write does the same once
+        // it lands — the stop only if that turn is still the one running.
+        const toFront = async (): Promise<void> => {
+          await this.reorderQueuedTurns(threadId, [queueId]);
+          this.announceQueuedState(threadId, row, "queued");
+          if (liveTurnId && this.activeTurns.get(threadId) === liveTurnId) {
+            void this.interruptTurn(threadId).catch((err) => {
+              console.warn(`[agent] interrupt on send-now failed for ${threadId}:`, err);
+            });
+          }
+        };
         const released = this.releaseRow(store, queueId, "queued");
-        // Not written: still claimed, so it is released on the backoff instead.
         if (released === null) {
-          this.releaseThen(threadId, store, queueId, "queued", () => this.announceQueuedState(threadId, row, "queued"));
-        }
-        if (released !== true) return false;
-        await this.reorderQueuedTurns(threadId, [queueId]);
-        this.announceQueuedState(threadId, row, "queued");
-        if (liveTurnId) {
-          void this.interruptTurn(threadId).catch((err) => {
-            console.warn(`[agent] interrupt on send-now failed for ${threadId}:`, err);
+          this.releaseThen(threadId, store, queueId, "queued", () => {
+            void toFront().catch((err) => {
+              console.warn(`[agent] send-now of ${queueId} failed after its late release:`, err);
+            });
           });
         }
+        if (released !== true) return false;
+        await toFront();
         return true;
       }
       let promoted = false;
@@ -2115,7 +2127,12 @@ export class AgentService {
       return true;
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      this.releaseThen(threadId, store, queueId, from, () => this.announceQueuedState(threadId, row, from, { error }));
+      // Back where it was; a waiting row on an idle thread is the drain's to
+      // run, and nothing else may come along to wake it.
+      this.releaseThen(threadId, store, queueId, from, () => {
+        this.announceQueuedState(threadId, row, from, { error });
+        this.promoteQueuedTurns(threadId);
+      });
       throw err;
     }
   }
@@ -2451,7 +2468,7 @@ export class AgentService {
       if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
       // A row waiting out its backoff is retried by its own timer, not by
       // whatever turn event happens to come first.
-      if (this.queueRetries.has(threadId)) return;
+      if (this.queueRetries.has(threadId) || this.hasPendingRelease(threadId)) return;
       if (this.turnInbox?.cutsIn?.(threadId)) {
         await this.runInboxTurn(threadId);
         return;
@@ -2570,8 +2587,10 @@ export class AgentService {
    *  meanwhile (nothing to release) is left alone. A release the store could
    *  not write leaves the row claimed with nothing to run it, so it is tried
    *  again on the queue's backoff, the last delay repeating, until it lands
-   *  or the row is stopped. The pending retry also keeps the drain from
-   *  claiming what was queued after it. */
+   *  or the row is stopped. Each row's retry is its own, apart from the
+   *  thread's send backoff. While any is pending the drain claims nothing, so
+   *  what was queued after the row cannot run ahead of it; one that lands
+   *  late runs `then` and wakes the drain, since nothing else may. */
   private releaseThen(
     threadId: string,
     store: QueuedTurnStore,
@@ -2583,18 +2602,42 @@ export class AgentService {
     const released = this.releaseRow(store, queueId, to);
     if (released === true) {
       then();
+      if (tries > 0) this.promoteQueuedTurns(threadId);
       return;
     }
-    if (released === false) return;
+    if (released === false) {
+      if (tries > 0) this.promoteQueuedTurns(threadId);
+      return;
+    }
     const delays = this.options.queueRetryDelaysMs ?? QUEUE_RETRY_DELAYS_MS;
     const retryIn = delays[Math.min(tries, delays.length - 1)] ?? 1_000;
-    this.clearQueueRetry(threadId);
+    this.clearPendingRelease(queueId);
     const timer = setTimeout(() => {
-      this.queueRetries.delete(threadId);
+      this.pendingReleases.delete(queueId);
       this.releaseThen(threadId, store, queueId, to, then, tries + 1);
     }, retryIn);
     timer.unref?.();
-    this.queueRetries.set(threadId, { queueId, timer });
+    this.pendingReleases.set(queueId, { threadId, timer });
+  }
+
+  private hasPendingRelease(threadId: string): boolean {
+    for (const pending of this.pendingReleases.values()) if (pending.threadId === threadId) return true;
+    return false;
+  }
+
+  private clearPendingRelease(queueId: string): void {
+    const pending = this.pendingReleases.get(queueId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingReleases.delete(queueId);
+  }
+
+  /** A stopped or deleted thread's rows are cancelled: nothing is left to
+   *  release. */
+  private clearPendingReleases(threadId: string): void {
+    for (const [queueId, pending] of this.pendingReleases) {
+      if (pending.threadId === threadId) this.clearPendingRelease(queueId);
+    }
   }
 
   /** A drained row the provider refused. While it has retries left it goes
@@ -2744,6 +2787,7 @@ export class AgentService {
     reason: "stop" | "thread-deleted" | "archive",
   ): void {
     this.clearQueueRetry(threadId);
+    this.clearPendingReleases(threadId);
     const resolved = provider ?? this.historyStore?.threadMeta(threadId)?.provider ?? null;
     try {
       const queueIds = this.queueStore.cancelQueuedTurnsForThread(threadId);
@@ -2842,6 +2886,8 @@ export class AgentService {
     this.queuedByThread.clear();
     for (const retry of this.queueRetries.values()) clearTimeout(retry.timer);
     this.queueRetries.clear();
+    for (const pending of this.pendingReleases.values()) clearTimeout(pending.timer);
+    this.pendingReleases.clear();
     this.lastActivity.clear();
   }
 }
