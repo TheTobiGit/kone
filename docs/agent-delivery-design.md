@@ -368,7 +368,7 @@ Each phase ships on its own and leaves the app working and tested.
 | 2 | An honest `agent_list` and a readable `agent_inbox` | Done (`7e6c89ee`) |
 | 3a | kone's notices move into the inbox | Done (`99359d70`) |
 | 3b | One ringer | Built (`1d47a55e`), behind `delivery.v2`, off by default |
-| 4 | Jobs: `agent_followup` and `app_send_to_thread` | Not started |
+| 4 | Jobs: `agent_followup` and `app_send_to_thread` | Built (`3a1c55f5`), behind `delivery.v2`, off by default |
 | 5 | kone steer | Not started |
 | 6 | The inbox in the app | Done (`1bb49544`, `04100edf`, `0b071123`) |
 | 7 | "Still out" on reports | Not started |
@@ -421,6 +421,7 @@ Each phase ships on its own and leaves the app working and tested.
 - **Files:** `spawnContinuation.ts`; `spawnWait.ts`; `threadSpawn.ts`; `gateway/tools/appThreads.ts`; `gateway/schemas.ts`.
 - **Tests:** a follow-up to a busy child, then `agent_wait` on the returned id, settles with that turn; `app_send_to_thread` held while parked, steered when urgent.
 - **Risk:** medium.
+- **As built:** routing changes only with `delivery.v2` on; off, both tools send a turn as before, and the one change is that `app_send_to_thread` takes `urgent` with `steer` as its alias. On, a job's id is derived from the request's dedupe key (the caller's thread, turn and `requestId`), so a retry finds the same row and gets the same id. The ringer takes the user's queued rows first, then one job at a time, oldest first, with other waiting messages riding in front of it; an urgent job goes into the running turn, one per steer. `agent_wait` pinned to a job's id reads the child as starting while the job waits (unless the child is parked on the user), then as the turn that carried it, and is re-checked when a delivery settles, so a turn that ends before its settle is recorded is still collected. `agent_inbox` never takes a job. `app_send_to_thread` holds a job for a parked thread instead of refusing it, and answers with a delivery receipt. Both tools still bring a closed session back up before leaving the job. Carried messages are journaled in front of the turn's own block (the block moves to the end; `thread.message-journaled` carries `beforeBlockId`), so the transcript reads in the order of the turn text. The 3b note on urgent to a provider that cannot steer still holds until Phase 5.
 
 ### Phase 5: kone steer
 
