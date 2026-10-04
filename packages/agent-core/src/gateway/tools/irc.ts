@@ -1438,7 +1438,9 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       const { runtime, state } = stateOf(id);
       const row: PeerRow = {
         id,
-        relationship: relationshipOf(store, ctx.threadId, id),
+        // How the listed agent relates to the reader: the reader's delegator
+        // reads as "your delegator", as its messages are headed.
+        relationship: relationshipOf(store, id, ctx.threadId),
         state: state.state,
         since: state.since,
         activity: state.activity,
