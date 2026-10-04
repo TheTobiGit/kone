@@ -516,6 +516,16 @@ A further re-review closed `a8dbf083`, `c3a453a8` and `49193fe6`, and held `deli
 | A boot recovery that could not be written left its rows `handing` until the next restart | The orphaned ids are read at the first open. If settling them fails, the same ids are retried on a backoff until it lands; a hand-over started since is never touched. A late recovery tells the inbox listeners, so mail that went back to unseen rings | `64273a0f` |
 | A queued turn refused for its marker, whose release also failed, stayed claimed with no timer | `releaseQueuedTurn` answers null for a write that failed, apart from false for a cancelled row. A failed release is retried on the queue's backoff until it lands, and the turn then runs | `59ef8e87` |
 
+The re-reviews after that held it back on these:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| Send now: a row whose release failed stayed claimed, and a late release did not finish the move to the front or wake the drain | Each row's release retries on its own timer. One that lands late finishes the move or the announcement, then wakes the drain; a Send now the provider refused wakes it too | `c9364f27` |
+| After a restart a child's turns were never reported to its parent, and `agent_wait` read its last sealed turn: interrupted and terminal, while a new turn ran | `agent_followup` takes such a child back on, and lets it go again if the follow-up cannot be sent | `783e6378` |
+| A job the child took before its `turn.started` came through read as the turn before it; the mark that a turn is under way could also bring back a turn that had finished, or outlive a failed session | The mark is set when a job settles to a turn too, not only for a direct follow-up. It is skipped when that turn's events already came through, or when the session ended or failed since the send. Only an event for that turn clears it, or the session ending or failing (`session.exited`, or state `error` or `stopped`) | `4db0a4b9` |
+| A wait pinned to a turn kone was not following read the store's newest turn | The store is read for the pinned turn itself. A turn it has no record of settles the wait `uncertain`, saying kone cannot tell how it went, with no other turn's answer | `9f758dfd` |
+| Stop during a write outage dropped the cancellation, so a stopped row could run | The cancellation is kept and retried, as in the table below | `287954f7` |
+
 What retries what, and when it stops:
 
 | Write or send | Retried | Stops |
@@ -530,6 +540,8 @@ What retries what, and when it stops:
 Still open:
 - The window inside the provider's own send, before it answers. A crash there leaves the row `uncertain`, which now reports the problem instead of replaying the message. Closing the window needs an idempotent provider request.
 - A database copied into the overlay is a snapshot. Codex's writes there do not reach the real home, and a later build does not refresh it.
+- Only `agent_followup` takes a child from before a restart back on. A turn started on it any other way, such as the user typing into it, is not followed live or reported to the parent.
+- A wait pinned to an older turn from the store reads that turn's state, but its summary is still the thread's newest answer.
 
 ## 13. Shipped while this was worked out
 
