@@ -161,26 +161,33 @@ export function startIrcDelivery(deps: IrcDeliveryDeps): () => void {
     // A running turn is steered rather than interrupted: the agent is working,
     // and a peer's message is context for that work, not a new assignment. An
     // idle one has no turn to steer, so it gets one.
+    // Delivered the moment the provider takes the turn — before the
+    // checkpoint after it, so a crash there cannot hand the batch over again.
+    // Settle exactly what was claimed, so a message that arrived while the
+    // turn was starting is still unseen and still gets its own delivery.
+    let settled = false;
+    const settle = (turnId: string): void => {
+      settled = true;
+      failures.delete(threadId);
+      deps.mailbox.settleDelivery(deliveryId, turnId);
+    };
     void (async () => {
-      let turnId: string | null;
       try {
+        const options = { silent: true, onAccepted: settle };
         const result = await (deps.isBusy(threadId)
-          ? deps.dispatcher.steerThreadTurn(input, { silent: true })
-          : deps.dispatcher.sendThreadTurn(input, { silent: true }));
-        turnId = result.turnId;
+          ? deps.dispatcher.steerThreadTurn(input, options)
+          : deps.dispatcher.sendThreadTurn(input, options));
+        // Queued behind a busy turn: the row carries the batch from here.
+        if (!settled) settle(result.turnId);
       } catch (err) {
+        console.warn(`[agent] irc delivery to ${threadId} failed:`, err);
+        if (settled) return;
         // Back to unseen on purpose: the batch never reached the agent, so the
         // next delivery — or the agent's own inbox read — should still find it.
         deps.mailbox.releaseDelivery(deliveryId);
-        console.warn(`[agent] irc delivery to ${threadId} failed:`, err);
         retry(threadId);
         return;
       }
-      failures.delete(threadId);
-      // Delivered. Settle exactly what was claimed, so a message that arrived
-      // while the turn was starting is still unseen and still gets its own
-      // delivery.
-      deps.mailbox.settleDelivery(deliveryId, turnId);
       // Past the batch cap the rest stayed behind. Nothing else is going to
       // come along for them — the senders' events have already fired — so the
       // overflow arms its own round rather than waiting for a message that may

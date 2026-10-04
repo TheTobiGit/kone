@@ -687,24 +687,38 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // transcript above the turn's own words, and seen only once the provider
     // takes the turn.
     const held = this.inboxRidesTurnSlot ? null : this.claimHeld(named.threadId);
+    // Accepted: the held messages were in it, settled the moment the provider
+    // took it. Refused: they were not, so they wait for the next turn, their
+    // blocks kept so nothing is written twice.
+    let accepted = false;
+    const onAccepted = (turnId: string): void => {
+      if (accepted) return;
+      accepted = true;
+      if (held) this.mailbox().settleDelivery(held.deliveryId, turnId);
+      options?.onAccepted?.(turnId);
+    };
     try {
       const input = held ? withBlocks(named, held.blockIds, options?.silent === true) : named;
       const started = this.dispatchComposed(
         input,
         destination,
         [replay, held?.text].filter((part): part is string => Boolean(part)).join("\n\n") || null,
-        options,
+        { ...options, onAccepted },
       );
-      if (!held) return started;
-      const mailbox = this.mailbox();
-      // Accepted: the held messages were in it. Refused: they were not, so
-      // they wait for the next turn, their blocks kept so nothing is written
-      // twice.
-      void started.then(
-        (result) => mailbox.settleDelivery(held.deliveryId, result.turnId),
-        () => mailbox.releaseDelivery(held.deliveryId),
-      );
-      return started;
+      return (async (): Promise<TurnStartResult> => {
+        let result: TurnStartResult;
+        try {
+          result = await started;
+        } catch (error) {
+          if (held && !accepted) this.mailbox().releaseDelivery(held.deliveryId);
+          throw error;
+        }
+        // A queued turn has no provider yet, but its row now carries the held
+        // messages durably: they are settled to it, as before.
+        if (!result.queued) onAccepted(result.turnId);
+        else if (held) this.mailbox().settleDelivery(held.deliveryId, result.turnId);
+        return result;
+      })();
     } catch (error) {
       if (held) this.mailbox().releaseDelivery(held.deliveryId);
       throw error;
