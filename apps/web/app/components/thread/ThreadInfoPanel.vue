@@ -10,6 +10,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ThreadProjectRows from "~/components/thread/ThreadProjectRows.vue";
+import AgentInboxPanel from "~/components/thread/AgentInboxPanel.vue";
+import { useAgentInbox } from "~/composables/useAgentInbox";
 import { useThreadExport } from "~/composables/useThreadExport";
 import type { ThreadExportFormat } from "~/types/desktop";
 import { THREAD_EXPORT_FORMAT_LABELS, THREAD_EXPORT_FORMATS } from "~/utils/threadExport";
@@ -141,6 +143,20 @@ async function copyId(): Promise<void> {
   } catch {
     /* clipboard blocked — silently no-op */
   }
+}
+
+// ── inbox ─────────────────────────────────────────────────────────────────────
+// The thread's agent inbox is the panel's second view: what other agents and
+// kone sent it, waiting or seen. Read while the panel is open, so the Inbox
+// tab can say how many wait before it is picked.
+const view = ref<"details" | "inbox">("details");
+const inbox = useAgentInbox(threadId);
+const waitingCount = computed(() => inbox.waiting.value.length);
+
+function pickView(next: "details" | "inbox"): void {
+  if (next === view.value) return;
+  cue("toggle");
+  view.value = next;
 }
 
 // ── export ────────────────────────────────────────────────────────────────────
@@ -282,14 +298,44 @@ onBeforeUnmount(() => {
       <button type="button" class="tip__catch" aria-label="Close thread info" @click="emit('close')" />
       <div ref="panel" class="tip__panel" role="dialog" aria-label="Thread info" :style="pos">
         <header class="tip__head">
-          <span class="tip__title">Details</span>
+          <div class="tip__tabs" role="tablist" aria-label="Thread info">
+            <button
+              type="button"
+              role="tab"
+              class="tip__tab"
+              :aria-selected="view === 'details'"
+              @click="pickView('details')"
+            >
+              Details
+            </button>
+            <button
+              v-if="threadId"
+              type="button"
+              role="tab"
+              class="tip__tab"
+              :aria-selected="view === 'inbox'"
+              :aria-label="waitingCount ? `Inbox, ${waitingCount} waiting` : 'Inbox'"
+              @click="pickView('inbox')"
+            >
+              Inbox
+              <span v-if="waitingCount" class="tip__count" aria-hidden="true">{{ waitingCount }}</span>
+            </button>
+          </div>
           <span v-if="showStatus" class="tip__state" :data-tone="errored ? 'error' : 'live'">
             <span class="tip__state-dot" aria-hidden="true" />
             {{ statusLabel }}
           </span>
         </header>
 
-        <dl class="tip__rows">
+        <div v-if="view === 'inbox'" class="tip__rows tip__rows--inbox" role="tabpanel" aria-label="Inbox">
+          <AgentInboxPanel
+            :waiting="inbox.waiting.value"
+            :seen="inbox.seen.value"
+            :loaded="inbox.loaded.value"
+            :error="inbox.error.value"
+          />
+        </div>
+        <dl v-else class="tip__rows" role="tabpanel" aria-label="Details">
           <div class="tip__row tip__row--name" :data-editing="editing ? '' : undefined">
             <dt>Name</dt>
             <dd class="tip__name">
@@ -505,15 +551,59 @@ onBeforeUnmount(() => {
   right: 0;
   background: radial-gradient(circle at bottom left, transparent var(--band-arc), var(--band-bg) 0);
 }
-.tip__title {
+.tip__tabs {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* The tabs read as the band's title: the open one in the title's weight and
+   tone, the other a step quieter, so a panel with one tab still reads as a
+   title and not a control. */
+.tip__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.3;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.tip__tab[aria-selected="true"],
+.tip__tab:hover {
   color: var(--ink-soft);
+}
+.tip__tab:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.tip__count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+/* Messages run longer than the details do: the inbox scrolls inside the
+   panel rather than past the window's edge. */
+.tip__rows--inbox {
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .tip__reasoning {
   display: inline-flex;
