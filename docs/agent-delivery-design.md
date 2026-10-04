@@ -356,6 +356,32 @@ word was in the file you just read?" A provider passes when all five runs
 answer correctly, and again after the session is closed and resumed. The
 result is recorded as a provider capability that kone steer checks.
 
+**Probe results** (`scripts/cancelProbe.ts`, `f1875b1d`, 5 runs each). The
+file is deleted before the cancel, so a correct answer can only come from the
+conversation. Every cancel settled as `turn.aborted`, and no answer called a
+tool.
+
+| Provider | Model | Live | After resume | `cancelKeepsCompletedTools` |
+|---|---|---|---|---|
+| Cursor | `gpt-5.4-mini` (and `composer-2.5`, 2 runs) | Fail, 0/5 | Fail, 0/5 | false |
+| Cline | `cline-free/deepseek-v4.1-flash` | Pass, 5/5 | Fail, 0/5 | true |
+| Antigravity print | Gemini 3.8 Flash, low | Pass, 5/5 | Pass, 5/5 | true |
+| Antigravity ACP | — | Not run: the ACP server is not installed on the probe machine | — | false |
+| Droid | — | Not run: disabled in the user's provider settings | — | false |
+
+- Cursor: kone sees the read finish with the nonce in its result, but the
+  model is told the call was interrupted. Asked next turn, it says the read
+  never returned. A different model fails the same way.
+- Cline's resume failure is not about the cancel. A control run with no
+  cancel (`PROBE_CONTROL=1`) fails the same way: the resumed session's turn
+  starts and completes with no output at all. That is a resume bug of its own,
+  so Cline is judged on the live runs.
+- Antigravity print passes although its interrupt kills the process tree: the
+  read is already in the conversation the next `agy` call resumes.
+- The `antigravity` provider as a whole stays false while ACP, its primary
+  transport, is unprobed. Phase 5 can only use the print result by asking
+  per thread which transport it runs on.
+
 ## 12. Build plan
 
 Each phase ships on its own and leaves the app working and tested.
@@ -363,7 +389,7 @@ Each phase ships on its own and leaves the app working and tested.
 | Phase | What | Status |
 |---|---|---|
 | 0 | Never interrupt a thread parked on the user | Done (`bab89204`) |
-| 0.5 | The cancel probe (§11) | Not started |
+| 0.5 | The cancel probe (§11) | Done (`f1875b1d`): Cline and Antigravity print pass, Cursor fails; Droid and Antigravity ACP not yet run |
 | 1 | The stored inbox, behind today's mailbox | Done (`0097c1fc`) |
 | 2 | An honest `agent_list` and a readable `agent_inbox` | Done (`7e6c89ee`) |
 | 3a | kone's notices move into the inbox | Done (`99359d70`) |
