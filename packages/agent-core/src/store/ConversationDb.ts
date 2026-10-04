@@ -174,8 +174,8 @@ export class ConversationDb {
    *  Must be called outside a transaction: SQLite rejects a safety-level change
    *  inside one ("Safety level may not be changed inside a transaction"), and the
    *  catch below would swallow that into a silently unfsynced write. Every write
-   *  path here runs statement-per-statement; deleteThread is the only BEGIN, and
-   *  it doesn't route through here. */
+   *  path here runs statement-per-statement or inside `atomically`, which opens
+   *  its transaction after the pragma is set. */
   durably(db: DatabaseSync, write: () => void): void {
     try {
       db.exec("PRAGMA synchronous = FULL");
@@ -190,6 +190,20 @@ export class ConversationDb {
       } catch {
         /* leave it raised rather than fail the write */
       }
+    }
+  }
+
+  /** Run `write` as one transaction: every statement in it lands, or none
+   *  does. Rethrows what `write` threw, after the rollback. Can run inside
+   *  `durably`, which sets its pragma before the transaction opens. */
+  atomically(db: DatabaseSync, write: () => void): void {
+    db.exec("BEGIN");
+    try {
+      write();
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
     }
   }
 

@@ -5,6 +5,7 @@ import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, Skil
 import { encodeMessageSender, parseMessageSender } from "@kone/protocol/message-sender";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
+import { moveBlockToTail } from "./sql.js";
 
 import { itemFullTextSql } from "./itemTextChunks.js";
 
@@ -428,10 +429,7 @@ export class ThreadRepo {
     const db = this.dbh.handle();
     if (!db) return;
     try {
-      db.prepare(
-        `UPDATE blocks SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM blocks WHERE thread_id = ?)
-          WHERE thread_id = ? AND block_id = ?`,
-      ).run(threadId, threadId, blockId);
+      moveBlockToTail(db, threadId, blockId);
     } catch (err) {
       console.error("[conversation-store] moveBlockToEnd failed:", err);
     }
