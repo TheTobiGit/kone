@@ -106,3 +106,18 @@ describe("migration 23: InboxRings", () => {
     db.close();
   });
 });
+
+// Migration 24 records when a hand-over went to the provider. Nothing stored
+// before it was on its way anywhere.
+describe("migration 24: InboxSentAt", () => {
+  test("rows stored before it were never sent", () => {
+    const { db, file } = v21Database();
+    migrate(db, file, { toMigrationInclusive: 23 });
+    insert(db, { inbox_id: "'msg_old'" });
+    migrate(db, file);
+    // SAFETY: the projection is one nullable INTEGER column.
+    const row = db.prepare("SELECT sent_at FROM agent_inbox WHERE inbox_id = 'msg_old'").get() as { sent_at: number | null };
+    expect(row.sent_at).toBeNull();
+    db.close();
+  });
+});

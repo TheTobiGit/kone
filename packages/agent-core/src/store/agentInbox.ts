@@ -67,6 +67,9 @@ export interface InboxRow {
   projectPath: string;
   createdAt: number;
   seenAt: number | null;
+  /** When the hand-over carrying it went to the provider. Set only while it
+   *  is being handed over: a crash after this may have delivered it. */
+  sentAt: number | null;
 }
 
 export interface InboxInsert {
@@ -109,6 +112,9 @@ export interface AgentInboxStore {
   /** The send failed: the batch is unseen again, block ids kept. Returns how
    *  many rows it released, or null when the store could not write it. */
   releaseInboxDelivery(deliveryId: string): number | null;
+  /** The batch is going to the provider now: from here a crash leaves it
+   *  uncertain rather than unsent. False when the store could not write it. */
+  markInboxSending(deliveryId: string): boolean;
   setInboxBlockId(inboxId: string, blockId: string): void;
   /** Mark these unseen messages seen, and return the ids that actually were
    *  unseen — a message already claimed or seen is left as it is. */
@@ -126,7 +132,7 @@ export interface AgentInboxStore {
 
 const INBOX_COLUMNS = `inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind,
                        urgent, rings, reply_to, body, state, delivery_id, block_id, turn_id,
-                       seen_via, dedupe_key, project_path, created_at, seen_at`;
+                       seen_via, dedupe_key, project_path, created_at, seen_at, sent_at`;
 
 /** Arrival order. rowid settles two messages written in the same millisecond,
  *  which a broadcast does routinely. */
@@ -201,6 +207,7 @@ type InboxDbRow = {
   project_path: string;
   created_at: number;
   seen_at: number | null;
+  sent_at: number | null;
   /** Present on RETURNING rows, which come back in no promised order. */
   row_seq?: number;
 };
@@ -242,14 +249,45 @@ function rowToInbox(row: InboxDbRow): InboxRow {
     projectPath: row.project_path,
     createdAt: row.created_at,
     seenAt: row.seen_at,
+    sentAt: row.sent_at,
   };
 }
 
-/** Put every message a dead process was handing over back to unseen. Safe
- *  only at the first open of a fresh process, when no hand-over is live. */
+/** Settle what a dead process was handing over. Safe only at the first open
+ *  of a fresh process, when no hand-over is live.
+ *
+ *  A row never sent to a provider goes back to unseen, keeping its block, and
+ *  is handed over again. A row that was sent may have been delivered, so it
+ *  is never simply resent: the transcript says which turn took it when it
+ *  can — the turn its block was steered into, or the first turn on the
+ *  thread that started once it was sent — and it is seen with that turn.
+ *  What the transcript cannot settle goes back to unseen for now. */
 export function releaseOrphanedInboxClaims(db: DatabaseSync): void {
   try {
-    db.prepare(`UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL WHERE state = 'handing'`).run();
+    db.prepare(
+      `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
+        WHERE state = 'handing' AND sent_at IS NULL`,
+    ).run();
+    db.prepare(
+      `UPDATE agent_inbox
+          SET state = 'seen', seen_via = 'turn', seen_at = ?, delivery_id = NULL,
+              turn_id = COALESCE(
+                (SELECT b.turn_id FROM blocks b
+                  WHERE b.block_id = agent_inbox.block_id AND b.role = 'user' AND b.turn_id IS NOT NULL),
+                (SELECT b.turn_id FROM blocks b
+                  WHERE b.thread_id = agent_inbox.recipient_thread_id AND b.role = 'assistant'
+                    AND b.at >= agent_inbox.sent_at
+                  ORDER BY b.at ASC, b.seq ASC LIMIT 1))
+        WHERE state = 'handing' AND sent_at IS NOT NULL
+          AND (EXISTS (SELECT 1 FROM blocks b
+                        WHERE b.block_id = agent_inbox.block_id AND b.role = 'user' AND b.turn_id IS NOT NULL)
+               OR EXISTS (SELECT 1 FROM blocks b
+                           WHERE b.thread_id = agent_inbox.recipient_thread_id AND b.role = 'assistant'
+                             AND b.at >= agent_inbox.sent_at))`,
+    ).run(Date.now());
+    db.prepare(
+      `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL, sent_at = NULL WHERE state = 'handing'`,
+    ).run();
   } catch (err) {
     console.error("[conversation-store] could not release orphaned inbox claims:", err);
   }
@@ -388,7 +426,7 @@ export class AgentInboxRepo implements AgentInboxStore {
       // SAFETY: RETURNING one TEXT column.
       const rows = db
         .prepare(
-          `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
+          `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL, sent_at = NULL
             WHERE delivery_id = ? AND state = 'handing'
             RETURNING recipient_thread_id`,
         )
@@ -398,6 +436,23 @@ export class AgentInboxRepo implements AgentInboxStore {
     } catch (err) {
       console.error("[conversation-store] releaseInboxDelivery failed:", err);
       return null;
+    }
+  }
+
+  markInboxSending(deliveryId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      this.dbh.durably(db, () => {
+        db.prepare(`UPDATE agent_inbox SET sent_at = ? WHERE delivery_id = ? AND state = 'handing'`).run(
+          Date.now(),
+          deliveryId,
+        );
+      });
+      return true;
+    } catch (err) {
+      console.error("[conversation-store] markInboxSending failed:", err);
+      return false;
     }
   }
 
@@ -580,6 +635,7 @@ export class MemoryAgentInbox implements AgentInboxStore {
       projectPath: input.projectPath,
       createdAt: input.createdAt ?? Date.now(),
       seenAt: null,
+      sentAt: null,
     });
     return "inserted";
   }
@@ -614,8 +670,15 @@ export class MemoryAgentInbox implements AgentInboxStore {
     return this.handing(deliveryId).map((row) => {
       row.state = "unseen";
       row.deliveryId = null;
+      row.sentAt = null;
       return row;
     }).length;
+  }
+
+  markInboxSending(deliveryId: string): boolean {
+    const now = Date.now();
+    for (const row of this.handing(deliveryId)) row.sentAt = now;
+    return true;
   }
 
   setInboxBlockId(inboxId: string, blockId: string): void {

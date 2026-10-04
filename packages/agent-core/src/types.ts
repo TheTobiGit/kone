@@ -397,6 +397,9 @@ export type TurnSendOptions = {
    *  is settled while a crash can only lose the checkpoint. Never runs for a
    *  turn the service queued. */
   onAccepted?: (turnId: string) => void;
+  /** Runs right before the turn goes to the provider, each time it does: what
+   *  the turn carries is no longer certainly unsent. */
+  onSending?: () => void;
   /** A steer that must land in a turn the provider is running, or not at all:
    *  refused rather than queued when no announced turn can take it. */
   liveOnly?: boolean;

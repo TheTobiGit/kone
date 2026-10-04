@@ -123,6 +123,8 @@ export interface StartThreadTurnOptions {
    *  turn the service starts, or as the dispatch resolves on a path that has
    *  nothing slow after the provider. Never for a turn the service queued. */
   onAccepted?: (turnId: string) => void;
+  /** Runs right before the turn goes to the provider. */
+  onSending?: () => void;
   /** Steer only: refused rather than queued when no announced turn can take
    *  it (AgentService.steerTurn). */
   liveOnly?: boolean;
@@ -697,13 +699,17 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       if (held) this.mailbox().settleDelivery(held.deliveryId, turnId);
       options?.onAccepted?.(turnId);
     };
+    const onSending = (): void => {
+      if (held) this.mailbox().sendingDelivery(held.deliveryId);
+      options?.onSending?.();
+    };
     try {
       const input = held ? withBlocks(named, held.blockIds, options?.silent === true) : named;
       const started = this.dispatchComposed(
         input,
         destination,
         [replay, held?.text].filter((part): part is string => Boolean(part)).join("\n\n") || null,
-        { ...options, onAccepted },
+        { ...options, onAccepted, onSending },
       );
       return (async (): Promise<TurnStartResult> => {
         let result: TurnStartResult;
@@ -801,6 +807,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       delivery.dispatch === input.input ? forService : { ...forService, input: delivery.dispatch };
     const handOff: TurnSendOptions = {};
     if (options?.onAccepted) handOff.onAccepted = options.onAccepted;
+    if (options?.onSending) handOff.onSending = options.onSending;
     if (options?.liveOnly) handOff.liveOnly = true;
     return destination === "steer"
       ? this.service.steerTurn(dispatched, handOff)

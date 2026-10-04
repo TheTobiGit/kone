@@ -49,6 +49,8 @@ export interface TurnInbox {
 /** A turn with the inbox folded in, and how to settle what it carries. */
 export interface CarriedTurn {
   input: SendTurnInput;
+  /** The turn is going to the provider now. */
+  sending(): void;
   /** The provider took the turn: what it carries is seen, with that turn. */
   settle(turnId: string): void;
   /** It did not: what it carried waits again, its blocks kept. */
@@ -191,7 +193,12 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     };
     void (async () => {
       try {
-        await deps.dispatcher.steerThreadTurn(input, { silent: true, liveOnly: true, onAccepted: settle });
+        await deps.dispatcher.steerThreadTurn(input, {
+          silent: true,
+          liveOnly: true,
+          onAccepted: settle,
+          onSending: () => handOver.sending(),
+        });
       } catch (err) {
         console.warn(`[agent] urgent delivery to ${threadId} failed:`, err);
         if (accepted) return;
@@ -269,6 +276,7 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
     // tries again on its backoff.
     return {
       input,
+      sending: () => handOver.sending(),
       settle: (turnId) => {
         failures.delete(threadId);
         handOver.settle(turnId);
@@ -331,16 +339,26 @@ function nameBlocks(input: SendTurnInput, blockIds: readonly string[]): void {
   if (blockIds.length > 1) input.userBlockIds = [...blockIds];
 }
 
+interface HandOver {
+  messages: IrcMessageRecord[];
+  sending(): void;
+  settle(turnId: string): void;
+  release(): void;
+}
+
 /** One hand-over that took more than one claim: what it carries, settled or
  *  released together. Null when every claim came back empty. */
 function joinClaims(
   mailbox: IrcMailbox,
   claims: readonly (IrcDeliveryClaim | null)[],
-): { messages: IrcMessageRecord[]; settle(turnId: string): void; release(): void } | null {
+): HandOver | null {
   const taken = claims.filter((c): c is IrcDeliveryClaim => c !== null);
   if (taken.length === 0) return null;
   return {
     messages: taken.flatMap((c) => c.messages),
+    sending: () => {
+      for (const c of taken) mailbox.sendingDelivery(c.deliveryId);
+    },
     settle: (turnId) => {
       for (const c of taken) mailbox.settleDelivery(c.deliveryId, turnId);
     },
@@ -350,11 +368,13 @@ function joinClaims(
   };
 }
 
-function carriedTurn(
-  input: SendTurnInput,
-  handOver: { settle(turnId: string): void; release(): void },
-): CarriedTurn {
-  return { input, settle: (turnId) => handOver.settle(turnId), release: () => handOver.release() };
+function carriedTurn(input: SendTurnInput, handOver: HandOver): CarriedTurn {
+  return {
+    input,
+    sending: () => handOver.sending(),
+    settle: (turnId) => handOver.settle(turnId),
+    release: () => handOver.release(),
+  };
 }
 
 /** A hand-over's job, if it carries one, apart from the rest. */

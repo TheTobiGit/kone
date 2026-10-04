@@ -876,7 +876,7 @@ export class AgentService {
     if (this.isBusy(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
-    return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options?.onAccepted);
+    return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options);
   }
 
   /** Is this thread already running (or about to run) a turn? True while a
@@ -1007,15 +1007,21 @@ export class AgentService {
     turn: SendTurnInput,
     ownBlockId?: string,
     carried?: CarriedTurn,
-    onAccepted?: (turnId: string) => void,
+    hooks?: TurnSendOptions,
   ): Promise<TurnStartResult> {
     const carry = carried ?? this.turnInbox?.carry(threadId, turn, ownBlockId) ?? null;
     let accepted = false;
     try {
-      return await this.sendToAdapter(threadId, carry ? carry.input : turn, (turnId) => {
-        accepted = true;
-        carry?.settle(turnId);
-        onAccepted?.(turnId);
+      return await this.sendToAdapter(threadId, carry ? carry.input : turn, {
+        onSending: () => {
+          carry?.sending();
+          hooks?.onSending?.();
+        },
+        onAccepted: (turnId) => {
+          accepted = true;
+          carry?.settle(turnId);
+          hooks?.onAccepted?.(turnId);
+        },
       });
     } catch (error) {
       if (!accepted) carry?.release();
@@ -1023,14 +1029,16 @@ export class AgentService {
     }
   }
 
-  /** Hand the turn to the adapter. `accepted` runs the moment the provider
-   *  takes it — before the checkpoint, which can take a while — so what the
-   *  turn delivers (inbox messages, a queued row) is settled while a crash can
-   *  still only lose the checkpoint, never send the turn a second time. */
+  /** Hand the turn to the adapter. `onSending` runs right before each send,
+   *  so what the turn carries is marked as possibly delivered before it can
+   *  be; `onAccepted` the moment the provider takes it — before the
+   *  checkpoint, which can take a while — so what the turn delivers (inbox
+   *  messages, a queued row) is settled while a crash can still only lose the
+   *  checkpoint, never send the turn a second time. */
   private async sendToAdapter(
     threadId: string,
     turn: SendTurnInput,
-    accepted?: (turnId: string) => void,
+    hooks: TurnSendOptions = {},
   ): Promise<TurnStartResult> {
     const input = this.withViewBlock(turn);
     if (input.fallbacks && input.fallbacks.length > 0) {
@@ -1040,8 +1048,9 @@ export class AgentService {
     const adapter = this.adapterForThread(threadId);
     this.dispatchingTurns.add(threadId);
     try {
+      this.noteSending(threadId, hooks.onSending);
       const result = await adapter.sendTurn(input);
-      this.noteAccepted(threadId, result.turnId, accepted);
+      this.noteAccepted(threadId, result.turnId, hooks.onAccepted);
       // The turn id is only known once the adapter accepts the turn, so the
       // pre-turn snapshot lands here — immediately after acceptance, before
       // the agent's first file mutation can arrive over the provider
@@ -1097,8 +1106,9 @@ export class AgentService {
           }
 
           try {
+            this.noteSending(threadId, hooks.onSending);
             const fallbackResult = await targetAdapter.sendTurn(nextInput);
-            this.noteAccepted(threadId, fallbackResult.turnId, accepted);
+            this.noteAccepted(threadId, fallbackResult.turnId, hooks.onAccepted);
             await this.captureTurnCheckpoint(threadId, fallbackResult.turnId);
             return fallbackResult;
           } catch (nextErr) {
@@ -1113,6 +1123,17 @@ export class AgentService {
       throw error;
     } finally {
       this.dispatchingTurns.delete(threadId);
+    }
+  }
+
+  /** Tell the caller the turn is going to the provider. Never throws: a
+   *  marker that could not be written leaves the send as it was. */
+  private noteSending(threadId: string, sending: (() => void) | undefined): void {
+    if (!sending) return;
+    try {
+      sending();
+    } catch (err) {
+      console.error(`[agent] marking what a turn on ${threadId} carries as sent failed:`, err);
     }
   }
 
@@ -1957,6 +1978,7 @@ export class AgentService {
       // really went into the live turn (it falls back to a plain send when its
       // own turn has just ended).
       if (adapter.steerTurn) {
+        this.noteSending(threadId, options?.onSending);
         const result = await adapter.steerTurn(input);
         options?.onAccepted?.(result.turnId);
         return result;
@@ -2073,8 +2095,10 @@ export class AgentService {
         return true;
       }
       let promoted = false;
-      const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, (turnId) => {
-        promoted = this.settlePromoted(threadId, queueId, turnId);
+      const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, {
+        onAccepted: (turnId) => {
+          promoted = this.settlePromoted(threadId, queueId, turnId);
+        },
       });
       if (!promoted) {
         // Stopped while the provider was taking it: the words are already
@@ -2438,8 +2462,10 @@ export class AgentService {
         // Stopped or deleted since the claim: the cancel already announced it.
         if (!store.isQueuedTurnClaimed(row.queueId)) return;
         let promoted = false;
-        const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, (turnId) => {
-          promoted = this.settlePromoted(threadId, row.queueId, turnId);
+        const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, {
+          onAccepted: (turnId) => {
+            promoted = this.settlePromoted(threadId, row.queueId, turnId);
+          },
         });
         // Stopped while the provider was taking it: stop the turn it started.
         if (!promoted) this.stopOrphanedDelivery(threadId, generation, result?.turnId);

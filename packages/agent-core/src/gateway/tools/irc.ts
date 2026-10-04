@@ -1046,6 +1046,15 @@ export class IrcMailbox {
     return () => this.releaseListeners.delete(listener);
   }
 
+  /** The hand-over is going to the provider now. Recorded so a process that
+   *  dies from here on leaves it uncertain, not unsent: the next one settles
+   *  it from the transcript, or holds it, rather than handing it over again.
+   *  A write the store refuses is not retried — by then the provider has the
+   *  turn or refused it, and settle or release says which. */
+  sendingDelivery(deliveryId: string): void {
+    this.inbox.markInboxSending(deliveryId);
+  }
+
   /** Remember the transcript block a message was written as. */
   setBlockId(messageId: string, blockId: string): void {
     this.inbox.setInboxBlockId(messageId, blockId);
