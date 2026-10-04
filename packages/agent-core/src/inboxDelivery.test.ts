@@ -52,6 +52,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
   const steers: { input: SendTurnInput; options?: StartThreadTurnOptions }[] = [];
   const restarts: string[] = [];
   const interrupts: string[] = [];
+  const control = { restartFails: false };
   const journaled: { id: string; before: string | undefined }[] = [];
   const placedLast: string[] = [];
   const listeners = new Set<(event: RuntimeEvent) => void>();
@@ -77,6 +78,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
       },
       ensureThreadSession: async (threadId) => {
         restarts.push(threadId);
+        if (control.restartFails) throw new Error("provider is down");
       },
       takeReplayPreamble: () => null,
     },
@@ -121,6 +123,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
     steers,
     restarts,
     interrupts,
+    control,
     journaled,
     placedLast,
     send,
@@ -368,6 +371,39 @@ describe("jobs", () => {
     h.clock.tick();
     await flush();
     expect(h.steers).toHaveLength(1);
+  });
+
+  // An idle thread whose provider refuses the turn has nothing else to wake
+  // it: the ringer tries again on its backoff, then stops.
+  test("a refused turn of its own is tried again, a bounded number of times", () => {
+    const h = harness();
+    h.job("Now add tests.");
+    let refused = 0;
+    for (let i = 0; i < 10 && h.clock.armed() > 0; i++) {
+      h.clock.tick();
+      const turn = h.delivery.carry("b", null);
+      if (!turn) break;
+      refused++;
+      turn.release();
+    }
+    expect(refused).toBe(5);
+    expect(h.clock.armed()).toBe(0);
+    expect(h.mailbox.jobCount("b")).toBe(1);
+  });
+
+  test("a session that will not come back up is tried again", async () => {
+    const h = harness({ live: false });
+    h.control.restartFails = true;
+    h.job("Now add tests.");
+    h.clock.tick();
+    await flush();
+    expect(h.restarts).toEqual(["b"]);
+    expect(h.clock.armed()).toBe(1);
+
+    h.control.restartFails = false;
+    h.clock.tick();
+    await flush();
+    expect(h.restarts).toEqual(["b", "b"]);
   });
 
   test("a job to a parked thread is held until the user answers", () => {
