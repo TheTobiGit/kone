@@ -382,8 +382,24 @@ export type SendTurnInput = {
 
 export type TurnStartResult = {
   threadId: string;
-  /** kone-owned id for the turn just accepted. */
+  /** kone-owned id for the turn just accepted — or, when `queued`, the id of
+   *  the queue row it waits in. */
   turnId: string;
+  /** The thread was busy, so the turn waits in the queue: no provider has it
+   *  yet, and `turnId` will never name a turn. */
+  queued?: true;
+};
+
+/** What a caller of sendTurn or steerTurn asks of the hand-off. */
+export type TurnSendOptions = {
+  /** Runs once, the moment the provider takes the turn — before the
+   *  checkpoint after it, which can take a while — so what the turn carries
+   *  is settled while a crash can only lose the checkpoint. Never runs for a
+   *  turn the service queued. */
+  onAccepted?: (turnId: string) => void;
+  /** A steer that must land in a turn the provider is running, or not at all:
+   *  refused rather than queued when no announced turn can take it. */
+  liveOnly?: boolean;
 };
 
 /** The naming source for a turn: prose first, then the invoked skill, then

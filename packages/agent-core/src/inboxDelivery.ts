@@ -180,14 +180,22 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
       input: renderHandOver(messages, job, mailbox.urgentCount(threadId)),
     };
     nameBlocks(input, blockIds);
+    // Live only: a turn that ended while this was on its way leaves the
+    // steer refused rather than queued, so the hand-over is settled with a
+    // turn the provider took, never with a queue row's id.
+    let accepted = false;
+    const settle = (turnId: string): void => {
+      accepted = true;
+      handOver.settle(turnId);
+      failures.delete(threadId);
+    };
     void (async () => {
       try {
-        const result = await deps.dispatcher.steerThreadTurn(input, { silent: true });
-        handOver.settle(result.turnId);
-        failures.delete(threadId);
+        await deps.dispatcher.steerThreadTurn(input, { silent: true, liveOnly: true, onAccepted: settle });
       } catch (err) {
-        handOver.release();
         console.warn(`[agent] urgent delivery to ${threadId} failed:`, err);
+        if (accepted) return;
+        handOver.release();
         retry(threadId);
         return;
       }

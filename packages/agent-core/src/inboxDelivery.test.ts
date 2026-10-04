@@ -52,7 +52,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
   const steers: { input: SendTurnInput; options?: StartThreadTurnOptions }[] = [];
   const restarts: string[] = [];
   const interrupts: string[] = [];
-  const control = { restartFails: false };
+  const control = { restartFails: false, steerRefused: false };
   const journaled: { id: string; before: string | undefined }[] = [];
   const placedLast: string[] = [];
   const listeners = new Set<(event: RuntimeEvent) => void>();
@@ -74,7 +74,11 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
         const entry: (typeof steers)[number] = { input };
         if (options) entry.options = options;
         steers.push(entry);
-        return { threadId: input.threadId, turnId: `steered-${steers.length}` };
+        // The service's live-only refusal: the turn ended on the way.
+        if (control.steerRefused) throw new Error("No running turn can take this steer yet.");
+        const turnId = `steered-${steers.length}`;
+        options?.onAccepted?.(turnId);
+        return { threadId: input.threadId, turnId };
       },
       ensureThreadSession: async (threadId) => {
         restarts.push(threadId);
@@ -357,6 +361,25 @@ describe("jobs", () => {
     expect(turn.input.input).toContain("stop and revert");
     turn.settle("turn-2");
     expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: true, turnId: "turn-2" });
+  });
+
+  // The steer is live only: a turn that ended while it was on its way refuses
+  // it instead of queueing it, so the job is never settled with a queue id.
+  test("an urgent steer the ended turn refused is asked live only, stays unseen, and is tried again", async () => {
+    const h = harness({ busy: true, turnStartedAt: 1 });
+    h.control.steerRefused = true;
+    const id = h.job("stop and revert", true);
+    h.clock.tick();
+    await flush();
+    expect(h.steers[0]!.options?.liveOnly).toBe(true);
+    expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: false, turnId: null });
+    expect(h.mailbox.jobCount("b")).toBe(1);
+    expect(h.clock.armed()).toBe(1);
+
+    h.control.steerRefused = false;
+    h.clock.tick();
+    await flush();
+    expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: true, turnId: "steered-2" });
   });
 
   test("urgent mail waits for a starting turn to announce itself, then goes in", async () => {

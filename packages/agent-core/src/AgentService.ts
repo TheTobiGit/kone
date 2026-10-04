@@ -89,6 +89,7 @@ import type {
   SessionStartInput,
   ThreadArchiveResult,
   ThreadCompactionCapability,
+  TurnSendOptions,
   TurnStartResult,
   UserInputAnswers,
   UserInputRespondResult,
@@ -830,7 +831,7 @@ export class AgentService {
     return session;
   }
 
-  async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+  async sendTurn(input: SendTurnInput, options?: TurnSendOptions): Promise<TurnStartResult> {
     this.lastActivity.set(input.threadId, Date.now());
     // SendTurnInput.model overrides the session model per turn (CodexAdapter
     // sets `session.model = input.model`), so guarding startSession alone left
@@ -875,7 +876,7 @@ export class AgentService {
     if (this.isBusy(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
-    return this.dispatchToAdapter(input.threadId, routed, input.userBlockId);
+    return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options?.onAccepted);
   }
 
   /** Is this thread already running (or about to run) a turn? True while a
@@ -1937,8 +1938,10 @@ export class AgentService {
    *  A turn that has been handed to an adapter but hasn't announced itself yet
    *  (see `isBusy`) has no turn id to steer INTO, so it takes the queue's steer
    *  lane rather than the live channel — the nudge still claims ahead of every
-   *  plain follow-up. */
-  async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
+   *  plain follow-up. A `liveOnly` steer is refused there instead: its caller
+   *  settles what it carries with the turn that took it, and a queue row is
+   *  not one. */
+  async steerTurn(input: SendTurnInput, options?: TurnSendOptions): Promise<TurnStartResult> {
     const threadId = input.threadId;
     // A steer needs a live turn to land in. There is none during a native
     // compaction — and during a fallback the live turn IS the compaction
@@ -1953,9 +1956,14 @@ export class AgentService {
       // The adapter announces turn.steered itself, once, when the message
       // really went into the live turn (it falls back to a plain send when its
       // own turn has just ended).
-      if (adapter.steerTurn) return adapter.steerTurn(input);
+      if (adapter.steerTurn) {
+        const result = await adapter.steerTurn(input);
+        options?.onAccepted?.(result.turnId);
+        return result;
+      }
     }
     if (this.isBusy(threadId)) {
+      if (options?.liveOnly) throw new Error(`No running turn on ${threadId} can take this steer yet.`);
       const provider = this.routing.get(threadId);
       if (provider) {
         const enqueued = await this.enqueueTurn(input, "steer", provider);
@@ -1971,7 +1979,7 @@ export class AgentService {
         return enqueued;
       }
     }
-    return this.sendTurn(input);
+    return this.sendTurn(input, options);
   }
 
   /** Cancel one queued follow-up (user-initiated drop). Emits
@@ -2303,6 +2311,7 @@ export class AgentService {
         return {
           threadId: input.threadId,
           turnId: existing.find((r) => r.userBlockId === userBlockId)?.queueId ?? queueId,
+          queued: true,
         };
       }
     } catch (err) {
@@ -2334,7 +2343,7 @@ export class AgentService {
     copyTurnStamp(row, queued);
     if (input.mode) queued.mode = input.mode;
     this.dispatch(queued);
-    return { threadId: input.threadId, turnId: queueId };
+    return { threadId: input.threadId, turnId: queueId, queued: true };
   }
 
   /** Every pending queue row on the thread, in the order they will run — what
