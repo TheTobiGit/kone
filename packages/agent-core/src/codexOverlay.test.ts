@@ -7,10 +7,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
 import path from "node:path";
 
 import { CODEX_MANAGED_REGION_BEGIN, CODEX_MANAGED_REGION_END } from "./gateway/injection.js";
@@ -146,6 +148,46 @@ describe("prepareCodexHomeOverlay", () => {
     expect(readFileSync(path.join(source, "thread_history_1.sqlite-wal"), "utf8")).toBe("real home");
     for (const suffix of ["", "-wal", "-shm"]) {
       expect(lstatSync(path.join(overlay, "state_5.sqlite" + suffix)).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  // Without the right to make symlinks (Windows, unelevated) a database is
+  // copied. Codex keeps it open in WAL mode, so its newest committed changes
+  // may sit only in the log: the copy must carry them, and the log itself is
+  // never copied beside it.
+  test("a database that cannot be linked is copied whole, with the changes still in its log", () => {
+    const source = makeHome();
+    const live = new Database(path.join(source, "thread_history_1.sqlite"));
+    try {
+      live.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;");
+      live.exec("CREATE TABLE threads (id TEXT)");
+      live.exec("INSERT INTO threads VALUES ('thread-1')");
+      expect(statSync(path.join(source, "thread_history_1.sqlite-wal")).size).toBeGreaterThan(0);
+      writeFileSync(path.join(source, "auth.json"), "{}");
+      const overlay = makeHome() + "/overlay";
+
+      prepareCodexHomeOverlay({
+        endpointUrl: "http://127.0.0.1:41003/mcp",
+        sourceHome: source,
+        overlayHome: overlay,
+        symlink: () => {
+          throw new Error("EPERM: operation not permitted, symlink");
+        },
+      });
+
+      expect(lstatSync(path.join(overlay, "thread_history_1.sqlite")).isFile()).toBe(true);
+      expect(existsSync(path.join(overlay, "thread_history_1.sqlite-wal"))).toBe(false);
+      expect(existsSync(path.join(overlay, "thread_history_1.sqlite-shm"))).toBe(false);
+      const copy = new Database(path.join(overlay, "thread_history_1.sqlite"), { readonly: true });
+      try {
+        expect(copy.query("SELECT id FROM threads").all()).toEqual([{ id: "thread-1" }]);
+      } finally {
+        copy.close();
+      }
+      // Anything that is not a database is still copied as it is.
+      expect(readFileSync(path.join(overlay, "auth.json"), "utf8")).toBe("{}");
+    } finally {
+      live.close();
     }
   });
 

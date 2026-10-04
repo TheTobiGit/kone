@@ -17,3 +17,8 @@ import { mock } from "bun:test";
 mock.module("./src/sqlite.ts", () => ({
   DatabaseSync: Database,
 }));
+
+// bun:sqlite spells the read-only option `readonly`.
+mock.module("./src/sqliteReadOnly.ts", () => ({
+  openDatabaseReadOnly: (filePath: string) => new Database(filePath, { readonly: true }),
+}));
