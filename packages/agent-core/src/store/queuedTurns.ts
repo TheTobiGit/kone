@@ -423,13 +423,26 @@ export class QueuedTurnRepo {
    *  journaled prompt with them, exactly like cancelQueuedTurn — a claimed row
    *  ('promoting') may already have a running turn behind it, so its prompt
    *  stays, the same way a single cancel refuses a claimed row. `only` narrows
-   *  it to those rows. Returns the cancelled queue ids, in queue order; null
-   *  when the store could not write it, nothing cancelled. */
-  cancelQueuedTurnsForThread(threadId: string, only?: readonly string[]): string[] | null {
+   *  it to those rows; `upTo` to rows queued at or before its time, apart
+   *  from its `except` rows. Returns the cancelled queue ids, in queue order;
+   *  null when the store could not write it, nothing cancelled. */
+  cancelQueuedTurnsForThread(
+    threadId: string,
+    only?: readonly string[],
+    upTo?: { at: number; except: readonly string[] },
+  ): string[] | null {
     const db = this.dbh.handle();
     if (!db) return null;
-    const among = only ? ` AND queue_id IN (SELECT value FROM json_each(?))` : "";
-    const args: string[] = only ? [threadId, JSON.stringify(only)] : [threadId];
+    let among = "";
+    const args: Array<string | number> = [threadId];
+    if (only) {
+      among += ` AND queue_id IN (SELECT value FROM json_each(?))`;
+      args.push(JSON.stringify(only));
+    }
+    if (upTo) {
+      among += ` AND created_at <= ? AND queue_id NOT IN (SELECT value FROM json_each(?))`;
+      args.push(upTo.at, JSON.stringify(upTo.except));
+    }
     try {
       let queueIds: string[] = [];
       this.dbh.durably(db, () => {
@@ -464,6 +477,24 @@ export class QueuedTurnRepo {
       return queueIds;
     } catch (err) {
       console.error("[conversation-store] cancelQueuedTurnsForThread failed:", err);
+      return null;
+    }
+  }
+
+  /** The ids of a thread's pending queued turns; null when the store could
+   *  not be read — unlike listQueuedTurns, which reads that as an empty
+   *  queue. */
+  pendingQueueIds(threadId: string): string[] | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names only the queue id.
+      const rows = db
+        .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+        .all(threadId) as Array<{ queue_id: string }>;
+      return rows.map((r) => r.queue_id);
+    } catch (err) {
+      console.error("[conversation-store] pendingQueueIds failed:", err);
       return null;
     }
   }

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -303,6 +303,17 @@ function failCancels(): () => void {
   };
 }
 
+/** Make the queue unreadable and unwritable — its table gone from under the
+ *  service — until the returned call ends the outage. */
+function loseQueueTable(): () => void {
+  const outage = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+  outage.exec("ALTER TABLE queued_turns RENAME TO queued_turns_away");
+  return () => {
+    outage.exec("ALTER TABLE queued_turns_away RENAME TO queued_turns");
+    outage.close();
+  };
+}
+
 // A Stop is the user taking their words back. When the store cannot write
 // the cancellation, it is kept and retried: the rows never go out meanwhile,
 // and once writes come back they are cancelled, not back in line.
@@ -343,6 +354,46 @@ describe("Stop whose cancellation could not be written", () => {
     adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(adapter.attempts).toHaveLength(0);
+  });
+
+  test("a Stop that could not read the queue cancels only what was queued before it", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "take it back");
+    const recover = loseQueueTable();
+
+    await service.cancelQueuedTurns(thread);
+    await tick();
+    recover();
+    expect(stateOf(thread, q1)).toBe("queued");
+    // The user writes again before the retry lands.
+    const q2 = queueRow(thread, "my next message");
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => c.queueId)).toEqual([q1]);
+    expect(stateOf(thread, q2)).toBe("queued");
+  });
+
+  test("a prompt queued in the same millisecond as such a Stop, but after it, is kept", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "take it back");
+    const clock = spyOn(Date, "now").mockReturnValue(Date.now());
+    let next: { turnId: string; queued?: boolean };
+    try {
+      const recover = loseQueueTable();
+      await service.cancelQueuedTurns(thread);
+      recover();
+      store.recordUserBlock({ blockId: "ub-next", threadId: thread, text: "my next message" });
+      next = await service.sendTurn({ threadId: thread, input: "my next message", userBlockId: "ub-next" });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(next.queued).toBe(true);
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => c.queueId)).toEqual([q1]);
+    expect(stateOf(thread, next.turnId)).toBe("queued");
   });
 });
 
