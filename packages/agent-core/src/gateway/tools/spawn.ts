@@ -443,20 +443,24 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       // What opened is a record, as a single spawn's is; a batch where nothing
       // opened has nothing to record and stays the plain refusal sentence.
       const text = spawns.length > 0 ? formatSpawnResult({ spawns, summary }) : summary;
+      const structuredContent: GatewayRecord = {
+        batch: {
+          total: args.items.length,
+          succeeded: spawns.length,
+          failed: args.items.length - spawns.length,
+          threads: results.map(batchThreadEntry),
+        },
+      };
+      // As in a single dispatch: the record survives a provider that stores
+      // this in place of the text.
+      if (spawns.length > 0) {
+        structuredContent.spawns = spawns;
+        structuredContent.summary = summary;
+      }
       return {
         content: [{ type: "text", text }],
         isError: spawns.length === 0,
-        structuredContent: {
-          // As in a single dispatch: the record survives a provider that
-          // stores this in place of the text.
-          ...(spawns.length > 0 ? { spawns, summary } : {}),
-          batch: {
-            total: args.items.length,
-            succeeded: spawns.length,
-            failed: args.items.length - spawns.length,
-            threads: results.map(batchThreadEntry),
-          },
-        },
+        structuredContent,
       };
     });
   };
