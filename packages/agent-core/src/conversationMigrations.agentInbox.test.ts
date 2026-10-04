@@ -141,3 +141,22 @@ describe("migration 25: InboxUncertain", () => {
     db.close();
   });
 });
+
+describe("migration 26: InboxUncertainAt", () => {
+  test("an uncertain row keeps when it turned uncertain; nothing else gets a time", () => {
+    const { db, file } = v21Database();
+    migrate(db, file, { toMigrationInclusive: 25 });
+    insert(db, { inbox_id: "'msg_uncertain'", state: "'uncertain'", sent_at: "7" });
+    insert(db, { inbox_id: "'msg_seen'", state: "'seen'", sent_at: "8" });
+    migrate(db, file);
+    // SAFETY: the projection is a TEXT column and a nullable INTEGER.
+    const rows = db.prepare("SELECT inbox_id, uncertain_at FROM agent_inbox ORDER BY inbox_id").all() as Array<
+      Record<string, string | number | null>
+    >;
+    expect(rows).toEqual([
+      { inbox_id: "msg_seen", uncertain_at: null },
+      { inbox_id: "msg_uncertain", uncertain_at: 7 },
+    ]);
+    db.close();
+  });
+});

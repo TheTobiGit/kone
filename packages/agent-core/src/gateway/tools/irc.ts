@@ -212,7 +212,7 @@ function recordFromRow(row: InboxRow): IrcMessageRecord {
   if (row.urgent) record.urgent = true;
   if (row.sender) record.sender = row.sender;
   if (row.blockId) record.blockId = row.blockId;
-  if (row.state === "uncertain") record.uncertain = true;
+  if (row.uncertainAt !== null) record.uncertain = true;
   return record;
 }
 
@@ -958,12 +958,13 @@ export class IrcMailbox {
 
   /** Where a job stands: who it is for, whether it was handed over yet, and
    *  the turn that carried it once it was. An uncertain job was not handed
-   *  over as far as anything on record says, and never will be on its own.
-   *  Null when there is no such job. */
+   *  over as far as anything on record says, and never will be on its own —
+   *  still so once the recipient has read it, which says nothing about
+   *  whether it ran. Null when there is no such job. */
   jobTurn(inboxId: string): JobTurn | null {
     const row = this.inbox.inboxMessage(inboxId);
     if (!row || row.kind !== "job") return null;
-    if (row.state === "uncertain") {
+    if (row.uncertainAt !== null) {
       return { recipient: row.recipientThreadId, handedOver: false, turnId: null, uncertain: true };
     }
     // Taken by a turn whose settle the store has yet to write.
