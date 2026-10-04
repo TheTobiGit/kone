@@ -25,7 +25,10 @@ import type { DatabaseSync } from "../sqlite.js";
 
 export const INBOX_KINDS = ["note", "question", "pushback", "answer", "report", "notice", "job"] as const;
 export type InboxKind = (typeof INBOX_KINDS)[number];
-export type InboxState = "unseen" | "handing" | "seen" | "retracted";
+/** `uncertain`: a hand-over went to the provider and the process died with
+ *  nothing on record to say whether it took it. Never handed over again on its
+ *  own; read from the inbox. */
+export type InboxState = "unseen" | "handing" | "seen" | "retracted" | "uncertain";
 export type InboxSeenVia = "turn" | "inbox" | "wait";
 /** kone itself, writing a notice of its own. */
 export type SystemSender = { kind: "system" };
@@ -117,8 +120,16 @@ export interface AgentInboxStore {
   markInboxSending(deliveryId: string): boolean;
   setInboxBlockId(inboxId: string, blockId: string): void;
   /** Mark these unseen messages seen, and return the ids that actually were
-   *  unseen — a message already claimed or seen is left as it is. */
+   *  unseen — a message already claimed or seen is left as it is. A read of
+   *  the inbox (`via` "inbox") takes an uncertain one too. */
   markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia): string[];
+  /** Messages a dead process left uncertain, oldest first. */
+  listUncertainInbox(recipientThreadId: string): InboxRow[];
+  /** The provider took the turn carrying this hand-over: link each message's
+   *  transcript block to that turn — the record recovery settles it by, written
+   *  apart from the settle so that a settle the store loses can still be.
+   *  False when the store could not write it. */
+  linkInboxDelivery(deliveryId: string, turnId: string): boolean;
   /** Take back an unseen message. False once it was claimed or seen. */
   retractInboxMessage(inboxId: string): boolean;
   listUnseenInbox(recipientThreadId: string, limit?: number): InboxRow[];
@@ -256,41 +267,132 @@ function rowToInbox(row: InboxDbRow): InboxRow {
 /** Settle what a dead process was handing over. Safe only at the first open
  *  of a fresh process, when no hand-over is live.
  *
- *  A row never sent to a provider goes back to unseen, keeping its block, and
- *  is handed over again. A row that was sent may have been delivered, so it
- *  is never simply resent: the transcript says which turn took it when it
- *  can — the turn its block was steered into, or the first turn on the
- *  thread that started once it was sent — and it is seen with that turn.
- *  What the transcript cannot settle goes back to unseen for now. */
+ *  A row never marked sent never reached a provider: it goes back to unseen,
+ *  keeping its block, and is handed over again. A row marked sent may have
+ *  been delivered, so it is never simply resent. It is seen with a turn only
+ *  on an explicit record that the turn took it — its block linked to that
+ *  turn when the provider accepted it, or steered into it — never on when
+ *  some turn happened to start. Anything else is uncertain: delivery skips
+ *  it, its recipient and its sender are each told once, and the recipient's
+ *  inbox read shows it. One transaction, so a crash part-way leaves the rows
+ *  handing for the next open, and the notices' dedupe keys keep a rerun from
+ *  telling anyone twice. */
 export function releaseOrphanedInboxClaims(db: DatabaseSync): void {
   try {
-    db.prepare(
-      `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
-        WHERE state = 'handing' AND sent_at IS NULL`,
-    ).run();
-    db.prepare(
-      `UPDATE agent_inbox
-          SET state = 'seen', seen_via = 'turn', seen_at = ?, delivery_id = NULL,
-              turn_id = COALESCE(
-                (SELECT b.turn_id FROM blocks b
-                  WHERE b.block_id = agent_inbox.block_id AND b.role = 'user' AND b.turn_id IS NOT NULL),
-                (SELECT b.turn_id FROM blocks b
-                  WHERE b.thread_id = agent_inbox.recipient_thread_id AND b.role = 'assistant'
-                    AND b.at >= agent_inbox.sent_at
-                  ORDER BY b.at ASC, b.seq ASC LIMIT 1))
-        WHERE state = 'handing' AND sent_at IS NOT NULL
-          AND (EXISTS (SELECT 1 FROM blocks b
-                        WHERE b.block_id = agent_inbox.block_id AND b.role = 'user' AND b.turn_id IS NOT NULL)
-               OR EXISTS (SELECT 1 FROM blocks b
-                           WHERE b.thread_id = agent_inbox.recipient_thread_id AND b.role = 'assistant'
-                             AND b.at >= agent_inbox.sent_at))`,
-    ).run(Date.now());
-    db.prepare(
-      `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL, sent_at = NULL WHERE state = 'handing'`,
-    ).run();
+    db.exec("BEGIN");
+    try {
+      reconcileOrphanedInboxClaims(db, Date.now());
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
   } catch (err) {
     console.error("[conversation-store] could not release orphaned inbox claims:", err);
   }
+}
+
+/** A row a dead process left uncertain, with what its notices are made of. */
+type UncertainRow = {
+  inbox_id: string;
+  recipient_thread_id: string;
+  sender_thread_id: string | null;
+  sender_json: string;
+  kind: InboxKind;
+  project_path: string;
+  recipient_title: string | null;
+};
+
+function reconcileOrphanedInboxClaims(db: DatabaseSync, now: number): void {
+  db.prepare(
+    `UPDATE agent_inbox SET state = 'unseen', delivery_id = NULL
+      WHERE state = 'handing' AND sent_at IS NULL`,
+  ).run();
+  const linked = `(SELECT b.turn_id FROM blocks b
+                    WHERE b.block_id = agent_inbox.block_id AND b.role = 'user' AND b.turn_id IS NOT NULL)`;
+  db.prepare(
+    `UPDATE agent_inbox
+        SET state = 'seen', seen_via = 'turn', seen_at = ?, delivery_id = NULL, turn_id = ${linked}
+      WHERE state = 'handing' AND ${linked} IS NOT NULL`,
+  ).run(now);
+  // SAFETY: RETURNING names exactly UncertainRow's columns.
+  const uncertain = db
+    .prepare(
+      `UPDATE agent_inbox SET state = 'uncertain', delivery_id = NULL
+        WHERE state = 'handing'
+        RETURNING inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, project_path,
+                  (SELECT title FROM threads WHERE thread_id = agent_inbox.recipient_thread_id) AS recipient_title`,
+    )
+    .all() as UncertainRow[];
+  if (uncertain.length === 0) return;
+  const insert = db.prepare(
+    `INSERT INTO agent_inbox (inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, urgent, rings,
+                              body, state, dedupe_key, project_path, created_at)
+     VALUES (?, ?, NULL, '{"kind":"system"}', 'notice', 0, 0, ?, 'unseen', ?, ?, ?)
+     ON CONFLICT (dedupe_key) DO NOTHING`,
+  );
+  const exists = db.prepare(`SELECT 1 FROM threads WHERE thread_id = ?`);
+  const tell = (to: string, body: string, key: string, projectPath: string): void => {
+    if (!exists.get(to)) return;
+    insert.run(`msg_${randomUUID()}`, to, body, key, projectPath, now);
+  };
+  for (const [recipient, rows] of groupBy(uncertain, (r) => r.recipient_thread_id)) {
+    tell(recipient, uncertainRecipientNotice(rows), uncertainKey("recipient", recipient, rows), rows[0]!.project_path);
+  }
+  const fromAgents = uncertain.filter((r) => r.sender_thread_id !== null);
+  for (const [sender, rows] of groupBy(fromAgents, (r) => r.sender_thread_id!)) {
+    tell(sender, uncertainSenderNotice(rows), uncertainKey("sender", sender, rows), rows[0]!.project_path);
+  }
+}
+
+function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const k = key(row);
+    groups.set(k, [...(groups.get(k) ?? []), row]);
+  }
+  return groups;
+}
+
+/** One key per reader and set of rows: a row turns uncertain once, so a later
+ *  open never makes the same notice again, and a rerun of this one finds its
+ *  own. */
+function uncertainKey(reader: "recipient" | "sender", threadId: string, rows: readonly UncertainRow[]): string {
+  const ids = rows.map((r) => r.inbox_id).sort().join(",");
+  return `uncertain:${reader}:${threadId}:${ids}`;
+}
+
+/** Who a message was from, by name, for a notice that carries no bodies. */
+function senderName(senderJson: string): string {
+  const sender = parseInboxSender(senderJson);
+  return (sender?.kind === "agent" ? sender.name : undefined) ?? "kone";
+}
+
+/** What the recipient is told: which messages, from whom, and where they
+ *  are — never what they said, which may already be in its context. */
+function uncertainRecipientNotice(rows: readonly UncertainRow[]): string {
+  const one = rows.length === 1;
+  const list = rows.map((r) => `${r.kind} ${r.inbox_id} from ${senderName(r.sender_json)}`).join("; ");
+  return (
+    `kone restarted while handing you ${one ? "a message" : `${rows.length} messages`} (${list}). ` +
+    `${one ? "It" : "They"} may already be in your context, or may never have reached you. ` +
+    `agent_inbox lists ${one ? "it" : "them"}, marked uncertain; reading ${one ? "it" : "them"} there marks ${one ? "it" : "them"} seen.`
+  );
+}
+
+/** What the sender is told: what may not have arrived, and how to send it
+ *  again — a job by a fresh agent_followup, since its old requestId would
+ *  only replay the job that may be lost. */
+function uncertainSenderNotice(rows: readonly UncertainRow[]): string {
+  const lines = rows.map((r) => {
+    const to = r.recipient_title?.trim() || r.recipient_thread_id;
+    const again =
+      r.kind === "job"
+        ? "If it still matters, send agent_followup again with a new requestId."
+        : "If it still matters, send it again.";
+    return `Your ${r.kind} ${r.inbox_id} to "${to}" may not have arrived: kone restarted while handing it over. ${again}`;
+  });
+  return lines.join("\n");
 }
 
 /** Told which recipients' inboxes just moved: a row written, claimed,
@@ -475,16 +577,55 @@ export class AgentInboxRepo implements AgentInboxStore {
       const rows = db
         .prepare(
           `UPDATE agent_inbox SET state = 'seen', seen_via = ?, seen_at = ?
-            WHERE inbox_id IN (${placeholders}) AND state = 'unseen'
+            WHERE inbox_id IN (${placeholders})
+              AND (state = 'unseen' OR (state = 'uncertain' AND ? = 'inbox'))
             RETURNING inbox_id, recipient_thread_id`,
         )
-        .all(via, Date.now(), ...inboxIds) as Array<{ inbox_id: string; recipient_thread_id: string }>;
+        .all(via, Date.now(), ...inboxIds, via) as Array<{ inbox_id: string; recipient_thread_id: string }>;
       this.changed(rows.map((r) => r.recipient_thread_id));
       const flipped = new Set(rows.map((r) => r.inbox_id));
       return inboxIds.filter((id) => flipped.has(id));
     } catch (err) {
       console.error("[conversation-store] markInboxSeen failed:", err);
       return [];
+    }
+  }
+
+  listUncertainInbox(recipientThreadId: string): InboxRow[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection is the column list InboxDbRow is declared from.
+      const rows = db
+        .prepare(
+          `SELECT ${INBOX_COLUMNS} FROM agent_inbox
+            WHERE recipient_thread_id = ? AND state = 'uncertain'
+            ORDER BY ${INBOX_ORDER}`,
+        )
+        .all(recipientThreadId) as InboxDbRow[];
+      return rows.map(rowToInbox);
+    } catch (err) {
+      console.error("[conversation-store] listUncertainInbox failed:", err);
+      return [];
+    }
+  }
+
+  linkInboxDelivery(deliveryId: string, turnId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      this.dbh.durably(db, () => {
+        db.prepare(
+          `UPDATE blocks SET turn_id = ?
+            WHERE role = 'user' AND turn_id IS NULL
+              AND block_id IN (SELECT block_id FROM agent_inbox
+                                WHERE delivery_id = ? AND state = 'handing' AND block_id IS NOT NULL)`,
+        ).run(turnId, deliveryId);
+      });
+      return true;
+    } catch (err) {
+      console.error("[conversation-store] linkInboxDelivery failed:", err);
+      return false;
     }
   }
 
@@ -690,12 +831,34 @@ export class MemoryAgentInbox implements AgentInboxStore {
     const now = Date.now();
     return inboxIds.filter((id) => {
       const row = this.rows.find((r) => r.inboxId === id);
-      if (row?.state !== "unseen") return false;
+      if (!row || !(row.state === "unseen" || (row.state === "uncertain" && via === "inbox"))) return false;
       row.state = "seen";
       row.seenVia = via;
       row.seenAt = now;
       return true;
     });
+  }
+
+  listUncertainInbox(recipientThreadId: string): InboxRow[] {
+    return this.rows
+      .filter((r) => r.recipientThreadId === recipientThreadId && r.state === "uncertain")
+      .map((r) => ({ ...r }));
+  }
+
+  /** No transcript here to link: a process with no store has nothing to
+   *  recover after it. */
+  linkInboxDelivery(): boolean {
+    return true;
+  }
+
+  /** Leave what a dead process was handing over as the store's boot would:
+   *  never sent goes back to unseen, sent turns uncertain. For tests. */
+  recoverAsAfterRestart(): void {
+    for (const row of this.rows) {
+      if (row.state !== "handing") continue;
+      row.state = row.sentAt === null ? "unseen" : "uncertain";
+      row.deliveryId = null;
+    }
   }
 
   retractInboxMessage(inboxId: string): boolean {

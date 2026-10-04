@@ -293,6 +293,16 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see AgentInboxRepo */
+  listUncertainInbox(recipientThreadId: string): InboxRow[] {
+    return this.agentInbox.listUncertainInbox(recipientThreadId);
+  }
+
+  /** @see AgentInboxRepo */
+  linkInboxDelivery(deliveryId: string, turnId: string): boolean {
+    return this.agentInbox.linkInboxDelivery(deliveryId, turnId);
+  }
+
+  /** @see AgentInboxRepo */
   setInboxBlockId(inboxId: string, blockId: string): void {
     this.agentInbox.setInboxBlockId(inboxId, blockId);
   }

@@ -1,5 +1,6 @@
 import type { SpawnEngineStore, TrackedChild } from "./threadSpawn.js";
 import { SPAWN_WAIT_DEFAULT_MS, SPAWN_WAIT_MAX_MS, SpawnError } from "./threadSpawn.js";
+import type { JobTurn } from "./gateway/tools/irc.js";
 import type { SpawnedThread } from "./types.js";
 import { projectSpawnedThread } from "./spawnProjection.js";
 
@@ -40,11 +41,12 @@ export interface SpawnWaitDeps {
   /** Where a job in a child's inbox stands, for a wait pinned to the job's
    *  id: the turn that carried it once it was handed over. Null when the id
    *  names no job. */
-  jobTurn?: (inboxId: string) => { recipient: string; handedOver: boolean; turnId: string | null } | null;
+  jobTurn?: (inboxId: string) => JobTurn | null;
 }
 
-/** What a wait is pinned to: a turn, or a job still waiting for its turn. */
-type Pin = { turnId: string | undefined; pending: boolean };
+/** What a wait is pinned to: a turn, or a job still waiting for its turn —
+ *  or one kone was handing over when it restarted, which will never come. */
+type Pin = { turnId: string | undefined; pending: boolean; uncertain?: true };
 
 /**
  * Coordinates async waits on spawned child threads, handling turn-pinning,
@@ -130,6 +132,7 @@ export class SpawnWaitCoordinator {
     if (requested === undefined) return { turnId: undefined, pending: false };
     const job = this.deps.jobTurn?.(requested) ?? null;
     if (!job || job.recipient !== threadId) return { turnId: requested, pending: false };
+    if (job.uncertain) return { turnId: requested, pending: false, uncertain: true };
     if (job.turnId) return { turnId: job.turnId, pending: false };
     return { turnId: requested, pending: !job.handedOver };
   }
@@ -193,6 +196,19 @@ export class SpawnWaitCoordinator {
   snapshotForWait(threadId: string, requested?: string): SpawnedThread {
     const pin = this.pinOf(threadId, requested);
     const snap = this.snapshotPinned(threadId, pin.turnId);
+    // Settled, with nothing to collect: the job may never have arrived, and
+    // the sender is the one who can send it again.
+    if (pin.uncertain) {
+      return {
+        ...snap,
+        status: "uncertain",
+        terminal: true,
+        handedOver: false,
+        detail:
+          "kone restarted while handing this job over, and nothing says whether it arrived. " +
+          "If it still matters, send agent_followup again with a new requestId.",
+      };
+    }
     // A job still in the child's inbox is a turn to come: nothing to collect
     // yet, unless the child is parked on the user, which holds the job too.
     if (pin.pending && snap.status !== "waiting-for-approval" && snap.status !== "waiting-for-user-input") {

@@ -23,6 +23,7 @@ import {
 import { SpawnFailoverRunner, type FallbackAdmissionCounts } from "./spawnFailover.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { getHandOffLifecycle } from "./handOffLifecycle.js";
+import type { JobTurn } from "./gateway/tools/irc.js";
 import type { SettledTurnReport, SettleReportSink, StillOut } from "./settleReports.js";
 import {
   isSpawnedRelationship,
@@ -193,7 +194,7 @@ export interface SpawnJobs {
     sender: AgentSender;
     dedupeKey?: string;
   }): { messageId: string; duplicate: boolean };
-  jobTurn(inboxId: string): { recipient: string; handedOver: boolean; turnId: string | null } | null;
+  jobTurn(inboxId: string): JobTurn | null;
   /** Hear when a hand-over is settled with its turn. */
   onDeliverySettled(listener: () => void): () => void;
 }
