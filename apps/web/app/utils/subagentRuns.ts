@@ -160,7 +160,8 @@ export type DelegatesState = { rows: DelegateRow[]; running: number; streaming: 
 // the user, so it still counts as live and keeps the dock open. An interrupted
 // child stopped mid-flight, the same way the dock already renders a `stopped`
 // run — so it reads "failed", not a state of its own. So does an uncertain
-// one: its job may never have arrived, and nothing will hand it over again.
+// one: its job may never have arrived and nothing will hand it over again, or
+// kone has no record of how the turn it was asked about went.
 const THREAD_STATUS_TO_STATE = {
   starting: "working",
   working: "working",
@@ -207,6 +208,13 @@ function failedThreadHint(thread: SpawnedThread): DelegateRowHint {
   return { hint: `${oneLine.slice(0, 80).trimEnd()}…`, hintFull: oneLine };
 }
 
+/** An uncertain thread is one of two things: a job whose hand-over a restart
+ *  cut off, which only it marks as not handed over, or a turn from before a
+ *  restart the store has no record of. */
+function cutOffHandOver(thread: SpawnedThread): boolean {
+  return thread.handedOver === false;
+}
+
 /** The one-liner under a spawned thread's title. Status words live on the row's
  *  `statusText` now — the hint carries only the *extra* facts: how long a
  *  working child has been at it, what a failure said. A parked child's ask is
@@ -232,7 +240,9 @@ function threadHint(thread: SpawnedThread): DelegateRowHint {
     case "interrupted":
       return { hint: "" };
     case "uncertain":
-      return { hint: "kone restarted while handing this over" };
+      return cutOffHandOver(thread)
+        ? { hint: "kone restarted while handing this over" }
+        : { hint: "kone has no record of how this turn went" };
     case "idle":
       return { hint: "" };
   }
@@ -262,7 +272,7 @@ function threadStatusText(thread: SpawnedThread): string {
     case "interrupted":
       return "Interrupted";
     case "uncertain":
-      return "May not have arrived";
+      return cutOffHandOver(thread) ? "May not have arrived" : "Outcome unknown";
     case "idle":
       return "Queued";
   }
