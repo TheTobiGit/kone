@@ -362,12 +362,12 @@ Each phase ships on its own and leaves the app working and tested.
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Never interrupt a thread parked on the user | In progress |
+| 0 | Never interrupt a thread parked on the user | Done (`bab89204`) |
 | 0.5 | The cancel probe (§11) | Not started |
-| 1 | The stored inbox, behind today's mailbox | In progress |
-| 2 | An honest `agent_list` and a readable `agent_inbox` | Not started |
-| 3a | kone's notices move into the inbox | Not started |
-| 3b | One ringer | Not started |
+| 1 | The stored inbox, behind today's mailbox | Done (`0097c1fc`) |
+| 2 | An honest `agent_list` and a readable `agent_inbox` | Done (`7e6c89ee`) |
+| 3a | kone's notices move into the inbox | Done (`99359d70`) |
+| 3b | One ringer | Built (`1d47a55e`), behind `delivery.v2`, off by default |
 | 4 | Jobs: `agent_followup` and `app_send_to_thread` | Not started |
 | 5 | kone steer | Not started |
 | 6 | The inbox in the app | Not started |
@@ -413,6 +413,7 @@ Each phase ships on its own and leaves the app working and tested.
 - **Files:** new `inboxDelivery.ts`; `AgentService.ts`; `dispatch.ts` (a turn with several senders); `senderHeader.ts`; `gateway/tools/irc.ts`; `gateway/schemas.ts`; `apps/desktop/src/agent/agent-ipc.ts`. `ircDelivery.ts` is deleted.
 - **Tests:** a note never starts a turn; a question to a busy agent lands when its turn ends, in front of the user's queued message, in one turn; urgent steers on a native provider; a parked agent holds until the user answers; answers go first; a note to a closed session does not restart it; each refusal; each send result.
 - **Risk:** high. Non-urgent messages stop arriving mid-turn on Claude, Codex and OpenCode. Ships behind a setting for one release.
+- **As built:** the setting is `v2` in `delivery-settings.json` (`deliverySettings.ts`), read once at boot. Off, today's routing runs unchanged and `ircDelivery.ts` stays until the flip. On, the service's turn slot hands the inbox over: every turn it starts carries what waits, so a carried message settles with the turn the provider started. The `urgent` rules and the new receipts apply with the setting off too; the other refusals, and notes not ringing, only with it on. Until kone steer (Phase 5), urgent on a provider that cannot steer keeps today's fallback, and a message that falls back to the queue that way still settles under the queue's id.
 
 ### Phase 4: jobs
 
