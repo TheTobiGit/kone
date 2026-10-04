@@ -1126,14 +1126,16 @@ export class AgentService {
     }
   }
 
-  /** Tell the caller the turn is going to the provider. Never throws: a
-   *  marker that could not be written leaves the send as it was. */
+  /** Tell the caller the turn is going to the provider. A caller that could
+   *  not record it throws, and the turn is refused before the provider is
+   *  contacted: what it carries must never be sent without its marker. */
   private noteSending(threadId: string, sending: (() => void) | undefined): void {
     if (!sending) return;
     try {
       sending();
     } catch (err) {
-      console.error(`[agent] marking what a turn on ${threadId} carries as sent failed:`, err);
+      console.error(`[agent] not sending a turn on ${threadId}: what it carries could not be marked sent:`, err);
+      throw err;
     }
   }
 

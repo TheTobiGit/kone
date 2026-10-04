@@ -986,11 +986,25 @@ class FlakyInbox extends MemoryAgentInbox {
   override releaseInboxDelivery(deliveryId: string): number | null {
     return this.failWrites ? null : super.releaseInboxDelivery(deliveryId);
   }
+  override markInboxSending(deliveryId: string): boolean {
+    return this.failWrites ? false : super.markInboxSending(deliveryId);
+  }
 }
 
 const settleTick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 describe("a settle or release the store could not write", () => {
+  test("a hand-over the store could not mark sent refuses to go out", () => {
+    const inbox = new FlakyInbox();
+    const mailbox = new IrcMailbox(inbox);
+    mailbox.sendNotice({ to: "b", projectPath: "/repo", message: "ping", rings: true });
+    const claim = mailbox.claimDelivery("b", 5)!;
+    inbox.failWrites = true;
+    expect(() => mailbox.sendingDelivery(claim.deliveryId)).toThrow("not sending it");
+    inbox.failWrites = false;
+    expect(() => mailbox.sendingDelivery(claim.deliveryId)).not.toThrow();
+  });
+
   const sender = { kind: "agent" as const, threadId: "lead", relationship: "delegator" as const, messageKind: "followup" as const };
 
   test("a turn the store could not record keeps its job claimed, stands for it, and is written once the store recovers", async () => {
