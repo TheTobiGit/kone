@@ -243,7 +243,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see QueuedTurnRepo */
-  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean {
+  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean | null {
     return this.queuedTurns.releaseQueuedTurn(queueId, to);
   }
 

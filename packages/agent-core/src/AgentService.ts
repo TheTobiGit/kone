@@ -2086,7 +2086,12 @@ export class AgentService {
         return true;
       }
       if (this.isBusy(threadId)) {
-        if (!this.releaseRow(store, queueId, "queued")) return false;
+        const released = this.releaseRow(store, queueId, "queued");
+        // Not written: still claimed, so it is released on the backoff instead.
+        if (released === null) {
+          this.releaseThen(threadId, store, queueId, "queued", () => this.announceQueuedState(threadId, row, "queued"));
+        }
+        if (released !== true) return false;
         await this.reorderQueuedTurns(threadId, [queueId]);
         this.announceQueuedState(threadId, row, "queued");
         if (liveTurnId) {
@@ -2109,9 +2114,8 @@ export class AgentService {
       }
       return true;
     } catch (err) {
-      if (this.releaseRow(store, queueId, from)) {
-        this.announceQueuedState(threadId, row, from, { error: err instanceof Error ? err.message : String(err) });
-      }
+      const error = err instanceof Error ? err.message : String(err);
+      this.releaseThen(threadId, store, queueId, from, () => this.announceQueuedState(threadId, row, from, { error }));
       throw err;
     }
   }
@@ -2552,14 +2556,45 @@ export class AgentService {
   }
 
   /** Give a claimed row back (to waiting, or held). Never throws: a store
-   *  failure here is logged, and the row is then recovered as a stale claim. */
-  private releaseRow(store: QueuedTurnStore, queueId: string, to: "queued" | "failed"): boolean {
+   *  failure here is logged and answers null, the row still claimed. */
+  private releaseRow(store: QueuedTurnStore, queueId: string, to: "queued" | "failed"): boolean | null {
     try {
       return store.releaseQueuedTurn(queueId, to);
     } catch (err) {
       console.error(`[agent] releasing queued turn ${queueId} failed:`, err);
-      return false;
+      return null;
     }
+  }
+
+  /** Release a claimed row, then run `then`. A row that was cancelled
+   *  meanwhile (nothing to release) is left alone. A release the store could
+   *  not write leaves the row claimed with nothing to run it, so it is tried
+   *  again on the queue's backoff, the last delay repeating, until it lands
+   *  or the row is stopped. The pending retry also keeps the drain from
+   *  claiming what was queued after it. */
+  private releaseThen(
+    threadId: string,
+    store: QueuedTurnStore,
+    queueId: string,
+    to: "queued" | "failed",
+    then: () => void,
+    tries = 0,
+  ): void {
+    const released = this.releaseRow(store, queueId, to);
+    if (released === true) {
+      then();
+      return;
+    }
+    if (released === false) return;
+    const delays = this.options.queueRetryDelaysMs ?? QUEUE_RETRY_DELAYS_MS;
+    const retryIn = delays[Math.min(tries, delays.length - 1)] ?? 1_000;
+    this.clearQueueRetry(threadId);
+    const timer = setTimeout(() => {
+      this.queueRetries.delete(threadId);
+      this.releaseThen(threadId, store, queueId, to, then, tries + 1);
+    }, retryIn);
+    timer.unref?.();
+    this.queueRetries.set(threadId, { queueId, timer });
   }
 
   /** A drained row the provider refused. While it has retries left it goes
@@ -2574,36 +2609,38 @@ export class AgentService {
     const retryIn = delays[row.attemptCount - 1];
     const provider = this.routing.get(threadId);
     if (retryIn === undefined) {
-      if (!this.releaseRow(store, row.queueId, "failed")) return;
-      // Held now: nothing retries it until the user says so.
-      this.clearQueueRetry(threadId);
-      this.announceQueuedState(threadId, row, "failed", { error });
+      this.releaseThen(threadId, store, row.queueId, "failed", () => {
+        // Held now: nothing retries it until the user says so.
+        this.clearQueueRetry(threadId);
+        this.announceQueuedState(threadId, row, "failed", { error });
+        if (provider) {
+          this.warn(
+            threadId,
+            provider,
+            `A queued message didn't start after ${row.attemptCount} tries (${error}). It's held in the queue: send it now or remove it.`,
+          );
+        }
+      });
+      return;
+    }
+    this.releaseThen(threadId, store, row.queueId, "queued", () => {
+      const retryAt = Date.now() + retryIn;
+      this.announceQueuedState(threadId, row, "queued", { retryAt, error });
       if (provider) {
         this.warn(
           threadId,
           provider,
-          `A queued message didn't start after ${row.attemptCount} tries (${error}). It's held in the queue: send it now or remove it.`,
+          `A queued message didn't start (${error}). Trying again in ${Math.ceil(retryIn / 1000)}s.`,
         );
       }
-      return;
-    }
-    if (!this.releaseRow(store, row.queueId, "queued")) return;
-    const retryAt = Date.now() + retryIn;
-    this.announceQueuedState(threadId, row, "queued", { retryAt, error });
-    if (provider) {
-      this.warn(
-        threadId,
-        provider,
-        `A queued message didn't start (${error}). Trying again in ${Math.ceil(retryIn / 1000)}s.`,
-      );
-    }
-    this.clearQueueRetry(threadId);
-    const timer = setTimeout(() => {
-      this.queueRetries.delete(threadId);
-      this.promoteQueuedTurns(threadId);
-    }, retryIn);
-    timer.unref?.();
-    this.queueRetries.set(threadId, { queueId: row.queueId, timer });
+      this.clearQueueRetry(threadId);
+      const timer = setTimeout(() => {
+        this.queueRetries.delete(threadId);
+        this.promoteQueuedTurns(threadId);
+      }, retryIn);
+      timer.unref?.();
+      this.queueRetries.set(threadId, { queueId: row.queueId, timer });
+    });
   }
 
   private clearQueueRetry(threadId: string): void {

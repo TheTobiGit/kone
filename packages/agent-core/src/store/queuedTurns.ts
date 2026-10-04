@@ -282,10 +282,12 @@ export class QueuedTurnRepo {
    *  out. attempt_count is preserved (the retry ledger stays honest).
    *  Returns false when the row is not in 'promoting' — the cancelled-row
    *  resurrection guard: cancelQueuedTurnsForThread flips 'promoting' rows to
-   *  'cancelled' first, so a drain's late release can no longer match. */
-  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean {
+   *  'cancelled' first, so a drain's late release can no longer match. Null
+   *  when the store could not write it: the row is still claimed, and the
+   *  caller must try again. */
+  releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean | null {
     const db = this.dbh.handle();
-    if (!db) return false;
+    if (!db) return null;
     try {
       const result = db
         .prepare(
@@ -296,7 +298,7 @@ export class QueuedTurnRepo {
       return Number(result.changes) > 0;
     } catch (err) {
       console.error("[conversation-store] releaseQueuedTurn failed:", err);
-      return false;
+      return null;
     }
   }
 

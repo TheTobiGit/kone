@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
-import { setUserDataDir } from "./userDataDir.js";
+import { getUserDataDir, setUserDataDir } from "./userDataDir.js";
 import type { ProviderAdapter, RuntimeEvent, SendTurnInput, TurnStartResult } from "./types.js";
 import type { CheckpointStore } from "./conversationStoreTypes.js";
 
@@ -759,6 +759,34 @@ describe("the turn slot carries the inbox, against the real store", () => {
     await waitFor(() => log[0]?.released === true);
     expect(adapter.attempts).toHaveLength(0);
     expect(log[0]?.settled).toBeNull();
+  });
+
+  // The outage that refused the marker can refuse the queue's release too.
+  // The row is then still claimed with nothing to run it: the release is
+  // tried again until it lands, and the row then runs.
+  test("a queued message whose release could not be written runs once writes come back", async () => {
+    const thread = await openThread();
+    const faults = { markerFails: true };
+    const { inbox } = fakeInbox(false, faults);
+    service.setTurnInbox(inbox);
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const row = queueRow(thread, "ship it");
+    const outage = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+    outage.exec(`CREATE TRIGGER release_fails BEFORE UPDATE OF state ON queued_turns
+                  WHEN OLD.state = 'promoting' AND NEW.state IN ('queued', 'failed')
+                  BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await waitFor(() => ofType(thread, "turn.queued-updated").some((u) => u.state === "promoting"));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(stateOf(thread, row)).toBe("promoting");
+    expect(adapter.attempts).toHaveLength(0);
+
+    outage.exec("DROP TRIGGER release_fails");
+    outage.close();
+    faults.markerFails = false;
+    await waitFor(() => stateOf(thread, row) === "gone");
+    expect(adapter.sent.map((s) => s.input)).toEqual(["INBOX\n\nship it"]);
   });
 
   test("a message sent straight to an idle thread carries the inbox too", async () => {
