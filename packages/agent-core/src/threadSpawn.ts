@@ -504,6 +504,12 @@ export type TrackedChild = {
   sessionStopped: boolean;
   tokens?: number;
   lastProjection: SpawnedThread | null;
+  /** Taken back on after a restart, by a follow-up: its turns from before are
+   *  not in `turns`, only in the store. */
+  adopted?: true;
+  /** A follow-up the provider took whose turn has not started yet, as far as
+   *  the events have said. Cleared by the next turn or session event. */
+  awaitingTurn?: { turnId: string; at: number };
 };
 
 /** What has become of each settled turn's report, for one child. */
@@ -557,6 +563,7 @@ class SpawnEngineImpl implements SpawnEngine {
       tracked: this.tracked,
       store: this.store,
       snapshot: (threadId) => this.snapshot(threadId),
+      storedSnapshot: (threadId) => this.storedSnapshot(threadId),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
       onCollected: (scopeThreadId, threadId, turnId) => this.onCollected(scopeThreadId, threadId, turnId),
       onAbandoned: (scopeThreadId, threadIds) => this.onAbandoned(scopeThreadId, threadIds),
@@ -574,6 +581,7 @@ class SpawnEngineImpl implements SpawnEngine {
       tracked: this.tracked,
       liveChildren: this.liveChildren,
       recompute: (child) => this.recompute(child),
+      adopt: (threadId, parentTurnId, hasLiveSession) => this.adopt(threadId, parentTurnId, hasLiveSession),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
     };
     if (jobs) continuationDeps.jobs = jobs;
@@ -881,7 +889,50 @@ class SpawnEngineImpl implements SpawnEngine {
   snapshot(threadId: string): SpawnedThread | null {
     const tracked = this.tracked.get(threadId);
     if (tracked) return this.project(tracked, Date.now());
+    return this.storedSnapshot(threadId);
+  }
 
+  /** Take a spawned child this process did not spawn — one from before a
+   *  restart — back on, so its turns from here on are followed live: a wait
+   *  reads them as they run, and each settled one is reported to the parent.
+   *  It starts with no turns, reading "starting" until the follow-up's turn
+   *  begins. Null when the thread is not a spawned child. */
+  private adopt(threadId: string, parentTurnId: string, hasLiveSession: boolean): TrackedChild | null {
+    const meta = this.store.threadMeta(threadId);
+    const lineage = meta ? this.store.threadLineage(threadId) : null;
+    if (!meta || !lineage?.parentThreadId || !isSpawnedRelationship(lineage.relationshipToParent)) return null;
+    const handOff: HandOffKind =
+      lineage.relationshipToParent !== "delegation" ? "worker" : meta.contract ? "contract" : "delegation";
+    const boundAgentId = handOff === "delegation" ? this.store.getThreadAgent?.(threadId)?.agentId : undefined;
+    const agentName =
+      meta.contract?.name ?? (boundAgentId ? this.store.getAgent?.(boundAgentId)?.name ?? undefined : undefined);
+    const child: TrackedChild = {
+      threadId,
+      parentThreadId: lineage.parentThreadId,
+      handOff,
+      parentTurnId,
+      title: meta.title ?? "",
+      provider: meta.provider,
+      createdAt: meta.createdAt,
+      updatedAt: meta.updatedAt,
+      turns: [],
+      gate: null,
+      hasLiveSession,
+      sessionStopped: false,
+      lastProjection: null,
+      adopted: true,
+    };
+    if (meta.model) child.model = meta.model;
+    if (agentName) child.agentName = agentName;
+    if (meta.tokens !== undefined && meta.tokens !== null) child.tokens = meta.tokens;
+    child.lastProjection = this.project(child, Date.now());
+    this.tracked.set(threadId, child);
+    return child;
+  }
+
+  /** A spawned child as the store has it, for one this process is not
+   *  following: its newest turn recovered from the transcript. */
+  private storedSnapshot(threadId: string): SpawnedThread | null {
     const meta = this.store.threadMeta(threadId);
     const lineage = meta ? this.store.threadLineage(threadId) : null;
     if (!meta || !lineage || !isSpawnedRelationship(lineage.relationshipToParent)) return null;
@@ -971,6 +1022,14 @@ class SpawnEngineImpl implements SpawnEngine {
   private onEvent(event: RuntimeEvent): void {
     const child = this.tracked.get(event.threadId);
     if (!child) return;
+    if (
+      event.type === "turn.started" ||
+      event.type === "turn.completed" ||
+      event.type === "turn.aborted" ||
+      event.type === "session.exited"
+    ) {
+      delete child.awaitingTurn;
+    }
     switch (event.type) {
       case "turn.started":
         child.turns.push({ turnId: event.turnId, state: "running", at: event.at });
@@ -1185,7 +1244,11 @@ class SpawnEngineImpl implements SpawnEngine {
         createdAt: child.createdAt,
         updatedAt: child.updatedAt,
       },
-      turns: child.turns,
+      // A follow-up on its way reads as a turn under way; its "<" id is never
+      // reported or collected.
+      turns: child.awaitingTurn
+        ? [...child.turns, { turnId: "<follow-up>", state: "running", at: child.awaitingTurn.at }]
+        : child.turns,
       latestAssistantText: this.store.latestAssistantText(child.threadId),
       gate: child.gate,
       hasLiveSession: child.hasLiveSession || child.turns.length === 0,

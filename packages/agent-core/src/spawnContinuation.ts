@@ -26,6 +26,9 @@ export interface SpawnContinuationDeps {
   tracked: Map<string, TrackedChild>;
   liveChildren: Set<string>;
   recompute: (child: TrackedChild) => void;
+  /** Take a child from before a restart back on; null when it is no
+   *  spawned child. */
+  adopt?: (threadId: string, parentTurnId: string, hasLiveSession: boolean) => TrackedChild | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
   /** Under the ringer, where a follow-up goes: a job in the child's inbox. */
   jobs?: SpawnJobs;
@@ -109,8 +112,19 @@ export class ThreadContinuationManager {
     meta: StoredThreadMeta,
     lineage: ThreadLineage,
   ): Promise<ContinueThreadResult> {
-    const tracked = this.deps.tracked.get(request.threadId);
+    let tracked = this.deps.tracked.get(request.threadId);
     const live = tracked ? tracked.hasLiveSession : this.deps.providers.hasLiveSession(request.threadId);
+    // A child from before a restart is followed again from this follow-up on,
+    // so its turns report to the parent and a wait reads them live. If the
+    // follow-up never goes out, it is let go again.
+    const adopted = tracked ? null : (this.deps.adopt?.(request.threadId, caller.turnId, live) ?? null);
+    if (adopted) tracked = adopted;
+    const letGo = (): void => {
+      if (adopted && this.deps.tracked.get(request.threadId) === adopted) {
+        this.deps.tracked.delete(request.threadId);
+        this.deps.liveChildren.delete(request.threadId);
+      }
+    };
     let resumed = false;
     if (!live) {
       resumed = true;
@@ -136,6 +150,7 @@ export class ThreadContinuationManager {
           tracked.hasLiveSession = false;
           tracked.sessionStopped = true;
         }
+        letGo();
         const detail = err instanceof Error ? err.message : String(err);
         throw new SpawnError(
           "provider_unavailable",
@@ -165,16 +180,22 @@ export class ThreadContinuationManager {
               ? "delegator"
               : "parent";
       const sender = agentSenderFor(this.deps.store, caller.threadId, relationship, "followup");
-      const result = this.deps.jobs
-        ? finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true)
-        : finish(
-            (
-              await this.deps.dispatcher.sendThreadTurn(
-                { threadId: request.threadId, input: message, sender },
-                { generateTitle: false, parentTurnId: caller.turnId },
-              )
-            ).turnId,
-          );
+      let result: ContinueThreadResult;
+      if (this.deps.jobs) {
+        result = finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true);
+      } else {
+        const sent = await this.deps.dispatcher.sendThreadTurn(
+          { threadId: request.threadId, input: message, sender },
+          { generateTitle: false, parentTurnId: caller.turnId },
+        );
+        // The provider took the turn: until its turn.started comes through,
+        // the child reads as starting it, not as the turn before.
+        if (tracked && !sent.queued) {
+          tracked.awaitingTurn = { turnId: sent.turnId, at: Date.now() };
+          this.deps.recompute(tracked);
+        }
+        result = finish(sent.turnId);
+      }
       if (tracked) {
         this.deps.liveChildren.add(request.threadId);
       }
@@ -188,6 +209,7 @@ export class ThreadContinuationManager {
       }
       return result;
     } catch (err) {
+      letGo();
       const detail = err instanceof Error ? err.message : String(err);
       throw new SpawnError(
         "provider_unavailable",
