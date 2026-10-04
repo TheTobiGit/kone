@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { ref, type Ref } from "vue";
 
 import {
+  mergeQueueReturn,
   queuedBlockIdsOf,
   parseQueuedAttachments,
   sortQueuedByIds,
+  usersOwnQueuedRows,
 } from "./sessionQueue";
 import { useSessionReducer } from "./sessionReducer";
 import type { QueuedTurnEntry, ThreadBlock } from "../agentTypes";
@@ -24,6 +26,7 @@ function makeSession() {
   const blocks: Ref<ThreadBlock[]> = ref([]);
   const threadId = ref("t");
   const queuedTurnsRaw: Ref<QueuedTurnEntry[]> = ref([]);
+  const queueReturn: Ref<QueueReturn | null> = ref(null);
   const deps = {
     blocks,
     threadId,
@@ -39,18 +42,19 @@ function makeSession() {
     everRan: ref(false),
     spawnedChildren: ref<SpawnedThread[]>([]),
     queuedTurnsRaw,
-    queueReturn: ref<QueueReturn | null>(null),
-    mergeQueueReturn: () => ({ at: 0, text: "", attachments: [], skills: [] }),
+    queueReturn,
+    mergeQueueReturn,
     pendingQueueAnchors: new Map<string, string>(),
     pendingUserInput: ref<PendingUserInput | null>(null),
     pendingApprovals: ref<PendingApproval[]>([]),
     anchorFor: () => undefined,
     queuedBlockIdsOf,
+    usersOwnQueuedRows,
     sortQueuedByIds,
     parseQueuedAttachments,
     noteCompactedBoundary: (_marker: CompactionRecord) => {},
   };
-  return { blocks, queuedTurnsRaw, reduce: useSessionReducer(deps).reduce };
+  return { blocks, queuedTurnsRaw, queueReturn, reduce: useSessionReducer(deps).reduce };
 }
 
 const base = { threadId: "t", provider: "opencode", source: "kone.store" } as const;
@@ -363,5 +367,66 @@ describe("messages delivered from other agents read where they arrived", () => {
       "user: Is OAuth in scope?",
       "assistant: turn-2",
     ]);
+  });
+});
+
+describe("an agent's message waiting in the queue", () => {
+  function queued(queueId: string, userBlockId: string, input: string, at: number): RuntimeEvent {
+    return { ...base, type: "turn.queued", queueId, userBlockId, dispatchMode: "steer", position: 1, input, at };
+  }
+
+  /** A busy thread on a provider that cannot take a message mid-turn: the
+   *  agent's message is journaled under its sender, then queued; the user
+   *  queues a follow-up of their own behind it. */
+  function busyWithBoth() {
+    const session = makeSession();
+    session.reduce(turnStarted("turn-1", 100));
+    session.reduce({
+      ...base,
+      type: "thread.message-journaled",
+      at: 110,
+      block: {
+        id: "ub-agent",
+        role: "user",
+        text: "<agent_messages>from Ada</agent_messages>",
+        at: 110,
+        sender: { kind: "agent", threadId: "ada", name: "Ada", relationship: "peer" },
+      },
+    });
+    session.reduce(queued("q-agent", "ub-agent", "<agent_messages>from Ada</agent_messages>", 111));
+    session.reduce(queued("q-mine", "ub-mine", "and then this", 120));
+    return session;
+  }
+
+  test("is not the user's to get back on a Stop", () => {
+    const session = busyWithBoth();
+    session.reduce({ ...base, type: "turn.queued-cancelled", queueId: "q-agent", reason: "stop", at: 200 });
+
+    expect(session.queueReturn.value?.text).toBe("and then this");
+    expect(session.queuedTurnsRaw.value).toEqual([]);
+  });
+
+  test("a Stop with only an agent's message queued hands nothing back", () => {
+    const session = makeSession();
+    session.reduce(turnStarted("turn-1", 100));
+    session.reduce({
+      ...base,
+      type: "thread.message-journaled",
+      at: 110,
+      block: { id: "ub-agent", role: "user", text: "x", at: 110, sender: { kind: "courier" } },
+    });
+    session.reduce(queued("q-agent", "ub-agent", "x", 111));
+    session.reduce({ ...base, type: "turn.queued-cancelled", queueId: "q-agent", reason: "stop", at: 200 });
+
+    expect(session.queueReturn.value).toBeNull();
+  });
+
+  test("keeps its sender when it runs", () => {
+    const session = busyWithBoth();
+    session.reduce(turnStarted("turn-2", 300));
+    session.reduce({ ...base, type: "turn.promoted", queueId: "q-agent", turnId: "turn-2", at: 310 });
+
+    const block = session.blocks.value.find((b) => b.id === "ub-agent");
+    expect(block?.role === "user" ? block.sender?.kind : undefined).toBe("agent");
   });
 });

@@ -45,6 +45,22 @@ export function queuedBlockIdsOf(rows: QueuedTurnEntry[]): Set<string> {
   return ids;
 }
 
+/** The queued rows the user wrote. The turn queue also carries other agents'
+ *  messages — on a provider that cannot take one mid-turn, a message waits
+ *  there for the turn to end — and those are not the user's to edit, reorder
+ *  or get back on a Stop. Such a row's block is on the transcript under its
+ *  sender; a row with no block here, or one the user sent, is the user's. */
+export function usersOwnQueuedRows(rows: QueuedTurnEntry[], blocks: readonly ThreadBlock[]): QueuedTurnEntry[] {
+  const fromOthers = new Set<string>();
+  for (const b of blocks) {
+    if (b.role === "user" && b.sender && b.sender.kind !== "user") fromOthers.add(b.id);
+  }
+  if (fromOthers.size === 0) return rows;
+  return rows.filter(
+    (q) => !fromOthers.has(q.userBlockId) && !(q.blockId !== undefined && fromOthers.has(q.blockId)),
+  );
+}
+
 /** Order queued rows by an explicit id list (the optimistic reorder or the
  *  backend's reordered event). Ids missing from the list sort behind every
  *  listed row; Array.sort is stable, so unlisted rows keep their relative
@@ -131,11 +147,13 @@ export function useSessionQueue(deps: SessionQueueDeps) {
    *  boundary (no queue event can arrive after the turn it belongs to has
    *  started). */
   const pendingQueueAnchors = new Map<string, string>();
-  /** The queue as the UI reads it — entries renumbered so a cancellation
-   *  leaves no gaps (1-based order within the queue of waiting follow-ups:
-   *  the first queued follow-up is #1, the second #2, …). */
+  /** The queue as the UI reads it — the user's own rows only (see
+   *  usersOwnQueuedRows), renumbered so a cancellation leaves no gaps
+   *  (1-based order within the queue of waiting follow-ups: the first queued
+   *  follow-up is #1, the second #2, …). The raw list keeps every row, so the
+   *  transcript still holds an agent's queued message back until it runs. */
   const queuedTurns = computed<QueuedTurnEntry[]>(() =>
-    queuedTurnsRaw.value.map((q, i) => ({ ...q, position: i + 1 })),
+    usersOwnQueuedRows(queuedTurnsRaw.value, blocks.value).map((q, i) => ({ ...q, position: i + 1 })),
   );
   /** The latest set of queued messages a Stop handed back, for the composer
    *  to put in its field (see mergeQueueReturn). */

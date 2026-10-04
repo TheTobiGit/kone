@@ -81,6 +81,7 @@ export type SessionReducerDeps = {
   pendingApprovals: Ref<PendingApproval[]>;
   anchorFor: (userBlockId: string, queueId: string) => string | undefined;
   queuedBlockIdsOf: (rows: QueuedTurnEntry[]) => Set<string>;
+  usersOwnQueuedRows: (rows: QueuedTurnEntry[], blocks: readonly ThreadBlock[]) => QueuedTurnEntry[];
   sortQueuedByIds: (rows: QueuedTurnEntry[], ids: readonly string[]) => QueuedTurnEntry[];
   parseQueuedAttachments: (json?: string | null) => ChatAttachment[] | undefined;
   noteCompactedBoundary: (marker: CompactionRecord) => void;
@@ -112,6 +113,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     pendingApprovals,
     anchorFor,
     queuedBlockIdsOf,
+    usersOwnQueuedRows,
     sortQueuedByIds,
     parseQueuedAttachments,
     noteCompactedBoundary,
@@ -596,6 +598,11 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         const dropped = clearingAll
           ? queuedTurnsRaw.value.filter((q) => q.threadId === event.threadId)
           : queuedTurnsRaw.value.filter((q) => q.queueId === event.queueId);
+        // Only the user's own words go back to the composer on a Stop: an
+        // agent's message that waited in the queue was never theirs to edit.
+        // Read before the dropped blocks leave, since the blocks say who wrote
+        // each row.
+        const returned = event.reason === "stop" ? usersOwnQueuedRows(dropped, blocks.value) : [];
         pendingQueueAnchors.delete(event.queueId);
         queuedTurnsRaw.value = clearingAll
           ? queuedTurnsRaw.value.filter((q) => q.threadId !== event.threadId)
@@ -610,8 +617,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         // A Stop keeps queued work from starting, not the words: they go back
         // to the composer. (The first "stop" event clears the whole line, so
         // this hands everything back once.)
-        if (event.reason === "stop" && dropped.length > 0) {
-          queueReturn.value = mergeQueueReturn(dropped, Date.now());
+        if (returned.length > 0) {
+          queueReturn.value = mergeQueueReturn(returned, Date.now());
         }
         break;
       }
