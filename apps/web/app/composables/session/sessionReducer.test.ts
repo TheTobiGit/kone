@@ -430,3 +430,56 @@ describe("an agent's message waiting in the queue", () => {
     expect(block?.role === "user" ? block.sender?.kind : undefined).toBe("agent");
   });
 });
+
+describe("a message kone journals for someone else", () => {
+  function journaled(id: string, beforeBlockId?: string): RuntimeEvent {
+    const event: Extract<RuntimeEvent, { type: "thread.message-journaled" }> = {
+      ...base,
+      type: "thread.message-journaled",
+      at: 200,
+      block: {
+        id,
+        role: "user",
+        text: `from Ada ${id}`,
+        at: 200,
+        sender: { kind: "agent", threadId: "ada", name: "Ada", relationship: "peer" },
+      },
+    };
+    if (beforeBlockId) event.beforeBlockId = beforeBlockId;
+    return event;
+  }
+
+  function withOwnWords() {
+    const session = makeSession();
+    session.blocks.value = [
+      { id: "ub-1", role: "user", text: "first", at: 1 },
+      { id: "ub-2", role: "user", text: "the turn's own words", at: 2 },
+    ];
+    return session;
+  }
+
+  test("reads above the block it belongs in front of", () => {
+    const session = withOwnWords();
+    session.reduce(journaled("ub-a", "ub-2"));
+    expect(timeline(session.blocks)).toEqual(["user: first", "user: from Ada ub-a", "user: the turn's own words"]);
+  });
+
+  test("goes at the tail without one, or when that block is not loaded", () => {
+    const session = withOwnWords();
+    session.reduce(journaled("ub-a"));
+    session.reduce(journaled("ub-b", "ub-missing"));
+    expect(timeline(session.blocks)).toEqual([
+      "user: first",
+      "user: the turn's own words",
+      "user: from Ada ub-a",
+      "user: from Ada ub-b",
+    ]);
+  });
+
+  test("lands once", () => {
+    const session = withOwnWords();
+    session.reduce(journaled("ub-a", "ub-2"));
+    session.reduce(journaled("ub-a", "ub-1"));
+    expect(session.blocks.value.filter((b) => b.id === "ub-a")).toHaveLength(1);
+  });
+});
