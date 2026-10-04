@@ -81,7 +81,7 @@ export type SessionReducerDeps = {
   pendingApprovals: Ref<PendingApproval[]>;
   anchorFor: (userBlockId: string, queueId: string) => string | undefined;
   queuedBlockIdsOf: (rows: QueuedTurnEntry[]) => Set<string>;
-  usersOwnQueuedRows: (rows: QueuedTurnEntry[], blocks: readonly ThreadBlock[]) => QueuedTurnEntry[];
+  usersOwnQueuedRows: (rows: QueuedTurnEntry[]) => QueuedTurnEntry[];
   sortQueuedByIds: (rows: QueuedTurnEntry[], ids: readonly string[]) => QueuedTurnEntry[];
   parseQueuedAttachments: (json?: string | null) => ChatAttachment[] | undefined;
   noteCompactedBoundary: (marker: CompactionRecord) => void;
@@ -568,6 +568,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         if (event.effort) entry.effort = event.effort;
         if (event.model) entry.model = event.model;
         if (event.mode) entry.mode = event.mode;
+        if (event.sender) entry.sender = event.sender;
         if (blockId) entry.blockId = blockId;
         // A re-seed may already hold this queueId — replace, never duplicate.
         // The backend's run order wins (a steer row claims ahead of plain
@@ -608,9 +609,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
           : queuedTurnsRaw.value.filter((q) => q.queueId === event.queueId);
         // Only the user's own words go back to the composer on a Stop: an
         // agent's message that waited in the queue was never theirs to edit.
-        // Read before the dropped blocks leave, since the blocks say who wrote
-        // each row.
-        const returned = event.reason === "stop" ? usersOwnQueuedRows(dropped, blocks.value) : [];
+        const returned = event.reason === "stop" ? usersOwnQueuedRows(dropped) : [];
         pendingQueueAnchors.delete(event.queueId);
         queuedTurnsRaw.value = clearingAll
           ? queuedTurnsRaw.value.filter((q) => q.threadId !== event.threadId)

@@ -1036,6 +1036,11 @@ export type QueuedTurnRow = {
   contextWindow?: string;
   /** Times this turn was claimed; survives release→reclaim (the retry ledger). */
   attemptCount: number;
+  /** Who wrote the row's words, read from the block it was journaled as:
+   *  `{ kind: "user" }` for the user, an agent or kone otherwise. Absent when
+   *  the row has no block on record, which a user's send always has — so
+   *  absent is never the user's. */
+  sender?: MessageSender;
   createdAt: number;
   updatedAt: number;
   promotedAt?: number;
@@ -1722,6 +1727,9 @@ export type RuntimeEvent =
       userBlockId: string;
       dispatchMode: "queue" | "steer";
       position: number;
+      /** Who wrote the row's words, as QueuedTurnRow.sender: `{ kind: "user" }`
+       *  for the user; absent when the row has no block on record. */
+      sender?: MessageSender;
       input?: string;
       /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
       attachmentsJson?: string | null;

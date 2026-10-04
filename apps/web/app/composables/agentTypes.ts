@@ -260,6 +260,11 @@ export type QueuedTurnRow = {
   /** The user's prompt text (also derivable from the anchored block; kept so
    *  an optimistic chip can render before a block is ever matched). */
   input: string;
+  /** Who wrote the row's words, read from the block it was journaled as:
+   *  `{ kind: "user" }` for the user, an agent or kone otherwise. Absent when
+   *  the row has no block on record, which a user's send always has — so
+   *  absent is never the user's. */
+  sender?: MessageSender;
   createdAt: number;
   /** Files/images queued with the request (metadata only). A stored row
    *  arrives with these parsed; a live turn.queued row is parsed into them. */

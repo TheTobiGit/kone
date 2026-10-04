@@ -142,6 +142,7 @@ export function createMockTurnRunner(deps: {
       position: queuedTurnsRaw.value.length + 1,
       input,
       attachmentsJson: serializeQueuedAttachments(attachments),
+      sender: { kind: "user" },
     };
     if (skills?.length && event.type === "turn.queued") event.skills = skills;
     reduce(event);

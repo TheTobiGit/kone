@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ref } from "vue";
-import type { KoneAgentApi } from "~/types/desktop";
+import type { KoneAgentApi, QueuedTurnRow } from "~/types/desktop";
 import type { QueuedTurnEntry, ThreadBlock } from "../agentTypes";
 import { usersOwnQueuedRows, useSessionQueue } from "./sessionQueue";
 
@@ -56,50 +56,55 @@ describe("Send now on a queued row", () => {
 });
 
 describe("the strip shows the user's own queued rows", () => {
-  const agentSender = { kind: "agent", threadId: "peer", name: "Ada", relationship: "peer" } as const;
+  const ada = { kind: "agent", threadId: "ada", name: "Ada", relationship: "peer" } as const;
 
-  function row(queueId: string, userBlockId: string, over: Partial<QueuedTurnEntry> = {}): QueuedTurnEntry {
-    return { ...ENTRY, queueId, userBlockId, state: "queued", ...over };
+  function row(queueId: string, over: Partial<QueuedTurnEntry> = {}): QueuedTurnEntry {
+    return { ...ENTRY, queueId, userBlockId: `ub-${queueId}`, state: "queued", ...over };
   }
 
-  test("a row whose block another agent wrote is left out, and the rest renumber", () => {
-    const blocks = ref<ThreadBlock[]>([
-      { id: "ub-agent", role: "user", text: "<agent_messages>…</agent_messages>", at: 1, sender: agentSender },
-      { id: "ub-mine", role: "user", text: "mine", at: 2 },
-    ]);
+  function queueOn(rows: QueuedTurnRow[]) {
+    // SAFETY: seeding reads only queuedTurns, stubbed here.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    const api = { queuedTurns: async () => rows } as unknown as KoneAgentApi;
     const queue = useSessionQueue({
-      blocks,
+      // A reopened thread whose queued messages' blocks are not in the loaded
+      // page: nothing on screen says who wrote them.
+      blocks: ref<ThreadBlock[]>([]),
       threadId: ref("t1"),
-      bridge: () => null,
+      bridge: () => api,
       error: ref<string | null>(null),
       busy: ref(true),
       ensureSession: async () => true,
       send: async () => {},
       steerTurn: async () => {},
     });
-    queue.queuedTurnsRaw.value = [row("q-agent", "ub-agent"), row("q-mine", "ub-mine"), row("q-reseeded", "ub-gone")];
+    return { queue, api };
+  }
 
-    expect(queue.queuedTurns.value.map((q) => [q.queueId, q.position])).toEqual([
-      ["q-mine", 1],
-      ["q-reseeded", 2],
-    ]);
-    // The raw list keeps the agent's row, so its block stays held back from
-    // the transcript until it runs.
-    expect(queue.queuedTurnsRaw.value).toHaveLength(3);
+  test("a reopened thread's queue shows only the rows the user wrote, renumbered", async () => {
+    const stored: QueuedTurnRow[] = [
+      { ...row("agent", { sender: ada }), input: "<agent_messages>from Ada</agent_messages>", attemptCount: 0, updatedAt: 1 },
+      { ...row("orphan"), attemptCount: 0, updatedAt: 1 },
+      { ...row("mine", { sender: { kind: "user" } }), attemptCount: 0, updatedAt: 1 },
+      { ...row("notice", { sender: { kind: "system" } }), attemptCount: 0, updatedAt: 1 },
+    ];
+    const { queue, api } = queueOn(stored);
+    queue.seedQueuedTurns(api);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(queue.queuedTurns.value.map((q) => [q.queueId, q.position])).toEqual([["mine", 1]]);
+    // The raw list keeps every row, so their blocks stay held back from the
+    // transcript until they run.
+    expect(queue.queuedTurnsRaw.value).toHaveLength(4);
   });
 
-  test("a row anchored to an agent's block by its blockId is left out too", () => {
-    const blocks: ThreadBlock[] = [
-      { id: "ub-agent", role: "user", text: "x", at: 1, sender: { kind: "courier" } },
+  test("only a user sender is the user's", () => {
+    const rows = [
+      row("a", { sender: ada }),
+      row("b", { sender: { kind: "courier" } }),
+      row("c"),
+      row("d", { sender: { kind: "user" } }),
     ];
-    expect(usersOwnQueuedRows([row("q", "ub-other", { blockId: "ub-agent" })], blocks)).toEqual([]);
-  });
-
-  test("kone's notices count as not the user's; a user sender does", () => {
-    const blocks: ThreadBlock[] = [
-      { id: "ub-sys", role: "user", text: "x", at: 1, sender: { kind: "system" } },
-      { id: "ub-me", role: "user", text: "y", at: 2, sender: { kind: "user" } },
-    ];
-    expect(usersOwnQueuedRows([row("a", "ub-sys"), row("b", "ub-me")], blocks).map((q) => q.queueId)).toEqual(["b"]);
+    expect(usersOwnQueuedRows(rows).map((q) => q.queueId)).toEqual(["d"]);
   });
 });

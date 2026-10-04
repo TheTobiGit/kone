@@ -52,7 +52,7 @@ function queuedEvent<T extends QueueEventType>(
 ): Extract<RuntimeEvent, { type: T }> {
   // SAFETY: test fixture — `extra` supplies every non-envelope field of the
   // one union member `T` names; the literals above pin the AgentBaseEvent half.
-  return {
+  const event = {
     threadId,
     provider: "codex",
     at: Date.now(),
@@ -60,6 +60,11 @@ function queuedEvent<T extends QueueEventType>(
     ...extra,
     type,
   } as Extract<RuntimeEvent, { type: T }>;
+  // The store says who wrote every queued row it announces; these rows are
+  // the user's own sends unless a test says otherwise.
+  const runtime: RuntimeEvent = event;
+  if (runtime.type === "turn.queued" && !runtime.sender) runtime.sender = { kind: "user" };
+  return event;
 }
 
 function userBlock(id: string, text = "follow-up"): UserBlock {
