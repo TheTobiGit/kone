@@ -6,6 +6,7 @@ import type { RelationshipToParent } from "../types.js";
 import { readAntigravityConversationUsage, resolveAntigravityContextWindow } from "../usage/local/antigravityScan.js";
 import { getUserDataDir } from "../userDataDir.js";
 import { REOPEN_COOLDOWN_MS, UnsupportedSchemaError, assistantBlockId, migrate } from "../conversationMigrations.js";
+import { releaseOrphanedInboxClaims } from "./agentInbox.js";
 
 /** Max cached prepared statements per connection (FIFO eviction). 200 covers
  *  the static query set with room to spare, and is small enough that dynamic
@@ -122,6 +123,10 @@ export class ConversationDb {
       // is orphaned by definition and waiting out a lease would only delay
       // the queue.
       this.releaseOrphanedJobClaims(db);
+      // Sixth pass: inbox messages a dead process was handing over go back to
+      // unseen, keeping the block they were written as, so the next hand-over
+      // carries them again without writing them twice.
+      releaseOrphanedInboxClaims(db);
       // Fourth pass: populate token totals for stored Antigravity threads whose
       // tokens were not backfilled at turn run time.
       this.backfillAntigravityTokens(db);

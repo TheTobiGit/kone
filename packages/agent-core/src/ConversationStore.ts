@@ -11,6 +11,7 @@ import { ModelPreferenceRepo } from "./store/modelPreferences.js";
 import type { ModelPreference } from "./modelPreference.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
+import { AgentInboxRepo, type AgentInboxStore, type InboxClaim, type InboxInsert, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
@@ -28,7 +29,7 @@ import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
 export { GLOBAL_ASSISTANT_PROJECT_PATH };
 
-export class ConversationStore implements CheckpointStore {
+export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly dbh: ConversationDb;
   private readonly studio: StudioRepo;
   private readonly gatewayOps: GatewayOpRepo;
@@ -41,6 +42,7 @@ export class ConversationStore implements CheckpointStore {
   private readonly modelPreferences: ModelPreferenceRepo;
   private readonly threadLifecycle: ThreadLifecycleRepo;
   private readonly queuedTurns: QueuedTurnRepo;
+  private readonly agentInbox: AgentInboxRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
@@ -75,6 +77,7 @@ export class ConversationStore implements CheckpointStore {
     });
     this.transcript = new TranscriptRepo(this.dbh);
     this.queuedTurns = new QueuedTurnRepo(this.dbh);
+    this.agentInbox = new AgentInboxRepo(this.dbh);
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
@@ -262,6 +265,61 @@ export class ConversationStore implements CheckpointStore {
   /** @see QueuedTurnRepo */
   listQueuedTurns(threadId: string): QueuedTurnRow[] {
     return this.queuedTurns.listQueuedTurns(threadId);
+  }
+
+  /** @see AgentInboxRepo */
+  insertInboxMessage(input: InboxInsert): InboxInsertResult {
+    return this.agentInbox.insertInboxMessage(input);
+  }
+
+  /** @see AgentInboxRepo */
+  claimInbox(recipientThreadId: string, limit: number): InboxClaim | null {
+    return this.agentInbox.claimInbox(recipientThreadId, limit);
+  }
+
+  /** @see AgentInboxRepo */
+  settleInboxDelivery(deliveryId: string, turnId: string | null): number {
+    return this.agentInbox.settleInboxDelivery(deliveryId, turnId);
+  }
+
+  /** @see AgentInboxRepo */
+  releaseInboxDelivery(deliveryId: string): number {
+    return this.agentInbox.releaseInboxDelivery(deliveryId);
+  }
+
+  /** @see AgentInboxRepo */
+  setInboxBlockId(inboxId: string, blockId: string): void {
+    this.agentInbox.setInboxBlockId(inboxId, blockId);
+  }
+
+  /** @see AgentInboxRepo */
+  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia): string[] {
+    return this.agentInbox.markInboxSeen(inboxIds, via);
+  }
+
+  /** @see AgentInboxRepo */
+  retractInboxMessage(inboxId: string): boolean {
+    return this.agentInbox.retractInboxMessage(inboxId);
+  }
+
+  /** @see AgentInboxRepo */
+  listUnseenInbox(recipientThreadId: string, limit?: number): InboxRow[] {
+    return this.agentInbox.listUnseenInbox(recipientThreadId, limit);
+  }
+
+  /** @see AgentInboxRepo */
+  inboxHistory(recipientThreadId: string, limit: number): InboxRow[] {
+    return this.agentInbox.inboxHistory(recipientThreadId, limit);
+  }
+
+  /** @see AgentInboxRepo */
+  unseenInboxCount(recipientThreadId: string): number {
+    return this.agentInbox.unseenInboxCount(recipientThreadId);
+  }
+
+  /** @see AgentInboxRepo */
+  resetInboxHandingAtBoot(): void {
+    this.agentInbox.resetHandingAtBoot();
   }
 
   /** @see TurnCheckpointRepo */

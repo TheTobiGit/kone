@@ -570,14 +570,15 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(() => mailbox.sendMessage(a, { to: "b", message: "again" })).not.toThrow();
   });
 
-  test("an inbox nobody drains keeps the newest, not the first fifty", () => {
+  test("an inbox nobody drains drops nothing", () => {
     const mailbox = new IrcMailbox();
     for (let i = 0; i < 60; i++) {
       mailbox.sendMessage({ threadId: `s${i}`, projectPath: "/p" }, { to: "b", message: `m${i}` });
     }
 
-    expect(mailbox.getUnreadCount("b")).toBe(50);
+    expect(mailbox.getUnreadCount("b")).toBe(60);
     const { messages } = mailbox.getInbox("b", { peek: true });
+    expect(messages[0]!.message).toBe("m0");
     expect(messages[messages.length - 1]!.message).toBe("m59");
   });
 
@@ -812,5 +813,54 @@ describe("createIrcTools gateway registration and execution", () => {
       message: "Second message after unsubscribe",
     });
     expect(interrupted.length).toBe(1);
+  });
+});
+
+describe("waitForReply takes its answer in one step", () => {
+  const asker = { threadId: "a", projectPath: PROJECT_A };
+  const answerer = { threadId: "b", projectPath: PROJECT_A };
+
+  test("an answer the waiting sender took is gone for a hand-over", async () => {
+    const mailbox = new IrcMailbox();
+    const asked = mailbox.sendMessage(asker, { to: "b", message: "which db?", kind: "question" });
+    const waiting = mailbox.waitForReply("a", asked.copyIds, 1_000);
+    mailbox.sendMessage(answerer, { to: "a", message: "sqlite", kind: "answer", replyTo: asked.messageId });
+
+    expect((await waiting)?.message).toBe("sqlite");
+    expect(mailbox.claimDelivery("a", 8)).toBeNull();
+    expect(mailbox.getUnreadCount("a")).toBe(0);
+  });
+
+  test("an answer a hand-over claimed first is not also returned to the sender", async () => {
+    const mailbox = new IrcMailbox();
+    const asked = mailbox.sendMessage(asker, { to: "b", message: "which db?", kind: "question" });
+    mailbox.sendMessage(answerer, { to: "a", message: "sqlite", kind: "answer", replyTo: asked.messageId });
+    const claim = mailbox.claimDelivery("a", 8);
+    expect(claim?.messages.map((m) => m.message)).toEqual(["sqlite"]);
+
+    expect(await mailbox.waitForReply("a", asked.copyIds, 10)).toBeNull();
+  });
+
+  test("a hand-over released after a failed send lets the waiting sender take it", async () => {
+    const mailbox = new IrcMailbox();
+    const asked = mailbox.sendMessage(asker, { to: "b", message: "which db?", kind: "question" });
+    mailbox.sendMessage(answerer, { to: "a", message: "sqlite", kind: "answer", replyTo: asked.messageId });
+    mailbox.releaseDelivery(mailbox.claimDelivery("a", 8)!.deliveryId);
+
+    expect((await mailbox.waitForReply("a", asked.copyIds, 10))?.message).toBe("sqlite");
+  });
+
+  test("an answer to any recipient's copy of a broadcast releases the sender", async () => {
+    const mailbox = new IrcMailbox();
+    mailbox.registerThread({ threadId: "a", projectPath: PROJECT_A });
+    mailbox.registerThread({ threadId: "b", projectPath: PROJECT_A });
+    mailbox.registerThread({ threadId: "c", projectPath: PROJECT_A });
+    const asked = mailbox.sendMessage(asker, { to: "all", message: "anyone?", kind: "question" });
+    expect(new Set(asked.copyIds).size).toBe(2);
+    const cCopy = mailbox.getInbox("c").messages[0]!;
+
+    const waiting = mailbox.waitForReply("a", asked.copyIds, 1_000);
+    mailbox.sendMessage({ threadId: "c", projectPath: PROJECT_A }, { to: "a", message: "me", kind: "answer", replyTo: cCopy.id });
+    expect((await waiting)?.message).toBe("me");
   });
 });

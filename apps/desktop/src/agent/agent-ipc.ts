@@ -27,7 +27,7 @@ import {
 import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
 import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
 import { createMailboxReportSink } from "@kone/agent-core/settleReports.js";
-import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
+import { configureIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
 import { currentAppearance, currentThemeRoster } from "../modules/system/system.js";
@@ -148,6 +148,10 @@ export function registerAgentIpc(): void {
   const svc = getAgentService();
   const store = getConversationStore();
   const attachments = getAttachmentStore();
+  // Agent mail is kept in the conversation store, so a message waiting for its
+  // recipient survives a quit. Set before the gateway is built: its tools, the
+  // delivery and the courier all reach for the same mailbox.
+  const mailbox = configureIrcMailbox(store);
 
   // Startup GC pass for orphaned attachment bytes (a crash between the
   // temp-write and the registry insert, or a row dropped after a failed
@@ -398,7 +402,7 @@ export function registerAgentIpc(): void {
   // Without this the IRC tools are a dead drop — every inbox read comes back
   // empty and an agent that reached for one concludes messaging is broken.
   stopIrcDelivery = startIrcDelivery({
-    mailbox: getIrcMailbox(),
+    mailbox,
     dispatcher,
     isLive: (threadId) => svc.hasLiveSession(threadId),
     isBusy: (threadId) => svc.isThreadBusy(threadId),
@@ -436,7 +440,7 @@ export function registerAgentIpc(): void {
     // parent by the courier, kone's own agent, as a report — through the same
     // mailbox and delivery as agent_message.
     reports: createMailboxReportSink({
-      mailbox: getIrcMailbox(),
+      mailbox,
       store,
       isBusy: (threadId) => svc.isThreadBusy(threadId),
       queueNotice: (threadId, text, sender) => dispatcher.queueNotice(threadId, text, sender),
