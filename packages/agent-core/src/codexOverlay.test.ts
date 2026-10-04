@@ -1,5 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -111,6 +121,32 @@ describe("prepareCodexHomeOverlay", () => {
     // The user's own table survives intact inside the user part; kone adds no
     // second one.
     expect(userPart(config)).toBe('[shell_environment_policy]\nexclude = ["*SECRET*", "' + CODEX_GATEWAY_TOKEN_ENV + '"]');
+  });
+
+  // A database codex created in the overlay is the overlay's own; its log and
+  // shared memory must be too. Linked to the real home's, they belong to
+  // another database, and codex cannot open this one.
+  test("a database of the overlay's own keeps its sidecars local, while a linked one's are linked", () => {
+    const source = makeHome();
+    for (const name of ["thread_history_1.sqlite", "state_5.sqlite"]) {
+      for (const suffix of ["", "-wal", "-shm"]) writeFileSync(path.join(source, name + suffix), "real home");
+    }
+    const overlay = makeHome() + "/overlay";
+    mkdirSync(overlay);
+    writeFileSync(path.join(overlay, "thread_history_1.sqlite"), "overlay's own");
+    // What an earlier build left: links beside the overlay's own database.
+    symlinkSync(path.join(source, "thread_history_1.sqlite-wal"), path.join(overlay, "thread_history_1.sqlite-wal"));
+
+    prepareCodexHomeOverlay({ endpointUrl: "http://127.0.0.1:41002/mcp", sourceHome: source, overlayHome: overlay });
+
+    expect(readFileSync(path.join(overlay, "thread_history_1.sqlite"), "utf8")).toBe("overlay's own");
+    expect(existsSync(path.join(overlay, "thread_history_1.sqlite-wal"))).toBe(false);
+    expect(existsSync(path.join(overlay, "thread_history_1.sqlite-shm"))).toBe(false);
+    // The real home's files are untouched.
+    expect(readFileSync(path.join(source, "thread_history_1.sqlite-wal"), "utf8")).toBe("real home");
+    for (const suffix of ["", "-wal", "-shm"]) {
+      expect(lstatSync(path.join(overlay, "state_5.sqlite" + suffix)).isSymbolicLink()).toBe(true);
+    }
   });
 
   test("works when the source home does not exist at all", () => {
