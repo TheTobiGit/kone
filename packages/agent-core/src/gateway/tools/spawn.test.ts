@@ -1046,6 +1046,37 @@ describe("spawn gateway tools", () => {
     ).rejects.toEqual(expect.objectContaining({ name: "AbortError" }));
   });
 
+  // A provider that reads the structured half in place of the text saw the
+  // thread and the turn, and no reply.
+  test("agent_read's final reply is in the structured half too", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const thread: StoredThread = {
+      threadId: "child-1",
+      projectPath: "/repo",
+      provider: "claudeAgent",
+      createdAt: 1,
+      updatedAt: 2,
+      title: "login UI",
+      blocks: [
+        { id: "u-1", role: "user", text: "Build the login screen.", at: 1 },
+        {
+          id: "a-1",
+          role: "assistant",
+          turnId: "turn-1",
+          state: "completed",
+          at: 2,
+          items: [{ itemId: "i-1", kind: "assistant_text", status: "completed", text: "The screen is in, tests green." }],
+        },
+      ],
+    };
+    const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
+    for (const scope of ["final", "response"] as const) {
+      const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope });
+      expect(res.content[0]?.text ?? "").toContain("The screen is in, tests green.");
+      expect(String(res.structuredContent?.text)).toContain("The screen is in, tests green.");
+    }
+  });
+
   test("agent_read on an out-of-subtree id returns not_found", async () => {
     currentEngine = makeEngine({ isInSubtree: () => false });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
