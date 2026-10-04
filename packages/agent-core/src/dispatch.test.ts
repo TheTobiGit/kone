@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
-import { composeTurnDelivery } from "./dispatch.js";
+import { composeTurnDelivery, inboxBlockId } from "./dispatch.js";
 import { isWorkspaceCancel } from "@kone/protocol/ipc-error";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
@@ -406,6 +406,29 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     // The id it hands back is the block's, so the turn that delivers the words
     // can name it.
     expect(blockId).toBe(journaledEvents[0]!.id);
+  });
+
+  test("a held message written to the transcript but never linked to its row is not written twice", async () => {
+    const { store, dispatcher, mailbox } = await harness();
+    const sender = {
+      kind: "courier" as const,
+      messageKind: "report" as const,
+      about: { threadId: "t-child", name: "Ada", relationship: "delegate" as const },
+    };
+    const sent = mailbox.sendCourierMessage({
+      to: THREAD,
+      projectPath: CWD,
+      message: "Ada finished.",
+      kind: "report",
+      sender,
+      rings: false,
+    });
+    // The crash window: the block was written, the row never learned it.
+    dispatcher.recordAgentMessage({ threadId: THREAD, text: "Ada finished.", sender, inboxId: sent!.messageId });
+
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "carry on" });
+    expect(userTexts(store)).toEqual(["Ada finished.", "carry on"]);
+    expect(mailbox.message(sent!.messageId)?.blockId).toBe(inboxBlockId(sent!.messageId));
   });
 
   test("a report the courier holds rides in front of the next turn, journaled then as the courier's", async () => {

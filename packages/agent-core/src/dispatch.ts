@@ -183,6 +183,9 @@ export interface ThreadDispatcher {
     /** The turn's own block this message reads above, when it is already on
      *  the transcript. */
     beforeBlockId?: string;
+    /** The inbox message this writes. Its block id is derived from it, so a
+     *  retry after a crash finds the block already written. */
+    inboxId?: string;
   }): string | null;
   /** A follow-up from `parentTurnId` is on its way to `threadId`: stamp the
    *  child's events with that turn, as a send carrying it would. */
@@ -206,6 +209,11 @@ export interface ThreadDispatcher {
   onTurnCompleted(threadId: string): void;
   /** Drop per-thread bookkeeping when a thread is deleted. */
   forgetThread(threadId: string): void;
+}
+
+/** The transcript block an inbox message is written as. */
+export function inboxBlockId(inboxId: string): string {
+  return `blk_${inboxId}`;
 }
 
 /**
@@ -797,7 +805,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (!claim) return null;
     for (const message of claim.messages) {
       if (message.blockId || !message.sender) continue;
-      const blockId = this.recordAgentMessage({ threadId, text: message.message, sender: message.sender });
+      const blockId = this.recordAgentMessage({ threadId, text: message.message, sender: message.sender, inboxId: message.id });
       if (!blockId) continue;
       message.blockId = blockId;
       mailbox.setBlockId(message.id, blockId);
@@ -814,8 +822,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     text: string;
     sender: MessageSender;
     beforeBlockId?: string;
+    inboxId?: string;
   }): string | null {
-    const blockId = randomUUID();
+    // A message's block is named after it. The block and the inbox row's link
+    // to it are two writes, so a crash between them leaves the block unlinked;
+    // the retry finds it under the same name instead of writing a second.
+    const blockId = input.inboxId ? inboxBlockId(input.inboxId) : randomUUID();
+    if (input.inboxId && this.store.userBlockSender(input.threadId, blockId)) return blockId;
     const count = this.store.recordUserBlock({
       blockId,
       threadId: input.threadId,
