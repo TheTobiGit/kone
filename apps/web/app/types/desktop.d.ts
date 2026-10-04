@@ -1577,6 +1577,9 @@ export type RuntimeEvent =
   | (AgentBaseEvent & {
       type: "thread.message-journaled";
       block: Extract<StoredBlock, { role: "user" }>;
+      /** The block this one reads above, when it was written for a turn whose
+       *  own words are already on the transcript; absent, it goes last. */
+      beforeBlockId?: string;
     })
   // An agent gateway write landed on a project's scratchpad
   // (scratchpad_write). `projectPath` scopes it to the project the pad

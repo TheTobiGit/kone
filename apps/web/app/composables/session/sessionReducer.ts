@@ -391,12 +391,20 @@ export function useSessionReducer(deps: SessionReducerDeps) {
       case "thread.message-journaled": {
         // Words kone put on this transcript for someone else — an agent's
         // brief or message, kone's own notice. The user's own sends never
-        // arrive here (they are placed as they are sent), so this appends at
-        // the tail, once.
+        // arrive here (they are placed as they are sent). Written for a turn
+        // whose own words are already on screen, it reads above them;
+        // otherwise, or when that block is not loaded here, it goes at the
+        // tail. Once either way.
         if (blocks.value.some((b) => b.id === event.block.id)) break;
         const { effort: _effort, ...journaled } = event.block;
         const block: UserBlock = { ...journaled };
-        blocks.value = [...blocks.value, block];
+        const before = event.beforeBlockId
+          ? blocks.value.findIndex((b) => b.id === event.beforeBlockId)
+          : -1;
+        blocks.value =
+          before === -1
+            ? [...blocks.value, block]
+            : [...blocks.value.slice(0, before), block, ...blocks.value.slice(before)];
         break;
       }
       case "thread.workspace.progress":
