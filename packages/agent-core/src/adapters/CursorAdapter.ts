@@ -774,6 +774,9 @@ export class CursorAdapter implements ProviderAdapter {
     // No native compaction call — manual compaction runs as a `/compress`
     // command turn, which the agent understands.
     compaction: { kind: "command", command: "/compress" },
+    // A read that completed before the cancel comes back to the model as an
+    // interrupted call: asked next turn, it says the read never returned.
+    cancelKeepsCompletedTools: false,
   };
 
   private readonly emit: EmitEvent;

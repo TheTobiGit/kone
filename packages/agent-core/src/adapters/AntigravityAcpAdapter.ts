@@ -304,6 +304,8 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     // models cross the protocol, so a delegated run isn't distinguishable as
     // a nested one.
     supportsSubagents: false,
+    // Not yet probed.
+    cancelKeepsCompletedTools: false,
   };
 
   private readonly emit: EmitEvent;

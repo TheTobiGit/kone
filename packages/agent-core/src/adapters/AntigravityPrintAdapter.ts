@@ -960,6 +960,9 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     // produce is attributable: the capture hooks tag each line with the
     // child's own conversation id, and the child writes its own transcript.
     supportsSubagents: true,
+    // The interrupt kills the process tree, yet the completed read is in the
+    // conversation the next invocation resumes, live and after a reopen.
+    cancelKeepsCompletedTools: true,
   };
 
   private readonly emit: EmitEvent;

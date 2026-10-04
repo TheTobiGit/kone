@@ -299,6 +299,11 @@ export class ClineAdapter implements ProviderAdapter {
     supportsSubagents: false,
     // No compaction entry: Cline compacts on its own (`--compaction agentic`)
     // and no manual trigger was verified.
+
+    // The completed read survives the cancel into the next turn. A resumed
+    // session answers nothing at all, cancelled or not, so the resume half
+    // says nothing about cancelling.
+    cancelKeepsCompletedTools: true,
   };
 
   private readonly emit: EmitEvent;

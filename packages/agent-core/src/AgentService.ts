@@ -905,6 +905,13 @@ export class AgentService {
     return this.adapters.get(provider)?.steerTurn !== undefined;
   }
 
+  /** Whether `provider` still holds a finished tool call's result after its
+   *  turn is cancelled — what kone steer needs before it may interrupt a
+   *  provider that cannot steer. False for an unknown provider. */
+  providerCancelKeepsCompletedTools(provider: ProviderKind): boolean {
+    return this.adapters.get(provider)?.capabilities.cancelKeepsCompletedTools === true;
+  }
+
   /** What one thread is doing right now, read-only: what a sender looks at
    *  before deciding whether a message is worth disturbing it. */
   threadRuntime(threadId: string): ThreadRuntime {

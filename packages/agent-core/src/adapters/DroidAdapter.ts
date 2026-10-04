@@ -552,6 +552,8 @@ export class DroidAdapter implements ProviderAdapter {
     // command turn, the word droid's own CLI reference documents for
     // compressing the session.
     compaction: { kind: "command", command: "/compress" },
+    // Not yet probed.
+    cancelKeepsCompletedTools: false,
   };
 
   private readonly emit: EmitEvent;
