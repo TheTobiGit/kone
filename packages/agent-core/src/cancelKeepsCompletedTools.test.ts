@@ -67,7 +67,7 @@ describe("the cancel probe's results", () => {
     ["Cline", () => new ClineAdapter(emit), true],
     ["Droid", () => new DroidAdapter(emit), false],
     ["Antigravity ACP", () => new AntigravityAcpAdapter(emit, { userDataDir: userData }), false],
-    ["Antigravity print", () => new AntigravityPrintAdapter(emit), true],
+    ["Antigravity print", () => new AntigravityPrintAdapter(emit), false],
     ["Antigravity", () => new AntigravityAdapter(emit, undefined, { userDataDir: userData }), false],
   ] as const)("%s", (_name, make, expected) => {
     expect(make().capabilities.cancelKeepsCompletedTools).toBe(expected);
