@@ -491,6 +491,14 @@ A review of everything since Phase 0 held `delivery.v2` back until findings 1–
 | 8. Agent mail reads as the user's queued text on reload | Backend half: `QueuedTurnRow.sender` and `turn.queued.sender`, read from the row's block. The renderer half is Maya's | `3f923e98` |
 | `agent_read` final/response looked empty to providers that read the structured half | The rendered reply is in `structuredContent.text` too | `4ae5551b` |
 
+A re-review found 4, 5 and 7 fixed and withdrew 6; three fixes were partial:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| 2. A steer that found the announced turn ended, while the next send was on its way, was queued and the job settled with the queue id | The ringer's steer is live only: `steerTurn` refuses it rather than queue it, and the mail stays unseen for the backoff. A queued result says `queued: true`, and `onAccepted` never runs for one | `048b2144` |
+| 1. With `delivery.v2` off, legacy delivery and held notices settled after the checkpoint | Both settle through `onAccepted`, before the checkpoint. A turn the service queued still settles to its row, which carries the messages from there | `dc9bfbf0` |
+| 3. A failed settle followed by a crash replayed accepted mail at boot | Each hand-over marks its rows `sent_at` right before the provider gets the turn. At boot a row never sent is handed over again; a sent one is settled with the turn the transcript shows took it — the turn its block was steered into, or the first turn that started once it was sent. A sent row the transcript cannot settle is still released for now; holding it instead is the open question | `d2369971` |
+
 ## 13. Shipped while this was worked out
 
 | Commit | What |
