@@ -19,7 +19,7 @@ import type {
   UserInputRespondResult,
 } from "./types.js";
 import { assistantWorkingDir } from "./assistantWorkspace.js";
-import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
+import { GLOBAL_ASSISTANT_PROJECT_PATH, type CheckpointStore } from "./conversationStoreTypes.js";
 
 // The thread dispatcher against a REAL ConversationStore and a real
 // AgentService, with only the provider adapter faked. The store is what makes
@@ -183,7 +183,7 @@ let freshenAnswer: { base?: string; note?: string } | Error = {};
 /** Every branch rename the dispatcher asked for. */
 const renamed: Array<{ worktreePath: string; title: string }> = [];
 
-async function harness(options: { reopen?: boolean } = {}): Promise<{
+async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStore } = {}): Promise<{
   store: StoreType;
   dispatcher: import("./dispatch.js").ThreadDispatcher;
   emit: EmitEvent;
@@ -196,7 +196,7 @@ async function harness(options: { reopen?: boolean } = {}): Promise<{
   const store = new ConversationStoreCtor();
   const mailbox = new IrcMailboxCtor(store);
   let captured: EmitEvent | undefined;
-  const service = new AgentServiceCtor({
+  const serviceOptions: ConstructorParameters<typeof AgentServiceCtor>[0] = {
     // SAFETY: the real store satisfies the queue slice the service reads.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     store: store as unknown as QueuedTurnStore,
@@ -206,7 +206,9 @@ async function harness(options: { reopen?: boolean } = {}): Promise<{
       // eslint-disable-next-line anti-slop/no-chained-type-assertions
       return [new FakeAdapter(emit) as unknown as ProviderAdapter];
     },
-  });
+  };
+  if (options.checkpoints) serviceOptions.checkpointStore = options.checkpoints;
+  const service = new AgentServiceCtor(serviceOptions);
   const dispatcher = initThreadDispatcher({
     service,
     store,
@@ -579,6 +581,30 @@ describe("thread dispatcher: kone's notices wait in the inbox for the next turn"
     await settled();
     expect(FakeAdapter.sent[0]).toContain("Ben withdrew this task.");
     expect(second.mailbox.heldCount(THREAD)).toBe(0);
+  });
+
+  // The process can die while the checkpoint after an accepted turn is being
+  // taken: the notice the turn carried is already seen by then.
+  test("a notice the provider took is settled before the turn's checkpoint is taken", async () => {
+    const atCheckpoint: Array<string | undefined> = [];
+    let held = (): string | undefined => undefined;
+    const checkpoints: CheckpointStore = {
+      threadProjectPath: () => CWD,
+      threadWorkspace: () => null,
+      recordTurnCheckpoint: () => false,
+      getTurnCheckpoint: () => {
+        atCheckpoint.push(held());
+        return null;
+      },
+      listTurnCheckpoints: () => [],
+      pruneTurnCheckpoints: () => [],
+    };
+    const { store, dispatcher } = await harness({ checkpoints });
+    held = () => store.inboxHistory(THREAD, 10)[0]?.state;
+    dispatcher.queueNotice(THREAD, "Ben stopped this task.");
+
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "what next?" });
+    expect(atCheckpoint).toEqual(["seen"]);
   });
 
   test("a silent turn carries what is held too, and names the blocks it carries", async () => {

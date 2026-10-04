@@ -9,6 +9,7 @@ import { setUserDataDir } from "./userDataDir.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
 import { IRC_DELIVERY_BATCH_MAX, IRC_DELIVERY_DEBOUNCE_MS, IRC_DELIVERY_RETRY_MS, startIrcDelivery } from "./ircDelivery.js";
 import type { IrcTurnDispatcher } from "./ircDelivery.js";
+import type { StartThreadTurnOptions } from "./dispatch.js";
 import type { SendTurnInput, TurnStartResult } from "./types.js";
 
 // Delivery against the REAL store, across restarts: the mail is on disk, so
@@ -54,7 +55,13 @@ async function settle(): Promise<void> {
 
 /** One process: a store on the shared file, a mailbox on it, a delivery with
  *  a hand-cranked clock, and a dispatcher whose sends the test decides. */
-function processOn(dir: string, opts: { live?: boolean; send?: (input: SendTurnInput) => Promise<TurnStartResult> } = {}) {
+function processOn(
+  dir: string,
+  opts: {
+    live?: boolean;
+    send?: (input: SendTurnInput, options?: StartThreadTurnOptions) => Promise<TurnStartResult>;
+  } = {},
+) {
   const store = new ConversationStoreCtor(dir);
   const mailbox = new IrcMailbox(store);
   const sent: SendTurnInput[] = [];
@@ -64,9 +71,9 @@ function processOn(dir: string, opts: { live?: boolean; send?: (input: SendTurnI
   const delays: number[] = [];
   const liveListeners = new Set<(threadId: string) => void>();
   let live = opts.live ?? true;
-  const send = async (input: SendTurnInput): Promise<TurnStartResult> => {
+  const send = async (input: SendTurnInput, options?: StartThreadTurnOptions): Promise<TurnStartResult> => {
     sent.push(input);
-    if (opts.send) return opts.send(input);
+    if (opts.send) return opts.send(input, options);
     return { threadId: input.threadId, turnId: `turn-${sent.length}` };
   };
   const dispatcher: IrcTurnDispatcher = { sendThreadTurn: send, steerThreadTurn: send };
@@ -136,6 +143,32 @@ describe("delivery on the stored inbox", () => {
     expect(second.sent[0]!.userBlockId).toBe(`blk-${sent!.messageId}`);
     expect(second.mailbox.getUnreadCount("parent")).toBe(0);
     expect(second.store.inboxHistory("parent", 10)[0]).toMatchObject({ state: "seen", turnId: "turn-1" });
+  });
+
+  // The provider took the turn; the process died while the checkpoint after
+  // it was still being taken. The batch was settled when the provider took
+  // it, so the next process has nothing to hand over again.
+  test("a batch the provider took is settled before the send resolves, and is not replayed after a restart", async () => {
+    const dir = freshDir();
+    const first = processOn(dir, {
+      send: (input, options) => {
+        options?.onAccepted?.("turn-1");
+        return new Promise<TurnStartResult>(() => {});
+      },
+    });
+    const sent = first.report("result");
+    first.tick();
+    await settle();
+    expect(first.store.inboxHistory("parent", 10)[0]).toMatchObject({ state: "seen", turnId: "turn-1" });
+    first.stop();
+
+    const second = processOn(dir, { live: false });
+    expect(second.mailbox.getUnreadCount("parent")).toBe(0);
+    second.comeBack("parent");
+    second.tick();
+    await settle();
+    expect(second.sent).toHaveLength(0);
+    expect(sent).toBeDefined();
   });
 
   test("a send that throws releases the batch; the retry names the same block", async () => {
