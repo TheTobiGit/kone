@@ -14,6 +14,7 @@ import {
   IrcSendInputSchema,
   IrcSendMessageInputSchema,
 } from "../schemas.js";
+import { MemoryAgentInbox } from "../../store/agentInbox.js";
 import {
   createIrcTools,
   getIrcMailbox,
@@ -115,12 +116,12 @@ describe("IRC Schema validation", () => {
     expect(IRC_MESSAGE_JSON_SCHEMA).toBe(IRC_SEND_MESSAGE_JSON_SCHEMA);
   });
 
-  test("IrcInboxInputSchema validates peek and limit options", () => {
+  test("IrcInboxInputSchema validates history and limit options", () => {
     expect(IrcInboxInputSchema.parse({})).toEqual({});
-    expect(IrcInboxInputSchema.parse({ peek: true })).toEqual({ peek: true });
+    expect(IrcInboxInputSchema.parse({ history: true })).toEqual({ history: true });
     expect(IrcInboxInputSchema.parse({ limit: 5 })).toEqual({ limit: 5 });
-    expect(IrcInboxInputSchema.parse({ peek: false, limit: 10 })).toEqual({
-      peek: false,
+    expect(IrcInboxInputSchema.parse({ history: false, limit: 10 })).toEqual({
+      history: false,
       limit: 10,
     });
 
@@ -663,7 +664,7 @@ describe("createIrcTools gateway registration and execution", () => {
     const result = await registry.call(ctxNoTurn, "agent_inbox", {});
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent?.count).toBe(0);
-    expect(result.content[0]!.text).toBe("Inbox is empty (0 unread messages).");
+    expect(result.content[0]!.text).toBe("Nothing unseen in your inbox.");
   });
 
   test("Calling agent_message with invalid inputs returns invalid_input", async () => {
@@ -688,7 +689,7 @@ describe("createIrcTools gateway registration and execution", () => {
     });
   });
 
-  test("Full tool workflow: send, peek, reply, and drain via registry", async () => {
+  test("Full tool workflow: send, read, reply, and history via registry", async () => {
     const store = new FakeIrcStore();
     store.addThread({ threadId: "agent-alice", projectPath: PROJECT_A });
     store.addThread({ threadId: "agent-bob", projectPath: PROJECT_A });
@@ -712,18 +713,19 @@ describe("createIrcTools gateway registration and execution", () => {
     const aliceMsgId = String(sendResult1.structuredContent?.messageId);
     expect(aliceMsgId).toMatch(/^msg_/);
 
-    // Bob peeks inbox (does not consume)
-    const bobPeek = await registry.call(bobCtx, "agent_inbox", { peek: true });
-    expect(bobPeek.isError).toBeUndefined();
-    expect(bobPeek.structuredContent?.count).toBe(1);
-    expect(bobPeek.structuredContent?.unreadRemaining).toBe(1);
-    expect(bobPeek.content[0]!.text).toContain("Could you check the logs for errors?");
-    expect(bobPeek.content[0]!.text).toContain("From: agent-alice");
+    // Bob reads his inbox, which marks it seen
+    const bobRead = await registry.call(bobCtx, "agent_inbox", {});
+    expect(bobRead.isError).toBeUndefined();
+    expect(bobRead.structuredContent?.count).toBe(1);
+    expect(bobRead.structuredContent?.unseenRemaining).toBe(0);
+    expect(bobRead.content[0]!.text).toContain("Could you check the logs for errors?");
+    expect(bobRead.content[0]!.text).toContain("note from");
 
-    // Bob drains inbox (consumes)
-    const bobDrain = await registry.call(bobCtx, "agent_inbox", {});
-    expect(bobDrain.structuredContent?.count).toBe(1);
-    expect(bobDrain.structuredContent?.unreadRemaining).toBe(0);
+    // A second read finds nothing unseen; history still has it
+    const bobAgain = await registry.call(bobCtx, "agent_inbox", { history: true });
+    expect(bobAgain.structuredContent?.count).toBe(0);
+    expect(bobAgain.content[0]!.text).toContain("Seen before, newest first");
+    expect(bobAgain.content[0]!.text).toContain("Could you check the logs for errors?");
 
     // Bob replies to Alice with replyTo
     const sendResult2 = await registry.call(
@@ -862,5 +864,114 @@ describe("waitForReply takes its answer in one step", () => {
     const waiting = mailbox.waitForReply("a", asked.copyIds, 1_000);
     mailbox.sendMessage({ threadId: "c", projectPath: PROJECT_A }, { to: "a", message: "me", kind: "answer", replyTo: cCopy.id });
     expect((await waiting)?.message).toBe("me");
+  });
+});
+
+describe("agent_list reads every agent on the project", () => {
+  test("an agent that never sent mail is listed, with what it is doing", async () => {
+    const store = new FakeIrcStore();
+    store.addThread({ threadId: "me", projectPath: PROJECT_A });
+    store.addThread({ threadId: "quiet", projectPath: PROJECT_A, provider: "cursor" });
+    store.addThread({ threadId: "gone", projectPath: PROJECT_A, provider: "codex" });
+    store.addThread({ threadId: "elsewhere", projectPath: PROJECT_B });
+    const registry = createRegistry(
+      createIrcTools({
+        store,
+        mailbox: new IrcMailbox(),
+        threadRuntime: (id) =>
+          id === "quiet"
+            ? {
+                live: true,
+                starting: false,
+                busy: true,
+                turnStartedAt: Date.now() - 120_000,
+                parked: null,
+                parkedSince: null,
+                compacting: false,
+                steers: false,
+                activeTool: { name: "edit", text: "auth.ts", startedAt: Date.now() },
+                lastActivityAt: Date.now(),
+              }
+            : null,
+        providerSteers: (provider) => provider !== "cursor",
+      }),
+    );
+
+    const result = await registry.call(makeCtx({ threadId: "me" }), "agent_list", {});
+    const peers = result.structuredContent?.peers;
+    // SAFETY: agent_list returns its rows as `peers`.
+    const rows = (Array.isArray(peers) ? peers : []) as Array<{ id: string; state: string; steers: boolean | null }>;
+    expect(rows.map((r) => r.id)).toEqual(["quiet", "gone"]);
+    expect(rows[0]).toMatchObject({ state: "working", steers: false });
+    expect(rows[1]).toMatchObject({ state: "closed", steers: true });
+    const text = result.content[0]!.text;
+    expect(text).toContain("working (2 min): edit: auth.ts; a message interrupts its turn");
+    expect(text).toContain("session closed");
+  });
+
+  test("an agent parked in agent_message's wait reads as waiting on the one it asked", async () => {
+    const mailbox = new IrcMailbox();
+    const registry = createRegistry(
+      createIrcTools({
+        mailbox,
+        threadRuntime: (id) => ({
+          live: true,
+          starting: false,
+          busy: id === "asker",
+          turnStartedAt: null,
+          parked: null,
+          parkedSince: null,
+          compacting: false,
+          steers: true,
+          activeTool: null,
+          lastActivityAt: null,
+        }),
+      }),
+    );
+    mailbox.registerThread({ threadId: "asker", projectPath: PROJECT_A });
+    mailbox.registerThread({ threadId: "answerer", projectPath: PROJECT_A });
+    const asking = registry.call(makeCtx({ threadId: "asker" }), "agent_message", {
+      to: "answerer",
+      message: "which db?",
+      kind: "question",
+      wait: true,
+      timeoutMs: 1_000,
+    });
+    await Promise.resolve();
+
+    const listed = await registry.call(makeCtx({ threadId: "answerer" }), "agent_list", {});
+    expect(listed.content[0]!.text).toContain("waiting on answerer");
+    const asked = mailbox.getInbox("answerer").messages[0]!;
+    mailbox.sendMessage({ threadId: "answerer", projectPath: PROJECT_A }, { to: "asker", message: "sqlite", kind: "answer", replyTo: asked.id });
+    await asking;
+    expect(mailbox.waitingOn("asker")).toBeNull();
+  });
+});
+
+describe("agent_inbox", () => {
+  test("returns kind, sender and replyTo, marks what it returns seen via the inbox, and shows history on request", async () => {
+    const inbox = new MemoryAgentInbox();
+    const mailbox = new IrcMailbox(inbox);
+    const registry = createRegistry(createIrcTools({ mailbox }));
+    mailbox.sendMessage({ threadId: "a", projectPath: PROJECT_A }, { to: "b", message: "first", kind: "question" });
+    mailbox.sendMessage({ threadId: "a", projectPath: PROJECT_A }, { to: "b", message: "second", kind: "answer", replyTo: "msg_x" });
+
+    const read = await registry.call(makeCtx({ threadId: "b" }), "agent_inbox", { limit: 1 });
+    const messages = read.structuredContent?.messages;
+    // SAFETY: agent_inbox returns its entries as `messages`.
+    const entries = (Array.isArray(messages) ? messages : []) as Array<{ kind: string; message: string; replyTo: string | null }>;
+    expect(entries).toEqual([expect.objectContaining({ kind: "question", message: "first", replyTo: null })]);
+    expect(read.structuredContent?.unseenRemaining).toBe(1);
+    expect(inbox.inboxHistory("b", 10)[0]).toMatchObject({ body: "first", seenVia: "inbox" });
+
+    const withHistory = await registry.call(makeCtx({ threadId: "b" }), "agent_inbox", { history: true });
+    const text = withHistory.content[0]!.text;
+    expect(text).toContain("answer from a, replying to msg_x");
+    expect(text).toContain("Seen before, newest first");
+    const history = withHistory.structuredContent?.history;
+    // SAFETY: with history: true agent_inbox returns the seen entries as `history`.
+    const seen = (Array.isArray(history) ? history : []) as Array<{ message: string }>;
+    // History is what was seen before this read: the first message only.
+    expect(seen.map((m) => m.message)).toEqual(["first"]);
   });
 });

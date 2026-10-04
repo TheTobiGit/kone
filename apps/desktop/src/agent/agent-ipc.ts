@@ -233,6 +233,8 @@ export function registerAgentIpc(): void {
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
+    threadRuntime: (threadId) => svc.threadRuntime(threadId),
+    providerSteers: (provider) => svc.providerSteers(provider),
     // What a thread is parked on, if anything — approvals and user-input
     // questions are live round-trips the store never journals, so the
     // service's parked snapshot is the only place the thread list can read

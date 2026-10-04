@@ -685,7 +685,7 @@ export const IrcSendMessageInputSchema = IrcSendInputSchema;
 export const IrcMessageInputSchema = IrcSendInputSchema;
 
 export const IrcInboxInputSchema = z.object({
-  peek: z.boolean().optional(),
+  history: z.boolean().optional(),
   limit: z.number().int().positive().optional(),
 });
 
@@ -736,13 +736,13 @@ export const IRC_LIST_JSON_SCHEMA = {
 export const IRC_INBOX_JSON_SCHEMA = {
   type: "object",
   properties: {
-    peek: {
+    history: {
       type: "boolean",
-      description: "If true, reads messages without consuming/clearing them from the inbox.",
+      description: "Also return the last 20 messages you have already seen, newest first.",
     },
     limit: {
       type: "integer",
-      description: "Maximum number of messages to retrieve.",
+      description: "At most this many unseen messages (and, with history, at most this many seen ones).",
     },
   },
 } satisfies GatewayRecord;

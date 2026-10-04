@@ -22,6 +22,7 @@ import {
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
+import type { ThreadRuntime } from "./recipientState.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
@@ -341,6 +342,13 @@ export class AgentService {
    *  item.completed yet) — the wedge sweep's "is this thread legitimately busy"
    *  signal. */
   private readonly openItems = new Map<string, Set<string>>();
+  /** When each live turn started — how long a thread has been working. */
+  private readonly turnStartedAt = new Map<string, number>();
+  /** The tool call each thread is in the middle of, if any — what it is
+   *  working on, for a sender deciding whether to disturb it. */
+  private readonly activeTool = new Map<string, { itemId: string; name: string; text: string; startedAt: number }>();
+  /** Threads whose session is being started right now. */
+  private readonly startingSessions = new Set<string>();
   /** Per-thread tail of queued-row deliveries — the drain and Send now share
    *  it, so one row at a time is handed to the provider (withQueueDelivery). */
   private readonly queueDeliveries = new Map<string, Promise<void>>();
@@ -776,6 +784,15 @@ export class AgentService {
   }
 
   async startSession(input: SessionStartInput): Promise<Session> {
+    this.startingSessions.add(input.threadId);
+    try {
+      return await this.startSessionNow(input);
+    } finally {
+      this.startingSessions.delete(input.threadId);
+    }
+  }
+
+  private async startSessionNow(input: SessionStartInput): Promise<Session> {
     this.bumpSessionGeneration(input.threadId);
     assertProviderEnabled(readProviderSettings(), input.provider);
     this.sessionInputs.set(input.threadId, input);
@@ -877,6 +894,38 @@ export class AgentService {
    *  running turn or start one. */
   isThreadBusy(threadId: string): boolean {
     return this.isBusy(threadId);
+  }
+
+  /** Whether `provider` can take a message into a running turn. One that
+   *  cannot gets it as the next turn instead. */
+  providerSteers(provider: ProviderKind): boolean {
+    return this.adapters.get(provider)?.steerTurn !== undefined;
+  }
+
+  /** What one thread is doing right now, read-only: what a sender looks at
+   *  before deciding whether a message is worth disturbing it. */
+  threadRuntime(threadId: string): ThreadRuntime {
+    const provider = this.routing.get(threadId) ?? null;
+    const parked = this.parkedByThread.get(threadId);
+    let gate: ThreadRuntime["parked"] = null;
+    let parkedSince: number | null = null;
+    for (const ask of parked?.values() ?? []) {
+      if (gate !== "approval") gate = ask.kind;
+      parkedSince = Math.min(parkedSince ?? ask.event.at, ask.event.at);
+    }
+    const tool = this.activeTool.get(threadId);
+    return {
+      live: provider !== null,
+      starting: this.startingSessions.has(threadId),
+      busy: this.isBusy(threadId),
+      turnStartedAt: this.turnStartedAt.get(threadId) ?? null,
+      parked: gate,
+      parkedSince,
+      compacting: this.isCompacting(threadId),
+      steers: provider ? this.providerSteers(provider) : null,
+      activeTool: tool ? { name: tool.name, text: tool.text, startedAt: tool.startedAt } : null,
+      lastActivityAt: this.lastActivity.get(threadId) ?? null,
+    };
   }
 
   /** Every thread with a turn live right now: the announced turn id, or null
@@ -1513,6 +1562,7 @@ export class AgentService {
         break;
       case "turn.started":
         this.activeTurns.set(threadId, event.turnId);
+        this.turnStartedAt.set(threadId, event.at);
         // A turn nobody here asked for — the user typing, a peer's message, a
         // queued follow-up — means the thread is being driven from outside the
         // wake chain, so the chain is over and its budget goes back.
@@ -1526,10 +1576,19 @@ export class AgentService {
           this.openItems.set(threadId, items);
         }
         items.add(event.item.itemId);
+        if (event.item.kind === "tool_call" && !event.subagentToolUseId) {
+          this.activeTool.set(threadId, {
+            itemId: event.item.itemId,
+            name: event.item.name ?? "tool",
+            text: event.item.text,
+            startedAt: event.at,
+          });
+        }
         break;
       }
       case "item.completed":
         this.openItems.get(threadId)?.delete(event.item.itemId);
+        if (this.activeTool.get(threadId)?.itemId === event.item.itemId) this.activeTool.delete(threadId);
         break;
       case "turn.steered":
         // The provider took the message into its running turn: the journaled
@@ -1544,6 +1603,8 @@ export class AgentService {
       case "turn.aborted":
         this.activeTurns.delete(threadId);
         this.openItems.delete(threadId);
+        this.turnStartedAt.delete(threadId);
+        this.activeTool.delete(threadId);
         // A turn settling frees the one-live-turn slot: promote the next
         // queued follow-up (fire-and-forget; drain is serialized per thread
         // and sends at most one turn, so the next settlement drains again).
@@ -1659,6 +1720,8 @@ export class AgentService {
     this.dispatchingTurns.delete(threadId);
     this.compactingThreads.delete(threadId);
     this.openItems.delete(threadId);
+    this.turnStartedAt.delete(threadId);
+    this.activeTool.delete(threadId);
     this.lastActivity.delete(threadId);
     this.clearQueueRetry(threadId);
   }

@@ -743,42 +743,42 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_message, agent_inbo
     expect(sendBody.result.structuredContent.recipients).toEqual(["thread-2"]);
     const msgId = sendBody.result.structuredContent.messageId;
 
-    // Thread 2 reads inbox with peek: true
-    const peekRes = await post(transport, auth2, {
+    // Thread 2 reads its inbox, which marks the message seen
+    const readRes = await post(transport, auth2, {
       jsonrpc: "2.0",
       id: 7,
       method: "tools/call",
-      params: { name: "agent_inbox", arguments: { peek: true } },
+      params: { name: "agent_inbox", arguments: {} },
     });
-    expect(peekRes.status).toBe(200);
-    // SAFETY: Peek inbox returns message list and unread count.
-    const peekBody = peekRes.body as {
+    expect(readRes.status).toBe(200);
+    // SAFETY: an inbox read returns the message list and what is left unseen.
+    const readBody = readRes.body as {
       result: {
         structuredContent: {
           count: number;
-          unreadRemaining: number;
+          unseenRemaining: number;
           messages: Array<{ id: string; from: string; message: string }>;
         };
       };
     };
-    expect(peekBody.result.structuredContent.count).toBe(1);
-    expect(peekBody.result.structuredContent.unreadRemaining).toBe(1);
-    expect(peekBody.result.structuredContent.messages[0]?.id).toBe(msgId);
-    expect(peekBody.result.structuredContent.messages[0]?.message).toBe("Hello peer 2");
+    expect(readBody.result.structuredContent.count).toBe(1);
+    expect(readBody.result.structuredContent.unseenRemaining).toBe(0);
+    expect(readBody.result.structuredContent.messages[0]?.id).toBe(msgId);
+    expect(readBody.result.structuredContent.messages[0]?.message).toBe("Hello peer 2");
 
-    // Thread 2 drains inbox
-    const drainRes = await post(transport, auth2, {
+    // With history, it is there among the seen
+    const historyRes = await post(transport, auth2, {
       jsonrpc: "2.0",
       id: 8,
       method: "tools/call",
-      params: { name: "agent_inbox", arguments: {} },
+      params: { name: "agent_inbox", arguments: { history: true } },
     });
-    // SAFETY: Drain inbox returns consumed message count.
-    const drainBody = drainRes.body as {
-      result: { structuredContent: { count: number; unreadRemaining: number } };
+    // SAFETY: a history read returns the unseen count and the seen history.
+    const historyBody = historyRes.body as {
+      result: { structuredContent: { count: number; history: Array<{ id: string }> } };
     };
-    expect(drainBody.result.structuredContent.count).toBe(1);
-    expect(drainBody.result.structuredContent.unreadRemaining).toBe(0);
+    expect(historyBody.result.structuredContent.count).toBe(0);
+    expect(historyBody.result.structuredContent.history.map((m) => m.id)).toEqual([msgId]);
 
     // Subsequent read is empty
     const emptyRes = await post(transport, auth2, {
@@ -789,10 +789,10 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_message, agent_inbo
     });
     // SAFETY: Empty inbox returns 0 counts.
     const emptyBody = emptyRes.body as {
-      result: { structuredContent: { count: number; unreadRemaining: number } };
+      result: { structuredContent: { count: number; unseenRemaining: number } };
     };
     expect(emptyBody.result.structuredContent.count).toBe(0);
-    expect(emptyBody.result.structuredContent.unreadRemaining).toBe(0);
+    expect(emptyBody.result.structuredContent.unseenRemaining).toBe(0);
 
     // Thread 2 replies to Thread 1 referencing msgId
     turnState.set("thread-2", { turnId: "turn-201", running: true });

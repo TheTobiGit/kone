@@ -956,6 +956,20 @@ describe("spawn engine", () => {
     expect(out.threads[0].status).toBe("waiting-for-approval");
   });
 
+  test("a parent parked in agent_wait reads as waiting on its child until the wait returns", async () => {
+    const { engine, store, providers, bus } = makeEngine();
+    setupParent(store, providers);
+
+    const result = await engine.spawn(CALLER, REQUEST);
+    expect(engine.waitingOn(CALLER.threadId)).toBeNull();
+    const waiting = engine.waitFor({ threadIds: [result.threadId], timeoutMs: 300, scopeThreadId: CALLER.threadId });
+    expect(engine.waitingOn(CALLER.threadId)?.threadIds).toEqual([result.threadId]);
+
+    bus.emit(approvalRequested(result.threadId, 50));
+    await waiting;
+    expect(engine.waitingOn(CALLER.threadId)).toBeNull();
+  });
+
   test("waitFor resolves when every named child is terminal", async () => {
     const { engine, store, providers, bus } = makeEngine();
     setupParent(store, providers);

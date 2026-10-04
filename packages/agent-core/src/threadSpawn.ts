@@ -375,6 +375,8 @@ export interface SpawnEngine {
    *  its current turn comes to is no news to that agent, so it is not
    *  reported. A follow-up from up the chain lifts it. */
   muteReports(threadId: string): void;
+  /** The children `threadId` is parked in agent_wait on, and since when. */
+  waitingOn(threadId: string): { threadIds: string[]; since: number } | null;
   waitFor(input: {
     threadIds: string[];
     /** Positionally paired with `threadIds`: pin each wait to that exact turn
@@ -837,6 +839,10 @@ class SpawnEngineImpl implements SpawnEngine {
       .spawnedChildren(parentThreadId)
       .map((meta) => this.snapshot(meta.threadId))
       .filter((t): t is SpawnedThread => t !== null);
+  }
+
+  waitingOn(threadId: string): { threadIds: string[]; since: number } | null {
+    return this.waitCoordinator.waitingOn(threadId);
   }
 
   snapshot(threadId: string): SpawnedThread | null {

@@ -497,3 +497,47 @@ describe("a steer on a provider that can't steer, against the real store", () =>
     expect(adapter.interrupted).toEqual([thread]);
   });
 });
+
+describe("threadRuntime: what a thread is doing, for a sender", () => {
+  test("reads the live turn, the tool in progress, the parked ask and the steer channel", async () => {
+    const thread = await openThread();
+    expect(service.threadRuntime(thread)).toMatchObject({ live: true, busy: false, parked: null, steers: false });
+
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    adapter.emit({
+      ...base(thread),
+      type: "item.started",
+      turnId: "live",
+      item: { itemId: "i-1", kind: "tool_call", status: "in-progress", text: "bun test", name: "Bash" },
+    });
+    const working = service.threadRuntime(thread);
+    expect(working.busy).toBe(true);
+    expect(working.turnStartedAt).not.toBeNull();
+    expect(working.activeTool).toMatchObject({ name: "Bash", text: "bun test" });
+
+    adapter.emit({
+      ...base(thread),
+      type: "item.completed",
+      turnId: "live",
+      item: { itemId: "i-1", kind: "tool_call", status: "completed", text: "bun test", name: "Bash" },
+    });
+    expect(service.threadRuntime(thread).activeTool).toBeNull();
+
+    adapter.emit({
+      ...base(thread),
+      type: "user-input.requested",
+      requestId: "q-1",
+      turnId: "live",
+      questions: [],
+    });
+    expect(service.threadRuntime(thread).parked).toBe("user-input");
+
+    adapter.steerTurn = async (input) => ({ threadId: input.threadId, turnId: "live" });
+    expect(service.threadRuntime(thread).steers).toBe(true);
+    expect(service.providerSteers("codex")).toBe(true);
+
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    expect(service.threadRuntime(thread)).toMatchObject({ busy: false, turnStartedAt: null });
+    expect(service.threadRuntime("nobody")).toMatchObject({ live: false, steers: null });
+  });
+});
