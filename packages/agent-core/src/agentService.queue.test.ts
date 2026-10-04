@@ -277,6 +277,92 @@ describe("retry and hold, against the real store", () => {
   }
 });
 
+/** Make every release of a claimed queue row fail, as a full or locked disk
+ *  does, until the returned call ends the outage. */
+function failReleases(): () => void {
+  const outage = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+  outage.exec(`CREATE TRIGGER release_fails BEFORE UPDATE OF state ON queued_turns
+                WHEN OLD.state = 'promoting' AND NEW.state IN ('queued', 'failed')
+                BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+  return () => {
+    outage.exec("DROP TRIGGER release_fails");
+    outage.close();
+  };
+}
+
+// Send now on a busy thread with no steer channel releases the row to the
+// front of the line. When the store cannot write that release, the row is
+// still claimed: each must be released once writes come back, and then run.
+// A release that lands at once must still leave the row to a drain that runs.
+describe("Send now's release, against the real store", () => {
+  test("two rows sent now in one outage are both released once writes come back", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "one");
+    const q2 = queueRow(thread, "two");
+    const recover = failReleases();
+
+    expect(await service.sendQueuedTurnNow(thread, q1)).toBe(false);
+    expect(await service.sendQueuedTurnNow(thread, q2)).toBe(false);
+    expect([stateOf(thread, q1), stateOf(thread, q2)]).toEqual(["promoting", "promoting"]);
+
+    recover();
+    await waitFor(() => stateOf(thread, q1) === "queued" && stateOf(thread, q2) === "queued");
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await waitFor(() => adapter.sent.length === 1);
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "turn-1" });
+    await waitFor(() => adapter.sent.length === 2);
+    expect(adapter.sent.map((s) => s.input).sort()).toEqual(["one", "two"]);
+  });
+
+  test("a row whose release lands after the running turn ended runs then", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "one");
+    const recover = failReleases();
+
+    expect(await service.sendQueuedTurnNow(thread, q1)).toBe(false);
+    // The turn ends while the release still waits: the drain is held back
+    // for it, so nothing else starts the row.
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(adapter.sent).toHaveLength(0);
+
+    recover();
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(adapter.sent.map((s) => s.input)).toEqual(["one"]);
+    // The turn it would have stopped was already over.
+    expect(adapter.interrupted).toHaveLength(0);
+  });
+
+  test("a refused send now on an idle thread goes back in line and the queue runs it", async () => {
+    const thread = await openThread();
+    const q1 = queueRow(thread, "one");
+    adapter.refuse = new Error("provider is down");
+
+    await expect(service.sendQueuedTurnNow(thread, q1)).rejects.toThrow("provider is down");
+    adapter.refuse = null;
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(adapter.sent.map((s) => s.input)).toEqual(["one"]);
+  });
+
+  test("a refused send now whose release lands late is retried by the queue", async () => {
+    const thread = await openThread();
+    const q1 = queueRow(thread, "one");
+    adapter.refuse = new Error("provider is down");
+    const recover = failReleases();
+
+    await expect(service.sendQueuedTurnNow(thread, q1)).rejects.toThrow("provider is down");
+    expect(stateOf(thread, q1)).toBe("promoting");
+
+    adapter.refuse = null;
+    recover();
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(adapter.sent.map((s) => s.input)).toEqual(["one"]);
+  });
+});
+
 describe("Send now, against the real store", () => {
   test("refuses without a session and leaves the row where Send now and remove can reach it", async () => {
     const thread = `t-${++seq}`;
