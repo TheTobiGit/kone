@@ -1705,6 +1705,9 @@ export type RuntimeEvent =
   | (BaseEvent & {
       type: "thread.message-journaled";
       block: Extract<StoredBlock, { role: "user" }>;
+      /** The block this one reads above, when it was written for a turn whose
+       *  own words are already on the transcript; absent, it goes last. */
+      beforeBlockId?: string;
     })
   // An agent spawned a child thread (worker_start), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so

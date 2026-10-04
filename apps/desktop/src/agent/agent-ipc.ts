@@ -427,11 +427,12 @@ export function registerAgentIpc(): void {
         onEvent: (listener) => svc.onEvent(listener),
       },
       dispatcher,
-      journal: (threadId, message) =>
+      journal: (threadId, message, beforeBlockId) =>
         message.sender
-          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender })
+          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, beforeBlockId })
           : null,
       blockSender: (threadId, blockId) => store.userBlockSender(threadId, blockId),
+      placeLast: (threadId, blockId) => store.moveBlockToEnd(threadId, blockId),
     });
     svc.setTurnInbox(delivery);
     stopIrcDelivery = () => {
@@ -483,6 +484,8 @@ export function registerAgentIpc(): void {
       store,
       isBusy: (threadId) => svc.isThreadBusy(threadId),
     }),
+    // Under the ringer a follow-up is a job in the child's inbox.
+    jobs: deliveryV2 ? mailbox : undefined,
   });
 
   // What happens to handed-off work when the agent that handed it off is

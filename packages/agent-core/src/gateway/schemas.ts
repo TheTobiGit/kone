@@ -2186,14 +2186,16 @@ export const START_APP_THREAD_JSON_SCHEMA = {
 
 const SEND_MESSAGE_DESCRIPTION =
   "What to say to the thread, as the user would type it. It lands in the thread's transcript as a user message and the thread's agent answers it with everything it already knows from that conversation, so write it as a follow-up, not a fresh brief.";
-const SEND_STEER_DESCRIPTION =
-  "Only matters when the thread is mid-turn. false (default): queue the message to run after the current turn, exactly like the user typing while it works. true: put it into the running turn now, for a correction the work in progress needs to hear.";
+const SEND_URGENT_DESCRIPTION =
+  "Only matters when the thread is mid-turn. false (default): it runs after the current turn, exactly like the user typing while it works. true: put it into the running turn now, for a correction the work in progress needs to hear.";
+const SEND_STEER_DESCRIPTION = "The same as urgent, under its older name.";
 const SEND_REQUEST_ID_DESCRIPTION =
   "A stable idempotency key for this message. Retrying with the same one reports the message already sent instead of sending it twice.";
 
 export const SendAppThreadMessageInputSchema = z.object({
   threadId: z.string().min(1).describe("The thread to message, as app_list_threads reports it."),
   message: z.string().trim().min(1).describe(SEND_MESSAGE_DESCRIPTION),
+  urgent: z.boolean().optional().describe(SEND_URGENT_DESCRIPTION),
   steer: z.boolean().optional().describe(SEND_STEER_DESCRIPTION),
   requestId: z.string().min(1).max(200).describe(SEND_REQUEST_ID_DESCRIPTION),
 });
@@ -2203,6 +2205,7 @@ export const SEND_APP_THREAD_MESSAGE_JSON_SCHEMA = {
   properties: {
     threadId: { type: "string", description: "The thread to message, as app_list_threads reports it." },
     message: { type: "string", description: SEND_MESSAGE_DESCRIPTION },
+    urgent: { type: "boolean", description: SEND_URGENT_DESCRIPTION },
     steer: { type: "boolean", description: SEND_STEER_DESCRIPTION },
     requestId: { type: "string", description: SEND_REQUEST_ID_DESCRIPTION },
   },

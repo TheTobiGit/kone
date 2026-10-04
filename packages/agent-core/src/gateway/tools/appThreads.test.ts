@@ -5,6 +5,8 @@ import type { ProviderAvailability } from "../../agentModel.js";
 import type { TurnSpan } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { ThreadGateKind } from "../../types.js";
+import type { ThreadRuntime } from "../../recipientState.js";
+import { IrcMailbox } from "./irc.js";
 import type {
   EmitEvent,
   SendTurnInput,
@@ -278,6 +280,8 @@ function tools(
       archived: boolean,
     ) => Promise<{ ok: boolean; reason?: string; threadIds?: string[] }>;
     deleteThread?: (threadId: string) => Promise<{ ok: boolean; reason?: string }>;
+    jobs?: AppThreadsToolOptions["jobs"];
+    threadRuntime?: AppThreadsToolOptions["threadRuntime"];
     renameThread?: (
       threadId: string,
       title: string,
@@ -312,6 +316,8 @@ function tools(
   if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
   if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
   if (options.renameThread) toolOptions.renameThread = options.renameThread;
+  if (options.jobs) toolOptions.jobs = options.jobs;
+  if (options.threadRuntime) toolOptions.threadRuntime = options.threadRuntime;
   // `runner: null` is the "no dispatcher behind the gateway" case, which is a
   // different thing from a runner nobody passed — the option has to be absent,
   // not undefined.
@@ -1236,6 +1242,90 @@ describe("app_send_to_thread", () => {
     });
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("not_found");
+  });
+  it("takes urgent as the name for steer", async () => {
+    const calls = newCalls();
+    await tools({ runner: sendRunner(calls), live: ["t-newest"], spans: { "t-newest": BUSY } }).call(
+      makeCtx(),
+      "app_send_to_thread",
+      { ...SEND, urgent: true },
+    );
+    expect(calls.steered).toHaveLength(1);
+  });
+
+  describe("under the ringer", () => {
+    function runtime(over: Partial<ThreadRuntime> = {}): ThreadRuntime {
+      return {
+        live: true,
+        starting: false,
+        busy: false,
+        turnStartedAt: null,
+        parked: null,
+        parkedSince: null,
+        compacting: false,
+        steers: true,
+        activeTool: null,
+        lastActivityAt: null,
+        ...over,
+      };
+    }
+    const ringer = (mailbox: IrcMailbox, rt: ThreadRuntime, over: Parameters<typeof tools>[0] = {}) =>
+      tools({ live: ["t-newest"], jobs: mailbox, threadRuntime: () => rt, ...over });
+
+    it("leaves a job in the thread's inbox instead of sending a turn", async () => {
+      const calls = newCalls();
+      const mailbox = new IrcMailbox();
+      const result = await ringer(mailbox, runtime(), { runner: sendRunner(calls) }).call(
+        makeCtx(),
+        "app_send_to_thread",
+        SEND,
+      );
+
+      expect(calls.turns).toHaveLength(0);
+      expect(mailbox.jobCount("t-newest")).toBe(1);
+      expect(result.structuredContent).toMatchObject({ delivery: "waking", urgent: false });
+      expect(String(result.structuredContent?.messageId).startsWith("msg_")).toBe(true);
+    });
+
+    it("holds a job for a thread parked on the user, and says so", async () => {
+      const mailbox = new IrcMailbox();
+      const result = await ringer(mailbox, runtime({ busy: true, parked: "approval", parkedSince: 1 }), {
+        runner: sendRunner(newCalls()),
+        gates: { "t-newest": "approval" },
+      }).call(makeCtx(), "app_send_to_thread", SEND);
+
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({ delivery: "held" });
+      expect(mailbox.jobCount("t-newest")).toBe(1);
+    });
+
+    it("a busy thread takes it next; urgent goes into the running turn", async () => {
+      const busy = runtime({ busy: true });
+      const plain = await ringer(new IrcMailbox(), busy, { spans: { "t-newest": BUSY } }).call(
+        makeCtx(),
+        "app_send_to_thread",
+        SEND,
+      );
+      expect(plain.structuredContent).toMatchObject({ delivery: "next" });
+
+      const mailbox = new IrcMailbox();
+      const urgent = await ringer(mailbox, busy, { spans: { "t-newest": BUSY } }).call(
+        makeCtx(),
+        "app_send_to_thread",
+        { ...SEND, steer: true },
+      );
+      expect(urgent.structuredContent).toMatchObject({ delivery: "delivered", urgent: true });
+      expect(mailbox.urgentCount("t-newest")).toBe(1);
+    });
+
+    it("a retried send leaves one job", async () => {
+      const mailbox = new IrcMailbox();
+      const registry = ringer(mailbox, runtime(), { store: makeStore() });
+      await registry.call(makeCtx(), "app_send_to_thread", SEND);
+      const retry = await registry.call(makeCtx(), "app_send_to_thread", SEND);
+      expect(text(retry)).toContain("Already sent");
+      expect(mailbox.jobCount("t-newest")).toBe(1);
+    });
   });
 });
 

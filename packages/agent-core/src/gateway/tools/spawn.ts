@@ -401,13 +401,11 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       const resumed = result.resumed
         ? " (its session had settled and was brought back up with its full context)"
         : "";
+      const text = result.job
+        ? `Follow-up left in ${result.threadId}'s inbox as job ${result.turnId}${resumed}. It runs as a turn of its own — now if the thread is idle, or once its running turn ends. Its response comes to you when it settles; to wait for it before going on, agent_wait with threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"]: the job's id stands for the turn that carries it.`
+        : `Follow-up sent to ${result.threadId} as turn ${result.turnId}${resumed}. Its response comes to you when it settles; to wait for it before going on, agent_wait with threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"] to pin it to this turn.`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `Follow-up sent to ${result.threadId} as turn ${result.turnId}${resumed}. Its response comes to you when it settles; to wait for it before going on, agent_wait with threadIds ["${result.threadId}"] and turnIds ["${result.turnId}"] to pin it to this turn.`,
-          },
-        ],
+        content: [{ type: "text", text }],
         structuredContent: { continuation: result },
       };
     });

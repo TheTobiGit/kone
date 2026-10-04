@@ -51,6 +51,8 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
   const kicks: string[] = [];
   const steers: { input: SendTurnInput; options?: StartThreadTurnOptions }[] = [];
   const restarts: string[] = [];
+  const journaled: { id: string; before: string | undefined }[] = [];
+  const placedLast: string[] = [];
   const listeners = new Set<(event: RuntimeEvent) => void>();
   const delivery = startInboxDelivery({
     mailbox,
@@ -74,8 +76,12 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
       },
       takeReplayPreamble: () => null,
     },
-    journal: (_threadId, message) => `blk-${message.id}`,
+    journal: (_threadId, message, before) => {
+      journaled.push({ id: message.id, before });
+      return `blk-${message.id}`;
+    },
     blockSender: (_threadId, blockId) => (blockId === "blk-user" ? { kind: "user" } : null),
+    placeLast: (_threadId, blockId) => placedLast.push(blockId),
     schedule: clock.schedule,
   });
   /** Under the ringer a note is kept quiet; everything else rings. */
@@ -94,6 +100,15 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
   const emit = (event: RuntimeEvent) => {
     for (const listener of listeners) listener(event);
   };
+  /** A follow-up from the agent that handed `b` its work. */
+  const job = (message: string, urgent = false) =>
+    mailbox.postJob({
+      to: "b",
+      projectPath: PROJECT,
+      message,
+      sender: { kind: "agent", threadId: "lead", name: "Vera", relationship: "delegator", messageKind: "followup" },
+      urgent,
+    }).messageId;
   return {
     mailbox,
     clock,
@@ -101,7 +116,10 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
     kicks,
     steers,
     restarts,
+    journaled,
+    placedLast,
     send,
+    job,
     emit,
     set: (over: Partial<ThreadRuntime>) => {
       rt = runtime(over);
@@ -243,6 +261,107 @@ describe("the ringer", () => {
     expect(text).not.toContain("note 7");
     expect(text).toContain("2 more messages are still in your inbox.");
     expect(mailbox.getUnreadCount("b")).toBe(2);
+  });
+});
+
+describe("jobs", () => {
+  test("a job never rides someone else's turn; it gets one of its own", () => {
+    const h = harness();
+    const id = h.job("Now add tests.");
+    h.send("a", "fyi: the schema moved");
+    h.clock.tick();
+    expect(h.kicks).toEqual(["b"]);
+
+    const userTurn = h.delivery.carry("b", { threadId: "b", input: "ship it" });
+    expect(userTurn!.input.input).toContain("the schema moved");
+    expect(userTurn!.input.input).not.toContain("Now add tests.");
+    userTurn!.settle("turn-1");
+
+    const own = h.delivery.carry("b", null)!;
+    expect(own.input.input).toContain('<from_agent name="Vera" relationship="delegator" kind="followup">');
+    expect(own.input.input.endsWith("Now add tests.")).toBe(true);
+    own.settle("turn-2");
+    expect(h.mailbox.jobTurn(id)).toEqual({ recipient: "b", handedOver: true, turnId: "turn-2" });
+  });
+
+  test("what waits rides in front of a job, which is written last", () => {
+    const h = harness();
+    h.send("a", "a note first");
+    const id = h.job("Now add tests.");
+
+    const own = h.delivery.carry("b", null)!;
+    const text = own.input.input;
+    expect(text.indexOf("a note first")).toBeLessThan(text.indexOf("Now add tests."));
+    expect(h.journaled.at(-1)!.id).toBe(id);
+    expect(own.input.userBlockId).toBe(`blk-${id}`);
+  });
+
+  test("two jobs are two turns", () => {
+    const h = harness();
+    h.job("first job");
+    h.job("second job");
+
+    const one = h.delivery.carry("b", null)!;
+    expect(one.input.input).toContain("first job");
+    expect(one.input.input).not.toContain("second job");
+    one.settle("turn-1");
+    expect(h.delivery.carry("b", null)!.input.input).toContain("second job");
+  });
+
+  test("an urgent job goes into the running turn; a plain one waits for it to end", async () => {
+    const h = harness({ busy: true });
+    h.job("plain job");
+    h.clock.tick();
+    await flush();
+    expect(h.steers).toHaveLength(0);
+
+    h.job("stop and revert", true);
+    h.clock.tick();
+    await flush();
+    expect(h.steers).toHaveLength(1);
+    expect(h.steers[0]!.input.input).toContain("stop and revert");
+    expect(h.steers[0]!.input.input).not.toContain("plain job");
+    expect(h.mailbox.jobCount("b")).toBe(1);
+  });
+
+  test("a job to a parked thread is held until the user answers", () => {
+    const h = harness({ parked: "user-input" });
+    h.job("Now add tests.");
+    h.clock.tick();
+    expect(h.kicks).toHaveLength(0);
+
+    h.set({});
+    h.emit(approvalResolved);
+    h.clock.tick();
+    expect(h.kicks).toEqual(["b"]);
+  });
+
+  test("reading the inbox never takes a job", () => {
+    const h = harness();
+    h.job("Now add tests.");
+    h.send("a", "fyi");
+    const read = h.mailbox.getInbox("b");
+    expect(read.messages.map((m) => m.message)).toEqual(["fyi"]);
+    expect(h.mailbox.jobCount("b")).toBe(1);
+  });
+});
+
+describe("transcript order", () => {
+  test("what a turn carries is written above the turn's own words", () => {
+    const h = harness();
+    h.mailbox.sendNotice({ to: "b", projectPath: PROJECT, message: "your hand-off finished", rings: false });
+
+    h.delivery.carry("b", { threadId: "b", input: "ship it", userBlockId: "blk-user" }, "blk-user");
+
+    expect(h.journaled).toHaveLength(1);
+    expect(h.journaled[0]!.before).toBe("blk-user");
+    expect(h.placedLast).toEqual(["blk-user"]);
+  });
+
+  test("nothing carried, nothing moved", () => {
+    const h = harness();
+    expect(h.delivery.carry("b", { threadId: "b", input: "ship it" }, "blk-user")).toBeNull();
+    expect(h.placedLast).toHaveLength(0);
   });
 });
 

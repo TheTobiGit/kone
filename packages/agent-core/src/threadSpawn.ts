@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ModelCandidate } from "./agentModel.js";
+import type { AgentSender } from "@kone/protocol/message-sender";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type { ThreadAgentBinding } from "./rosterRecord.js";
 import { checkSpawn, type SpawnRefusalDetails } from "./spawnGuards.js";
@@ -9,8 +10,8 @@ import {
   type SpawnGate,
   type SpawnProjectionTurn,
 } from "./spawnProjection.js";
-import { SpawnWaitCoordinator, type WaiterResult } from "./spawnWait.js";
-import { ThreadContinuationManager } from "./spawnContinuation.js";
+import { SpawnWaitCoordinator, type SpawnWaitDeps, type WaiterResult } from "./spawnWait.js";
+import { ThreadContinuationManager, type SpawnContinuationDeps } from "./spawnContinuation.js";
 import {
   ThreadControlManager,
   type AnswerChildInputRequest,
@@ -177,6 +178,24 @@ export interface SpawnEngineDeps {
    *  the work off hears it finished. Absent, results are only ever collected
    *  through waitFor. */
   reports?: SettleReportSink;
+  /** Where follow-ups go under the ringer: a job in the child's inbox, handed
+   *  over as a turn of its own, whose id `agent_wait` resolves to that turn.
+   *  Absent, a follow-up is sent straight at the child as a turn. */
+  jobs?: SpawnJobs;
+}
+
+/** The inbox's side of a follow-up sent as a job. */
+export interface SpawnJobs {
+  postJob(input: {
+    to: string;
+    projectPath: string;
+    message: string;
+    sender: AgentSender;
+    dedupeKey?: string;
+  }): { messageId: string; duplicate: boolean };
+  jobTurn(inboxId: string): { recipient: string; handedOver: boolean; turnId: string | null } | null;
+  /** Hear when a hand-over is settled with its turn. */
+  onDeliverySettled(listener: () => void): () => void;
 }
 
 /** The parent session asking to spawn. Every field is server-derived from the
@@ -327,8 +346,12 @@ export type ContinueThreadResult = {
   threadId: string;
   parentThreadId: string;
   /** The follow-up turn's id — pass it back as turnIds to pin
-   *  agent_wait to this exact turn. */
+   *  agent_wait to this exact turn. A follow-up sent as a job has no turn
+   *  yet: this is the job's inbox id, which agent_wait resolves to the turn
+   *  that carries it. */
   turnId: string;
+  /** Sent as a job: waiting in the child's inbox for a turn of its own. */
+  job?: boolean;
   /** True when the child's provider session had settled and this follow-up
    *  brought it back up before dispatching. */
   resumed: boolean;
@@ -513,6 +536,7 @@ class SpawnEngineImpl implements SpawnEngine {
   private readonly reports = new Map<string, ChildReports>();
   private readonly reportSink: SettleReportSink | undefined;
   private readonly unsubscribeEvents: () => void;
+  private readonly unsubscribeJobs: (() => void) | null;
 
   private readonly waitCoordinator: SpawnWaitCoordinator;
   private readonly continuation: ThreadContinuationManager;
@@ -527,16 +551,22 @@ class SpawnEngineImpl implements SpawnEngine {
     this.reportSink = deps.reports;
     this.unsubscribeEvents = deps.onEvents((event) => this.onEvent(event));
 
-    this.waitCoordinator = new SpawnWaitCoordinator({
+    const jobs = deps.jobs;
+    const waitDeps: SpawnWaitDeps = {
       tracked: this.tracked,
       store: this.store,
       snapshot: (threadId) => this.snapshot(threadId),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
       onCollected: (scopeThreadId, threadId, turnId) => this.onCollected(scopeThreadId, threadId, turnId),
       onAbandoned: (scopeThreadId, threadIds) => this.onAbandoned(scopeThreadId, threadIds),
-    });
+    };
+    if (jobs) waitDeps.jobTurn = (inboxId) => jobs.jobTurn(inboxId);
+    this.waitCoordinator = new SpawnWaitCoordinator(waitDeps);
+    // A job handed over turns a wait pinned to its id into a wait on a turn,
+    // which may already have settled.
+    this.unsubscribeJobs = jobs?.onDeliverySettled(() => this.waitCoordinator.checkWaiters()) ?? null;
 
-    this.continuation = new ThreadContinuationManager({
+    const continuationDeps: SpawnContinuationDeps = {
       store: this.store,
       providers: this.providers,
       dispatcher: this.dispatcher,
@@ -544,7 +574,9 @@ class SpawnEngineImpl implements SpawnEngine {
       liveChildren: this.liveChildren,
       recompute: (child) => this.recompute(child),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
-    });
+    };
+    if (jobs) continuationDeps.jobs = jobs;
+    this.continuation = new ThreadContinuationManager(continuationDeps);
 
     this.controls = new ThreadControlManager({
       providers: this.providers,
@@ -928,6 +960,7 @@ class SpawnEngineImpl implements SpawnEngine {
 
   dispose(): void {
     this.unsubscribeEvents();
+    this.unsubscribeJobs?.();
     this.waitCoordinator.dispose();
     this.tracked.clear();
     this.liveChildren.clear();

@@ -326,6 +326,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     return this.agentInbox.inboxMessage(inboxId);
   }
 
+  /** @see ThreadRepo.moveBlockToEnd */
+  moveBlockToEnd(threadId: string, blockId: string): void {
+    this.threads.moveBlockToEnd(threadId, blockId);
+  }
+
   /** Who wrote one of a thread's user blocks: `{ kind: "user" }` for the
    *  user's own words, null when there is no such block. */
   userBlockSender(threadId: string, blockId: string): MessageSender | null {

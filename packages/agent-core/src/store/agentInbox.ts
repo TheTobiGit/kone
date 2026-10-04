@@ -32,9 +32,18 @@ export type SystemSender = { kind: "system" };
 export type InboxSender = AgentSender | CourierSender | SystemSender;
 /** Which unseen rows a hand-over takes: the ones that ring, handed over on
  *  their own; the held ones, which ride in front of the recipient's next turn
- *  whatever starts it; all of them, for a turn starting now; or only the
- *  urgent ones, for a running turn. */
-export type InboxRing = "ringing" | "held" | "all" | "urgent";
+ *  whatever starts it; all of them; only the urgent ones, for a running turn;
+ *  every message but the jobs, which ride in front of a turn; or the jobs,
+ *  each a turn of its own — `urgent-` narrowing either to what is urgent. */
+export type InboxRing =
+  | "ringing"
+  | "held"
+  | "all"
+  | "urgent"
+  | "messages"
+  | "urgent-messages"
+  | "job"
+  | "urgent-job";
 
 export interface InboxRow {
   inboxId: string;
@@ -135,6 +144,14 @@ function selectClause(which: InboxRing | undefined): string {
       return " AND rings = 0";
     case "urgent":
       return " AND urgent = 1";
+    case "messages":
+      return " AND kind <> 'job'";
+    case "urgent-messages":
+      return " AND urgent = 1 AND kind <> 'job'";
+    case "job":
+      return " AND kind = 'job'";
+    case "urgent-job":
+      return " AND urgent = 1 AND kind = 'job'";
     default:
       return "";
   }
@@ -149,6 +166,14 @@ function selects(row: InboxRow, which: InboxRing | undefined): boolean {
       return !row.rings;
     case "urgent":
       return row.urgent;
+    case "messages":
+      return row.kind !== "job";
+    case "urgent-messages":
+      return row.urgent && row.kind !== "job";
+    case "job":
+      return row.kind === "job";
+    case "urgent-job":
+      return row.urgent && row.kind === "job";
     default:
       return true;
   }

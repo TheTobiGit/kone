@@ -1,3 +1,4 @@
+import type { AgentSender } from "@kone/protocol/message-sender";
 import { agentSenderFor } from "./senderHeader.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type {
@@ -6,6 +7,7 @@ import type {
   SpawnCaller,
   SpawnEngineProviders,
   SpawnEngineStore,
+  SpawnJobs,
   TrackedChild,
 } from "./threadSpawn.js";
 import { CONTINUE_THREAD_OP_KIND, fingerprintOf, SpawnError } from "./threadSpawn.js";
@@ -25,6 +27,8 @@ export interface SpawnContinuationDeps {
   liveChildren: Set<string>;
   recompute: (child: TrackedChild) => void;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
+  /** Under the ringer, where a follow-up goes: a job in the child's inbox. */
+  jobs?: SpawnJobs;
 }
 /**
  * Handles follow-up turns dispatched to already-spawned child threads,
@@ -142,12 +146,11 @@ export class ThreadContinuationManager {
       if (tracked) this.deps.recompute(tracked);
     }
 
-    const finish = (turnId: string): ContinueThreadResult => ({
-      threadId: request.threadId,
-      parentThreadId: caller.threadId,
-      turnId,
-      resumed,
-    });
+    const finish = (turnId: string, job = false): ContinueThreadResult => {
+      const result: ContinueThreadResult = { threadId: request.threadId, parentThreadId: caller.threadId, turnId, resumed };
+      if (job) result.job = true;
+      return result;
+    };
 
     try {
       // Whoever above the child asks, the ask arrives as that agent's words —
@@ -162,10 +165,16 @@ export class ThreadContinuationManager {
               ? "delegator"
               : "parent";
       const sender = agentSenderFor(this.deps.store, caller.threadId, relationship, "followup");
-      const turn = await this.deps.dispatcher.sendThreadTurn(
-        { threadId: request.threadId, input: message, sender },
-        { generateTitle: false, parentTurnId: caller.turnId },
-      );
+      const result = this.deps.jobs
+        ? finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true)
+        : finish(
+            (
+              await this.deps.dispatcher.sendThreadTurn(
+                { threadId: request.threadId, input: message, sender },
+                { generateTitle: false, parentTurnId: caller.turnId },
+              )
+            ).turnId,
+          );
       if (tracked) {
         this.deps.liveChildren.add(request.threadId);
       }
@@ -174,10 +183,10 @@ export class ThreadContinuationManager {
           threadId: caller.threadId,
           turnId: caller.turnId,
           requestId: request.requestId,
-          resultJson: JSON.stringify(finish(turn.turnId)),
+          resultJson: JSON.stringify(result),
         });
       }
-      return finish(turn.turnId);
+      return result;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new SpawnError(
@@ -186,6 +195,28 @@ export class ThreadContinuationManager {
         { threadId: request.threadId },
       );
     }
+  }
+
+  /** Leave the follow-up in the child's inbox as a job, and hand back its id.
+   *  The ringer gives it a turn of its own — now, when the child is idle, or
+   *  when its running turn ends. A retry under the same request id finds the
+   *  job already there and gets the same id. */
+  private postJob(
+    jobs: SpawnJobs,
+    caller: SpawnCaller,
+    request: ContinueThreadRequest,
+    message: string,
+    meta: StoredThreadMeta,
+    sender: AgentSender,
+  ): string {
+    // The child's events are stamped with the turn that asked, as a send
+    // carrying it would stamp them.
+    this.deps.dispatcher.noteSpawnParentTurn(request.threadId, caller.turnId);
+    const job: Parameters<SpawnJobs["postJob"]>[0] = { to: request.threadId, projectPath: meta.projectPath, message, sender };
+    if (request.requestId !== undefined) {
+      job.dedupeKey = `job:${caller.threadId}:${caller.turnId}:${request.requestId}`;
+    }
+    return jobs.postJob(job).messageId;
   }
 
   private personaFor(threadId: string, lineage: ThreadLineage): AgentPersona | undefined {

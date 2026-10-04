@@ -1,9 +1,9 @@
 import { senderRelationshipLabel } from "@kone/protocol/message-sender";
-import type { IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
+import type { IrcDeliveryClaim, IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import { IRC_DELIVERY_BATCH_MAX, IRC_DELIVERY_DEBOUNCE_MS, IRC_DELIVERY_RETRY_MS, type ScheduleDelivery } from "./ircDelivery.js";
 import { formatSince, type RecipientState, type ThreadRuntime } from "./recipientState.js";
-import { renderCourierMessage, renderKoneNotice, renderUserHeader } from "./senderHeader.js";
+import { renderCourierMessage, renderKoneNotice, renderSenderHeader, renderUserHeader } from "./senderHeader.js";
 import type { MessageSender, RuntimeEvent, SendTurnInput } from "./types.js";
 
 // The ringer: one place that decides whether, when and how a message waiting
@@ -16,6 +16,11 @@ import type { MessageSender, RuntimeEvent, SendTurnInput } from "./types.js";
 // last). What does not ring — a note, an unmarked notice — never starts a turn;
 // it rides in front of the next one, whatever starts it. Only an urgent
 // message goes into a running turn.
+//
+// A job — work handed over with agent_followup or app_send_to_thread — is a
+// turn of its own, never folded into someone else's and never batched with
+// another job. The user's queued messages go first; then each job, oldest
+// first, with whatever else waits riding in front of it.
 //
 // What the recipient is doing is read when it rings, not when the message was
 // sent: a thread parked on the user holds everything until the user answers; a
@@ -57,10 +62,14 @@ export interface InboxDeliveryDeps {
   };
   dispatcher: Pick<ThreadDispatcher, "steerThreadTurn" | "ensureThreadSession" | "takeReplayPreamble">;
   /** Put one message on the recipient's transcript under its sender, and hand
-   *  back the block it was written as (null when nothing was written). */
-  journal: (threadId: string, message: IrcMessageRecord) => string | null;
+   *  back the block it was written as (null when nothing was written).
+   *  `beforeBlockId` is the turn's own block, which it reads above. */
+  journal: (threadId: string, message: IrcMessageRecord, beforeBlockId?: string) => string | null;
   /** Who wrote a block on the thread's transcript; null when unknown. */
   blockSender?: (threadId: string, blockId: string) => MessageSender | null;
+  /** Put a block after everything on the transcript: the turn's own words,
+   *  once what it carries is written above them. */
+  placeLast?: (threadId: string, blockId: string) => void;
   schedule?: ScheduleDelivery;
 }
 
@@ -125,23 +134,28 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
       .finally(() => restarting.delete(threadId));
   }
 
-  /** Put the urgent messages into the running turn. */
+  /** Put the urgent messages, and at most one urgent job, into the running
+   *  turn. */
   function steerUrgent(threadId: string): void {
-    const claim = mailbox.claimUrgent(threadId, IRC_DELIVERY_BATCH_MAX);
-    if (!claim) return;
-    const blockIds = journalAll(threadId, claim.messages);
+    const handOver = joinClaims(mailbox, [
+      mailbox.claimUrgent(threadId, IRC_DELIVERY_BATCH_MAX),
+      mailbox.claimJob(threadId, true),
+    ]);
+    if (!handOver) return;
+    const { messages, job } = splitJob(handOver.messages);
+    const blockIds = journalAll(threadId, job ? [...messages, job] : messages);
     const input: SendTurnInput = {
       threadId,
-      input: renderInboxTurn(claim.messages, mailbox.urgentCount(threadId)),
+      input: renderHandOver(messages, job, mailbox.urgentCount(threadId)),
     };
     nameBlocks(input, blockIds);
     void (async () => {
       try {
         const result = await deps.dispatcher.steerThreadTurn(input, { silent: true });
-        mailbox.settleDelivery(claim.deliveryId, result.turnId);
+        handOver.settle(result.turnId);
         failures.delete(threadId);
       } catch (err) {
-        mailbox.releaseDelivery(claim.deliveryId);
+        handOver.release();
         console.warn(`[agent] urgent delivery to ${threadId} failed:`, err);
         retry(threadId);
         return;
@@ -163,10 +177,10 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
   }
 
   /** Write each message to the transcript once, and return the blocks. */
-  function journalAll(threadId: string, messages: IrcMessageRecord[]): string[] {
+  function journalAll(threadId: string, messages: IrcMessageRecord[], beforeBlockId?: string): string[] {
     for (const message of messages) {
       if (message.blockId || !message.sender) continue;
-      const blockId = deps.journal(threadId, message);
+      const blockId = deps.journal(threadId, message, beforeBlockId);
       if (!blockId) continue;
       message.blockId = blockId;
       mailbox.setBlockId(message.id, blockId);
@@ -175,38 +189,47 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
   }
 
   function carry(threadId: string, turn: SendTurnInput | null, ownBlockId?: string): CarriedTurn | null {
-    // Nothing else to run: only what rings is worth a turn of its own.
-    if (turn === null && mailbox.ringingCount(threadId) === 0) return null;
+    if (turn === null) return carryOwnTurn(threadId);
+    // Jobs wait for a turn of their own; everything else rides this one.
     const claim = mailbox.claimForTurn(threadId, IRC_DELIVERY_BATCH_MAX);
     if (!claim) return null;
-    const carried = journalAll(threadId, claim.messages);
-    const inbox = renderInboxTurn(claim.messages, mailbox.getUnreadCount(threadId));
-    let input: SendTurnInput;
-    let blockIds: string[];
-    if (turn) {
-      const own = ownBlockId ? (deps.blockSender?.(threadId, ownBlockId) ?? null) : null;
-      // The user's words come last, headed as the user's, so the agent can
-      // tell where the messages end and the person it works for begins.
-      const words = own?.kind === "user" ? `${renderUserHeader()}\n\n${turn.input}` : turn.input;
-      input = { ...turn, input: `${inbox}\n\n${words}` };
-      blockIds = [...carried, ...(turn.userBlockIds ?? (ownBlockId ? [ownBlockId] : []))];
-    } else {
-      // A session that came up blank gets its transcript back first, as any
-      // turn would.
-      const replay = deps.dispatcher.takeReplayPreamble(threadId);
-      input = { threadId, input: replay ? `${replay}\n\n${inbox}` : inbox };
-      blockIds = carried;
-    }
+    const carried = journalAll(threadId, claim.messages, ownBlockId);
+    // Read in the order the turn says it: what waited above, the turn's own
+    // words below.
+    if (ownBlockId && carried.length > 0) deps.placeLast?.(threadId, ownBlockId);
+    const inbox = renderInboxTurn(claim.messages, messagesLeft(threadId));
+    const own = ownBlockId ? (deps.blockSender?.(threadId, ownBlockId) ?? null) : null;
+    // The user's words come last, headed as the user's, so the agent can
+    // tell where the messages end and the person it works for begins.
+    const words = own?.kind === "user" ? `${renderUserHeader()}\n\n${turn.input}` : turn.input;
+    const input: SendTurnInput = { ...turn, input: `${inbox}\n\n${words}` };
+    nameBlocks(input, [...carried, ...(turn.userBlockIds ?? (ownBlockId ? [ownBlockId] : []))]);
+    return carriedTurn(input, joinClaims(mailbox, [claim])!);
+  }
+
+  /** A turn with nothing else to run: the oldest job, with what else waits
+   *  in front of it, or — with no job — what rings. Null when nothing is owed
+   *  a turn. */
+  function carryOwnTurn(threadId: string): CarriedTurn | null {
+    const job = mailbox.claimJob(threadId);
+    if (!job && mailbox.ringingCount(threadId) === 0) return null;
+    const handOver = joinClaims(mailbox, [mailbox.claimForTurn(threadId, IRC_DELIVERY_BATCH_MAX), job]);
+    if (!handOver) return null;
+    const split = splitJob(handOver.messages);
+    // The job is the turn's own words: written last, under what rode with it.
+    const blockIds = journalAll(threadId, split.job ? [...split.messages, split.job] : split.messages);
+    // A session that came up blank gets its transcript back first, as any
+    // turn would.
+    const replay = deps.dispatcher.takeReplayPreamble(threadId);
+    const body = renderHandOver(split.messages, split.job, messagesLeft(threadId));
+    const input: SendTurnInput = { threadId, input: replay ? `${replay}\n\n${body}` : body };
     nameBlocks(input, blockIds);
-    return {
-      input,
-      settle: (turnId) => {
-        mailbox.settleDelivery(claim.deliveryId, turnId);
-      },
-      release: () => {
-        mailbox.releaseDelivery(claim.deliveryId);
-      },
-    };
+    return carriedTurn(input, handOver);
+  }
+
+  /** Messages still waiting once this hand-over is out, jobs aside. */
+  function messagesLeft(threadId: string): number {
+    return mailbox.getUnreadCount(threadId) - mailbox.jobCount(threadId);
   }
 
   const unsubscribeMail = mailbox.onMessageDelivered((threadId) => arm(threadId));
@@ -242,6 +265,50 @@ function nameBlocks(input: SendTurnInput, blockIds: readonly string[]): void {
   if (blockIds.length === 0) return;
   input.userBlockId = blockIds[blockIds.length - 1];
   if (blockIds.length > 1) input.userBlockIds = [...blockIds];
+}
+
+/** One hand-over that took more than one claim: what it carries, settled or
+ *  released together. Null when every claim came back empty. */
+function joinClaims(
+  mailbox: IrcMailbox,
+  claims: readonly (IrcDeliveryClaim | null)[],
+): { messages: IrcMessageRecord[]; settle(turnId: string): void; release(): void } | null {
+  const taken = claims.filter((c): c is IrcDeliveryClaim => c !== null);
+  if (taken.length === 0) return null;
+  return {
+    messages: taken.flatMap((c) => c.messages),
+    settle: (turnId) => {
+      for (const c of taken) mailbox.settleDelivery(c.deliveryId, turnId);
+    },
+    release: () => {
+      for (const c of taken) mailbox.releaseDelivery(c.deliveryId);
+    },
+  };
+}
+
+function carriedTurn(
+  input: SendTurnInput,
+  handOver: { settle(turnId: string): void; release(): void },
+): CarriedTurn {
+  return { input, settle: (turnId) => handOver.settle(turnId), release: () => handOver.release() };
+}
+
+/** A hand-over's job, if it carries one, apart from the rest. */
+function splitJob(all: IrcMessageRecord[]) {
+  const job = all.find((m) => m.kind === "job") ?? null;
+  return { messages: all.filter((m) => m !== job), job };
+}
+
+/** What waited, then the job — which reads as its sender's words, the way a
+ *  turn someone sent does. */
+function renderHandOver(messages: IrcMessageRecord[], job: IrcMessageRecord | null, remaining: number): string {
+  const parts: string[] = [];
+  if (messages.length > 0 || (!job && remaining > 0)) parts.push(renderInboxTurn(messages, remaining));
+  if (job) {
+    const header = job.sender ? renderSenderHeader(job.sender) : null;
+    parts.push(header ? `${header}\n\n${job.message}` : job.message);
+  }
+  return parts.join("\n\n");
 }
 
 /**
