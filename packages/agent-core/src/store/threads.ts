@@ -2,7 +2,7 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, SkillReference, StoredThreadMeta, TurnStamp } from "../types.js";
-import { encodeMessageSender } from "@kone/protocol/message-sender";
+import { encodeMessageSender, parseMessageSender } from "@kone/protocol/message-sender";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
 
@@ -400,6 +400,24 @@ export class ThreadRepo {
       return row ? rowToMeta(row) : null;
     } catch (err) {
       console.error("[conversation-store] latestThreadMeta failed:", err);
+      return null;
+    }
+  }
+
+  /** Who wrote one user block: `{ kind: "user" }` when no sender was stored
+   *  (the user's own words), null when the block is not there. */
+  userBlockSender(threadId: string, blockId: string): MessageSender | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names one nullable TEXT column.
+      const row = this.dbh.prepare(
+        db,
+        `SELECT sender_json FROM blocks WHERE thread_id = ? AND block_id = ? AND role = 'user'`,
+      ).get(threadId, blockId) as { sender_json: string | null } | undefined;
+      if (!row) return null;
+      return parseMessageSender(row.sender_json) ?? { kind: "user" };
+    } catch {
       return null;
     }
   }

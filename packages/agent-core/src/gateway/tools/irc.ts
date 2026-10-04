@@ -4,6 +4,7 @@ import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type CourierSen
 import type { ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
+import { deliveryReceipt } from "../../inboxDelivery.js";
 import type { AgentRecord } from "../../ConversationStore.js";
 import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRow, type InboxSender, type SystemSender } from "../../store/agentInbox.js";
 import type {
@@ -47,6 +48,8 @@ export interface IrcMessageRecord {
   /** Absent on a message from before kinds existed; reads as a note. */
   kind?: InboxKind;
   replyTo?: string;
+  /** The sender asked for it to be seen now, even at the cost of disrupting. */
+  urgent?: boolean;
   createdAt: number;
   read: boolean;
   projectPath?: string;
@@ -155,6 +158,9 @@ export function relationshipOf(store: IrcToolStore | undefined, fromThreadId: st
 export interface IrcToolInput {
   store?: IrcToolStore;
   mailbox?: IrcMailbox;
+  /** Delivery runs on the ringer: a note waits for the recipient's next
+   *  turn, everything else rings, urgent alone goes into a running turn. */
+  deliveryV2?: boolean;
   /** Whether a peer has a live session right now. A message to a live peer
    *  interrupts it and costs it a turn; one to a peer that is away costs
    *  nothing until it returns. The roster says which, because that difference
@@ -187,6 +193,7 @@ function recordFromRow(row: InboxRow): IrcMessageRecord {
     projectPath: row.projectPath,
   };
   if (row.replyTo) record.replyTo = row.replyTo;
+  if (row.urgent) record.urgent = true;
   if (row.sender) record.sender = row.sender;
   if (row.blockId) record.blockId = row.blockId;
   return record;
@@ -509,6 +516,8 @@ export class IrcMailbox {
     },
     input: IrcSendInput,
     store?: IrcToolStore,
+    /** How it is kept: whether it rings (default true) and is urgent. */
+    options: { rings?: boolean; urgent?: boolean } = {},
   ) {
     // Ensure sender is registered in memory
     if (!this.threads.has(sender.threadId)) {
@@ -546,6 +555,7 @@ export class IrcMailbox {
     if (input.replyTo !== undefined) {
       record.replyTo = input.replyTo;
     }
+    if (options.urgent) record.urgent = true;
 
     // Each recipient's copy is its own stored message, so each has its own id:
     // one recipient's copy can be seen or retracted without touching another's.
@@ -570,7 +580,7 @@ export class IrcMailbox {
         });
       }
 
-      this.enqueue(recipientId, messageCopy);
+      this.enqueue(recipientId, messageCopy, undefined, options.rings ?? true);
       copyIds.push(copyId);
     }
 
@@ -662,6 +672,7 @@ export class IrcMailbox {
       senderThreadId: message.sender?.kind === "agent" || !message.sender ? message.from : null,
       sender: message.sender ?? null,
       kind: message.kind ?? "note",
+      urgent: message.urgent ?? false,
       replyTo: message.replyTo ?? null,
       body: message.message,
       dedupeKey: dedupeKey ?? null,
@@ -840,6 +851,34 @@ export class IrcMailbox {
     return this.inbox.unseenInboxCount(threadId, "held");
   }
 
+  /** Claim up to `limit` of everything unseen — answers first, then oldest —
+   *  for a turn starting now. */
+  claimForTurn(threadId: string, limit: number): IrcDeliveryClaim | null {
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "all");
+    if (!claim) return null;
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
+  /** Claim up to `limit` urgent messages, for the turn running now. */
+  claimUrgent(threadId: string, limit: number): IrcDeliveryClaim | null {
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "urgent");
+    if (!claim) return null;
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
+  /** How many urgent messages wait unseen. */
+  urgentCount(threadId: string): number {
+    return this.inbox.unseenInboxCount(threadId, "urgent");
+  }
+
+  /** One stored message, whatever its state — what an answer's replyTo is
+   *  checked against. */
+  message(messageId: string): (IrcMessageRecord & { recipient: string; senderThreadId: string | null }) | null {
+    const row = this.inbox.inboxMessage(messageId);
+    if (!row) return null;
+    return { ...recordFromRow(row), recipient: row.recipientThreadId, senderThreadId: row.senderThreadId };
+  }
+
   /** The provider took the turn carrying this hand-over: its messages are
    *  seen, and remember the turn. */
   settleDelivery(deliveryId: string, turnId: string | null): void {
@@ -945,6 +984,20 @@ const IRC_SEND_DESCRIPTION = [
   "When someone you handed work to asks you something, answer from what you know of the user's intent; ask the user only what you cannot answer, then pass the answer down. Never send an acknowledgement, a progress report, anything a tool could answer, or the next line of chit-chat. Between peers the bus refuses a pair that has traded 16 messages with nobody else involved; a question and its answer along a hand-off never count.",
 ].join("\n");
 
+/** The same tool when delivery runs on the ringer: what a message costs now
+ *  depends on its kind, so the description leads with that. */
+const IRC_SEND_DESCRIPTION_V2 = [
+  "Message another kone agent. Every message lands in its inbox. A note waits there and is handed over in front of the agent's next turn, whatever starts it: it never starts a turn of its own, so it costs nobody a turn. A question, pushback, answer or report rings: an idle agent is woken with a turn for it, a working one takes it when its running turn ends, and a closed session is brought back up for it. It arrives headed as yours, with how you relate to the reader, so it is never mistaken for the user. The result says what happened to it.",
+  "",
+  "`urgent` puts it into the reader's running turn instead of waiting for the turn to end. Only along a hand-off (to an agent you handed work to, or the one you work for) or from the main agent; never on a broadcast, never from a worker. Use it only when the work going on is wrong without it.",
+  "",
+  "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say. The answer reaches you on its own, so keep working on what does not depend on it; set wait only when you cannot go on without it. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question you were asked, with replyTo set to its message id; anything else sent as an answer goes as a note.",
+  "",
+  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `all` broadcasts a note to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
+  "",
+  "When someone you handed work to asks you something, answer from what you know of the user's intent; ask the user only what you cannot answer, then pass the answer down. Never send an acknowledgement, a progress report, anything a tool could answer, or the next line of chit-chat. Between peers the bus refuses a pair that has traded 16 messages with nobody else involved; a question and its answer along a hand-off never count.",
+].join("\n");
+
 const IRC_LIST_DESCRIPTION = [
   "List the kone agents on this project you can message, and what each is doing: working (on what, for how long), idle, waiting on the user, waiting on another agent, starting, compacting, session closed, or its hand-off ended. Each row says how you relate to it, what a message to it would do right now, and how many messages wait unseen in its inbox and for how long.",
   "",
@@ -983,7 +1036,7 @@ function inboxEntry(m: IrcMessageRecord): GatewayRecord {
 }
 
 /** One roster row as text. */
-function renderPeerLine(p: PeerRow, now: number): string {
+function renderPeerLine(p: PeerRow, now: number, v2: boolean): string {
   const name = p.agentName ? `${p.agentName} ` : "";
   const provider = p.provider ? `, ${p.provider}` : "";
   const state = describeRecipientState(
@@ -998,6 +1051,7 @@ function renderPeerLine(p: PeerRow, now: number): string {
       oldestUnseenAt: p.oldestUnseenAt,
     },
     now,
+    v2,
   );
   const unseen =
     p.unseen > 0 ? ` ${p.unseen} unseen in its inbox, oldest ${formatSince(p.oldestUnseenAt, now) ?? "just now"}.` : "";
@@ -1016,7 +1070,9 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     args: GatewayRecord,
   ): Promise<GatewayToolResult> => {
     const parsed = IrcSendInputSchema.parse(args);
-    const kind = parsed.kind ?? "note";
+    let kind = parsed.kind ?? "note";
+    const urgent = parsed.urgent === true;
+    const v2 = input.deliveryV2 === true;
 
     let parentThreadId: string | null | undefined;
     let rootThreadId: string | undefined;
@@ -1030,12 +1086,33 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     }
 
     const target = parsed.to.trim().toLowerCase();
+    const broadcast = target === "all" || target === "*";
     // A broadcast interrupts every agent on the project at once: the main
     // agent's call, never one of the agents working for it.
-    if ((target === "all" || target === "*") && parentThreadId) {
+    if (broadcast && parentThreadId) {
       throw new GatewayToolError(
         "permission_denied",
         "Only the main agent may message `all`. Message your `delegator`, or name the agents you mean.",
+      );
+    }
+    // Disrupting someone is a deliberate choice, so it is narrow: never to
+    // everyone at once, never from a worker.
+    if (urgent && broadcast) {
+      throw new GatewayToolError(
+        "permission_denied",
+        "A broadcast is a note: it never interrupts anyone. Drop urgent, or name the agent that has to see it now.",
+      );
+    }
+    if (urgent && relationshipToParent === "subagent") {
+      throw new GatewayToolError(
+        "permission_denied",
+        "You are a worker: you cannot send urgent. Report or ask your `parent` without it, or put it in your final reply.",
+      );
+    }
+    if (v2 && broadcast && kind !== "note") {
+      throw new GatewayToolError(
+        "permission_denied",
+        "A broadcast is a note: it asks nobody anything and nobody is waiting on a reply. Ask the agent you need an answer from by name.",
       );
     }
 
@@ -1060,21 +1137,112 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       }
     }
 
-    const result = mailbox.sendMessage(sender, parsed, input.store);
+    const recipients = mailbox.resolveRecipients(sender, parsed.to, input.store);
+    // Urgent travels along a hand-off, either way, or comes from the main
+    // agent. Between peers it would be one agent deciding another's work is
+    // less important than its own.
+    if (urgent && parentThreadId) {
+      const peer = recipients.find((id) => relationshipOf(input.store, ctx.threadId, id) === "peer");
+      if (peer) {
+        throw new GatewayToolError(
+          "permission_denied",
+          `${nameOf(peer)} is not an agent you handed work to or work for, so you cannot send it urgent. Send it without urgent; it reaches ${nameOf(peer)} when its turn ends.`,
+        );
+      }
+    }
+
+    let replyTo = parsed.replyTo;
+    let downgraded: string | null = null;
+    if (v2) {
+      for (const id of recipients) {
+        const { state } = stateOf(id);
+        // Over: nothing it is sent will be read by anyone working.
+        if (state.state === "ended") {
+          throw new GatewayToolError(
+            "permission_denied",
+            `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
+          );
+        }
+        // Two agents each parked on the other's answer wait for ever.
+        if (parsed.wait === true && state.waitingOn.includes(ctx.threadId)) {
+          throw new GatewayToolError(
+            "permission_denied",
+            `${nameOf(id)} is already waiting on you — answer it first.`,
+          );
+        }
+        if (kind === "note" && !urgent && mailbox.getUnreadCount(id) >= INBOX_FULL) {
+          throw new GatewayToolError(
+            "permission_denied",
+            `${nameOf(id)}'s inbox is full: ${INBOX_FULL} messages wait unseen. Send it only what it has to act on, as a question or report.`,
+          );
+        }
+      }
+      // An answer answers something: a question or pushback the recipient
+      // sent to this agent. Anything else goes as the note it is, so it
+      // cannot release a wait it has no business releasing.
+      if (kind === "answer" && replyTo !== undefined) {
+        const asked = mailbox.message(replyTo);
+        const genuine =
+          asked !== null &&
+          asked.recipient === ctx.threadId &&
+          (asked.kind === "question" || asked.kind === "pushback") &&
+          recipients.length === 1 &&
+          asked.senderThreadId === recipients[0];
+        if (!genuine) {
+          downgraded = replyTo;
+          kind = "note";
+          replyTo = undefined;
+        }
+      }
+    }
+
+    // A note waits for the recipient's next turn; everything else rings. A
+    // broadcast is a note whatever it says.
+    const rings = !v2 || (!broadcast && (kind !== "note" || urgent));
+    const outgoing: IrcSendInput = { ...parsed, kind };
+    if (replyTo === undefined) delete outgoing.replyTo;
+    else outgoing.replyTo = replyTo;
+    // Read before it is sent: an answer to an agent parked on it is returned
+    // to that wait, and never rings.
+    const before = recipients.map((id) => ({ id, ...stateOf(id) }));
+    const result = mailbox.sendMessage(sender, outgoing, input.store, { rings, urgent });
+    const now = Date.now();
+    const receipts = before.map(({ id, state }) => ({
+      to: id,
+      ...deliveryReceipt({
+        name: nameOf(id),
+        state,
+        rings,
+        urgent,
+        returned: kind === "answer" && (mailbox.waitingOn(id)?.threadIds.includes(ctx.threadId) ?? false),
+        v2,
+        now,
+      }),
+    }));
 
     const recipientDesc =
       result.recipients.length === 1
         ? result.recipients[0]
         : `${result.recipients.length} recipients (${result.recipients.join(", ")})`;
+    const outcome = receipts.length === 1 && !broadcast ? receipts[0]!.outcome : "broadcast";
+    const receiptText =
+      receipts.length === 1 ? receipts[0]!.text : receipts.map((r) => `- ${r.text}`).join("\n");
+    const downgradeNote = downgraded
+      ? ` Sent as a note: ${downgraded} is not a question ${result.recipients.length === 1 ? nameOf(result.recipients[0]!) : "they"} asked you.`
+      : "";
     const structured: GatewayRecord = {
       messageId: result.messageId,
       from: ctx.threadId,
       to: parsed.to,
       kind,
+      urgent,
       delivered: result.delivered,
       recipients: result.recipients,
-      replyTo: parsed.replyTo ?? null,
+      replyTo: replyTo ?? null,
       createdAt: result.message.createdAt,
+      outcome,
+      text: receiptText + downgradeNote,
+      receipts,
     };
 
     if (parsed.wait === true) {
@@ -1109,7 +1277,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       content: [
         {
           type: "text",
-          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}].`,
+          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}]. ${receiptText}${downgradeNote}`,
         },
       ],
       structuredContent: structured,
@@ -1153,6 +1321,27 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     return { content: [{ type: "text", text: parts.join("\n\n") }], structuredContent: structured };
   };
 
+  /** What one agent is doing now, as a sender sees it. */
+  const stateOf = (id: string) => {
+    const meta = input.store?.threadMeta?.(id) ?? null;
+    const runtime = input.threadRuntime?.(id) ?? (input.isThreadLive?.(id) ? liveOnly() : null);
+    const waitingOn = mergeWaits(input.waitingOn?.(id) ?? null, mailbox.waitingOn(id));
+    const steersWhenClosed = meta && input.providerSteers ? input.providerSteers(meta.provider) : null;
+    const state = recipientState({
+      runtime,
+      spawned: input.spawnedStatus?.(id) ?? null,
+      waitingOn,
+      providerSteers: steersWhenClosed,
+      unseen: mailbox.getUnreadCount(id),
+      oldestUnseenAt: mailbox.oldestUnseenAt(id),
+    });
+    return { runtime, state };
+  };
+
+  /** The name a sender knows an agent by. */
+  const nameOf = (id: string): string =>
+    mailbox.getThread(id)?.agentName ?? (input.store ? threadAgentName(input.store, id) : id);
+
   const listHandler = async (ctx: GatewayToolContext): Promise<GatewayToolResult> => {
     const store = input.store;
     const rootThreadId = store?.threadLineage?.(ctx.threadId)?.rootThreadId;
@@ -1172,19 +1361,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
 
     const rows = ids.map((id): PeerRow => {
       const meta = store?.threadMeta?.(id) ?? null;
-      const runtime = input.threadRuntime?.(id) ?? (input.isThreadLive?.(id) ? liveOnly() : null);
-      const agentWait = input.waitingOn?.(id) ?? null;
-      const replyWait = mailbox.waitingOn(id);
-      const waitingOn = mergeWaits(agentWait, replyWait);
-      const steersWhenClosed = meta && input.providerSteers ? input.providerSteers(meta.provider) : null;
-      const state = recipientState({
-        runtime,
-        spawned: input.spawnedStatus?.(id) ?? null,
-        waitingOn,
-        providerSteers: steersWhenClosed,
-        unseen: mailbox.getUnreadCount(id),
-        oldestUnseenAt: mailbox.oldestUnseenAt(id),
-      });
+      const { runtime, state } = stateOf(id);
       const row: PeerRow = {
         id,
         relationship: relationshipOf(store, ctx.threadId, id),
@@ -1210,7 +1387,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     const listed = [...reachable, ...rest].slice(0, Math.max(ROSTER_MAX, reachable.length));
     const hidden = rows.length - listed.length;
 
-    const lines = listed.map((p) => renderPeerLine(p, now));
+    const lines = listed.map((p) => renderPeerLine(p, now, input.deliveryV2 === true));
     if (hidden > 0) {
       lines.push(`${hidden} more agent${hidden === 1 ? "" : "s"} on this project with closed sessions, not listed; address one by name or id.`);
     }
@@ -1225,13 +1402,14 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
   return [
     {
       name: "agent_message",
-      description: IRC_SEND_DESCRIPTION,
+      description: input.deliveryV2 ? IRC_SEND_DESCRIPTION_V2 : IRC_SEND_DESCRIPTION,
       inputSchema: IrcSendInputSchema,
       jsonSchema: IRC_SEND_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
-      promptSnippet:
-        "Message another kone agent, running or idle — a running one is steered mid-turn, an idle one wakes with a new turn — as a note, question, pushback, report or answer, headed as yours so it is never taken for the user.",
+      promptSnippet: input.deliveryV2
+        ? "Message another kone agent as a note (waits for its next turn), question, pushback, report or answer (these ring: an idle agent wakes, a working one takes it when its turn ends), headed as yours so it is never taken for the user."
+        : "Message another kone agent, running or idle — a running one is steered mid-turn, an idle one wakes with a new turn — as a note, question, pushback, report or answer, headed as yours so it is never taken for the user.",
       // When to send is the description's; these are the rules that sit
       // between tools: the spawn tools it steers an agent away from, and the
       // hand-off conversation it carries.
@@ -1266,6 +1444,9 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     },
   ];
 }
+
+/** Unseen messages past which an agent's inbox refuses more notes. */
+export const INBOX_FULL = 200;
 
 /** A runtime for a thread known only to be live: nothing else is known. */
 function liveOnly(): ThreadRuntime {

@@ -541,3 +541,90 @@ describe("threadRuntime: what a thread is doing, for a sender", () => {
     expect(service.threadRuntime("nobody")).toMatchObject({ live: false, steers: null });
   });
 });
+
+describe("the turn slot carries the inbox, against the real store", () => {
+  /** An inbox that folds one line in front of every turn and records how what
+   *  it carried was settled. `rings` is whether anything waits that is worth a
+   *  turn of its own. */
+  function fakeInbox(rings = false) {
+    type Carried = { turn: string | null; own: string | undefined; settled: string | null; released: boolean };
+    const log: Carried[] = [];
+    const inbox = {
+      carry(threadId: string, turn: SendTurnInput | null, own?: string) {
+        if (turn === null && !rings) return null;
+        rings = false;
+        const entry: Carried = { turn: turn?.input ?? null, own, settled: null, released: false };
+        log.push(entry);
+        return {
+          input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
+          settle: (turnId: string) => {
+            entry.settled = turnId;
+          },
+          release: () => {
+            entry.released = true;
+          },
+        };
+      },
+    };
+    return { inbox, log };
+  }
+
+  test("a queued message carries the inbox, settled with the turn the provider started", async () => {
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox();
+    service.setTurnInbox(inbox);
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const row = queueRow(thread, "ship it");
+
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await waitFor(() => stateOf(thread, row) === "gone");
+
+    expect(adapter.sent.map((s) => s.input)).toEqual(["INBOX\n\nship it"]);
+    expect(log).toEqual([{ turn: "ship it", own: `ub-${row}`, settled: "turn-1", released: false }]);
+  });
+
+  test("with nothing queued, what rings starts a turn of its own", async () => {
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox(true);
+    service.setTurnInbox(inbox);
+
+    service.kickTurnSlot(thread);
+    await waitFor(() => adapter.sent.length === 1);
+
+    expect(adapter.sent[0]!.input).toBe("INBOX");
+    await waitFor(() => log[0]?.settled !== null);
+    expect(log[0]!.settled).toBe("turn-1");
+  });
+
+  test("nothing ringing, nothing queued: the slot stays empty", async () => {
+    const thread = await openThread();
+    service.setTurnInbox(fakeInbox().inbox);
+
+    service.kickTurnSlot(thread);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(adapter.sent).toHaveLength(0);
+  });
+
+  test("a refused turn puts what it carried back", async () => {
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox(true);
+    service.setTurnInbox(inbox);
+    adapter.refuse = new Error("provider is down");
+
+    service.kickTurnSlot(thread);
+    await waitFor(() => log.length === 1 && log[0]!.released);
+    expect(log[0]!.settled).toBeNull();
+  });
+
+  test("a message sent straight to an idle thread carries the inbox too", async () => {
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox();
+    service.setTurnInbox(inbox);
+    store.recordUserBlock({ blockId: "ub-direct", threadId: thread, text: "go" });
+
+    const result = await service.sendTurn({ threadId: thread, input: "go", userBlockId: "ub-direct" });
+
+    expect(adapter.sent[0]!.input).toBe("INBOX\n\ngo");
+    expect(log[0]).toMatchObject({ own: "ub-direct", settled: result.turnId });
+  });
+});
