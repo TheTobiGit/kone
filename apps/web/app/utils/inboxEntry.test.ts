@@ -19,7 +19,16 @@ describe("inbox entry labels", () => {
     expect(inboxStateLabel({ state: "seen", rings: true, seenVia: "inbox" })).toBe("Read");
     expect(inboxStateLabel({ state: "seen", rings: true, seenVia: "wait" })).toBe("Answered a wait");
     expect(inboxStateLabel({ state: "retracted", rings: true, seenVia: null })).toBe("Taken back");
-    expect(inboxStateLabel({ state: "uncertain", rings: true, seenVia: null })).toBe("May not have arrived");
+    expect(inboxStateLabel({ state: "uncertain", rings: true, seenVia: null, uncertainAt: 7 })).toBe(
+      "May not have arrived",
+    );
+  });
+
+  test("a read message kone lost track of still says it may not have arrived", () => {
+    expect(inboxStateLabel({ state: "seen", rings: true, seenVia: "inbox", uncertainAt: 7 })).toBe(
+      "Read · may not have arrived",
+    );
+    expect(inboxStateLabel({ state: "seen", rings: true, seenVia: "inbox", uncertainAt: null })).toBe("Read");
   });
 
   test("the stamp counts from when it was seen, else when it arrived", () => {

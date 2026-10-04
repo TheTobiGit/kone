@@ -23,6 +23,8 @@ function row(over: Partial<InboxRow>): InboxRow {
     projectPath: "/repo",
     createdAt: 1,
     seenAt: null,
+    sentAt: null,
+    uncertainAt: null,
     ...over,
   };
 }
@@ -57,6 +59,7 @@ describe("inbox view", () => {
       seenAt: null,
       seenVia: null,
       turnId: null,
+      uncertainAt: null,
     });
   });
 
@@ -85,10 +88,21 @@ describe("inbox view", () => {
   });
 
   test("an uncertain message waits, flagged", () => {
-    const [entry] = waitingInbox(source([row({ state: "uncertain" })]), "t");
+    const [entry] = waitingInbox(source([row({ state: "uncertain", uncertainAt: 7 })]), "t");
     expect(entry?.state).toBe("uncertain");
+    expect(entry?.uncertainAt).toBe(7);
     expect(entry?.uncertain).toBe(true);
     expect(waitingInbox(source([row({})]), "t")[0]).not.toHaveProperty("uncertain");
+  });
+
+  test("a read uncertain message stays flagged in history", () => {
+    const [entry] = inboxHistoryView(
+      source([row({ state: "seen", seenVia: "inbox", seenAt: 9, uncertainAt: 7 })]),
+      "t",
+    );
+    expect(entry?.state).toBe("seen");
+    expect(entry?.uncertainAt).toBe(7);
+    expect(entry?.uncertain).toBe(true);
   });
 
   test("history takes a sane limit", () => {
