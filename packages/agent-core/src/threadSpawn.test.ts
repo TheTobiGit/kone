@@ -2264,25 +2264,48 @@ describe("the turn a follow-up started", () => {
     expect(h.engine.snapshot(child)).toMatchObject({ status: "completed", terminal: true });
   });
 
-  test("a session that failed before the send returned leaves no turn under way", async () => {
-    const h = makeEngine();
+  test("a session that failed before the send returned fails the turn, reported once", async () => {
+    const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
     h.dispatcher.emitBeforeSent = (threadId) => h.bus.emit(sessionState(threadId, "error", Date.now()));
 
-    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    await h.flush();
 
-    expect(h.engine.snapshot(child)!.status).not.toBe("working");
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain(`turn ${turnId}`);
+    h.stopDelivery();
   });
 
-  test("a session that fails after the provider took the turn ends it", async () => {
-    const h = makeEngine();
+  test("a session that fails after the provider took the turn fails it, reported once", async () => {
+    const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
-    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
     expect(h.engine.snapshot(child)!.status).toBe("working");
 
     h.bus.emit(sessionState(child, "error", Date.now()));
+    h.bus.emit({ type: "session.exited", threadId: child, provider: "opencode", at: Date.now(), source: "kone.store", code: 1 });
+    await h.flush();
 
-    expect(h.engine.snapshot(child)!.status).not.toBe("working");
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain(`turn ${turnId}`);
+    h.stopDelivery();
+  });
+
+  test("a session stopped before the turn started interrupts it, reported once", async () => {
+    const h = makeReportEngine();
+    const child = childFromBeforeRestart(h);
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    h.bus.emit(sessionState(child, "stopped", Date.now()));
+    await h.flush();
+
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "interrupted", terminal: true });
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain(`turn ${turnId}`);
+    h.stopDelivery();
   });
 
   test("an event for another turn does not end it", async () => {
