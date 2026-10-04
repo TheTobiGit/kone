@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1117,6 +1117,50 @@ function migration0024InboxSentAt(db: DatabaseSync): void {
   db.exec(`ALTER TABLE agent_inbox ADD COLUMN sent_at INTEGER`);
 }
 
+/**
+ * A row can be uncertain: a hand-over that went to the provider before the
+ * process died, with nothing on record to say whether the provider took it.
+ * It is never handed over again on its own; its recipient and sender are told,
+ * and the recipient's inbox read shows it. SQLite cannot widen a CHECK in
+ * place, so the table is rebuilt; nothing references it.
+ */
+function migration0025InboxUncertain(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE agent_inbox__v25 (
+      inbox_id            TEXT PRIMARY KEY,
+      recipient_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      sender_thread_id    TEXT,
+      sender_json         TEXT NOT NULL CHECK (json_valid(sender_json)),
+      kind                TEXT NOT NULL CHECK (kind IN ('note', 'question', 'pushback', 'answer', 'report', 'notice', 'job')),
+      urgent              INTEGER NOT NULL DEFAULT 0,
+      reply_to            TEXT,
+      body                TEXT NOT NULL,
+      state               TEXT NOT NULL CHECK (state IN ('unseen', 'handing', 'seen', 'retracted', 'uncertain')),
+      delivery_id         TEXT,
+      block_id            TEXT,
+      turn_id             TEXT,
+      seen_via            TEXT CHECK (seen_via IN ('turn', 'inbox', 'wait')),
+      dedupe_key          TEXT UNIQUE,
+      project_path        TEXT NOT NULL,
+      created_at          INTEGER NOT NULL,
+      seen_at             INTEGER,
+      rings               INTEGER NOT NULL DEFAULT 1,
+      sent_at             INTEGER
+    );
+    INSERT INTO agent_inbox__v25 (inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, urgent,
+                                  reply_to, body, state, delivery_id, block_id, turn_id, seen_via, dedupe_key,
+                                  project_path, created_at, seen_at, rings, sent_at)
+      SELECT inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind, urgent,
+             reply_to, body, state, delivery_id, block_id, turn_id, seen_via, dedupe_key,
+             project_path, created_at, seen_at, rings, sent_at
+        FROM agent_inbox ORDER BY rowid;
+    DROP TABLE agent_inbox;
+    ALTER TABLE agent_inbox__v25 RENAME TO agent_inbox;
+    CREATE INDEX IF NOT EXISTS idx_agent_inbox_pending
+      ON agent_inbox (recipient_thread_id, state, created_at);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1142,6 +1186,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 22, name: "AgentInbox", run: migration0022AgentInbox },
   { id: 23, name: "InboxRings", run: migration0023InboxRings },
   { id: 24, name: "InboxSentAt", run: migration0024InboxSentAt },
+  { id: 25, name: "InboxUncertain", run: migration0025InboxUncertain },
 ];
 
 export interface MigrationOptions {

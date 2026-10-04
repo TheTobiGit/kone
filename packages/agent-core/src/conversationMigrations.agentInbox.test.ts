@@ -121,3 +121,23 @@ describe("migration 24: InboxSentAt", () => {
     db.close();
   });
 });
+
+// Migration 25 lets a row be uncertain. The table is rebuilt for it, and every
+// row comes through as it was.
+describe("migration 25: InboxUncertain", () => {
+  test("keeps every row and column, and takes an uncertain row", () => {
+    const { db, file } = v21Database();
+    migrate(db, file, { toMigrationInclusive: 24 });
+    insert(db, { inbox_id: "'msg_old'", state: "'handing'", rings: "0", sent_at: "7" });
+    migrate(db, file);
+    // SAFETY: the projection is four columns, TEXT and nullable INTEGERs.
+    const row = db.prepare("SELECT inbox_id, state, rings, sent_at FROM agent_inbox").get() as Record<
+      string,
+      string | number | null
+    >;
+    expect(row).toEqual({ inbox_id: "msg_old", state: "handing", rings: 0, sent_at: 7 });
+    insert(db, { inbox_id: "'msg_uncertain'", state: "'uncertain'" });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_agent_inbox_pending'").get()).not.toBeNull();
+    db.close();
+  });
+});
