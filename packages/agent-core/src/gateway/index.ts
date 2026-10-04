@@ -24,7 +24,7 @@ import { createAstTools } from "./tools/ast.js";
 import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
-import { createIrcTools, type IrcToolInput } from "./tools/irc.js";
+import { createIrcTools, getIrcMailbox, type IrcToolInput } from "./tools/irc.js";
 import type { ThreadRuntime } from "../recipientState.js";
 import { getSpawnEngine } from "../threadSpawn.js";
 import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
@@ -270,6 +270,9 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.threads) appThreadOptions.runner = input.threads;
   if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
   if (input.threadControls) Object.assign(appThreadOptions, input.threadControls);
+  // Under the ringer a message to a thread is a job in its inbox.
+  if (input.deliveryV2) appThreadOptions.jobs = getIrcMailbox();
+  if (input.threadRuntime) appThreadOptions.threadRuntime = input.threadRuntime;
 
   // The provider tools take their options as one object, passed straight
   // through — no per-field mapping here to drift from AppProvidersToolOptions.

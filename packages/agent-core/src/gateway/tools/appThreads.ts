@@ -38,6 +38,9 @@ import {
 } from "../../agentModel.js";
 import { resolveDelegation } from "../../delegate.js";
 import { agentSenderFor } from "../../senderHeader.js";
+import { recipientState, type ThreadRuntime } from "../../recipientState.js";
+import { deliveryReceipt } from "../../inboxDelivery.js";
+import type { AgentSender } from "@kone/protocol/message-sender";
 import { compact, decodeCursor, encodeCursor, squash } from "../helpers.js";
 import type {
   AgentPersona,
@@ -183,9 +186,27 @@ export type AppThreadsAvailability = () => Promise<readonly ProviderAvailability
  *  write through the same store methods the canonical path uses, but they
  *  cannot emit the queued-cancelled broadcasts, remove attachment bytes, or
  *  forget dispatcher state. */
+/** The inbox's side of a message sent as a job. */
+export interface AppThreadJobs {
+  postJob(input: {
+    to: string;
+    projectPath: string;
+    message: string;
+    sender: AgentSender;
+    urgent?: boolean;
+    dedupeKey?: string;
+  }): { messageId: string; duplicate: boolean };
+}
+
 export interface AppThreadsToolOptions {
   store: AppThreadsStore;
   emit?: EmitEvent;
+  /** Under the ringer, where a message goes: a job in the thread's inbox,
+   *  handed over as a turn of its own, held while the thread waits on the
+   *  user. Absent, a message is sent straight at the thread. */
+  jobs?: AppThreadJobs;
+  /** What a thread is doing right now, for what a job's send reports. */
+  threadRuntime?: (threadId: string) => ThreadRuntime | null;
   /** The projects the renderer last reported — what a project name resolves
    *  against, and what an unscoped list walks. */
   readProjects?: () => readonly ProjectRosterEntry[] | null;
@@ -928,16 +949,19 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       gate: options.pendingGateFor?.(params.threadId) ?? null,
       live,
     });
+    const parked = status === "waiting-for-approval" || status === "waiting-for-user-input";
     // A parked thread is waiting on the user, not on more instructions: a
     // message would queue behind a gate only a person can open, and read as
-    // sent while nothing moves.
-    if (status === "waiting-for-approval" || status === "waiting-for-user-input") {
+    // sent while nothing moves. Under the ringer it is held instead, and
+    // the send says so.
+    if (parked && !options.jobs) {
       const asks = asksFor(params.threadId);
       throw new GatewayToolError(
         "capability_denied",
         `Thread "${params.threadId}" is ${status === "waiting-for-approval" ? "waiting for the user to approve something" : "waiting for the user to answer a question"}${asks.length > 0 ? `: ${asks.join("; ")}` : ""}. Nothing it is sent will run until they do, so tell them instead.`,
       );
     }
+    const urgent = params.urgent ?? params.steer ?? false;
     if (!live && !runner.ensureThreadSession) {
       throw new GatewayToolError(
         "provider_unavailable",
@@ -953,7 +977,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     const reserve = store.reserveGatewayOp({
       ...opKey,
       kind: "app.send_to_thread",
-      fingerprint: fingerprintOf([params.threadId, params.message, params.steer ? "steer" : "queue"]),
+      fingerprint: fingerprintOf([params.threadId, params.message, urgent ? "steer" : "queue"]),
     });
     if (reserve === null) {
       throw new GatewayToolError("internal", "Idempotency reserve failed.");
@@ -983,6 +1007,54 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // stored one, so the agent answers with the conversation it already had.
     if (!live) await runner.ensureThreadSession?.(params.threadId, { resume: true });
 
+    const title = meta?.title ?? thread?.title ?? params.threadId;
+    if (options.jobs) {
+      // Read before it is sent: what the send reports is what the thread was
+      // doing when it went.
+      const state = recipientState({
+        runtime: options.threadRuntime?.(params.threadId) ?? null,
+        unseen: 0,
+        oldestUnseenAt: null,
+      });
+      const posted = options.jobs.postJob({
+        to: params.threadId,
+        projectPath: meta?.projectPath ?? thread?.projectPath ?? "",
+        message: params.message,
+        sender: agentSenderFor(store, ctx.threadId, "peer", "note"),
+        urgent,
+        dedupeKey: `app-send:${ctx.threadId}:${turnId}:${params.requestId}`,
+      });
+      const receipt = deliveryReceipt({
+        name: `"${title}"`,
+        state,
+        rings: true,
+        urgent,
+        returned: false,
+        v2: true,
+        now: Date.now(),
+      });
+      const summary = `Sent to "${title}" (${params.threadId}). ${receipt.text}`;
+      const payload: GatewayRecord = {
+        ok: true,
+        threadId: params.threadId,
+        messageId: posted.messageId,
+        delivery: receipt.outcome,
+        urgent,
+        resumed: !live,
+        summary,
+      };
+      store.setGatewayOpResult({ ...opKey, resultJson: JSON.stringify(payload) });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${summary} It runs as a turn of its own and shows in that thread as a message from you, not from the user. Read the reply back with app_read_thread.`,
+          },
+        ],
+        structuredContent: payload,
+      };
+    }
+
     // Only a running turn is busy. "starting" is a session that is up with no
     // turn run yet: a send goes straight to it.
     const busy = status === "working";
@@ -994,11 +1066,10 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // The service queues a send that lands on a busy thread, the same durable
     // queue a user's follow-up joins. A steer goes into the running turn — only
     // when there is one to go into and the host can reach it.
-    const steerable = busy && params.steer === true ? runner.steerThreadTurn?.bind(runner) : undefined;
+    const steerable = busy && urgent ? runner.steerThreadTurn?.bind(runner) : undefined;
     const steered = steerable !== undefined;
     const turn = steerable ? await steerable(turnInput) : await runner.sendThreadTurn(turnInput);
 
-    const title = meta?.title ?? thread?.title ?? params.threadId;
     const how = steered
       ? "into its running turn"
       : busy
@@ -1164,7 +1235,9 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_send_to_thread",
       description:
-        "Send a message to an existing thread, as the user would, so its agent carries on with everything that conversation already knows. An idle thread wakes up and answers; one mid-turn gets it queued behind the running turn (or, with steer: true, put into the running turn). A thread with no running session is resumed first. Refused for a thread waiting on the user's approval or answer, an archived thread, and this conversation itself. Pass a stable requestId so a retry does not send the message twice.",
+        options.jobs
+          ? "Send a message to an existing thread, so its agent carries on with everything that conversation already knows. It runs as a turn of its own: at once on an idle thread, after the running turn on a busy one (or, with urgent: true, inside the running turn), and once the user answers on a thread waiting on the user's approval or answer. A thread with no running session is resumed first. Refused for an archived thread and this conversation itself. Pass a stable requestId so a retry does not send the message twice."
+          : "Send a message to an existing thread, as the user would, so its agent carries on with everything that conversation already knows. An idle thread wakes up and answers; one mid-turn gets it queued behind the running turn (or, with urgent: true, put into the running turn). A thread with no running session is resumed first. Refused for a thread waiting on the user's approval or answer, an archived thread, and this conversation itself. Pass a stable requestId so a retry does not send the message twice.",
       inputSchema: SendAppThreadMessageInputSchema,
       jsonSchema: SEND_APP_THREAD_MESSAGE_JSON_SCHEMA,
       permission: "allow",

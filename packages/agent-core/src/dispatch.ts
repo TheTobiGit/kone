@@ -176,7 +176,17 @@ export interface ThreadDispatcher {
    *  block's id — the caller hands it to the turn that delivers the words, so
    *  a steer splits the reply where they landed — or null when nothing was
    *  written. */
-  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): string | null;
+  recordAgentMessage(input: {
+    threadId: string;
+    text: string;
+    sender: MessageSender;
+    /** The turn's own block this message reads above, when it is already on
+     *  the transcript. */
+    beforeBlockId?: string;
+  }): string | null;
+  /** A follow-up from `parentTurnId` is on its way to `threadId`: stamp the
+   *  child's events with that turn, as a send carrying it would. */
+  noteSpawnParentTurn(threadId: string, parentTurnId: string): void;
   /** Tell a thread something as kone. The notice is stored in its inbox, and
    *  this returns once it is. Held (the default), it never starts a turn: it
    *  rides in front of whatever turn the thread runs next, and is written to
@@ -799,7 +809,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     };
   }
 
-  recordAgentMessage(input: { threadId: string; text: string; sender: MessageSender }): string | null {
+  recordAgentMessage(input: {
+    threadId: string;
+    text: string;
+    sender: MessageSender;
+    beforeBlockId?: string;
+  }): string | null {
     const blockId = randomUUID();
     const count = this.store.recordUserBlock({
       blockId,
@@ -808,8 +823,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       sender: input.sender,
     });
     if (count === 0) return null;
-    this.announceJournaled(input.threadId, blockId, input.text, input.sender);
+    this.announceJournaled(input.threadId, blockId, input.text, input.sender, input.beforeBlockId);
     return blockId;
+  }
+
+  noteSpawnParentTurn(threadId: string, parentTurnId: string): void {
+    this.spawnParentTurnIds.set(threadId, parentTurnId);
   }
 
   /** Tell renderers a block kone wrote for someone else is on the transcript. */
@@ -818,21 +837,21 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     blockId: string | undefined,
     text: string,
     sender: MessageSender,
+    beforeBlockId?: string,
   ): void {
     const provider = this.store.threadMeta(threadId)?.provider;
     if (!provider) return;
     const at = Date.now();
-    this.broadcast(
-      {
-        type: "thread.message-journaled",
-        threadId,
-        provider,
-        at,
-        source: "kone.store",
-        block: { id: blockId ?? randomUUID(), role: "user", text, at, sender },
-      },
-      false,
-    );
+    const event: Extract<RuntimeEvent, { type: "thread.message-journaled" }> = {
+      type: "thread.message-journaled",
+      threadId,
+      provider,
+      at,
+      source: "kone.store",
+      block: { id: blockId ?? randomUUID(), role: "user", text, at, sender },
+    };
+    if (beforeBlockId) event.beforeBlockId = beforeBlockId;
+    this.broadcast(event, false);
   }
 
   onTurnCompleted(threadId: string): void {

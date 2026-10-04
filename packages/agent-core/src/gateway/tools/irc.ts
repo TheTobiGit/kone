@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
-import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type CourierSender } from "@kone/protocol/message-sender";
+import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type AgentSender, type CourierSender } from "@kone/protocol/message-sender";
 import type { ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
@@ -258,6 +258,7 @@ export class IrcMailbox {
   private threads = new Map<string, ThreadRegistration>();
   private agentToThread = new Map<string, string>();
   private deliveryListeners = new Set<(recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void>();
+  private readonly settleListeners = new Set<() => void>();
   /** Consecutive messages traded between a pair with nobody else involved —
    *  the ping-pong counter MAX_PAIR_EXCHANGES cuts off. Keyed by unordered
    *  pair; an exchange involving anyone else resets it (see recordExchange). */
@@ -822,9 +823,12 @@ export class IrcMailbox {
     if (options?.peek === true) {
       return { messages: unseen.map(recordFromRow), unreadCount: this.inbox.unseenInboxCount(threadId) };
     }
-    const taken = new Set(this.inbox.markInboxSeen(unseen.map((row) => row.inboxId), "inbox"));
+    // A job is work handed over as a turn of its own, and its sender's handle
+    // on that turn: reading the inbox never takes it.
+    const readable = unseen.filter((row) => row.kind !== "job");
+    const taken = new Set(this.inbox.markInboxSeen(readable.map((row) => row.inboxId), "inbox"));
     return {
-      messages: unseen.filter((row) => taken.has(row.inboxId)).map((row) => ({ ...recordFromRow(row), read: true })),
+      messages: readable.filter((row) => taken.has(row.inboxId)).map((row) => ({ ...recordFromRow(row), read: true })),
       unreadCount: this.inbox.unseenInboxCount(threadId),
     };
   }
@@ -854,16 +858,72 @@ export class IrcMailbox {
   /** Claim up to `limit` of everything unseen — answers first, then oldest —
    *  for a turn starting now. */
   claimForTurn(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "all");
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "messages");
     if (!claim) return null;
     return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
   }
 
   /** Claim up to `limit` urgent messages, for the turn running now. */
   claimUrgent(threadId: string, limit: number): IrcDeliveryClaim | null {
-    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "urgent");
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, "urgent-messages");
     if (!claim) return null;
     return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
+  /** Claim the oldest waiting job — only an urgent one when `urgent` — for a
+   *  turn of its own. Null when there is none. */
+  claimJob(threadId: string, urgent = false): IrcDeliveryClaim | null {
+    const claim: InboxClaim | null = this.inbox.claimInbox(threadId, 1, urgent ? "urgent-job" : "job");
+    if (!claim) return null;
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+  }
+
+  /** How many jobs wait unseen. */
+  jobCount(threadId: string): number {
+    return this.inbox.unseenInboxCount(threadId, "job");
+  }
+
+  /**
+   * Put a job — work to do, from the agent that handed the thread its work or
+   * from kone's assistant — in one thread's inbox. It always rings, and is
+   * handed over as a turn of its own. Its id is the sender's handle on it:
+   * once handed over, `jobTurn` names the turn that carried it. A post with a
+   * dedupe key already stored stores nothing and returns the same id, so a
+   * retried call never asks twice. Throws when it could not be stored.
+   */
+  postJob(input: {
+    to: string;
+    projectPath: string;
+    message: string;
+    sender: AgentSender;
+    urgent?: boolean;
+    dedupeKey?: string;
+  }) {
+    const messageId = input.dedupeKey
+      ? `msg_${createHash("sha256").update(input.dedupeKey).digest("hex").slice(0, 32)}`
+      : `msg_${randomUUID()}`;
+    const record: IrcMessageRecord = {
+      id: messageId,
+      from: input.sender.threadId,
+      to: input.to,
+      message: input.message,
+      kind: "job",
+      createdAt: Date.now(),
+      read: false,
+      projectPath: input.projectPath,
+      sender: input.sender,
+    };
+    if (input.urgent) record.urgent = true;
+    const stored = this.enqueue(input.to, record, input.dedupeKey, true);
+    return { messageId, duplicate: !stored };
+  }
+
+  /** Where a job stands: who it is for, whether it was handed over yet, and
+   *  the turn that carried it once it was. Null when there is no such job. */
+  jobTurn(inboxId: string): { recipient: string; handedOver: boolean; turnId: string | null } | null {
+    const row = this.inbox.inboxMessage(inboxId);
+    if (!row || row.kind !== "job") return null;
+    return { recipient: row.recipientThreadId, handedOver: row.state === "seen", turnId: row.turnId };
   }
 
   /** How many urgent messages wait unseen. */
@@ -882,7 +942,21 @@ export class IrcMailbox {
   /** The provider took the turn carrying this hand-over: its messages are
    *  seen, and remember the turn. */
   settleDelivery(deliveryId: string, turnId: string | null): void {
-    this.inbox.settleInboxDelivery(deliveryId, turnId);
+    if (this.inbox.settleInboxDelivery(deliveryId, turnId) === 0) return;
+    for (const listener of this.settleListeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.warn("[agent] an inbox settle listener failed:", err);
+      }
+    }
+  }
+
+  /** Hear when a hand-over is settled with its turn — when a job's id comes
+   *  to stand for a turn. Returns the unsubscribe. */
+  onDeliverySettled(listener: () => void): () => void {
+    this.settleListeners.add(listener);
+    return () => this.settleListeners.delete(listener);
   }
 
   /** The hand-over's send failed: its messages are unseen again, and keep the

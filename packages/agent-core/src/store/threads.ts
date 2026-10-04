@@ -422,6 +422,21 @@ export class ThreadRepo {
     }
   }
 
+  /** Place one block after everything else on its thread's transcript. Its
+   *  `at` stays the moment it was written. */
+  moveBlockToEnd(threadId: string, blockId: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE blocks SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM blocks WHERE thread_id = ?)
+          WHERE thread_id = ? AND block_id = ?`,
+      ).run(threadId, threadId, blockId);
+    } catch (err) {
+      console.error("[conversation-store] moveBlockToEnd failed:", err);
+    }
+  }
+
   /** Fast indexed lookup for the ID of the most recent user block in a thread,
    *  avoiding full-transcript parsing on turn enqueues. */
   latestUserBlockId(threadId: string): string | null {

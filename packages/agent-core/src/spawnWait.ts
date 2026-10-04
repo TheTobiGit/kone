@@ -37,7 +37,14 @@ export interface SpawnWaitDeps {
   onCollected?: (scopeThreadId: string, threadId: string, turnId: string) => void;
   /** A parked wait was cancelled before it returned anything. */
   onAbandoned?: (scopeThreadId: string, threadIds: readonly string[]) => void;
+  /** Where a job in a child's inbox stands, for a wait pinned to the job's
+   *  id: the turn that carried it once it was handed over. Null when the id
+   *  names no job. */
+  jobTurn?: (inboxId: string) => { recipient: string; handedOver: boolean; turnId: string | null } | null;
 }
+
+/** What a wait is pinned to: a turn, or a job still waiting for its turn. */
+type Pin = { turnId: string | undefined; pending: boolean };
 
 /**
  * Coordinates async waits on spawned child threads, handling turn-pinning,
@@ -112,8 +119,19 @@ export class SpawnWaitCoordinator {
     return this.waiters.some(
       (waiter) =>
         waiter.scopeThreadId === scopeThreadId &&
-        waiter.ids.some((id, i) => id === threadId && (waiter.turnIds?.[i] ?? turnId) === turnId),
+        waiter.ids.some((id, i) => id === threadId && (this.pinOf(id, waiter.turnIds?.[i]).turnId ?? turnId) === turnId),
     );
+  }
+
+  /** A pin names a turn, or a job's inbox id — which stands for the turn
+   *  that carried the job once it was handed over, and for a turn still to
+   *  come until then. */
+  private pinOf(threadId: string, requested: string | undefined): Pin {
+    if (requested === undefined) return { turnId: undefined, pending: false };
+    const job = this.deps.jobTurn?.(requested) ?? null;
+    if (!job || job.recipient !== threadId) return { turnId: requested, pending: false };
+    if (job.turnId) return { turnId: job.turnId, pending: false };
+    return { turnId: requested, pending: !job.handedOver };
   }
 
   /** The threads `scopeThreadId` is parked waiting on, and since when; null
@@ -162,7 +180,7 @@ export class SpawnWaitCoordinator {
 
   private resolvedTurnIds(waiter: Waiter): (string | null)[] {
     return waiter.ids.map((id, i) => {
-      const requested = waiter.turnIds?.[i];
+      const requested = this.pinOf(id, waiter.turnIds?.[i]).turnId;
       if (requested !== undefined) return requested;
       const tracked = this.deps.tracked.get(id);
       if (tracked && tracked.turns.length > 0) {
@@ -172,7 +190,18 @@ export class SpawnWaitCoordinator {
     });
   }
 
-  snapshotForWait(threadId: string, turnId?: string): SpawnedThread {
+  snapshotForWait(threadId: string, requested?: string): SpawnedThread {
+    const pin = this.pinOf(threadId, requested);
+    const snap = this.snapshotPinned(threadId, pin.turnId);
+    // A job still in the child's inbox is a turn to come: nothing to collect
+    // yet, unless the child is parked on the user, which holds the job too.
+    if (pin.pending && snap.status !== "waiting-for-approval" && snap.status !== "waiting-for-user-input") {
+      return { ...snap, status: "starting", terminal: false };
+    }
+    return snap;
+  }
+
+  private snapshotPinned(threadId: string, turnId: string | undefined): SpawnedThread {
     const tracked = this.deps.tracked.get(threadId);
     if (tracked && turnId) {
       const pin = tracked.turns.find((t) => t.turnId === turnId);

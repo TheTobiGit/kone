@@ -12,6 +12,7 @@ import {
   SpawnError,
   type SpawnCaller,
   type SpawnEngine,
+  type SpawnEngineDeps,
   type SpawnEngineProviders,
   type SpawnEngineStore,
   type SpawnRequest,
@@ -319,6 +320,13 @@ class FakeDispatcher implements ThreadDispatcher {
     return { threadId: input.threadId, turnId: `turn-${this.sent.length}` };
   }
 
+  /** The parent turn each follow-up sent as a job stamped on its child. */
+  parentTurnsNoted: Array<{ threadId: string; parentTurnId: string }> = [];
+
+  noteSpawnParentTurn(threadId: string, parentTurnId: string): void {
+    this.parentTurnsNoted.push({ threadId, parentTurnId });
+  }
+
   spawnParentTurnId(): string | undefined {
     return undefined;
   }
@@ -369,19 +377,23 @@ type EngineHarness = {
   bus: EventBus;
 };
 
-function makeEngine(options: { reports?: (store: FakeStore) => SettleReportSink } = {}): EngineHarness {
+function makeEngine(
+  options: { reports?: (store: FakeStore) => SettleReportSink; jobs?: IrcMailbox } = {},
+): EngineHarness {
   const store = new FakeStore();
   const providers = new FakeProviders();
   const dispatcher = new FakeDispatcher();
   const bus = new EventBus();
-  const engine = initSpawnEngine({
+  const deps: SpawnEngineDeps = {
     store,
     providers,
     dispatcher,
     emit: (event) => bus.emit(event),
     onEvents: (listener) => bus.on(listener),
     reports: options.reports?.(store),
-  });
+  };
+  if (options.jobs) deps.jobs = options.jobs;
+  const engine = initSpawnEngine(deps);
   return { engine, store, providers, dispatcher, bus };
 }
 
@@ -1640,6 +1652,80 @@ describe("continueThread", () => {
     const resumedLimits = (await h.engine.targets(CALLER)).limits;
     expect(resumedLimits.remainingAppWide).toBe(settledLimits.remainingAppWide - 1);
     expect(resumedLimits.remainingChildren).toBe(settledLimits.remainingChildren - 1);
+  });
+});
+
+describe("continueThread under the ringer", () => {
+  async function busyChild(h: EngineHarness): Promise<string> {
+    const spawned = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(spawned.threadId, 1));
+    h.bus.emit(turnStarted(spawned.threadId, "turn-a", 2));
+    return spawned.threadId;
+  }
+
+  test("a follow-up is a job in the child's inbox, and its id comes back", async () => {
+    const mailbox = new IrcMailbox();
+    const h = makeEngine({ jobs: mailbox });
+    setupParent(h.store, h.providers);
+    const child = await busyChild(h);
+    const sentBefore = h.dispatcher.sent.length;
+
+    const result = await h.engine.continueThread(CALLER, { threadId: child, message: "Now add tests." });
+
+    expect(result.job).toBe(true);
+    expect(result.turnId.startsWith("msg_")).toBe(true);
+    // Nothing is sent at the child: the ringer hands the job over.
+    expect(h.dispatcher.sent).toHaveLength(sentBefore);
+    expect(mailbox.jobCount(child)).toBe(1);
+    expect(mailbox.jobTurn(result.turnId)).toEqual({ recipient: child, handedOver: false, turnId: null });
+    expect(h.dispatcher.parentTurnsNoted).toEqual([{ threadId: child, parentTurnId: CALLER.turnId }]);
+  });
+
+  test("a retry under the same request id finds the same job", async () => {
+    const mailbox = new IrcMailbox();
+    const h = makeEngine({ jobs: mailbox });
+    setupParent(h.store, h.providers);
+    const child = await busyChild(h);
+
+    const first = await h.engine.continueThread(CALLER, { threadId: child, message: "Now add tests.", requestId: "fu-1" });
+    const retry = await h.engine.continueThread(CALLER, { threadId: child, message: "Now add tests.", requestId: "fu-1" });
+
+    expect(retry).toEqual(first);
+    expect(mailbox.jobCount(child)).toBe(1);
+  });
+
+  test("agent_wait on the job's id waits past the running turn, then settles with the turn that carried it", async () => {
+    const mailbox = new IrcMailbox();
+    const h = makeEngine({ jobs: mailbox });
+    setupParent(h.store, h.providers);
+    const child = await busyChild(h);
+    const { turnId: jobId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Now add tests." });
+
+    let settled = false;
+    const waiting = h.engine
+      .waitFor({ threadIds: [child], turnIds: [jobId], timeoutMs: 2_000, scopeThreadId: CALLER.threadId })
+      .then((out) => {
+        settled = true;
+        return out;
+      });
+
+    // The turn that was running ends: the job has not run yet.
+    h.bus.emit(turnCompleted(child, "turn-a", 3));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    // The ringer hands the job over as its own turn, which settles before
+    // the provider's accept is even recorded.
+    const claim = mailbox.claimJob(child)!;
+    h.bus.emit(turnStarted(child, "turn-b", 4));
+    h.bus.emit(turnCompleted(child, "turn-b", 5));
+    expect(settled).toBe(false);
+    mailbox.settleDelivery(claim.deliveryId, "turn-b");
+
+    const out = await waiting;
+    expect(out.timedOut).toBe(false);
+    expect(out.allTerminal).toBe(true);
+    expect(out.turnIds).toEqual(["turn-b"]);
   });
 });
 
