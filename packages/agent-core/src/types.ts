@@ -1270,9 +1270,10 @@ export type SpawnedThreadStatus =
   | "completed"
   | "failed"
   | "interrupted"
-  // Only on a wait pinned to a job kone was handing over when it restarted:
-  // nothing on record says whether the child got it, and nothing will hand
-  // it over again.
+  // Only on a wait pinned to a job or turn kone cannot account for: a job it
+  // was handing over when it restarted — nothing on record says whether the
+  // child got it, and nothing will hand it over again — or a turn from
+  // before a restart the store has no record of.
   | "uncertain";
 
 /** A top-level thread's rolled-up state, as the assistant sees it. Derived at

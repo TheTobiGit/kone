@@ -97,6 +97,15 @@ export interface SpawnEngineStore {
     /** The NEWEST assistant block's error, when it has one. */
     lastError?: string;
   } | null;
+  /** The same readout for one turn of the thread; null when the store has
+   *  no record of it. */
+  turnSpan?(threadId: string, turnId: string): {
+    startedAt: number;
+    endedAt: number | null;
+    runningTurns: number;
+    lastState: "running" | "interrupted" | "failed" | "completed" | null;
+    lastError?: string;
+  } | null;
   reserveGatewayOp(input: {
     threadId: string;
     turnId: string;
@@ -586,7 +595,7 @@ class SpawnEngineImpl implements SpawnEngine {
       tracked: this.tracked,
       store: this.store,
       snapshot: (threadId) => this.snapshot(threadId),
-      storedSnapshot: (threadId) => this.storedSnapshot(threadId),
+      storedSnapshot: (threadId, turnId) => this.storedSnapshot(threadId, turnId),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
       onCollected: (scopeThreadId, threadId, turnId) => this.onCollected(scopeThreadId, threadId, turnId),
       onAbandoned: (scopeThreadId, threadIds) => this.onAbandoned(scopeThreadId, threadIds),
@@ -962,23 +971,25 @@ class SpawnEngineImpl implements SpawnEngine {
   }
 
   /** A spawned child as the store has it, for one this process is not
-   *  following: its newest turn recovered from the transcript. */
-  private storedSnapshot(threadId: string): SpawnedThread | null {
+   *  following: its newest turn recovered from the transcript, or with
+   *  `turnId` that turn. A turn the store has no record of is not read as
+   *  any other: the snapshot says kone cannot tell how it went. */
+  private storedSnapshot(threadId: string, turnId?: string): SpawnedThread | null {
     const meta = this.store.threadMeta(threadId);
     const lineage = meta ? this.store.threadLineage(threadId) : null;
     if (!meta || !lineage || !isSpawnedRelationship(lineage.relationshipToParent)) return null;
-    const span = this.store.threadTurnSpan(threadId);
+    const span = turnId === undefined ? this.store.threadTurnSpan(threadId) : (this.store.turnSpan?.(threadId, turnId) ?? null);
     const turns: SpawnProjectionTurn[] = [];
     if (span) {
       if (span.runningTurns > 0) {
-        turns.push({ turnId: "<recovered>", state: "running", at: span.startedAt });
+        turns.push({ turnId: turnId ?? "<recovered>", state: "running", at: span.startedAt });
       } else if (span.endedAt !== null) {
         const state: SpawnProjectionTurn["state"] =
           span.lastState === "interrupted" || span.lastState === "failed"
             ? span.lastState
             : "completed";
         const recoveredTurn: SpawnProjectionTurn = {
-          turnId: "<recovered>",
+          turnId: turnId ?? "<recovered>",
           state,
           at: span.startedAt,
           endedAt: span.endedAt,
@@ -994,7 +1005,8 @@ class SpawnEngineImpl implements SpawnEngine {
     const boundAgentId = handOff === "delegation" ? this.store.getThreadAgent?.(threadId)?.agentId : undefined;
     const agentName =
       meta.contract?.name ?? (boundAgentId ? this.store.getAgent?.(boundAgentId)?.name ?? undefined : undefined);
-    return projectSpawnedThread({
+    const unknownTurn = turnId !== undefined && turns.length === 0;
+    const snap = projectSpawnedThread({
       thread: {
         threadId,
         parentThreadId: lineage.parentThreadId ?? threadId,
@@ -1007,12 +1019,22 @@ class SpawnEngineImpl implements SpawnEngine {
         updatedAt: meta.updatedAt,
       },
       turns,
-      latestAssistantText: this.store.latestAssistantText(threadId),
+      // The newest text is another turn's when the asked-for one is unknown.
+      latestAssistantText: unknownTurn ? null : this.store.latestAssistantText(threadId),
       gate: null,
       hasLiveSession: false,
       tokens: meta.tokens,
       now: Date.now(),
     });
+    if (!unknownTurn) return snap;
+    return {
+      ...snap,
+      status: "uncertain",
+      terminal: true,
+      detail:
+        `kone has no record of how turn ${turnId} on this thread went, so it cannot say. ` +
+        "Read the thread with agent_read to see what it did.",
+    };
   }
 
   isInSubtree(rootThreadId: string, threadId: string): boolean {

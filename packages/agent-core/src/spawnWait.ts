@@ -33,7 +33,7 @@ export interface SpawnWaitDeps {
   store: SpawnEngineStore;
   snapshot: (threadId: string) => SpawnedThread | null;
   /** The child as the store has it, for a turn the live record does not hold. */
-  storedSnapshot?: (threadId: string) => SpawnedThread | null;
+  storedSnapshot?: (threadId: string, turnId?: string) => SpawnedThread | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
   /** A wait returned a settled turn to the agent that waited — that agent has
    *  the result, so nothing else need tell it. */
@@ -224,9 +224,9 @@ export class SpawnWaitCoordinator {
     if (tracked && turnId) {
       const pin = tracked.turns.find((t) => t.turnId === turnId);
       // A child taken back on after a restart holds only its turns since; a
-      // turn from before is read from the store.
+      // turn from before is read from the store — that turn, not the newest.
       if (!pin && tracked.adopted && tracked.awaitingTurn?.turnId !== turnId) {
-        const stored = this.deps.storedSnapshot?.(threadId);
+        const stored = this.deps.storedSnapshot?.(threadId, turnId);
         if (stored) return stored;
       }
       // The provider took the turn; its events have yet to say so.
@@ -251,6 +251,9 @@ export class SpawnWaitCoordinator {
         now: Date.now(),
       });
     }
+    // Not followed here: the store has the turn the wait asked for.
+    const stored = turnId ? this.deps.storedSnapshot?.(threadId, turnId) : null;
+    if (stored) return stored;
     const snap = this.deps.snapshot(threadId);
     if (snap) return snap;
     const meta = this.deps.store.threadMeta(threadId);

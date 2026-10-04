@@ -69,6 +69,11 @@ class FakeStore implements SpawnEngineStore {
     string,
     { startedAt: number; endedAt: number | null; runningTurns: number; lastState: "running" | "interrupted" | "failed" | "completed" | null }
   >();
+  /** One turn's span, by `${threadId}/${turnId}`. */
+  readonly turnSpans = new Map<
+    string,
+    { startedAt: number; endedAt: number | null; runningTurns: number; lastState: "running" | "interrupted" | "failed" | "completed" | null }
+  >();
   readonly texts = new Map<string, string>();
   liveIds: string[] = [];
   readonly ops = new Map<string, { fingerprint: string; result?: SpawnThreadResult }>();
@@ -171,6 +176,15 @@ class FakeStore implements SpawnEngineStore {
     lastState: "running" | "interrupted" | "failed" | "completed" | null;
   } | null {
     return this.spans.get(threadId) ?? null;
+  }
+
+  turnSpan(threadId: string, turnId: string): {
+    startedAt: number;
+    endedAt: number | null;
+    runningTurns: number;
+    lastState: "running" | "interrupted" | "failed" | "completed" | null;
+  } | null {
+    return this.turnSpans.get(`${threadId}/${turnId}`) ?? null;
   }
 
   reserveGatewayOp(input: {
@@ -2146,6 +2160,7 @@ function childFromBeforeRestart(h: EngineHarness, threadId = "old-1"): string {
     lineage: { parentThreadId: CALLER.threadId, relationshipToParent: "delegation", rootThreadId: CALLER.threadId },
   });
   h.store.spans.set(threadId, { startedAt: 10, endedAt: 20, runningTurns: 0, lastState: "interrupted" });
+  h.store.turnSpans.set(`${threadId}/turn-from-before`, { startedAt: 10, endedAt: 20, runningTurns: 0, lastState: "interrupted" });
   return threadId;
 }
 
@@ -2279,5 +2294,55 @@ describe("the turn a follow-up started", () => {
     h.bus.emit(turnAborted(child, "turn-from-before", 30, "interrupted"));
 
     expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
+  });
+});
+
+// ── a wait pinned to a turn kone is not following ────────────────────────────
+// The store is read for the turn the wait asked for, never the newest one;
+// a turn it has no record of is said to be unknown, not read as another.
+
+/** A child from before a restart whose turn "old" was interrupted and whose
+ *  newer turn "new" completed. */
+function childWithTwoStoredTurns(h: EngineHarness): string {
+  const child = childFromBeforeRestart(h);
+  h.store.spans.set(child, { startedAt: 10, endedAt: 40, runningTurns: 0, lastState: "completed" });
+  h.store.turnSpans.set(`${child}/old`, { startedAt: 10, endedAt: 20, runningTurns: 0, lastState: "interrupted" });
+  h.store.turnSpans.set(`${child}/new`, { startedAt: 30, endedAt: 40, runningTurns: 0, lastState: "completed" });
+  h.store.texts.set(child, "The newer turn's answer.");
+  return child;
+}
+
+describe("a wait pinned to a turn from the store", () => {
+  test("a child not followed here reads the turn asked for, not the newest", async () => {
+    const h = makeEngine();
+    const child = childWithTwoStoredTurns(h);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["old"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "interrupted", terminal: true });
+  });
+
+  test("a child taken back on reads a turn from before the restart as that turn, not the newest", async () => {
+    const h = makeEngine();
+    const child = childWithTwoStoredTurns(h);
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["old"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "interrupted", terminal: true });
+  });
+
+  test("a turn the store has no record of reads as unknown, with no other turn's answer", async () => {
+    const h = makeEngine();
+    const child = childWithTwoStoredTurns(h);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["gone"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "uncertain", terminal: true });
+    expect(out.threads[0]!.detail).toContain("no record of how turn gone");
+    expect(out.threads[0]!.summary).toBeUndefined();
   });
 });

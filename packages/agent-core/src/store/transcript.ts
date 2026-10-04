@@ -471,6 +471,53 @@ export class TranscriptRepo {
     }
   }
 
+  /** The same readout as threadTurnSpan, for one turn of the thread: its
+   *  assistant blocks alone. Null when no assistant block carries that turn,
+   *  or the store cannot be read. */
+  turnSpan(threadId: string, turnId: string): TurnSpan | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: every selected value is an aliased aggregate or a scalar
+      // subselect named in the projection below.
+      const row = db
+        .prepare(
+          `SELECT MIN(at) AS started_at,
+                  MAX(ended_at) AS ended_at,
+                  COUNT(CASE WHEN state = 'running' THEN 1 END) AS running,
+                  (SELECT state FROM blocks
+                    WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
+                    ORDER BY at DESC, seq DESC LIMIT 1) AS last_state,
+                  (SELECT error FROM blocks
+                    WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
+                    ORDER BY at DESC, seq DESC LIMIT 1) AS last_error
+             FROM blocks
+            WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'`,
+        )
+        .get(threadId, turnId, threadId, turnId, threadId, turnId) as
+        | {
+            started_at: number | null;
+            ended_at: number | null;
+            running: number;
+            last_state: "running" | "interrupted" | "failed" | "completed" | null;
+            last_error: string | null;
+          }
+        | undefined;
+      if (!row || row.started_at === null) return null;
+      const span: TurnSpan = {
+        startedAt: row.started_at,
+        endedAt: row.running > 0 ? null : row.ended_at,
+        runningTurns: row.running,
+        lastState: row.last_state,
+      };
+      if (row.last_error) span.lastError = row.last_error;
+      return span;
+    } catch (err) {
+      console.error("[conversation-store] turnSpan failed:", err);
+      return null;
+    }
+  }
+
   /** Batch version of threadTurnSpan: the same per-thread readout for many
    *  threads in one aggregate query, so a twenty-row list costs one round
    *  trip instead of twenty. Threads with no assistant blocks are absent
