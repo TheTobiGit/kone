@@ -79,7 +79,13 @@ const sections = computed(() => [
     <template v-for="sec in sections" :key="sec.key">
       <p class="tip__section">{{ sec.label }}</p>
       <ol v-if="sec.lines.length" class="aip__list" :aria-label="`${sec.label} messages`">
-        <li v-for="l in sec.lines" :key="l.entry.inboxId" class="aip__msg" :data-state="l.entry.state">
+        <li
+          v-for="l in sec.lines"
+          :key="l.entry.inboxId"
+          class="aip__msg"
+          :data-state="l.entry.state"
+          :data-uncertain="l.entry.uncertain ? '' : undefined"
+        >
           <div class="aip__head">
             <RosterFace v-if="l.from.agent" :agent="l.from.agent" :size="16" class="aip__face" />
             <AgentFace v-else :seed="l.from.seed" :size="16" class="aip__face" />
@@ -220,7 +226,7 @@ const sections = computed(() => [
 }
 /* A message kone may never have handed over reads as a failure does, not as
    something on its way. */
-.aip__msg[data-state="uncertain"] .aip__state {
+.aip__msg[data-uncertain] .aip__state {
   color: var(--danger, #d9544f);
 }
 .aip__empty {

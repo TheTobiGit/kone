@@ -19,8 +19,17 @@ export function inboxKindLabel(kind: InboxKind): string {
 
 /** Where one message stands, in a few words. A waiting message says whether
  *  it will be handed over on its own or rides in with the next turn; a seen
- *  one says how it got seen. */
-export function inboxStateLabel(entry: Pick<InboxEntry, "state" | "rings" | "seenVia">): string {
+ *  one says how it got seen, and still says it may not have arrived when kone
+ *  lost track of its hand-over: reading it later does not settle that. */
+export function inboxStateLabel(
+  entry: Pick<InboxEntry, "state" | "rings" | "seenVia"> & Partial<Pick<InboxEntry, "uncertainAt">>,
+): string {
+  const seen = seenLabel(entry);
+  if (entry.state === "seen" && entry.uncertainAt != null) return `${seen} · may not have arrived`;
+  return seen;
+}
+
+function seenLabel(entry: Pick<InboxEntry, "state" | "rings" | "seenVia">): string {
   switch (entry.state) {
     case "unseen":
       return entry.rings ? "Waiting" : "Next turn";

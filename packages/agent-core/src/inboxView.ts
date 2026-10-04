@@ -22,8 +22,11 @@ export interface InboxEntry {
   /** False for a message held for the recipient's next turn. */
   rings: boolean;
   state: InboxState;
-  /** Set while the message is uncertain: kone was handing it over when it
-   *  restarted, so it may not have arrived. */
+  /** When kone found it mid-hand-over after a restart, so it may not have
+   *  arrived. Kept once the message is read: reading it does not say whether
+   *  the first hand-over landed. */
+  uncertainAt: number | null;
+  /** Set whenever `uncertainAt` is. */
   uncertain?: true;
   sender: InboxSender | null;
   body: string;
@@ -70,8 +73,9 @@ export function inboxEntryOf(row: InboxRow, lookup: (inboxId: string) => InboxRo
     seenAt: row.seenAt,
     seenVia: row.seenVia,
     turnId: row.turnId,
+    uncertainAt: row.uncertainAt,
   };
-  if (row.state === "uncertain") entry.uncertain = true;
+  if (row.uncertainAt !== null) entry.uncertain = true;
   return entry;
 }
 

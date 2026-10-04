@@ -334,6 +334,21 @@ describe("what the app hears about an inbox", () => {
     expect(store.listWaitingInbox("t").find((r) => r.inboxId === m.inboxId)?.state).toBe("uncertain");
   });
 
+  test("a read uncertain message moves to history and stays uncertain", () => {
+    const { store } = freshStore();
+    const m = message();
+    store.insertInboxMessage(m);
+    const claim = store.claimInbox("t", 8, "all")!;
+    store.markInboxSending(claim.deliveryId);
+    store.resetInboxHandingAtBoot();
+    store.markInboxSeen([m.inboxId], "inbox");
+
+    expect(store.listWaitingInbox("t").some((r) => r.inboxId === m.inboxId)).toBe(false);
+    const read = store.inboxHistory("t", 20).find((r) => r.inboxId === m.inboxId);
+    expect(read?.state).toBe("seen");
+    expect(read?.uncertainAt).not.toBeNull();
+  });
+
   test("waiting lists unseen and handing, oldest first, and nothing seen", () => {
     const { store } = freshStore();
     const first = message();

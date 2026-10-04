@@ -1075,7 +1075,10 @@ export type InboxEntry = {
   /** False for a message held for the recipient's next turn. */
   rings: boolean;
   state: InboxState;
-  /** Set while the message is uncertain: it may not have arrived. */
+  /** When kone found it mid-hand-over after a restart, so it may not have
+   *  arrived. Kept once the message is read. */
+  uncertainAt: number | null;
+  /** Set whenever `uncertainAt` is. */
   uncertain?: true;
   sender: InboxSender | null;
   body: string;
