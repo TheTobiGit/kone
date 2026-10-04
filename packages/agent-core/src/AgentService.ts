@@ -1006,22 +1006,30 @@ export class AgentService {
     turn: SendTurnInput,
     ownBlockId?: string,
     carried?: CarriedTurn,
+    onAccepted?: (turnId: string) => void,
   ): Promise<TurnStartResult> {
     const carry = carried ?? this.turnInbox?.carry(threadId, turn, ownBlockId) ?? null;
-    let result: TurnStartResult;
+    let accepted = false;
     try {
-      result = await this.sendToAdapter(threadId, carry ? carry.input : turn);
+      return await this.sendToAdapter(threadId, carry ? carry.input : turn, (turnId) => {
+        accepted = true;
+        carry?.settle(turnId);
+        onAccepted?.(turnId);
+      });
     } catch (error) {
-      carry?.release();
+      if (!accepted) carry?.release();
       throw error;
     }
-    carry?.settle(result.turnId);
-    return result;
   }
 
+  /** Hand the turn to the adapter. `accepted` runs the moment the provider
+   *  takes it — before the checkpoint, which can take a while — so what the
+   *  turn delivers (inbox messages, a queued row) is settled while a crash can
+   *  still only lose the checkpoint, never send the turn a second time. */
   private async sendToAdapter(
     threadId: string,
     turn: SendTurnInput,
+    accepted?: (turnId: string) => void,
   ): Promise<TurnStartResult> {
     const input = this.withViewBlock(turn);
     if (input.fallbacks && input.fallbacks.length > 0) {
@@ -1032,6 +1040,7 @@ export class AgentService {
     this.dispatchingTurns.add(threadId);
     try {
       const result = await adapter.sendTurn(input);
+      this.noteAccepted(threadId, result.turnId, accepted);
       // The turn id is only known once the adapter accepts the turn, so the
       // pre-turn snapshot lands here — immediately after acceptance, before
       // the agent's first file mutation can arrive over the provider
@@ -1088,6 +1097,7 @@ export class AgentService {
 
           try {
             const fallbackResult = await targetAdapter.sendTurn(nextInput);
+            this.noteAccepted(threadId, fallbackResult.turnId, accepted);
             await this.captureTurnCheckpoint(threadId, fallbackResult.turnId);
             return fallbackResult;
           } catch (nextErr) {
@@ -1102,6 +1112,17 @@ export class AgentService {
       throw error;
     } finally {
       this.dispatchingTurns.delete(threadId);
+    }
+  }
+
+  /** Tell the caller the provider took the turn. Never throws: the turn is
+   *  running whatever the bookkeeping does. */
+  private noteAccepted(threadId: string, turnId: string, accepted: ((turnId: string) => void) | undefined): void {
+    if (!accepted) return;
+    try {
+      accepted(turnId);
+    } catch (err) {
+      console.error(`[agent] settling what turn ${turnId} on ${threadId} delivers failed:`, err);
     }
   }
 
@@ -2043,8 +2064,11 @@ export class AgentService {
         }
         return true;
       }
-      const result = await this.dispatchToAdapter(threadId, input, row.userBlockId);
-      if (!this.settlePromoted(threadId, queueId, result.turnId)) {
+      let promoted = false;
+      const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, (turnId) => {
+        promoted = this.settlePromoted(threadId, queueId, turnId);
+      });
+      if (!promoted) {
         // Stopped while the provider was taking it: the words are already
         // back in the composer, so the turn it started is stopped too.
         this.stopOrphanedDelivery(threadId, generation, result.turnId);
@@ -2396,11 +2420,12 @@ export class AgentService {
         const input = this.turnInputFromQueuedRow(row);
         // Stopped or deleted since the claim: the cancel already announced it.
         if (!store.isQueuedTurnClaimed(row.queueId)) return;
-        const result = await this.dispatchToAdapter(threadId, input, row.userBlockId);
+        let promoted = false;
+        const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, (turnId) => {
+          promoted = this.settlePromoted(threadId, row.queueId, turnId);
+        });
         // Stopped while the provider was taking it: stop the turn it started.
-        if (!this.settlePromoted(threadId, row.queueId, result?.turnId)) {
-          this.stopOrphanedDelivery(threadId, generation, result?.turnId);
-        }
+        if (!promoted) this.stopOrphanedDelivery(threadId, generation, result?.turnId);
       } catch (err) {
         console.warn(`[agent] promotion of queued turn ${row.queueId} failed (try ${row.attemptCount}):`, err);
         this.retryOrHold(threadId, row, err instanceof Error ? err.message : String(err), store);

@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 
 import { setUserDataDir } from "./userDataDir.js";
 import type { ProviderAdapter, RuntimeEvent, SendTurnInput, TurnStartResult } from "./types.js";
+import type { CheckpointStore } from "./conversationStoreTypes.js";
 
 // The queue's orchestration against the REAL ConversationStore. The suite in
 // agentService.test.ts drives a fake store; this one exists because the real
@@ -614,6 +615,49 @@ describe("the turn slot carries the inbox, against the real store", () => {
     service.kickTurnSlot(thread);
     await waitFor(() => log.length === 1 && log[0]!.released);
     expect(log[0]!.settled).toBeNull();
+  });
+
+  // A crash while the checkpoint is being taken must not leave the turn's
+  // delivery open: the restart would hand the same work over a second time.
+  test("what a turn delivers is settled before its checkpoint is taken", async () => {
+    const atCheckpoint: Array<{ inbox: string | null; row: string }> = [];
+    let probe: () => { inbox: string | null; row: string } = () => ({ inbox: null, row: "" });
+    const checkpoints: CheckpointStore = {
+      threadProjectPath: () => null,
+      threadWorkspace: () => null,
+      recordTurnCheckpoint: () => false,
+      getTurnCheckpoint: () => {
+        atCheckpoint.push(probe());
+        return null;
+      },
+      listTurnCheckpoints: () => [],
+      pruneTurnCheckpoints: () => [],
+    };
+    service = new AgentServiceCtor({
+      store,
+      checkpointStore: checkpoints,
+      queueRetryDelaysMs: [20, 20],
+      retentionSweepMs: 0,
+      wedgeSweepMs: 60_000,
+      idleSweepMs: 60_000,
+      adapters: (emit) => {
+        adapter = new FakeAdapter(emit);
+        // SAFETY: the fake covers every adapter method these queue paths reach.
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        return [adapter] as unknown as ProviderAdapter[];
+      },
+    });
+    const thread = await openThread();
+    const { inbox, log } = fakeInbox();
+    service.setTurnInbox(inbox);
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const row = queueRow(thread, "ship it");
+    probe = () => ({ inbox: log[0]?.settled ?? null, row: stateOf(thread, row) });
+
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await waitFor(() => atCheckpoint.length === 1);
+
+    expect(atCheckpoint[0]).toEqual({ inbox: "turn-1", row: "gone" });
   });
 
   test("a message sent straight to an idle thread carries the inbox too", async () => {
