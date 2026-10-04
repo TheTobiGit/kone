@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
-import { PENDING_QUEUE_STATES } from "./sql.js";
+import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
  *  runs next. Rows with an explicit position (set by reorder) drain first in
@@ -29,13 +29,12 @@ export class QueuedTurnRepo {
    *  This belongs at CLAIM time, not at settle. The service dispatches to the
    *  provider first — and the adapter emits turn.started from inside sendTurn,
    *  which journals the assistant block — settling the row only afterwards. A
-   *  re-sequencing done at settle therefore reads MAX(seq) with the assistant
-   *  block already in place and lands the prompt AFTER its own reply, which is
-   *  the order the transcript reads in until the thread is reloaded. A claimed
-   *  row is committed to run next (one live turn per thread, deliveries
-   *  serialized), so claiming is the last moment the block is still free to
-   *  move. `at` is left alone — it stays the original send instant, which is
-   *  the user-visible time.
+   *  re-sequencing done at settle therefore lands the prompt AFTER its own
+   *  reply, which is the order the transcript reads in until the thread is
+   *  reloaded. A claimed row is committed to run next (one live turn per
+   *  thread, deliveries serialized), so claiming is the last moment the block
+   *  is still free to move. `at` is left alone — it stays the original send
+   *  instant, which is the user-visible time.
    *
    *  A delivery that fails after this releases the row back to 'queued', where
    *  the block is hidden from the timeline anyway and the next claim moves it
@@ -43,16 +42,7 @@ export class QueuedTurnRepo {
   private moveBlockToTail(threadId: string, blockId: string): void {
     const db = this.dbh.handle();
     if (!db) return;
-    // SAFETY: aggregate MAX returns a single number
-    const maxSeqRow = db
-      .prepare(`SELECT COALESCE(MAX(seq), 0) AS max_seq FROM blocks WHERE thread_id = ?`)
-      .get(threadId) as { max_seq: number } | undefined;
-    const nextSeq = (maxSeqRow?.max_seq ?? 0) + 1;
-    db.prepare(`UPDATE blocks SET seq = ? WHERE thread_id = ? AND block_id = ?`).run(
-      nextSeq,
-      threadId,
-      blockId,
-    );
+    moveBlockToTail(db, threadId, blockId);
   }
 
   // A follow-up sent while a turn runs is durably enqueued here, claimed by
@@ -134,29 +124,35 @@ export class QueuedTurnRepo {
           WHERE thread_id = ? AND state = 'promoting' AND updated_at <= ?`,
       ).run(now, threadId, cutoff);
 
-      // SAFETY: RETURNING * of queued_turns is exactly QueuedTurnDbRow — the
-      // columns this schema creates.
-      const row = db
-        .prepare(
-          `UPDATE queued_turns
-              SET state = 'promoting',
-                  attempt_count = attempt_count + 1,
-                  updated_at = ?
-            WHERE queue_id = (
-              SELECT queue_id FROM queued_turns
-               WHERE thread_id = ? AND state IN ('queued', 'failed')
-               ORDER BY ${QUEUED_TURN_ORDER}
-               LIMIT 1
-            )
-              AND state = 'queued'
-           RETURNING *`,
-        )
-        .get(now, threadId) as QueuedTurnDbRow | undefined;
-      if (!row) return null;
-      const queued = rowToQueuedTurn(row);
-      // Ahead of the dispatch that journals this row's assistant turn, never
-      // behind it — see moveBlockToTail.
-      if (queued.userBlockId) this.moveBlockToTail(threadId, queued.userBlockId);
+      let queued: QueuedTurnRow | null = null;
+      // One transaction: a claim whose block could not move is no claim, so
+      // the row is not left 'promoting' with nobody delivering it.
+      this.dbh.atomically(db, () => {
+        // SAFETY: RETURNING * of queued_turns is exactly QueuedTurnDbRow — the
+        // columns this schema creates.
+        const row = db
+          .prepare(
+            `UPDATE queued_turns
+                SET state = 'promoting',
+                    attempt_count = attempt_count + 1,
+                    updated_at = ?
+              WHERE queue_id = (
+                SELECT queue_id FROM queued_turns
+                 WHERE thread_id = ? AND state IN ('queued', 'failed')
+                 ORDER BY ${QUEUED_TURN_ORDER}
+                 LIMIT 1
+              )
+                AND state = 'queued'
+             RETURNING *`,
+          )
+          .get(now, threadId) as QueuedTurnDbRow | undefined;
+        if (!row) return;
+        const claimed = rowToQueuedTurn(row);
+        // Ahead of the dispatch that journals this row's assistant turn, never
+        // behind it — see moveBlockToTail.
+        if (claimed.userBlockId) this.moveBlockToTail(threadId, claimed.userBlockId);
+        queued = claimed;
+      });
       return queued;
     } catch (err) {
       console.error("[conversation-store] claimNextQueuedTurn failed:", err);
@@ -175,7 +171,7 @@ export class QueuedTurnRepo {
     if (!db) return null;
     try {
       let claimed: { row: QueuedTurnRow; from: "queued" | "failed" } | null = null;
-      this.dbh.durably(db, () => {
+      this.dbh.durably(db, () => this.dbh.atomically(db, () => {
         // SAFETY: the projection names only the row's state column.
         const prior = db
           .prepare(`SELECT state FROM queued_turns WHERE queue_id = ? AND state IN ('queued', 'failed')`)
@@ -196,7 +192,7 @@ export class QueuedTurnRepo {
           if (queued.userBlockId) this.moveBlockToTail(row.thread_id, queued.userBlockId);
           claimed = { row: queued, from: prior.state };
         }
-      });
+      }));
       return claimed;
     } catch (err) {
       console.error("[conversation-store] claimQueuedTurn failed:", err);
