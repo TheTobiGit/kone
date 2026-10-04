@@ -23,7 +23,7 @@ import {
 import { SpawnFailoverRunner, type FallbackAdmissionCounts } from "./spawnFailover.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { getHandOffLifecycle } from "./handOffLifecycle.js";
-import type { SettledTurnReport, SettleReportSink } from "./settleReports.js";
+import type { SettledTurnReport, SettleReportSink, StillOut } from "./settleReports.js";
 import {
   isSpawnedRelationship,
   MAX_LIVE_CHILDREN_PER_PARENT,
@@ -1129,7 +1129,23 @@ class SpawnEngineImpl implements SpawnEngine {
     };
     if (turn.summary) report.summary = turn.summary;
     if (turn.detail) report.detail = turn.detail;
+    const stillOut = this.stillOut(child.parentThreadId, child.threadId);
+    if (stillOut) report.stillOut = stillOut;
     state.reported.set(turnId, sink.deliver(report));
+  }
+
+  /** The parent's other hand-offs still at work — running, starting, or
+   *  parked on a question — apart from the one reporting. Null when none. */
+  private stillOut(parentThreadId: string, exceptThreadId: string): StillOut | null {
+    const out: StillOut = { agents: [], workers: 0 };
+    const now = Date.now();
+    for (const other of this.tracked.values()) {
+      if (other.parentThreadId !== parentThreadId || other.threadId === exceptThreadId) continue;
+      if (this.project(other, now).terminal) continue;
+      if ((other.handOff ?? "worker") === "worker") out.workers += 1;
+      else out.agents.push({ name: other.agentName ?? other.title, title: other.title });
+    }
+    return out.agents.length > 0 || out.workers > 0 ? out : null;
   }
 
   /** Only the parent's own wait counts: a wait further up the chain tells that
