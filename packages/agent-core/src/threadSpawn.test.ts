@@ -2384,6 +2384,35 @@ describe("the turn a follow-up started", () => {
     h.stopDelivery();
   });
 
+  for (const [how, end, sealed] of [
+    ["fails", (child: string) => sessionState(child, "error", 30), "failed"],
+    ["stops", (child: string) => sessionState(child, "stopped", 30), "interrupted"],
+    ["exits", (child: string) => ({ type: "session.exited", threadId: child, provider: "opencode", at: 30, source: "kone.store", code: 1 }) satisfies RuntimeEvent, "interrupted"],
+  ] as const) {
+    test(`a turn whose session ${how} under it stays over when a new session runs the next one`, async () => {
+      const h = makeReportEngine();
+      const child = await delegate(h);
+      h.bus.emit(turnStarted(child, "t-1", 20));
+      h.bus.emit(end(child));
+      await h.flush();
+      expect(h.engine.snapshot(child)).toMatchObject({ status: sealed, terminal: true });
+      expect(h.delivered).toHaveLength(1);
+
+      const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Try again." });
+      h.bus.emit({ type: "session.started", threadId: child, provider: "opencode", at: Date.now(), source: "kone.store", session: { threadId: child, provider: "opencode", cwd: "/project", status: "ready", mode: "ask" } });
+      h.bus.emit(turnStarted(child, turnId, Date.now()));
+      h.bus.emit(turnCompleted(child, turnId, Date.now()));
+      await h.flush();
+
+      expect(h.engine.snapshot(child)).toMatchObject({ status: "completed", terminal: true });
+      const out = await h.engine.waitFor({ threadIds: [child], timeoutMs: 30, scopeThreadId: CALLER.threadId });
+      expect(out.timedOut).toBe(false);
+      // The cut-off turn was told once, the new one once.
+      expect(h.delivered).toHaveLength(2);
+      h.stopDelivery();
+    });
+  }
+
   test("error then ready before send acceptance remains a terminal failure", async () => {
     const h = makeReportEngine();
     const child = childFromBeforeRestart(h);

@@ -538,8 +538,14 @@ function endsAwaiting(event: RuntimeEvent, turnId: string): boolean {
   }
 }
 
-/** How a child's session ended: when, how a turn it cut off settles, and why. */
-type SessionEnd = { at: number; state: "failed" | "interrupted"; error: string };
+/** How a child's session ended: when, why, how a turn it took but never
+ *  started settles, and how a turn it was running settles. */
+type SessionEnd = {
+  at: number;
+  state: "failed" | "interrupted";
+  running: "failed" | "interrupted";
+  error: string;
+};
 
 /** Does `event` say the child's session ended or failed? */
 function endsSession(event: RuntimeEvent): boolean {
@@ -1125,11 +1131,17 @@ class SpawnEngineImpl implements SpawnEngine {
         this.endSession(child, awaiting, {
           at: event.at,
           state: event.state === "error" ? "failed" : "interrupted",
+          running: event.state === "error" ? "failed" : "interrupted",
           error: event.message ?? (event.state === "error" ? "The child's session failed." : "The child's session was stopped."),
         });
         break;
       case "session.exited":
-        this.endSession(child, awaiting, { at: event.at, state: "failed", error: "The child's session exited." });
+        this.endSession(child, awaiting, {
+          at: event.at,
+          state: "failed",
+          running: "interrupted",
+          error: "The child's session exited.",
+        });
         break;
       case "thread.token-usage.updated":
         if (event.usage.total !== undefined) child.tokens = event.usage.total;
@@ -1174,6 +1186,11 @@ class SpawnEngineImpl implements SpawnEngine {
   private endSession(child: TrackedChild, awaiting: TrackedChild["awaitingTurn"], end: SessionEnd): void {
     child.hasLiveSession = false;
     child.sessionEnd = end;
+    // A turn the session was running ends with it, for good: a later session
+    // starts turns of its own and never brings this one back.
+    for (const turn of child.turns) {
+      if (turn.state === "running") this.settleTurn(child, turn.turnId, end.running, end.at, end.error);
+    }
     if (awaiting && !child.turns.some((t) => t.turnId === awaiting.turnId)) {
       this.settleTurn(child, awaiting.turnId, end.state, end.at, `${end.error} Its turn never started.`);
     } else if (child.turns.length === 0) {
