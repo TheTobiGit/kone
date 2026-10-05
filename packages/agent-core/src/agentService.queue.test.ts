@@ -374,6 +374,54 @@ describe("Stop whose cancellation could not be written", () => {
     expect(stateOf(thread, q2)).toBe("queued");
   });
 
+  test("a Stop that could not read the queue still takes a row queued before the clock moved back", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const now = Date.now();
+    const ahead = spyOn(Date, "now").mockReturnValue(now + 60_000);
+    let q1: string;
+    try {
+      q1 = queueRow(thread, "take it back");
+    } finally {
+      ahead.mockRestore();
+    }
+    // The clock steps back a minute: the Stop comes "before" the row it stops.
+    const behind = spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const recover = loseQueueTable();
+      await service.cancelQueuedTurns(thread);
+      recover();
+    } finally {
+      behind.mockRestore();
+    }
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => c.queueId)).toEqual([q1]);
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(adapter.attempts).toHaveLength(0);
+  });
+
+  test("a row written straight to the store after such a Stop, in the same millisecond, is kept", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "take it back");
+    const clock = spyOn(Date, "now").mockReturnValue(Date.now());
+    let q2: string;
+    try {
+      const recover = loseQueueTable();
+      await service.cancelQueuedTurns(thread);
+      recover();
+      q2 = queueRow(thread, "my next message");
+    } finally {
+      clock.mockRestore();
+    }
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => c.queueId)).toEqual([q1]);
+    expect(stateOf(thread, q2)).toBe("queued");
+  });
+
   test("a prompt queued in the same millisecond as such a Stop, but after it, is kept", async () => {
     const thread = await openThread();
     adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });

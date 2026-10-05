@@ -20,7 +20,28 @@ const QUEUED_TURN_ORDER = `CASE WHEN sort_key IS NULL THEN 1 ELSE 0 END ASC,
 
 
 export class QueuedTurnRepo {
+  /** The highest rowid this process has given a queued turn, or seen among
+   *  them. Each row it enqueues takes the next one, so a row queued later
+   *  always sorts above it, whatever the clock does. */
+  private highestRowid: number | null = null;
+
   constructor(private readonly dbh: ConversationDb) {}
+
+  /** Every row queued so far has a rowid at or below this; one queued later
+   *  has a higher one. Known without a read once this process has enqueued
+   *  or read it; null when it has done neither and the store cannot be read. */
+  queueBoundary(): number | null {
+    if (this.highestRowid !== null) return this.highestRowid;
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      this.highestRowid = maxQueuedRowid(db);
+      return this.highestRowid;
+    } catch (err) {
+      console.error("[conversation-store] queueBoundary failed:", err);
+      return null;
+    }
+  }
 
   /** Move a claimed row's user block to the end of its thread's block order, so
    *  the prompt sits immediately before the assistant turn about to be
@@ -66,17 +87,21 @@ export class QueuedTurnRepo {
     const now = input.at ?? Date.now();
     let inserted = false;
     this.dbh.durably(db, () => {
+      // The next rowid past every row there is and every one this process
+      // gave out, so a cancel bounded by an earlier boundary never takes it.
+      const rowid = Math.max(this.highestRowid ?? 0, maxQueuedRowid(db)) + 1;
       const result = db
         .prepare(
           `INSERT INTO queued_turns (
-             queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+             rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input,
              attachments_json, skills_json, model, mode, effort, service_tier, context_window,
              attempt_count, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT (thread_id, user_block_id)
              WHERE state IN ${PENDING_QUEUE_STATES} DO NOTHING`,
         )
         .run(
+          rowid,
           input.queueId,
           input.threadId,
           input.userBlockId,
@@ -93,6 +118,7 @@ export class QueuedTurnRepo {
           now,
         );
       inserted = Number(result.changes) > 0;
+      if (inserted) this.highestRowid = rowid;
     });
     return inserted;
   }
@@ -423,13 +449,13 @@ export class QueuedTurnRepo {
    *  journaled prompt with them, exactly like cancelQueuedTurn — a claimed row
    *  ('promoting') may already have a running turn behind it, so its prompt
    *  stays, the same way a single cancel refuses a claimed row. `only` narrows
-   *  it to those rows; `upTo` to rows queued at or before its time, apart
-   *  from its `except` rows. Returns the cancelled queue ids, in queue order;
+   *  it to those rows; `upTo` to rows at or below its rowid boundary (any
+   *  row, when it is null), apart from its `except` rows. Returns the cancelled queue ids, in queue order;
    *  null when the store could not write it, nothing cancelled. */
   cancelQueuedTurnsForThread(
     threadId: string,
     only?: readonly string[],
-    upTo?: { at: number; except: readonly string[] },
+    upTo?: { rowid: number | null; except: readonly string[] },
   ): string[] | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -440,8 +466,12 @@ export class QueuedTurnRepo {
       args.push(JSON.stringify(only));
     }
     if (upTo) {
-      among += ` AND created_at <= ? AND queue_id NOT IN (SELECT value FROM json_each(?))`;
-      args.push(upTo.at, JSON.stringify(upTo.except));
+      if (upTo.rowid !== null) {
+        among += ` AND rowid <= ?`;
+        args.push(upTo.rowid);
+      }
+      among += ` AND queue_id NOT IN (SELECT value FROM json_each(?))`;
+      args.push(JSON.stringify(upTo.except));
     }
     try {
       let queueIds: string[] = [];
@@ -531,4 +561,11 @@ export class QueuedTurnRepo {
       return [];
     }
   }
+}
+
+/** The highest rowid among queued turns, 0 for none. */
+function maxQueuedRowid(db: DatabaseSync): number {
+  // SAFETY: an aggregate with a COALESCE default is always one numeric row.
+  const row = db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS n FROM queued_turns`).get() as { n: number };
+  return Number(row.n);
 }

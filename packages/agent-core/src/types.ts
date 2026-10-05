@@ -964,6 +964,7 @@ export type QueuedTurnStore = Pick<
   | "cancelQueuedTurnsForThread"
   | "listQueuedTurns"
   | "pendingQueueIds"
+  | "queueBoundary"
   | "reorderQueuedTurns"
   | "latestUserBlockId"
   | "loadThread"
