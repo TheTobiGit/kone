@@ -1,4 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Database } from "bun:sqlite";
+
+import { setUserDataDir } from "./userDataDir.js";
 
 import type {
   StartThreadOptions,
@@ -399,9 +405,9 @@ type EngineHarness = {
 };
 
 function makeEngine(
-  options: { reports?: (store: FakeStore) => SettleReportSink; jobs?: IrcMailbox } = {},
+  options: { reports?: (store: FakeStore) => SettleReportSink; jobs?: IrcMailbox; store?: FakeStore } = {},
 ): EngineHarness {
-  const store = new FakeStore();
+  const store = options.store ?? new FakeStore();
   const providers = new FakeProviders();
   const dispatcher = new FakeDispatcher();
   const bus = new EventBus();
@@ -2526,5 +2532,102 @@ describe("a wait pinned to a turn from the store", () => {
     expect(out.threads[0]).toMatchObject({ status: "uncertain", terminal: true });
     expect(out.threads[0]!.detail).toContain("no record of how turn gone");
     expect(out.threads[0]!.summary).toBeUndefined();
+  });
+});
+
+// ── a seal across a restart, against the real store ─────────────────────────
+// The store imports node:sqlite, which bun can't load: stand it in with
+// bun:sqlite, and import the store only once the stub is in place.
+
+mock.module("./sqlite.js", () => ({ DatabaseSync: Database }));
+
+type RealStore = import("./ConversationStore.js").ConversationStore;
+let RealStoreCtor: typeof import("./ConversationStore.js").ConversationStore;
+beforeAll(async () => {
+  RealStoreCtor = (await import("./ConversationStore.js")).ConversationStore;
+});
+
+/** Lineage and metadata from the fake; every turn record read from and
+ *  written to a real store, which can be closed and opened again. */
+class StoreBackedFakeStore extends FakeStore {
+  constructor(public real: RealStore) {
+    super();
+  }
+  override writeSpawnedThread(input: Parameters<FakeStore["writeSpawnedThread"]>[0]): boolean {
+    this.real.ensureThread({ threadId: input.threadId, projectPath: input.projectPath, provider: input.provider });
+    return super.writeSpawnedThread(input);
+  }
+  override threadTurnSpan(threadId: string): ReturnType<FakeStore["threadTurnSpan"]> {
+    return this.real.threadTurnSpan(threadId);
+  }
+  override turnSpan(threadId: string, turnId: string): ReturnType<FakeStore["turnSpan"]> {
+    return this.real.turnSpan(threadId, turnId);
+  }
+  sealTurn(threadId: string, turnId: string, seal: { state: "failed" | "interrupted"; error: string; at: number }): boolean {
+    return this.real.sealTurn(threadId, turnId, seal);
+  }
+}
+
+function realEngine(store: StoreBackedFakeStore): EngineHarness {
+  const h = makeEngine({ store });
+  h.bus.on((event) => store.real.applyEvent(event));
+  return h;
+}
+
+describe("a seal the store keeps across a restart", () => {
+  for (const [how, end, sealed] of [
+    ["fails", (child: string) => sessionState(child, "error", 30), "failed"],
+    ["exits", (child: string) => ({ type: "session.exited", threadId: child, provider: "opencode", at: 30, source: "kone.store", code: 1 }) satisfies RuntimeEvent, "interrupted"],
+  ] as const) {
+    test(`a turn whose session ${how} under it reads as sealed after a late completion and a reopen`, async () => {
+      setUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-spawn-seal-")));
+      const store = new StoreBackedFakeStore(new RealStoreCtor());
+      const first = realEngine(store);
+      setupParent(store, first.providers);
+      store.agents.set("agent-jonas", { name: "Jonas", instructions: null });
+      const { threadId: child } = await first.engine.spawn(CALLER, DELEGATION);
+      first.bus.emit(sessionStarted(child, 10));
+      first.bus.emit(turnStarted(child, "t-1", 20));
+      first.bus.emit(end(child));
+      first.bus.emit(turnCompleted(child, "t-1", 40));
+      expect(first.engine.snapshot(child)).toMatchObject({ status: sealed, terminal: true });
+      first.engine.dispose();
+
+      store.real.close();
+      store.real = new RealStoreCtor();
+      const second = makeEngine({ store });
+      const out = await second.engine.waitFor({ threadIds: [child], turnIds: ["t-1"], timeoutMs: 30, scopeThreadId: CALLER.threadId });
+      expect(out.timedOut).toBe(false);
+      expect(out.threads[0]).toMatchObject({ status: sealed, terminal: true });
+      expect(store.real.threadTurnSpan(child)).toMatchObject({ lastState: sealed, runningTurns: 0 });
+      second.engine.dispose();
+      store.real.close();
+    });
+  }
+
+  test("a turn that failed before it started stays failed after a late start and completion and a reopen", async () => {
+    setUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-spawn-seal-")));
+    const store = new StoreBackedFakeStore(new RealStoreCtor());
+    const first = realEngine(store);
+    setupParent(store, first.providers);
+    store.agents.set("agent-jonas", { name: "Jonas", instructions: null });
+    const { threadId: child } = await first.engine.spawn(CALLER, DELEGATION);
+    first.bus.emit(sessionStarted(child, 10));
+    first.bus.emit(turnStarted(child, "t-1", 20));
+    first.bus.emit(turnCompleted(child, "t-1", 25));
+    first.dispatcher.emitBeforeSent = (threadId) => first.bus.emit(sessionState(threadId, "error", Date.now()));
+    const { turnId } = await first.engine.continueThread(CALLER, { threadId: child, message: "Again." });
+    expect(first.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
+    first.bus.emit(turnStarted(child, turnId, Date.now()));
+    first.bus.emit(turnCompleted(child, turnId, Date.now()));
+    first.engine.dispose();
+
+    store.real.close();
+    store.real = new RealStoreCtor();
+    const second = makeEngine({ store });
+    const out = await second.engine.waitFor({ threadIds: [child], turnIds: [turnId], timeoutMs: 30, scopeThreadId: CALLER.threadId });
+    expect(out.threads[0]).toMatchObject({ status: "failed", terminal: true });
+    second.engine.dispose();
+    store.real.close();
   });
 });

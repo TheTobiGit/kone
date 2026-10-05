@@ -97,6 +97,10 @@ export interface SpawnEngineStore {
     /** The NEWEST assistant block's error, when it has one. */
     lastError?: string;
   } | null;
+  /** Keep how a session's end settled a turn, so a late settle for it,
+   *  before or after a restart, cannot rewrite it. False when it could not
+   *  be written. */
+  sealTurn?(threadId: string, turnId: string, seal: { state: "failed" | "interrupted"; error: string; at: number }): boolean;
   /** The same readout for one turn of the thread; null when the store has
    *  no record of it. */
   turnSpan?(threadId: string, turnId: string): {
@@ -1102,11 +1106,11 @@ class SpawnEngineImpl implements SpawnEngine {
         child.gate = null;
         break;
       case "turn.completed":
-        if (child.sealed?.has(event.turnId)) return;
+        if (this.ignoresLateSettle(child, event)) return;
         this.settleTurn(child, event.turnId, "completed", event.at);
         break;
       case "turn.aborted":
-        if (child.sealed?.has(event.turnId)) return;
+        if (this.ignoresLateSettle(child, event)) return;
         this.settleTurn(child, event.turnId, event.reason, event.at, event.message);
         break;
       case "approval.requested":
@@ -1169,8 +1173,7 @@ class SpawnEngineImpl implements SpawnEngine {
     if (end && end.at >= since) {
       // The session went before the turn could start: the turn ends with it,
       // and is reported like any other.
-      this.settleTurn(child, turnId, end.state, end.at, `${end.error} Its turn never started.`);
-      (child.sealed ??= new Set()).add(turnId);
+      this.sealTurn(child, turnId, end.state, end.at, `${end.error} Its turn never started.`);
       this.recompute(child);
       this.scheduleReport(child);
       return;
@@ -1197,15 +1200,33 @@ class SpawnEngineImpl implements SpawnEngine {
     // starts turns of its own and never brings this one back.
     for (const turn of child.turns) {
       if (turn.state !== "running") continue;
-      this.settleTurn(child, turn.turnId, end.running, end.at, end.error);
-      (child.sealed ??= new Set()).add(turn.turnId);
+      this.sealTurn(child, turn.turnId, end.running, end.at, end.error);
     }
     if (awaiting && !child.turns.some((t) => t.turnId === awaiting.turnId)) {
-      this.settleTurn(child, awaiting.turnId, end.state, end.at, `${end.error} Its turn never started.`);
-      (child.sealed ??= new Set()).add(awaiting.turnId);
+      this.sealTurn(child, awaiting.turnId, end.state, end.at, `${end.error} Its turn never started.`);
     } else if (child.turns.length === 0) {
       this.settleTurn(child, "<session-exited>", end.state, end.at, `${end.error} Its first turn never started.`);
     }
+  }
+
+  /** Settle a turn as its session's end decided, here and in the store, for
+   *  good: that is what the parent will be told. */
+  private sealTurn(child: TrackedChild, turnId: string, state: "failed" | "interrupted", at: number, error: string): void {
+    this.settleTurn(child, turnId, state, at, error);
+    (child.sealed ??= new Set()).add(turnId);
+    if (this.store.sealTurn?.(child.threadId, turnId, { state, error, at }) === false) {
+      console.error(`[spawn] could not store the seal of turn ${turnId} on ${child.threadId}; after a restart a late settle can rewrite it`);
+    }
+  }
+
+  /** Is `event` a late settle for a turn its session's end sealed? */
+  private ignoresLateSettle(child: TrackedChild, event: Extract<RuntimeEvent, { type: "turn.completed" | "turn.aborted" }>): boolean {
+    if (!child.sealed?.has(event.turnId)) return false;
+    const turn = child.turns.find((t) => t.turnId === event.turnId);
+    console.warn(
+      `[spawn] ignored a late ${event.type} for turn ${event.turnId} on ${child.threadId}: its session's end settled it ${turn?.state ?? "already"}`,
+    );
+    return true;
   }
 
   private settleTurn(
