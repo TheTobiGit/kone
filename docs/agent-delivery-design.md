@@ -527,6 +527,8 @@ The re-reviews after that held it back on these:
 | Stop during a write outage dropped the cancellation, so a stopped row could run | The cancellation is kept and retried, as in the table below | `287954f7` |
 | A child whose session failed or stopped before its follow-up's turn started read as `starting` forever, and was never reported | `session.state.changed` `error` or `stopped` ends the child the way an exit does: the turn the provider took settles failed, or interrupted for a stop, and is reported to the parent once — also when the session went down before the send returned | `2b8af79f` |
 | A Stop whose read of the queue failed, retried after the outage, also cancelled prompts queued after it | A failed read is told apart from an empty queue. Such a Stop cancels only rows queued at or before its time, apart from rows queued after it in the same millisecond, which the service names as it queues them | `1e3eb14d` |
+| A failure the session survives ended the child: OpenCode reported a question reply it could not post as a session error, so the child read interrupted while its turn went on, and its real completion was suppressed. A session that recovered before the send returned also failed the accepted turn | That failure is a `session.warning`, the kind for a session that carries on; `error` and `stopped` mean the session is gone or cannot go on, which every other adapter's emission already does. A session that reports itself live again, or starts a turn, clears the end it reported | `c0ced4b7` |
+| A clock that stepped back defeated the Stop's cutoff: a stopped prompt read as queued after its Stop, and ran | The cutoff is the queue's rowid. The store gives each row the next rowid past every row there is and every one it has given out, and holds that boundary in memory, so a Stop reads it without the database. A row queued later sits above it, through the service or straight into the store | `e78d3dfe` |
 
 What retries what, and when it stops:
 
@@ -536,7 +538,7 @@ What retries what, and when it stops:
 | A hand-over the provider refused, or whose marker failed | The ringer's backoff: 1 s, 5 s, 15 s, 60 s | After those four tries. The mail stays unseen until something else rings: new mail, a session starting, a turn ending |
 | A queued turn the provider refused, or whose marker failed | 1 s, 5 s, 15 s | Then it is held for the user to send now or remove. A Send now the provider refused goes back to where it was, and the drain is woken: a waiting row is then tried as a queued one, while a held one stays held |
 | The release of a claimed queued turn: after a refusal, or after Send now moved it to the front of a busy thread or failed | Per row, each on its own timer: the same delays, the last repeating. While any is pending, the drain claims nothing on that thread | When it lands, or when the thread is stopped or deleted: the stop's cancellation takes over the row, and a release would put a cancelled row back in line. A release that lands late finishes what it was for — the move to the front and the stop of the running turn, if that turn is still running, or the announcement — and then wakes the drain |
-| The cancellation of a thread's queued rows on Stop, delete or archive | The queue's delays, the last repeating, against the rows that were pending when it was asked; if they could not be read, the rows queued up to the Stop, never one queued after it. Until it lands, the drain claims nothing on that thread, and neither the drain nor Send now sends those rows | When it lands; it then announces each row and wakes the drain. Kept in memory only: if the app quits before the store can write it, the rows read as queued again at the next start. A row already handed to the provider is not taken back; only its queue row is |
+| The cancellation of a thread's queued rows on Stop, delete or archive | The queue's delays, the last repeating, against the rows that were pending when it was asked; if they could not be read, the rows at or below the queue's rowid boundary at the Stop, never one queued after it, whatever the clock does. Until it lands, the drain claims nothing on that thread, and neither the drain nor Send now sends those rows | When it lands; it then announces each row and wakes the drain. Kept in memory only: if the app quits before the store can write it, the rows read as queued again at the next start. A row already handed to the provider is not taken back; only its queue row is |
 | Boot recovery of rows a dead process was handing over | 1 s, 5 s, 15 s, then every 60 s | When it lands. If even reading which rows were orphaned fails, the database open fails and is retried after its cooldown |
 
 Still open:
@@ -547,20 +549,20 @@ Still open:
 
 ### Picking this up
 
-Where the work stands at `b4090f62`: agent-core passes 2536 tests and the web app 1436.
+Where the work stands at `e78d3dfe`: agent-core passes 2546 tests.
 
-**`delivery.v2` is not yet cleared to turn on.** The last review, at `58c88391`, held it back on two findings. `2b8af79f` (a failed or stopped child session) and `1e3eb14d` (a Stop that could not read the queue) fix them, with regression tests, but nobody has reviewed them yet. `c409144b` is not reviewed either: it makes a pinned turn kone has no record of read "Outcome unknown" in the delegate dock, instead of "May not have arrived".
+**`delivery.v2` is not yet cleared to turn on.** The review at `b4cca6cf` closed `c409144b` and held it back on two findings. `c0ced4b7` (a failure the session survives ended a child) and `e78d3dfe` (a clock step defeated Stop's cutoff) fix them, with regression tests, but nobody has reviewed them yet, nor `5744ecda` (below).
 
 Next, in order:
-1. **Review `58c88391..b4090f62`.** Use fault injection against the real store, not only the tests that came with the fixes. Look hard at:
-   - whether `2b8af79f` can report a child twice, or end a turn the provider never took;
-   - whether `1e3eb14d`'s same-millisecond exception is airtight.
+1. **Review `b4cca6cf..e78d3dfe`.** Use fault injection against the real store, not only the tests that came with the fixes. Look hard at:
+   - whether any adapter still emits `session.state.changed` `error` or `stopped` for a session that goes on;
+   - whether anything writes `queued_turns` other than `enqueueQueuedTurn`, which would put a row outside the rowid boundary the store keeps.
 2. **If that review clears it, try `delivery.v2` by hand.** Set `{"v2": true}` in `delivery-settings.json` in the app's userData directory; it is read once at boot. Exercise a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
 3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
 
 Smaller items found along the way:
-- ~~`agent_list` shows `activity: null` for an agent that is working.~~ Fixed in `5744ecda`, not yet reviewed. Activity came only from a tool call's start, so a call a provider first reports already under way (OpenCode, for one seen running rather than pending) never showed, nor did a target named only by a later update. Every start and update of a tool call now counts, the newest open call shown. Between calls it says the step the turn is on (thinking, writing a reply, updating its plan); with nothing open it stays null. It touches `AgentService.ts` and `agentService.queue.test.ts`, both also in `58c88391..b4090f62`.
+- ~~`agent_list` shows `activity: null` for an agent that is working.~~ Fixed in `5744ecda`, not yet reviewed; it goes with item 1. Activity came only from a tool call's start, so a call a provider first reports already under way (OpenCode, for one seen running rather than pending) never showed, nor did a target named only by a later update. Every start and update of a tool call now counts, the newest open call shown. Between calls it says the step the turn is on (thinking, writing a reply, updating its plan); with nothing open it stays null. It touches `AgentService.ts` and `agentService.queue.test.ts`, both also in `58c88391..b4090f62`.
 - Cline does not resume a session cleanly; it needs its own ticket.
 - A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). This goes when Phase 5 takes agent messages out of the turn queue.
 - Everything under "Still open" above, and the cancel intent kept only in memory (see the retry table).
