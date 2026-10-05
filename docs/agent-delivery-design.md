@@ -530,6 +530,16 @@ The re-reviews after that held it back on these:
 | A failure the session survives ended the child: OpenCode reported a question reply it could not post as a session error, so the child read interrupted while its turn went on, and its real completion was suppressed. A session that recovered before the send returned also failed the accepted turn | That failure is a `session.warning`, the kind for a session that carries on; `error` and `stopped` mean the session is gone or cannot go on, which every other adapter's emission already does. A session that reports itself live again, or starts a turn, clears the end it reported | `c0ced4b7` |
 | A clock that stepped back defeated the Stop's cutoff: a stopped prompt read as queued after its Stop, and ran | The cutoff is the queue's rowid. The store gives each row the next rowid past every row there is and every one it has given out, and holds that boundary in memory, so a Stop reads it without the database. A row queued later sits above it, through the service or straight into the store | `e78d3dfe` |
 
+The review at `72cff42b` held it back on three remaining findings:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| Activity from a tool call survived a failed session and appeared in the next turn | Ending the session clears its open items and activity, so the next turn starts without the old call | `c53f440a` |
+| An older `ready`, or a duplicate old `turn.started`, revived a dead child and made a pinned wait nonterminal | State changes never clear the recorded end. A `session.started` does, or a start for the accepted turn sent after the end; duplicate starts are ignored. Recoverable failures remain warnings. An `error` followed only by `ready` stays terminal: those events cannot distinguish a recovery from a stale notification | `1311562e` |
+| A Stop retry cancelled a later prompt when the highest row was deleted and a fresh store reused its rowid | Migration 27 preserves the queue's rowids, rows and indexes and makes allocation `INTEGER PRIMARY KEY AUTOINCREMENT`. Stop reads `sqlite_sequence` anew, including allocations by another store and deleted rows; retry boundaries survive reopening and queue order is unchanged | `acc6dad5` |
+
+Each new fix has fault-injection tests checked with its source stashed: the child tests fail on the old revival rules, and the queue tests fail on reused ids and the cached boundary.
+
 What retries what, and when it stops:
 
 | Write or send | Retried | Stops |
@@ -538,10 +548,11 @@ What retries what, and when it stops:
 | A hand-over the provider refused, or whose marker failed | The ringer's backoff: 1 s, 5 s, 15 s, 60 s | After those four tries. The mail stays unseen until something else rings: new mail, a session starting, a turn ending |
 | A queued turn the provider refused, or whose marker failed | 1 s, 5 s, 15 s | Then it is held for the user to send now or remove. A Send now the provider refused goes back to where it was, and the drain is woken: a waiting row is then tried as a queued one, while a held one stays held |
 | The release of a claimed queued turn: after a refusal, or after Send now moved it to the front of a busy thread or failed | Per row, each on its own timer: the same delays, the last repeating. While any is pending, the drain claims nothing on that thread | When it lands, or when the thread is stopped or deleted: the stop's cancellation takes over the row, and a release would put a cancelled row back in line. A release that lands late finishes what it was for — the move to the front and the stop of the running turn, if that turn is still running, or the announcement — and then wakes the drain |
-| The cancellation of a thread's queued rows on Stop, delete or archive | The queue's delays, the last repeating, against the rows that were pending when it was asked; if they could not be read, the rows at or below the queue's rowid boundary at the Stop, never one queued after it, whatever the clock does. Until it lands, the drain claims nothing on that thread, and neither the drain nor Send now sends those rows | When it lands; it then announces each row and wakes the drain. Kept in memory only: if the app quits before the store can write it, the rows read as queued again at the next start. A row already handed to the provider is not taken back; only its queue row is |
+| The cancellation of a thread's queued rows on Stop, delete or archive | The queue's delays, the last repeating, against the rows that were pending when it was asked; if they could not be read, the rows at or below the durable allocation boundary read from `sqlite_sequence` at the Stop. Deleted rows and allocations through other store instances remain below that boundary, and later inserts remain above it, whatever the clock does. If the sequence read fails too, the last observed boundary is used; without one, only later rows queued through the service can be excluded. Until it lands, the drain claims nothing on that thread, and neither the drain nor Send now sends those rows | When it lands; it then announces each row and wakes the drain. Kept in memory only: if the app quits before the store can write it, the rows read as queued again at the next start. A row already handed to the provider is not taken back; only its queue row is |
 | Boot recovery of rows a dead process was handing over | 1 s, 5 s, 15 s, then every 60 s | When it lands. If even reading which rows were orphaned fails, the database open fails and is retried after its cooldown |
 
 Still open:
+- If both the pending-row read and the allocation-boundary read fail on a fresh store, Stop has no cutoff. Its retry still excludes later service-enqueued rows, but a later direct-store insert can be cancelled. A durable allocation closes table-read failures while `sqlite_sequence` remains readable; it cannot reconstruct the Stop boundary after a complete read outage. A cached boundary can also miss rows another store inserted before Stop during that outage.
 - The window inside the provider's own send, before it answers. A crash there leaves the row `uncertain`, which now reports the problem instead of replaying the message. Closing the window needs an idempotent provider request.
 - A database copied into the overlay is a snapshot. Codex's writes there do not reach the real home, and a later build does not refresh it.
 - Only `agent_followup` takes a child from before a restart back on. A turn started on it any other way, such as the user typing into it, is not followed live or reported to the parent.
@@ -549,14 +560,12 @@ Still open:
 
 ### Picking this up
 
-Where the work stands at `e78d3dfe`: agent-core passes 2546 tests.
+Where the work stands after `c53f440a`, `1311562e` and `acc6dad5`: agent-core passes 2555 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
 
-**`delivery.v2` is not yet cleared to turn on.** The review at `b4cca6cf` closed `c409144b` and held it back on two findings. `c0ced4b7` (a failure the session survives ended a child) and `e78d3dfe` (a clock step defeated Stop's cutoff) fix them, with regression tests, but nobody has reviewed them yet, nor `5744ecda` (below).
+**`delivery.v2` is not yet cleared to turn on.** The review at `72cff42b` held it back on stale activity, stale lifecycle events reviving ended children, and queue rowids being reused after reopen. Those fixes are now local and need re-review. The complete-read-outage cutoff limitation above remains explicit.
 
 Next, in order:
-1. **Review `b4cca6cf..e78d3dfe`.** Use fault injection against the real store, not only the tests that came with the fixes. Look hard at:
-   - whether any adapter still emits `session.state.changed` `error` or `stopped` for a session that goes on;
-   - whether anything writes `queued_turns` other than `enqueueQueuedTurn`, which would put a row outside the rowid boundary the store keeps.
+1. **Review `72cff42b..acc6dad5`.** Use fault injection against the real store as well as the regression tests. Check stopped/exited children followed by older `ready` or duplicate starts, and a pending Stop retry followed by deleting the highest row, reopening and inserting through another store. Verify that recoverable adapter errors are warnings; terminal errors require a session start or a known new turn to revive. Decide how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
 2. **If that review clears it, try `delivery.v2` by hand.** Set `{"v2": true}` in `delivery-settings.json` in the app's userData directory; it is read once at boot. Exercise a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
 3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
