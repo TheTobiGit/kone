@@ -1037,6 +1037,31 @@ describe("kone steer, against the real store", () => {
     expect(adapter.sent.map((t) => t.input)).toEqual(["unrelated work"]);
   });
 
+  // Re-review finding 1: the cut outlives its cancelled steer, so a
+  // replacement that comes before the abort asks for no second cancel.
+  test("a steer that replaces a cancelled one before the abort cancels nothing again, and is told to carry on", async () => {
+    const thread = await working();
+    const first = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(await service.cancelQueuedTurn(thread, first.turnId)).toBe(true);
+    await service.steerTurn({ threadId: thread, input: "a better plan" });
+    expect(adapter.interruptedTurns).toEqual(["live"]);
+
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+    await waitFor(() => adapter.sent.length === 1);
+    expect(adapter.sent[0]!.input).toBe(`${STEER_CARRY_ON}\n\na better plan`);
+  });
+
+  test("a cut with nothing left owed adds no line, and still cancels once", async () => {
+    const thread = await working();
+    const first = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(await service.cancelQueuedTurn(thread, first.turnId)).toBe(true);
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+
+    await service.sendTurn({ threadId: thread, input: "unrelated work" });
+    expect(adapter.sent.map((t) => t.input)).toEqual(["unrelated work"]);
+    expect(adapter.interruptedTurns).toEqual(["live"]);
+  });
+
   test("a cancelled steer's wait ends no turn", async () => {
     const thread = await working();
     adapter.emit(item(thread, "item.started", "call-1"));

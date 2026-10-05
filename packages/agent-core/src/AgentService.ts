@@ -323,9 +323,13 @@ function joinSteer(into: SteerFor, queueId: string | undefined): void {
   else into.standing = true;
 }
 
-/** Take a cancelled row out; true when nothing is left to deliver. */
+/** Take a cancelled row out; true when that left nothing to deliver. */
 function dropSteerRow(from: SteerFor, queueId: string): boolean {
-  return from.rows.delete(queueId) && from.rows.size === 0 && !from.standing;
+  return from.rows.delete(queueId) && !steerOwed(from);
+}
+
+function steerOwed(owed: SteerFor): boolean {
+  return owed.rows.size > 0 || owed.standing;
 }
 
 function publicStepWait(wait: StepWait): StepWait {
@@ -1899,7 +1903,7 @@ export class AgentService {
           const cut = this.steerCuts.get(threadId);
           if (cut?.turnId === event.turnId) {
             this.steerCuts.delete(threadId);
-            if (event.type === "turn.aborted") this.steerCarryOn.set(threadId, cut.for);
+            if (event.type === "turn.aborted" && steerOwed(cut.for)) this.steerCarryOn.set(threadId, cut.for);
           }
         }
         if (this.stepWaits.get(threadId)?.turnId === event.turnId) this.stepWaits.delete(threadId);
@@ -2068,14 +2072,15 @@ export class AgentService {
     this.steerCarryOn.delete(threadId);
   }
 
-  /** A queued steer was cancelled: a wait, cut or carry-on that was only for
-   *  it goes. A wait that goes ends no turn; a cut whose turn then aborts
-   *  says nothing to the next one. */
+  /** A queued steer was cancelled: a wait or carry-on that was only for it
+   *  goes, and a wait that goes ends no turn. A cut stays until its turn
+   *  settles, so the cancel already asked for is never asked again; with
+   *  nothing left owed, its turn's abort says nothing to the next one. */
   private dropSteerRow(threadId: string, queueId: string): void {
     const wait = this.stepWaits.get(threadId);
     if (wait && dropSteerRow(wait.for, queueId)) this.stepWaits.delete(threadId);
     const cut = this.steerCuts.get(threadId);
-    if (cut && dropSteerRow(cut.for, queueId)) this.steerCuts.delete(threadId);
+    if (cut) dropSteerRow(cut.for, queueId);
     const carryOn = this.steerCarryOn.get(threadId);
     if (carryOn && dropSteerRow(carryOn, queueId)) this.steerCarryOn.delete(threadId);
   }
