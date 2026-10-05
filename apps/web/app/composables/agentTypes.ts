@@ -327,6 +327,7 @@ export type QueueBridge = {
   reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
   sendQueuedTurnNow?: (threadId: string, queueId: string) => Promise<boolean>;
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
+  interruptStepWaitNow?: (threadId: string) => Promise<boolean>;
 };
 
 /** The composer's reasoning-effort tier. Codex exposes this as a flag-based

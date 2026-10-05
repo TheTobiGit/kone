@@ -995,7 +995,22 @@ export type SendTurnInput = {
   contextWindow?: string;
 };
 
-export type TurnStartResult = { threadId: string; turnId: string };
+export type TurnStartResult = {
+  threadId: string;
+  turnId: string;
+  /** A steer its provider cannot take mid-turn, held until the running tool
+   *  call finishes (kone steer). */
+  afterStep?: StepWait;
+};
+
+/** A kone steer wait: the running turn ends once its open tool calls finish,
+ *  so the steer goes next. */
+export type StepWait = {
+  from: "user" | "agent";
+  /** The tool call it waits on, by name and target. */
+  tool: { name: string; text: string } | null;
+  since: number;
+};
 
 /** Outcome of a manual context-compaction request. Resolves once the provider
  *  has compacted and the `thread.state.changed` "compacted" boundary has been
@@ -3057,6 +3072,10 @@ export type KoneAgentApi = {
    *  enqueues it as a steer (claiming first) — or sends normally when there
    *  is no live turn to steer. */
   steerTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
+  /** Interrupt now: end the turn a steer is waiting on without waiting for
+   *  its tool call. False when nothing waits, or the thread is parked on the
+   *  user. */
+  interruptStepWaitNow: (threadId: string) => Promise<boolean>;
   /** Every pre-turn repository snapshot recorded for a thread, oldest first —
    *  what the timeline reads to offer a per-turn restore. */
   turnCheckpoints: (threadId: string) => Promise<TurnCheckpointRecord[]>;

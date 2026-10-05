@@ -16,6 +16,7 @@ import { SolarChatRoundLineLinearIcon } from "~/utils/solarChatIcons";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
+import AgentSteerWaitPill from "~/components/agent/AgentSteerWaitPill.vue";
 import ComposerWorkspaceTray from "~/components/agent/ComposerWorkspaceTray.vue";
 import WorktreeIcon from "~/components/icons/WorktreeIcon.vue";
 import InteractionModeIcon from "~/components/icons/InteractionModeIcon.vue";
@@ -31,6 +32,7 @@ import type {
   ProviderKind,
   ProviderStatus,
   SkillReference,
+  StepWait,
   ThreadEnvMode,
 } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
@@ -141,6 +143,9 @@ const props = defineProps<{
    *  strip above the card renders from these — the host owns the queue (send
    *  while busy enqueues; cancel/steer round-trip through the bridge). */
   queued?: QueuedTurnEntry[];
+  /** The user's steer, held until the running tool call finishes (kone
+   *  steer): the pill above the card offers Interrupt now after 30 s. */
+  steerWait?: StepWait | null;
   /** A picker the parent hosts outside our dock is open — the model picker, the
    *  workspace picker. While one is, a click in it or on its scrim must NOT
    *  collapse us. */
@@ -252,6 +257,8 @@ const emit = defineEmits<{
   "open-project": [];
   /** Drop one durably queued follow-up (the strip's Stop button). */
   "remove-queued": [queueId: string];
+  /** End the turn a held steer waits on, so the steer goes next. */
+  "interrupt-now": [];
   /** Dispatch a queued follow-up immediately (steer into running turn or send). */
   "send-now": [entry: QueuedTurnEntry];
   /** Reorder the queued follow-ups. */
@@ -1175,6 +1182,12 @@ defineExpose({ wake, setDraft, focus });
     <!-- Queued follow-ups live in the strip above the card; the composer only
          forwards its reports (cancel / send-now / reorder) and handles an
          edit by parking the row's text back in the field. -->
+    <AgentSteerWaitPill
+      v-if="!isJob"
+      :wait="steerWait"
+      :agent-name="settledIdentity?.name ?? currentAgent?.name"
+      @interrupt-now="emit('interrupt-now')"
+    />
     <AgentQueueStrip
       v-if="!isJob"
       :queued="queued"
