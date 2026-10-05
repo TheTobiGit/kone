@@ -149,10 +149,29 @@ describe("what rings", () => {
     expect(mailbox.urgentCount("backend")).toBe(1);
   });
 
-  test("urgent on a provider that cannot steer says the turn is interrupted", async () => {
-    runtimes.set("backend", runtime({ busy: true, steers: false }));
+  // kone steer (docs/agent-delivery-design.md §7).
+  test("urgent with kone steer, mid tool call, says it lands after the current step", async () => {
+    runtimes.set(
+      "backend",
+      runtime({ busy: true, steers: false, urgent: "after-step", activeTool: { name: "Bash", text: "bun test", startedAt: 1 } }),
+    );
+    const sent = await send("main", { to: "backend", message: "Stop.", urgent: true });
+    expect(sent.structuredContent).toMatchObject({ outcome: "after-step" });
+    expect(String(sent.structuredContent?.text)).toContain("to finish the current step (Bash: bun test); it lands right after");
+  });
+
+  test("urgent with kone steer, between steps, says the turn is interrupted", async () => {
+    runtimes.set("backend", runtime({ busy: true, steers: false, urgent: "after-step" }));
     const sent = await send("main", { to: "backend", message: "Stop.", urgent: true });
     expect(sent.structuredContent).toMatchObject({ outcome: "interrupts" });
+    expect(String(sent.structuredContent?.text)).toContain("interrupts");
+  });
+
+  test("urgent on a provider that failed the cancel probe lands when the turn ends, and says why", async () => {
+    runtimes.set("backend", runtime({ busy: true, steers: false, urgent: "turn-end" }));
+    const sent = await send("main", { to: "backend", message: "Stop.", urgent: true });
+    expect(sent.structuredContent).toMatchObject({ outcome: "next" });
+    expect(String(sent.structuredContent?.text)).toContain("provider loses work if interrupted mid-turn, so this lands when");
   });
 
   test("an idle agent is woken by what rings", async () => {

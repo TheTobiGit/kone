@@ -89,8 +89,10 @@ export interface InboxDeliveryDeps {
     /** Let the turn slot run: it starts a turn for what rings when the thread
      *  is free, and does nothing when it is not. */
     kickTurnSlot(threadId: string): void;
-    /** End the running turn, so the turn slot carries what is urgent next. */
-    interruptTurn(threadId: string): Promise<void>;
+    /** kone steer: end the running turn once its current tool call is done
+     *  — held while parked on the user — so the turn slot carries what is
+     *  urgent next. */
+    interruptAfterStep(threadId: string, from: "agent"): void;
     onEvent(listener: (event: RuntimeEvent) => void): () => void;
   };
   dispatcher: Pick<ThreadDispatcher, "steerThreadTurn" | "ensureThreadSession" | "takeReplayPreamble">;
@@ -126,9 +128,6 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
   const failures = new Map<string, number>();
   /** Threads being brought back up for a message that rings. */
   const restarting = new Set<string>();
-  /** The running turn (by when it started) each thread was interrupted in for
-   *  urgent mail its provider cannot take mid-turn — once a turn is enough. */
-  const interrupted = new Map<string, number>();
 
   function arm(threadId: string, ms = IRC_DELIVERY_DEBOUNCE_MS): void {
     armed.get(threadId)?.();
@@ -177,19 +176,15 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
   /** Urgent mail for a busy thread. It is settled only with a turn the
    *  provider really started, so a job's id always comes to stand for one:
    *  into the running turn when the provider takes it there and that turn has
-   *  announced itself; otherwise the running turn is ended, and the turn slot
-   *  carries the mail next, its rows unseen until then. */
+   *  announced itself. On a provider that cannot, kone steer ends the running
+   *  turn after its current step, and the turn slot carries the mail next,
+   *  its rows unseen until then. A provider that would lose that step's work
+   *  is never interrupted: the mail goes when the turn ends. */
   function urgentInto(threadId: string, rt: ThreadRuntime): void {
     if (rt.turnStartedAt === null) return; // turn.started rings again
-    if (rt.steers) {
-      steerUrgent(threadId);
-      return;
-    }
-    if (interrupted.get(threadId) === rt.turnStartedAt) return;
-    interrupted.set(threadId, rt.turnStartedAt);
-    void deps.service.interruptTurn(threadId).catch((err) => {
-      console.warn(`[agent] could not end ${threadId}'s turn for urgent mail:`, err);
-    });
+    const lands = rt.urgent ?? (rt.steers ? "steer" : "turn-end");
+    if (lands === "steer") steerUrgent(threadId);
+    else if (lands === "after-step") deps.service.interruptAfterStep(threadId, "agent");
   }
 
   /** Put the urgent messages, and at most one urgent job, into the running
@@ -351,7 +346,6 @@ export function startInboxDelivery(deps: InboxDeliveryDeps): InboxDelivery {
       for (const cancel of armed.values()) cancel();
       armed.clear();
       failures.clear();
-      interrupted.clear();
     },
   };
 }
@@ -488,9 +482,12 @@ function renderAgentSections(messages: IrcMessageRecord[], overflow: string): st
 export type DeliveryOutcome =
   /** Into the running turn. */
   | "delivered"
-  /** Its provider cannot take it mid-turn: the running turn is interrupted
-   *  and it lands as the next one. */
+  /** Its provider cannot take it mid-turn, and no tool call is running: kone
+   *  steer interrupts the running turn and it lands as the next one. */
   | "interrupts"
+  /** kone steer waits for the tool call the recipient is in, then
+   *  interrupts its turn, and it lands as the next one. */
+  | "after-step"
   /** Next, when the running turn ends. */
   | "next"
   /** The recipient was idle: it is taking it now. */
@@ -561,10 +558,24 @@ export function deliveryReceipt(input: DeliveryReceiptInput): DeliveryReceipt {
   if (state.state === "idle") return { outcome: "waking", text: `Delivered: ${name} was idle and is taking it now.` };
   // Working, or waiting on another agent inside a running turn.
   if (input.urgent) {
-    if (state.steers === false) {
+    const lands = state.urgent ?? (state.steers === false ? "turn-end" : "steer");
+    if (lands === "after-step" && state.inTool) {
+      return {
+        outcome: "after-step",
+        text: `Waiting for ${name} to finish the current step${state.activity ? ` (${state.activity})` : ""}; it lands right after, as ${name}'s next turn.`,
+      };
+    }
+    if (lands === "after-step") {
       return {
         outcome: "interrupts",
-        text: `${name}'s provider cannot take a message mid-turn, so kone interrupts ${name}'s turn and this lands as the next one.`,
+        text: `${name}'s provider cannot take a message mid-turn, so kone interrupts ${name}'s turn between steps and this lands as the next one.`,
+      };
+    }
+    if (lands === "turn-end") {
+      const since = formatSince(state.since, input.now);
+      return {
+        outcome: "next",
+        text: `Next for ${name}: ${name}'s provider loses work if interrupted mid-turn, so this lands when ${name}'s turn ends${since ? ` (running ${since})` : ""}.`,
       };
     }
     return { outcome: "delivered", text: `Delivered into ${name}'s running turn.` };

@@ -61,7 +61,7 @@ function harness(initial: Partial<ThreadRuntime> = {}) {
     service: {
       threadRuntime: () => rt,
       kickTurnSlot: (threadId) => kicks.push(threadId),
-      interruptTurn: async (threadId) => {
+      interruptAfterStep: (threadId) => {
         interrupts.push(threadId);
       },
       onEvent: (listener) => {
@@ -338,20 +338,15 @@ describe("jobs", () => {
 
   // A provider that cannot take a message mid-turn: a steer would only queue
   // it, and settle the job with the queue's id, which no turn ever carries.
-  test("an urgent job to a provider that cannot steer ends the turn, and waits for the next one, unseen", async () => {
-    const h = harness({ busy: true, turnStartedAt: 1, steers: false });
+  // kone steer ends the turn after its current step instead.
+  test("an urgent job to a provider with kone steer ends the turn after its step, and waits for the next one, unseen", async () => {
+    const h = harness({ busy: true, turnStartedAt: 1, steers: false, urgent: "after-step" });
     const id = h.job("stop and revert", true);
     h.clock.tick();
     await flush();
     expect(h.steers).toHaveLength(0);
     expect(h.interrupts).toEqual(["b"]);
     expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: false, turnId: null });
-
-    // Ringing again in the same turn does not interrupt it twice.
-    h.send("a", "and this", { urgent: true });
-    h.clock.tick();
-    await flush();
-    expect(h.interrupts).toEqual(["b"]);
 
     // The next turn is the job's own, ahead of anything the user queued, and
     // it settles with the turn the provider started.
@@ -361,6 +356,24 @@ describe("jobs", () => {
     expect(turn.input.input).toContain("stop and revert");
     turn.settle("turn-2");
     expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: true, turnId: "turn-2" });
+  });
+
+  // A provider that failed the cancel probe would lose the step it is on, so
+  // nothing interrupts it: the mail goes when the turn ends.
+  test("urgent mail to a provider without kone steer never interrupts, and goes when the turn ends", async () => {
+    const h = harness({ busy: true, turnStartedAt: 1, steers: false, urgent: "turn-end" });
+    const id = h.job("stop and revert", true);
+    h.send("a", "and this", { urgent: true });
+    h.clock.tick();
+    await flush();
+    expect(h.steers).toHaveLength(0);
+    expect(h.interrupts).toEqual([]);
+    expect(h.mailbox.jobTurn(id)).toMatchObject({ handedOver: false, turnId: null });
+
+    h.set({});
+    const turn = h.delivery.carry("b", null)!;
+    expect(turn.input.input).toContain("stop and revert");
+    expect(turn.input.input).toContain("and this");
   });
 
   // The steer is live only: a turn that ended while it was on its way refuses

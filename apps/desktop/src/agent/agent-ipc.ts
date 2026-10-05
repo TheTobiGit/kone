@@ -410,7 +410,7 @@ export function registerAgentIpc(): void {
     service: {
       threadRuntime: (threadId) => svc.threadRuntime(threadId),
       kickTurnSlot: (threadId) => svc.kickTurnSlot(threadId),
-      interruptTurn: (threadId) => svc.interruptTurn(threadId),
+      interruptAfterStep: (threadId, from) => svc.interruptAfterStep(threadId, from),
       onEvent: (listener) => svc.onEvent(listener),
     },
     dispatcher,
@@ -793,6 +793,10 @@ export function registerAgentIpc(): void {
   );
   // Same as agent:send-turn: a steer from the renderer is the user speaking.
   ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) => handOffs.userSteers(input));
+  // The user's Interrupt now on a steer kone steer is holding until the
+  // running tool call finishes: the turn ends at once, and the steer goes
+  // next. False when nothing waits, or the thread is parked on the user.
+  ipcMain.handle("agent:steer-interrupt-now", (_event, threadId: string) => svc.interruptStepWaitNow(threadId));
   // Pre-turn repository snapshots. `turn-checkpoints` lists every snapshot
   // recorded for a thread (oldest first); `preview-turn-checkpoint` names what
   // restoring one would change without changing anything; `revert-turn-checkpoint`

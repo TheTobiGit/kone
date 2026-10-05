@@ -388,6 +388,20 @@ export type TurnStartResult = {
   /** The thread was busy, so the turn waits in the queue: no provider has it
    *  yet, and `turnId` will never name a turn. */
   queued?: true;
+  /** A steer its provider cannot take mid-turn, waiting for the tool call
+   *  the turn is in to finish before kone ends the turn and it goes next
+   *  (kone steer): the call, and when the wait began. */
+  afterStep?: StepWait;
+};
+
+/** A kone steer wait: the running turn ends once its open tool calls finish,
+ *  so what waits for it goes next (docs/agent-delivery-design.md §7). */
+export type StepWait = {
+  /** Whose message waits: only the user is offered Interrupt now. */
+  from: "user" | "agent";
+  /** The tool call it waits on, by name and target. */
+  tool: { name: string; text: string } | null;
+  since: number;
 };
 
 /** What a caller of sendTurn or steerTurn asks of the hand-off. */

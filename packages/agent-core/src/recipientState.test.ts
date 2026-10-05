@@ -57,9 +57,16 @@ describe("recipientState", () => {
     expect(s.activity).toBe("read: a.ts");
   });
 
-  test("a provider that cannot steer says urgent interrupts", () => {
+  test("a provider with kone steer says urgent waits for the current step", () => {
+    const s = state({ runtime: runtime({ busy: true, steers: false, urgent: "after-step" }), unseen: 0, oldestUnseenAt: null });
+    expect(s.urgent).toBe("after-step");
+    expect(describeRecipientState(s, NOW)).toContain("urgent waits for its current step, then interrupts this turn");
+  });
+
+  test("a provider that cannot steer, without kone steer, says urgent waits for the turn to end", () => {
     const s = state({ runtime: runtime({ busy: true, steers: false }), unseen: 0, oldestUnseenAt: null });
-    expect(describeRecipientState(s, NOW)).toContain("urgent interrupts this one");
+    expect(s.urgent).toBe("turn-end");
+    expect(describeRecipientState(s, NOW)).toContain("urgent waits for this turn to end: its provider loses work if interrupted");
   });
 
   test("a live thread with no turn is idle since its last activity", () => {
