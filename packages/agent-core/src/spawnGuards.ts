@@ -309,7 +309,16 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
     effort = undefined;
   } else if (effort && model && input.catalog && input.catalog.length > 0) {
     const efforts = input.catalog.find((m) => m.id === model)?.reasoningEfforts;
-    if (efforts && efforts.length > 0 && !efforts.includes(effort)) {
+    // Elsewhere a model listed with no efforts takes any tier, but OpenCode
+    // lists every variant it accepts and refuses any other ("Variant
+    // unavailable"), the parent's inherited tier included.
+    const listsNone = !efforts || efforts.length === 0;
+    const known = input.catalog.some((m) => m.id === model);
+    if (
+      listsNone
+        ? known && input.target.provider === "opencode"
+        : !efforts.includes(effort)
+    ) {
       adjustments.push({
         field: "effort",
         requested: effort,
