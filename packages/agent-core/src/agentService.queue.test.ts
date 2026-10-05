@@ -318,6 +318,61 @@ function loseQueueTable(): () => void {
 // the cancellation, it is kept and retried: the rows never go out meanwhile,
 // and once writes come back they are cancelled, not back in line.
 describe("Stop whose cancellation could not be written", () => {
+  test("a Stop retry cannot cancel a replacement after its highest row is deleted and the store reopens", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "take it back");
+    const removed = queueRow(thread, "removed during outage");
+    const unreadableIds = spyOn(store, "pendingQueueIds").mockReturnValue(null);
+    const recover = failCancels();
+    try {
+      await service.cancelQueuedTurns(thread);
+    } finally {
+      unreadableIds.mockRestore();
+    }
+    const raw = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+    raw.prepare("DELETE FROM queued_turns WHERE queue_id = ?").run(removed);
+    raw.close();
+    store.close();
+    const reopened = new ConversationStoreCtor();
+    const replacement = `q-${++seq}`;
+    reopened.recordUserBlock({ blockId: `ub-${replacement}`, threadId: thread, text: "keep this" });
+    expect(reopened.enqueueQueuedTurn({ queueId: replacement, threadId: thread, userBlockId: `ub-${replacement}`, input: "keep this" })).toBe(true);
+    reopened.close();
+    recover();
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => c.queueId)).toEqual([q1]);
+    expect(stateOf(thread, replacement)).toBe("queued");
+  });
+
+  test("a Stop reads the durable boundary after another store writes, and spares a later direct insert", async () => {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    const q1 = queueRow(thread, "first stopped prompt");
+    expect(store.queueBoundary()).not.toBeNull();
+    const writer = new ConversationStoreCtor();
+    const q2 = `q-${++seq}`;
+    writer.recordUserBlock({ blockId: `ub-${q2}`, threadId: thread, text: "also stop this" });
+    expect(writer.enqueueQueuedTurn({ queueId: q2, threadId: thread, userBlockId: `ub-${q2}`, input: "also stop this" })).toBe(true);
+    const unreadableIds = spyOn(store, "pendingQueueIds").mockReturnValue(null);
+    const recover = failCancels();
+    try {
+      await service.cancelQueuedTurns(thread);
+    } finally {
+      unreadableIds.mockRestore();
+    }
+    const q3 = `q-${++seq}`;
+    writer.recordUserBlock({ blockId: `ub-${q3}`, threadId: thread, text: "keep this" });
+    expect(writer.enqueueQueuedTurn({ queueId: q3, threadId: thread, userBlockId: `ub-${q3}`, input: "keep this" })).toBe(true);
+    writer.close();
+    recover();
+
+    await waitFor(() => stateOf(thread, q1) === "gone");
+    expect(ofType(thread, "turn.queued-cancelled").map((c) => c.queueId)).toEqual([q1, q2]);
+    expect(stateOf(thread, q3)).toBe("queued");
+  });
+
   test("a stopped row never runs while its cancellation waits, and is cancelled once writes come back", async () => {
     const thread = await openThread();
     adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
