@@ -2413,6 +2413,44 @@ describe("the turn a follow-up started", () => {
     });
   }
 
+  for (const [late, event] of [
+    ["completion", (child: string) => turnCompleted(child, "t-1", 40)],
+    ["abort", (child: string) => turnAborted(child, "t-1", 40, "interrupted", "Cancelled.")],
+  ] as const) {
+    test(`a late ${late} for a turn its session's end settled changes nothing the parent was told`, async () => {
+      const h = makeReportEngine();
+      const child = await delegate(h);
+      h.bus.emit(turnStarted(child, "t-1", 20));
+      h.bus.emit(sessionState(child, "error", 30));
+      await h.flush();
+      const told = h.engine.snapshot(child);
+      expect(told).toMatchObject({ status: "failed", terminal: true });
+      expect(h.delivered).toHaveLength(1);
+
+      h.bus.emit(event(child));
+      await h.flush();
+      expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true, updatedAt: told.updatedAt });
+      expect(h.delivered).toHaveLength(1);
+      h.stopDelivery();
+    });
+  }
+
+  test("a late completion for a turn that failed before it started changes nothing the parent was told", async () => {
+    const h = makeReportEngine();
+    const child = childFromBeforeRestart(h);
+    h.dispatcher.emitBeforeSent = (threadId) => h.bus.emit(sessionState(threadId, "error", Date.now()));
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    await h.flush();
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
+    expect(h.delivered).toHaveLength(1);
+
+    h.bus.emit(turnCompleted(child, turnId, Date.now()));
+    await h.flush();
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
+    expect(h.delivered).toHaveLength(1);
+    h.stopDelivery();
+  });
+
   test("error then ready before send acceptance remains a terminal failure", async () => {
     const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
