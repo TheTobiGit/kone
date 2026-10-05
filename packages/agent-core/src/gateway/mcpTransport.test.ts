@@ -554,6 +554,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_message, agent_inbo
         spawnDepth: () => 0,
         liveSpawnedThreadIds: () => [],
         latestAssistantText: () => null,
+        turnAssistantText: () => null,
         threadTurnSpan: () => null,
         reserveGatewayOp: () => ({ kind: "reserved" as const }),
         setGatewayOpResult: () => {},

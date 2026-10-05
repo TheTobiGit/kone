@@ -383,40 +383,65 @@ export class TranscriptRepo {
         )
         .get(threadId) as { turn_id: string | null } | undefined;
       if (!block?.turn_id) return null;
-      // SAFETY: the projection names the turn's item bases plus each row's
-      // chunk array (see itemChunkArraySql) — the same base-plus-chunks read
-      // loadTurnParts performs.
-      const items = db
-        .prepare(
-          `SELECT kind, text, text_json, ${itemChunkArraySql("items")} AS chunk_text FROM items
-            WHERE thread_id = ? AND turn_id = ?
-              AND (kind = 'assistant_text' OR (kind = 'tool_call' AND subagent_tool_use_id IS NULL))
-            ORDER BY seq`,
-        )
-        .all(threadId, block.turn_id) as Array<{
-          kind: "assistant_text" | "tool_call";
-          text: string | null;
-          text_json: string | null;
-          chunk_text: string | null;
-        }>;
-      // Walk back from the end: skip tool calls the turn ended on, then take
-      // text until the tool call that precedes it.
-      const run: string[] = [];
-      for (let i = items.length - 1; i >= 0; i--) {
-        const item = items[i]!;
-        if (item.kind === "tool_call") {
-          if (run.length > 0) break;
-          continue;
-        }
-        const text = decodeStoredText(item.text, item.text_json) + decodeChunkArray(item.chunk_text);
-        if (text.trim().length > 0) run.unshift(text);
-      }
-      const text = run.join("").trim();
-      return text || null;
+      return this.turnFinalReply(db, threadId, block.turn_id);
     } catch (err) {
       console.error("[conversation-store] latestAssistantText failed:", err);
       return null;
     }
+  }
+
+  /** One turn's OWN final reply — the same run rule as latestAssistantText,
+   *  but read for the turn asked for rather than the newest. This is what a
+   *  wait pinned to that turn reports as its summary, so a wait on an older
+   *  turn never carries a newer turn's answer. Null when the turn said
+   *  nothing after its last step. */
+  turnAssistantText(threadId: string, turnId: string): string | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      return this.turnFinalReply(db, threadId, turnId);
+    } catch (err) {
+      console.error("[conversation-store] turnAssistantText failed:", err);
+      return null;
+    }
+  }
+
+  /** One turn's last run of `assistant_text` items, concatenated in arrival
+   *  order and trimmed — the narrative only (reasoning and plan never join a
+   *  run). Walking back from the end, it skips the tool calls the turn ended
+   *  on, then takes text until the tool call before the run. Null when the
+   *  turn has no narrative. (The full why is on latestAssistantText.) */
+  private turnFinalReply(db: DatabaseSync, threadId: string, turnId: string): string | null {
+    // SAFETY: the projection names the turn's item bases plus each row's
+    // chunk array (see itemChunkArraySql) — the same base-plus-chunks read
+    // loadTurnParts performs.
+    const items = db
+      .prepare(
+        `SELECT kind, text, text_json, ${itemChunkArraySql("items")} AS chunk_text FROM items
+          WHERE thread_id = ? AND turn_id = ?
+            AND (kind = 'assistant_text' OR (kind = 'tool_call' AND subagent_tool_use_id IS NULL))
+          ORDER BY seq`,
+      )
+      .all(threadId, turnId) as Array<{
+        kind: "assistant_text" | "tool_call";
+        text: string | null;
+        text_json: string | null;
+        chunk_text: string | null;
+      }>;
+    // Walk back from the end: skip tool calls the turn ended on, then take
+    // text until the tool call that precedes it.
+    const run: string[] = [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i]!;
+      if (item.kind === "tool_call") {
+        if (run.length > 0) break;
+        continue;
+      }
+      const text = decodeStoredText(item.text, item.text_json) + decodeChunkArray(item.chunk_text);
+      if (text.trim().length > 0) run.unshift(text);
+    }
+    const text = run.join("").trim();
+    return text || null;
   }
 
   /** The child's elapsed-time readout: when its first turn started, when its

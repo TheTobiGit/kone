@@ -82,6 +82,8 @@ class FakeStore implements SpawnEngineStore {
     { startedAt: number; endedAt: number | null; runningTurns: number; lastState: "running" | "interrupted" | "failed" | "completed" | null }
   >();
   readonly texts = new Map<string, string>();
+  /** One turn's own final reply, by `${threadId}/${turnId}`. */
+  readonly turnTexts = new Map<string, string>();
   liveIds: string[] = [];
   readonly ops = new Map<string, { fingerprint: string; result?: SpawnThreadResult }>();
   /** Op keys whose dispatched bit was set after startThread returned (F8). */
@@ -174,6 +176,10 @@ class FakeStore implements SpawnEngineStore {
 
   latestAssistantText(threadId: string): string | null {
     return this.texts.get(threadId) ?? null;
+  }
+
+  turnAssistantText(threadId: string, turnId: string): string | null {
+    return this.turnTexts.get(`${threadId}/${turnId}`) ?? null;
   }
 
   threadTurnSpan(threadId: string): {
@@ -2565,6 +2571,21 @@ function childWithTwoStoredTurns(h: EngineHarness): string {
   return child;
 }
 
+/** A child from before a restart whose two turns both completed, each with its
+ *  own reply: "first" then "second". The thread's newest answer is the second
+ *  turn's, so a wait pinned to the first that reports it is reporting the
+ *  wrong turn. */
+function childWithTwoCompletedTurns(h: EngineHarness): string {
+  const child = childFromBeforeRestart(h);
+  h.store.spans.set(child, { startedAt: 10, endedAt: 40, runningTurns: 0, lastState: "completed" });
+  h.store.turnSpans.set(`${child}/first`, { startedAt: 10, endedAt: 20, runningTurns: 0, lastState: "completed" });
+  h.store.turnSpans.set(`${child}/second`, { startedAt: 30, endedAt: 40, runningTurns: 0, lastState: "completed" });
+  h.store.turnTexts.set(`${child}/first`, "The first turn's reply.");
+  h.store.turnTexts.set(`${child}/second`, "The second turn's reply.");
+  h.store.texts.set(child, "The second turn's reply.");
+  return child;
+}
+
 describe("a wait pinned to a turn from the store", () => {
   test("a child not followed here reads the turn asked for, not the newest", async () => {
     const h = makeEngine();
@@ -2598,6 +2619,28 @@ describe("a wait pinned to a turn from the store", () => {
     expect(out.threads[0]!.detail).toContain("no record of how turn gone");
     expect(out.threads[0]!.summary).toBeUndefined();
   });
+
+  test("a wait pinned to an older turn reports that turn's reply as its summary, not the newest", async () => {
+    const h = makeEngine();
+    const child = childWithTwoCompletedTurns(h);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["first"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "completed", terminal: true });
+    expect(out.threads[0]!.summary).toBe("The first turn's reply.");
+  });
+
+  test("a pinned turn that said nothing carries no summary, not another turn's", async () => {
+    const h = makeEngine();
+    const child = childWithTwoCompletedTurns(h);
+    h.store.turnTexts.delete(`${child}/first`);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["first"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]!.summary).toBeUndefined();
+  });
 });
 
 // ── a seal across a restart, against the real store ─────────────────────────
@@ -2627,6 +2670,9 @@ class StoreBackedFakeStore extends FakeStore {
   }
   override turnSpan(threadId: string, turnId: string): ReturnType<FakeStore["turnSpan"]> {
     return this.real.turnSpan(threadId, turnId);
+  }
+  override turnAssistantText(threadId: string, turnId: string): string | null {
+    return this.real.turnAssistantText(threadId, turnId);
   }
   sealTurn(threadId: string, turnId: string, seal: { state: "failed" | "interrupted"; error: string; at: number }): boolean {
     return this.real.sealTurn(threadId, turnId, seal);
