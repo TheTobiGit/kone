@@ -1082,6 +1082,8 @@ class SpawnEngineImpl implements SpawnEngine {
     if (awaiting && endsAwaiting(event, awaiting.turnId)) delete child.awaitingTurn;
     switch (event.type) {
       case "turn.started":
+        // A turn runs on a live session, whatever was said of it before.
+        this.reviveSession(child);
         child.turns.push({ turnId: event.turnId, state: "running", at: event.at });
         child.gate = null;
         break;
@@ -1112,11 +1114,11 @@ class SpawnEngineImpl implements SpawnEngine {
         child.gate = null;
         break;
       case "session.started":
-        child.hasLiveSession = true;
+        this.reviveSession(child);
         break;
       case "session.state.changed":
         if (!endsSession(event)) {
-          child.hasLiveSession = true;
+          this.reviveSession(child);
           break;
         }
         this.endSession(child, awaiting, {
@@ -1155,6 +1157,13 @@ class SpawnEngineImpl implements SpawnEngine {
     }
     child.awaitingTurn = { turnId, at: Date.now() };
     this.recompute(child);
+  }
+
+  /** The child's session is up again: an end it reported before no longer
+   *  stands, so a turn sent since is not failed for it. */
+  private reviveSession(child: TrackedChild): void {
+    child.hasLiveSession = true;
+    delete child.sessionEnd;
   }
 
   /** The child's session ended or failed. A turn the provider took that had

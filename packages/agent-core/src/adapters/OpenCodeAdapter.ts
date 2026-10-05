@@ -1210,10 +1210,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
   /** Surface a question reply the provider never received. The modal already
    *  resolved optimistically, so without this the answer would look sent while
-   *  the turn waits for it. */
+   *  the turn waits for it. A warning, not a session error: the session and
+   *  its turn go on, and a session error reads as the session gone. */
   private failQuestionReply(session: OpenCodeSession, requestId: string, cause: unknown): void {
     const message = `question reply ${requestId} failed: ${errorMessage(cause)} — the provider never received the answer and the turn may still be waiting`;
     console.error(`[opencode] ${message}`);
-    this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message });
+    this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.warning", message });
   }
 }
