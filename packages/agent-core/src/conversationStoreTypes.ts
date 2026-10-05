@@ -523,6 +523,9 @@ export type TurnPartRows = {
 
 /** A thread's elapsed-time readout: when its turns started and ended, how many
  *  are still running, and how the newest assistant block settled. */
+/** How a session's end settled a turn, kept so nothing later rewrites it. */
+export type TurnSeal = { state: "failed" | "interrupted"; error: string; at: number };
+
 export type TurnSpan = {
   startedAt: number;
   endedAt: number | null;

@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import type { StoredThread } from "../types.js";
-import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
+import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSeal, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import { decodeChunkArray, decodeStoredText, itemChunkArraySql } from "./itemTextChunks.js";
 
@@ -471,9 +471,46 @@ export class TranscriptRepo {
     }
   }
 
+  /** Record that a session's end settled `turnId`, and settle its assistant
+   *  block the same way. The first seal of a turn stands. False when it could
+   *  not be written. */
+  sealTurn(threadId: string, turnId: string, seal: TurnSeal): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      this.dbh.durably(db, () =>
+        this.dbh.atomically(db, () => {
+          this.dbh
+            .prepare(
+              db,
+              `INSERT INTO turn_seals (thread_id, turn_id, state, error, sealed_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(thread_id, turn_id) DO NOTHING`,
+            )
+            .run(threadId, turnId, seal.state, seal.error, seal.at);
+          this.dbh
+            .prepare(
+              db,
+              `UPDATE blocks
+                  SET state = s.state, error = s.error, ended_at = COALESCE(blocks.ended_at, s.sealed_at)
+                 FROM turn_seals s
+                WHERE s.thread_id = blocks.thread_id AND s.turn_id = blocks.turn_id
+                  AND blocks.thread_id = ? AND blocks.turn_id = ? AND blocks.role = 'assistant'`,
+            )
+            .run(threadId, turnId);
+        }),
+      );
+      return true;
+    } catch (err) {
+      console.error("[conversation-store] sealTurn failed:", err);
+      return false;
+    }
+  }
+
   /** The same readout as threadTurnSpan, for one turn of the thread: its
-   *  assistant blocks alone. Null when no assistant block carries that turn,
-   *  or the store cannot be read. */
+   *  assistant blocks alone. A sealed turn reads as its seal, also when it
+   *  never got a block. Null when nothing records that turn, or the store
+   *  cannot be read. */
   turnSpan(threadId: string, turnId: string): TurnSpan | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -503,6 +540,22 @@ export class TranscriptRepo {
             last_error: string | null;
           }
         | undefined;
+      // SAFETY: the projection names turn_seals' columns, constrained by its CHECK.
+      const seal = db
+        .prepare(`SELECT state, error, sealed_at FROM turn_seals WHERE thread_id = ? AND turn_id = ?`)
+        .get(threadId, turnId) as
+        | { state: "failed" | "interrupted"; error: string | null; sealed_at: number }
+        | undefined;
+      if (seal) {
+        const sealed: TurnSpan = {
+          startedAt: row?.started_at ?? seal.sealed_at,
+          endedAt: row?.ended_at ?? seal.sealed_at,
+          runningTurns: 0,
+          lastState: seal.state,
+        };
+        if (seal.error) sealed.lastError = seal.error;
+        return sealed;
+      }
       if (!row || row.started_at === null) return null;
       const span: TurnSpan = {
         startedAt: row.started_at,

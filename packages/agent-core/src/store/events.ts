@@ -193,14 +193,19 @@ export class EventIngestRepo {
           this.dbh.durably(db, () => {
             this.dbh.prepare(
               db,
-              `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, at)
-               VALUES (?, ?, 'assistant', ?, 'running', ?)
+              // A turn its session's end already settled starts settled: a
+              // late start does not reopen it.
+              `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, error, at, ended_at)
+               SELECT ?, ?, 'assistant', ?, COALESCE(s.state, 'running'), s.error, ?, s.sealed_at
+                 FROM (SELECT 1) LEFT JOIN turn_seals s ON s.thread_id = ? AND s.turn_id = ?
                ON CONFLICT(block_id) DO NOTHING`,
             ).run(
               assistantBlockId(event.threadId, event.turnId),
               event.threadId,
               event.turnId,
               event.at,
+              event.threadId,
+              event.turnId,
             );
           });
           this.deps.touch(db, event.threadId, event.at);
@@ -306,8 +311,10 @@ export class EventIngestRepo {
             withTransaction(db, () => {
               this.dbh.prepare(
                 db,
+                // A turn its session's end settled keeps that outcome; its
+                // late text still lands, through the items.
                 `UPDATE blocks SET state = 'completed', ended_at = ?
-                 WHERE block_id = ?`,
+                 WHERE block_id = ? AND NOT EXISTS (SELECT 1 FROM turn_seals s WHERE s.thread_id = blocks.thread_id AND s.turn_id = blocks.turn_id)`,
               ).run(event.at, assistantBlockId(event.threadId, event.turnId));
               // A side chat's first turn settling consumes the one-shot
               // `<sidechat_context>` bootstrap — the imported transcript has
@@ -332,7 +339,7 @@ export class EventIngestRepo {
             this.dbh.prepare(
               db,
               `UPDATE blocks SET state = ?, error = ?, ended_at = ?
-               WHERE block_id = ?`,
+               WHERE block_id = ? AND NOT EXISTS (SELECT 1 FROM turn_seals s WHERE s.thread_id = blocks.thread_id AND s.turn_id = blocks.turn_id)`,
             ).run(
               state,
               event.message ?? null,
