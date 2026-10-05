@@ -585,7 +585,7 @@ Still open:
 - The window inside the provider's own send, before it answers. A crash there leaves the row `uncertain`, which now reports the problem instead of replaying the message. Closing the window needs an idempotent provider request.
 - A database copied into the overlay is a snapshot. Codex's writes there do not reach the real home, and a later build does not refresh it.
 - Only `agent_followup` takes a child from before a restart back on. A turn started on it any other way, such as the user typing into it, is not followed live or reported to the parent.
-- A wait pinned to an older turn from the store reads that turn's state, but its summary is still the thread's newest answer.
+- ~~A wait pinned to an older turn from the store reads that turn's state, but its summary is still the thread's newest answer.~~ Fixed for the store path in `125b9b8` (Milo) and for a turn followed live, settle reports included, in `3177eaa` (Sol); both reviewed. A pinned turn reports its own final reply through `turnAssistantText`; one with no reply has no summary, never the newest.
 
 ### Picking this up
 
@@ -610,7 +610,9 @@ Smaller items found along the way:
 - A spawn on an OpenCode model with no variants inherited the caller's effort and was refused ("Variant unavailable"). Fixed for the spawn guard in `7efd124` and `e1d12b2`, reviewed: OpenCode's inventory marks a model it reported with no variants (`reasoningEfforts: []`), unlike one whose variants it did not report, and only the first drops the effort; `AgentService.validEffortFor` still passes such an effort through.
 - A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). Likely closed: no path is left that puts agent mail into the turn queue. Not tested on its own.
 - Tests leave their `mkdtemp` directories in `/tmp`; parallel agent runs filled its quota (about 11k `kone-*` dirs) and broke every shell. They need to clean up.
-- A wait pinned to an older turn reads its state but the thread's newest reply (under "Still open"): assigned, not started, because the MiMo contractor could not spawn until the effort fix is in the running app.
+- ~~An interrupted child's report never woke an idle parent, whoever ended the turn.~~ Fixed in `ce6d3a7`, `3bf4677`, `35b7909` and `986b9d2`, reviewed (go). Milo's turn was ended by the wedge watchdog after five silent minutes of thinking; the stop's abort read as an interrupt, so the report was held and nothing happened until the user spoke. Now the watchdog announces the reset before it stops the session, so the turn is sealed failed and rings. AgentService marks a thread when anyone asks to end its work (`interruptTurn`, `stopSession`, `reject-and-stop`), before the teardown, and clears the mark on the next send or session start, or a microtask after an exit. The spawn engine reads the mark when a session's end seals a turn and keeps `cutOff` only for an end nobody asked for; only such a report rings an idle parent. An adapter's message on an abort is not evidence either way: Cline's "Request cancelled" comes with a Stop.
+- The wedge watchdog cannot tell a model thinking silently, or a long tool call, from a hung session (5 minutes of silence, 30 with an open item). The parent now hears of a reset, but the turn is still lost. Open: count reasoning or heartbeat events as activity, or a longer limit per provider.
+- A watchdog reset of a thread that is not a spawned child still reads interrupted in its own transcript, without the reason: the store does not read `session.state.changed`.
 - Everything under "Still open" above, and the cancel intent kept only in memory (see the retry table).
 
 ## 13. Shipped while this was worked out
