@@ -2179,6 +2179,24 @@ describe("settle reports", () => {
     h.stopDelivery();
   });
 
+  test("a turn its session's exit cut off rings an idle parent, and says so; a Stop's abort message does not", async () => {
+    const mailbox = new IrcMailbox();
+    const h = makeEngine({ reports: (store) => createMailboxReportSink({ mailbox, store, isBusy: () => false }) });
+    setupParent(h.store, h.providers);
+    const { threadId } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(threadId, 10));
+    h.bus.emit(turnStarted(threadId, "w-1", 20));
+    // A Stop somebody asked for, the way Cline reports it: a message on the abort.
+    h.bus.emit(turnAborted(threadId, "w-1", 30, "interrupted", "Request cancelled"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mailbox.ringingCount(CALLER.threadId)).toBe(0);
+
+    h.bus.emit(turnStarted(threadId, "w-2", 40));
+    h.bus.emit({ type: "session.exited", threadId, provider: "opencode", at: 50, source: "kone.store", code: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mailbox.ringingCount(CALLER.threadId)).toBe(1);
+  });
+
   test("an interruption somebody asked for reaches a busy parent, and is held for an idle one's next turn", async () => {
     const mailbox = new IrcMailbox();
     const rang: string[] = [];

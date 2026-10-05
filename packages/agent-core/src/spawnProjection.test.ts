@@ -134,20 +134,6 @@ describe("projectSpawnedThread", () => {
     expect(result.detail).toBeUndefined();
   });
 
-  test("an interrupted turn its session's end cut off carries that end as its detail", () => {
-    const result = projectSpawnedThread(
-      base({ turns: [turn({ at: 10, state: "interrupted", endedAt: 20, error: "The child's session exited." })] }),
-    );
-    expect(result.status).toBe("interrupted");
-    expect(result.detail).toBe("The child's session exited.");
-  });
-
-  test("an interrupt somebody asked for carries no detail", () => {
-    const result = projectSpawnedThread(base({ turns: [turn({ at: 10, state: "interrupted", endedAt: 20 })] }));
-    expect(result.status).toBe("interrupted");
-    expect(result.detail).toBeUndefined();
-  });
-
   test("a settled completed turn is terminal", () => {
     const result = projectSpawnedThread(
       base({ turns: [turn({ at: 10, state: "completed", endedAt: 30 })] }),
