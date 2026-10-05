@@ -2179,7 +2179,7 @@ describe("settle reports", () => {
     h.stopDelivery();
   });
 
-  test("an interruption nobody asked for reaches a busy parent, and is held for an idle one's next turn", async () => {
+  test("an interruption somebody asked for reaches a busy parent, and is held for an idle one's next turn", async () => {
     const mailbox = new IrcMailbox();
     const rang: string[] = [];
     mailbox.onMessageDelivered((recipient) => rang.push(recipient));
