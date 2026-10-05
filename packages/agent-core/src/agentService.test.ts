@@ -522,6 +522,23 @@ describe("AgentService wedge watchdog", () => {
   }, 5_000);
 });
 
+describe("AgentService: an end somebody asked for", () => {
+  test("an interrupt or a stop marks it, before the teardown; a new send or session clears it", async () => {
+    const thread = "t-end-asked";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    expect(service.endWasAsked(thread)).toBe(false);
+    await service.interruptTurn(thread);
+    expect(service.endWasAsked(thread)).toBe(true);
+    await service.sendTurn({ threadId: thread, input: "next" });
+    expect(service.endWasAsked(thread)).toBe(false);
+    await service.stopSession(thread);
+    expect(service.endWasAsked(thread)).toBe(true);
+    codexEmit({ ...base, type: "session.started" });
+    expect(service.endWasAsked(thread)).toBe(false);
+  });
+});
+
 describe("AgentService idle session reaper", () => {
   test("stops an inactive session whose inactivity exceeds the idle threshold", async () => {
     const thread = "t-idle-1";

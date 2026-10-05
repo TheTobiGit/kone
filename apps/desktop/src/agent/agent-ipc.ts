@@ -448,6 +448,7 @@ export function registerAgentIpc(): void {
       mailbox,
       store,
       isBusy: (threadId) => svc.isThreadBusy(threadId),
+      endWasAsked: (threadId) => svc.endWasAsked(threadId),
     }),
     // A follow-up is a job in the child's inbox.
     jobs: mailbox,
