@@ -588,7 +588,7 @@ Still open:
 
 Where the work stands after `c53f440a`, `1311562e`, `acc6dad5`, `ca1f7d10`, `4726a128`, `ad7e79f8` and `63722270`: agent-core passes 2564 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
 
-**`delivery.v2` is no longer a setting: it is the only delivery.** `deliverySettings.ts`, `ircDelivery.ts` and the old direct-send paths for `agent_followup`, `app_send_to_thread` and `agent_message` are deleted. Every message and follow-up goes through the inbox and `inboxDelivery.ts`; a `delivery-settings.json` left in userData is ignored. After the removal agent-core passes 2529 tests (fewer than before because the tests of the old paths went with them), and agent-core and desktop typecheck and Oxlint clean. The removal itself has not had a Codex review.
+**`delivery.v2` is no longer a setting: it is the only delivery.** `deliverySettings.ts`, `ircDelivery.ts` and the old direct-send paths for `agent_followup`, `app_send_to_thread` and `agent_message` are deleted. Every message and follow-up goes through the inbox and `inboxDelivery.ts`; a `delivery-settings.json` left in userData is ignored. After the removal agent-core passes 2529 tests (fewer than before because the tests of the old paths went with them), and agent-core and desktop typecheck and Oxlint clean. The review of the removal (`d7be8964`) found no blocker: the always-on path keeps every behaviour the v2-on path had, and boot wiring keeps its order. One nonblocking gap: `dispatch.test.ts` lost its test for a transcript block written before its inbox row was linked, with no equivalent through `startInboxDelivery`; the derived block id that guards it is still in `dispatch.ts`. `stdioProxy.test.ts` cancellation failed once under a full parallel run and passes alone.
 
 The review at `4d2d42cc` found no blocker. A seal holds across engine disposal and database reopen, migration 28 upgrades a real version-27 database, and the seal and its block settle commit or roll back together. Two nonblocking items remain: a seal whose write fails holds only in memory (`threadSpawn.ts`, `sealTurn`), and a late result appears where it arrived in the transcript. Still to decide: how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
 
@@ -596,13 +596,15 @@ Next, in order:
 1. ~~Review `4c4e4b25..63722270`.~~ Done: go at `4d2d42cc`. That review also covered `5744ecda` (`agent_list` activity).
 2. ~~Make it the default, then delete the old path.~~ Done: the switch and `ircDelivery.ts` are gone.
    **Try it by hand** after `bun run install:desktop`: a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
-   **Have Nadia review the switch removal**, the commit after `ab65bb18`.
+   ~~Have Nadia review the switch removal.~~ Done: no blocker.
 3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
 
 Smaller items found along the way:
 - ~~`agent_list` shows `activity: null` for an agent that is working.~~ Fixed in `5744ecda`, reviewed. Activity came only from a tool call's start, so a call a provider first reports already under way (OpenCode, for one seen running rather than pending) never showed, nor did a target named only by a later update. Every start and update of a tool call now counts, the newest open call shown. Between calls it says the step the turn is on (thinking, writing a reply, updating its plan); with nothing open it stays null. It touches `AgentService.ts` and `agentService.queue.test.ts`, both also in `58c88391..b4090f62`.
 - Cline does not resume a session cleanly; it needs its own ticket.
+- The test lost with the switch: a block journaled before its inbox row was linked, through `startInboxDelivery`.
+- A spawn on an OpenCode model with no variants inherited the caller's effort and was refused ("Variant unavailable"). Fixed in `7efd124` for the spawn guard; `AgentService.validEffortFor` still passes such an effort through.
 - A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). This goes when Phase 5 takes agent messages out of the turn queue.
 - Everything under "Still open" above, and the cancel intent kept only in memory (see the retry table).
 
