@@ -32,9 +32,12 @@ export type SettledTurnReport = {
   /** The child's final reply, already capped, with the pointer to agent_read
    *  when it was cut. */
   summary?: string;
-  /** Why a failed turn failed, or what ended an interrupted turn's session
-   *  under it; an interrupt somebody asked for has none. */
+  /** Why a failed turn failed. */
   detail?: string;
+  /** What ended an interrupted turn's session under it — set only when the
+   *  session's end sealed the turn, never for an interrupt somebody asked for,
+   *  whatever message the provider put on that abort. */
+  cutOff?: string;
   /** The parent's other hand-offs still at work when this one settled. */
   stillOut?: StillOut;
 };
@@ -88,7 +91,7 @@ export function renderSettleReport(report: SettledTurnReport, childName: string,
     lines.push(`${childName}'s turn failed (${where})${report.detail ? `: ${report.detail}` : "."}`);
     if (reply) lines.push("", "Its last reply:", "", quote(reply));
   } else if (report.status === "interrupted") {
-    lines.push(`${childName}'s turn was interrupted before it finished (${where})${report.detail ? `: ${report.detail}` : "."}`);
+    lines.push(`${childName}'s turn was interrupted before it finished (${where})${report.cutOff ? `: ${report.cutOff}` : "."}`);
     if (reply) lines.push("", "Its last reply:", "", quote(reply));
   } else {
     lines.push(`${childName} finished the work you handed it (${where}). Its final reply:`, "", reply ? quote(reply) : "(It ended without a reply.)");
@@ -130,8 +133,8 @@ export interface MailboxReportSinkDeps {
  * user, waking the parent invites it to start the work up again over the
  * user's head. So it reaches a parent that is running, and otherwise is held
  * in its inbox for its next turn. A turn its session's end cut off (an exit,
- * a stop nobody asked for) carries that end as its detail, and rings: nobody
- * else knows the work stopped. Held or not, it is the same stored report,
+ * a stop nobody asked for) is marked `cutOff`, and rings: nobody else knows
+ * the work stopped. Held or not, it is the same stored report,
  * retractable until it is seen.
  */
 export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleReportSink {
@@ -140,7 +143,7 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
       const meta = deps.store.threadMeta?.(report.childThreadId);
       if (!meta) return null;
       const sender = courierReportSender(deps.store, report);
-      const asked = report.status === "interrupted" && !report.detail;
+      const asked = report.status === "interrupted" && !report.cutOff;
       const rings = !(asked && deps.isBusy && !deps.isBusy(report.parentThreadId));
       const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId, rings);
       try {

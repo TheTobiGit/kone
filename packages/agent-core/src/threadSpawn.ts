@@ -1336,6 +1336,11 @@ class SpawnEngineImpl implements SpawnEngine {
     };
     if (turn.summary) report.summary = turn.summary;
     if (turn.detail) report.detail = turn.detail;
+    // Only a seal says the session's end, not a caller, ended the turn: the
+    // abort of an interrupt somebody asked for can carry a message too.
+    if (turn.status === "interrupted" && child.sealed?.has(turnId)) {
+      report.cutOff = child.turns.find((t) => t.turnId === turnId)?.error ?? "Its session ended.";
+    }
     const stillOut = this.stillOut(child.parentThreadId, child.threadId);
     if (stillOut) report.stillOut = stillOut;
     state.reported.set(turnId, sink.deliver(report));

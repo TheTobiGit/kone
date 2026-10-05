@@ -14,9 +14,9 @@ const store = {
     threadId === CHILD ? { parentThreadId: PARENT, relationshipToParent: "delegation", rootThreadId: PARENT } : null,
 } as unknown as IrcToolStore;
 
-function interrupted(turnId: string, detail?: string): SettledTurnReport {
+function interrupted(turnId: string, cutOff?: string): SettledTurnReport {
   const report: SettledTurnReport = { childThreadId: CHILD, parentThreadId: PARENT, turnId, handOff: "contract", status: "interrupted" };
-  if (detail) report.detail = detail;
+  if (cutOff) report.cutOff = cutOff;
   return report;
 }
 
@@ -25,6 +25,15 @@ describe("the report of an interrupted turn, to an idle parent", () => {
     const mailbox = new IrcMailbox();
     const sink = createMailboxReportSink({ mailbox, store, isBusy: () => false });
     expect(sink.deliver(interrupted("t-1"))).not.toBeNull();
+    expect(mailbox.ringingCount(PARENT)).toBe(0);
+  });
+
+  test("an asked-for interrupt whose abort carries a message is still held", () => {
+    const mailbox = new IrcMailbox();
+    const sink = createMailboxReportSink({ mailbox, store, isBusy: () => false });
+    const report = interrupted("t-5");
+    report.detail = "Request cancelled";
+    expect(sink.deliver(report)).not.toBeNull();
     expect(mailbox.ringingCount(PARENT)).toBe(0);
   });
 
