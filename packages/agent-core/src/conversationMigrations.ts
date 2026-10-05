@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1212,6 +1212,22 @@ function migration0027QueuedTurnDurableRowid(db: DatabaseSync): void {
   `);
 }
 
+/** A turn whose outcome was settled by its session ending and reported to a
+ *  parent. The outcome outlives the process, so a late settle for the turn,
+ *  before or after a restart, cannot rewrite what the parent was told. */
+function migration0028TurnSeals(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS turn_seals (
+      thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id   TEXT NOT NULL,
+      state     TEXT NOT NULL CHECK (state IN ('failed', 'interrupted')),
+      error     TEXT,
+      sealed_at INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1240,6 +1256,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 25, name: "InboxUncertain", run: migration0025InboxUncertain },
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
+  { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
 ];
 
 export interface MigrationOptions {
