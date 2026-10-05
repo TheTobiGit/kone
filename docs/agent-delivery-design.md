@@ -540,6 +540,14 @@ The review at `72cff42b` held it back on three remaining findings:
 
 Each new fix has fault-injection tests checked with its source stashed: the child tests fail on the old revival rules, and the queue tests fail on reused ids and the cached boundary.
 
+The review at `089db2d9` held it back on one more:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| A real restart revived the turn the old session died under. A turn running when its session failed, stopped or exited stayed running under the dead session, so once a follow-up started a new session the child read working after its new turn completed, an unpinned wait timed out, and the new turn was never reported | A session's end settles the turns it was running: failed for an error, interrupted for a stop or an exit, which is how such a turn already read while the session was down. It is reported to the parent once, and a later session's turns never reopen it; a duplicate start for it is ignored. A turn taken but never started still settles failed on an exit, as before | `ca1f7d10` |
+
+Its test drives each of error, stop and exit under a running turn, then a follow-up on a new session to completion. It fails with the fix stashed.
+
 What retries what, and when it stops:
 
 | Write or send | Retried | Stops |
@@ -560,12 +568,12 @@ Still open:
 
 ### Picking this up
 
-Where the work stands after `c53f440a`, `1311562e` and `acc6dad5`: agent-core passes 2555 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
+Where the work stands after `c53f440a`, `1311562e`, `acc6dad5` and `ca1f7d10`: agent-core passes 2558 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
 
-**`delivery.v2` is not yet cleared to turn on.** The review at `72cff42b` held it back on stale activity, stale lifecycle events reviving ended children, and queue rowids being reused after reopen. Those fixes are now local and need re-review. The complete-read-outage cutoff limitation above remains explicit.
+**`delivery.v2` is not yet cleared to turn on.** The review at `089db2d9` cleared the fixes for stale activity, stale lifecycle events and reused queue rowids. It held delivery back on one finding: a restart revived the turn the old session died under. That fix, `ca1f7d10`, is local and needs re-review. The complete-read-outage cutoff limitation above remains explicit.
 
 Next, in order:
-1. **Review `72cff42b..acc6dad5`.** Use fault injection against the real store as well as the regression tests. Check stopped/exited children followed by older `ready` or duplicate starts, and a pending Stop retry followed by deleting the highest row, reopening and inserting through another store. Verify that recoverable adapter errors are warnings; terminal errors require a session start or a known new turn to revive. Decide how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
+1. **Review `089db2d9..ca1f7d10`.** Run a child turn, then error, stop or exit with no `turn.aborted`, then a follow-up on a new session to completion. The child should end, an unpinned wait should return, and each turn should reach the parent once. Look hard at a late `turn.completed` or `turn.aborted` for a turn the session end already settled. It still overwrites the turn's state. No test covers whether that changes what the parent was told. Still to decide: how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
 2. **If that review clears it, try `delivery.v2` by hand.** Set `{"v2": true}` in `delivery-settings.json` in the app's userData directory; it is read once at boot. Exercise a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
 3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
