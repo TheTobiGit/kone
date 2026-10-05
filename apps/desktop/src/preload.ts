@@ -572,8 +572,8 @@ const api = {
       ipcRenderer.invoke("agent:steer-turn", input),
     // Interrupt now: end the turn a steer is waiting on without waiting for
     // its tool call to finish.
-    interruptStepWaitNow: (threadId: string): Promise<boolean> =>
-      ipcRenderer.invoke("agent:steer-interrupt-now", threadId),
+    interruptStepWaitNow: (threadId: string, waitId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:steer-interrupt-now", threadId, waitId),
     // Pre-turn repository snapshots for a thread (oldest first); the preview
     // names what restoring one would change; the revert restores it — refusing
     // with `dirty` plus the exact file lists unless `force` confirms them.
