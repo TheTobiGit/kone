@@ -1006,6 +1006,10 @@ export type TurnStartResult = {
 /** A kone steer wait: the running turn ends once its open tool calls finish,
  *  so the steer goes next. */
 export type StepWait = {
+  /** This wait: Interrupt now names it, so it ends no other. */
+  id: string;
+  /** The turn it ends. */
+  turnId: string;
   from: "user" | "agent";
   /** The tool call it waits on, by name and target. */
   tool: { name: string; text: string } | null;
@@ -3075,7 +3079,7 @@ export type KoneAgentApi = {
   /** Interrupt now: end the turn a steer is waiting on without waiting for
    *  its tool call. False when nothing waits, or the thread is parked on the
    *  user. */
-  interruptStepWaitNow: (threadId: string) => Promise<boolean>;
+  interruptStepWaitNow: (threadId: string, waitId: string) => Promise<boolean>;
   /** Every pre-turn repository snapshot recorded for a thread, oldest first —
    *  what the timeline reads to offer a per-turn restore. */
   turnCheckpoints: (threadId: string) => Promise<TurnCheckpointRecord[]>;

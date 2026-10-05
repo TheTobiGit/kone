@@ -3,6 +3,8 @@ import type { StepWait } from "~/types/desktop";
 import { STEER_WAIT_OFFER_MS, steerWaitLabel, steerWaitOffered } from "./steerWait";
 
 const wait = (over: Partial<StepWait> = {}): StepWait => ({
+  id: "w-1",
+  turnId: "turn-1",
   from: "user",
   tool: { name: "Bash", text: "bun test" },
   since: 1_000,
