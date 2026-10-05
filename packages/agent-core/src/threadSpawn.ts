@@ -522,6 +522,10 @@ export type TrackedChild = {
   awaitingTurn?: { turnId: string; at: number };
   /** How and when the child's session last ended or failed, by its event. */
   sessionEnd?: SessionEnd;
+  /** Turns a session's end settled, running or not yet started. That
+   *  settlement is what the parent was told, so a late event for one of
+   *  them changes nothing. */
+  sealed?: Set<string>;
 };
 
 /** Does `event` end the wait for the turn the provider took? An event for
@@ -1098,9 +1102,11 @@ class SpawnEngineImpl implements SpawnEngine {
         child.gate = null;
         break;
       case "turn.completed":
+        if (child.sealed?.has(event.turnId)) return;
         this.settleTurn(child, event.turnId, "completed", event.at);
         break;
       case "turn.aborted":
+        if (child.sealed?.has(event.turnId)) return;
         this.settleTurn(child, event.turnId, event.reason, event.at, event.message);
         break;
       case "approval.requested":
@@ -1164,6 +1170,7 @@ class SpawnEngineImpl implements SpawnEngine {
       // The session went before the turn could start: the turn ends with it,
       // and is reported like any other.
       this.settleTurn(child, turnId, end.state, end.at, `${end.error} Its turn never started.`);
+      (child.sealed ??= new Set()).add(turnId);
       this.recompute(child);
       this.scheduleReport(child);
       return;
@@ -1189,10 +1196,13 @@ class SpawnEngineImpl implements SpawnEngine {
     // A turn the session was running ends with it, for good: a later session
     // starts turns of its own and never brings this one back.
     for (const turn of child.turns) {
-      if (turn.state === "running") this.settleTurn(child, turn.turnId, end.running, end.at, end.error);
+      if (turn.state !== "running") continue;
+      this.settleTurn(child, turn.turnId, end.running, end.at, end.error);
+      (child.sealed ??= new Set()).add(turn.turnId);
     }
     if (awaiting && !child.turns.some((t) => t.turnId === awaiting.turnId)) {
       this.settleTurn(child, awaiting.turnId, end.state, end.at, `${end.error} Its turn never started.`);
+      (child.sealed ??= new Set()).add(awaiting.turnId);
     } else if (child.turns.length === 0) {
       this.settleTurn(child, "<session-exited>", end.state, end.at, `${end.error} Its first turn never started.`);
     }
