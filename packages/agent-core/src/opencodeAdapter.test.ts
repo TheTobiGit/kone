@@ -800,6 +800,95 @@ describe("OpenCode tool status ladder", () => {
 // The registration rides beside session creation (not after it), so this pins
 // the contract that survived the parallelization: one POST /mcp carrying the
 // thread's bearer token, and a working session.
+describe("OpenCode question reply the provider never received", () => {
+  const THREAD = "question-thread";
+  const originalFetch = globalThis.fetch;
+  let adapterModule: OpenCodeAdapterModule;
+  let pushFrame: ((frame: RecordLike) => void) | null = null;
+
+  beforeAll(async () => {
+    adapterModule = await loadOpenCodeAdapterWithStubbedServer();
+  });
+
+  beforeEach(() => {
+    pushFrame = null;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const route = String(input).replace(/^https?:\/\/[^/]+/, "");
+      const method = init?.method ?? "GET";
+      if (method === "GET" && route === "/event") {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder();
+              pushFrame = (frame) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (method === "POST" && route === "/session") {
+        return new Response(JSON.stringify({ data: { id: "ses_1" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (route.startsWith("/session/ses_1/")) {
+        return new Response(JSON.stringify({ data: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // The reply POST, and anything else: the server cannot take it.
+      return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("is a warning: the session and its turn go on", async () => {
+    const events: RuntimeEvent[] = [];
+    const adapter = new adapterModule.OpenCodeAdapter((event) => events.push(event));
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "opencode",
+      cwd: "/tmp/kone-test-project",
+      model: "opencode-go/deepseek-v4-flash",
+    });
+    await adapter.sendTurn({ threadId: THREAD, provider: "opencode", input: "hello" });
+    const wired = Date.now() + 1_000;
+    while (!pushFrame && Date.now() < wired) await new Promise((resolve) => setTimeout(resolve, 2));
+    if (!pushFrame) throw new Error("event stream never opened");
+
+    pushFrame({
+      type: "question.asked",
+      properties: {
+        sessionID: "ses_1",
+        id: "que_1",
+        questions: [{ question: "Proceed?", header: "Go", options: [{ label: "Yes" }] }],
+      },
+    });
+    const asked = Date.now() + 1_000;
+    while (ofType(events, "user-input.requested").length === 0 && Date.now() < asked) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    const request = ofType(events, "user-input.requested")[0];
+    if (!request) throw new Error("question never parked");
+    const questionId = request.questions[0]?.id ?? "";
+
+    await adapter.respondToUserInput(THREAD, request.requestId, { [questionId]: "Yes" });
+    const failed = Date.now() + 1_000;
+    while (ofType(events, "session.warning").length === 0 && Date.now() < failed) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+
+    expect(ofType(events, "session.warning")[0]?.message).toContain("question reply que_1 failed");
+    expect(ofType(events, "session.state.changed").filter((e) => e.state === "error")).toHaveLength(0);
+    await adapter.stopAll();
+  });
+});
+
 describe("OpenCode gateway MCP registration", () => {
   const THREAD = "mcp-thread";
   const originalFetch = globalThis.fetch;

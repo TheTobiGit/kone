@@ -1646,6 +1646,8 @@ export type BaseEvent = {
 
 export type RuntimeEvent =
   | (BaseEvent & { type: "session.started" })
+  // `error` and `stopped` say the session is gone or cannot go on: its turn
+  // is over. A failure the session survives is a `session.warning`.
   | (BaseEvent & { type: "session.state.changed"; state: RuntimeSessionState; message?: string })
   // Non-fatal: the session is degraded or retrying but continues. Distinct from
   // `session.state.changed state:"error"` — consumers must NOT flip the thread

@@ -2308,6 +2308,38 @@ describe("the turn a follow-up started", () => {
     h.stopDelivery();
   });
 
+  test("a session that failed and came back before the send returned does not fail the turn", async () => {
+    const h = makeReportEngine();
+    const child = childFromBeforeRestart(h);
+    h.dispatcher.emitBeforeSent = (threadId) => {
+      h.bus.emit(sessionState(threadId, "error", Date.now()));
+      h.bus.emit({ type: "session.state.changed", threadId, provider: "opencode", at: Date.now(), source: "kone.store", state: "ready" });
+    };
+
+    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
+
+    h.bus.emit(turnStarted(child, turnId, Date.now()));
+    h.bus.emit(turnCompleted(child, turnId, Date.now()));
+    await h.flush();
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "completed", terminal: true });
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.input).toContain(`turn ${turnId}`);
+    h.stopDelivery();
+  });
+
+  test("a turn that starts after a session error runs on a live session", async () => {
+    const h = makeReportEngine();
+    const child = await delegate(h);
+    h.bus.emit(turnCompleted(child, "t-1", 30));
+    h.bus.emit(sessionState(child, "error", 31));
+
+    h.bus.emit(turnStarted(child, "t-2", 40));
+
+    expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
+    h.stopDelivery();
+  });
+
   test("an event for another turn does not end it", async () => {
     const h = makeEngine();
     const child = childFromBeforeRestart(h);
