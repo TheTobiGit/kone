@@ -88,7 +88,7 @@ describe("OpenCode pure translation helpers", () => {
     ].join("\n");
     expect(parseOpenCodeModels(output)).toEqual([
       { id: "opencode-go/deepseek-v4-flash", label: "DeepSeek V4 Flash", reasoningEfforts: ["high", "max"], defaultReasoningEffort: "high" },
-      { id: "opencode/no-variants", label: "No Variants" },
+      { id: "opencode/no-variants", label: "No Variants", reasoningEfforts: [] },
     ]);
   });
 
@@ -145,6 +145,19 @@ describe("OpenCode pure translation helpers", () => {
       { id: "opencode/gpt-6-sol", label: "GPT-6 Sol", contextWindowTokens: 1050000, reasoningEfforts: ["high", "max"], defaultReasoningEffort: "high" },
     ]);
     expect(parseOpenCodeModelListApi("not json")).toEqual([]);
+  });
+
+  test("tells a model with no variants from one whose variants were not reported", () => {
+    const stdout = JSON.stringify({
+      data: [
+        { providerID: "opencode-go", modelID: "mimo-v2.6-pro", name: "MiMo-V2.6-Pro", variants: [] },
+        { providerID: "opencode", modelID: "silent", name: "Silent" },
+      ],
+    });
+    expect(parseOpenCodeModelListApi(stdout)).toEqual([
+      { id: "opencode-go/mimo-v2.6-pro", label: "MiMo-V2.6-Pro", reasoningEfforts: [] },
+      { id: "opencode/silent", label: "Silent" },
+    ]);
   });
 
   test("reconciles snapshot-then-delta and delta-then-snapshot without duplication", () => {

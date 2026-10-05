@@ -175,7 +175,7 @@ describe("checkSpawn", () => {
   });
 
   test("an OpenCode model with no variants drops an inherited effort", () => {
-    const catalog = [{ id: "opencode-go/mimo-v2.6-pro", label: "MiMo-V2.6-Pro" }];
+    const catalog = [{ id: "opencode-go/mimo-v2.6-pro", label: "MiMo-V2.6-Pro", reasoningEfforts: [] }];
     const result = checkSpawn(
       base({
         target: { provider: "opencode", model: "opencode-go/mimo-v2.6-pro" },
@@ -189,6 +189,18 @@ describe("checkSpawn", () => {
       expect(result.adjustments).toEqual([
         { field: "effort", requested: "medium", applied: null, reason: expect.any(String) },
       ]);
+    }
+  });
+
+  test("an OpenCode model whose variants were not reported keeps its effort", () => {
+    const catalog = [{ id: "opencode/gpt-6-sol", label: "opencode/gpt-6-sol" }];
+    const result = checkSpawn(
+      base({ target: { provider: "opencode", model: "opencode/gpt-6-sol" }, parentEffort: "high", catalog }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.effort).toBe("high");
+      expect(result.adjustments).toEqual([]);
     }
   });
 

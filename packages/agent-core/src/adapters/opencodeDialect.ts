@@ -81,7 +81,9 @@ export function permissionRulesV2(mode: InteractionMode): RecordLike[] {
 }
 
 /** Shared descriptor builder for both model inventories: one place defines
- *  the label/context/efforts/default-effort block. */
+ *  the label/context/efforts/default-effort block. `variantIds` left out means
+ *  the inventory did not say; an empty list means the model has none, which
+ *  the spawn guard needs to know, since OpenCode refuses any variant then. */
 export function modelDescriptor(input: {
   providerId: string;
   modelId: string;
@@ -93,14 +95,14 @@ export function modelDescriptor(input: {
   const modelId = input.modelId.trim();
   const name = input.name.trim();
   if (!providerId || !modelId || !name) return undefined;
-  const variants = input.variantIds?.map((v) => v.trim()).filter(Boolean) ?? [];
+  const variants = input.variantIds?.map((v) => v.trim()).filter(Boolean);
   const ctx = input.context;
   const contextWindowTokens = jsonNumber(ctx) && ctx > 0 ? ctx : undefined;
   const descriptor: ModelDescriptor = { id: `${providerId}/${modelId}`, label: name };
   if (contextWindowTokens !== undefined) descriptor.contextWindowTokens = contextWindowTokens;
-  if (variants.length) descriptor.reasoningEfforts = variants;
-  if (variants.includes("medium")) descriptor.defaultReasoningEffort = "medium";
-  else if (variants.includes("high")) descriptor.defaultReasoningEffort = "high";
+  if (variants) descriptor.reasoningEfforts = variants;
+  if (variants?.includes("medium")) descriptor.defaultReasoningEffort = "medium";
+  else if (variants?.includes("high")) descriptor.defaultReasoningEffort = "high";
   return descriptor;
 }
 
@@ -126,7 +128,7 @@ export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
       const modelId = textField(model.id)?.trim() ?? "";
       const id = providerId && modelId ? `${providerId}/${modelId}` : slug;
       const variants = record(model.variants);
-      const efforts = variants ? Object.keys(variants) : [];
+      const efforts = variants ? Object.keys(variants) : undefined;
       // The slug always carries provider/model (SLUG_LINE matched), so the
       // descriptor below is defined whenever a name is present.
       const descriptor = modelDescriptor({
@@ -185,7 +187,7 @@ function descriptorsFromModelInfos(entries: OpenCodeJsonValue[]): ModelDescripto
           const vid = textField(record(v)?.id)?.trim();
           return vid ? [vid] : [];
         })
-      : [];
+      : undefined;
     const descriptor = modelDescriptor({
       providerId: textField(model.providerID) ?? "",
       modelId: textField(model.modelID) ?? "",
