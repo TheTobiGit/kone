@@ -19,10 +19,9 @@ function running(turnId: string): AssistantBlock {
 
 function harness(bridge: SteerWaitBridge | null) {
   const blocks = ref<ThreadBlock[]>([running("turn-1")]);
-  const busy = ref(true);
   const error = ref<string | null>(null);
-  const unit = useSessionSteerWait({ threadId: ref("t-1"), blocks, busy, error, bridge: () => bridge });
-  return { unit, blocks, busy, error };
+  const unit = useSessionSteerWait({ threadId: ref("t-1"), blocks, error, bridge: () => bridge });
+  return { unit, blocks, error };
 }
 
 describe("the steer wait", () => {
@@ -35,18 +34,27 @@ describe("the steer wait", () => {
   // Review finding 4: the reply can come back after the turn it waited on
   // ended, which already cleared the pill.
   test("a reply that comes back after its turn ended raises nothing", async () => {
-    const { unit, blocks, busy } = harness(null);
+    const { unit, blocks } = harness(null);
     blocks.value = [{ ...running("turn-1"), state: "interrupted" }];
-    busy.value = false;
     await nextTick();
     unit.offer(wait());
     expect(unit.steerWait.value).toBeNull();
   });
 
   test("it goes with the turn", async () => {
-    const { unit, busy } = harness(null);
+    const { unit, blocks } = harness(null);
     unit.offer(wait());
-    busy.value = false;
+    blocks.value = [{ ...running("turn-1"), state: "interrupted" }];
+    await nextTick();
+    expect(unit.steerWait.value).toBeNull();
+  });
+
+  // Re-review finding 2: the thread stays busy when the next turn starts at
+  // once — the steer the cut was for — so busy alone never clears the pill.
+  test("it goes when its turn ends and the next starts at once", async () => {
+    const { unit, blocks } = harness(null);
+    unit.offer(wait());
+    blocks.value = [{ ...running("turn-1"), state: "interrupted" }, running("turn-2")];
     await nextTick();
     expect(unit.steerWait.value).toBeNull();
   });

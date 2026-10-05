@@ -1,4 +1,4 @@
-import { shallowRef, watch, type Ref } from "vue";
+import { shallowRef, watchEffect, type Ref } from "vue";
 import type { StepWait } from "~/types/desktop";
 import type { ThreadBlock } from "~/composables/agentTypes";
 import { peelIpcError } from "~/utils/ipcError";
@@ -17,7 +17,6 @@ export type SteerWaitBridge = {
 export type SessionSteerWaitDeps = {
   threadId: Ref<string>;
   blocks: Ref<ThreadBlock[]>;
-  busy: Ref<boolean>;
   error: Ref<string | null>;
   bridge: () => SteerWaitBridge | null;
 };
@@ -29,9 +28,11 @@ export function steerWaitTurnRunning(wait: StepWait, blocks: readonly ThreadBloc
 
 export function useSessionSteerWait(deps: SessionSteerWaitDeps) {
   const steerWait = shallowRef<StepWait | null>(null);
-  // Gone with the turn.
-  watch(deps.busy, (on) => {
-    if (!on) steerWait.value = null;
+  // Gone with its own turn, even when another starts at once and the thread
+  // never reads idle in between.
+  watchEffect(() => {
+    const wait = steerWait.value;
+    if (wait && !steerWaitTurnRunning(wait, deps.blocks.value)) steerWait.value = null;
   });
 
   /** A steer's reply named a wait. One whose turn has already ended — the

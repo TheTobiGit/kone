@@ -328,7 +328,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const queueReturn = queue.queueReturn;
   // The user's steer kone steer is holding until the running tool call
   // finishes: what the pill above the composer reads to offer Interrupt now.
-  const steerWaits = useSessionSteerWait({ threadId, blocks, busy, error, bridge: ctx.bridge });
+  const steerWaits = useSessionSteerWait({ threadId, blocks, error, bridge: ctx.bridge });
   const steerWait = steerWaits.steerWait;
   const anchorFor = queue.anchorFor;
   const seedQueuedTurns = queue.seedQueuedTurns;
