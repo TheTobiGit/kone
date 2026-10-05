@@ -1082,7 +1082,11 @@ class SpawnEngineImpl implements SpawnEngine {
     if (awaiting && endsAwaiting(event, awaiting.turnId)) delete child.awaitingTurn;
     switch (event.type) {
       case "turn.started":
-        // A turn runs on a live session, whatever was said of it before.
+        // An old start can arrive after the session ended. Only the turn
+        // accepted since that end can establish new life without a start
+        // announcement for the session itself.
+        if (child.sessionEnd && awaiting?.turnId !== event.turnId) return;
+        if (child.turns.some((turn) => turn.turnId === event.turnId)) return;
         this.reviveSession(child);
         child.turns.push({ turnId: event.turnId, state: "running", at: event.at });
         child.gate = null;
@@ -1117,10 +1121,7 @@ class SpawnEngineImpl implements SpawnEngine {
         this.reviveSession(child);
         break;
       case "session.state.changed":
-        if (!endsSession(event)) {
-          this.reviveSession(child);
-          break;
-        }
+        if (!endsSession(event)) break;
         this.endSession(child, awaiting, {
           at: event.at,
           state: event.state === "error" ? "failed" : "interrupted",
