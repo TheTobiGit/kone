@@ -537,6 +537,29 @@ describe("AgentService: an end somebody asked for", () => {
     codexEmit({ ...base, type: "session.started" });
     expect(service.endWasAsked(thread)).toBe(false);
   });
+
+  test("reject-and-stop marks it, since the adapter ends the turn itself", async () => {
+    const thread = "t-end-asked-reject";
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    await service.respondToRequest(thread, "req-1", "reject-and-stop");
+    expect(service.endWasAsked(thread)).toBe(true);
+  });
+
+  test("an exit takes the mark with it, once its listeners have read it", async () => {
+    const thread = "t-end-asked-exit";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    await service.interruptTurn(thread);
+    let seen: boolean | null = null;
+    const off = service.onEvent((e) => {
+      if (e.threadId === thread && e.type === "session.exited") seen = service.endWasAsked(thread);
+    });
+    codexEmit({ ...base, type: "session.exited", code: null });
+    off?.();
+    expect(seen).toBe(true);
+    await Promise.resolve();
+    expect(service.endWasAsked(thread)).toBe(false);
+  });
 });
 
 describe("AgentService idle session reaper", () => {

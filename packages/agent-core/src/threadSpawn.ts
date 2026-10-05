@@ -165,6 +165,10 @@ export interface SpawnEngineProviders {
    *  Antigravity children an ACP transport could serve. Optional — absentees
    *  keep the conservative floor. */
   isAntigravityAcpAvailable?(): boolean;
+  /** Did somebody ask to end the thread's work (an interrupt or a stop) since
+   *  its last send or session start? Read when a session's end seals a turn:
+   *  a seal says how the turn ended, not who wanted it ended. */
+  endWasAsked?(threadId: string): boolean;
   /** Answer a parked approval on a child thread with a rejection — the ONLY
    *  decision the spawn engine ever sends: decline the proposed action so the
    *  child tries an alternative (reject-once), or decline and stop its turn
@@ -532,6 +536,9 @@ export type TrackedChild = {
    *  settlement is what the parent was told, so a late event for one of
    *  them changes nothing. */
   sealed?: Set<string>;
+  /** Interrupted turns a session's end cut off that nobody asked to end, with
+   *  what ended it — taken at the seal, so a report sent later still knows. */
+  cutOff?: Map<string, string>;
 };
 
 /** Does `event` end the wait for the turn the provider took? An event for
@@ -1201,14 +1208,20 @@ class SpawnEngineImpl implements SpawnEngine {
   private endSession(child: TrackedChild, awaiting: TrackedChild["awaitingTurn"], end: SessionEnd): void {
     child.hasLiveSession = false;
     child.sessionEnd = end;
+    const unasked = !(this.providers.endWasAsked?.(child.threadId) ?? false);
+    const cutOff = (turnId: string, state: "failed" | "interrupted", error: string): void => {
+      if (state === "interrupted" && unasked) (child.cutOff ??= new Map()).set(turnId, error);
+    };
     // A turn the session was running ends with it, for good: a later session
     // starts turns of its own and never brings this one back.
     for (const turn of child.turns) {
       if (turn.state !== "running") continue;
       this.sealTurn(child, turn.turnId, end.running, end.at, end.error);
+      cutOff(turn.turnId, end.running, end.error);
     }
     if (awaiting && !child.turns.some((t) => t.turnId === awaiting.turnId)) {
       this.sealTurn(child, awaiting.turnId, end.state, end.at, `${end.error} Its turn never started.`);
+      cutOff(awaiting.turnId, end.state, `${end.error} Its turn never started.`);
     } else if (child.turns.length === 0) {
       this.settleTurn(child, "<session-exited>", end.state, end.at, `${end.error} Its first turn never started.`);
     }
@@ -1336,11 +1349,11 @@ class SpawnEngineImpl implements SpawnEngine {
     };
     if (turn.summary) report.summary = turn.summary;
     if (turn.detail) report.detail = turn.detail;
-    // Only a seal says the session's end, not a caller, ended the turn: the
-    // abort of an interrupt somebody asked for can carry a message too.
-    if (turn.status === "interrupted" && child.sealed?.has(turnId)) {
-      report.cutOff = child.turns.find((t) => t.turnId === turnId)?.error ?? "Its session ended.";
-    }
+    // Only a seal nobody asked for says the session's end cut the turn off:
+    // the abort of an interrupt somebody asked for can carry a message too,
+    // and a stop can arrive as a bare exit.
+    const cutOff = turn.status === "interrupted" ? child.cutOff?.get(turnId) : undefined;
+    if (cutOff) report.cutOff = cutOff;
     const stillOut = this.stillOut(child.parentThreadId, child.threadId);
     if (stillOut) report.stillOut = stillOut;
     state.reported.set(turnId, sink.deliver(report));

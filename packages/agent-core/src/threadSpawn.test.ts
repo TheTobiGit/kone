@@ -263,6 +263,12 @@ class FakeProviders implements SpawnEngineProviders {
   /** Thread ids with a live session, for untracked children the engine has no
    *  memory of (a follow-up consults this before waking one). */
   readonly liveSessions = new Set<string>();
+  /** Threads somebody asked to end, as AgentService would answer. */
+  readonly endAsked = new Set<string>();
+
+  endWasAsked(threadId: string): boolean {
+    return this.endAsked.has(threadId);
+  }
 
   cachedSurface() {
     return { statuses: this.statuses, models: this.models };
@@ -2195,6 +2201,23 @@ describe("settle reports", () => {
     h.bus.emit({ type: "session.exited", threadId, provider: "opencode", at: 50, source: "kone.store", code: 1 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mailbox.ringingCount(CALLER.threadId)).toBe(1);
+  });
+
+  test("a stop somebody asked for that lands as a bare exit stays quiet, though the mark is gone by the report", async () => {
+    const mailbox = new IrcMailbox();
+    const h = makeEngine({ reports: (store) => createMailboxReportSink({ mailbox, store, isBusy: () => false }) });
+    setupParent(h.store, h.providers);
+    const { threadId } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(threadId, 10));
+    h.bus.emit(turnStarted(threadId, "w-1", 20));
+    // Antigravity Print stopped before its process came up: no abort, only the exit.
+    h.providers.endAsked.add(threadId);
+    h.bus.emit({ type: "session.exited", threadId, provider: "opencode", at: 30, source: "kone.store", code: null });
+    // Cleared before the report goes, as a restart or the exit itself would.
+    h.providers.endAsked.delete(threadId);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mailbox.ringingCount(CALLER.threadId)).toBe(0);
+    expect(mailbox.claimHeld(CALLER.threadId, 8)?.messages).toHaveLength(1);
   });
 
   test("an interruption somebody asked for reaches a busy parent, and is held for an idle one's next turn", async () => {
