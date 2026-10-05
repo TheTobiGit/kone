@@ -38,7 +38,6 @@ import type {
 } from "./types.js";
 import { turnLabel } from "./types.js";
 import { getIrcMailbox, type IrcMailbox } from "./gateway/tools/irc.js";
-import { IRC_DELIVERY_BATCH_MAX, renderIncoming } from "./ircDelivery.js";
 import {
   describeCopiedFiles,
   freshenBase,
@@ -84,10 +83,6 @@ export interface ThreadDispatcherDeps {
   /** The inbox kone's notices are kept in until a turn carries them. Absent,
    *  the app's mailbox, resolved when first needed. */
   mailbox?: IrcMailbox;
-  /** The service's turn slot carries what waits in the inbox (the ringer), so
-   *  a send here claims nothing held: a send that ends up queued would
-   *  otherwise settle it before the turn that carries it has run. */
-  inboxRidesTurnSlot?: boolean;
 }
 
 export interface StartThreadOptions {
@@ -308,7 +303,6 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  a worktree nobody asked for, owned by a thread that never started. */
   private readonly cancelledWorkspaces = new Set<string>();
   private readonly mailboxDep: IrcMailbox | undefined;
-  private readonly inboxRidesTurnSlot: boolean;
 
   // Threads whose live provider session came up with none of the thread's
   // context — no stored resume id to offer, or the provider refused the one we
@@ -336,7 +330,6 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.store = deps.store;
     this.broadcast = deps.broadcast;
     this.mailboxDep = deps.mailbox;
-    this.inboxRidesTurnSlot = deps.inboxRidesTurnSlot ?? false;
     this.provisionWorkspace = deps.provisionWorkspace;
     this.releaseWorkspace = deps.releaseWorkspace;
     this.freshenWorkspaceBase = deps.freshenWorkspaceBase;
@@ -685,50 +678,21 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // The replay is read before anything below is journaled, so the digest
     // ends at the last thing the agent actually saw.
     const replay = this.takeReplay(named.threadId);
-    // Then what was held for this turn: claimed now, written to the
-    // transcript above the turn's own words, and seen only once the provider
-    // takes the turn.
-    const held = this.inboxRidesTurnSlot ? null : this.claimHeld(named.threadId);
-    // Accepted: the held messages were in it, settled the moment the provider
-    // took it. Refused: they were not, so they wait for the next turn, their
-    // blocks kept so nothing is written twice.
+    // What waits in the inbox is carried by the service's turn slot, not
+    // here: a send that ends up queued would otherwise settle it before the
+    // turn that carries it has run.
     let accepted = false;
     const onAccepted = (turnId: string): void => {
       if (accepted) return;
       accepted = true;
-      if (held) this.mailbox().settleDelivery(held.deliveryId, turnId);
       options?.onAccepted?.(turnId);
     };
-    const onSending = (): void => {
-      if (held) this.mailbox().sendingDelivery(held.deliveryId);
-      options?.onSending?.();
-    };
-    try {
-      const input = held ? withBlocks(named, held.blockIds, options?.silent === true) : named;
-      const started = this.dispatchComposed(
-        input,
-        destination,
-        [replay, held?.text].filter((part): part is string => Boolean(part)).join("\n\n") || null,
-        { ...options, onAccepted, onSending },
-      );
-      return (async (): Promise<TurnStartResult> => {
-        let result: TurnStartResult;
-        try {
-          result = await started;
-        } catch (error) {
-          if (held && !accepted) this.mailbox().releaseDelivery(held.deliveryId);
-          throw error;
-        }
-        // A queued turn has no provider yet, but its row now carries the held
-        // messages durably: they are settled to it, as before.
-        if (!result.queued) onAccepted(result.turnId);
-        else if (held) this.mailbox().settleDelivery(held.deliveryId, result.turnId);
-        return result;
-      })();
-    } catch (error) {
-      if (held) this.mailbox().releaseDelivery(held.deliveryId);
-      throw error;
-    }
+    const started = this.dispatchComposed(named, destination, replay, { ...options, onAccepted });
+    return (async (): Promise<TurnStartResult> => {
+      const result = await started;
+      if (!result.queued) onAccepted(result.turnId);
+      return result;
+    })();
   }
 
   /** Journal a turn whose preamble is settled, and hand it to the service. */
@@ -825,28 +789,6 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
 
   private mailbox(): IrcMailbox {
     return this.mailboxDep ?? getIrcMailbox();
-  }
-
-  /** Claim what is held for a thread's next turn, write each message to the
-   *  transcript under its sender (once: a message released by a refused turn
-   *  keeps the block it was written as), and render the lot for the turn's
-   *  preamble. Null when nothing is held. */
-  private claimHeld(threadId: string): { deliveryId: string; text: string; blockIds: string[] } | null {
-    const mailbox = this.mailbox();
-    const claim = mailbox.claimHeld(threadId, IRC_DELIVERY_BATCH_MAX);
-    if (!claim) return null;
-    for (const message of claim.messages) {
-      if (message.blockId || !message.sender) continue;
-      const blockId = this.recordAgentMessage({ threadId, text: message.message, sender: message.sender, inboxId: message.id });
-      if (!blockId) continue;
-      message.blockId = blockId;
-      mailbox.setBlockId(message.id, blockId);
-    }
-    return {
-      deliveryId: claim.deliveryId,
-      text: renderIncoming(claim.messages, mailbox.heldCount(threadId)),
-      blockIds: claim.messages.flatMap((m) => (m.blockId ? [m.blockId] : [])),
-    };
   }
 
   recordAgentMessage(input: {
@@ -1344,19 +1286,4 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const thread = this.store.loadThread(threadId);
     return thread ? buildResumeContext(thread) : null;
   }
-}
-
-/** The turn, naming the held blocks it carries in front of its own. A steer
- *  moves only the blocks it names to where it landed, so the held messages
- *  move with the words they were carried in front of. */
-function withBlocks(input: SendTurnInput, held: readonly string[], silent: boolean): SendTurnInput {
-  if (held.length === 0) return input;
-  // A turn that journals its own words needs its own block id now: unnamed,
-  // it would take the last held block's, and be written over it.
-  const ownId = input.userBlockId ?? (silent ? undefined : randomUUID());
-  const own = input.userBlockIds ?? (ownId ? [ownId] : []);
-  const all = [...held, ...own];
-  const named: SendTurnInput = { ...input, userBlockId: all[all.length - 1] };
-  if (all.length > 1) named.userBlockIds = all;
-  return named;
 }

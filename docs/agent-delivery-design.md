@@ -398,8 +398,8 @@ Each phase ships on its own and leaves the app working and tested.
 | 1 | The stored inbox, behind today's mailbox | Done (`0097c1fc`) |
 | 2 | An honest `agent_list` and a readable `agent_inbox` | Done (`7e6c89ee`) |
 | 3a | kone's notices move into the inbox | Done (`99359d70`) |
-| 3b | One ringer | Built (`1d47a55e`), behind `delivery.v2`, off by default |
-| 4 | Jobs: `agent_followup` and `app_send_to_thread` | Built (`3a1c55f5`), behind `delivery.v2`, off by default |
+| 3b | One ringer | Done (`1d47a55e`); the only delivery path since the switch was removed |
+| 4 | Jobs: `agent_followup` and `app_send_to_thread` | Done (`3a1c55f5`); the only path for follow-ups and app sends |
 | 5 | kone steer | Not started |
 | 6 | The inbox in the app | Done (`1bb49544`, `04100edf`, `0b071123`) |
 | 7 | "Still out" on reports | Done (`71567947`) |
@@ -588,12 +588,15 @@ Still open:
 
 Where the work stands after `c53f440a`, `1311562e`, `acc6dad5`, `ca1f7d10`, `4726a128`, `ad7e79f8` and `63722270`: agent-core passes 2564 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
 
-**`delivery.v2` is cleared to turn on.** The review at `4d2d42cc` found no blocker. A seal holds across engine disposal and database reopen, migration 28 upgrades a real version-27 database, and the seal and its block settle commit or roll back together. Two nonblocking items remain: a seal whose write fails holds only in memory (`threadSpawn.ts`, `sealTurn`), and a late result appears where it arrived in the transcript. Still to decide: how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
+**`delivery.v2` is no longer a setting: it is the only delivery.** `deliverySettings.ts`, `ircDelivery.ts` and the old direct-send paths for `agent_followup`, `app_send_to_thread` and `agent_message` are deleted. Every message and follow-up goes through the inbox and `inboxDelivery.ts`; a `delivery-settings.json` left in userData is ignored. After the removal agent-core passes 2529 tests (fewer than before because the tests of the old paths went with them), and agent-core and desktop typecheck and Oxlint clean. The removal itself has not had a Codex review.
+
+The review at `4d2d42cc` found no blocker. A seal holds across engine disposal and database reopen, migration 28 upgrades a real version-27 database, and the seal and its block settle commit or roll back together. Two nonblocking items remain: a seal whose write fails holds only in memory (`threadSpawn.ts`, `sealTurn`), and a late result appears where it arrived in the transcript. Still to decide: how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
 
 Next, in order:
 1. ~~Review `4c4e4b25..63722270`.~~ Done: go at `4d2d42cc`. That review also covered `5744ecda` (`agent_list` activity).
-2. **Try `delivery.v2` by hand.** Set `{"v2": true}` in `delivery-settings.json` in the app's userData directory; it is read once at boot. Exercise a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
-   Once it holds up, make it the default in `deliverySettings.ts` so every install gets it, and a release later delete `ircDelivery.ts` and the setting.
+2. ~~Make it the default, then delete the old path.~~ Done: the switch and `ircDelivery.ts` are gone.
+   **Try it by hand** after `bun run install:desktop`: a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
+   **Have Nadia review the switch removal**, the commit after `ab65bb18`.
 3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
 

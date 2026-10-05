@@ -26,7 +26,8 @@ import {
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
 import { MemoryAgentInbox } from "./store/agentInbox.js";
-import { startIrcDelivery } from "./ircDelivery.js";
+import { startInboxDelivery, type InboxDelivery } from "./inboxDelivery.js";
+import type { ThreadRuntime } from "./recipientState.js";
 import { createMailboxReportSink, renderSettleReport, type SettledTurnReport, type SettleReportSink } from "./settleReports.js";
 import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
 import type {
@@ -402,6 +403,8 @@ type EngineHarness = {
   providers: FakeProviders;
   dispatcher: FakeDispatcher;
   bus: EventBus;
+  /** The children's inboxes, where follow-ups go as jobs. */
+  jobs: IrcMailbox;
 };
 
 function makeEngine(
@@ -411,6 +414,7 @@ function makeEngine(
   const providers = new FakeProviders();
   const dispatcher = new FakeDispatcher();
   const bus = new EventBus();
+  const jobs = options.jobs ?? new IrcMailbox();
   const deps: SpawnEngineDeps = {
     store,
     providers,
@@ -418,10 +422,34 @@ function makeEngine(
     emit: (event) => bus.emit(event),
     onEvents: (listener) => bus.on(listener),
     reports: options.reports?.(store),
+    jobs,
   };
-  if (options.jobs) deps.jobs = options.jobs;
   const engine = initSpawnEngine(deps);
-  return { engine, store, providers, dispatcher, bus };
+  return { engine, store, providers, dispatcher, bus, jobs };
+}
+
+/** A follow-up, and the ringer handing its job over: the job is claimed, sent
+ *  at the child as a turn of its own, and settled with the turn the provider
+ *  took. Returns that turn and the job's id. */
+async function followUp(
+  h: EngineHarness,
+  request: { threadId: string; message: string; requestId?: string },
+): Promise<{ turnId: string; jobId: string }> {
+  const { turnId: jobId } = await h.engine.continueThread(CALLER, request);
+  const claim = h.jobs.claimJob(request.threadId);
+  if (!claim) throw new Error(`no job waits for ${request.threadId}`);
+  h.jobs.sendingDelivery(claim.deliveryId);
+  const job = claim.messages[0]!;
+  try {
+    const input: SendTurnInput = { threadId: request.threadId, input: job.message };
+    if (job.sender?.kind === "agent") input.sender = job.sender;
+    const sent = await h.dispatcher.sendThreadTurn(input);
+    h.jobs.settleDelivery(claim.deliveryId, sent.turnId);
+    return { turnId: sent.turnId, jobId };
+  } catch (err) {
+    h.jobs.releaseDelivery(claim.deliveryId);
+    throw err;
+  }
 }
 
 /** The parent thread + a live session at full-access, plus a healthy target
@@ -1500,27 +1528,19 @@ describe("continueThread", () => {
       message: "Also update the README to match.",
     });
 
-    expect(result).toEqual({
-      threadId: child,
-      parentThreadId: CALLER.threadId,
-      turnId: "turn-2",
-      resumed: false,
-    });
-    // No second startThread — the child's session is still live.
+    expect(result).toMatchObject({ threadId: child, parentThreadId: CALLER.threadId, resumed: false, job: true });
+    // The follow-up is a job in the child's inbox, handed over as its own turn.
+    expect(h.jobs.jobTurn(result.turnId)).toEqual({ recipient: child, handedOver: false, turnId: null });
+    // No second startThread — the child's session is still live — and
+    // nothing is sent at it: the ringer hands the job over.
     expect(h.dispatcher.started).toHaveLength(1);
-    expect(h.dispatcher.sent).toHaveLength(2);
+    expect(h.dispatcher.sent).toHaveLength(1);
     // It is the caller asking, never the user.
-    expect(h.dispatcher.sent[1]?.input).toEqual({
-      threadId: child,
-      input: "Also update the README to match.",
-      sender: { kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "followup", name: "Basalt" },
-    });
-    // The follow-up is the caller's turn speaking into the child: no rename,
-    // and the child's events correlate back to the caller's turn (F10).
-    expect(h.dispatcher.sent[1]?.options).toEqual({
-      generateTitle: false,
-      parentTurnId: CALLER.turnId,
-    });
+    const job = h.jobs.claimJob(child)!.messages[0]!;
+    expect(job.message).toBe("Also update the README to match.");
+    expect(job.sender).toEqual({ kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "followup", name: "Basalt" });
+    // The child's events correlate back to the caller's turn (F10).
+    expect(h.dispatcher.parentTurnsNoted).toEqual([{ threadId: child, parentTurnId: CALLER.turnId }]);
   });
 
   test("a follow-up from past the parent is labelled as from up the chain", async () => {
@@ -1545,7 +1565,7 @@ describe("continueThread", () => {
 
     await h.engine.continueThread(CALLER, { threadId: grandchild, message: "Check the edge case too." });
 
-    expect(h.dispatcher.sent.at(-1)?.input.sender).toEqual({
+    expect(h.jobs.claimJob(grandchild)!.messages[0]!.sender).toEqual({
       kind: "agent",
       threadId: CALLER.threadId,
       relationship: "upstream",
@@ -1653,7 +1673,7 @@ describe("continueThread", () => {
     });
 
     expect(retry).toEqual(first);
-    expect(h.dispatcher.sent).toHaveLength(2);
+    expect(h.jobs.jobCount(child)).toBe(1);
 
     const conflict = await h.engine
       .continueThread(CALLER, { threadId: child, message: "Different ask.", requestId: "fu-1" })
@@ -1661,8 +1681,8 @@ describe("continueThread", () => {
     expect(conflict).toBeInstanceOf(SpawnError);
     // SAFETY: asserted to be a SpawnError immediately above.
     expect((conflict as SpawnError).code).toBe("idempotency_conflict");
-    // The conflicting call dispatched nothing.
-    expect(h.dispatcher.sent).toHaveLength(2);
+    // The conflicting call posted nothing.
+    expect(h.jobs.jobCount(child)).toBe(1);
   });
 
   test("a follow-up puts the settled child back into the live counts", async () => {
@@ -1805,6 +1825,7 @@ function turnAborted(threadId: string, turnId: string, at: number, reason: "inte
 
 type ReportHarness = EngineHarness & {
   mailbox: IrcMailbox;
+  delivery: InboxDelivery;
   /** Turns the mailbox delivered to a parent, in order. */
   delivered: Array<{ threadId: string; input: string; steered: boolean }>;
   /** Messages put on a parent's transcript, with who they are signed by. */
@@ -1815,6 +1836,21 @@ type ReportHarness = EngineHarness & {
   stopDelivery: () => void;
 };
 
+function reportRuntime(busy: boolean): ThreadRuntime {
+  return {
+    live: true,
+    starting: false,
+    busy,
+    turnStartedAt: busy ? 1 : null,
+    parked: null,
+    parkedSince: null,
+    compacting: false,
+    steers: true,
+    activeTool: null,
+    lastActivityAt: null,
+  };
+}
+
 function makeReportEngine(): ReportHarness {
   const mailbox = new IrcMailbox();
   const h = makeEngine({ reports: (store) => createMailboxReportSink({ mailbox, store }) });
@@ -1822,21 +1858,37 @@ function makeReportEngine(): ReportHarness {
   const journaled: ReportHarness["journaled"] = [];
   const busy = new Set<string>();
   const armed: Array<() => void> = [];
-  const stopDelivery = startIrcDelivery({
+  let delivery!: InboxDelivery;
+  delivery = startInboxDelivery({
     mailbox,
-    dispatcher: {
-      sendThreadTurn: async (input) => {
-        delivered.push({ threadId: input.threadId, input: input.input, steered: false });
-        return { threadId: input.threadId, turnId: `wake-${delivered.length}` };
+    service: {
+      threadRuntime: (threadId) => reportRuntime(busy.has(threadId)),
+      // The turn slot: an idle thread owed a turn gets one carrying nothing
+      // but its inbox, settled once the provider takes it.
+      kickTurnSlot: (threadId) => {
+        const carried = delivery.carry(threadId, null);
+        if (!carried) return;
+        carried.sending();
+        delivered.push({ threadId, input: carried.input.input, steered: false });
+        carried.settle(`wake-${delivered.length}`);
       },
-      steerThreadTurn: async (input) => {
-        delivered.push({ threadId: input.threadId, input: input.input, steered: true });
-        return { threadId: input.threadId, turnId: `steer-${delivered.length}` };
-      },
+      interruptTurn: () => Promise.resolve(),
+      onEvent: (listener) => h.bus.on(listener),
     },
-    isLive: () => true,
-    isBusy: (threadId) => busy.has(threadId),
-    journal: (threadId, message) => journaled.push({ threadId, text: message.message, sender: message.sender }),
+    dispatcher: {
+      steerThreadTurn: async (input, options) => {
+        delivered.push({ threadId: input.threadId, input: input.input, steered: true });
+        const turnId = `steer-${delivered.length}`;
+        options?.onAccepted?.(turnId);
+        return { threadId: input.threadId, turnId };
+      },
+      ensureThreadSession: () => Promise.resolve(),
+      takeReplayPreamble: () => null,
+    },
+    journal: (threadId, message) => {
+      journaled.push({ threadId, text: message.message, sender: message.sender });
+      return `blk-${message.id}`;
+    },
     schedule: (fn) => {
       armed.push(fn);
       return () => {
@@ -1850,7 +1902,8 @@ function makeReportEngine(): ReportHarness {
     while (armed.length > 0) armed.shift()!();
     await new Promise((resolve) => setTimeout(resolve, 0));
   };
-  return { ...h, mailbox, delivered, journaled, busy, flush, stopDelivery };
+  const stopDelivery = (): void => delivery.stop();
+  return { ...h, mailbox, delivery, delivered, journaled, busy, flush, stopDelivery };
 }
 
 const DELEGATION: SpawnRequest = {
@@ -1973,13 +2026,22 @@ describe("settle reports", () => {
     h.stopDelivery();
   });
 
-  test("a delegator busy with other work has the report steered into its running turn", async () => {
+  test("a delegator busy with other work holds the report for its next turn", async () => {
     const h = makeReportEngine();
     const child = await delegate(h);
     h.busy.add(CALLER.threadId);
     h.bus.emit(turnCompleted(child, "t-1", 30));
     await h.flush();
-    expect(h.delivered.map((d) => d.steered)).toEqual([true]);
+    // Held: a report never interrupts a running turn.
+    expect(h.delivered).toHaveLength(0);
+    // When the running turn ends, the next turn carries the report in front
+    // of its own words.
+    const carried = h.delivery.carry(CALLER.threadId, { threadId: CALLER.threadId, input: "Keep going." });
+    expect(carried).not.toBeNull();
+    expect(carried!.input.input).toContain(`thread ${child}, turn t-1`);
+    expect(carried!.input.input).toContain("Keep going.");
+    carried!.sending();
+    carried!.settle("t-parent-2");
     h.stopDelivery();
   });
 
@@ -2100,7 +2162,7 @@ describe("settle reports", () => {
     await h.flush();
     expect(h.delivered).toHaveLength(0);
 
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Pick it back up." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Pick it back up." });
     h.bus.emit(turnStarted(child, turnId, 40));
     h.bus.emit(turnCompleted(child, turnId, 50));
     await h.flush();
@@ -2175,7 +2237,7 @@ describe("a child from before a restart", () => {
     const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
 
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     h.bus.emit(turnStarted(child, turnId, 40));
     h.bus.emit(turnCompleted(child, turnId, 50));
     await h.flush();
@@ -2188,7 +2250,7 @@ describe("a child from before a restart", () => {
   test("a wait right after the follow-up reads the turn it started, not the interrupted one before", async () => {
     const h = makeEngine();
     const child = childFromBeforeRestart(h);
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
 
     // The provider took the turn; its turn.started has not come through yet.
     const latest = await h.engine.waitFor({ threadIds: [child], timeoutMs: 30, scopeThreadId: CALLER.threadId });
@@ -2209,7 +2271,7 @@ describe("a child from before a restart", () => {
   test("a wait pinned to a turn from before the restart reads it from the store", async () => {
     const h = makeEngine();
     const child = childFromBeforeRestart(h);
-    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    await followUp(h, { threadId: child, message: "Re-review, please." });
 
     const out = await h.engine.waitFor({
       threadIds: [child],
@@ -2221,10 +2283,13 @@ describe("a child from before a restart", () => {
     expect(out.threads[0]).toMatchObject({ status: "interrupted", terminal: true });
   });
 
-  test("a follow-up that could not be sent leaves it as the store has it", async () => {
-    const h = makeEngine();
+  test("a follow-up that could not be stored leaves it as the store has it", async () => {
+    const jobs = new IrcMailbox();
+    jobs.postJob = () => {
+      throw new Error("inbox write failed");
+    };
+    const h = makeEngine({ jobs });
     const child = childFromBeforeRestart(h);
-    h.dispatcher.failSend = true;
 
     await expect(h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." })).rejects.toThrow();
     expect(h.engine.snapshot(child)).toMatchObject({ status: "interrupted", terminal: true });
@@ -2265,7 +2330,7 @@ describe("the turn a follow-up started", () => {
       h.bus.emit(turnCompleted(threadId, turnId, 50));
     };
 
-    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    await followUp(h, { threadId: child, message: "Re-review, please." });
 
     expect(h.engine.snapshot(child)).toMatchObject({ status: "completed", terminal: true });
   });
@@ -2275,7 +2340,7 @@ describe("the turn a follow-up started", () => {
     const child = childFromBeforeRestart(h);
     h.dispatcher.emitBeforeSent = (threadId) => h.bus.emit(sessionState(threadId, "error", Date.now()));
 
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     await h.flush();
 
     expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
@@ -2287,7 +2352,7 @@ describe("the turn a follow-up started", () => {
   test("a session that fails after the provider took the turn fails it, reported once", async () => {
     const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     expect(h.engine.snapshot(child)!.status).toBe("working");
 
     h.bus.emit(sessionState(child, "error", Date.now()));
@@ -2303,7 +2368,7 @@ describe("the turn a follow-up started", () => {
   test("a session stopped before the turn started interrupts it, reported once", async () => {
     const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
 
     h.bus.emit(sessionState(child, "stopped", Date.now()));
     await h.flush();
@@ -2322,7 +2387,7 @@ describe("the turn a follow-up started", () => {
       h.bus.emit({ type: "session.started", threadId, provider: "opencode", at: Date.now(), source: "kone.store", session: { threadId, provider: "opencode", cwd: "/project", status: "ready", mode: "ask" } });
     };
 
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
 
     h.bus.emit(turnStarted(child, turnId, Date.now()));
@@ -2340,7 +2405,7 @@ describe("the turn a follow-up started", () => {
     h.bus.emit(turnCompleted(child, "t-1", 30));
     h.bus.emit(sessionState(child, "error", 31));
 
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Try again." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Try again." });
     h.bus.emit(turnStarted(child, turnId, Date.now()));
 
     expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
@@ -2380,7 +2445,7 @@ describe("the turn a follow-up started", () => {
       h.bus.emit({ type: "session.warning", threadId, provider: "opencode", at: Date.now(), source: "kone.store", message: "Could not post the answer." });
       h.bus.emit({ type: "session.state.changed", threadId, provider: "opencode", at: Date.now(), source: "kone.store", state: "ready" });
     };
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     expect(h.engine.snapshot(child)).toMatchObject({ status: "working", terminal: false });
     h.bus.emit(turnStarted(child, turnId, Date.now()));
     h.bus.emit(turnCompleted(child, turnId, Date.now()));
@@ -2404,7 +2469,7 @@ describe("the turn a follow-up started", () => {
       expect(h.engine.snapshot(child)).toMatchObject({ status: sealed, terminal: true });
       expect(h.delivered).toHaveLength(1);
 
-      const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Try again." });
+      const { turnId } = await followUp(h, { threadId: child, message: "Try again." });
       h.bus.emit({ type: "session.started", threadId: child, provider: "opencode", at: Date.now(), source: "kone.store", session: { threadId: child, provider: "opencode", cwd: "/project", status: "ready", mode: "ask" } });
       h.bus.emit(turnStarted(child, turnId, Date.now()));
       h.bus.emit(turnCompleted(child, turnId, Date.now()));
@@ -2445,7 +2510,7 @@ describe("the turn a follow-up started", () => {
     const h = makeReportEngine();
     const child = childFromBeforeRestart(h);
     h.dispatcher.emitBeforeSent = (threadId) => h.bus.emit(sessionState(threadId, "error", Date.now()));
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     await h.flush();
     expect(h.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
     expect(h.delivered).toHaveLength(1);
@@ -2464,7 +2529,7 @@ describe("the turn a follow-up started", () => {
       h.bus.emit(sessionState(threadId, "error", Date.now()));
       h.bus.emit({ type: "session.state.changed", threadId, provider: "opencode", at: Date.now(), source: "kone.store", state: "ready" });
     };
-    const { turnId } = await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    const { turnId } = await followUp(h, { threadId: child, message: "Re-review, please." });
     h.bus.emit(turnStarted(child, turnId, Date.now()));
     await h.flush();
 
@@ -2476,7 +2541,7 @@ describe("the turn a follow-up started", () => {
   test("an event for another turn does not end it", async () => {
     const h = makeEngine();
     const child = childFromBeforeRestart(h);
-    await h.engine.continueThread(CALLER, { threadId: child, message: "Re-review, please." });
+    await followUp(h, { threadId: child, message: "Re-review, please." });
 
     // The turn from before the restart, its end landing late.
     h.bus.emit(turnAborted(child, "turn-from-before", 30, "interrupted"));
@@ -2616,7 +2681,7 @@ describe("a seal the store keeps across a restart", () => {
     first.bus.emit(turnStarted(child, "t-1", 20));
     first.bus.emit(turnCompleted(child, "t-1", 25));
     first.dispatcher.emitBeforeSent = (threadId) => first.bus.emit(sessionState(threadId, "error", Date.now()));
-    const { turnId } = await first.engine.continueThread(CALLER, { threadId: child, message: "Again." });
+    const { turnId } = await followUp(first, { threadId: child, message: "Again." });
     expect(first.engine.snapshot(child)).toMatchObject({ status: "failed", terminal: true });
     first.bus.emit(turnStarted(child, turnId, Date.now()));
     first.bus.emit(turnCompleted(child, turnId, Date.now()));

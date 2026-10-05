@@ -43,7 +43,7 @@ export interface SpawnWaitDeps {
   /** Where a job in a child's inbox stands, for a wait pinned to the job's
    *  id: the turn that carried it once it was handed over. Null when the id
    *  names no job. */
-  jobTurn?: (inboxId: string) => JobTurn | null;
+  jobTurn: (inboxId: string) => JobTurn | null;
 }
 
 /** What a wait is pinned to: a turn, or a job still waiting for its turn —
@@ -132,7 +132,7 @@ export class SpawnWaitCoordinator {
    *  come until then. */
   private pinOf(threadId: string, requested: string | undefined): Pin {
     if (requested === undefined) return { turnId: undefined, pending: false };
-    const job = this.deps.jobTurn?.(requested) ?? null;
+    const job = this.deps.jobTurn(requested);
     if (!job || job.recipient !== threadId) return { turnId: requested, pending: false };
     if (job.uncertain) return { turnId: requested, pending: false, uncertain: true };
     if (job.turnId) return { turnId: job.turnId, pending: false };

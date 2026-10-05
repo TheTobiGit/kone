@@ -1,7 +1,6 @@
 import { senderRelationshipLabel } from "@kone/protocol/message-sender";
 import type { IrcDeliveryClaim, IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
 import type { ThreadDispatcher } from "./dispatch.js";
-import { IRC_DELIVERY_BATCH_MAX, IRC_DELIVERY_DEBOUNCE_MS, IRC_DELIVERY_RETRY_MS, type ScheduleDelivery } from "./ircDelivery.js";
 import { formatSince, type RecipientState, type ThreadRuntime } from "./recipientState.js";
 import { renderCourierMessage, renderKoneNotice, renderSenderHeader, renderUserHeader } from "./senderHeader.js";
 import type { MessageSender, RuntimeEvent, SendTurnInput } from "./types.js";
@@ -26,6 +25,32 @@ import type { MessageSender, RuntimeEvent, SendTurnInput } from "./types.js";
 // sent: a thread parked on the user holds everything until the user answers; a
 // thread starting or compacting takes its messages as soon as it can; a closed
 // one is brought back up for a message that rings, and for nothing else.
+
+/** How long a delivery waits for more messages to the same recipient.
+ *
+ *  A wake costs the recipient a full turn, so two messages arriving together
+ *  should cost one turn, not two. Short enough that a lone message is not left
+ *  sitting; long enough to catch a burst from one sender, or a broadcast
+ *  fanning out across a fleet. */
+export const IRC_DELIVERY_DEBOUNCE_MS = 400;
+
+/** How many messages ride one delivery. Past this the rest wait for the next
+ *  round — a wake carrying forty messages is not a wake, it is a context
+ *  dump. */
+export const IRC_DELIVERY_BATCH_MAX = 8;
+
+/** How long a released batch waits before it is tried again, by attempt.
+ *
+ *  A send that throws — a session reaped under it, a provider refusing the
+ *  steer — may be over in a second or may not be over at all, and nothing else
+ *  is coming to try again: the senders' events have fired. So each failure
+ *  arms its own retry, a little later each time, and after the last one the
+ *  batch waits in the inbox until something else rings. */
+export const IRC_DELIVERY_RETRY_MS: readonly number[] = [1_000, 5_000, 15_000, 60_000];
+
+/** Arm a callback, and hand back the way to call it off. Injectable so tests
+ *  fire the debounce deliberately instead of sleeping on real time. */
+export type ScheduleDelivery = (fn: () => void, ms: number) => () => void;
 
 /** The service's side of the turn slot: what is waiting is folded into the
  *  next turn to start, and settled with that turn once the provider takes it. */
@@ -497,7 +522,6 @@ export interface DeliveryReceiptInput {
   returned: boolean;
   /** Delivery as the ringer does it; false describes the older routing, where
    *  every message is steered into a running turn or wakes an idle one. */
-  v2: boolean;
   now: number;
 }
 
@@ -510,16 +534,12 @@ export function deliveryReceipt(input: DeliveryReceiptInput): DeliveryReceipt {
   const { name, state } = input;
   if (input.returned) return { outcome: "returned", text: `Returned to ${name}, who was waiting on this answer.` };
   if (state.state === "waiting-on-user") {
-    if (!input.v2 && state.steers !== false) {
-      return { outcome: "delivered", text: `Delivered into ${name}'s running turn; ${name} is waiting on the user.` };
-    }
     return {
       outcome: "held",
       text: `Held: ${name} is ${state.activity ?? "waiting on the user"}. Nothing reaches ${name} until the user answers — ask the user if you need this sooner.`,
     };
   }
   const notLive = state.state === "closed" || state.state === "ended";
-  if (!input.v2) return legacyReceipt(name, state, notLive);
   if (!input.rings) {
     if (notLive) {
       return { outcome: "inbox", text: `In ${name}'s inbox. ${name}'s session is closed, so it waits until ${name} runs again.` };
@@ -557,21 +577,64 @@ export function deliveryReceipt(input: DeliveryReceiptInput): DeliveryReceipt {
   };
 }
 
-/** The older routing: a running turn is steered (or, without a steer, cut
- *  short), an idle thread woken, a closed one left to find it later. */
-function legacyReceipt(name: string, state: RecipientState, notLive: boolean): DeliveryReceipt {
-  if (notLive) {
-    return { outcome: "inbox", text: `In ${name}'s inbox. ${name}'s session is closed, so it waits until ${name} runs again.` };
+/**
+ * How a delivered batch reads to the agent receiving it.
+ *
+ * Tagged, so an agent can tell another agent's words from its own user's —
+ * they arrive on the same channel and nothing else distinguishes them — and
+ * each one says who sent it, how that agent relates to this one, and what the
+ * message is for: a question from a delegate wants an answer, a note from a
+ * peer wants nothing. It says plainly when no reply is owed, because the
+ * default failure of agent messaging is two of them being polite at each other
+ * until somebody runs out of money.
+ *
+ * What the courier carries, and kone's own notices, are kone speaking, not
+ * another agent, so each is framed as kone's on its own rather than counted
+ * among the agents' messages.
+ */
+export function renderIncoming(messages: IrcMessageRecord[], remaining = 0): string {
+  const carried: string[] = [];
+  const fromAgents: IrcMessageRecord[] = [];
+  for (const m of messages) {
+    if (m.sender?.kind === "courier") carried.push(renderCourierMessage(m.sender, m.message));
+    else if (m.sender?.kind === "system") carried.push(renderKoneNotice(m.message));
+    else fromAgents.push(m);
   }
-  if (state.state === "starting" || state.state === "compacting") {
-    return { outcome: "soon", text: `In ${name}'s inbox: ${name} is ${state.state} and takes it as soon as it can.` };
-  }
-  if (state.state === "idle") return { outcome: "waking", text: `Delivered: ${name} was idle and is taking it now.` };
-  if (state.steers === false) {
-    return {
-      outcome: "interrupts",
-      text: `${name}'s provider cannot take a message mid-turn, so kone interrupts ${name}'s turn and this lands as the next one.`,
-    };
-  }
-  return { outcome: "delivered", text: `Delivered into ${name}'s running turn.` };
+  // Said rather than left implicit: past the batch cap the rest are still in the
+  // inbox, and an agent told "3 messages arrived" while forty wait is being
+  // given a wrong number to reason about.
+  const overflow =
+    remaining > 0
+      ? `${remaining} more ${remaining === 1 ? "message is" : "messages are"} still in your inbox.`
+      : "";
+  if (fromAgents.length === 0) return [...carried, overflow].filter(Boolean).join("\n\n");
+  return [...carried, renderAgentMessages(fromAgents, overflow)].join("\n\n");
+}
+
+/** Messages other agents sent, as one tagged block. */
+function renderAgentMessages(messages: IrcMessageRecord[], overflow: string): string {
+  const lines = messages.map((m) => {
+    const who = (m.sender?.kind === "agent" ? m.sender.name : undefined) ?? m.from;
+    const relation = m.sender?.kind === "agent" ? ` (${senderRelationshipLabel(m.sender.relationship)})` : "";
+    const kind = m.kind && m.kind !== "note" ? `, ${m.kind}` : "";
+    const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
+    return `[${m.id}] From \`${who}\`${relation}${kind}${replyTo}:\n${m.message}`;
+  });
+  const header =
+    messages.length === 1
+      ? "A message from another agent arrived while you were working:"
+      : `${messages.length} messages from other agents arrived while you were working:`;
+  const asked = messages.some((m) => m.kind === "question" || m.kind === "pushback");
+  const closing = asked
+    ? "The user did not say this — other agents did. A question or pushback is waiting on you: answer it with agent_message (kind \"answer\", replyTo its id) from what you know of the user's intent, asking the user only what you cannot answer. Anything else here needs no reply."
+    : "The user did not say this — other agents did, and nobody is waiting on a reply. Fold anything useful into what you are already doing; a bare acknowledgement costs the sender a whole turn and tells them nothing.";
+  return [
+    "<agent_messages>",
+    header + (overflow ? `\n\n${overflow}` : ""),
+    "",
+    lines.join("\n\n"),
+    "",
+    closing,
+    "</agent_messages>",
+  ].join("\n");
 }
