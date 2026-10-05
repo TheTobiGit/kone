@@ -400,7 +400,7 @@ Each phase ships on its own and leaves the app working and tested.
 | 3a | kone's notices move into the inbox | Done (`99359d70`) |
 | 3b | One ringer | Done (`1d47a55e`); the only delivery path since the switch was removed |
 | 4 | Jobs: `agent_followup` and `app_send_to_thread` | Done (`3a1c55f5`); the only path for follow-ups and app sends |
-| 5 | kone steer | Not started |
+| 5 | kone steer | Done (`83ab07a`, `d99b4fc`; review fixes `ab9313c`, `376a983`, `fd27cb0`, `6319f6e`), Cline only |
 | 6 | The inbox in the app | Done (`1bb49544`, `04100edf`, `0b071123`) |
 | 7 | "Still out" on reports | Done (`71567947`) |
 
@@ -460,6 +460,9 @@ Each phase ships on its own and leaves the app working and tested.
 - **Files:** `AgentService.ts`; the provider capability table; `inboxDelivery.ts`; the renderer's composer.
 - **Tests:** interrupts only after a tool call's `item.completed`, not on streaming text; never while parked; a provider that failed the probe lands at turn end.
 - **Risk:** medium.
+- **As built:** the capability is `cancelKeepsCompletedTools`, read through `AgentService.urgentLanding`: `steer` for a provider with `steerTurn`, `after-step` (kone steer) for one that keeps a finished tool call across a cancel — Cline only — and `turn-end` for the rest. `openItems` keeps each item's kind; only open tool calls, a subagent's included, hold the interrupt back. `interruptAfterStep` is the one wait: held while parked (re-checked when the user answers), ended at once with no tool call open, otherwise on the last open call's completion, checked after every listener so the journal records the completion first. Cline ends a turn before it closes the turn's last items, so a completion its own finalizer emits never turns a finished turn into an interrupted one. A turn being ended is cancelled once; later asks join that cut until it settles. The cut stays until its turn settles even when the steers it was for are cancelled, and a cut with nothing left owed adds no carry-on line. Each wait, cut and carry-on records what it is for — the user's queued steers by queue id, or an agent's urgent mail — and goes when its last steer row is cancelled, and with the session (error, stop, exit, a new session). A turn kone steer ended that reads aborted puts the carry-on line in front of the next turn the provider accepts, consumed on acceptance and sent to the provider only; a turn that completed first gets none. The ringer calls it for urgent mail; on `turn-end` it never interrupts and the mail goes when the turn ends, the send saying why. The user's steer on an `after-step` provider takes the same wait, and its result names the wait (`afterStep`: id, turn, call). After 30 s a pill above the composer (`AgentSteerWaitPill.vue`, `sessionSteerWait.ts`) offers **Interrupt now** (`agent:steer-interrupt-now`, taking the wait's id), raised only while that turn still runs, gone as soon as the turn its wait names stops running, and kept when the interrupt is refused, as it is while parked; an agent's wait has no pill. Send results: `after-step` mid tool call, `interrupts` between steps, `next` with the reason on a provider without kone steer.
+- **Review:** Nadia's first review held it on five findings (a Cline turn's own finalizer read as interrupted; a second cancel for one turn; the carry-on line outliving its session and reaching unrelated work; a stale or wrongly hidden pill; the carry-on line lost on a refused send), fixed in `ab9313c` and `376a983`. The re-review found the cut dropped while its cancel was pending and the pill outliving a replaced turn, fixed in `fd27cb0` and `6319f6e`. The third review is go: eight backend probes pass, session death included, and the pill clears on reload and in a window without the turn. agent-core passes 2557 tests and web 1447. All of it is tested against fake adapters and Cline's real finalizer; Cline itself has not been run.
+- **Still open:** the user's steer on a `turn-end` provider (Cursor, Droid, Antigravity) interrupts at once, as before, and so does Send now on a queued row there. The pill lives in the renderer session, so a reload or another window does not get it back. A failed interrupt is logged and not retried; the mail goes when the turn ends.
 
 ### Phase 6: the inbox in the app
 
@@ -597,7 +600,7 @@ Next, in order:
 2. ~~Make it the default, then delete the old path.~~ Done: the switch and `ircDelivery.ts` are gone.
    **Try it by hand** after `bun run install:desktop`: a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
    ~~Have Nadia review the switch removal.~~ Done: no blocker.
-3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
+3. ~~**Phase 5, kone steer**, for Cline only.~~ Done and reviewed (go after `6319f6e`). **Try it on a real Cline** once it is installed: an urgent message mid tool call, between calls, and while parked.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
 
 Smaller items found along the way:
@@ -605,7 +608,9 @@ Smaller items found along the way:
 - Cline does not resume a session cleanly; it needs its own ticket.
 - The test lost with the switch: a block journaled before its inbox row was linked, through `startInboxDelivery`.
 - A spawn on an OpenCode model with no variants inherited the caller's effort and was refused ("Variant unavailable"). Fixed for the spawn guard in `7efd124` and `e1d12b2`, reviewed: OpenCode's inventory marks a model it reported with no variants (`reasoningEfforts: []`), unlike one whose variants it did not report, and only the first drops the effort; `AgentService.validEffortFor` still passes such an effort through.
-- A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). This goes when Phase 5 takes agent messages out of the turn queue.
+- A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). Likely closed: no path is left that puts agent mail into the turn queue. Not tested on its own.
+- Tests leave their `mkdtemp` directories in `/tmp`; parallel agent runs filled its quota (about 11k `kone-*` dirs) and broke every shell. They need to clean up.
+- A wait pinned to an older turn reads its state but the thread's newest reply (under "Still open"): assigned, not started, because the MiMo contractor could not spawn until the effort fix is in the running app.
 - Everything under "Still open" above, and the cancel intent kept only in memory (see the retry table).
 
 ## 13. Shipped while this was worked out
