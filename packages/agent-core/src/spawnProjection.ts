@@ -248,9 +248,10 @@ export function projectSpawnedThread(input: SpawnProjectionInput): SpawnedThread
     // Only a live-backed rung moves on its own: "working" is mid-turn and
     // "starting" is pre-first-turn, and everything else has settled.
     terminal = status !== "working" && status !== "starting";
-    if (status === "failed") {
+    if (status === "failed" || status === "interrupted") {
       // A failed turn carries its error up as the detail, so the parent can
-      // tell the user what broke.
+      // tell the user what broke. An interrupted one has an error only when
+      // its session's end cut it off; an interrupt somebody asked for has none.
       detail = last?.error || undefined;
     }
   }

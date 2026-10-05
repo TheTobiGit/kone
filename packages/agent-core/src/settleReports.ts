@@ -32,7 +32,8 @@ export type SettledTurnReport = {
   /** The child's final reply, already capped, with the pointer to agent_read
    *  when it was cut. */
   summary?: string;
-  /** Why a failed turn failed. */
+  /** Why a failed turn failed, or what ended an interrupted turn's session
+   *  under it; an interrupt somebody asked for has none. */
   detail?: string;
   /** The parent's other hand-offs still at work when this one settled. */
   stillOut?: StillOut;
@@ -87,7 +88,7 @@ export function renderSettleReport(report: SettledTurnReport, childName: string,
     lines.push(`${childName}'s turn failed (${where})${report.detail ? `: ${report.detail}` : "."}`);
     if (reply) lines.push("", "Its last reply:", "", quote(reply));
   } else if (report.status === "interrupted") {
-    lines.push(`${childName}'s turn was interrupted before it finished (${where}).`);
+    lines.push(`${childName}'s turn was interrupted before it finished (${where})${report.detail ? `: ${report.detail}` : "."}`);
     if (reply) lines.push("", "Its last reply:", "", quote(reply));
   } else {
     lines.push(`${childName} finished the work you handed it (${where}). Its final reply:`, "", reply ? quote(reply) : "(It ended without a reply.)");
@@ -125,11 +126,13 @@ export interface MailboxReportSinkDeps {
  * The sink the app runs on: reports go out through the agent mailbox.
  *
  * A finished or failed turn is news the parent has to act on, so it wakes an
- * idle parent. An interruption is not: somebody stopped the child, and when
- * that was the user, waking the parent invites it to start the work up again
- * over the user's head. So an interruption reaches a parent that is running,
- * and otherwise is held in its inbox for its next turn. Held or not, it is
- * the same stored report, retractable until it is seen.
+ * idle parent. An interruption somebody asked for is not: when that was the
+ * user, waking the parent invites it to start the work up again over the
+ * user's head. So it reaches a parent that is running, and otherwise is held
+ * in its inbox for its next turn. A turn its session's end cut off (an exit,
+ * a stop nobody asked for) carries that end as its detail, and rings: nobody
+ * else knows the work stopped. Held or not, it is the same stored report,
+ * retractable until it is seen.
  */
 export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleReportSink {
   return {
@@ -137,7 +140,8 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
       const meta = deps.store.threadMeta?.(report.childThreadId);
       if (!meta) return null;
       const sender = courierReportSender(deps.store, report);
-      const rings = !(report.status === "interrupted" && deps.isBusy && !deps.isBusy(report.parentThreadId));
+      const asked = report.status === "interrupted" && !report.detail;
+      const rings = !(asked && deps.isBusy && !deps.isBusy(report.parentThreadId));
       const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId, rings);
       try {
         const sent = deps.mailbox.sendCourierMessage({
