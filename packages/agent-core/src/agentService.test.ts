@@ -54,6 +54,8 @@ class FakeAdapter {
     supportsSubagents: false,
   };
   static stopped: string[] = [];
+  /** Per thread, whether its reset had been announced when its stop came. */
+  static announcedAtStop = new Map<string, boolean>();
   /** Every sendTurn the service routed to a fake — the queue tests assert the
    *  busy path never dispatches and the promotion path dispatches once. */
   static sentTurns: Array<{ threadId: string; input: SendTurnInput; turnId: string }> = [];
@@ -73,6 +75,10 @@ class FakeAdapter {
   }
   async stopSession(threadId: string): Promise<void> {
     FakeAdapter.stopped.push(threadId);
+    FakeAdapter.announcedAtStop.set(
+      threadId,
+      received.some((e) => e.threadId === threadId && e.type === "session.state.changed" && e.state === "error"),
+    );
   }
   async stopAll(): Promise<void> {}
   // The fake is injected as a `ProviderAdapter` wholesale (see the cast where
@@ -422,6 +428,9 @@ describe("AgentService wedge watchdog", () => {
       (e) => e.threadId === thread && e.type === "session.state.changed" && e.state === "error",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "session.state.changed" }> | undefined;
     expect(reset?.message).toBe("wedged — session reset");
+    // Announced before the stop, whose own abort would otherwise read as an
+    // interrupt somebody asked for, and a parent would hold its report.
+    expect(FakeAdapter.announcedAtStop.get(thread)).toBe(true);
   }, 5_000);
 
   test("never resets a session parked on a human answer", async () => {

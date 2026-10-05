@@ -2141,10 +2141,11 @@ export class AgentService {
       console.warn(
         `[agent] wedge watchdog: ${provider} session ${threadId} silent ${silentFor} with live turn ${this.activeTurns.get(threadId)} — resetting`,
       );
-      // Best-effort: a failed stop leaves the state in place for the next sweep.
-      void this.stopSession(threadId).catch(() => {});
       // The adapters do not announce their stop path, so name it here — the
-      // renderer must not keep showing a live thread that is being reset.
+      // renderer must not keep showing a live thread that is being reset. Named
+      // before the stop: the stop's own abort reads as an interrupt, and a
+      // parent would hold the report of a turn nobody asked to end. Said
+      // first, the reset fails the turn, and the parent hears why.
       this.dispatch({
         type: "session.state.changed",
         threadId,
@@ -2154,6 +2155,8 @@ export class AgentService {
         state: "error",
         message: "wedged — session reset",
       });
+      // Best-effort: a failed stop leaves the state in place for the next sweep.
+      void this.stopSession(threadId).catch(() => {});
     }
   }
 

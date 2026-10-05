@@ -1,0 +1,44 @@
+import { describe, expect, test } from "bun:test";
+
+import { IrcMailbox, type IrcToolStore } from "./gateway/tools/irc.js";
+import { createMailboxReportSink, renderSettleReport, type SettledTurnReport } from "./settleReports.js";
+
+const PARENT = "parent-1";
+const CHILD = "child-1";
+
+// SAFETY: the sink reads only threadMeta and threadLineage off its store.
+// eslint-disable-next-line anti-slop/no-chained-type-assertions
+const store = {
+  threadMeta: (threadId: string) => (threadId === CHILD ? { projectPath: "/p", contract: { name: "Milo" } } : { projectPath: "/p" }),
+  threadLineage: (threadId: string) =>
+    threadId === CHILD ? { parentThreadId: PARENT, relationshipToParent: "delegation", rootThreadId: PARENT } : null,
+} as unknown as IrcToolStore;
+
+function interrupted(turnId: string, detail?: string): SettledTurnReport {
+  const report: SettledTurnReport = { childThreadId: CHILD, parentThreadId: PARENT, turnId, handOff: "contract", status: "interrupted" };
+  if (detail) report.detail = detail;
+  return report;
+}
+
+describe("the report of an interrupted turn, to an idle parent", () => {
+  test("an interrupt somebody asked for is held for the parent's next turn", () => {
+    const mailbox = new IrcMailbox();
+    const sink = createMailboxReportSink({ mailbox, store, isBusy: () => false });
+    expect(sink.deliver(interrupted("t-1"))).not.toBeNull();
+    expect(mailbox.ringingCount(PARENT)).toBe(0);
+  });
+
+  test("a turn its session's end cut off rings", () => {
+    const mailbox = new IrcMailbox();
+    const sink = createMailboxReportSink({ mailbox, store, isBusy: () => false });
+    expect(sink.deliver(interrupted("t-2", "The child's session exited."))).not.toBeNull();
+    expect(mailbox.ringingCount(PARENT)).toBe(1);
+  });
+
+  test("its report says what ended it; an asked-for one says nothing more", () => {
+    expect(renderSettleReport(interrupted("t-3", "The child's session exited."), "Milo")).toContain(
+      "interrupted before it finished (thread child-1, turn t-3): The child's session exited.",
+    );
+    expect(renderSettleReport(interrupted("t-4"), "Milo")).toContain("interrupted before it finished (thread child-1, turn t-4).");
+  });
+});
