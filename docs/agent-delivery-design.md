@@ -604,7 +604,7 @@ Smaller items found along the way:
 - ~~`agent_list` shows `activity: null` for an agent that is working.~~ Fixed in `5744ecda`, reviewed. Activity came only from a tool call's start, so a call a provider first reports already under way (OpenCode, for one seen running rather than pending) never showed, nor did a target named only by a later update. Every start and update of a tool call now counts, the newest open call shown. Between calls it says the step the turn is on (thinking, writing a reply, updating its plan); with nothing open it stays null. It touches `AgentService.ts` and `agentService.queue.test.ts`, both also in `58c88391..b4090f62`.
 - Cline does not resume a session cleanly; it needs its own ticket.
 - The test lost with the switch: a block journaled before its inbox row was linked, through `startInboxDelivery`.
-- A spawn on an OpenCode model with no variants inherited the caller's effort and was refused ("Variant unavailable"). Fixed in `7efd124` for the spawn guard; `AgentService.validEffortFor` still passes such an effort through.
+- A spawn on an OpenCode model with no variants inherited the caller's effort and was refused ("Variant unavailable"). Fixed for the spawn guard in `7efd124` and `e1d12b2`, reviewed: OpenCode's inventory marks a model it reported with no variants (`reasoningEfforts: []`), unlike one whose variants it did not report, and only the first drops the effort; `AgentService.validEffortFor` still passes such an effort through.
 - A Stop drops a queued agent message's block although its inbox row already reads seen (Phase 6). This goes when Phase 5 takes agent messages out of the turn queue.
 - Everything under "Still open" above, and the cancel intent kept only in memory (see the retry table).
 
