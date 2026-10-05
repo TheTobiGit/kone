@@ -535,6 +535,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               :provider="composer.provider.value"
               :send-rejection="session?.sendRejection.value"
               :queue-return="session?.queueReturn.value"
+              :steer-wait="session?.steerWait.value"
               :mention-projects="mentionProjects"
               disable-file-mentions
               :branch-switchable="false"
@@ -558,6 +559,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               @remove-queued="session?.cancelQueuedTurn($event)"
               @reorder-queued="session?.reorderQueuedTurns($event)"
               @send-now="onSendNow"
+              @interrupt-now="void session?.interruptStepWaitNow()"
               @interrupt="session?.stop()"
               @update:model-id="composer.onModelId"
               @update:reasoning="composer.onReasoning"

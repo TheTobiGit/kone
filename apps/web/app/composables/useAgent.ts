@@ -15,6 +15,7 @@ import type {
   Session,
   SessionStartInput,
   SpawnedThread,
+  StepWait,
   StoredBlock,
   StoredThread,
   StoredThreadMeta,
@@ -231,6 +232,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       sessionState.value === "running" ||
       blocks.value.some((b) => b.role === "assistant" && b.state === "running"),
   );
+  /** The user's steer kone steer is holding until the running tool call
+   *  finishes, on a provider that cannot take a message mid-turn: what the
+   *  pill above the composer reads to offer Interrupt now. Gone with the
+   *  turn. */
+  const steerWait = shallowRef<StepWait | null>(null);
   // Flips true the first time a live turn starts here (turn.started). Rehydrated
   // history never trips it, so a reloaded thread stays out of the pill stack
   // until it actually runs something.
@@ -325,6 +331,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const pendingQueueAnchors = queue.pendingQueueAnchors;
   const queuedTurns = queue.queuedTurns;
   const queueReturn = queue.queueReturn;
+  watch(busy, (on) => {
+    if (!on) steerWait.value = null;
+  });
   const anchorFor = queue.anchorFor;
   const seedQueuedTurns = queue.seedQueuedTurns;
   const cancelQueuedTurn = queue.cancelQueuedTurn;
@@ -945,10 +954,25 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // the adapter's turn id and never produces a queue event; it's pruned
       // at the next turn boundary).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
+      if (result?.afterStep) steerWait.value = result.afterStep;
     } catch (e) {
       rejectSend(blockId, peelIpcError(e, "Could not steer the agent"), { input: trimmed, skills });
     } finally {
       dispatching.value = false;
+    }
+  }
+
+  /** Interrupt now: end the turn the user's steer waits on without waiting
+   *  for its tool call, so the steer goes next. */
+  async function interruptStepWaitNow(): Promise<void> {
+    // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
+    const api = bridge() as (KoneAgentApi & QueueBridge) | null;
+    if (!steerWait.value || !api?.interruptStepWaitNow) return;
+    steerWait.value = null;
+    try {
+      await api.interruptStepWaitNow(threadId.value);
+    } catch (e) {
+      error.value = peelIpcError(e, "Could not interrupt the agent");
     }
   }
 
@@ -1276,6 +1300,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     sendRejection,
     // Queued messages a Stop handed back for the composer to restore.
     queueReturn,
+    steerWait,
     warning,
     // Why a send would be refused right now, or null. The composer binds it to
     // keep the draft instead of dispatching into a provider that can't run it.
@@ -1342,6 +1367,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     restart,
     send,
     steerTurn,
+    interruptStepWaitNow,
     forkAtBlock,
     switchProvider,
     handInRecords,
