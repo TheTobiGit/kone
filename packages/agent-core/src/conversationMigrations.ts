@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1171,6 +1171,47 @@ function migration0026InboxUncertainAt(db: DatabaseSync): void {
   `);
 }
 
+/** Queue cancellation boundaries must survive deletes and store reopenings. */
+function migration0027QueuedTurnDurableRowid(db: DatabaseSync): void {
+  if (!hasTable(db, "queued_turns")) return;
+  db.exec(`
+    CREATE TABLE queued_turns__v27 (
+      rowid            INTEGER PRIMARY KEY AUTOINCREMENT,
+      queue_id         TEXT UNIQUE,
+      thread_id        TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      user_block_id    TEXT NOT NULL,
+      dispatch_mode    TEXT NOT NULL CHECK (dispatch_mode IN ('followup', 'steer', 'direct', 'queue')),
+      state            TEXT NOT NULL CHECK (state IN ('queued', 'promoting', 'promoted', 'failed', 'cancelled')),
+      input            TEXT NOT NULL,
+      attachments_json TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json)),
+      model            TEXT,
+      mode             TEXT,
+      effort           TEXT,
+      service_tier     TEXT,
+      context_window   TEXT,
+      attempt_count    INTEGER NOT NULL DEFAULT 0,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      promoted_at      INTEGER,
+      sort_key         INTEGER,
+      skills_json      TEXT CHECK (skills_json IS NULL OR json_valid(skills_json))
+    );
+    INSERT INTO queued_turns__v27 (rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+                                 attachments_json, model, mode, effort, service_tier, context_window,
+                                 attempt_count, created_at, updated_at, promoted_at, sort_key, skills_json)
+      SELECT rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+             attachments_json, model, mode, effort, service_tier, context_window,
+             attempt_count, created_at, updated_at, promoted_at, sort_key, skills_json
+        FROM queued_turns ORDER BY rowid;
+    DROP TABLE queued_turns;
+    ALTER TABLE queued_turns__v27 RENAME TO queued_turns;
+    CREATE INDEX idx_queued_turns_pending ON queued_turns (thread_id, created_at);
+    CREATE INDEX idx_queued_turns_thread_state ON queued_turns (thread_id, state);
+    CREATE UNIQUE INDEX idx_queued_turns_active_user_block ON queued_turns (thread_id, user_block_id)
+      WHERE state IN ('queued', 'promoting', 'failed');
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1198,6 +1239,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 24, name: "InboxSentAt", run: migration0024InboxSentAt },
   { id: 25, name: "InboxUncertain", run: migration0025InboxUncertain },
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
+  { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
 ];
 
 export interface MigrationOptions {

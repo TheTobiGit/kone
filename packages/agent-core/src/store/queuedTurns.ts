@@ -20,26 +20,23 @@ const QUEUED_TURN_ORDER = `CASE WHEN sort_key IS NULL THEN 1 ELSE 0 END ASC,
 
 
 export class QueuedTurnRepo {
-  /** The highest rowid this process has given a queued turn, or seen among
-   *  them. Each row it enqueues takes the next one, so a row queued later
-   *  always sorts above it, whatever the clock does. */
+  /** Last durable boundary observed, usable during a temporary read outage. */
   private highestRowid: number | null = null;
 
   constructor(private readonly dbh: ConversationDb) {}
 
-  /** Every row queued so far has a rowid at or below this; one queued later
-   *  has a higher one. Known without a read once this process has enqueued
-   *  or read it; null when it has done neither and the store cannot be read. */
+  /** Read the durable allocation boundary, including deleted rows and rows
+   *  written by other store instances. During a read outage, fall back to the
+   *  last observed boundary, or null if none has been observed. */
   queueBoundary(): number | null {
-    if (this.highestRowid !== null) return this.highestRowid;
     const db = this.dbh.handle();
-    if (!db) return null;
+    if (!db) return this.highestRowid;
     try {
-      this.highestRowid = maxQueuedRowid(db);
+      this.highestRowid = allocatedQueueBoundary(db);
       return this.highestRowid;
     } catch (err) {
       console.error("[conversation-store] queueBoundary failed:", err);
-      return null;
+      return this.highestRowid;
     }
   }
 
@@ -87,21 +84,17 @@ export class QueuedTurnRepo {
     const now = input.at ?? Date.now();
     let inserted = false;
     this.dbh.durably(db, () => {
-      // The next rowid past every row there is and every one this process
-      // gave out, so a cancel bounded by an earlier boundary never takes it.
-      const rowid = Math.max(this.highestRowid ?? 0, maxQueuedRowid(db)) + 1;
       const result = db
         .prepare(
           `INSERT INTO queued_turns (
-             rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+             queue_id, thread_id, user_block_id, dispatch_mode, state, input,
              attachments_json, skills_json, model, mode, effort, service_tier, context_window,
              attempt_count, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT (thread_id, user_block_id)
              WHERE state IN ${PENDING_QUEUE_STATES} DO NOTHING`,
         )
         .run(
-          rowid,
           input.queueId,
           input.threadId,
           input.userBlockId,
@@ -118,7 +111,7 @@ export class QueuedTurnRepo {
           now,
         );
       inserted = Number(result.changes) > 0;
-      if (inserted) this.highestRowid = rowid;
+      if (inserted) this.highestRowid = Number(result.lastInsertRowid);
     });
     return inserted;
   }
@@ -563,9 +556,13 @@ export class QueuedTurnRepo {
   }
 }
 
-/** The highest rowid among queued turns, 0 for none. */
-function maxQueuedRowid(db: DatabaseSync): number {
-  // SAFETY: an aggregate with a COALESCE default is always one numeric row.
-  const row = db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS n FROM queued_turns`).get() as { n: number };
-  return Number(row.n);
+/** AUTOINCREMENT keeps this boundary even when its highest row is deleted. */
+function allocatedQueueBoundary(db: DatabaseSync): number {
+  // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+  const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+  if (row) return Number(row.seq);
+  // An empty queue has no sequence entry yet; an unavailable table must not
+  // be mistaken for that empty queue.
+  db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+  return 0;
 }
