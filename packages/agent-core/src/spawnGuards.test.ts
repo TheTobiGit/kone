@@ -174,6 +174,24 @@ describe("checkSpawn", () => {
     }
   });
 
+  test("an OpenCode model with no variants drops an inherited effort", () => {
+    const catalog = [{ id: "opencode-go/mimo-v2.6-pro", label: "MiMo-V2.6-Pro" }];
+    const result = checkSpawn(
+      base({
+        target: { provider: "opencode", model: "opencode-go/mimo-v2.6-pro" },
+        parentEffort: "medium",
+        catalog,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.effort).toBeUndefined();
+      expect(result.adjustments).toEqual([
+        { field: "effort", requested: "medium", applied: null, reason: expect.any(String) },
+      ]);
+    }
+  });
+
   test("an effort is kept when no model was chosen (nothing to check against)", () => {
     const result = checkSpawn(base({ target: { provider: "codex", effort: "high" } }));
     expect(result.ok).toBe(true);
