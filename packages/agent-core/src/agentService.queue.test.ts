@@ -5,7 +5,7 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 
 import { getUserDataDir, setUserDataDir } from "./userDataDir.js";
-import type { ProviderAdapter, RuntimeEvent, SendTurnInput, TurnStartResult } from "./types.js";
+import type { ProviderAdapter, RuntimeEvent, RuntimeItem, SendTurnInput, TurnStartResult } from "./types.js";
 import type { CheckpointStore } from "./conversationStoreTypes.js";
 
 // The queue's orchestration against the REAL ConversationStore. The suite in
@@ -36,6 +36,7 @@ type ConversationStoreType = import("./ConversationStore.js").ConversationStore;
 type AgentServiceType = import("./AgentService.js").AgentService;
 let ConversationStoreCtor: typeof import("./ConversationStore.js").ConversationStore;
 let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
+let STEER_CARRY_ON: string;
 
 /** A provider whose sends can be held open, refused, or let through, and
  *  which announces its turns the way the real adapters do. */
@@ -47,6 +48,8 @@ class FakeAdapter {
     supportsResume: false,
     supportsModelList: false,
     supportsSubagents: false,
+    /** On for a provider kone steer may interrupt between steps. */
+    cancelKeepsCompletedTools: false,
   };
   readonly provider = "codex";
   sent: SendTurnInput[] = [];
@@ -136,6 +139,7 @@ let seq = 0;
 beforeAll(async () => {
   ConversationStoreCtor = (await import("./ConversationStore.js")).ConversationStore;
   AgentServiceCtor = (await import("./AgentService.js")).AgentService;
+  STEER_CARRY_ON = (await import("./AgentService.js")).STEER_CARRY_ON;
 });
 
 beforeEach(() => {
@@ -791,6 +795,211 @@ describe("a steer on a provider that can't steer, against the real store", () =>
     await service.steerTurn({ threadId: thread, input: "now" });
 
     expect(steerRows(thread)).toHaveLength(1);
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+});
+
+// kone steer (docs/agent-delivery-design.md §7): a provider that cannot steer
+// but keeps a finished tool call across a cancel has its turn ended between
+// two actions, never mid tool call and never while parked on the user.
+describe("kone steer, against the real store", () => {
+  beforeEach(() => {
+    adapter.capabilities.cancelKeepsCompletedTools = true;
+  });
+
+  const item = (
+    threadId: string,
+    type: "item.started" | "item.completed",
+    itemId: string,
+    kind: "tool_call" | "assistant_text" = "tool_call",
+    over: { name?: string; text?: string; subagentToolUseId?: string } = {},
+  ): RuntimeEvent => {
+    const status = type === "item.started" ? "in-progress" : "completed";
+    const runtimeItem: RuntimeItem = { itemId, kind, status, text: over.text ?? "" };
+    if (kind === "tool_call") runtimeItem.name = over.name ?? "bash";
+    const event: Extract<RuntimeEvent, { type: "item.started" | "item.completed" }> = {
+      ...base(threadId),
+      type,
+      turnId: "live",
+      item: runtimeItem,
+    };
+    if (over.subagentToolUseId) event.subagentToolUseId = over.subagentToolUseId;
+    return event;
+  };
+
+  async function working(): Promise<string> {
+    const thread = await openThread();
+    adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
+    return thread;
+  }
+
+  function park(threadId: string, requestId: string): void {
+    adapter.emit({
+      ...base(threadId),
+      type: "approval.requested",
+      requestId,
+      turnId: "live",
+      approval: { kind: "command", title: "rm -rf build" },
+    });
+  }
+
+  test("reads as after-step in the thread's runtime", async () => {
+    const thread = await working();
+    expect(service.threadRuntime(thread).urgent).toBe("after-step");
+    adapter.capabilities.cancelKeepsCompletedTools = false;
+    expect(service.threadRuntime(thread).urgent).toBe("turn-end");
+  });
+
+  test("with no tool call open the turn ends now; streaming text does not hold it", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "text-1", "assistant_text"));
+
+    const result = await service.steerTurn({ threadId: thread, input: "change of plan" });
+
+    expect(result.queued).toBe(true);
+    expect(result.afterStep).toBeUndefined();
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+
+  test("mid tool call it waits, and ends the turn only on that call's completion, not on streaming text", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1", "tool_call", { name: "bash", text: "bun test" }));
+
+    const result = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(result.afterStep).toMatchObject({ from: "user", tool: { name: "bash", text: "bun test" } });
+    expect(service.stepWait(thread)).toMatchObject({ from: "user" });
+    expect(adapter.interrupted).toEqual([]);
+
+    // Text streaming beside the call, and finishing, is not the gap.
+    adapter.emit(item(thread, "item.started", "text-1", "assistant_text"));
+    adapter.emit(item(thread, "item.completed", "text-1", "assistant_text"));
+    expect(adapter.interrupted).toEqual([]);
+
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(adapter.interruptedTurns).toEqual(["live"]);
+    expect(service.stepWait(thread)).toBeNull();
+  });
+
+  test("the tool call's completion is recorded before the interrupt", async () => {
+    const thread = await working();
+    const timeline: string[] = [];
+    // Registered after the service's own bookkeeping, like the journal.
+    service.onEvent((e) => {
+      if (e.type === "item.completed") timeline.push(`recorded ${e.item.itemId}`);
+    });
+    const interrupt = adapter.interruptTurn.bind(adapter);
+    adapter.interruptTurn = async (threadId) => {
+      timeline.push("interrupt");
+      return interrupt(threadId);
+    };
+    adapter.emit(item(thread, "item.started", "call-1"));
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(timeline).toEqual(["recorded call-1", "interrupt"]);
+  });
+
+  test("waits for every open tool call, a subagent's included", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    adapter.emit(item(thread, "item.started", "sub-call", "tool_call", { subagentToolUseId: "task-1" }));
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(adapter.interrupted).toEqual([]);
+    adapter.emit(item(thread, "item.completed", "sub-call", "tool_call", { subagentToolUseId: "task-1" }));
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+
+  test("never while parked on the user: held through the call's completion, then ended when the user answers", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    park(thread, "req-1");
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(adapter.interrupted).toEqual([]);
+    expect(service.interruptStepWaitNow(thread)).toBe(false);
+    expect(adapter.interrupted).toEqual([]);
+
+    adapter.emit({ ...base(thread), type: "approval.resolved", requestId: "req-1", decision: "allow-once" });
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+
+  test("parked with no tool call open, it holds until the user answers", async () => {
+    const thread = await working();
+    park(thread, "req-1");
+    const result = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(result.queued).toBe(true);
+    expect(adapter.interrupted).toEqual([]);
+
+    adapter.emit({ ...base(thread), type: "approval.resolved", requestId: "req-1", decision: "allow-once" });
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+
+  test("Interrupt now ends the turn without waiting for the tool call, once", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    expect(service.interruptStepWaitNow(thread)).toBe(false);
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+
+    expect(service.interruptStepWaitNow(thread)).toBe(true);
+    expect(adapter.interruptedTurns).toEqual(["live"]);
+    expect(service.interruptStepWaitNow(thread)).toBe(false);
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(adapter.interrupted).toEqual([thread]);
+  });
+
+  test("the turn it ended is followed by the steer, told the task goes on", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+
+    await waitFor(() => adapter.sent.length === 1);
+    expect(adapter.sent[0]!.input).toBe(`${STEER_CARRY_ON}\n\nchange of plan`);
+
+    // Said once: the turn after that is plain.
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "turn-1" });
+    await service.sendTurn({ threadId: thread, input: "next" });
+    expect(adapter.sent[1]!.input).toBe("next");
+  });
+
+  test("a turn that finished on its own before the cancel was not cut short", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+
+    await waitFor(() => adapter.sent.length === 1);
+    expect(adapter.sent[0]!.input).toBe("change of plan");
+  });
+
+  test("a wait goes with its turn", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    adapter.emit({ ...base(thread), type: "turn.completed", turnId: "live" });
+    await waitFor(() => adapter.sent.length === 1);
+    expect(service.stepWait(thread)).toBeNull();
+
+    // The next turn's tool calls end nothing.
+    adapter.emit({ ...base(thread), type: "item.started", turnId: "turn-1", item: { itemId: "c-2", kind: "tool_call", status: "in-progress", text: "", name: "bash" } });
+    adapter.emit({ ...base(thread), type: "item.completed", turnId: "turn-1", item: { itemId: "c-2", kind: "tool_call", status: "completed", text: "", name: "bash" } });
+    expect(adapter.interrupted).toEqual([]);
+  });
+
+  test("an agent's urgent mail joins the wait; the user's steer makes it theirs", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    expect(service.interruptAfterStep(thread, "agent")).toMatchObject({ outcome: "after-step", wait: { from: "agent" } });
+    expect(service.interruptAfterStep(thread, "agent").outcome).toBe("after-step");
+    const result = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(result.afterStep?.from).toBe("user");
+
+    adapter.emit(item(thread, "item.completed", "call-1"));
     expect(adapter.interrupted).toEqual([thread]);
   });
 });

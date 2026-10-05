@@ -904,7 +904,9 @@ describe("agent_list reads every agent on the project", () => {
     expect(rows[0]).toMatchObject({ state: "working", steers: false });
     expect(rows[1]).toMatchObject({ state: "closed", steers: true });
     const text = result.content[0]!.text;
-    expect(text).toContain("working (2 min): edit: auth.ts; a message that rings takes its next turn; urgent interrupts this one");
+    expect(text).toContain(
+      "working (2 min): edit: auth.ts; a message that rings takes its next turn; urgent waits for this turn to end: its provider loses work if interrupted",
+    );
     expect(text).toContain("session closed");
   });
 

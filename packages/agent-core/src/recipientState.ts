@@ -4,6 +4,12 @@ import type { RuntimeItemKind, SpawnedThreadStatus } from "./types.js";
 // message is worth sending, and whether it should disturb. Pure: every fact
 // comes in as data, so the ladder is the same wherever it is read.
 
+/** How an urgent message reaches a running turn: into it, on a provider that
+ *  steers; after its current step, through kone steer, on one that cannot but
+ *  keeps a finished tool call across a cancel; or when the turn ends, on one
+ *  that would lose that work (docs/agent-delivery-design.md §7). */
+export type UrgentLanding = "steer" | "after-step" | "turn-end";
+
 /** One thread's live state, as the agent service holds it. */
 export interface ThreadRuntime {
   /** A provider session backs the thread. */
@@ -20,6 +26,9 @@ export interface ThreadRuntime {
   /** Whether its provider takes a message into a running turn. Null when no
    *  session says which provider it runs on. */
   steers: boolean | null;
+  /** How an urgent message reaches its running turn. Null when no session
+   *  says which provider it runs on; absent reads from `steers`. */
+  urgent?: UrgentLanding | null;
   /** The tool call it is in the middle of: the newest one open. */
   activeTool: { name: string; text: string; startedAt: number } | null;
   /** Between tool calls, what its turn is on: the newest open item that is
@@ -47,6 +56,10 @@ export interface RecipientState {
   activity: string | null;
   /** Whether a message can go into its running turn; null when unknown. */
   steers: boolean | null;
+  /** How an urgent message reaches its running turn; null when unknown. */
+  urgent: UrgentLanding | null;
+  /** It is in the middle of a tool call. */
+  inTool: boolean;
   /** The agents it is parked waiting on. */
   waitingOn: string[];
   /** How a hand-off's work ended, for `ended`. */
@@ -90,8 +103,12 @@ const STEP = {
  */
 export function recipientState(input: RecipientStateInput): RecipientState {
   const rt = input.runtime;
+  const steers = rt?.steers ?? input.providerSteers ?? null;
+  const urgent: UrgentLanding | null = rt?.urgent ?? (steers === null ? null : steers ? "steer" : "turn-end");
   const base = {
-    steers: rt?.steers ?? input.providerSteers ?? null,
+    steers,
+    urgent,
+    inTool: rt?.activeTool != null,
     waitingOn: input.waitingOn?.threadIds ?? [],
     ended: null,
     unseen: input.unseen,
@@ -142,6 +159,12 @@ export function formatSince(since: number | null, now: number): string | null {
   return `${Math.round(m / 60)} h`;
 }
 
+const URGENT_LANDS = {
+  steer: "urgent goes into this one",
+  "after-step": "urgent waits for its current step, then interrupts this turn",
+  "turn-end": "urgent waits for this turn to end: its provider loses work if interrupted",
+} satisfies Record<UrgentLanding, string>;
+
 /** One roster line's state, as the sender reads it: what it is doing, and
  *  what a message to it would do. */
 export function describeRecipientState(state: RecipientState, now: number): string {
@@ -150,10 +173,7 @@ export function describeRecipientState(state: RecipientState, now: number): stri
   switch (state.state) {
     case "working": {
       const on = state.activity ? `: ${state.activity}` : "";
-      const lands =
-        state.steers === false
-          ? "a message that rings takes its next turn; urgent interrupts this one"
-          : "a message that rings takes its next turn; urgent goes into this one";
+      const lands = `a message that rings takes its next turn; ${URGENT_LANDS[state.urgent ?? (state.steers === false ? "turn-end" : "steer")]}`;
       return `working${forHow}${on}; ${lands}`;
     }
     case "idle":

@@ -116,6 +116,7 @@ type PeerRow = {
   since: number | null;
   activity: string | null;
   steers: boolean | null;
+  urgent: RecipientState["urgent"];
   waitingOn: string[];
   ended: RecipientState["ended"];
   unseen: number;
@@ -1180,7 +1181,7 @@ export function resetIrcMailbox(): void {
 const IRC_SEND_DESCRIPTION = [
   "Message another kone agent. Every message lands in its inbox. A note waits there and is handed over in front of the agent's next turn, whatever starts it: it never starts a turn of its own, so it costs nobody a turn. A question, pushback, answer or report rings: an idle agent is woken with a turn for it, a working one takes it when its running turn ends, and a closed session is brought back up for it. It arrives headed as yours, with how you relate to the reader, so it is never mistaken for the user. The result says what happened to it.",
   "",
-  "`urgent` puts it into the reader's running turn instead of waiting for the turn to end. Only along a hand-off (to an agent you handed work to, or the one you work for) or from the main agent; never on a broadcast, never from a worker. Use it only when the work going on is wrong without it.",
+  "`urgent` puts it into the reader's running turn instead of waiting for the turn to end; on a provider that cannot take it there, kone waits for the reader's current step to finish, then interrupts the turn, and on one that would lose that work it lands when the turn ends. The result says which. Only along a hand-off (to an agent you handed work to, or the one you work for) or from the main agent; never on a broadcast, never from a worker. Use it only when the work going on is wrong without it.",
   "",
   "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say. The answer reaches you on its own, so keep working on what does not depend on it; set wait only when you cannot go on without it. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question you were asked, with replyTo set to its message id; anything else sent as an answer goes as a note.",
   "",
@@ -1192,7 +1193,7 @@ const IRC_SEND_DESCRIPTION = [
 const IRC_LIST_DESCRIPTION = [
   "List the kone agents on this project you can message, and what each is doing: working (on what, for how long), idle, waiting on the user, waiting on another agent, starting, compacting, session closed, or its hand-off ended. Each row says how you relate to it, what a message to it would do right now, and how many messages wait unseen in its inbox and for how long.",
   "",
-  "Look before you send: a message to an agent waiting on the user waits with it, and an urgent one to a busy agent on a provider that cannot steer interrupts its turn.",
+  "Look before you send: a message to an agent waiting on the user waits with it, and an urgent one to a busy agent on a provider that cannot steer waits for its current step, then interrupts its turn, or waits for the turn to end.",
 ].join("\n");
 
 const IRC_INBOX_DESCRIPTION = [
@@ -1238,6 +1239,8 @@ function renderPeerLine(p: PeerRow, now: number): string {
       since: p.since,
       activity: p.activity,
       steers: p.steers,
+      urgent: p.urgent,
+      inTool: false,
       waitingOn: p.waitingOn,
       ended: p.ended,
       unseen: p.unseen,
@@ -1559,6 +1562,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
         since: state.since,
         activity: state.activity,
         steers: state.steers,
+        urgent: state.urgent,
         waitingOn: state.waitingOn,
         ended: state.ended,
         unseen: state.unseen,
