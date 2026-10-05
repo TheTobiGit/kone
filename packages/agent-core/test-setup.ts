@@ -12,8 +12,7 @@
 // `StatementSync` is only ever imported as a type, so it erases and needs no
 // stand-in here.
 import { Database } from "bun:sqlite";
-import { mock } from "bun:test";
-
+import { afterAll, mock } from "bun:test";
 mock.module("./src/sqlite.ts", () => ({
   DatabaseSync: Database,
 }));
@@ -22,3 +21,29 @@ mock.module("./src/sqlite.ts", () => ({
 mock.module("./src/sqliteReadOnly.ts", () => ({
   openDatabaseReadOnly: (filePath: string) => new Database(filePath, { readonly: true }),
 }));
+
+// Keeps test runs from littering the shared temp dir.
+//
+// Every suite builds its scratch space with mkdtemp under os.tmpdir(), so
+// pointing TMPDIR at a directory of this run's own contains all of it — the
+// stores' databases included, and anything a spawned child process puts there,
+// since it inherits the environment — and removing that one directory when
+// the runner exits cleans up without touching a single test file. The same
+// block lives in apps/desktop/test-setup.ts and
+// packages/git-core/test-setup.ts, one per `bun test` process.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const testRunDir = mkdtempSync(path.join(tmpdir(), "kone-test-run-"));
+process.env.TMPDIR = testRunDir;
+// `afterAll` at preload scope runs once, after every test file: `process.on
+// "exit"` never fires under `bun test` (the runner exits natively), and this
+// is the hook that does.
+afterAll(() => {
+  try {
+    rmSync(testRunDir, { recursive: true, force: true });
+  } catch {
+    // Best effort: a wedged scratch file must not fail the run.
+  }
+});

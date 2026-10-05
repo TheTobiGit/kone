@@ -1,0 +1,3 @@
+[test]
+# Contains each run's temp dirs (see test-setup.ts) and removes them on exit.
+preload = ["./test-setup.ts"]
