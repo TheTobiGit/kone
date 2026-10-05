@@ -962,12 +962,12 @@ export class ClineAdapter implements ProviderAdapter {
     this.emitItem(session, "item.updated", buffer, "in-progress");
   }
 
-  private closeSegment(session: ClineSession): void {
+  private closeSegment(session: ClineSession, turnId?: string): void {
     const open = session.segment;
     if (!open) return;
     session.segment = undefined;
     const buffer = session.items.get(open.itemId);
-    if (buffer) this.emitItem(session, "item.completed", buffer, "completed");
+    if (buffer) this.emitItem(session, "item.completed", buffer, "completed", turnId);
   }
 
   private handleToolCall(session: ClineSession, update: ClineAcpRecord): void {
@@ -1045,7 +1045,11 @@ export class ClineAdapter implements ProviderAdapter {
   /** Close out a turn's bookkeeping: settle anything still marked in-progress,
    *  then drop the turn's buffers so a long thread doesn't accumulate them. */
   private endTurn(session: ClineSession, turnId: string, status: RuntimeItemStatus): void {
-    this.closeSegment(session);
+    // The turn is over before its last items are closed: an interrupt asked
+    // for on one of their completions (kone steer) finds no turn to cancel,
+    // so a turn that ended on its own is not reported interrupted.
+    session.activeTurnId = undefined;
+    this.closeSegment(session, turnId);
     for (const itemId of session.openItemIds) {
       const buffer = session.items.get(itemId);
       if (buffer) this.emitItem(session, "item.completed", buffer, status, turnId);
@@ -1054,7 +1058,6 @@ export class ClineAdapter implements ProviderAdapter {
     session.items.clear();
     session.openItemIds.clear();
     session.segmentCount = 0;
-    session.activeTurnId = undefined;
   }
 
   private completeTurn(session: ClineSession, turnId: string, response: ClineAcpRecord): void {

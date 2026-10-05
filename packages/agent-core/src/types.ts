@@ -397,6 +397,11 @@ export type TurnStartResult = {
 /** A kone steer wait: the running turn ends once its open tool calls finish,
  *  so what waits for it goes next (docs/agent-delivery-design.md §7). */
 export type StepWait = {
+  /** This wait, so Interrupt now ends the turn it was offered for and no
+   *  other. */
+  id: string;
+  /** The turn it ends. */
+  turnId: string;
   /** Whose message waits: only the user is offered Interrupt now. */
   from: "user" | "agent";
   /** The tool call it waits on, by name and target. */

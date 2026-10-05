@@ -915,11 +915,11 @@ describe("kone steer, against the real store", () => {
     const thread = await working();
     adapter.emit(item(thread, "item.started", "call-1"));
     park(thread, "req-1");
-    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    const { afterStep } = await service.steerTurn({ threadId: thread, input: "change of plan" });
 
     adapter.emit(item(thread, "item.completed", "call-1"));
     expect(adapter.interrupted).toEqual([]);
-    expect(service.interruptStepWaitNow(thread)).toBe(false);
+    expect(service.interruptStepWaitNow(thread, afterStep!.id)).toBe(false);
     expect(adapter.interrupted).toEqual([]);
 
     adapter.emit({ ...base(thread), type: "approval.resolved", requestId: "req-1", decision: "allow-once" });
@@ -937,15 +937,18 @@ describe("kone steer, against the real store", () => {
     expect(adapter.interrupted).toEqual([thread]);
   });
 
-  test("Interrupt now ends the turn without waiting for the tool call, once", async () => {
+  test("Interrupt now ends the turn without waiting for the tool call, once, for the wait it was offered for", async () => {
     const thread = await working();
     adapter.emit(item(thread, "item.started", "call-1"));
-    expect(service.interruptStepWaitNow(thread)).toBe(false);
-    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    const { afterStep } = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(afterStep?.turnId).toBe("live");
+    expect(afterStep?.id).toBe(service.stepWait(thread)!.id);
 
-    expect(service.interruptStepWaitNow(thread)).toBe(true);
+    expect(service.interruptStepWaitNow(thread, "some-other-wait")).toBe(false);
+    expect(adapter.interrupted).toEqual([]);
+    expect(service.interruptStepWaitNow(thread, afterStep!.id)).toBe(true);
     expect(adapter.interruptedTurns).toEqual(["live"]);
-    expect(service.interruptStepWaitNow(thread)).toBe(false);
+    expect(service.interruptStepWaitNow(thread, afterStep!.id)).toBe(false);
     adapter.emit(item(thread, "item.completed", "call-1"));
     expect(adapter.interrupted).toEqual([thread]);
   });
@@ -989,6 +992,87 @@ describe("kone steer, against the real store", () => {
     adapter.emit({ ...base(thread), type: "item.started", turnId: "turn-1", item: { itemId: "c-2", kind: "tool_call", status: "in-progress", text: "", name: "bash" } });
     adapter.emit({ ...base(thread), type: "item.completed", turnId: "turn-1", item: { itemId: "c-2", kind: "tool_call", status: "completed", text: "", name: "bash" } });
     expect(adapter.interrupted).toEqual([]);
+  });
+
+  // Review finding 2: a turn kone steer is ending is not cancelled again.
+  test("a turn already being ended is not cancelled twice, whoever asks", async () => {
+    const thread = await working();
+    expect(service.interruptAfterStep(thread, "agent").outcome).toBe("interrupted");
+    expect(service.interruptAfterStep(thread, "agent").outcome).toBe("interrupted");
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(adapter.interrupted).toEqual([thread]);
+
+    // Settled, the next turn can be ended again.
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+    await waitFor(() => adapter.sent.length === 1);
+    expect(service.interruptAfterStep(thread, "agent").outcome).toBe("interrupted");
+    expect(adapter.interrupted).toEqual([thread, thread]);
+  });
+
+  // Review finding 3: what a cut was for goes with its session, and with the
+  // steer it was for.
+  test("a cancelled steer takes its carry-on line with it, across a session exit", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    const steered = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(await service.cancelQueuedTurn(thread, steered.turnId)).toBe(true);
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+    adapter.emit({ ...base(thread), type: "session.exited", code: 0 });
+
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    await service.sendTurn({ threadId: thread, input: "unrelated work" });
+    expect(adapter.sent.map((t) => t.input)).toEqual(["unrelated work"]);
+  });
+
+  test("a cancelled steer takes its carry-on line with it", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    const steered = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(await service.cancelQueuedTurn(thread, steered.turnId)).toBe(true);
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+
+    await service.sendTurn({ threadId: thread, input: "unrelated work" });
+    expect(adapter.sent.map((t) => t.input)).toEqual(["unrelated work"]);
+  });
+
+  test("a cancelled steer's wait ends no turn", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    const steered = await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(await service.cancelQueuedTurn(thread, steered.turnId)).toBe(true);
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    expect(adapter.interrupted).toEqual([]);
+  });
+
+  test("the carry-on line does not outlive the session", async () => {
+    const thread = await working();
+    adapter.emit(item(thread, "item.started", "call-1"));
+    expect(service.interruptAfterStep(thread, "agent").outcome).toBe("after-step");
+    adapter.emit(item(thread, "item.completed", "call-1"));
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+    adapter.emit({ ...base(thread), type: "session.state.changed", state: "error", message: "gone" });
+
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    await service.sendTurn({ threadId: thread, input: "unrelated work" });
+    expect(adapter.sent.map((t) => t.input)).toEqual(["unrelated work"]);
+  });
+
+  // Review finding 5: a refused turn did not carry the line, so its retry does.
+  test("the carry-on line goes with the turn the provider accepts, not one it refused", async () => {
+    const thread = await working();
+    await service.steerTurn({ threadId: thread, input: "change of plan" });
+    expect(adapter.interrupted).toEqual([thread]);
+    adapter.refuse = new Error("busy, try again");
+    adapter.abortBeforeRefusing = true;
+    adapter.emit({ ...base(thread), type: "turn.aborted", turnId: "live", reason: "interrupted" });
+    await waitFor(() => adapter.attempts.length === 1);
+    adapter.refuse = null;
+    adapter.abortBeforeRefusing = false;
+
+    await waitFor(() => adapter.sent.length === 1);
+    expect(adapter.sent[0]!.input).toBe(`${STEER_CARRY_ON}\n\nchange of plan`);
   });
 
   test("an agent's urgent mail joins the wait; the user's steer makes it theirs", async () => {

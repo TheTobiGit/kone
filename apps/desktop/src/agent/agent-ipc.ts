@@ -795,8 +795,11 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) => handOffs.userSteers(input));
   // The user's Interrupt now on a steer kone steer is holding until the
   // running tool call finishes: the turn ends at once, and the steer goes
-  // next. False when nothing waits, or the thread is parked on the user.
-  ipcMain.handle("agent:steer-interrupt-now", (_event, threadId: string) => svc.interruptStepWaitNow(threadId));
+  // next. Only for the wait it was offered for; false when that wait is
+  // over, or the thread is parked on the user.
+  ipcMain.handle("agent:steer-interrupt-now", (_event, threadId: string, waitId: string) =>
+    svc.interruptStepWaitNow(threadId, waitId),
+  );
   // Pre-turn repository snapshots. `turn-checkpoints` lists every snapshot
   // recorded for a thread (oldest first); `preview-turn-checkpoint` names what
   // restoring one would change without changing anything; `revert-turn-checkpoint`

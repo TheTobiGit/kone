@@ -979,6 +979,36 @@ describe("ClineAdapter streamed turn", () => {
     expect(assistant.length).toBeGreaterThan(0);
   });
 
+  // kone steer interrupts on a tool call's completion. The calls a turn's end
+  // closes are completions too, and must not turn a finished turn into an
+  // interrupted one.
+  test("an interrupt asked for on a completion the turn's end emits cancels nothing", async () => {
+    let finish: (result: RecordLike) => void = () => {};
+    behavior.prompt = () => new Promise<RecordLike>((resolve) => (finish = resolve));
+    const events: RuntimeEvent[] = [];
+    let adapter: InstanceType<typeof ClineAdapter> | null = null;
+    adapter = new ClineAdapter((event) => {
+      events.push(event);
+      if (event.type === "item.completed" && event.item.kind === "tool_call") void adapter?.interruptTurn("t1");
+    }, async () => featuredModels);
+    await adapter.startSession({ threadId: "t1", provider: "cline", cwd: PROJECT });
+    const child = sessionChild();
+    await adapter.sendTurn({ threadId: "t1", input: "run the tests" });
+    child.update({
+      sessionUpdate: "tool_call", toolCallId: "call-1", title: "bun test", kind: "execute", status: "in_progress",
+      rawInput: { command: "bun test" },
+    });
+
+    // The turn ends with the call still open: the finalizer closes it.
+    finish({ stopReason: "end_turn" });
+    await until(() => types(events).some((type) => type === "turn.completed" || type === "turn.aborted"), "the turn's end");
+
+    expect(events.some((event) => event.type === "item.completed" && event.item.kind === "tool_call")).toBe(true);
+    expect(types(events)).toContain("turn.completed");
+    expect(types(events)).not.toContain("turn.aborted");
+    expect(child.notifications.map((n) => n.method)).not.toContain("session/cancel");
+  });
+
   test("stopping mid-turn seals the live turn and kills the child", async () => {
     behavior.prompt = () => new Promise<RecordLike>(() => {});
     const { adapter, events } = makeAdapter();

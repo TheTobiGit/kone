@@ -309,8 +309,27 @@ function endsAStep(event: RuntimeEvent): boolean {
   }
 }
 
+/** What a kone steer ends a turn for: the user's queued steers, by queue id,
+ *  and whether anything stands that no row's cancellation takes back (an
+ *  agent's urgent mail). With neither left there is nothing to deliver. */
+type SteerFor = { rows: Set<string>; standing: boolean };
+
+function steerFor(queueId: string | undefined): SteerFor {
+  return { rows: new Set(queueId ? [queueId] : []), standing: !queueId };
+}
+
+function joinSteer(into: SteerFor, queueId: string | undefined): void {
+  if (queueId) into.rows.add(queueId);
+  else into.standing = true;
+}
+
+/** Take a cancelled row out; true when nothing is left to deliver. */
+function dropSteerRow(from: SteerFor, queueId: string): boolean {
+  return from.rows.delete(queueId) && from.rows.size === 0 && !from.standing;
+}
+
 function publicStepWait(wait: StepWait): StepWait {
-  return { from: wait.from, tool: wait.tool, since: wait.since };
+  return { id: wait.id, turnId: wait.turnId, from: wait.from, tool: wait.tool, since: wait.since };
 }
 
 function failedCheckpoint(cause: unknown): FailedCheckpoint {
@@ -390,11 +409,13 @@ export class AgentService {
   /** kone steer's waits, per thread: the running turn to end once its open
    *  tool calls finish, so what waits for it goes next. Each names the turn
    *  it ends; a turn that settles on its own takes its wait with it. */
-  private readonly stepWaits = new Map<string, StepWait & { turnId: string }>();
-  /** The turn kone steer interrupted, per thread, until it settles. */
-  private readonly steerCuts = new Map<string, string>();
-  /** Threads whose turn kone steer ended: the next turn says so. */
-  private readonly steerCarryOn = new Set<string>();
+  private readonly stepWaits = new Map<string, StepWait & { for: SteerFor }>();
+  /** The turn kone steer interrupted, per thread, until it settles: it is
+   *  never cancelled twice. */
+  private readonly steerCuts = new Map<string, { turnId: string; for: SteerFor }>();
+  /** Threads whose turn kone steer ended: the next turn the provider accepts
+   *  says so. Gone with the session, or with the last steer it was for. */
+  private readonly steerCarryOn = new Map<string, SteerFor>();
   /** When each live turn started — how long a thread has been working. */
   private readonly turnStartedAt = new Map<string, number>();
   /** The tool calls each thread has open, by item id — what it is working
@@ -993,18 +1014,35 @@ export class AgentService {
    *
    * "none" when there is no announced turn to end; otherwise what it did, and
    * for a wait, what it waits on. A second call for the same turn joins the
-   * wait; the user's call makes it theirs.
+   * wait, or the cancellation already asked for; the user's call makes the
+   * wait theirs. `queueId` is the user's queued steer it is for: cancelling
+   * that row takes it back.
    */
   interruptAfterStep(
     threadId: string,
     from: StepWait["from"],
+    queueId?: string,
   ): { outcome: "none" | "interrupted" | "after-step" | "held"; wait?: StepWait } {
     const turnId = this.activeTurns.get(threadId);
     if (!turnId) return { outcome: "none" };
+    const cut = this.steerCuts.get(threadId);
+    if (cut?.turnId === turnId) {
+      joinSteer(cut.for, queueId);
+      return { outcome: "interrupted" };
+    }
     const known = this.stepWaits.get(threadId);
-    const joins = known?.turnId === turnId;
-    if (!joins || (from === "user" && known.from !== "user")) {
-      this.stepWaits.set(threadId, { turnId, from, tool: this.openToolNamed(threadId), since: Date.now() });
+    if (known?.turnId === turnId) {
+      joinSteer(known.for, queueId);
+      if (from === "user") known.from = "user";
+    } else {
+      this.stepWaits.set(threadId, {
+        id: randomUUID(),
+        turnId,
+        from,
+        tool: this.openToolNamed(threadId),
+        since: Date.now(),
+        for: steerFor(queueId),
+      });
     }
     const outcome = this.settleStepWait(threadId);
     const wait = this.stepWaits.get(threadId);
@@ -1017,14 +1055,15 @@ export class AgentService {
     return wait && this.activeTurns.get(threadId) === wait.turnId ? publicStepWait(wait) : null;
   }
 
-  /** The user's **Interrupt now** on a kone steer wait: end the turn without
-   *  waiting for its tool call. Never while parked on the user, whose answer
-   *  the interrupt would decline. False when nothing was ended. */
-  interruptStepWaitNow(threadId: string): boolean {
+  /** The user's **Interrupt now** on the kone steer wait `waitId`: end the
+   *  turn without waiting for its tool call. Never while parked on the user,
+   *  whose answer the interrupt would decline. False when nothing was ended:
+   *  that wait is over, or the thread is parked. */
+  interruptStepWaitNow(threadId: string, waitId: string): boolean {
     const wait = this.stepWaits.get(threadId);
-    if (!wait || this.activeTurns.get(threadId) !== wait.turnId) return false;
+    if (!wait || wait.id !== waitId || this.activeTurns.get(threadId) !== wait.turnId) return false;
     if (this.parkedByThread.get(threadId)?.size) return false;
-    this.endForSteer(threadId, wait.turnId);
+    this.endForSteer(threadId, wait);
     return true;
   }
 
@@ -1042,13 +1081,13 @@ export class AgentService {
       wait.tool ??= this.openToolNamed(threadId);
       return "after-step";
     }
-    this.endForSteer(threadId, wait.turnId);
+    this.endForSteer(threadId, wait);
     return "interrupted";
   }
 
-  private endForSteer(threadId: string, turnId: string): void {
+  private endForSteer(threadId: string, wait: { turnId: string; for: SteerFor }): void {
     this.stepWaits.delete(threadId);
-    this.steerCuts.set(threadId, turnId);
+    this.steerCuts.set(threadId, { turnId: wait.turnId, for: wait.for });
     void this.interruptTurn(threadId).catch((err) => {
       console.warn(`[agent] kone steer could not end ${threadId}'s turn:`, err);
     });
@@ -1176,7 +1215,10 @@ export class AgentService {
     const body = carry ? carry.input : turn;
     // kone steer ended the last turn only to deliver this: the agent is told
     // its task goes on. Prompt only, never journaled.
-    const sent = this.steerCarryOn.has(threadId) ? { ...body, input: `${STEER_CARRY_ON}\n\n${body.input}` } : body;
+    // Said once, by the turn the provider takes: a refused one leaves it for
+    // the retry.
+    const carryOn = this.steerCarryOn.get(threadId);
+    const sent = carryOn ? { ...body, input: `${STEER_CARRY_ON}\n\n${body.input}` } : body;
     try {
       return await this.sendToAdapter(threadId, sent, {
         onSending: () => {
@@ -1185,6 +1227,7 @@ export class AgentService {
         },
         onAccepted: (turnId) => {
           accepted = true;
+          if (carryOn && this.steerCarryOn.get(threadId) === carryOn) this.steerCarryOn.delete(threadId);
           carry?.settle(turnId);
           hooks?.onAccepted?.(turnId);
         },
@@ -1811,8 +1854,6 @@ export class AgentService {
         // A new turn: whatever an earlier one left open — a session that
         // died under it without aborting it — is not what this one is doing.
         if (this.activeTurns.get(threadId) !== event.turnId) this.forgetOpenItems(threadId);
-        // Whatever kone steer ended the last turn for, this one carried it.
-        this.steerCarryOn.delete(threadId);
         this.activeTurns.set(threadId, event.turnId);
         this.turnStartedAt.set(threadId, event.at);
         // A turn nobody here asked for — the user typing, a peer's message, a
@@ -1854,9 +1895,12 @@ export class AgentService {
       case "turn.aborted":
         // A turn kone steer ended: the next one says why. One that finished
         // on its own before the cancel reached it was not cut short.
-        if (this.steerCuts.get(threadId) === event.turnId) {
-          this.steerCuts.delete(threadId);
-          if (event.type === "turn.aborted") this.steerCarryOn.add(threadId);
+        {
+          const cut = this.steerCuts.get(threadId);
+          if (cut?.turnId === event.turnId) {
+            this.steerCuts.delete(threadId);
+            if (event.type === "turn.aborted") this.steerCarryOn.set(threadId, cut.for);
+          }
         }
         if (this.stepWaits.get(threadId)?.turnId === event.turnId) this.stepWaits.delete(threadId);
         this.activeTurns.delete(threadId);
@@ -1867,17 +1911,26 @@ export class AgentService {
         // and sends at most one turn, so the next settlement drains again).
         this.promoteQueuedTurns(threadId);
         break;
+      case "turn.queued-cancelled":
+        this.dropSteerRow(threadId, event.queueId);
+        break;
       case "session.state.changed":
         if (event.state === "stopped" || event.state === "error") {
           this.activeTurns.delete(threadId);
           this.dropAllParked(threadId);
           this.forgetOpenItems(threadId);
+          this.forgetSteer(threadId);
         }
         break;
       case "session.exited":
         this.activeTurns.delete(threadId);
         this.dropAllParked(threadId);
         this.forgetOpenItems(threadId);
+        this.forgetSteer(threadId);
+        break;
+      case "session.started":
+        // A new session carries on nothing an old one was cut short for.
+        this.forgetSteer(threadId);
         break;
       case "subagent.background-settled":
         this.wakeForSettledSubagents(event);
@@ -2005,6 +2058,26 @@ export class AgentService {
     this.stepWaits.delete(threadId);
     this.openTools.delete(threadId);
     this.openStep.delete(threadId);
+  }
+
+  /** kone steer's marks on a thread: its session went, and what it was
+   *  ending a turn for went with it. */
+  private forgetSteer(threadId: string): void {
+    this.stepWaits.delete(threadId);
+    this.steerCuts.delete(threadId);
+    this.steerCarryOn.delete(threadId);
+  }
+
+  /** A queued steer was cancelled: a wait, cut or carry-on that was only for
+   *  it goes. A wait that goes ends no turn; a cut whose turn then aborts
+   *  says nothing to the next one. */
+  private dropSteerRow(threadId: string, queueId: string): void {
+    const wait = this.stepWaits.get(threadId);
+    if (wait && dropSteerRow(wait.for, queueId)) this.stepWaits.delete(threadId);
+    const cut = this.steerCuts.get(threadId);
+    if (cut && dropSteerRow(cut.for, queueId)) this.steerCuts.delete(threadId);
+    const carryOn = this.steerCarryOn.get(threadId);
+    if (carryOn && dropSteerRow(carryOn, queueId)) this.steerCarryOn.delete(threadId);
   }
 
   private closeItem(threadId: string, itemId: string): void {
@@ -2222,7 +2295,7 @@ export class AgentService {
         // kone steer: the turn ends between two actions, held while parked
         // on the user, and the row goes next.
         if (liveTurnId && this.urgentLanding(provider) === "after-step") {
-          const { wait } = this.interruptAfterStep(threadId, "user");
+          const { wait } = this.interruptAfterStep(threadId, "user", enqueued.queued ? enqueued.turnId : undefined);
           return wait ? { ...enqueued, afterStep: wait } : enqueued;
         }
         // A turn parked on the user is not interrupted: on several providers
