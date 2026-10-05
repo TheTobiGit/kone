@@ -556,6 +556,16 @@ An exit settles the two kinds of turn differently, on purpose. A running turn re
 
 Its tests cover a late completion and a late abort for a turn cut off while running, and a late completion for a turn that failed before it started. All three fail with the fix stashed.
 
+The review at `4c4e4b25` held it back on one more:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| A sealed outcome changed after a restart. The seal was kept only in the engine's memory, so the store wrote the late completion over the turn's block, and after the store reopened, a wait pinned to that turn read completed where the parent had been told failed | Migration 28 adds `turn_seals`. The engine stores each seal as it makes it, and settles the turn's assistant block the same way; the first seal of a turn stands. In the store, a late `turn.completed` or `turn.aborted` leaves a sealed block as it is, and a late `turn.started` opens the block already settled. `turnSpan` reads a sealed turn as its seal, also for a turn that never got a block. Late items still land, index and broadcast as before. The engine logs each late settle it ignores, and logs when a seal could not be stored | `ad7e79f8`, `63722270` |
+
+Its tests run the engine on a real store for every turn record, while thread lineage stays in the test's fake. Each test seals a turn, delivers a late settle, disposes the engine, closes and reopens the store, then runs the pinned wait in a fresh engine. They cover a turn cut off by an error, one cut off by an exit, and one that failed before it started and then got a late start and completion. All three fail with the source stashed and read `completed`.
+
+For a child, an exit now leaves the cut-off turn's block `interrupted`, the seal's state, where the store's own exit handling writes `failed`. Threads that are not tracked children keep `failed`. The in-memory seal set is a field of the tracked child, so it goes when the child is untracked or the engine is disposed. It holds at most one entry per turn the child ran.
+
 What retries what, and when it stops:
 
 | Write or send | Retried | Stops |
@@ -576,12 +586,12 @@ Still open:
 
 ### Picking this up
 
-Where the work stands after `c53f440a`, `1311562e`, `acc6dad5`, `ca1f7d10` and `4726a128`: agent-core passes 2561 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
+Where the work stands after `c53f440a`, `1311562e`, `acc6dad5`, `ca1f7d10`, `4726a128`, `ad7e79f8` and `63722270`: agent-core passes 2564 tests; agent-core and desktop typechecks and changed-file Oxlint pass. The child and queue fault-injection regressions fail with their fixes stashed and pass after restoration.
 
-**`delivery.v2` is not yet cleared to turn on.** The review at `089db2d9` cleared the fixes for stale activity, stale lifecycle events and reused queue rowids. It held delivery back on one finding: a restart revived the turn the old session died under. That fix, `ca1f7d10`, is local and needs re-review, along with `4726a128`, which closes the late settle it left open. The complete-read-outage cutoff limitation above remains explicit.
+**`delivery.v2` is not yet cleared to turn on.** The review at `089db2d9` cleared the fixes for stale activity, stale lifecycle events and reused queue rowids. It held delivery back on one finding: a restart revived the turn the old session died under. The review at `4c4e4b25` cleared `ca1f7d10` and `4726a128` in the live engine, and held it on a sealed outcome changing after a restart. That fix, `ad7e79f8` and `63722270`, is local and needs re-review. The complete-read-outage cutoff limitation above remains explicit.
 
 Next, in order:
-1. **Review `089db2d9..4726a128`.** Run a child turn, then error, stop or exit with no `turn.aborted`, then a follow-up on a new session to completion. The child should end, an unpinned wait should return, and each turn should reach the parent once. Check that a late `turn.completed` or `turn.aborted` for a turn the session end already settled is ignored, both for a turn cut off while running and for one taken but never started. Still to decide: how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
+1. **Review `4c4e4b25..63722270`.** Seal a turn by error, stop or exit, deliver a late completion, and reopen the store. A wait pinned to that turn, and the thread's newest-turn read, should both give the seal. Upgrade a version-27 database to 28. Look hard at what happens when the seal write fails: the engine keeps the seal in memory and logs, but after a restart a late settle can still rewrite it. Still to decide: how a Stop should behave when neither its pending rows nor its allocation boundary can be read.
 2. **If that review clears it, try `delivery.v2` by hand.** Set `{"v2": true}` in `delivery-settings.json` in the app's userData directory; it is read once at boot. Exercise a note, a question to a busy agent, an urgent message, a follow-up job, and a restart mid-hand-over.
 3. **Phase 5, kone steer**, for Cline only: it is the only provider that passed the cancel probe.
 4. **Run the cancel probe (`packages/agent-core/scripts/cancelProbe.ts`) on Droid and Antigravity ACP** once they are installed and enabled.
