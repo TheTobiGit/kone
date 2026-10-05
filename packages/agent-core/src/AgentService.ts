@@ -296,9 +296,10 @@ function failedCheckpoint(cause: unknown): FailedCheckpoint {
 // no DI container. One instance per app, created in main.ts.
 
 /** The rows an owed cancellation takes: the ones read as pending when it was
- *  asked, or — when that read failed — every row queued up to `upTo`, apart
- *  from those queued after it, named in `spared` as they arrive. */
-type CancelScope = { queueIds: ReadonlySet<string> } | { upTo: number; spared: Set<string> };
+ *  asked, or — when that read failed — every row at or below the queue's
+ *  rowid boundary then (any row, when even that was unknown), apart from
+ *  those queued after it, named in `spared` as they arrive. */
+type CancelScope = { queueIds: ReadonlySet<string> } | { upToRowid: number | null; spared: Set<string> };
 
 export class AgentService {
   private readonly adapters = new Map<ProviderKind, ProviderAdapter>();
@@ -2852,15 +2853,15 @@ export class AgentService {
     this.clearPendingReleases(threadId);
     // The rows this cancels: what is pending now. Read first, so a retry
     // never takes rows queued later. When the read fails, the rows queued up
-    // to now are cancelled instead, apart from any queued after this — the
-    // queue's own clock draws the line, and the ones queued after are named.
+    // to now are cancelled instead: the store's rowid boundary, which only
+    // grows, draws the line, and rows the service queues after are named.
     let pending: string[] | null = null;
     try {
       pending = this.queueStore.pendingQueueIds(threadId);
     } catch {
       // Unreadable, the same as a null answer.
     }
-    let scope: CancelScope = pending ? { queueIds: new Set(pending) } : { upTo: Date.now(), spared: new Set() };
+    let scope: CancelScope = pending ? { queueIds: new Set(pending) } : { upToRowid: this.queueBoundary(), spared: new Set() };
     // Rows an earlier cancel is still owed are pending, so this one's read
     // has them, and its line is later than theirs. Its ids are kept anyway,
     // for a read that missed them.
@@ -2895,7 +2896,7 @@ export class AgentService {
         "queueIds" in scope
           ? this.queueStore.cancelQueuedTurnsForThread(threadId, [...scope.queueIds])
           : this.queueStore.cancelQueuedTurnsForThread(threadId, undefined, {
-              at: scope.upTo,
+              rowid: scope.upToRowid,
               except: [...scope.spared],
             });
     } catch (err) {
@@ -2928,6 +2929,15 @@ export class AgentService {
       }
     }
     if (tries > 0) this.promoteQueuedTurns(threadId);
+  }
+
+  /** The queue's rowid boundary, or null when the store cannot say. */
+  private queueBoundary(): number | null {
+    try {
+      return this.queueStore.queueBoundary();
+    } catch {
+      return null;
+    }
   }
 
   /** Is `queueId` cancelled in intent, its cancellation not yet written? */
