@@ -1942,6 +1942,9 @@ export class AgentService {
         }
         break;
       case "session.exited":
+        // Read by every listener to this exit first (a seal takes its intent
+        // from it), then gone with the session.
+        queueMicrotask(() => this.endAsked.delete(threadId));
         this.activeTurns.delete(threadId);
         this.dropAllParked(threadId);
         this.forgetOpenItems(threadId);
@@ -2258,6 +2261,8 @@ export class AgentService {
     requestId: string,
     decision: ApprovalDecision,
   ): Promise<void> {
+    // The adapter ends the turn itself for this one, never through interruptTurn.
+    if (decision === "reject-and-stop") this.endAsked.add(threadId);
     return this.adapterForThread(threadId).respondToRequest(threadId, requestId, decision);
   }
 
@@ -3294,6 +3299,7 @@ export class AgentService {
     this.stepWaits.clear();
     this.steerCuts.clear();
     this.steerCarryOn.clear();
+    this.endAsked.clear();
     // Queued ROWS are deliberately NOT cleared on quit — durability is the
     // point of the queue; the next startSession drains them. Only the
     // in-memory mirrors reset.
