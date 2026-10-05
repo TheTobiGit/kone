@@ -4,7 +4,7 @@ import type { ContractTerms, StoredThreadMeta, ThreadLineage } from "../../types
 import { createRegistry } from "../registry.js";
 import type { GatewayToolContext } from "../schemas.js";
 import { createIrcTools, IrcMailbox, relationshipOf, type IrcToolStore } from "./irc.js";
-import { renderIncoming } from "../../ircDelivery.js";
+import { renderIncoming } from "../../inboxDelivery.js";
 
 // agent_message: one channel across every hand-off. A tree for the whole file:
 //
@@ -193,7 +193,7 @@ describe("questions and answers", () => {
       const a = await registry.call(ctxFor("main"), "agent_message", {
         to: "backend",
         kind: "answer",
-        replyTo: "x",
+        replyTo: String(q.structuredContent?.messageId),
         message: `a${i}`,
       });
       expect(a.isError).toBeUndefined();

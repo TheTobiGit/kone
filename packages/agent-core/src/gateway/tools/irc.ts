@@ -182,9 +182,6 @@ export function relationshipOf(store: IrcToolStore | undefined, fromThreadId: st
 export interface IrcToolInput {
   store?: IrcToolStore;
   mailbox?: IrcMailbox;
-  /** Delivery runs on the ringer: a note waits for the recipient's next
-   *  turn, everything else rings, urgent alone goes into a running turn. */
-  deliveryV2?: boolean;
   /** Whether a peer has a live session right now. A message to a live peer
    *  interrupts it and costs it a turn; one to a peer that is away costs
    *  nothing until it returns. The roster says which, because that difference
@@ -1170,9 +1167,9 @@ export function resetIrcMailbox(): void {
 
 // ── what the agent is told ───────────────────────────────────────────────────
 // These descriptions are the only place an agent learns the economics, and the
-// economics are the whole design. A message is not a notification: it interrupts
-// a running peer or wakes an idle one, and either way somebody pays for a turn
-// they did not plan. An agent that does not know that treats messaging like
+// economics are the whole design. A message is not a notification: one that
+// rings wakes an idle peer or takes a working one's next turn, and either way
+// somebody pays for a turn they did not plan. An agent that does not know that treats messaging like
 // chat, and two agents treating it like chat is a loop that bills.
 //
 // So each one leads with the cost, then with the test — does this change what
@@ -1181,18 +1178,6 @@ export function resetIrcMailbox(): void {
 // reflex to acknowledge, which manufactures the next message from the other side.
 
 const IRC_SEND_DESCRIPTION = [
-  "Message another kone agent, whether it is running right now or idle: a running one has it steered into its active turn, and an idle one is woken with a new turn on its existing thread (idle means waiting, not gone). It arrives headed as yours, with how you relate to the reader, so it is never mistaken for the user. Every message costs the reader a turn.",
-  "",
-  "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say. The answer reaches you on its own, so keep working on what does not depend on it; set wait only when you cannot go on without it. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question, with replyTo set to its message id.",
-  "",
-  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `all` broadcasts to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
-  "",
-  "When someone you handed work to asks you something, answer from what you know of the user's intent; ask the user only what you cannot answer, then pass the answer down. Never send an acknowledgement, a progress report, anything a tool could answer, or the next line of chit-chat. Between peers the bus refuses a pair that has traded 16 messages with nobody else involved; a question and its answer along a hand-off never count.",
-].join("\n");
-
-/** The same tool when delivery runs on the ringer: what a message costs now
- *  depends on its kind, so the description leads with that. */
-const IRC_SEND_DESCRIPTION_V2 = [
   "Message another kone agent. Every message lands in its inbox. A note waits there and is handed over in front of the agent's next turn, whatever starts it: it never starts a turn of its own, so it costs nobody a turn. A question, pushback, answer or report rings: an idle agent is woken with a turn for it, a working one takes it when its running turn ends, and a closed session is brought back up for it. It arrives headed as yours, with how you relate to the reader, so it is never mistaken for the user. The result says what happened to it.",
   "",
   "`urgent` puts it into the reader's running turn instead of waiting for the turn to end. Only along a hand-off (to an agent you handed work to, or the one you work for) or from the main agent; never on a broadcast, never from a worker. Use it only when the work going on is wrong without it.",
@@ -1207,7 +1192,7 @@ const IRC_SEND_DESCRIPTION_V2 = [
 const IRC_LIST_DESCRIPTION = [
   "List the kone agents on this project you can message, and what each is doing: working (on what, for how long), idle, waiting on the user, waiting on another agent, starting, compacting, session closed, or its hand-off ended. Each row says how you relate to it, what a message to it would do right now, and how many messages wait unseen in its inbox and for how long.",
   "",
-  "Look before you send: a message to an agent waiting on the user waits with it, and one to a busy agent on a provider that cannot steer interrupts its turn.",
+  "Look before you send: a message to an agent waiting on the user waits with it, and an urgent one to a busy agent on a provider that cannot steer interrupts its turn.",
 ].join("\n");
 
 const IRC_INBOX_DESCRIPTION = [
@@ -1244,7 +1229,7 @@ function inboxEntry(m: IrcMessageRecord): GatewayRecord {
 }
 
 /** One roster row as text. */
-function renderPeerLine(p: PeerRow, now: number, v2: boolean): string {
+function renderPeerLine(p: PeerRow, now: number): string {
   const name = p.agentName ? `${p.agentName} ` : "";
   const provider = p.provider ? `, ${p.provider}` : "";
   const state = describeRecipientState(
@@ -1259,7 +1244,6 @@ function renderPeerLine(p: PeerRow, now: number, v2: boolean): string {
       oldestUnseenAt: p.oldestUnseenAt,
     },
     now,
-    v2,
   );
   const unseen =
     p.unseen > 0 ? ` ${p.unseen} unseen in its inbox, oldest ${formatSince(p.oldestUnseenAt, now) ?? "just now"}.` : "";
@@ -1280,7 +1264,6 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     const parsed = IrcSendInputSchema.parse(args);
     let kind = parsed.kind ?? "note";
     const urgent = parsed.urgent === true;
-    const v2 = input.deliveryV2 === true;
 
     let parentThreadId: string | null | undefined;
     let rootThreadId: string | undefined;
@@ -1317,7 +1300,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
         "You are a worker: you cannot send urgent. Report or ask your `parent` without it, or put it in your final reply.",
       );
     }
-    if (v2 && broadcast && kind !== "note") {
+    if (broadcast && kind !== "note") {
       throw new GatewayToolError(
         "permission_denied",
         "A broadcast is a note: it asks nobody anything and nobody is waiting on a reply. Ask the agent you need an answer from by name.",
@@ -1361,52 +1344,50 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
 
     let replyTo = parsed.replyTo;
     let downgraded: string | null = null;
-    if (v2) {
-      for (const id of recipients) {
-        const { state } = stateOf(id);
-        // Over: nothing it is sent will be read by anyone working.
-        if (state.state === "ended") {
-          throw new GatewayToolError(
-            "permission_denied",
-            `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
-          );
-        }
-        // Two agents each parked on the other's answer wait for ever.
-        if (parsed.wait === true && state.waitingOn.includes(ctx.threadId)) {
-          throw new GatewayToolError(
-            "permission_denied",
-            `${nameOf(id)} is already waiting on you — answer it first.`,
-          );
-        }
-        if (kind === "note" && !urgent && mailbox.getUnreadCount(id) >= INBOX_FULL) {
-          throw new GatewayToolError(
-            "permission_denied",
-            `${nameOf(id)}'s inbox is full: ${INBOX_FULL} messages wait unseen. Send it only what it has to act on, as a question or report.`,
-          );
-        }
+    for (const id of recipients) {
+      const { state } = stateOf(id);
+      // Over: nothing it is sent will be read by anyone working.
+      if (state.state === "ended") {
+        throw new GatewayToolError(
+          "permission_denied",
+          `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
+        );
       }
-      // An answer answers something: a question or pushback the recipient
-      // sent to this agent. Anything else goes as the note it is, so it
-      // cannot release a wait it has no business releasing.
-      if (kind === "answer" && replyTo !== undefined) {
-        const asked = mailbox.message(replyTo);
-        const genuine =
-          asked !== null &&
-          asked.recipient === ctx.threadId &&
-          (asked.kind === "question" || asked.kind === "pushback") &&
-          recipients.length === 1 &&
-          asked.senderThreadId === recipients[0];
-        if (!genuine) {
-          downgraded = replyTo;
-          kind = "note";
-          replyTo = undefined;
-        }
+      // Two agents each parked on the other's answer wait for ever.
+      if (parsed.wait === true && state.waitingOn.includes(ctx.threadId)) {
+        throw new GatewayToolError(
+          "permission_denied",
+          `${nameOf(id)} is already waiting on you — answer it first.`,
+        );
+      }
+      if (kind === "note" && !urgent && mailbox.getUnreadCount(id) >= INBOX_FULL) {
+        throw new GatewayToolError(
+          "permission_denied",
+          `${nameOf(id)}'s inbox is full: ${INBOX_FULL} messages wait unseen. Send it only what it has to act on, as a question or report.`,
+        );
+      }
+    }
+    // An answer answers something: a question or pushback the recipient
+    // sent to this agent. Anything else goes as the note it is, so it
+    // cannot release a wait it has no business releasing.
+    if (kind === "answer" && replyTo !== undefined) {
+      const asked = mailbox.message(replyTo);
+      const genuine =
+        asked !== null &&
+        asked.recipient === ctx.threadId &&
+        (asked.kind === "question" || asked.kind === "pushback") &&
+        recipients.length === 1 &&
+        asked.senderThreadId === recipients[0];
+      if (!genuine) {
+        downgraded = replyTo;
+        kind = "note";
+        replyTo = undefined;
       }
     }
 
     // A note waits for the recipient's next turn; everything else rings. A
     // broadcast is a note whatever it says.
-    const rings = !v2 || (!broadcast && (kind !== "note" || urgent));
+    const rings = !broadcast && (kind !== "note" || urgent);
     const outgoing: IrcSendInput = { ...parsed, kind };
     if (replyTo === undefined) delete outgoing.replyTo;
     else outgoing.replyTo = replyTo;
@@ -1423,7 +1404,6 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
         rings,
         urgent,
         returned: kind === "answer" && (mailbox.waitingOn(id)?.threadIds.includes(ctx.threadId) ?? false),
-        v2,
         now,
       }),
     }));
@@ -1597,7 +1577,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     const listed = [...reachable, ...rest].slice(0, Math.max(ROSTER_MAX, reachable.length));
     const hidden = rows.length - listed.length;
 
-    const lines = listed.map((p) => renderPeerLine(p, now, input.deliveryV2 === true));
+    const lines = listed.map((p) => renderPeerLine(p, now));
     if (hidden > 0) {
       lines.push(`${hidden} more agent${hidden === 1 ? "" : "s"} on this project with closed sessions, not listed; address one by name or id.`);
     }
@@ -1612,14 +1592,13 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
   return [
     {
       name: "agent_message",
-      description: input.deliveryV2 ? IRC_SEND_DESCRIPTION_V2 : IRC_SEND_DESCRIPTION,
+      description: IRC_SEND_DESCRIPTION,
       inputSchema: IrcSendInputSchema,
       jsonSchema: IRC_SEND_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
-      promptSnippet: input.deliveryV2
-        ? "Message another kone agent as a note (waits for its next turn), question, pushback, report or answer (these ring: an idle agent wakes, a working one takes it when its turn ends), headed as yours so it is never taken for the user."
-        : "Message another kone agent, running or idle — a running one is steered mid-turn, an idle one wakes with a new turn — as a note, question, pushback, report or answer, headed as yours so it is never taken for the user.",
+      promptSnippet:
+        "Message another kone agent as a note (waits for its next turn), question, pushback, report or answer (these ring: an idle agent wakes, a working one takes it when its turn ends), headed as yours so it is never taken for the user.",
       // When to send is the description's; these are the rules that sit
       // between tools: the spawn tools it steers an agent away from, and the
       // hand-off conversation it carries.

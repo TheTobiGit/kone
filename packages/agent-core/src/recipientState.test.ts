@@ -34,7 +34,9 @@ describe("recipientState", () => {
       oldestUnseenAt: null,
     });
     expect(s).toMatchObject({ state: "working", since: NOW - 240_000, activity: "Bash: bun test", steers: true });
-    expect(describeRecipientState(s, NOW)).toBe("working (4 min): Bash: bun test; a message goes into its running turn");
+    expect(describeRecipientState(s, NOW)).toBe(
+      "working (4 min): Bash: bun test; a message that rings takes its next turn; urgent goes into this one",
+    );
   });
 
   test("between tool calls a running turn says the step it is on, and nothing when none is known", () => {
@@ -55,9 +57,9 @@ describe("recipientState", () => {
     expect(s.activity).toBe("read: a.ts");
   });
 
-  test("a provider that cannot steer says a message interrupts", () => {
+  test("a provider that cannot steer says urgent interrupts", () => {
     const s = state({ runtime: runtime({ busy: true, steers: false }), unseen: 0, oldestUnseenAt: null });
-    expect(describeRecipientState(s, NOW)).toContain("interrupts its turn");
+    expect(describeRecipientState(s, NOW)).toContain("urgent interrupts this one");
   });
 
   test("a live thread with no turn is idle since its last activity", () => {

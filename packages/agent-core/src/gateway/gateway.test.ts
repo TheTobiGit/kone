@@ -42,6 +42,7 @@ type ConversationStoreType = ConversationStore;
 let ConversationStoreCtor: typeof ConversationStore;
 let createGateway: typeof createGatewayType;
 let initSpawnEngine: typeof initSpawnEngineType;
+let IrcMailboxCtor: typeof import("./tools/irc.js").IrcMailbox;
 function freshStore(): ConversationStoreType {
   useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-gateway-test-")));
   return new ConversationStoreCtor();
@@ -168,6 +169,7 @@ beforeAll(async () => {
   ConversationStoreCtor = storeModule.ConversationStore;
   createGateway = gatewayModule.createGateway;
   initSpawnEngine = spawnModule.initSpawnEngine;
+  IrcMailboxCtor = (await import("./tools/irc.js")).IrcMailbox;
 });
 
 describe("gateway integration (real store + HTTP)", () => {
@@ -657,6 +659,7 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(toolMap.get("agent_read")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
 
     initSpawnEngine({
+      jobs: new IrcMailboxCtor(),
       store,
       providers: {
         cachedSurface: () => ({
@@ -853,6 +856,7 @@ describe("gateway integration (real store + HTTP)", () => {
     });
 
     initSpawnEngine({
+      jobs: new IrcMailboxCtor(),
       store,
       providers: {
         cachedSurface: () => ({

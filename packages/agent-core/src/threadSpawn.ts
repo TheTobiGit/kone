@@ -192,10 +192,9 @@ export interface SpawnEngineDeps {
    *  the work off hears it finished. Absent, results are only ever collected
    *  through waitFor. */
   reports?: SettleReportSink;
-  /** Where follow-ups go under the ringer: a job in the child's inbox, handed
-   *  over as a turn of its own, whose id `agent_wait` resolves to that turn.
-   *  Absent, a follow-up is sent straight at the child as a turn. */
-  jobs?: SpawnJobs;
+  /** Where follow-ups go: a job in the child's inbox, handed over as a turn
+   *  of its own, whose id `agent_wait` resolves to that turn. */
+  jobs: SpawnJobs;
 }
 
 /** The inbox's side of a follow-up sent as a job. */
@@ -616,19 +615,18 @@ class SpawnEngineImpl implements SpawnEngine {
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
       onCollected: (scopeThreadId, threadId, turnId) => this.onCollected(scopeThreadId, threadId, turnId),
       onAbandoned: (scopeThreadId, threadIds) => this.onAbandoned(scopeThreadId, threadIds),
+      jobTurn: (inboxId) => jobs.jobTurn(inboxId),
     };
-    if (jobs) waitDeps.jobTurn = (inboxId) => jobs.jobTurn(inboxId);
     this.waitCoordinator = new SpawnWaitCoordinator(waitDeps);
     // A job handed over turns a wait pinned to its id into a wait on a turn,
     // which may already have settled.
     // A turn that took a hand-over is under way from that moment, though its
     // turn.started may still be on its way.
-    this.unsubscribeJobs =
-      jobs?.onDeliverySettled(({ recipient, claimedAt, turnId }) => {
-        const child = recipient ? this.tracked.get(recipient) : undefined;
-        if (child && turnId) this.markAwaitingTurn(child, turnId, claimedAt ?? Date.now());
-        this.waitCoordinator.checkWaiters();
-      }) ?? null;
+    this.unsubscribeJobs = jobs.onDeliverySettled(({ recipient, claimedAt, turnId }) => {
+      const child = recipient ? this.tracked.get(recipient) : undefined;
+      if (child && turnId) this.markAwaitingTurn(child, turnId, claimedAt ?? Date.now());
+      this.waitCoordinator.checkWaiters();
+    });
 
     const continuationDeps: SpawnContinuationDeps = {
       store: this.store,
@@ -637,11 +635,10 @@ class SpawnEngineImpl implements SpawnEngine {
       tracked: this.tracked,
       liveChildren: this.liveChildren,
       recompute: (child) => this.recompute(child),
-      markAwaitingTurn: (child, turnId, since) => this.markAwaitingTurn(child, turnId, since),
       adopt: (threadId, parentTurnId, hasLiveSession) => this.adopt(threadId, parentTurnId, hasLiveSession),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
+      jobs,
     };
-    if (jobs) continuationDeps.jobs = jobs;
     this.continuation = new ThreadContinuationManager(continuationDeps);
 
     this.controls = new ThreadControlManager({

@@ -537,6 +537,7 @@ describe("mcp transport: new tools (agent_spawn_batch, agent_message, agent_inbo
     };
 
     initSpawnEngine({
+      jobs: new IrcMailbox(),
       store: {
         threadMeta: (threadId: string) => ({
           threadId,

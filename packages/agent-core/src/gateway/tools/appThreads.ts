@@ -201,10 +201,9 @@ export interface AppThreadJobs {
 export interface AppThreadsToolOptions {
   store: AppThreadsStore;
   emit?: EmitEvent;
-  /** Under the ringer, where a message goes: a job in the thread's inbox,
-   *  handed over as a turn of its own, held while the thread waits on the
-   *  user. Absent, a message is sent straight at the thread. */
-  jobs?: AppThreadJobs;
+  /** Where a message goes: a job in the thread's inbox, handed over as a
+   *  turn of its own, held while the thread waits on the user. */
+  jobs: AppThreadJobs;
   /** What a thread is doing right now, for what a job's send reports. */
   threadRuntime?: (threadId: string) => ThreadRuntime | null;
   /** The projects the renderer last reported — what a project name resolves
@@ -944,23 +943,6 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     }
 
     const live = isLive(params.threadId);
-    const status = statusFor({
-      span: store.threadTurnSpan?.(params.threadId) ?? null,
-      gate: options.pendingGateFor?.(params.threadId) ?? null,
-      live,
-    });
-    const parked = status === "waiting-for-approval" || status === "waiting-for-user-input";
-    // A parked thread is waiting on the user, not on more instructions: a
-    // message would queue behind a gate only a person can open, and read as
-    // sent while nothing moves. Under the ringer it is held instead, and
-    // the send says so.
-    if (parked && !options.jobs) {
-      const asks = asksFor(params.threadId);
-      throw new GatewayToolError(
-        "capability_denied",
-        `Thread "${params.threadId}" is ${status === "waiting-for-approval" ? "waiting for the user to approve something" : "waiting for the user to answer a question"}${asks.length > 0 ? `: ${asks.join("; ")}` : ""}. Nothing it is sent will run until they do, so tell them instead.`,
-      );
-    }
     const urgent = params.urgent ?? params.steer ?? false;
     if (!live && !runner.ensureThreadSession) {
       throw new GatewayToolError(
@@ -1008,91 +990,45 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     if (!live) await runner.ensureThreadSession?.(params.threadId, { resume: true });
 
     const title = meta?.title ?? thread?.title ?? params.threadId;
-    if (options.jobs) {
-      // Read before it is sent: what the send reports is what the thread was
-      // doing when it went.
-      const state = recipientState({
-        runtime: options.threadRuntime?.(params.threadId) ?? null,
-        unseen: 0,
-        oldestUnseenAt: null,
-      });
-      const posted = options.jobs.postJob({
-        to: params.threadId,
-        projectPath: meta?.projectPath ?? thread?.projectPath ?? "",
-        message: params.message,
-        sender: agentSenderFor(store, ctx.threadId, "peer", "note"),
-        urgent,
-        dedupeKey: `app-send:${ctx.threadId}:${turnId}:${params.requestId}`,
-      });
-      const receipt = deliveryReceipt({
-        name: `"${title}"`,
-        state,
-        rings: true,
-        urgent,
-        returned: false,
-        v2: true,
-        now: Date.now(),
-      });
-      const summary = `Sent to "${title}" (${params.threadId}). ${receipt.text}`;
-      const payload: GatewayRecord = {
-        ok: true,
-        threadId: params.threadId,
-        messageId: posted.messageId,
-        delivery: receipt.outcome,
-        urgent,
-        resumed: !live,
-        summary,
-      };
-      store.setGatewayOpResult({ ...opKey, resultJson: JSON.stringify(payload) });
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${summary} It runs as a turn of its own and shows in that thread as a message from you, not from the user. Read the reply back with app_read_thread.`,
-          },
-        ],
-        structuredContent: payload,
-      };
-    }
-
-    // Only a running turn is busy. "starting" is a session that is up with no
-    // turn run yet: a send goes straight to it.
-    const busy = status === "working";
-    const turnInput: SendTurnInput = {
-      threadId: params.threadId,
-      input: params.message,
+    // Read before it is sent: what the send reports is what the thread was
+    // doing when it went.
+    const state = recipientState({
+      runtime: options.threadRuntime?.(params.threadId) ?? null,
+      unseen: 0,
+      oldestUnseenAt: null,
+    });
+    const posted = options.jobs.postJob({
+      to: params.threadId,
+      projectPath: meta?.projectPath ?? thread?.projectPath ?? "",
+      message: params.message,
       sender: agentSenderFor(store, ctx.threadId, "peer", "note"),
-    };
-    // The service queues a send that lands on a busy thread, the same durable
-    // queue a user's follow-up joins. A steer goes into the running turn — only
-    // when there is one to go into and the host can reach it.
-    const steerable = busy && urgent ? runner.steerThreadTurn?.bind(runner) : undefined;
-    const steered = steerable !== undefined;
-    const turn = steerable ? await steerable(turnInput) : await runner.sendThreadTurn(turnInput);
-
-    const how = steered
-      ? "into its running turn"
-      : busy
-        ? "queued behind its running turn"
-        : live
-          ? "and woke it with a new turn"
-          : "after resuming its session, with a new turn";
-    const summary = `Sent to "${title}" (${params.threadId}), ${how}.`;
+      urgent,
+      dedupeKey: `app-send:${ctx.threadId}:${turnId}:${params.requestId}`,
+    });
+    const receipt = deliveryReceipt({
+      name: `"${title}"`,
+      state,
+      rings: true,
+      urgent,
+      returned: false,
+      now: Date.now(),
+    });
+    const summary = `Sent to "${title}" (${params.threadId}). ${receipt.text}`;
     const payload: GatewayRecord = {
       ok: true,
       threadId: params.threadId,
-      turnId: turn.turnId,
-      delivery: steered ? "steered" : busy ? "queued" : "sent",
+      messageId: posted.messageId,
+      delivery: receipt.outcome,
+      urgent,
       resumed: !live,
       summary,
     };
     store.setGatewayOpResult({ ...opKey, resultJson: JSON.stringify(payload) });
-
     return {
       content: [
         {
           type: "text",
-          text: `${summary} It shows in that thread as a message from you, not from the user. Read the reply back with app_read_thread.`,
+          text: `${summary} It runs as a turn of its own and shows in that thread as a message from you, not from the user. Read the reply back with app_read_thread.`,
         },
       ],
       structuredContent: payload,
@@ -1235,9 +1171,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_send_to_thread",
       description:
-        options.jobs
-          ? "Send a message to an existing thread, so its agent carries on with everything that conversation already knows. It runs as a turn of its own: at once on an idle thread, after the running turn on a busy one (or, with urgent: true, inside the running turn), and once the user answers on a thread waiting on the user's approval or answer. A thread with no running session is resumed first. Refused for an archived thread and this conversation itself. Pass a stable requestId so a retry does not send the message twice."
-          : "Send a message to an existing thread, as the user would, so its agent carries on with everything that conversation already knows. An idle thread wakes up and answers; one mid-turn gets it queued behind the running turn (or, with urgent: true, put into the running turn). A thread with no running session is resumed first. Refused for a thread waiting on the user's approval or answer, an archived thread, and this conversation itself. Pass a stable requestId so a retry does not send the message twice.",
+        "Send a message to an existing thread, so its agent carries on with everything that conversation already knows. It runs as a turn of its own: at once on an idle thread, after the running turn on a busy one (or, with urgent: true, inside the running turn), and once the user answers on a thread waiting on the user's approval or answer. A thread with no running session is resumed first. Refused for an archived thread and this conversation itself. Pass a stable requestId so a retry does not send the message twice.",
       inputSchema: SendAppThreadMessageInputSchema,
       jsonSchema: SEND_APP_THREAD_MESSAGE_JSON_SCHEMA,
       permission: "allow",
@@ -1246,7 +1180,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "`app_send_to_thread`: send a follow-up message into an existing thread, which answers it with the context it already has.",
       promptGuidelines: [
         "When the user wants something added to work a thread is already doing, message that thread with `app_send_to_thread` instead of starting a new one - a new thread starts with none of that context.",
-        "The message appears in the thread as if the user typed it, so write it the way they would, and tell the user what you sent and where.",
+        "The message appears in the thread as a message from you, not from the user, so tell the user what you sent and where.",
       ],
       handler: sendHandler,
     },

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { IrcMailbox } from "./gateway/tools/irc.js";
-import { renderInboxTurn, startInboxDelivery } from "./inboxDelivery.js";
+import { renderIncoming, renderInboxTurn, startInboxDelivery } from "./inboxDelivery.js";
 import type { ThreadRuntime } from "./recipientState.js";
 import type { RuntimeEvent } from "./types.js";
 import type { SendTurnInput, StartThreadTurnOptions } from "./dispatch.js";
@@ -486,5 +486,75 @@ describe("renderInboxTurn", () => {
     expect(text).toContain("3 messages from other agents are waiting for you:");
     expect(text.indexOf("one")).toBeLessThan(text.indexOf("two"));
     expect(text).toContain("nobody is waiting on a reply");
+  });
+});
+
+describe("how a delivered message reads", () => {
+  const message = {
+    id: "m1",
+    from: "Explorer",
+    to: "b",
+    message: "the archive path is in ConversationStore",
+    createdAt: 0,
+    read: false,
+  };
+
+  test("names the sender and says the user did not say it", () => {
+    const text = renderIncoming([message]);
+    expect(text).toContain("Explorer");
+    expect(text).toContain("the archive path is in ConversationStore");
+    expect(text).toContain("The user did not say this");
+  });
+
+  test("warns off the reflex that makes a two-agent loop", () => {
+    expect(renderIncoming([message])).toContain("bare acknowledgement");
+  });
+
+  test("carries replyTo so an answer can be correlated", () => {
+    expect(renderIncoming([{ ...message, replyTo: "m0" }])).toContain("replying to m0");
+  });
+
+  const carried = {
+    id: "m2",
+    from: "kone",
+    to: "b",
+    message: "Ada finished the work you handed it (thread t-ada, turn 1). Its final reply:\n\n> Done.",
+    kind: "report" as const,
+    createdAt: 0,
+    read: false,
+    sender: {
+      kind: "courier" as const,
+      messageKind: "report" as const,
+      about: { threadId: "t-ada", name: "Ada", relationship: "contractor" as const },
+    },
+  };
+
+  test("what the courier carries reads as kone's, not as another agent's message", () => {
+    const text = renderIncoming([carried]);
+    expect(text).toContain('<kone_notice from="kone" kind="report" about="Ada" relationship="contractor" thread="t-ada">');
+    expect(text).toContain("Ada did not send it");
+    expect(text).toContain("Ada is your contractor");
+    expect(text).toContain("> Done.");
+    expect(text).not.toContain("<agent_messages>");
+    expect(text).not.toContain("another agent arrived");
+  });
+
+  test("a mixed batch frames each speaker as itself and counts only the agents", () => {
+    const text = renderIncoming([carried, message], 2);
+    expect(text).toContain('<kone_notice from="kone"');
+    expect(text).toContain("A message from another agent arrived while you were working:");
+    expect(text).toContain("2 more messages are still in your inbox.");
+    expect(text.indexOf("</kone_notice>")).toBeLessThan(text.indexOf("<agent_messages>"));
+  });
+
+  test("a courier message travels the mailbox without counting toward a pair's exchanges", () => {
+    const mailbox = new IrcMailbox();
+    for (let i = 0; i < 20; i++) {
+      mailbox.sendCourierMessage({ to: "lead", projectPath: PROJECT, message: `r${i}`, kind: "report", sender: carried.sender });
+    }
+    const inbox = mailbox.getInbox("lead");
+    expect(inbox.messages).toHaveLength(20);
+    expect(inbox.messages[0]!.from).toBe("kone");
+    expect(inbox.messages[0]!.sender?.kind).toBe("courier");
   });
 });

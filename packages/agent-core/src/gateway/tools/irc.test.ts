@@ -629,14 +629,11 @@ describe("createIrcTools gateway registration and execution", () => {
     // The failure mode this guards against is an agent concluding a peer that
     // has settled is closed, and re-spawning it to reach it — so both the
     // description and the prompt snippet must say idle is deliverable, and
-    // name the two delivery shapes (steer vs wake).
-    expect(send.description).toContain("idle");
-    expect(send.description).toMatch(/running right now or idle/);
-    expect(send.description).toMatch(/steered into its active turn/);
-    expect(send.description).toMatch(/woken with a new turn on its existing thread/);
-    expect(send.promptSnippet).toMatch(/running or idle/);
-    expect(send.promptSnippet).toMatch(/steered mid-turn/);
-    expect(send.promptSnippet).toMatch(/wakes with a new turn/);
+    // what a working one does with it.
+    expect(send.description).toMatch(/an idle agent is woken with a turn for it/);
+    expect(send.description).toMatch(/a working one takes it when its running turn ends/);
+    expect(send.promptSnippet).toMatch(/an idle agent wakes/);
+    expect(send.promptSnippet).toMatch(/a working one takes it when its turn ends/);
     const guidelines = send.promptGuidelines ?? [];
     expect(guidelines.some((g) => /idle kone agent is not a closed one/.test(g))).toBe(true);
   });
@@ -789,7 +786,7 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(getIrcMailbox().getUnreadCount("agent-2")).toBe(0);
   });
 
-  test("Delivery notification handler fires synchronously on message delivery", async () => {
+  test("Delivery notification handler fires synchronously on a message that rings", async () => {
     const customMailbox = new IrcMailbox();
     const interrupted: Array<{ recipient: string; message: string }> = [];
 
@@ -802,6 +799,7 @@ describe("createIrcTools gateway registration and execution", () => {
 
     await registry.call(ctxA, "agent_message", {
       to: "agent-2",
+      kind: "question",
       message: "Abort current approach and switch to plan B",
     });
 
@@ -812,6 +810,7 @@ describe("createIrcTools gateway registration and execution", () => {
     unsubscribe();
     await registry.call(ctxA, "agent_message", {
       to: "agent-2",
+      kind: "question",
       message: "Second message after unsubscribe",
     });
     expect(interrupted.length).toBe(1);
@@ -905,7 +904,7 @@ describe("agent_list reads every agent on the project", () => {
     expect(rows[0]).toMatchObject({ state: "working", steers: false });
     expect(rows[1]).toMatchObject({ state: "closed", steers: true });
     const text = result.content[0]!.text;
-    expect(text).toContain("working (2 min): edit: auth.ts; a message interrupts its turn");
+    expect(text).toContain("working (2 min): edit: auth.ts; a message that rings takes its next turn; urgent interrupts this one");
     expect(text).toContain("session closed");
   });
 

@@ -26,15 +26,12 @@ export interface SpawnContinuationDeps {
   tracked: Map<string, TrackedChild>;
   liveChildren: Set<string>;
   recompute: (child: TrackedChild) => void;
-  /** The provider took `turnId` for `child`, sent at `since`; its events
-   *  may still be on their way. */
-  markAwaitingTurn?: (child: TrackedChild, turnId: string, since: number) => void;
   /** Take a child from before a restart back on; null when it is no
    *  spawned child. */
   adopt?: (threadId: string, parentTurnId: string, hasLiveSession: boolean) => TrackedChild | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
-  /** Under the ringer, where a follow-up goes: a job in the child's inbox. */
-  jobs?: SpawnJobs;
+  /** Where a follow-up goes: a job in the child's inbox. */
+  jobs: SpawnJobs;
 }
 /**
  * Handles follow-up turns dispatched to already-spawned child threads,
@@ -183,20 +180,7 @@ export class ThreadContinuationManager {
               ? "delegator"
               : "parent";
       const sender = agentSenderFor(this.deps.store, caller.threadId, relationship, "followup");
-      let result: ContinueThreadResult;
-      if (this.deps.jobs) {
-        result = finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true);
-      } else {
-        const sentAt = Date.now();
-        const sent = await this.deps.dispatcher.sendThreadTurn(
-          { threadId: request.threadId, input: message, sender },
-          { generateTitle: false, parentTurnId: caller.turnId },
-        );
-        // The provider took the turn: until its turn.started comes through,
-        // the child reads as starting it, not as the turn before.
-        if (tracked && !sent.queued) this.deps.markAwaitingTurn?.(tracked, sent.turnId, sentAt);
-        result = finish(sent.turnId);
-      }
+      const result = finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true);
       if (tracked) {
         this.deps.liveChildren.add(request.threadId);
       }

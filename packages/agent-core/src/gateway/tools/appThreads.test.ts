@@ -305,6 +305,7 @@ function tools(
     pendingGateFor: (threadId) => gates[threadId] ?? null,
     availability: async () => options.availability ?? AVAILABILITY,
     newThreadId: () => options.threadId ?? "thread-new",
+    jobs: options.jobs ?? new IrcMailbox(),
   };
   if (options.pendingGates) toolOptions.pendingGates = options.pendingGates;
   if (options.asks) {
@@ -316,7 +317,6 @@ function tools(
   if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
   if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
   if (options.renameThread) toolOptions.renameThread = options.renameThread;
-  if (options.jobs) toolOptions.jobs = options.jobs;
   if (options.threadRuntime) toolOptions.threadRuntime = options.threadRuntime;
   // `runner: null` is the "no dispatcher behind the gateway" case, which is a
   // different thing from a runner nobody passed — the option has to be absent,
@@ -1091,16 +1091,6 @@ describe("what a parked thread is waiting on", () => {
     expect(body).toMatch(/- Wire the projects module — .*waiting-for-approval.* · approve command "rm -rf dist"/);
     expect(body).toMatch(/- Fix the strip — [^\n]*done$/m);
   });
-
-  it("says what the thread waits on when refusing to message it", async () => {
-    const result = await tools({ gates: { "t-newest": "approval" }, asks: [APPROVAL], live: ["t-newest"] }).call(
-      makeCtx(),
-      "app_send_to_thread",
-      { threadId: "t-newest", message: "hi", requestId: "s1" },
-    );
-    expect(result.isError).toBe(true);
-    expect(text(result)).toContain('waiting for the user to approve something: approve command "rm -rf dist"');
-  });
 });
 
 describe("app_send_to_thread", () => {
@@ -1128,29 +1118,15 @@ describe("app_send_to_thread", () => {
   }
   const newCalls = (): SendCalls => ({ started: [], turns: [], steered: [], resumed: [] });
 
-  it("wakes an idle live thread with the message as a new turn", async () => {
+  it("resumes a thread with no running session before leaving the job", async () => {
     const calls = newCalls();
-    const result = await tools({ runner: sendRunner(calls), live: ["t-newest"] }).call(
-      makeCtx(),
-      "app_send_to_thread",
-      SEND,
-    );
-
-    expect(result.isError).toBeUndefined();
-    expect(calls.turns[0]?.input).toMatchObject({ threadId: "t-newest", input: "Also run the tests" });
-    // It lands as this agent's words, not the user's.
-    expect(calls.turns[0]?.input.sender).toMatchObject({ kind: "agent", relationship: "peer", messageKind: "note" });
-    expect(calls.resumed).toHaveLength(0);
-    expect(text(result)).toContain('Sent to "Wire the projects module" (t-newest), and woke it with a new turn.');
-  });
-
-  it("resumes a thread with no running session before sending", async () => {
-    const calls = newCalls();
-    const result = await tools({ runner: sendRunner(calls) }).call(makeCtx(), "app_send_to_thread", SEND);
+    const mailbox = new IrcMailbox();
+    const result = await tools({ runner: sendRunner(calls), jobs: mailbox }).call(makeCtx(), "app_send_to_thread", SEND);
 
     expect(calls.resumed).toEqual([{ threadId: "t-newest", resume: true }]);
-    expect(calls.turns).toHaveLength(1);
-    expect(text(result)).toContain("after resuming its session");
+    expect(calls.turns).toHaveLength(0);
+    expect(mailbox.jobCount("t-newest")).toBe(1);
+    expect(result.structuredContent).toMatchObject({ resumed: true });
   });
 
   it("refuses a sessionless thread when the host cannot resume one", async () => {
@@ -1159,41 +1135,6 @@ describe("app_send_to_thread", () => {
 
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("cannot bring one back");
-    expect(calls.turns).toHaveLength(0);
-  });
-
-  it("queues behind a running turn by default, and steers into it on request", async () => {
-    const queuedCalls = newCalls();
-    const queued = await tools({
-      runner: sendRunner(queuedCalls),
-      live: ["t-newest"],
-      spans: { "t-newest": BUSY },
-    }).call(makeCtx(), "app_send_to_thread", SEND);
-    expect(queuedCalls.turns).toHaveLength(1);
-    expect(queuedCalls.steered).toHaveLength(0);
-    expect(text(queued)).toContain("queued behind its running turn");
-
-    const steerCalls = newCalls();
-    const steered = await tools({
-      runner: sendRunner(steerCalls),
-      live: ["t-newest"],
-      spans: { "t-newest": BUSY },
-    }).call(makeCtx(), "app_send_to_thread", { ...SEND, steer: true });
-    expect(steerCalls.steered).toHaveLength(1);
-    expect(steerCalls.turns).toHaveLength(0);
-    expect(text(steered)).toContain("into its running turn");
-  });
-
-  it("refuses a thread parked on the user, and sends nothing", async () => {
-    const calls = newCalls();
-    const result = await tools({
-      runner: sendRunner(calls),
-      live: ["t-newest"],
-      gates: { "t-newest": "approval" },
-    }).call(makeCtx(), "app_send_to_thread", SEND);
-
-    expect(result.isError).toBe(true);
-    expect(text(result)).toContain("waiting for the user to approve something");
     expect(calls.turns).toHaveLength(0);
   });
 
@@ -1222,11 +1163,11 @@ describe("app_send_to_thread", () => {
   });
 
   it("sends a retried message once, and refuses a different one under the same key", async () => {
-    const calls = newCalls();
-    const registry = tools({ runner: sendRunner(calls), store: makeStore(), live: ["t-newest"] });
+    const mailbox = new IrcMailbox();
+    const registry = tools({ runner: sendRunner(newCalls()), store: makeStore(), live: ["t-newest"], jobs: mailbox });
     await registry.call(makeCtx(), "app_send_to_thread", SEND);
     const retry = await registry.call(makeCtx(), "app_send_to_thread", SEND);
-    expect(calls.turns).toHaveLength(1);
+    expect(mailbox.jobCount("t-newest")).toBe(1);
     expect(text(retry)).toContain("Already sent");
     expect(text(retry)).toContain("(t-newest)");
 
@@ -1243,17 +1184,18 @@ describe("app_send_to_thread", () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("not_found");
   });
-  it("takes urgent as the name for steer", async () => {
-    const calls = newCalls();
-    await tools({ runner: sendRunner(calls), live: ["t-newest"], spans: { "t-newest": BUSY } }).call(
+  it("takes steer as the old name for urgent", async () => {
+    const mailbox = new IrcMailbox();
+    const result = await tools({ runner: sendRunner(newCalls()), live: ["t-newest"], jobs: mailbox }).call(
       makeCtx(),
       "app_send_to_thread",
-      { ...SEND, urgent: true },
+      { ...SEND, steer: true },
     );
-    expect(calls.steered).toHaveLength(1);
+    expect(result.structuredContent).toMatchObject({ urgent: true });
+    expect(mailbox.urgentCount("t-newest")).toBe(1);
   });
 
-  describe("under the ringer", () => {
+  describe("as a job in the thread's inbox", () => {
     function runtime(over: Partial<ThreadRuntime> = {}): ThreadRuntime {
       return {
         live: true,

@@ -6,7 +6,7 @@ import { createRegistry } from "../registry.js";
 import { IRC_SEND_JSON_SCHEMA, type GatewayToolContext } from "../schemas.js";
 import { createIrcTools, INBOX_FULL, IrcMailbox, type IrcToolStore } from "./irc.js";
 
-// agent_message under the ringer: what it refuses, what rings, and what the
+// agent_message: what it refuses, what rings, and what the
 // sender is told happened. The same tree as agentMessage.test.ts:
 //
 //   main ─┬─ backend      (delegation to a teammate)
@@ -88,12 +88,11 @@ let runtimes: Map<string, ThreadRuntime | null>;
 let spawned: Map<string, SpawnedThreadStatus>;
 let waits: Map<string, { threadIds: string[]; since: number }>;
 
-function registryFor(deliveryV2: boolean) {
+function registryFor() {
   return createRegistry(
     createIrcTools({
       store,
       mailbox,
-      deliveryV2,
       threadRuntime: (id) => (runtimes.has(id) ? (runtimes.get(id) ?? null) : runtime()),
       spawnedStatus: (id) => spawned.get(id) ?? null,
       waitingOn: (id) => waits.get(id) ?? null,
@@ -115,7 +114,7 @@ beforeEach(() => {
   runtimes = new Map();
   spawned = new Map();
   waits = new Map();
-  registry = registryFor(true);
+  registry = registryFor();
 });
 
 const send = (from: string, args: Record<string, string | boolean>) =>
@@ -253,30 +252,6 @@ describe("answers", () => {
       replyTo: String(asked.structuredContent?.messageId),
       message: "main.",
     });
-    expect(sent.structuredContent).toMatchObject({ kind: "answer" });
-  });
-});
-
-describe("today's routing, with the ringer off", () => {
-  beforeEach(() => {
-    registry = registryFor(false);
-  });
-
-  test("a note steers a working agent, and says so", async () => {
-    runtimes.set("backend", runtime({ busy: true }));
-    const sent = await send("main", { to: "backend", message: "API shape changed." });
-    expect(sent.structuredContent).toMatchObject({ outcome: "delivered" });
-    expect(mailbox.ringingCount("backend")).toBe(1);
-  });
-
-  test("urgent's rules hold either way", async () => {
-    expect(refusal(await send("backend", { to: "frontend", message: "Stop.", urgent: true }))).toContain(
-      "cannot send it urgent",
-    );
-  });
-
-  test("an unasked answer is still sent as an answer", async () => {
-    const sent = await send("backend", { to: "delegator", kind: "answer", replyTo: "msg_made_up", message: "Yes." });
     expect(sent.structuredContent).toMatchObject({ kind: "answer" });
   });
 });

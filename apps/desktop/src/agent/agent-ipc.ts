@@ -25,9 +25,7 @@ import {
   removeCollectedWorktrees,
 } from "../modules/git/worktreeCleanup.js";
 import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
-import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
 import { startInboxDelivery } from "@kone/agent-core/inboxDelivery.js";
-import { isDeliveryV2Enabled } from "@kone/agent-core/deliverySettings.js";
 import { createMailboxReportSink } from "@kone/agent-core/settleReports.js";
 import { inboxHistoryView, waitingInbox } from "@kone/agent-core/inboxView.js";
 import { configureIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
@@ -128,7 +126,7 @@ let jobRunner: JobRunner | null = null;
 
 /** Teardown for the IRC delivery subscription — dropped at quit so no armed
  *  delivery timer holds the process open. */
-let stopIrcDelivery: (() => void) | null = null;
+let stopDelivery: (() => void) | null = null;
 let stopWorktreeSweeper: (() => void) | null = null;
 
 /** The bench runner, once registerAgentIpc has built it. Resolved lazily by
@@ -155,9 +153,6 @@ export function registerAgentIpc(): void {
   // recipient survives a quit. Set before the gateway is built: its tools, the
   // delivery and the courier all reach for the same mailbox.
   const mailbox = configureIrcMailbox(store);
-  // Which delivery carries that mail is decided once, here: the two cannot
-  // hand rows between each other mid-run.
-  const deliveryV2 = isDeliveryV2Enabled();
 
   // Startup GC pass for orphaned attachment bytes (a crash between the
   // temp-write and the registry insert, or a row dropped after a failed
@@ -174,9 +169,6 @@ export function registerAgentIpc(): void {
     store,
     mailbox,
     broadcast,
-    // Under the ringer the service's turn slot hands the inbox over, so the
-    // dispatcher must not claim it a second time.
-    inboxRidesTurnSlot: deliveryV2,
     // Git lives out here, so the dispatcher is handed the capability rather
     // than reaching for it. A thread that asks for its own branch gets a
     // worktree built before its session starts, and the project's checkout is
@@ -245,7 +237,6 @@ export function registerAgentIpc(): void {
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
     threadRuntime: (threadId) => svc.threadRuntime(threadId),
     providerSteers: (provider) => svc.providerSteers(provider),
-    deliveryV2,
     // What a thread is parked on, if anything — approvals and user-input
     // questions are live round-trips the store never journals, so the
     // service's parked snapshot is the only place the thread list can read
@@ -411,57 +402,30 @@ export function registerAgentIpc(): void {
   svc.attachGateway(gateway);
 
   // Agent-to-agent messages reach their recipient's turn rather than sitting in
-  // a mailbox nobody drains: a running thread is steered, an idle one is woken.
-  // Without this the IRC tools are a dead drop — every inbox read comes back
-  // empty and an agent that reached for one concludes messaging is broken.
-  //
-  // Under the ringer a message waits for the recipient's next turn and rides
-  // in front of it; only what rings starts that turn, and only urgent goes into
-  // a running one.
-  if (deliveryV2) {
-    const delivery = startInboxDelivery({
-      mailbox,
-      service: {
-        threadRuntime: (threadId) => svc.threadRuntime(threadId),
-        kickTurnSlot: (threadId) => svc.kickTurnSlot(threadId),
-        interruptTurn: (threadId) => svc.interruptTurn(threadId),
-        onEvent: (listener) => svc.onEvent(listener),
-      },
-      dispatcher,
-      journal: (threadId, message, beforeBlockId) =>
-        message.sender
-          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, beforeBlockId, inboxId: message.id })
-          : null,
-      blockSender: (threadId, blockId) => store.userBlockSender(threadId, blockId),
-      placeLast: (threadId, blockId) => store.moveBlockToEnd(threadId, blockId),
-    });
-    svc.setTurnInbox(delivery);
-    stopIrcDelivery = () => {
-      svc.setTurnInbox(null);
-      delivery.stop();
-    };
-  } else {
-    stopIrcDelivery = startIrcDelivery({
-      mailbox,
-      dispatcher,
-      isLive: (threadId) => svc.hasLiveSession(threadId),
-      isBusy: (threadId) => svc.isThreadBusy(threadId),
-      // Mail that arrived while a thread was away has nothing scheduled to read
-      // it: the sender's delivery already fired and found no live session. Coming
-      // back is the moment to flush it.
-      onThreadLive: (listener) =>
-        svc.onEvent((event) => {
-          if (event.type === "session.started") listener(event.threadId);
-        }),
-      // Each message lands on the recipient's transcript as its sender's words,
-      // so the thread shows another agent speaking rather than a turn from
-      // nowhere.
-      journal: (threadId, message) =>
-        message.sender
-          ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, inboxId: message.id })
-          : null,
-    });
-  }
+  // a mailbox nobody drains. A message waits for the recipient's next turn and
+  // rides in front of it; only what rings starts that turn, and only urgent
+  // goes into a running one.
+  const delivery = startInboxDelivery({
+    mailbox,
+    service: {
+      threadRuntime: (threadId) => svc.threadRuntime(threadId),
+      kickTurnSlot: (threadId) => svc.kickTurnSlot(threadId),
+      interruptTurn: (threadId) => svc.interruptTurn(threadId),
+      onEvent: (listener) => svc.onEvent(listener),
+    },
+    dispatcher,
+    journal: (threadId, message, beforeBlockId) =>
+      message.sender
+        ? dispatcher.recordAgentMessage({ threadId, text: message.message, sender: message.sender, beforeBlockId, inboxId: message.id })
+        : null,
+    blockSender: (threadId, blockId) => store.userBlockSender(threadId, blockId),
+    placeLast: (threadId, blockId) => store.moveBlockToEnd(threadId, blockId),
+  });
+  svc.setTurnInbox(delivery);
+  stopDelivery = () => {
+    svc.setTurnInbox(null);
+    delivery.stop();
+  };
 
   // The spawn engine (docs/thread-spawning-design.md) drives agent-spawned
   // child threads headlessly through the same dispatcher as the renderer. Its
@@ -485,8 +449,8 @@ export function registerAgentIpc(): void {
       store,
       isBusy: (threadId) => svc.isThreadBusy(threadId),
     }),
-    // Under the ringer a follow-up is a job in the child's inbox.
-    jobs: deliveryV2 ? mailbox : undefined,
+    // A follow-up is a job in the child's inbox.
+    jobs: mailbox,
   });
 
   // What happens to handed-off work when the agent that handed it off is
@@ -1226,9 +1190,9 @@ export async function shutdownAgents(): Promise<void> {
     stopWorktreeSweeper();
     stopWorktreeSweeper = null;
   }
-  if (stopIrcDelivery) {
-    stopIrcDelivery();
-    stopIrcDelivery = null;
+  if (stopDelivery) {
+    stopDelivery();
+    stopDelivery = null;
   }
   if (gateway) {
     await gateway.shutdown().catch(() => {});

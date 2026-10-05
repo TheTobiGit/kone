@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
-import { composeTurnDelivery, inboxBlockId } from "./dispatch.js";
+import { composeTurnDelivery } from "./dispatch.js";
 import { isWorkspaceCancel } from "@kone/protocol/ipc-error";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
@@ -410,55 +410,6 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(blockId).toBe(journaledEvents[0]!.id);
   });
 
-  test("a held message written to the transcript but never linked to its row is not written twice", async () => {
-    const { store, dispatcher, mailbox } = await harness();
-    const sender = {
-      kind: "courier" as const,
-      messageKind: "report" as const,
-      about: { threadId: "t-child", name: "Ada", relationship: "delegate" as const },
-    };
-    const sent = mailbox.sendCourierMessage({
-      to: THREAD,
-      projectPath: CWD,
-      message: "Ada finished.",
-      kind: "report",
-      sender,
-      rings: false,
-    });
-    // The crash window: the block was written, the row never learned it.
-    dispatcher.recordAgentMessage({ threadId: THREAD, text: "Ada finished.", sender, inboxId: sent!.messageId });
-
-    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "carry on" });
-    expect(userTexts(store)).toEqual(["Ada finished.", "carry on"]);
-    expect(mailbox.message(sent!.messageId)?.blockId).toBe(inboxBlockId(sent!.messageId));
-  });
-
-  test("a report the courier holds rides in front of the next turn, journaled then as the courier's", async () => {
-    const { store, dispatcher, mailbox } = await harness();
-    const sender = {
-      kind: "courier" as const,
-      messageKind: "report" as const,
-      about: { threadId: "t-child", name: "Ada", relationship: "delegate" as const },
-    };
-    mailbox.sendCourierMessage({
-      to: THREAD,
-      projectPath: CWD,
-      message: "Ada's turn was interrupted before it finished (thread t-child, turn 1).",
-      kind: "report",
-      sender,
-      rings: false,
-    });
-    // Held: nothing on the transcript until a turn carries it.
-    expect(userTexts(store)).toEqual([]);
-
-    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "carry on" });
-    expect(FakeAdapter.sent[0]).toContain('<kone_notice from="kone" kind="report" about="Ada" relationship="delegate" thread="t-child">');
-    expect(FakeAdapter.sent[0]).toContain("Ada's turn was interrupted");
-    expect(FakeAdapter.sent[0]).toEndWith("carry on");
-    const block = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
-    expect(block?.role === "user" ? block.sender : undefined).toEqual(sender);
-  });
-
   test("a user turn reads back with no sender", async () => {
     const { store, dispatcher } = await harness();
     await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello" });
@@ -522,101 +473,6 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(userTexts(store)).toEqual(["start here"]);
     // First user turn on the thread — it names it, exactly like a send would.
     expect(store.getTitle(THREAD)).toBeTruthy();
-  });
-});
-
-describe("thread dispatcher: kone's notices wait in the inbox for the next turn", () => {
-  beforeEach(() => {
-    FakeAdapter.sent.length = 0;
-    FakeAdapter.turnCounter = 0;
-    FakeAdapter.refuseNext = null;
-  });
-
-  /** Let a turn's settle-or-release, chained on its start, run. */
-  async function settled(): Promise<void> {
-    for (let i = 0; i < 4; i++) await Promise.resolve();
-  }
-
-  test("a notice is stored, not journaled; the next turn carries it, journals it above its words, and settles it", async () => {
-    const { store, dispatcher, mailbox } = await harness();
-    const id = dispatcher.queueNotice(THREAD, "Ben stopped this task. Start nothing new.");
-    expect(userTexts(store)).toEqual([]);
-    expect(mailbox.heldCount(THREAD)).toBe(1);
-
-    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "what next?" });
-    await settled();
-
-    expect(FakeAdapter.sent[0]).toBe("<kone_notice>\nBen stopped this task. Start nothing new.\n</kone_notice>\n\nwhat next?");
-    expect(userTexts(store)).toEqual(["Ben stopped this task. Start nothing new.", "what next?"]);
-    const notice = store.loadThread(THREAD)?.blocks.find((b) => b.role === "user");
-    expect(notice?.role === "user" ? notice.sender : undefined).toEqual({ kind: "system" });
-    expect(mailbox.heldCount(THREAD)).toBe(0);
-    expect(store.inboxHistory(THREAD, 10)).toEqual([
-      expect.objectContaining({ inboxId: id, kind: "notice", seenVia: "turn", turnId: "turn-1" }),
-    ]);
-  });
-
-  test("a turn the provider refuses keeps the notice for the next one, written to the transcript once", async () => {
-    const { store, dispatcher, mailbox } = await harness();
-    dispatcher.queueNotice(THREAD, "The user spoke to Ada directly.");
-    FakeAdapter.refuseNext = new Error("session reaped");
-    await expect(dispatcher.sendThreadTurn({ threadId: THREAD, input: "first" })).rejects.toThrow("session reaped");
-    await settled();
-    expect(mailbox.heldCount(THREAD)).toBe(1);
-
-    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "second" });
-    await settled();
-    expect(FakeAdapter.sent).toHaveLength(1);
-    expect(FakeAdapter.sent[0]).toContain("The user spoke to Ada directly.");
-    expect(userTexts(store).filter((t) => t === "The user spoke to Ada directly.")).toHaveLength(1);
-    expect(mailbox.heldCount(THREAD)).toBe(0);
-  });
-
-  test("a notice survives a restart and rides the next process's first turn", async () => {
-    const first = await harness();
-    first.dispatcher.queueNotice(THREAD, "Ben withdrew this task.");
-
-    const second = await harness({ reopen: true });
-    await second.dispatcher.sendThreadTurn({ threadId: THREAD, input: "hello again" });
-    await settled();
-    expect(FakeAdapter.sent[0]).toContain("Ben withdrew this task.");
-    expect(second.mailbox.heldCount(THREAD)).toBe(0);
-  });
-
-  // The process can die while the checkpoint after an accepted turn is being
-  // taken: the notice the turn carried is already seen by then.
-  test("a notice the provider took is settled before the turn's checkpoint is taken", async () => {
-    const atCheckpoint: Array<string | undefined> = [];
-    let held = (): string | undefined => undefined;
-    const checkpoints: CheckpointStore = {
-      threadProjectPath: () => CWD,
-      threadWorkspace: () => null,
-      recordTurnCheckpoint: () => false,
-      getTurnCheckpoint: () => {
-        atCheckpoint.push(held());
-        return null;
-      },
-      listTurnCheckpoints: () => [],
-      pruneTurnCheckpoints: () => [],
-    };
-    const { store, dispatcher } = await harness({ checkpoints });
-    held = () => store.inboxHistory(THREAD, 10)[0]?.state;
-    dispatcher.queueNotice(THREAD, "Ben stopped this task.");
-
-    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "what next?" });
-    expect(atCheckpoint).toEqual(["seen"]);
-  });
-
-  test("a silent turn carries what is held too, and names the blocks it carries", async () => {
-    const { store, dispatcher, emit } = await harness();
-    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "start" });
-    turnStarted(emit, "turn-1");
-    dispatcher.queueNotice(THREAD, "Ada's work was interrupted.");
-    await dispatcher.steerThreadTurn({ threadId: THREAD, input: "a peer's message" }, { silent: true });
-    const noticeBlock = userBlocks(store).find((b) => b.text === "Ada's work was interrupted.");
-    expect(noticeBlock).toBeDefined();
-    // The steer took the queue's steer lane: its row names the notice block.
-    expect(store.listQueuedTurns(THREAD).at(-1)?.userBlockId).toBe(noticeBlock?.id);
   });
 });
 

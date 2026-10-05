@@ -147,9 +147,6 @@ export interface GatewayInput {
    *  agent_list reads to tell a sender what a message would do. */
   threadRuntime?: (threadId: string) => ThreadRuntime | null;
   providerSteers?: (provider: ProviderKind) => boolean;
-  /** Whether the ringer delivers agent mail — what agent_message refuses,
-   *  rings and promises, and what agent_list says a message would do. */
-  deliveryV2?: boolean;
   /** What a thread is parked on, if anything — what the thread list reads to
    *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
    *  from one that is merely idle. Absent, no thread reads as parked, which
@@ -232,7 +229,6 @@ function ircToolInput(input: GatewayInput): IrcToolInput {
   if (input.isThreadLive) tools.isThreadLive = input.isThreadLive;
   if (input.threadRuntime) tools.threadRuntime = input.threadRuntime;
   if (input.providerSteers) tools.providerSteers = input.providerSteers;
-  if (input.deliveryV2) tools.deliveryV2 = true;
   return tools;
 }
 
@@ -261,7 +257,8 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // The threads module reads the same project mirror (a project is named the
   // same way everywhere) and, unlike the rest of the family, also writes: its
   // runner is the dispatcher, absent in a gateway built without one.
-  const appThreadOptions: AppThreadsToolOptions = { store: input.store, emit: input.emit };
+  // A message to a thread is a job in its inbox.
+  const appThreadOptions: AppThreadsToolOptions = { store: input.store, emit: input.emit, jobs: getIrcMailbox() };
   if (input.readProjects) appThreadOptions.readProjects = input.readProjects;
   if (input.isThreadLive) appThreadOptions.isThreadLive = input.isThreadLive;
   if (input.pendingThreadGate) appThreadOptions.pendingGateFor = input.pendingThreadGate;
@@ -270,8 +267,6 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.threads) appThreadOptions.runner = input.threads;
   if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
   if (input.threadControls) Object.assign(appThreadOptions, input.threadControls);
-  // Under the ringer a message to a thread is a job in its inbox.
-  if (input.deliveryV2) appThreadOptions.jobs = getIrcMailbox();
   if (input.threadRuntime) appThreadOptions.threadRuntime = input.threadRuntime;
 
   // The provider tools take their options as one object, passed straight
