@@ -385,6 +385,10 @@ export class AgentService {
   private readonly parkedByThread = new Map<string, Map<string, PendingInteraction>>();
   /** Last event arrival per thread — the wedge watchdog's heartbeat and idle reaper clock. */
   private readonly lastActivity = new Map<string, number>();
+  /** Threads somebody asked to end — an interrupt or a stop — since their last
+   *  send or session start. Marked before the teardown, so however the end
+   *  then arrives (an abort, a bare exit), it reads as asked for. */
+  private readonly endAsked = new Set<string>();
   /** Turns currently live per thread (turnId) — the wedge watchdog's scope. */
   private readonly activeTurns = new Map<string, string>();
   /** Consecutive subagent wakes per thread — see SUBAGENT_WAKE_MAX. */
@@ -1214,6 +1218,8 @@ export class AgentService {
     carried?: CarriedTurn,
     hooks?: TurnSendOptions,
   ): Promise<TurnStartResult> {
+    // New work: an end asked for before it was about what came before.
+    this.endAsked.delete(threadId);
     const carry = carried ?? this.turnInbox?.carry(threadId, turn, ownBlockId) ?? null;
     let accepted = false;
     const body = carry ? carry.input : turn;
@@ -1583,7 +1589,15 @@ export class AgentService {
   }
 
   async interruptTurn(threadId: string): Promise<void> {
+    this.endAsked.add(threadId);
     return this.adapterForThread(threadId).interruptTurn(threadId);
+  }
+
+  /** Did somebody ask to end what `threadId` was doing — an interrupt or a
+   *  stop since its last send or session start? A turn its session's end cut
+   *  off that nobody asked to end is news to whoever handed the work off. */
+  endWasAsked(threadId: string): boolean {
+    return this.endAsked.has(threadId);
   }
 
   // ── context compaction ────────────────────────────────────────────────────
@@ -1797,6 +1811,7 @@ export class AgentService {
   async stopSession(threadId: string): Promise<void> {
     const provider = this.routing.get(threadId);
     if (!provider) return;
+    this.endAsked.add(threadId);
     // Cancel queued follow-ups BEFORE the teardown: a row must never promote
     // into a session that is being torn down (a drain racing the stop could
     // otherwise claim one and hand it to a dead session).
@@ -1935,6 +1950,7 @@ export class AgentService {
       case "session.started":
         // A new session carries on nothing an old one was cut short for.
         this.forgetSteer(threadId);
+        this.endAsked.delete(threadId);
         break;
       case "subagent.background-settled":
         this.wakeForSettledSubagents(event);

@@ -123,6 +123,9 @@ export interface MailboxReportSinkDeps {
   store: IrcToolStore;
   /** Is the parent mid-turn? Only an interruption asks: see below. */
   isBusy?: (threadId: string) => boolean;
+  /** Did somebody ask to end the child's work? A seal says how its turn
+   *  ended, not who wanted it ended. */
+  endWasAsked?: (threadId: string) => boolean;
 }
 
 /**
@@ -134,7 +137,8 @@ export interface MailboxReportSinkDeps {
  * user's head. So it reaches a parent that is running, and otherwise is held
  * in its inbox for its next turn. A turn its session's end cut off (an exit,
  * a stop nobody asked for) is marked `cutOff`, and rings: nobody else knows
- * the work stopped. Held or not, it is the same stored report,
+ * the work stopped. Unless somebody asked for that end after all — a stop
+ * whose teardown came through as a bare exit — which is held like any other. Held or not, it is the same stored report,
  * retractable until it is seen.
  */
 export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleReportSink {
@@ -143,7 +147,9 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
       const meta = deps.store.threadMeta?.(report.childThreadId);
       if (!meta) return null;
       const sender = courierReportSender(deps.store, report);
-      const asked = report.status === "interrupted" && !report.cutOff;
+      const asked =
+        report.status === "interrupted" &&
+        (!report.cutOff || (deps.endWasAsked?.(report.childThreadId) ?? false));
       const rings = !(asked && deps.isBusy && !deps.isBusy(report.parentThreadId));
       const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId, rings);
       try {

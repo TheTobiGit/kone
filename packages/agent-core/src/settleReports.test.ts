@@ -44,6 +44,13 @@ describe("the report of an interrupted turn, to an idle parent", () => {
     expect(mailbox.ringingCount(PARENT)).toBe(1);
   });
 
+  test("a cut-off turn whose end somebody asked for is held", () => {
+    const mailbox = new IrcMailbox();
+    const sink = createMailboxReportSink({ mailbox, store, isBusy: () => false, endWasAsked: (id) => id === CHILD });
+    expect(sink.deliver(interrupted("t-6", "The child's session exited."))).not.toBeNull();
+    expect(mailbox.ringingCount(PARENT)).toBe(0);
+  });
+
   test("its report says what ended it; an asked-for one says nothing more", () => {
     expect(renderSettleReport(interrupted("t-3", "The child's session exited."), "Milo")).toContain(
       "interrupted before it finished (thread child-1, turn t-3): The child's session exited.",
