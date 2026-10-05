@@ -1981,6 +1981,7 @@ describe("settle reports", () => {
     const h = makeReportEngine();
     const child = await delegate(h);
     h.store.texts.set(child, "Endpoint shipped: POST /v1/things, tests green.");
+    h.store.turnTexts.set(`${child}/t-1`, "Endpoint shipped: POST /v1/things, tests green.");
 
     h.bus.emit(turnCompleted(child, "t-1", 30));
     await h.flush();
@@ -2151,6 +2152,7 @@ describe("settle reports", () => {
     h.bus.emit(sessionStarted(threadId, 10));
     h.bus.emit(turnStarted(threadId, "w-1", 20));
     h.store.texts.set(threadId, "Found it in sidebar.ts:42.");
+    h.store.turnTexts.set(`${threadId}/w-1`, "Found it in sidebar.ts:42.");
     h.bus.emit(turnCompleted(threadId, "w-1", 30));
     await h.flush();
     expect(h.delivered).toHaveLength(1);
@@ -2640,6 +2642,70 @@ describe("a wait pinned to a turn from the store", () => {
 
     expect(out.timedOut).toBe(false);
     expect(out.threads[0]!.summary).toBeUndefined();
+  });
+});
+
+// ── a wait pinned to a live-tracked turn ─────────────────────────────────────
+// The live path projects the turn the wait asked for, never the newest one: a
+// wait pinned to an older turn reports that turn's reply, and so does the
+// settle report the courier carries for it.
+
+/** A live-tracked child whose two turns settled, each with its own reply:
+ *  "first" then "second". The thread's newest answer is the second turn's,
+ *  so anything pinned to the first that reports it is reporting the wrong
+ *  turn. */
+async function childWithTwoLiveTurns(h: EngineHarness): Promise<string> {
+  setupParent(h.store, h.providers);
+  const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+  h.bus.emit(sessionStarted(child, 10));
+  h.bus.emit(turnStarted(child, "t-1", 20));
+  h.store.turnTexts.set(`${child}/t-1`, "The first turn's reply.");
+  h.bus.emit(turnCompleted(child, "t-1", 30));
+  h.bus.emit(turnStarted(child, "t-2", 40));
+  h.store.turnTexts.set(`${child}/t-2`, "The second turn's reply.");
+  h.store.texts.set(child, "The second turn's reply.");
+  h.bus.emit(turnCompleted(child, "t-2", 50));
+  return child;
+}
+
+describe("a wait pinned to a live-tracked turn", () => {
+  test("a wait pinned to the first of two turns reports the first turn's reply, not the newest", async () => {
+    const h = makeEngine();
+    const child = await childWithTwoLiveTurns(h);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["t-1"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]).toMatchObject({ status: "completed", terminal: true });
+    expect(out.threads[0]!.summary).toBe("The first turn's reply.");
+  });
+
+  test("a pinned live turn that said nothing carries no summary, not the newest turn's", async () => {
+    const h = makeEngine();
+    const child = await childWithTwoLiveTurns(h);
+    h.store.turnTexts.delete(`${child}/t-1`);
+
+    const out = await h.engine.waitFor({ threadIds: [child], turnIds: ["t-1"], timeoutMs: 2_000, scopeThreadId: CALLER.threadId });
+
+    expect(out.timedOut).toBe(false);
+    expect(out.threads[0]!.summary).toBeUndefined();
+  });
+
+  test("a settle report for a turn carries that turn's reply, not the newest", async () => {
+    const h = makeReportEngine();
+    const child = await childWithTwoLiveTurns(h);
+    await h.flush();
+
+    // One wake carries both turns' reports, in order: each quotes its own
+    // turn's reply, never the newest turn's twice.
+    expect(h.delivered).toHaveLength(1);
+    const input = h.delivered[0]!.input;
+    expect(input).toContain(`thread ${child}, turn t-1`);
+    expect(input).toContain(`thread ${child}, turn t-2`);
+    expect(input).toContain("> The first turn's reply.");
+    expect(input).toContain("> The second turn's reply.");
+    expect(input.indexOf("The first turn's reply.")).toBeLessThan(input.indexOf("The second turn's reply."));
+    h.stopDelivery();
   });
 });
 

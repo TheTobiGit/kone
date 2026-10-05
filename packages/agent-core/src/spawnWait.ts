@@ -244,7 +244,10 @@ export class SpawnWaitCoordinator {
           updatedAt: tracked.updatedAt,
         },
         turns: pinnedTurns,
-        latestAssistantText: this.deps.store.latestAssistantText(tracked.threadId),
+        // A pinned turn reports ITS OWN reply, never the thread's newest —
+        // the same rule as the store path. A turn that said nothing carries
+        // no summary.
+        latestAssistantText: this.deps.store.turnAssistantText(tracked.threadId, turnId),
         gate: tracked.gate,
         hasLiveSession: tracked.hasLiveSession || pinnedTurns.length === 0,
         tokens: tracked.tokens,
