@@ -1663,6 +1663,9 @@ export class AgentService {
         this.dropParked(threadId, event.requestId);
         break;
       case "turn.started":
+        // A new turn: whatever an earlier one left open — a session that
+        // died under it without aborting it — is not what this one is doing.
+        if (this.activeTurns.get(threadId) !== event.turnId) this.forgetOpenItems(threadId);
         this.activeTurns.set(threadId, event.turnId);
         this.turnStartedAt.set(threadId, event.at);
         // A turn nobody here asked for — the user typing, a peer's message, a
@@ -1700,10 +1703,8 @@ export class AgentService {
       case "turn.completed":
       case "turn.aborted":
         this.activeTurns.delete(threadId);
-        this.openItems.delete(threadId);
         this.turnStartedAt.delete(threadId);
-        this.openTools.delete(threadId);
-        this.openStep.delete(threadId);
+        this.forgetOpenItems(threadId);
         // A turn settling frees the one-live-turn slot: promote the next
         // queued follow-up (fire-and-forget; drain is serialized per thread
         // and sends at most one turn, so the next settlement drains again).
@@ -1713,11 +1714,13 @@ export class AgentService {
         if (event.state === "stopped" || event.state === "error") {
           this.activeTurns.delete(threadId);
           this.dropAllParked(threadId);
+          this.forgetOpenItems(threadId);
         }
         break;
       case "session.exited":
         this.activeTurns.delete(threadId);
         this.dropAllParked(threadId);
+        this.forgetOpenItems(threadId);
         break;
       case "subagent.background-settled":
         this.wakeForSettledSubagents(event);
@@ -1837,6 +1840,13 @@ export class AgentService {
       text: item.text || known?.text || "",
       startedAt: known?.startedAt ?? at,
     });
+  }
+
+  /** The items a thread had open, and what they said it was doing. */
+  private forgetOpenItems(threadId: string): void {
+    this.openItems.delete(threadId);
+    this.openTools.delete(threadId);
+    this.openStep.delete(threadId);
   }
 
   private closeItem(threadId: string, itemId: string): void {

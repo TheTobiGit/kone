@@ -813,6 +813,35 @@ describe("threadRuntime: what a thread is doing, for a sender", () => {
     expect(service.threadRuntime(thread).activeTool).toBeNull();
   });
 
+  for (const [how, end] of [
+    ["fails", { type: "session.state.changed", state: "error", message: "query exited" }],
+    ["exits", { type: "session.exited", code: 1 }],
+  ] as const) {
+    test(`a session that ${how} under an open tool call leaves nothing of it for the next turn`, async () => {
+      const thread = await openThread();
+      adapter.emit({ ...base(thread), type: "turn.started", turnId: "t-1" });
+      adapter.emit({
+        ...base(thread),
+        type: "item.started",
+        turnId: "t-1",
+        item: { itemId: "c-1", kind: "tool_call", status: "in-progress", text: "old.ts", name: "read" },
+      });
+      adapter.emit({ ...base(thread), ...end });
+      expect(service.threadRuntime(thread).activeTool).toBeNull();
+
+      // Even with the end unheard, a new turn starts clean.
+      adapter.emit({
+        ...base(thread),
+        type: "item.started",
+        turnId: "t-1",
+        item: { itemId: "c-2", kind: "tool_call", status: "in-progress", text: "older.ts", name: "read" },
+      });
+      await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+      adapter.emit({ ...base(thread), type: "turn.started", turnId: "t-2" });
+      expect(service.threadRuntime(thread)).toMatchObject({ busy: true, activeTool: null, step: null });
+    });
+  }
+
   test("of two tool calls open at once, the one still open stays when the other ends", async () => {
     const thread = await openThread();
     adapter.emit({ ...base(thread), type: "turn.started", turnId: "live" });
