@@ -86,6 +86,9 @@ export interface SpawnEngineStore {
   spawnDepth(threadId: string): number;
   liveSpawnedThreadIds(): string[];
   latestAssistantText(threadId: string): string | null;
+  /** One turn's OWN final reply — the text a wait pinned to that turn reports
+   *  as its summary. Null when the turn said nothing after its last step. */
+  turnAssistantText(threadId: string, turnId: string): string | null;
   threadTurnSpan(threadId: string): {
     startedAt: number;
     endedAt: number | null;
@@ -1033,8 +1036,13 @@ class SpawnEngineImpl implements SpawnEngine {
         updatedAt: meta.updatedAt,
       },
       turns,
-      // The newest text is another turn's when the asked-for one is unknown.
-      latestAssistantText: unknownTurn ? null : this.store.latestAssistantText(threadId),
+      // A pinned turn reports ITS OWN reply; unpinned reports the newest. A
+      // turn with no reply is left unsaid, never borrowed from the newest.
+      latestAssistantText: unknownTurn
+        ? null
+        : turnId === undefined
+          ? this.store.latestAssistantText(threadId)
+          : this.store.turnAssistantText(threadId, turnId),
       gate: null,
       hasLiveSession: false,
       tokens: meta.tokens,
