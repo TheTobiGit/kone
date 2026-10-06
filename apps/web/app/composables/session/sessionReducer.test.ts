@@ -28,11 +28,20 @@ function makeSession() {
   const threadId = ref("t");
   const queuedTurnsRaw: Ref<QueuedTurnEntry[]> = ref([]);
   const queueReturn: Ref<QueueReturn | null> = ref(null);
+  /** What the reducer told the session about its provider conversation. */
+  const conversations: string[] = [];
+  const exits = { count: 0 };
   const deps = {
     blocks,
     threadId,
     touch: () => {},
     noteResumeSessionAt: () => {},
+    noteConversationId: (id: string) => {
+      conversations.push(id);
+    },
+    noteSessionExited: () => {
+      exits.count++;
+    },
     sessionState: ref<RuntimeSessionState>("ready"),
     warning: ref<string | null>(null),
     error: ref<string | null>(null),
@@ -55,7 +64,7 @@ function makeSession() {
     parseQueuedAttachments,
     noteCompactedBoundary: (_marker: CompactionRecord) => {},
   };
-  return { blocks, queuedTurnsRaw, queueReturn, reduce: useSessionReducer(deps).reduce };
+  return { blocks, queuedTurnsRaw, queueReturn, conversations, exits, reduce: useSessionReducer(deps).reduce };
 }
 
 const base = { threadId: "t", provider: "opencode", source: "kone.store" } as const;
@@ -515,5 +524,39 @@ describe("a message kone journals for someone else", () => {
     session.reduce(journaled("ub-a", "ub-2"));
     session.reduce(journaled("ub-a", "ub-1"));
     expect(session.blocks.value.filter((b) => b.id === "ub-a")).toHaveLength(1);
+  });
+});
+
+describe("a provider session's end", () => {
+  function exited(threadId: string): RuntimeEvent {
+    return { type: "session.exited", threadId, provider: "codex", at: 500, source: "codex.rpc.lifecycle", code: null };
+  }
+
+  test("tells the session, so its next send starts a new one", () => {
+    const session = makeSession();
+    session.reduce(exited("t"));
+    expect(session.exits.count).toBe(1);
+  });
+
+  test("another thread's end is not this one's", () => {
+    const session = makeSession();
+    session.reduce(exited("someone-else"));
+    expect(session.exits.count).toBe(0);
+  });
+
+  test("the conversation to resume is this thread's own, never a child's", () => {
+    const session = makeSession();
+    const refsOn = (threadId: string, conversationId: string): RuntimeEvent => ({
+      type: "session.warning",
+      threadId,
+      provider: "claudeAgent",
+      at: 400,
+      source: "claude.sdk.lifecycle",
+      refs: { conversationId },
+      message: "noted",
+    });
+    session.reduce(refsOn("t", "conv-own"));
+    session.reduce(refsOn("child", "conv-child"));
+    expect(session.conversations).toEqual(["conv-own"]);
   });
 });
