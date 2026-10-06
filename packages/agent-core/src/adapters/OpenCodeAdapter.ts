@@ -880,7 +880,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       // of it. The server's `: heartbeat` comments never get this far.
       case "session.step.started":
       case "session.step.streamed": if (active) this.alive(session.threadId); break;
-      case "session.status": if (record(p.status)?.type === "idle") this.complete(session); else if (active) this.alive(session.threadId); break;
+      case "session.status": { const status = record(p.status)?.type; if (status === "idle") this.complete(session); else if (active && (status === "busy" || status === "retry")) this.alive(session.threadId); break; }
       case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
       case "permission.asked": void this.permissionAsked(session, p); break;
       case "permission.replied": {
