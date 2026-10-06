@@ -5,6 +5,7 @@ import { ToolCallAccumulator } from "../toolCallAccumulator.js";
 import { acpObservation, describeTool, openCodeFileChanges } from "./toolCalls.js";
 import { normalizeV2Event } from "./opencodeV2Events.js";
 import { record, type OpenCodeEvent, type RecordLike } from "./opencodeJson.js";
+import { diffStats } from "@kone/protocol/unified-diff";
 
 describe("captured OpenCode tool events", () => {
   test("v2 translation retains command input, exit status and per-file patches", () => {
@@ -55,4 +56,17 @@ describe("synthetic ACP observations (protocol coverage only)", () => {
       action: "read", target: "a.ts", transport: { server: "files", tool: "read_file" },
     });
   });
+});
+
+test("an ACP before/after block becomes a real line diff, not a whole-file replace", () => {
+  const before = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+  const after = before.replace("line 250", "LINE 250");
+  const observation = acpObservation(
+    { toolCallId: "c1", kind: "edit", status: "completed", content: [{ type: "diff", path: "/w/a.ts", oldText: before, newText: after }] },
+    "edit_file",
+    "",
+  );
+  const [change] = observation.fileChanges!;
+  expect(change).toMatchObject({ path: "/w/a.ts", kind: "edited", applied: true });
+  expect(diffStats(change!.diff)).toEqual({ added: 1, removed: 1 });
 });

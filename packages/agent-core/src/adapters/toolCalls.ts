@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { JsonValue, JsonObject } from "../lib-jsonValue.js";
 import { ToolActionSchema, type ToolAction, type ToolCall, type ToolFileChange } from "@kone/protocol/tool-call";
+import { unifiedDiffFromTexts } from "@kone/protocol/unified-diff";
 import type { ToolObservation } from "../toolCallAccumulator.js";
 
 export function object(value: JsonValue): JsonObject | undefined {
@@ -108,12 +109,10 @@ export function acpObservation(update: JsonValue, name: string | undefined, deta
   return observation;
 }
 
-/** Before/after content has known line origins, unlike a bare list of +/- lines. */
+/** Before/after content has known line origins: diff it into numbered hunks
+ *  rather than reading a bare run of +/- lines. */
 export function beforeAfterDiff(before: string, after: string): string {
-  const oldLines = before === "" ? [] : before.replace(/\n$/, "").split("\n");
-  const newLines = after === "" ? [] : after.replace(/\n$/, "").split("\n");
-  return [`@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@`,
-    ...oldLines.map((l) => `-${l}`), ...newLines.map((l) => `+${l}`)].join("\n");
+  return unifiedDiffFromTexts(before, after);
 }
 
 export function codexFileChanges(raw: JsonValue): ToolFileChange[] | undefined {
