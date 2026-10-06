@@ -350,6 +350,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     noteConversationId: (conversationId: string) => {
       lastConversationId = conversationId;
     },
+    ownsExit: (event) => ownsExit(event),
     noteSessionExited: () => rearmAfterExit(),
     sessionState,
     warning,
@@ -1219,6 +1220,19 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // Claude resumes with the id + the last assistant message uuid; keep the
     // freshest one we've seen so the re-staged cursor is complete.
     if (lastResumeSessionAt) pendingResumeSessionAt = lastResumeSessionAt;
+  }
+
+  /** Whether an exit is the live session's. One from another provider, or
+   *  naming a conversation other than the one this session reported, is a
+   *  session the thread has since moved off — late, or stopped in a hand-in —
+   *  and the live one is still up. With no session here, any exit is news. */
+  function ownsExit(event: Extract<RuntimeEvent, { type: "session.exited" }>): boolean {
+    const live = session.value;
+    if (!live) return true;
+    if (event.provider !== live.provider) return false;
+    const ours = lastConversationId ?? live.conversationId;
+    const theirs = event.refs?.conversationId;
+    return !ours || !theirs || ours === theirs;
   }
 
   /** The provider session ended. A stop this side asked for — hibernate,

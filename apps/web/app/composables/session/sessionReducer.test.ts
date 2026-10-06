@@ -42,6 +42,7 @@ function makeSession() {
     noteConversationId: (id: string) => {
       conversations.push(id);
     },
+    ownsExit: () => true,
     noteSessionExited: () => {
       exits.count++;
     },

@@ -67,6 +67,9 @@ export type SessionReducerDeps = {
   /** Remember the freshest provider conversation id riding this thread's
    *  event envelopes. */
   noteConversationId: (conversationId: string) => void;
+  /** Whether an exit is the session this thread is on, rather than one it
+   *  has since moved off — another provider's, or a conversation it left. */
+  ownsExit: (event: Extract<RuntimeEvent, { type: "session.exited" }>) => boolean;
   /** The provider session ended: re-arm the start-on-next-send, unless a stop
    *  this side asked for has already dealt with it. */
   noteSessionExited: () => void;
@@ -103,6 +106,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     touch,
     noteResumeSessionAt,
     noteConversationId,
+    ownsExit,
     noteSessionExited,
     sessionState,
     warning,
@@ -321,9 +325,13 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     // Past the routing guard, so a spawned child's conversation never stands
     // in for this thread's. The provider's resume cursor travels on the
     // envelope beside it; the freshest one is kept so a hibernated session can
-    // re-stage it (Claude-only — other providers never set it).
-    if (event.refs?.conversationId) noteConversationId(event.refs.conversationId);
-    if (event.refs?.resumeSessionAt) noteResumeSessionAt(event.refs.resumeSessionAt);
+    // re-stage it (Claude-only — other providers never set it). An exit says
+    // nothing new about the conversation, and is checked against what was
+    // noted before it (ownsExit).
+    if (event.type !== "session.exited") {
+      if (event.refs?.conversationId) noteConversationId(event.refs.conversationId);
+      if (event.refs?.resumeSessionAt) noteResumeSessionAt(event.refs.resumeSessionAt);
+    }
     switch (event.type) {
       case "session.state.changed":
         sessionState.value = event.state;
@@ -343,6 +351,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         model.value = event.toModel;
         break;
       case "session.exited": {
+        // A session this thread has moved off ended: the one it is on has not.
+        if (!ownsExit(event)) break;
         sessionState.value = "stopped";
         if (event.code && error.value === null) {
           error.value = "Agent process exited unexpectedly";
