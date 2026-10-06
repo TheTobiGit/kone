@@ -54,6 +54,11 @@ class FakeAdapter {
   static sentSkills: Array<SendTurnInput["skills"]> = [];
   static startedCwds: string[] = [];
   static startedAgents: Array<SessionStartInput["agent"]> = [];
+  /** The conversation each session start asked to resume. */
+  static startedResumes: Array<string | undefined> = [];
+  /** Whether the adapter still holds a session for the thread — what an exit
+   *  from a session it has since replaced looks like. */
+  static holding = false;
   static turnCounter = 0;
   /** The provider refuses the next turn sent to it. */
   static refuseNext: Error | null = null;
@@ -65,12 +70,13 @@ class FakeAdapter {
     return [];
   }
   async startSession(
-    input: Pick<SessionStartInput, "threadId" | "cwd" | "agent">,
+    input: Pick<SessionStartInput, "threadId" | "cwd" | "agent" | "resume">,
   ): Promise<{ threadId: string; provider: "codex" }> {
     // The directory a provider process would have been spawned in. Recorded
     // before the gate so a test can tell the session has started coming up.
     FakeAdapter.startedCwds.push(input.cwd);
     FakeAdapter.startedAgents.push(input.agent);
+    FakeAdapter.startedResumes.push(input.resume);
     if (startGate) await startGate;
     return { threadId: input.threadId, provider: "codex" };
   }
@@ -93,7 +99,7 @@ class FakeAdapter {
     return [];
   }
   async hasSession(): Promise<boolean> {
-    return false;
+    return FakeAdapter.holding;
   }
 }
 
@@ -577,6 +583,56 @@ describe("composeTurnDelivery", () => {
 // by — and the wrong thing to hand a child process, which is what took the
 // assistant's very first send down: no CLI came up, so the turn arrived at a
 // thread with no session behind it.
+/** The provider's session ending without anyone stopping it — its process
+ *  died, its stream closed. */
+function sessionExited(emit: EmitEvent, provider: "codex" | "claudeAgent" = "codex"): void {
+  emit({ type: "session.exited", threadId: THREAD, provider, at: Date.now(), source: "codex.rpc.lifecycle", code: 1 });
+}
+
+describe("thread dispatcher: a session that ends on its own", () => {
+  beforeEach(() => {
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.startedResumes.length = 0;
+    FakeAdapter.holding = false;
+  });
+
+  test("the next wake brings it back up, resuming its conversation", async () => {
+    const { store, dispatcher, emit, service } = await harness();
+    store.captureConversationId(THREAD, "conv-1");
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+
+    sessionExited(emit);
+    await waitFor(() => !service.hasLiveSession(THREAD));
+    await dispatcher.ensureThreadSession(THREAD, { resume: true });
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "hi" });
+
+    // Kept as live, the thread was never restarted and every send reached an
+    // adapter with no session for it.
+    expect(FakeAdapter.startedResumes).toEqual([undefined, "conv-1"]);
+    expect(FakeAdapter.sent).toHaveLength(2);
+    expect(FakeAdapter.sent[1]).toEndWith("hi");
+  });
+
+  test("an exit the adapter has already replaced leaves the thread live", async () => {
+    const { emit, service } = await harness();
+    FakeAdapter.holding = true;
+
+    sessionExited(emit);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(service.hasLiveSession(THREAD)).toBe(true);
+  });
+
+  test("an exit from a provider the thread is not on leaves it live", async () => {
+    const { emit, service } = await harness();
+
+    sessionExited(emit, "claudeAgent");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(service.hasLiveSession(THREAD)).toBe(true);
+  });
+});
+
 describe("thread dispatcher: where a session is spawned", () => {
   beforeEach(() => {
     FakeAdapter.sent.length = 0;
