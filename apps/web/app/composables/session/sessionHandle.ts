@@ -32,6 +32,11 @@ export function useSessionHandle(deps: SessionHandleDeps) {
    *  the id start() was handed back can be missing (a fresh conversation) or
    *  stale; this is the freshest. */
   let reported: { provider: ProviderKind; conversationId?: string; resumeSessionAt?: string } | null = null;
+  /** A hand-in is swapping the session out from under the thread: the old
+   *  one's exit is the swap, not a session to bring back. Whether that exit
+   *  has been seen yet, too — a hand-in that fails after it left the thread
+   *  with no session. */
+  let handIn: { oldExited: boolean } | null = null;
 
   /** An event's envelope named the conversation or Claude's cursor into it.
    *  Kept only for the provider the thread is on: another's is a session the
@@ -90,7 +95,8 @@ export function useSessionHandle(deps: SessionHandleDeps) {
    *  leaves it: the next send starts a session that resumes the conversation. */
   function exited(): void {
     const live = deps.session.value;
-    if (live && !deps.isForgotten()) {
+    if (handIn) handIn.oldExited = true;
+    else if (live && !deps.isForgotten()) {
       restageResume(live);
       deps.session.value = null;
       deps.deferred.value = true;
@@ -98,5 +104,37 @@ export function useSessionHandle(deps: SessionHandleDeps) {
     forgetConversation();
   }
 
-  return { noteRefs, forgetConversation, ownsExit, restageResume, exited };
+  /** A hand-in is about to stop the live session and start the target's. */
+  function beginHandIn(): void {
+    handIn = { oldExited: false };
+  }
+
+  /** The hand-in's session is up — started by the desktop side, so the
+   *  thread is started: nothing is left for the next send to start. */
+  function adoptHandIn(next: Session): void {
+    handIn = null;
+    deps.session.value = next;
+    deps.deferred.value = false;
+  }
+
+  /** The hand-in broke. Once the old session was stopped, the thread has none
+   *  and the next send starts one; short of that, the old one is still up. */
+  function handInFailed(): void {
+    const oldExited = handIn?.oldExited ?? false;
+    handIn = null;
+    if (!oldExited || deps.isForgotten()) return;
+    deps.session.value = null;
+    deps.deferred.value = true;
+  }
+
+  return {
+    noteRefs,
+    forgetConversation,
+    ownsExit,
+    restageResume,
+    exited,
+    beginHandIn,
+    adoptHandIn,
+    handInFailed,
+  };
 }
