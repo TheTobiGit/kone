@@ -295,10 +295,6 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     // child's traffic is routed here too, and the parent orchestrating it is
     // very much active.
     touch();
-    // The provider's resume cursor travels on the envelope; remember the
-    // freshest one so a hibernated session can re-stage it (Claude-only —
-    // other providers never set it).
-    if (event.refs?.resumeSessionAt) noteResumeSessionAt(event.refs.resumeSessionAt);
     // A spawned child's events bear the CHILD's id — the child is the subject,
     // and its session is never in this registry (only the parent's is; the
     // parent's dock is what these events maintain). The manager routes them to
@@ -323,8 +319,11 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     }
     if (event.threadId !== threadId.value) return;
     // Past the routing guard, so a spawned child's conversation never stands
-    // in for this thread's.
+    // in for this thread's. The provider's resume cursor travels on the
+    // envelope beside it; the freshest one is kept so a hibernated session can
+    // re-stage it (Claude-only — other providers never set it).
     if (event.refs?.conversationId) noteConversationId(event.refs.conversationId);
+    if (event.refs?.resumeSessionAt) noteResumeSessionAt(event.refs.resumeSessionAt);
     switch (event.type) {
       case "session.state.changed":
         sessionState.value = event.state;

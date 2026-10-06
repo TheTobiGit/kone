@@ -30,12 +30,15 @@ function makeSession() {
   const queueReturn: Ref<QueueReturn | null> = ref(null);
   /** What the reducer told the session about its provider conversation. */
   const conversations: string[] = [];
+  const cursors: string[] = [];
   const exits = { count: 0 };
   const deps = {
     blocks,
     threadId,
     touch: () => {},
-    noteResumeSessionAt: () => {},
+    noteResumeSessionAt: (cursor: string) => {
+      cursors.push(cursor);
+    },
     noteConversationId: (id: string) => {
       conversations.push(id);
     },
@@ -64,7 +67,7 @@ function makeSession() {
     parseQueuedAttachments,
     noteCompactedBoundary: (_marker: CompactionRecord) => {},
   };
-  return { blocks, queuedTurnsRaw, queueReturn, conversations, exits, reduce: useSessionReducer(deps).reduce };
+  return { blocks, queuedTurnsRaw, queueReturn, conversations, cursors, exits, reduce: useSessionReducer(deps).reduce };
 }
 
 const base = { threadId: "t", provider: "opencode", source: "kone.store" } as const;
@@ -558,5 +561,22 @@ describe("a provider session's end", () => {
     session.reduce(refsOn("t", "conv-own"));
     session.reduce(refsOn("child", "conv-child"));
     expect(session.conversations).toEqual(["conv-own"]);
+  });
+
+  test("the resume cursor is this thread's own, never a child's", () => {
+    const session = makeSession();
+    const cursorOn = (threadId: string, resumeSessionAt: string): RuntimeEvent => ({
+      type: "session.warning",
+      threadId,
+      provider: "claudeAgent",
+      at: 400,
+      source: "claude.sdk.lifecycle",
+      refs: { resumeSessionAt },
+      message: "noted",
+    });
+    session.reduce(cursorOn("t", "uuid-own"));
+    // A spawned child's traffic is routed to its parent's session too.
+    session.reduce(cursorOn("child", "uuid-child"));
+    expect(session.cursors).toEqual(["uuid-own"]);
   });
 });
