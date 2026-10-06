@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import type { StoredThread } from "../types.js";
-import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSeal, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
+import type { RuntimeItem, StoredThread } from "../types.js";
+import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToItem, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSeal, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import { decodeChunkArray, decodeStoredText, itemChunkArraySql } from "./itemTextChunks.js";
 
@@ -37,6 +37,27 @@ export class TranscriptRepo {
       };
     } catch (err) {
       console.error("[conversation-store] loadThread failed:", err);
+      return null;
+    }
+  }
+
+  /** One stored item, whole — the read behind a clipped tool_call's "show
+   *  everything" (see conversationWire.ts). Null when the row is gone. */
+  loadItem(threadId: string, turnId: string, itemId: string): RuntimeItem | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: `SELECT *` of items plus the chunk array aliased below is
+      // exactly ItemRow, as in loadTurnParts.
+      const row = db
+        .prepare(
+          `SELECT *, ${itemChunkArraySql("items")} AS chunk_text FROM items
+            WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+        )
+        .get(threadId, turnId, itemId) as ItemRow | undefined;
+      return row ? rowToItem(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] loadItem failed:", err);
       return null;
     }
   }

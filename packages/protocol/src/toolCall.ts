@@ -25,5 +25,21 @@ export const ToolFileChangeSchema = z.object({
   diff: z.string().optional(),
   /** A proposed edit is not a confirmed filesystem mutation. */
   applied: z.boolean(),
+  /** Line counts measured on the whole diff. Set where `diff` reaches the
+   *  renderer clipped, so the counts stay exact while the preview is partial. */
+  added: z.number().int().nonnegative().optional(),
+  removed: z.number().int().nonnegative().optional(),
+  diffClipped: z.boolean().optional(),
 });
 export type ToolFileChange = z.infer<typeof ToolFileChangeSchema>;
+
+/** A tool_call whose bodies were clipped on their way to the renderer: where
+ *  the full call lives, and the full length of each clipped body. The store
+ *  always keeps the whole call; this is only the wire copy's receipt. */
+export type ToolCallClip = {
+  threadId: string;
+  turnId: string;
+  detail?: number;
+  input?: number;
+  diffs?: boolean;
+};

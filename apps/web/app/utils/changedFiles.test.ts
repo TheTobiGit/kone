@@ -127,6 +127,28 @@ describe("deriveChangedFiles", () => {
     expect(totalRemoved).toBe(1);
   });
 
+  test("a diff clipped for the wire counts by its whole-diff line counts", () => {
+    const item: RuntimeItem = {
+      itemId: `i${n++}`,
+      kind: "tool_call",
+      status: "completed",
+      name: "edit",
+      text: "src/big.ts",
+      fileChanges: [{
+        path: "src/big.ts",
+        kind: "edited",
+        applied: true,
+        diff: "@@ -1,2 +1,2 @@\n-a\n+b\n",
+        added: 900,
+        removed: 400,
+        diffClipped: true,
+      }],
+    };
+    const { files, totalAdded, totalRemoved } = deriveChangedFiles([assistant([item])]);
+    expect(files[0]).toMatchObject({ path: "src/big.ts", added: 900, removed: 400 });
+    expect([totalAdded, totalRemoved]).toEqual([900, 400]);
+  });
+
   test("diff headers refine a generic edit tool into create / remove", () => {
     const { files } = deriveChangedFiles([
       assistant([

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { ToolFileChange } from "@kone/protocol/tool-call";
+import type { ToolCallClip, ToolFileChange } from "@kone/protocol/tool-call";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   CommandLineIcon,
@@ -21,7 +21,21 @@ const props = defineProps<{
   fileChanges?: ToolFileChange[];
   toolName?: string;
   toolText?: string;
+  /** Present when the wire clipped this call's bodies. */
+  clipped?: ToolCallClip;
+  loadingWhole?: boolean;
 }>();
+
+const emit = defineEmits<{ showWhole: [] }>();
+
+/** What the clip receipt says was cut, in words. */
+const clipNote = computed(() => {
+  const c = props.clipped;
+  if (!c) return "";
+  if (c.detail !== undefined) return `Showing the first ${props.detail.length.toLocaleString()} of ${c.detail.toLocaleString()} characters`;
+  if (c.diffs) return "Long diffs are shortened here";
+  return "Long input is shortened here";
+});
 
 const { cue } = useSound();
 const copied = ref(false);
@@ -336,6 +350,12 @@ async function onCopy(): Promise<void> {
         <pre class="sdetail__raw">{{ payload.content }}</pre>
       </template>
     </div>
+    <div v-if="clipped" class="sdetail__clip">
+      <span>{{ clipNote }}</span>
+      <button type="button" class="sdetail__copy" :disabled="loadingWhole" @click.stop="emit('showWhole')">
+        {{ loadingWhole ? "Loading…" : "Show all" }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -391,6 +411,17 @@ async function onCopy(): Promise<void> {
   font-size: 11px;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
+}
+.sdetail__clip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 5%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
 }
 .sdetail__copy:hover {
   background: var(--hover);

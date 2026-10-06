@@ -1716,22 +1716,24 @@ describe("loadThreadPage user-anchored windows", () => {
   });
 });
 
-describe("IPC wire projection (lossless tool-call payloads)", () => {
-  test("tool details cross the wire intact", async () => {
+describe("IPC wire projection (bounded tool-call payloads)", () => {
+  test("long tool bodies cross the wire clipped, with a receipt", async () => {
     const { projectRuntimeItemForIpc, projectRuntimeEventForIpc, TOOL_DETAIL_WIRE_CAP } =
       await import("./ConversationStore.js");
     const long = "x".repeat(TOOL_DETAIL_WIRE_CAP + 5000);
     const item = { itemId: "i-1", kind: "tool_call" as const, status: "completed" as const, text: "run", detail: long };
-    const projected = projectRuntimeItemForIpc(item);
-    expect(projected.detail).toBe(long);
-    expect(projected.detail!.startsWith("x".repeat(TOOL_DETAIL_WIRE_CAP))).toBe(true);
+    const projected = projectRuntimeItemForIpc(item, "t-1", "turn-1");
+    expect(projected.detail).toBe("x".repeat(TOOL_DETAIL_WIRE_CAP));
+    expect(projected.clipped).toEqual({ threadId: "t-1", turnId: "turn-1", detail: long.length });
+    // The source item is untouched — the store and the adapters keep it whole.
+    expect(item.detail).toBe(long);
 
     const short = { itemId: "i-2", kind: "tool_call" as const, status: "completed" as const, text: "run", detail: "tiny" };
-    expect(projectRuntimeItemForIpc(short)).toBe(short);
+    expect(projectRuntimeItemForIpc(short, "t-1", "turn-1")).toBe(short);
 
     // Text kinds are never slimmed — the streamed reply must arrive verbatim.
     const textItem = { itemId: "i-3", kind: "assistant_text" as const, status: "in-progress" as const, text: long };
-    expect(projectRuntimeItemForIpc(textItem)).toBe(textItem);
+    expect(projectRuntimeItemForIpc(textItem, "t-1", "turn-1")).toBe(textItem);
 
     const event = {
       type: "item.completed" as const,
@@ -1743,16 +1745,53 @@ describe("IPC wire projection (lossless tool-call payloads)", () => {
       item,
     };
     const projectedEvent = projectRuntimeEventForIpc(event);
-    expect(projectedEvent).toBe(event);
     // SAFETY: the projected event wraps the same item shape this test built.
-    expect((projectedEvent as { item: typeof item }).item.detail).toBe(long);
+    expect((projectedEvent as { item: typeof item }).item.detail).toBe("x".repeat(TOOL_DETAIL_WIRE_CAP));
     // Non-item events cross untouched (same object).
     const other = { type: "turn.completed" as const, threadId: "t-1", provider: "opencode" as const, at: 1, source: "kone.store" as const, turnId: "turn-1" };
     expect(projectRuntimeEventForIpc(other)).toBe(other);
   });
 
-  test("the store and wire keep the full payload", async () => {
-    const { projectStoredThreadForIpc } = await import("./ConversationStore.js");
+  test("clipped output ends on a line, and input is bounded too", async () => {
+    const { projectRuntimeItemForIpc, TOOL_DETAIL_WIRE_CAP } = await import("./ConversationStore.js");
+    const lines = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join("\n");
+    const input = JSON.stringify({ content: "y".repeat(TOOL_DETAIL_WIRE_CAP * 2) });
+    const projected = projectRuntimeItemForIpc(
+      { itemId: "i-1", kind: "tool_call", status: "completed", text: "run", detail: lines, tool: { action: "run", input } },
+      "t-1",
+      "turn-1",
+    );
+    expect(projected.detail!.length).toBeLessThanOrEqual(TOOL_DETAIL_WIRE_CAP);
+    expect(projected.detail!.endsWith("\n")).toBe(true);
+    expect(projected.tool!.input!.length).toBeLessThanOrEqual(TOOL_DETAIL_WIRE_CAP);
+    expect(projected.clipped).toEqual({ threadId: "t-1", turnId: "turn-1", detail: lines.length, input: input.length });
+  });
+
+  test("a clipped diff keeps the line counts of the whole diff", async () => {
+    const { projectRuntimeItemForIpc, TOOL_DIFF_WIRE_CAP } = await import("./ConversationStore.js");
+    const added = Math.ceil(TOOL_DIFF_WIRE_CAP / 10) + 50;
+    const diff = `@@ -0,0 +1,${added} @@\n` + Array.from({ length: added }, (_, i) => `+row ${String(i).padStart(4, "0")}`).join("\n");
+    const small = { path: "b.ts", kind: "edited" as const, applied: true, diff: "@@ -1 +1 @@\n-a\n+b" };
+    const projected = projectRuntimeItemForIpc(
+      {
+        itemId: "i-1",
+        kind: "tool_call",
+        status: "completed",
+        text: "a.ts",
+        fileChanges: [{ path: "a.ts", kind: "created", applied: true, diff }, small],
+      },
+      "t-1",
+      "turn-1",
+    );
+    const [big, untouched] = projected.fileChanges!;
+    expect(big!.diff!.length).toBeLessThanOrEqual(TOOL_DIFF_WIRE_CAP);
+    expect(big).toMatchObject({ added, removed: 0, diffClipped: true });
+    expect(untouched).toBe(small);
+    expect(projected.clipped).toEqual({ threadId: "t-1", turnId: "turn-1", diffs: true });
+  });
+
+  test("the store keeps the full payload and reads one item back whole", async () => {
+    const { projectStoredThreadForIpc, TOOL_DETAIL_WIRE_CAP } = await import("./ConversationStore.js");
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     store.applyEvent(turnStarted("t-1", "turn-1", 10));
@@ -1772,8 +1811,11 @@ describe("IPC wire projection (lossless tool-call payloads)", () => {
     expect(storedItem.detail).toBe(long);
     const projected = projectStoredThreadForIpc(stored);
     // SAFETY: projection preserves the block/item order of the stored thread.
-    const projectedItem = (projected.blocks[0] as { items: Array<{ detail?: string }> }).items[0]!;
-    expect(projectedItem.detail).toBe(long);
+    const projectedItem = (projected.blocks[0] as { items: Array<{ detail?: string; clipped?: unknown }> }).items[0]!;
+    expect(projectedItem.detail).toBe("y".repeat(TOOL_DETAIL_WIRE_CAP));
+    expect(projectedItem.clipped).toEqual({ threadId: "t-1", turnId: "turn-1", detail: long.length });
+    expect(store.loadItem("t-1", "turn-1", "i-1")?.detail).toBe(long);
+    expect(store.loadItem("t-1", "turn-1", "missing")).toBeNull();
   });
 
   test("nested subagent run items are projected too", async () => {
@@ -1800,10 +1842,12 @@ describe("IPC wire projection (lossless tool-call payloads)", () => {
         ],
       },
     };
-    const projected = projectRuntimeItemForIpc(parent);
-    expect(projected.subagent!.items[0]!.detail).toBe(long);
+    const projected = projectRuntimeItemForIpc(parent, "t-1", "turn-1");
+    expect(projected.subagent!.items[0]!.detail).toBe("z".repeat(TOOL_DETAIL_WIRE_CAP));
+    expect(projected.subagent!.items[0]!.clipped?.detail).toBe(long.length);
     // Parent detail unchanged → the parent's own body crosses untouched.
     expect(projected.detail).toBe("short");
+    expect(projected.clipped).toBeUndefined();
   });
 
   test("item updates fold into one store row — superseded updates never accumulate", () => {

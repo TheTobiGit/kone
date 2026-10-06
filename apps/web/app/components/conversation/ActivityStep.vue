@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -11,6 +11,7 @@ import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
+import type { RuntimeItem } from "~/types/desktop";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
 import { thinkingOrbHue } from "~/utils/toolOrbDraw";
 import {
@@ -47,6 +48,29 @@ const everOpened = ref(false);
 
 const isThinking = computed(() => props.entry.type === "thinking");
 const tool = computed(() => (props.entry.type === "tool" ? props.entry.item : null));
+
+// A row whose bodies were clipped on the wire reads its whole call from the
+// store on request. The whole copy is only good for the state it was read in,
+// so a later update to the row drops it.
+const wholeItem = ref<RuntimeItem | null>(null);
+const loadingWhole = ref(false);
+watch(() => tool.value?.status, () => (wholeItem.value = null));
+const shownTool = computed(() => wholeItem.value ?? tool.value);
+
+async function showWhole(): Promise<void> {
+  const item = tool.value;
+  const receipt = item?.clipped;
+  const history = window.koneDesktop?.agent.history;
+  if (!item || !receipt || !history || loadingWhole.value) return;
+  loadingWhole.value = true;
+  try {
+    wholeItem.value = await history.toolItem(receipt.threadId, receipt.turnId, item.itemId);
+  } catch {
+    // The clipped copy stays on screen; nothing else depends on this read.
+  } finally {
+    loadingWhole.value = false;
+  }
+}
 
 const meta = computed(() => (tool.value ? toolMeta(tool.value.name, tool.value.tool) : null));
 const status = computed(() => (tool.value ? toolStatus(tool.value) : "done"));
@@ -197,11 +221,14 @@ function toggle(): void {
           />
           <ActivityStepDetail
             v-else-if="hasToolBody"
-            :detail="tool!.detail ?? ''"
-            :tool-input="tool!.tool?.input"
-            :file-changes="tool!.fileChanges"
-            :tool-name="tool!.name"
-            :tool-text="tool!.text"
+            :detail="shownTool!.detail ?? ''"
+            :tool-input="shownTool!.tool?.input"
+            :file-changes="shownTool!.fileChanges"
+            :tool-name="shownTool!.name"
+            :tool-text="shownTool!.text"
+            :clipped="shownTool!.clipped"
+            :loading-whole="loadingWhole"
+            @show-whole="showWhole"
           />
         </template>
       </div>

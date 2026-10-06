@@ -844,6 +844,12 @@ export function registerAgentIpc(): void {
     const thread = store.loadThread(threadId);
     return thread ? projectStoredThreadForIpc(thread) : null;
   });
+  // One tool call, whole — what a row whose bodies were clipped for the wire
+  // (its `clipped` receipt names thread and turn) reads when the user asks
+  // for everything. Unprojected on purpose.
+  ipcMain.handle("agent:history-tool-item", (_event, threadId: string, turnId: string, itemId: string) =>
+    store.loadItem(threadId, turnId, itemId),
+  );
   // Settled compaction boundaries for a thread, oldest first — the timeline's
   // "when/where compacted" markers. Few rows ever (one per boundary event),
   // so this is always the full list, never a page.
@@ -880,7 +886,7 @@ export function registerAgentIpc(): void {
     (_event, threadId: string, options?: { limit?: number; cursor?: string }) => {
       const page = store.loadThreadPage(threadId, options);
       if (!page) return null;
-      return { ...page, blocks: projectStoredBlocksForIpc(page.blocks) };
+      return { ...page, blocks: projectStoredBlocksForIpc(page.blocks, threadId) };
     },
   );
   // Thread export to Markdown / JSON files. Reads the full stored rows —

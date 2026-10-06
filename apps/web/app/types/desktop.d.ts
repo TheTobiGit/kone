@@ -1,4 +1,4 @@
-import type { ToolCall, ToolFileChange } from "@kone/protocol/tool-call";
+import type { ToolCall, ToolCallClip, ToolFileChange } from "@kone/protocol/tool-call";
 // Shape of the Electron preload bridge, as seen from the renderer.
 // Mirrors apps/desktop/src/git.ts and apps/desktop/src/types/global.d.ts.
 export {};
@@ -1430,6 +1430,9 @@ export type RuntimeItem = {
   detail?: string;
   tool?: ToolCall;
   fileChanges?: ToolFileChange[];
+  /** Present when the bodies were clipped for IPC; `history.toolItem` reads
+   *  the whole call. */
+  clipped?: ToolCallClip;
   /** For a Task/Agent `tool_call`: the nested run it spawned, assembled by the
    *  consumer from the `subagent.*` events plus items tagged with this run's
    *  `subagentToolUseId` — adapters emit the pieces, never the tree. */
@@ -2324,6 +2327,7 @@ export type KoneAgentHistoryApi = {
    *  timeline renders its "Handed to" markers from. */
   continuationsFromSource: (sourceThreadId: string) => Promise<ContinuationLink[]>;
   handInsForThread: (threadId: string) => Promise<HandInRecord[]>;
+  toolItem: (threadId: string, turnId: string, itemId: string) => Promise<RuntimeItem | null>;
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;

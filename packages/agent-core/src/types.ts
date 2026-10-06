@@ -1,4 +1,4 @@
-import type { ToolCall, ToolFileChange } from "@kone/protocol/tool-call";
+import type { ToolCall, ToolCallClip, ToolFileChange } from "@kone/protocol/tool-call";
 import { z } from "zod";
 
 // ── Agent provider data model ───────────────────────────────────────────────
@@ -1498,6 +1498,9 @@ export type RuntimeItem = {
   detail?: string;
   tool?: ToolCall;
   fileChanges?: ToolFileChange[];
+  /** Set only on the renderer's copy when its bodies were clipped for IPC
+   *  (see conversationWire.ts); never stored. */
+  clipped?: ToolCallClip;
   /** For a `tool_call` that spawned a provider-native subagent (Claude's
    *  Task/Agent tool): the child run and its own transcript. Consumers build
    *  this from the `subagent.*` events plus the `item.*` events tagged with the

@@ -62,6 +62,7 @@ import type {
   ProviderUpdateResult,
   RevertTurnCheckpointResult,
   RuntimeEvent,
+  RuntimeItem,
   SendTurnInput,
   Session,
   SessionStartInput,
@@ -609,6 +610,10 @@ const api = {
       // "changed hands" markers.
       handInsForThread: (threadId: string): Promise<HandInRecord[]> =>
         ipcRenderer.invoke("agent:history-hand-ins", threadId),
+      // One tool call with its whole output, input and diffs — for a row the
+      // wire clipped (RuntimeItem.clipped). Null when the row is gone.
+      toolItem: (threadId: string, turnId: string, itemId: string): Promise<RuntimeItem | null> =>
+        ipcRenderer.invoke("agent:history-tool-item", threadId, turnId, itemId),
       // Windowed thread read (user-anchored keyset pages): first page when no
       // cursor is given; pass `nextCursor` back verbatim for the next strictly
       // older page. Null when the thread is missing. The renderer treats the

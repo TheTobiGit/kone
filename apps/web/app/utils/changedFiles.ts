@@ -91,9 +91,8 @@ function splitPath(path: string): Pick<ChangedFile, "name" | "dir"> {
   return { name, dir };
 }
 
-// Count added/removed lines from a tool's diff body — unified-diff `+`/`-`
-// lines, ignoring the `+++`/`---` file headers. Bodies that aren't diffs
-// (command stdout) simply contribute nothing meaningful, which is fine.
+// Count added/removed lines from a diff body. Only numbered hunks count, so a
+// body that isn't a diff (command stdout) contributes nothing.
 const countDiff = diffStats;
 
 // Fold a fresh touch onto a file's running kind. Removal is the terminal fate;
@@ -115,10 +114,10 @@ export function deriveChangedFiles(blocks: ThreadBlock[]): ChangedFilesState {
   const byPath = new Map<string, ChangedFile>();
   let anyLive = false;
 
-  function touch(path: string, kind: ChangeKind, detail: string | undefined, live: boolean): void {
+  function touch(path: string, kind: ChangeKind, detail: string | undefined, live: boolean, counts?: Pick<ChangedFile, "added" | "removed">): void {
     if (!path) return;
     anyLive ||= live;
-    const { added, removed } = countDiff(detail);
+    const { added, removed } = counts ?? countDiff(detail);
     const existing = byPath.get(path);
     if (existing) {
       existing.kind = mergeKind(existing.kind, kind);
@@ -139,7 +138,10 @@ export function deriveChangedFiles(blocks: ThreadBlock[]): ChangedFilesState {
         for (const change of it.fileChanges) {
           if (!change.applied) continue;
           if (change.kind === "renamed" && change.oldPath) touch(change.oldPath, "removed", undefined, false);
-          touch(change.path, change.kind === "renamed" ? "created" : change.kind, change.diff, it.status === "in-progress");
+          // A diff clipped for the wire carries counts measured on the whole diff.
+          const counts = change.added !== undefined && change.removed !== undefined
+            ? { added: change.added, removed: change.removed } : undefined;
+          touch(change.path, change.kind === "renamed" ? "created" : change.kind, change.diff, it.status === "in-progress", counts);
         }
         continue;
       }
