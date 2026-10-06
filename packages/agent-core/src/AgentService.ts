@@ -1837,6 +1837,34 @@ export class AgentService {
     this.gateway?.revokeThread(threadId);
   }
 
+  /** Forget a session that ended without stopSession — its process died, its
+   *  stream closed — once its adapter no longer holds it. Kept, the thread
+   *  still read as live: nothing restarted it, and every send went to an
+   *  adapter with no session to take it. Gone, the next send or wake adopts a
+   *  fresh session that resumes the conversation, and the queue drains into
+   *  it. An exit that isn't the thread's current session's — a provider the
+   *  thread has fallen back from, a session a start has since replaced, one
+   *  a start or stop is already dealing with — leaves the thread alone. */
+  private retireExitedSession(threadId: string, provider: ProviderKind): void {
+    if (this.routing.get(threadId) !== provider || this.startingSessions.has(threadId)) return;
+    const generation = this.sessionGeneration(threadId);
+    void this.adapter(provider)
+      .hasSession(threadId)
+      .then((live) => {
+        if (live || this.sessionGeneration(threadId) !== generation) return;
+        if (this.routing.get(threadId) !== provider) return;
+        console.warn(`[agent] ${provider} session for ${threadId} ended on its own; the next send restarts it`);
+        this.bumpSessionGeneration(threadId);
+        this.routing.delete(threadId);
+        this.sessionInputs.delete(threadId);
+        // The session is gone — its gateway credential must 401 from here on.
+        this.gateway?.revokeThread(threadId);
+      })
+      .catch((err) => {
+        console.warn(`[agent] could not retire the exited session for ${threadId}:`, err);
+      });
+  }
+
   /** Fan one event out to every listener — the single emit path, shared by the
    *  adapters' closure and the service's own synthesized events (the wedge
    *  watchdog's reset announcement). */
@@ -1957,6 +1985,7 @@ export class AgentService {
         this.dropAllParked(threadId);
         this.forgetOpenItems(threadId);
         this.forgetSteer(threadId);
+        this.retireExitedSession(threadId, event.provider);
         break;
       case "session.started":
         // A new session carries on nothing an old one was cut short for.
