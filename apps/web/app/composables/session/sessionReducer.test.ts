@@ -36,11 +36,9 @@ function makeSession() {
     blocks,
     threadId,
     touch: () => {},
-    noteResumeSessionAt: (cursor: string) => {
-      cursors.push(cursor);
-    },
-    noteConversationId: (id: string) => {
-      conversations.push(id);
+    noteRefs: (_provider: string, refs: { conversationId?: string; resumeSessionAt?: string }) => {
+      if (refs.conversationId) conversations.push(refs.conversationId);
+      if (refs.resumeSessionAt) cursors.push(refs.resumeSessionAt);
     },
     ownsExit: () => true,
     noteSessionExited: () => {
