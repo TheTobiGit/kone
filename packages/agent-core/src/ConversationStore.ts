@@ -114,6 +114,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
+  discardUnsentUserBlock(threadId: string, blockId: string): boolean {
+    return this.threads.discardUnsentUserBlock(threadId, blockId);
+  }
+
+  /** @see ThreadRepo */
   markUserBlockSteered(threadId: string, blockId: string, turnId?: string, at?: number): void {
     this.threads.markUserBlockSteered(threadId, blockId, turnId, at);
   }

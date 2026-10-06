@@ -5,7 +5,7 @@ import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, Skil
 import { encodeMessageSender, parseMessageSender } from "@kone/protocol/message-sender";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
-import { moveBlockToTail } from "./sql.js";
+import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
 
 import { itemFullTextSql } from "./itemTextChunks.js";
 
@@ -116,6 +116,39 @@ export class ThreadRepo {
     } catch (err) {
       console.error("[conversation-store] recordUserBlock failed:", err);
       return 0;
+    }
+  }
+
+  /** Take back a user block journaled for a send the service then refused.
+   *  The renderer drops the block and hands the words back to the composer
+   *  when a send rejects; left here, a reload would show it as sent and never
+   *  answered. Only a block no turn adopted and no queue row still carries:
+   *  either means the words did reach somewhere that will answer them.
+   *  Returns whether a block went. */
+  discardUnsentUserBlock(threadId: string, blockId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      let removed = false;
+      this.dbh.durably(db, () => {
+        const result = db
+          .prepare(
+            `DELETE FROM blocks
+              WHERE thread_id = ? AND block_id = ? AND role = 'user' AND turn_id IS NULL
+                AND NOT EXISTS (SELECT 1 FROM queued_turns
+                                 WHERE thread_id = blocks.thread_id
+                                   AND user_block_id = blocks.block_id
+                                   AND state IN ${PENDING_QUEUE_STATES})`,
+          )
+          .run(threadId, blockId);
+        removed = Number(result.changes) > 0;
+        // Blank text unlists the block's search row.
+        if (removed) indexBlockRow(db, { threadId, blockId, turnId: null, at: 0, text: "" });
+      });
+      return removed;
+    } catch (err) {
+      console.error("[conversation-store] discardUnsentUserBlock failed:", err);
+      return false;
     }
   }
 
