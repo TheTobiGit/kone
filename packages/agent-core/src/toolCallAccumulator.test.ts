@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ToolCallAccumulator } from "./toolCallAccumulator.js";
 
 describe("normalized tool observations", () => {
-  test("a late title or output update cannot reopen a failed call or replace its command", () => {
+  test("a late title or output update cannot reopen a failed call, replace its command or grow its output", () => {
     const call = new ToolCallAccumulator().observe({
       name: { value: "run", authority: "inferred" },
       action: { value: "run", authority: "explicit" },
@@ -11,7 +11,7 @@ describe("normalized tool observations", () => {
     });
     call.observe({ title: "Reading file", target: { value: "Reading file", authority: "inferred" }, status: "in-progress",
       detail: { value: "\nexit 1", mode: "delta" } });
-    expect(call.snapshot()).toMatchObject({ text: "cat missing.txt", status: "failed", detail: "no such file\nexit 1" });
+    expect(call.snapshot()).toMatchObject({ text: "cat missing.txt", status: "failed", detail: "no such file" });
     call.observe({ status: "completed", provisional: true });
     expect(call.status).toBe("failed");
   });
@@ -39,5 +39,19 @@ describe("normalized tool observations", () => {
     call.observe({ action: { value: "edit", authority: "explicit" }, target: { value: "b", authority: "explicit" } });
     call.observe({ action: { value: "other", authority: "fallback" } });
     expect(call.tool).toMatchObject({ action: "edit", target: "b" });
+  });
+
+  test("a delta arriving with the completion that settles the call still lands", () => {
+    const call = new ToolCallAccumulator().observe({ detail: { value: "a", mode: "delta" } });
+    call.observe({ detail: { value: "b", mode: "delta" }, status: "completed" });
+    expect(call.detail).toBe("ab");
+  });
+
+  test("a settled call takes a whole snapshot but no further deltas", () => {
+    const call = new ToolCallAccumulator().observe({ detail: { value: "partial", mode: "delta" }, status: "completed" });
+    call.observe({ detail: { value: " stray", mode: "delta" } });
+    expect(call.detail).toBe("partial");
+    call.observe({ detail: { value: "the whole output", mode: "snapshot" } });
+    expect(call.detail).toBe("the whole output");
   });
 });

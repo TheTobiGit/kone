@@ -50,7 +50,12 @@ export class ToolCallAccumulator {
     if (o.title !== undefined) this.tool.title = o.title;
     if (o.transport !== undefined) this.tool.transport = o.transport;
     if (o.input !== undefined) this.tool.input = o.input;
-    if (o.detail) this.detail = o.detail.mode === "delta" ? this.detail + o.detail.value : o.detail.value;
+    // A settled call's output is final: a late delta (a stray stdout chunk
+    // after the completion) is dropped, while a whole snapshot may still
+    // enrich it. Status is applied below, so a delta arriving with the
+    // completion that settles the call still lands.
+    if (o.detail?.mode === "snapshot") this.detail = o.detail.value;
+    else if (o.detail && this.status === "in-progress") this.detail += o.detail.value;
     if (o.status && (this.status === "in-progress" || (o.status !== "in-progress" && !o.provisional))) {
       this.status = o.status;
     }
