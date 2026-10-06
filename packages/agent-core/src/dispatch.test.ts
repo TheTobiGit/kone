@@ -178,6 +178,8 @@ const released: Array<{
 }> = [];
 /** Every workspace progress report, in order. */
 let journaledEvents: Array<{ id: string; text: string; sender?: unknown }> = [];
+/** Every block renderers were told to take back down, in order. */
+let unjournaledEvents: string[] = [];
 const steps: Array<{ step: string; state: string }> = [];
 /** The note each finished fetch step carried, in order. */
 const fetchNotes: Array<string | undefined> = [];
@@ -221,6 +223,7 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
     mailbox,
     broadcast: (event) => {
       if (event.type === "thread.message-journaled") journaledEvents.push(event.block);
+      if (event.type === "thread.message-unjournaled") unjournaledEvents.push(event.blockId);
       if (event.type === "thread.workspace.progress") {
         steps.push({ step: event.step, state: event.state });
         if (event.step === "fetch" && event.state === "done") fetchNotes.push(event.note);
@@ -515,6 +518,26 @@ describe("thread dispatcher: a steer is the user speaking", () => {
 
     expect(row && store.discardUnsentUserBlock(THREAD, row.userBlockId)).toBe(false);
     expect(userTexts(store)).toEqual(["first message", "queued behind it"]);
+  });
+
+  test("an agent's refused message is taken back down wherever it was announced", async () => {
+    const { dispatcher } = await harness();
+    journaledEvents = [];
+    unjournaledEvents = [];
+
+    FakeAdapter.refuseNext = new Error("No agent session for thread t-dispatch");
+    await expect(
+      dispatcher.sendThreadTurn({
+        threadId: THREAD,
+        input: "Build the login screen",
+        sender: { kind: "agent", threadId: "t-lead", relationship: "delegator", messageKind: "brief" },
+      }),
+    ).rejects.toThrow("No agent session");
+
+    // Announced when journaled, so an open view placed it; only this tells
+    // that view the store no longer has it.
+    expect(journaledEvents).toHaveLength(1);
+    expect(unjournaledEvents).toEqual([journaledEvents[0]!.id]);
   });
 });
 

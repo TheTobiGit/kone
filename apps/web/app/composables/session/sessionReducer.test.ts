@@ -580,3 +580,22 @@ describe("a provider session's end", () => {
     expect(session.cursors).toEqual(["uuid-own"]);
   });
 });
+
+describe("a journaled message taken back", () => {
+  test("comes off the transcript it was placed on", () => {
+    const session = makeSession();
+    const envelope = { threadId: "t", provider: "codex", at: 300, source: "kone.store" } as const;
+    session.reduce({
+      ...envelope,
+      type: "thread.message-journaled",
+      block: { id: "ub-agent", role: "user", text: "Build the login screen", at: 300 },
+    });
+    expect(session.blocks.value.map((b) => b.id)).toEqual(["ub-agent"]);
+
+    session.reduce({ ...envelope, type: "thread.message-unjournaled", blockId: "ub-agent" });
+
+    // The send was refused and the store dropped the block; left here, the
+    // view showed a message the agent never got and a reload would not.
+    expect(session.blocks.value).toEqual([]);
+  });
+});

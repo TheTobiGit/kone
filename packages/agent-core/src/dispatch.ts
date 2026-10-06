@@ -788,7 +788,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       try {
         return await sent;
       } catch (error) {
-        this.store.discardUnsentUserBlock(input.threadId, journaledId);
+        if (this.store.discardUnsentUserBlock(input.threadId, journaledId)) {
+          this.announceUnjournaled(input.threadId, journaledId);
+        }
         throw error;
       }
     })();
@@ -855,6 +857,25 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     };
     if (beforeBlockId) event.beforeBlockId = beforeBlockId;
     this.broadcast(event, false);
+  }
+
+  /** Tell renderers a block they may be showing is off the transcript again.
+   *  An agent's message was announced when it was journaled, so a view has it
+   *  on screen with nothing coming to take it down otherwise. */
+  private announceUnjournaled(threadId: string, blockId: string): void {
+    const provider = this.store.threadMeta(threadId)?.provider;
+    if (!provider) return;
+    this.broadcast(
+      {
+        type: "thread.message-unjournaled",
+        threadId,
+        provider,
+        at: Date.now(),
+        source: "kone.store",
+        blockId,
+      },
+      false,
+    );
   }
 
   onTurnCompleted(threadId: string): void {

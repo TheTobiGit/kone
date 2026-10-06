@@ -420,6 +420,12 @@ export function useSessionReducer(deps: SessionReducerDeps) {
             : [...blocks.value.slice(0, before), block, ...blocks.value.slice(before)];
         break;
       }
+      case "thread.message-unjournaled":
+        // A send the service refused took its journaled message back. The
+        // user's own was already dropped when the send rejected; an agent's
+        // was placed here from thread.message-journaled and only goes now.
+        blocks.value = blocks.value.filter((b) => b.id !== event.blockId);
+        break;
       case "thread.workspace.progress":
         // Only ever arrives for a thread that asked for a worktree, and only
         // during the seconds it is being built.
