@@ -218,9 +218,7 @@ export function createAnswerChildInputTool(): ToolEntry {
           requestId: args.requestId,
           answers: args.answers,
         });
-        const baseText = `Answered the parked question ${result.requestId} on agent ${result.threadId}. Its turn continues; its response comes to you when it settles (agent_wait if you need it before going on).`;
-        const text =
-          result.followUp !== undefined ? `${baseText}\nFollow-up: ${result.followUp}` : baseText;
+        const text = `Answered the parked question ${result.requestId} on agent ${result.threadId}. Its turn continues; its response comes to you when it settles (agent_wait if you need it before going on).`;
         return {
           content: [
             {

@@ -408,6 +408,66 @@ describe("AgentService recovery bookkeeping", () => {
     expect(pending[0].requestId).toBe("req-2");
   });
 
+  test("Kone questions park the live turn, recover after reload, and answer without sending", async () => {
+    const base = { ...codexBase, threadId: "t-kone-question" };
+    codexEmit({ ...base, type: "turn.started", turnId: "question-turn" });
+    const sentBefore = FakeAdapter.sentTurns.length;
+    const answer = service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn",
+      questions: [{ id: "q0", header: "Question", question: "Which one?", options: [] }] });
+    const pending = service.pendingInteractions().find((p) => p.threadId === base.threadId);
+    if (!pending) throw new Error("missing recoverable question");
+    expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: "user-input" });
+    expect(await service.respondToUserInput(base.threadId, pending.requestId, { q0: "Blue" })).toEqual({ owned: true });
+    expect(await answer).toEqual({ q0: "Blue" });
+    expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
+    expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: null });
+    expect(FakeAdapter.sentTurns).toHaveLength(sentBefore);
+    expect(await service.respondToUserInput(base.threadId, pending.requestId, { q0: "Late" })).toEqual({ owned: false });
+    codexEmit({ ...base, type: "turn.completed", turnId: "question-turn" });
+  });
+
+  test("aborting a turn clears Kone questions and unblocks its tool call", async () => {
+    const base = { ...codexBase, threadId: "t-kone-question-abort" };
+    codexEmit({ ...base, type: "turn.started", turnId: "question-turn" });
+    const answer = service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn",
+      questions: [{ id: "q0", header: "Question", question: "Which one?", options: [] }] });
+    codexEmit({ ...base, type: "turn.aborted", turnId: "question-turn", reason: "interrupted" });
+    expect(await answer).toEqual({});
+    expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
+    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({});
+  });
+
+  test("a provider's question and a Kone question on one thread show one at a time, and none is hidden", async () => {
+    const base = { ...codexBase, threadId: "t-overlap" };
+    const shown = () => received.filter((e) => e.threadId === base.threadId && e.type === "user-input.requested");
+    const parked = () => service.pendingInteractions().filter((p) => p.threadId === base.threadId);
+    codexEmit({ ...base, type: "turn.started", turnId: "overlap-turn" });
+    codexEmit({ ...base, type: "user-input.requested", requestId: "native-1", turnId: "overlap-turn",
+      questions: [{ id: "q", header: "Native", question: "Native?" }] });
+    const answer = service.askUser({ ...base, cwd: "/tmp", turnId: "overlap-turn",
+      questions: [{ id: "q0", header: "Kone", question: "Kone?", options: [] }] });
+    // The Kone question waits: the renderer, and a reload's replay, see only the native one.
+    expect(shown().map((e) => e.requestId)).toEqual(["native-1"]);
+    expect(parked().map((p) => p.requestId)).toEqual(["native-1"]);
+    // The provider settles its own ask; the Kone question takes its place.
+    codexEmit({ ...base, type: "user-input.resolved", requestId: "native-1", answers: { q: "yes" } });
+    const kone = parked();
+    expect(kone).toHaveLength(1);
+    expect(kone[0]!.requestId.startsWith("question:")).toBe(true);
+    expect(shown().map((e) => e.requestId)).toEqual(["native-1", kone[0]!.requestId]);
+    // A provider ask arriving now waits behind it, and the turn's end drops both.
+    codexEmit({ ...base, type: "user-input.requested", requestId: "native-2", turnId: "overlap-turn",
+      questions: [{ id: "q", header: "Native", question: "Again?" }] });
+    expect(parked().map((p) => p.requestId)).toEqual([kone[0]!.requestId]);
+    codexEmit({ ...base, type: "turn.aborted", turnId: "overlap-turn", reason: "interrupted" });
+    expect(await answer).toEqual({});
+    expect(parked()).toHaveLength(0);
+    expect(shown()).toHaveLength(2);
+    // The adapter's late word on the dropped ask still reaches listeners.
+    codexEmit({ ...base, type: "user-input.resolved", requestId: "native-2", answers: {} });
+    expect(received.some((e) => e.type === "user-input.resolved" && e.requestId === "native-2")).toBe(true);
+  });
+
   test("a terminal session drops every parked ask", () => {
     codexEmit({
       ...codexBase,
@@ -1944,4 +2004,3 @@ describe("AgentService context compaction", () => {
     expect(svc.supportsThreadCompaction("droid")).toBe(true);
   });
 });
-

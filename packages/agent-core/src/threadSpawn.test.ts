@@ -304,7 +304,7 @@ class FakeProviders implements SpawnEngineProviders {
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
-  ): Promise<{ owned: boolean; followUp?: string }> {
+  ): Promise<{ owned: boolean }> {
     this.gateAnswers.push({ threadId, requestId, answers });
     return { owned: true };
   }
@@ -1175,6 +1175,23 @@ describe("spawn engine", () => {
     // Parked, not terminal — the session must stay so it can resume.
     expect(engine.snapshot(result.threadId)?.status).toBe("waiting-for-approval");
     expect(providers.stopped).toHaveLength(0);
+  });
+
+  test("a late resolution of a settled ask leaves the child's current question parked", async () => {
+    const { engine, store, providers, bus } = makeEngine();
+    setupParent(store, providers);
+
+    const result = await engine.spawn(CALLER, REQUEST);
+    bus.emit(sessionStarted(result.threadId, 10));
+    bus.emit(turnStarted(result.threadId, "t-1", 20));
+    const base = { threadId: result.threadId, provider: "opencode" as const, source: "kone.store" as const };
+    bus.emit({ ...base, type: "user-input.requested", at: 30, requestId: "q-2", turnId: "t-1",
+      questions: [{ id: "q", header: "Q", question: "Which one?", options: [] }] });
+    bus.emit({ ...base, type: "user-input.resolved", at: 40, requestId: "q-1", answers: {} });
+
+    expect(engine.snapshot(result.threadId)?.status).toBe("waiting-for-user-input");
+    bus.emit({ ...base, type: "user-input.resolved", at: 50, requestId: "q-2", answers: {} });
+    expect(engine.snapshot(result.threadId)?.status).toBe("working");
   });
 
   test("waitFor pins to a turnId so a newer turn can't swap the outcome (F7)", async () => {

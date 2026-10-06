@@ -232,6 +232,7 @@ export function registerAgentIpc(): void {
   // AgentService.startSession/stopSession.
   gateway = createGateway({
     store,
+    askUser: (request) => svc.askUser(request),
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
@@ -1201,9 +1202,10 @@ export async function shutdownAgents(): Promise<void> {
     stopDelivery();
     stopDelivery = null;
   }
+  // Settle pending questions before closing the gateway connections waiting on them.
+  if (service) await service.stopAll();
   if (gateway) {
     await gateway.shutdown().catch(() => {});
     gateway = null;
   }
-  if (service) await service.stopAll();
 }

@@ -2027,15 +2027,12 @@ export type RuntimeEvent =
     })
   // The agent is asking the user one or more questions mid-turn and the turn is
   // parked until they answer (respondToUserInput). `turnId` is the turn that
-  // raised it, when known. `postTurn` marks a print-mode aftermath ask: the
-  // turn already settled (its ask tool auto-skipped headless), so answering
-  // delivers the answers as a follow-up turn instead of resolving a live call.
+  // raised it, when known. Answers always resolve a live request.
   | (BaseEvent & {
       type: "user-input.requested";
       requestId: string;
       turnId?: string;
       questions: UserInputQuestion[];
-      postTurn?: boolean;
     })
   // The parked question has been answered (or cancelled) — clear the prompt.
   | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
@@ -2133,17 +2130,10 @@ export type AdapterCapabilities = {
   cancelKeepsCompletedTools?: boolean;
 };
 
-/** What answering a parked question settled. `owned` tells whether this call
- *  owned and cleared the pending request — false when nothing was pending for
- *  that requestId (a superseded aftermath, a double submit, or a stop race),
- *  in which case the caller sends nothing, so a stale answer can never start
- *  a phantom follow-up turn. `followUp` carries the follow-up turn text only
- *  for a print-mode aftermath ask (the asking process is gone, so the answers
- *  travel as an ordinary user message); absent for every live-question answer
- *  and for a dismissal, where there is nothing to deliver. */
+/** Whether the backend still owned the parked question. Answers resolve
+ *  the waiting tool directly; stale or cancelled requests send no message. */
 export type UserInputRespondResult = {
   owned: boolean;
-  followUp?: string;
 };
 
 /** Every provider implements this. Methods return once the request is accepted;
@@ -2178,9 +2168,7 @@ export interface ProviderAdapter {
 
   /** Answer a pending mid-turn question (Claude's AskUserQuestion / Codex's
    *  requestUserInput), unblocking the parked provider callback so the turn
-   *  continues. Ownership and the aftermath follow-up resolve atomically in
-   *  the returned handoff (see UserInputRespondResult) — one call, one
-   *  conditional send, no retry against a cleared park. */
+   *  continues. Answers resolve that request directly without sending a turn. */
   respondToUserInput(
     threadId: string,
     requestId: string,

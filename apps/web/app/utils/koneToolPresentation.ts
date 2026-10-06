@@ -51,6 +51,11 @@ function kone(
 }
 
 const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.entries({
+  ask_question: kone(WorkflowSquare01Icon, "Question", "agent", [
+    "Asking question",
+    "Asked question",
+    "Couldn't ask question",
+  ]),
   // scratchpad
   scratchpad_read: kone(Note01Icon, "Scratchpad", "read", [
     "Reading the scratchpad",

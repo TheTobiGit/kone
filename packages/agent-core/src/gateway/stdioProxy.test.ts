@@ -55,9 +55,15 @@ beforeAll(async () => {
       }
       requests.push(msg);
       auths.push(req.headers.authorization ?? "");
+      if (!("id" in msg)) {
+        // A notification, answered as the real gateway does: 202, no body.
+        res.writeHead(202);
+        res.end();
+        return;
+      }
       if (msg.method === "slow") {
         // Hold the request open; a cancellation should abort this connection.
-        req.on("close", () => {
+        res.on("close", () => {
           if (!res.writableEnded) slowAborted = true;
         });
         setTimeout(() => {
@@ -113,6 +119,11 @@ function nextLine(run: ProxyRun, timeoutMs = 2_000): Promise<string | null> {
       resolve(line);
     });
   });
+}
+
+async function until(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
 function send(run: ProxyRun, message: MockRequest | MockRequest[]): void {
@@ -181,7 +192,7 @@ describe("stdio proxy", () => {
     const run = spawnProxy({ KONE_GATEWAY_URL: baseUrl, KONE_GATEWAY_TOKEN: "token-abc" });
     try {
       send(run, { jsonrpc: "2.0", method: "notifications/initialized" });
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await until(() => requests.some((r) => r.method === "notifications/initialized"));
       expect(requests.map((r) => r.method)).toContain("notifications/initialized");
       expect(await nextLine(run, 200)).toBeNull();
     } finally {
@@ -220,9 +231,11 @@ describe("stdio proxy", () => {
     const run = spawnProxy({ KONE_GATEWAY_URL: baseUrl, KONE_GATEWAY_TOKEN: "token-abc" });
     try {
       send(run, { jsonrpc: "2.0", id: 42, method: "slow" });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Cancel only once the gateway is holding the call open — a cancel that
+      // beats the POST out would abort it before the gateway ever saw it.
+      await until(() => requests.some((r) => r.method === "slow"));
       send(run, { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 42 } });
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await until(() => slowAborted, 400);
       expect(slowAborted).toBe(true);
       // The cancelled request must produce no response line.
       expect(await nextLine(run, 300)).toBeNull();

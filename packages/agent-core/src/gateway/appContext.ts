@@ -425,6 +425,9 @@ export function codexDeveloperInstructions(options: KoneContextOptions): string 
   // in, and sending it alone would put a mode declaration on every turn of a
   // session that has nothing else to be told.
   if (!hostContext && !identity) return undefined;
+  const questionGuidance = options.gateway?.tools.some((tool) => tool.name === "ask_question")
+    ? "When you need to ask the user a question, use Kone's `ask_question` MCP tool. It is available in Default mode and waits for the answer as its tool result, then you continue in the same turn. Prefer it over `request_user_input_async`; do not repeat the question in assistant prose or send the answer as a new message."
+    : "If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.";
   const collaborationMode = [
     "<collaboration_mode># Collaboration Mode: Default",
     "",
@@ -436,7 +439,8 @@ export function codexDeveloperInstructions(options: KoneContextOptions): string 
     "",
     "The `request_user_input` tool is unavailable in Default mode. If you call it while in Default mode, it will return an error.",
     "",
-    "In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.",
+    "In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions.",
+    questionGuidance,
     "</collaboration_mode>",
   ].join("\n");
   return [collaborationMode, hostContext, identity].filter(Boolean).join("\n\n");

@@ -1,11 +1,9 @@
 import { computed, ref, type Ref } from "vue";
 import type {
   ApprovalDecision,
-  ChatAttachment,
   KoneAgentApi,
   SpawnedThread,
   UserInputAnswers,
-  UserInputRespondResult,
 } from "~/types/desktop";
 import { seedFromBridge } from "../useCompaction";
 import type {
@@ -14,14 +12,11 @@ import type {
   ThreadAttention,
 } from "../agentTypes";
 
-/** Live parked asks — questions, tool approvals, spawned children. The
- *  follow-up turn an answered aftermath ask carries goes out as an ordinary
- *  send, and the browser-dev mock owns its own pending approvals, so both
- *  arrive as the callbacks below. */
+/** Live questions, tool approvals, and spawned children. Answers resolve
+ *  the waiting provider/tool request through IPC; this path never sends a turn. */
 export type SessionGatesDeps = {
   threadId: Ref<string>;
   bridge: () => KoneAgentApi | null;
-  send: (text: string, attachments?: ChatAttachment[]) => Promise<void>;
   mockHasPendingApproval: (requestId: string) => boolean;
   mockRespondApproval: (requestId: string, decision: ApprovalDecision) => void;
 };
@@ -31,11 +26,20 @@ export type SessionGatesDeps = {
  *  reducer and the orphan stashes through the session — this unit owns them,
  *  callers only wire them through. */
 export function useSessionGates(deps: SessionGatesDeps) {
-  const { threadId, bridge, send, mockHasPendingApproval, mockRespondApproval } = deps;
+  const { threadId, bridge, mockHasPendingApproval, mockRespondApproval } = deps;
 
-  // A live question the agent is asking (AskUserQuestion / Codex requestUserInput).
-  // Non-null while the modal is up; cleared once answered or resolved/aborted.
-  const pendingUserInput = ref<PendingUserInput | null>(null);
+  // The question the thread is parked on — a Kone question or a provider's
+  // own request — as the backend's events last left it. Only the event
+  // reducer writes it: the backend shows a thread one question at a time and
+  // says when each is resolved, aborted or replaced.
+  const parkedUserInput = ref<PendingUserInput | null>(null);
+  // The question whose answer is on its way. Hidden meanwhile, and back only
+  // if the answer never reached the backend and the question still waits.
+  const answeringUserInput = ref<string | null>(null);
+  const pendingUserInput = computed<PendingUserInput | null>(() => {
+    const parked = parkedUserInput.value;
+    return parked && parked.requestId !== answeringUserInput.value ? parked : null;
+  });
   // Live tool approvals the agent is parked on (Codex requestApproval / Claude
   // canUseTool / ACP request_permission / OpenCode permission). A queue, not a
   // single slot: providers can ask for several tools in parallel (Claude's
@@ -99,43 +103,24 @@ export function useSessionGates(deps: SessionGatesDeps) {
     }
   }
 
-  /** Answer the agent's live question. Clears the modal optimistically, then
-   *  hands the answers to the backend in one call — which reports whether it
-   *  still owned the request and, for a print-mode aftermath ask, the
-   *  follow-up turn text carrying the answers. A stale answer (a superseded
-   *  aftermath, a double submit, a stop race) resolves unowned and sends
-   *  nothing, so it can never start a phantom follow-up turn. A print-mode
-   *  aftermath ask has no live call to resolve, so an owned answer goes out
-   *  as an ordinary follow-up turn instead — journaling, queueing and history
-   *  then behave like a typed message. A dismissal (nothing answered) carries
-   *  no follow-up and sends nothing. A failed backend call restores the modal
-   *  so the answers are not lost; a failed follow-up never does — the backend
-   *  cleared its park before answering, so there is nothing left to retry
-   *  against, and resurrecting the modal would answer into a dead request.
-   *  The send error itself still surfaces through the send path. */
+  /** Answer the parked request directly; stale answers never send a message
+   *  or start a turn. The prompt hides while the answer travels and nothing
+   *  restores a copy of it: a failed send only stops hiding it, so whatever
+   *  the backend said meanwhile — resolved, aborted, the next question — is
+   *  what shows, and a question still waiting stays retryable. */
   async function respondUserInput(requestId: string, answers: UserInputAnswers): Promise<void> {
-    const pending =
-      pendingUserInput.value?.requestId === requestId ? pendingUserInput.value : undefined;
-    if (pending) {
-      pendingUserInput.value = null;
-    }
     const api = bridge();
-    if (!api) {
-      if (pending) pendingUserInput.value = pending;
-      return;
-    }
-    let result: UserInputRespondResult;
+    if (!api) return;
+    answeringUserInput.value = requestId;
     try {
-      result = await api.respondUserInput(threadId.value, requestId, answers);
+      await api.respondUserInput(threadId.value, requestId, answers);
+      // Taken, or waiting nowhere any more (a stale answer): done either way.
+      if (parkedUserInput.value?.requestId === requestId) parkedUserInput.value = null;
     } catch {
-      // The backend never took the answers — put the modal back so the user
-      // can retry instead of losing them to a cleared prompt. No follow-up:
-      // nothing was owned, so there is nothing to deliver.
-      if (pending) pendingUserInput.value = pending;
-      return;
+      // The backend never took the answers.
+    } finally {
+      if (answeringUserInput.value === requestId) answeringUserInput.value = null;
     }
-    if (!result.owned) return;
-    if (result.followUp) await send(result.followUp);
   }
 
   /** Decide a parked tool approval. Drops it from the queue optimistically,
@@ -158,6 +143,7 @@ export function useSessionGates(deps: SessionGatesDeps) {
   }
 
   return {
+    parkedUserInput,
     pendingUserInput,
     pendingApprovals,
     spawnedChildren,

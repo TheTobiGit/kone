@@ -84,7 +84,8 @@ export type SessionReducerDeps = {
   queueReturn: Ref<QueueReturn | null>;
   mergeQueueReturn: (rows: QueuedTurnEntry[], at: number) => QueueReturn;
   pendingQueueAnchors: Map<string, string>;
-  pendingUserInput: Ref<PendingUserInput | null>;
+  /** The parked question as the backend reports it; the gates hide it while an answer travels. */
+  parkedUserInput: Ref<PendingUserInput | null>;
   pendingApprovals: Ref<PendingApproval[]>;
   anchorFor: (userBlockId: string, queueId: string) => string | undefined;
   queuedBlockIdsOf: (rows: QueuedTurnEntry[]) => Set<string>;
@@ -118,7 +119,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     queueReturn,
     mergeQueueReturn,
     pendingQueueAnchors,
-    pendingUserInput,
+    parkedUserInput,
     pendingApprovals,
     anchorFor,
     queuedBlockIdsOf,
@@ -525,21 +526,20 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         // An aborted turn can never have its question answered — drop the modal.
         // (A parked approval clears via the backend's `approval.resolved`, which
         // it emits with reject-once on interrupt.)
-        pendingUserInput.value = null;
+        parkedUserInput.value = null;
         blocks.value = [...blocks.value];
         break;
       }
       case "user-input.requested": {
         const input: PendingUserInput = { requestId: event.requestId, questions: event.questions };
-        if (event.postTurn) input.postTurn = true;
-        pendingUserInput.value = input;
+        parkedUserInput.value = input;
         break;
       }
       case "user-input.resolved":
         // The backend settled this round-trip (our answer, or a drain on
         // interrupt/stop). Clear the modal if it's the one we're showing.
-        if (pendingUserInput.value?.requestId === event.requestId) {
-          pendingUserInput.value = null;
+        if (parkedUserInput.value?.requestId === event.requestId) {
+          parkedUserInput.value = null;
         }
         break;
       case "approval.requested": {

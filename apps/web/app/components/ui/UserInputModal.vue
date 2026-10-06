@@ -4,6 +4,11 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import type { UserInputAnswers, UserInputQuestion } from "~/types/desktop";
 import { useModalExit } from "~/composables/useModalExit";
+import {
+  buildUserInputAnswers,
+  emptyUserInputDraft,
+  type UserInputDraft,
+} from "~/utils/userInputAnswers";
 
 // The agent's mid-turn question, in the same scrim + elastic card shell the
 // folder/model/branch pickers wear — but anchored bottom-centre where the agent
@@ -27,58 +32,48 @@ const emit = defineEmits<{
   cancel: [requestId: string];
 }>();
 
-// Per-question working state, keyed by question id: `picks` holds selected option
-// labels (one entry for single-select, many for multi); `other` flags that the
-// "write your own" field is active; `texts` holds the typed answer — the whole
-// answer for an option-less question, or the custom value when `other` is on.
-const picks = reactive<Record<string, string[]>>({});
-const other = reactive<Record<string, boolean>>({});
-const texts = reactive<Record<string, string>>({});
-for (const q of props.questions) {
-  picks[q.id] = [];
-  other[q.id] = false;
-  texts[q.id] = "";
+// Per-question working state, keyed by question id (see UserInputDraft): the
+// picked option labels, whether "write your own" is on, and the typed text.
+const drafts = reactive<Record<string, UserInputDraft>>({});
+for (const q of props.questions) drafts[q.id] = emptyUserInputDraft();
+
+function draft(q: UserInputQuestion): UserInputDraft {
+  return drafts[q.id] ?? (drafts[q.id] = emptyUserInputDraft());
 }
 
 function isPicked(q: UserInputQuestion, label: string): boolean {
-  return (picks[q.id] ?? []).includes(label);
+  return draft(q).picks.includes(label);
 }
 
 // Single-select latches one option (and clears any custom answer); multi-select
+// toggles it alongside the others.
 function toggle(q: UserInputQuestion, label: string): void {
-  const current = picks[q.id] ?? [];
+  const d = draft(q);
   if (q.multiSelect) {
-    picks[q.id] = current.includes(label)
-      ? current.filter((l) => l !== label)
-      : [...current, label];
+    d.picks = d.picks.includes(label) ? d.picks.filter((l) => l !== label) : [...d.picks, label];
   } else {
-    picks[q.id] = current.includes(label) ? [] : [label];
-    other[q.id] = false;
+    d.picks = d.picks.includes(label) ? [] : [label];
+    d.other = false;
   }
 }
 
 // "Write your own" — reveal the text field. For single-select it's exclusive with
 // the option rows; for multi it rides alongside them.
 function toggleOther(q: UserInputQuestion): void {
-  const next = !other[q.id];
-  other[q.id] = next;
-  if (next && !q.multiSelect) picks[q.id] = [];
+  const d = draft(q);
+  d.other = !d.other;
+  if (d.other && !q.multiSelect) d.picks = [];
 }
 
 // Focusing the inline field switches its answer on (exclusive with the option
 // rows for single-select).
 function activateOther(q: UserInputQuestion): void {
-  if (!other[q.id]) toggleOther(q);
-}
-
-function answered(q: UserInputQuestion): boolean {
-  if (q.options.length === 0) return texts[q.id]!.trim().length > 0;
-  if (other[q.id] && texts[q.id]!.trim().length > 0) return true;
-  return (picks[q.id] ?? []).length > 0;
+  if (!draft(q).other) toggleOther(q);
 }
 
 // Every question must have an answer before the turn can continue.
-const canSubmit = computed(() => props.questions.every(answered));
+const answers = computed(() => buildUserInputAnswers(props.questions, drafts));
+const canSubmit = computed(() => answers.value !== null);
 
 // The shell's header-band title: the lone question's header reads best there;
 // with several, a neutral label and each question keeps its own inline header.
@@ -87,21 +82,9 @@ const bandTitle = computed(() =>
 );
 
 function submit(): void {
-  if (!canSubmit.value || closing.value) return;
-  const answers: UserInputAnswers = {};
-  for (const q of props.questions) {
-    const custom = texts[q.id]!.trim();
-    if (q.options.length === 0) {
-      answers[q.id] = custom;
-    } else if (q.multiSelect) {
-      const selected = [...(picks[q.id] ?? [])];
-      if (other[q.id] && custom) selected.push(custom);
-      answers[q.id] = selected;
-    } else {
-      answers[q.id] = other[q.id] && custom ? custom : (picks[q.id]?.[0] ?? null);
-    }
-  }
-  close(() => emit("answer", props.requestId, answers));
+  const ready = answers.value;
+  if (!ready || closing.value) return;
+  close(() => emit("answer", props.requestId, ready));
 }
 
 // Dismiss the question — hands the parked tool call an empty answer, which the
@@ -221,11 +204,11 @@ onBeforeUnmount(() => {
               <!-- Always offer a way out of the presets: an inline "write your
                    own" row whose typed value replaces (single) or joins (multi)
                    the picked options. -->
-              <div class="ask-option ask-option--inline" :class="{ 'is-picked': other[q.id] }">
+              <div class="ask-option ask-option--inline" :class="{ 'is-picked': draft(q).other }">
                 <button
                   type="button"
                   class="ask-mark-btn"
-                  :aria-pressed="other[q.id]"
+                  :aria-pressed="draft(q).other"
                   aria-label="Write your own answer"
                   @click="toggleOther(q)"
                 >
@@ -234,7 +217,7 @@ onBeforeUnmount(() => {
                     :class="q.multiSelect ? 'ask-mark--box' : 'ask-mark--dot'"
                   >
                     <HugeiconsIcon
-                      v-if="other[q.id]"
+                      v-if="draft(q).other"
                       :icon="Tick02Icon"
                       :size="12"
                       :stroke-width="2.5"
@@ -242,7 +225,7 @@ onBeforeUnmount(() => {
                   </span>
                 </button>
                 <input
-                  v-model="texts[q.id]"
+                  v-model="draft(q).text"
                   type="text"
                   class="ask-inline-input"
                   placeholder="Write your own…"
@@ -255,7 +238,7 @@ onBeforeUnmount(() => {
             <!-- No options → free-text answer. -->
             <textarea
               v-else
-              v-model="texts[q.id]"
+              v-model="draft(q).text"
               class="ask-input"
               rows="2"
               placeholder="Type your answer…"

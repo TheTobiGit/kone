@@ -23,6 +23,7 @@ import { LspManager } from "../lsp/manager.js";
 import { createAstTools } from "./tools/ast.js";
 import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
+import { createQuestionTools, type AskUser } from "./tools/questions.js";
 import { createSpawnTools } from "./tools/spawn.js";
 import { createIrcTools, getIrcMailbox, type IrcToolInput } from "./tools/irc.js";
 import type { ThreadRuntime } from "../recipientState.js";
@@ -130,6 +131,8 @@ export interface GatewayHandle {
 
 export interface GatewayInput {
   store: ConversationStore;
+  /** Blocking question calls return the user's answer to the invoking tool. */
+  askUser?: AskUser;
   /** Events the gateway raises (scratchpad.updated) — the IPC layer broadcasts
    *  these to renderers. */
   emit: EmitEvent;
@@ -313,7 +316,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // The ast search stays target "all" (visible from worker and assistant
   // scopes alike), so it joins after the two maps that stamp their own
   // target onto every entry they hold.
-  const tools = [...workerTools, ...assistantTools, ...createAstTools()];
+  const tools = [...workerTools, ...assistantTools, ...createAstTools(), ...createQuestionTools(input.askUser)];
   const registry = createRegistry(tools, { approve: input.approve });
   const transport = makeMcpTransport({
     credentials,

@@ -37,7 +37,6 @@ export type AnswerChildInputResult = {
   threadId: string;
   requestId: string;
   owned: boolean;
-  followUp?: string;
 };
 
 export interface SpawnControlDeps {
@@ -96,7 +95,6 @@ export class ThreadControlManager {
       requestId: request.requestId,
       owned: outcome.owned,
     };
-    if (outcome.followUp !== undefined) result.followUp = outcome.followUp;
     return result;
   }
 

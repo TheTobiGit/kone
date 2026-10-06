@@ -34,7 +34,7 @@ class FakeGateResponder {
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
-  ): Promise<{ owned: boolean; followUp?: string }> {
+  ): Promise<{ owned: boolean }> {
     this.answers.push({ threadId, requestId, answers });
     return this.nextUserInputResult;
   }
@@ -67,7 +67,7 @@ function makeHarness(
         threadId: string,
         requestId: string,
         answers: UserInputAnswers,
-      ): Promise<{ owned: boolean; followUp?: string }> =>
+      ): Promise<{ owned: boolean }> =>
         gate.respondToUserInput(threadId, requestId, answers),
     },
     tracked,
@@ -221,9 +221,9 @@ describe("ThreadControlManager", () => {
     expect(h.gate.decisions[0]?.decision).toBe("reject-once");
   });
 
-  test("answer forwards the answers verbatim and carries the follow-up through", async () => {
+  test("answer forwards the answers verbatim to the parked call", async () => {
     const h = makeHarness();
-    h.gate.nextUserInputResult = { owned: true, followUp: "Tell me more." };
+    h.gate.nextUserInputResult = { owned: true };
     const answers: UserInputAnswers = {
       "q-1": "Use Postgres.",
       picks: ["a", "b"],
@@ -244,11 +244,10 @@ describe("ThreadControlManager", () => {
       threadId: CHILD_ID,
       requestId: "q-1",
       owned: true,
-      followUp: "Tell me more.",
     });
   });
 
-  test("answer without a follow-up returns owned and no followUp key", async () => {
+  test("stale answers return unowned without a message", async () => {
     const h = makeHarness();
     h.gate.nextUserInputResult = { owned: false };
 

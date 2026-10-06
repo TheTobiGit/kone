@@ -17,7 +17,7 @@ mock.module("../sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 
-import type { RuntimeEvent } from "../types.js";
+import { PROVIDER_KIND_VALUES, type RuntimeEvent } from "../types.js";
 import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import type { ConversationStore } from "../ConversationStore.js";
 import type { createGateway as createGatewayType } from "./index.js";
@@ -30,6 +30,7 @@ import {
   READ_RESPONSE_JSON_SCHEMA,
 } from "./schemas.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
+import { UserQuestionRequests } from "../userQuestionRequests.js";
 
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
 function useUserDataDir(dir: string): string {
@@ -173,6 +174,45 @@ beforeAll(async () => {
 });
 
 describe("gateway integration (real store + HTTP)", () => {
+  test.each(PROVIDER_KIND_VALUES)("%s: ask_question returns the dialog answer through its HTTP tool call", async (provider) => {
+    const store = freshStore();
+    const dialogEvents: RuntimeEvent[] = [];
+    const questions = new UserQuestionRequests((e) => dialogEvents.push(e));
+    let announceAsked = () => {};
+    const asked = new Promise<void>((resolve) => { announceAsked = resolve; });
+    const { gateway, turn } = makeGateway(store, undefined, {
+      askUser: (request) => {
+        const answer = questions.ask(request);
+        announceAsked();
+        return answer;
+      },
+    });
+    await gateway.ready;
+    store.ensureThread({ threadId: "question-thread", projectPath: "/tmp/proj", provider });
+    const connection = gateway.connectionForThread("question-thread", provider);
+    turn({ type: "turn.started", threadId: "question-thread", turnId: "question-turn", provider, source: "kone.store", at: Date.now() });
+    let settled = false;
+    const call = mcpPost(connection.url, connection.bearerToken, {
+      jsonrpc: "2.0", id: 101, method: "tools/call",
+      params: { name: "ask_question", arguments: { questions: [{ question: "Pick one", options: ["Option A", "Option B"] }] } },
+    }).then((reply) => { settled = true; return reply; });
+    try {
+      await asked;
+      expect(settled).toBe(false);
+      const event = dialogEvents[0];
+      if (event?.type !== "user-input.requested") throw new Error("missing question dialog");
+      expect(event.turnId).toBe("question-turn");
+      questions.respond("question-thread", event.requestId, { q0: "Option A" });
+      const reply = await call;
+      expect(reply.status).toBe(200);
+      expect(JSON.parse(rpcResult(reply).content![0]!.text)).toEqual({ answers: [{ question: "Pick one", answer: "Option A" }] });
+      expect(dialogEvents.map((e) => e.type)).toEqual(["user-input.requested", "user-input.resolved"]);
+      expect(store.loadThread("question-thread")?.blocks).toEqual([]);
+    } finally {
+      await gateway.shutdown();
+    }
+  });
+
   test("scratchpads revision and gateway_ops persist in baseline schema", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-gw-baseline-"));
     useUserDataDir(dir);
@@ -336,6 +376,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "code_lsp",
       "code_find_calls",
       "code_preview_rewrite",
+      "ask_question",
     ]);
     // A deferring client reaches the same endpoint as two servers: the core
     // set loaded up front, and the rarely needed rest behind its tool search.
@@ -500,6 +541,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_get_view",
       "code_find_calls",
       "code_preview_rewrite",
+      "ask_question",
     ]);
 
     // Every tool it was handed is one the host-context block will name — the
