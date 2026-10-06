@@ -2204,6 +2204,15 @@ export interface ProviderAdapter {
    *  (a steer row that claims first and runs as the next turn). */
   steerTurn?(input: SendTurnInput): Promise<TurnStartResult>;
 
+  /** Hand the adapter kone's liveness hook: it calls it with a thread id when
+   *  the provider shows that thread's running turn is progressing in a way no
+   *  RuntimeEvent carries — the model thinking without visible text, a tool
+   *  reporting progress, the provider retrying a request. Only the wedge
+   *  watchdog reads it; nothing is journaled or broadcast. A keepalive the
+   *  transport sends whatever the model is doing must never call it, or a hung
+   *  turn would never be reset. */
+  setLivenessHook?(hook: (threadId: string) => void): void;
+
   // introspection
   listSessions(): Promise<Session[]>;
   hasSession(threadId: string): Promise<boolean>;

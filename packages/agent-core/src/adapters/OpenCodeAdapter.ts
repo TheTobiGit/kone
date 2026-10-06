@@ -504,6 +504,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
    *  server session. The variant (effort) rides the same request. */
   readonly capabilities = { sessionModelSwitch: "in-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true, compaction: { kind: "native" as const } };
   private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>();
+  /** kone's liveness hook (ProviderAdapter.setLivenessHook). */
+  private alive: (threadId: string) => void = () => {};
+  setLivenessHook(hook: (threadId: string) => void): void { this.alive = hook; }
   /** Prebooted servers for the next thread start. Held here beside the live
    *  sessions because it is the same kind of state — processes this adapter
    *  owns and must take down with it. */
@@ -872,7 +875,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
         emitCompacted(this.emit, base(session));
         break;
       }
-      case "session.status": if (record(p.status)?.type === "idle") this.complete(session); break;
+      // A step starting or done streaming, and a busy or retrying status, are
+      // the turn moving on with nothing to show yet: the wedge watchdog hears
+      // of it. The server's `: heartbeat` comments never get this far.
+      case "session.step.started":
+      case "session.step.streamed": if (active) this.alive(session.threadId); break;
+      case "session.status": if (record(p.status)?.type === "idle") this.complete(session); else if (active) this.alive(session.threadId); break;
       case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
       case "permission.asked": void this.permissionAsked(session, p); break;
       case "permission.replied": {

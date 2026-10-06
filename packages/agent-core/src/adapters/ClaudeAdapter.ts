@@ -172,6 +172,10 @@ import {
 
 type ClaudeStreamEvent = Extract<SDKMessage, { type: "stream_event" }>["event"];
 
+/** System messages that say a running turn is progressing without anything
+ *  for the transcript (see handleMessage). */
+const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(["thinking_tokens", "api_retry", "status"]);
+
 export class ClaudeAdapter implements ProviderAdapter {
   readonly provider = "claudeAgent" as const;
   readonly capabilities: AdapterCapabilities = {
@@ -203,6 +207,13 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   constructor(emit: EmitEvent) {
     this.emit = emit;
+  }
+
+  /** kone's liveness hook (ProviderAdapter.setLivenessHook). */
+  private alive: (threadId: string) => void = () => {};
+
+  setLivenessHook(hook: (threadId: string) => void): void {
+    this.alive = hook;
   }
 
   // ── discovery ─────────────────────────────────────────────────────────────
@@ -1084,6 +1095,14 @@ export class ClaudeAdapter implements ProviderAdapter {
           this.handleCompactBoundary(session, message);
           return;
         }
+        // The turn moving with nothing for the transcript: the model's
+        // thinking counted in tokens, the SDK retrying the request after a
+        // backoff, its status (requesting, compacting). The wedge watchdog
+        // hears of it.
+        if (CLAUDE_PROGRESS_SUBTYPES.has(readString(message, "subtype") ?? "")) {
+          if (session.activeTurnId) this.alive(session.threadId);
+          return;
+        }
         this.handleTaskMessage(session, message);
         return;
       case "stream_event":
@@ -1230,7 +1249,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       else if (deltaType === "input_json_delta") {
         buffer.detail += readString(delta, "partial_json") ?? "";
         if (buffer.kind === "plan_text") applyPlanSnapshot(buffer, buffer.detail);
-      } else return;
+      } else {
+        // A thinking block's signature: nothing to show, but the model is
+        // still producing this turn.
+        if (deltaType === "signature_delta" && session.activeTurnId) this.alive(session.threadId);
+        return;
+      }
       this.emitItem(session, scope, "item.updated", buffer, "in-progress");
       return;
     }

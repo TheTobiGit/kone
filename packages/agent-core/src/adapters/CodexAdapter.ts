@@ -512,6 +512,24 @@ function requestScope(session: CodexSession, params: CodexJsonValue | null | und
 /** Bound on each child interrupt, so a wedged child can't hold up stopping the parent. */
 const CHILD_INTERRUPT_TIMEOUT_MS = 3_000;
 
+/** Turn-scoped notifications that say the turn is moving with nothing for
+ *  the transcript: a tool's progress, a terminal waiting on input, a patch
+ *  being built, a reasoning summary part opening, a hook running, the turn's
+ *  diff moving, the model's output held for a safety check. Each names its thread and turn; only the
+ *  running turn's reach the wedge watchdog (setLivenessHook). */
+const CODEX_PROGRESS_METHODS = [
+  "item/mcpToolCall/progress",
+  "item/commandExecution/terminalInteraction",
+  "item/fileChange/patchUpdated",
+  "item/reasoning/summaryPartAdded",
+  "item/autoApprovalReview/started",
+  "item/autoApprovalReview/completed",
+  "hook/started",
+  "hook/completed",
+  "turn/diff/updated",
+  "model/safetyBuffering/updated",
+];
+
 const CODEX_DELTA_METHODS = [
   "item/agentMessage/delta",
   "item/reasoning/textDelta",
@@ -766,12 +784,18 @@ export class CodexAdapter implements ProviderAdapter {
 
   private readonly emit: EmitEvent;
   private readonly sessions = new Map<string, CodexSession>();
+  /** kone's liveness hook (ProviderAdapter.setLivenessHook). */
+  private alive: (threadId: string) => void = () => {};
   private modelsCache: Promise<ModelDescriptor[]> | null = null;
   /** The CLI executable to spawn — the user's override or the `codex` default. */
   private binary = CODEX_BINARY;
 
   constructor(emit: EmitEvent) {
     this.emit = emit;
+  }
+
+  setLivenessHook(hook: (threadId: string) => void): void {
+    this.alive = hook;
   }
 
   /** Adopt the user's persisted install settings. A blank binaryPath falls back
@@ -1379,6 +1403,15 @@ export class CodexAdapter implements ProviderAdapter {
 
     for (const method of CODEX_DELTA_METHODS) {
       onOwnNotification(method, (params) => this.handleDelta(session, params));
+    }
+
+    for (const method of CODEX_PROGRESS_METHODS) {
+      onOwnNotification(method, (params) => {
+        const turnId = readString(params, "turnId");
+        if (turnId && turnId === session.activeTurnId && readString(params, "threadId") === session.conversationId) {
+          this.alive(session.threadId);
+        }
+      });
     }
 
     onOwnNotification("error", (params) => {

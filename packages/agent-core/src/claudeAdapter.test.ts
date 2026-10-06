@@ -287,6 +287,42 @@ describe("Claude result handler", () => {
   });
 });
 
+// The wedge watchdog's liveness hook: a turn moving with nothing for the
+// transcript says so. Shapes as `claude -p --output-format stream-json
+// --include-partial-messages` 2.1.286 sent them in a live run.
+describe("Claude liveness", () => {
+  test("thinking counted in tokens, a request retried and a status keep the turn alive", async () => {
+    const { adapter } = setup();
+    const alive: string[] = [];
+    adapter.setLivenessHook((threadId) => alive.push(threadId));
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    state.feed!.push({ type: "system", subtype: "status", status: "requesting", uuid: "u1", session_id: "x" });
+    state.feed!.push({ type: "system", subtype: "thinking_tokens", estimated_tokens: 50, estimated_tokens_delta: 50, uuid: "u2", session_id: "x" });
+    state.feed!.push({
+      type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, retry_delay_ms: 30_000, error_status: 529,
+      error: "server_error", uuid: "u3", session_id: "x",
+    });
+    const stream = (event: ClaudeJsonObject): void => {
+      state.feed!.push({ type: "stream_event", parent_tool_use_id: null, uuid: "s", session_id: "x", event });
+    };
+    stream({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } });
+    stream({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "abc" } });
+    await flush();
+    expect(alive).toEqual([THREAD, THREAD, THREAD, THREAD]);
+  });
+
+  test("with no turn running, nothing is kept alive", async () => {
+    const { adapter } = setup();
+    const alive: string[] = [];
+    adapter.setLivenessHook((threadId) => alive.push(threadId));
+    await start(adapter);
+    state.feed!.push({ type: "system", subtype: "status", status: "requesting", uuid: "u1", session_id: "x" });
+    await flush();
+    expect(alive).toEqual([]);
+  });
+});
+
 describe("Claude context fill", () => {
   /** A settled main-conversation assistant message carrying one call's usage. */
   function assistantCall(uuid: string, usage: Record<string, number>): void {
