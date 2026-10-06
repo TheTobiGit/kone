@@ -1,5 +1,5 @@
 import { ToolCallAccumulator } from "../toolCallAccumulator.js";
-import { codexFileChanges, describeTool, object, string as jsonString } from "./toolCalls.js";
+import { codexCommandView, codexFileChanges, describeTool, object, string as jsonString } from "./toolCalls.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -1941,16 +1941,17 @@ export class CodexAdapter implements ProviderAdapter {
     const info = describeTool(name, raw.arguments);
     const changes = codexFileChanges(raw);
     const action = object(raw.action);
+    const command = type === "command execution" ? codexCommandView(raw) : undefined;
     const target = changes?.map((c) => c.path).join(", ")
-      ?? readString(raw, "command") ?? (readString(raw, "query") || jsonString(action?.url)) ?? info.target;
-    const semantic = type === "command execution" ? "run" : type === "file change" ? "edit"
-      : type === "web search" ? action?.type === "openPage" ? "fetch" : "web-search" : info.action;
+      ?? command?.target ?? (readString(raw, "query") || jsonString(action?.url)) ?? info.target;
+    const semantic = command?.action ?? (type === "file change" ? "edit"
+      : type === "web search" ? action?.type === "openPage" ? "fetch" : "web-search" : info.action);
     state.observe({
       name: name ? { value: name, authority: nativeTool ? "explicit" : "inferred" } : undefined,
       action: { value: semantic, authority: type === "mcp tool call" ? "inferred" : "explicit" },
       target: target ? { value: target, authority: "explicit" } : buffer.text ? { value: buffer.text, authority: "inferred" } : undefined,
       transport: server && nativeTool ? { server, tool: nativeTool } : undefined,
-      input: info.input,
+      input: command?.input ?? info.input,
       title: readString(raw, "title"),
       detail: (buffer.detail || jsonString(raw.aggregatedOutput) !== undefined) && (state.status === "in-progress" || status !== "in-progress")
         ? { value: buffer.detail, mode: "snapshot" } : undefined,

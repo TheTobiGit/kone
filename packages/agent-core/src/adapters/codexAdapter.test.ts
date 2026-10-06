@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Database } from "bun:sqlite";
 import type { JsonRpcRequestHandler } from "../jsonRpc.js";
-import { object } from "./toolCalls.js";
+import { codexCommandView, object } from "./toolCalls.js";
 import type { JsonObject, JsonValue } from "../lib-jsonValue.js";
 import type { SubagentRunSnapshot } from "../types.js";
 
@@ -626,7 +626,12 @@ describe("captured Codex tool calls", () => {
       if (raw.type === "commandExecution") {
         expect(item?.detail).toBe(raw.aggregatedOutput);
         expect(item?.status).toBe(raw.status);
-        expect(item?.tool?.action).toBe("run");
+        // A whole-script read (`cat /etc/hostname`) reads as a read; the rest run.
+        const view = codexCommandView(raw)!;
+        expect(item?.tool?.action).toBe(view.action);
+        expect(item?.tool?.target).toBe(view.target);
+        expect(item?.text).toBe(view.target);
+        expect(item?.text.startsWith("/bin/bash")).toBe(false);
       } else if (raw.type === "fileChange") {
         expect(item?.fileChanges?.length).toBe(Array.isArray(raw.changes) ? raw.changes.length : 0);
         expect(item?.fileChanges?.every((c) => c.applied)).toBe(true);

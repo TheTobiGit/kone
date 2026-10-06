@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ToolCallAccumulator } from "../toolCallAccumulator.js";
-import { acpObservation, describeTool, openCodeFileChanges } from "./toolCalls.js";
+import { acpObservation, codexCommandView, describeTool, openCodeFileChanges, unwrapShellCommand } from "./toolCalls.js";
 import { normalizeV2Event } from "./opencodeV2Events.js";
 import { record, type OpenCodeEvent, type RecordLike } from "./opencodeJson.js";
 import { diffStats } from "@kone/protocol/unified-diff";
@@ -69,4 +69,40 @@ test("an ACP before/after block becomes a real line diff, not a whole-file repla
   const [change] = observation.fileChanges!;
   expect(change).toMatchObject({ path: "/w/a.ts", kind: "edited", applied: true });
   expect(diffStats(change!.diff)).toEqual({ added: 1, removed: 1 });
+});
+
+describe("shell wrappers", () => {
+  test("only the exact quoted login-shell shape unwraps", () => {
+    expect(unwrapShellCommand("/bin/bash -lc 'git status --short'")).toBe("git status --short");
+    expect(unwrapShellCommand("bash -c 'echo it'\\''s'")).toBe("echo it's");
+    expect(unwrapShellCommand('/bin/zsh -lc "echo \\"hi\\" \\$HOME"')).toBe('echo "hi" $HOME');
+    expect(unwrapShellCommand("/usr/bin/sh -c 'ls'")).toBe("ls");
+    // Anything else is shown as it ran.
+    expect(unwrapShellCommand("/bin/bash -lc 'a' 'b'")).toBe("/bin/bash -lc 'a' 'b'");
+    expect(unwrapShellCommand("/bin/bash -lc 'a' | tee x")).toBe("/bin/bash -lc 'a' | tee x");
+    expect(unwrapShellCommand("/bin/fish -c 'ls'")).toBe("/bin/fish -c 'ls'");
+    expect(unwrapShellCommand("git status")).toBe("git status");
+  });
+});
+
+describe("captured Codex commands", () => {
+  const completed = readFileSync(path.join(import.meta.dir, "fixtures/toolCalls/codex-app-server.jsonl"), "utf8")
+    .trim().split("\n")
+    // SAFETY: repository-owned app-server fixtures use label/frame envelopes of decoded JSON-RPC frames.
+    .map((line) => JSON.parse(line) as { label: string; frame: { method?: string; params?: { item?: { type?: string } } } })
+    .filter(({ frame }) => frame.method === "item/completed" && frame.params?.item?.type === "commandExecution");
+  const view = (label: string) => codexCommandView(completed.find((c) => c.label === label)!.frame.params!.item!);
+
+  test("a compound script stays a run, unwrapped", () => {
+    expect(view("command")).toMatchObject({ action: "run", target: "echo capture-ok && ls -la" });
+  });
+
+  test("a whole-script read reads as a read of its path", () => {
+    expect(view("read-command")).toMatchObject({ action: "read", target: "/etc/hostname" });
+    expect(view("command-fail")).toMatchObject({ action: "read", target: "/nonexistent/file.txt" });
+  });
+
+  test("the executed command and cwd stay in the input", () => {
+    expect(JSON.parse(view("command")!.input)).toEqual({ command: "/bin/bash -lc 'echo capture-ok && ls -la'", cwd: "/tmp/kone-capture/work" });
+  });
 });

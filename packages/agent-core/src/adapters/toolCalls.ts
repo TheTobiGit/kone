@@ -149,3 +149,48 @@ export function openCodeFileChanges(metadata: JsonValue, applied: boolean): Tool
       : diff?.includes("+++ /dev/null") ? "removed" : "edited", diff, applied }];
   });
 }
+
+/** The script a login-shell wrapper runs — `/bin/bash -lc 'git status'` reads
+ *  as `git status`. Only the exact `<shell> -c|-lc <one quoted argument>` shape
+ *  unwraps; anything else (pipes outside the quotes, a second argument, an
+ *  unknown shell) is returned as given, because a wrong unwrap would show a
+ *  command that never ran. */
+export function unwrapShellCommand(command: string): string {
+  const match = command.match(/^(?:\/(?:usr\/)?bin\/)?(?:bash|zsh|sh)\s+-l?c\s+(['"])([\s\S]*)\1$/);
+  if (!match) return command;
+  const [, quote, body] = match;
+  if (quote === "'") {
+    // POSIX single quotes can't contain ', so a quote inside is spelled '\''.
+    const parts = body!.split("'\\''");
+    return parts.some((part) => part.includes("'")) ? command : parts.join("'");
+  }
+  // Inside double quotes only \" \\ \$ \` and \newline are escapes; a bare "
+  // would have ended the argument.
+  if (/(^|[^\\])(\\\\)*"/.test(body!)) return command;
+  return body!.replace(/\\(["\\$`\n])/g, "$1");
+}
+
+/** How a Codex `commandExecution` reads: the unwrapped script as its target,
+ *  re-read as a read, listing or search when Codex's own parse says the whole
+ *  script is exactly one of those. A compound script stays a run — Codex's
+ *  `commandActions` can describe only part of it (`echo x && ls` reports one
+ *  `listFiles`). The executed command and cwd stay in the call's input. */
+export function codexCommandView(item: JsonValue): { action: ToolAction; target: string; input: string } | undefined {
+  const raw = object(item);
+  const executed = string(raw?.command) ?? (Array.isArray(raw?.command) ? raw.command.map(string).filter((s) => s !== undefined).join(" ") : undefined);
+  if (!raw || !executed) return undefined;
+  const script = unwrapShellCommand(executed);
+  const cwd = string(raw.cwd);
+  const input = JSON.stringify(cwd ? { command: executed, cwd } : { command: executed }, null, 2);
+  const actions = Array.isArray(raw.commandActions) ? raw.commandActions.map(object) : [];
+  const only = actions.length === 1 ? actions[0] : undefined;
+  if (only && string(only.command)?.trim() === script.trim()) {
+    const type = string(only.type);
+    const path = string(only.path);
+    const query = string(only.query);
+    if (type === "read" && path) return { action: "read", target: path, input };
+    if (type === "listFiles") return { action: "list", target: path ?? script, input };
+    if (type === "search") return { action: "search", target: query ?? script, input };
+  }
+  return { action: "run", target: script, input };
+}
