@@ -8,6 +8,7 @@ import { app, BrowserWindow, globalShortcut, Menu, nativeTheme, net, protocol, s
 import { getAgentService, prepareQuitResumeForQuit, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
+import { installMainLog } from "./mainLog.js";
 import { resolveAttachmentProtocolPath } from "./attachmentProtocol.js";
 import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
@@ -40,6 +41,9 @@ import {
 // electron itself, so main resolves it once here — before any store is touched.
 // (`userData` is available pre-`whenReady`.)
 setUserDataDir(app.getPath("userData"));
+// Before anything else can log: what the main process prints is otherwise
+// kept nowhere, and a failure in it leaves nothing to read afterwards.
+installMainLog({ dir: path.join(app.getPath("userData"), "logs") });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.KONE_DEV === "1";
