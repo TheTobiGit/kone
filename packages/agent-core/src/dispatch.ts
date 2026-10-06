@@ -710,11 +710,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     });
     // Persist the user prompt (with any attachment metadata) before dispatching,
     // so it precedes the turn in arrival order (turn.started lands after this).
+    // Named here rather than inside the write, so a send the service refuses
+    // can take back the block it journaled.
+    const journaledId = input.userBlockId ?? randomUUID();
     const userTurnCount =
       delivery.journal === null
         ? 0
         : this.store.recordUserBlock({
-            blockId: input.userBlockId,
+            blockId: journaledId,
             threadId: input.threadId,
             text: delivery.journal,
             attachments: input.attachments,
@@ -773,9 +776,22 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (options?.onAccepted) handOff.onAccepted = options.onAccepted;
     if (options?.onSending) handOff.onSending = options.onSending;
     if (options?.liveOnly) handOff.liveOnly = true;
-    return destination === "steer"
-      ? this.service.steerTurn(dispatched, handOff)
-      : this.service.sendTurn(dispatched, handOff);
+    const sent =
+      destination === "steer"
+        ? this.service.steerTurn(dispatched, handOff)
+        : this.service.sendTurn(dispatched, handOff);
+    if (userTurnCount === 0) return sent;
+    // A refused send never reached anything that will answer it: its block
+    // goes, as the renderer's own copy does, so a reload doesn't show the
+    // words as sent and waiting on a reply.
+    return (async (): Promise<TurnStartResult> => {
+      try {
+        return await sent;
+      } catch (error) {
+        this.store.discardUnsentUserBlock(input.threadId, journaledId);
+        throw error;
+      }
+    })();
   }
 
   queueNotice(threadId: string, text: string, options?: { rings?: boolean }): string {

@@ -474,6 +474,42 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     // First user turn on the thread — it names it, exactly like a send would.
     expect(store.getTitle(THREAD)).toBeTruthy();
   });
+
+  test("a send the provider refuses leaves no block behind", async () => {
+    const { store, dispatcher } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+
+    FakeAdapter.refuseNext = new Error("No agent session for thread t-dispatch");
+    await expect(
+      dispatcher.sendThreadTurn({ threadId: THREAD, input: "hi", userBlockId: "ub-refused" }),
+    ).rejects.toThrow("No agent session");
+
+    // The renderer dropped its copy and gave the words back to the composer;
+    // a block left in the journal reloaded as sent and never answered.
+    expect(userTexts(store)).toEqual(["first message"]);
+  });
+
+  test("a refused send takes back its block even when it named none", async () => {
+    const { store, dispatcher } = await harness();
+
+    FakeAdapter.refuseNext = new Error("provider gone");
+    await expect(dispatcher.steerThreadTurn({ threadId: THREAD, input: "hi" })).rejects.toThrow(
+      "provider gone",
+    );
+
+    expect(userTexts(store)).toEqual([]);
+  });
+
+  test("a refused send never takes a block a queue row still carries", async () => {
+    const { store, dispatcher, emit, service } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+    turnStarted(emit, "turn-1");
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "queued behind it" });
+    const [row] = await service.listQueuedTurns(THREAD);
+
+    expect(row && store.discardUnsentUserBlock(THREAD, row.userBlockId)).toBe(false);
+    expect(userTexts(store)).toEqual(["first message", "queued behind it"]);
+  });
 });
 
 describe("composeTurnDelivery", () => {
