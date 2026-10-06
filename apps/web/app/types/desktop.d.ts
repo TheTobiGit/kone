@@ -1612,6 +1612,9 @@ export type RuntimeEvent =
        *  own words are already on the transcript; absent, it goes last. */
       beforeBlockId?: string;
     })
+  // A message kone journaled for a send the service then refused is gone from
+  // the transcript again: nothing will ever answer it. Take the block down.
+  | (AgentBaseEvent & { type: "thread.message-unjournaled"; blockId: string })
   // An agent gateway write landed on a project's scratchpad
   // (scratchpad_write). `projectPath` scopes it to the project the pad
   // belongs to (a studio row is project-scoped, not thread-scoped); `writer` is

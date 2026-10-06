@@ -1759,6 +1759,10 @@ export type RuntimeEvent =
        *  own words are already on the transcript; absent, it goes last. */
       beforeBlockId?: string;
     })
+  // A message kone journaled for a send the service then refused is gone from
+  // the transcript again: nothing will ever answer it. A renderer that placed
+  // it — from thread.message-journaled, or as its own send — takes it down.
+  | (BaseEvent & { type: "thread.message-unjournaled"; blockId: string })
   // An agent spawned a child thread (worker_start), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
