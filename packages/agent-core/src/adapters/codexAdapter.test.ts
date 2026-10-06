@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 // Sandbox copies of the adapter live inside the app tree (not the OS tmpdir)
@@ -28,7 +29,7 @@ import type { SubagentRunSnapshot } from "../types.js";
 mock.module("../sqlite.js", () => ({
   DatabaseSync: Database,
 }));
-setUserDataDir("/tmp/kone-codex-adapter-test");
+setUserDataDir(path.join(tmpdir(), "kone-codex-adapter-test"));
 
 const CODEX_ADAPTER_SOURCE = fileURLToPath(new URL("./CodexAdapter.ts", import.meta.url));
 

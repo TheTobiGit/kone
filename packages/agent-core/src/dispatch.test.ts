@@ -34,7 +34,7 @@ setUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-dispatch-test-")));
 mock.module("./sqlite.js", () => ({ DatabaseSync: Database }));
 
 const THREAD = "t-dispatch";
-const CWD = "/tmp/kone-dispatch";
+const CWD = path.join(tmpdir(), "kone-dispatch");
 let lastDataDir = "";
 
 /** Records what reached the provider, and whether a live-steer channel exists

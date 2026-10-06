@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
@@ -12,7 +13,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 // display list so the getInitialWindowState fallback path is exercised.
 type Rect = { x: number; y: number; width: number; height: number };
 
-const USER_DATA = "/tmp/kone-window-state-test";
+const USER_DATA = path.join(tmpdir(), "kone-window-state-test");
 const displays: Array<{ workArea: Rect }> = [];
 let displayError: Error | null = null;
 
