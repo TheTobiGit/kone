@@ -1,5 +1,5 @@
 import { ToolCallAccumulator } from "../toolCallAccumulator.js";
-import { acpObservation } from "./toolCalls.js";
+import { foldAcpToolCall, parseAcpPlan } from "./acpTools.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -29,15 +29,12 @@ import type { CursorImageBlock } from "../promptAttachments.js";
 import { probeResult } from "../spawn.js";
 import { getUserDataDir } from "../userDataDir.js";
 import {
-  TOOL_KIND_NAMES,
   acpArray,
-  antigravityToolDetail,
   buildAntigravityApprovalRequestWithWarnings,
   findOption,
   isAcpRecord,
   isAntigravityQuestion,
   parseAntigravityConfigOptions,
-  parseAntigravityPlan,
   readNumber,
   readString,
   readValue,
@@ -82,12 +79,8 @@ import { inlineSkills } from "../skillInvocation.js";
 export type { AntigravityAcpRecord, AntigravityAcpValue } from "./antigravityAcpProtocol.js";
 export {
   antigravityOptionWarning,
-  antigravityToolDetail,
-  antigravityToolStatus,
-  antigravityToolTarget,
   isAntigravityQuestion,
   parseAntigravityConfigOptions,
-  parseAntigravityPlan,
   selectQuestionOption,
   toAntigravityModelDescriptor,
   toAntigravityQuestion,
@@ -1084,16 +1077,9 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
       session.items.set(itemId, buffer);
     }
 
-    const kind = readString(update, "kind");
-    const name = kind ? TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
     const state = buffer.toolState ??= new ToolCallAccumulator();
-    state.observe(acpObservation(update, name, antigravityToolDetail(update)));
-    const explicitStatus = readString(update, "status");
-    if (explicitStatus === "completed" && state.fileChanges) {
-      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
-    }
+    const status = foldAcpToolCall(state, update);
     Object.assign(buffer, state.snapshot());
-    const status = state.status;
     if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
@@ -1101,7 +1087,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
 
   private handlePlan(session: AntigravityAcpSession, update: AntigravityAcpRecord): void {
     if (!session.activeTurnId) return;
-    const snapshot = parseAntigravityPlan(update);
+    const snapshot = parseAcpPlan(update);
     if (!snapshot) return;
 
     const itemId = `${session.activeTurnId}:plan`;

@@ -3,16 +3,12 @@ import { describe, expect, test } from "bun:test";
 import {
   buildContextWindowFallback,
   contextWindowTokens,
-  parseAcpPlan,
   parseConfigOptions,
   parseStoredCursorContext,
   resolveContextWindow,
   resolveModeId,
   seedFromSessionResponse,
   toModelDescriptor,
-  toolCallDetail,
-  toolCallStatus,
-  toolCallTarget,
 } from "./adapters/CursorAdapter.js";
 import { parseCursorAuth, parseCursorCliModels, parseCursorVersion, resolveCursorBinary } from "./cursorHome.js";
 
@@ -139,68 +135,6 @@ describe("Cursor session modes", () => {
     expect(resolveModeId("accept-edits", ["plan"])).toBe("plan");
     expect(resolveModeId("accept-edits", ["something-new"])).toBe("something-new");
     expect(resolveModeId("ask", [])).toBeUndefined();
-  });
-});
-
-describe("Cursor tool-call translation", () => {
-  test("prefers the command, then the path, then the query as the inline target", () => {
-    expect(toolCallTarget({ kind: "execute", rawInput: { command: "bun test" }, title: "Shell" })).toBe("bun test");
-    expect(toolCallTarget({ kind: "read", rawInput: { path: "src/app.ts" } })).toBe("src/app.ts");
-    expect(toolCallTarget({ kind: "search", rawInput: { query: "TODO" } })).toBe("TODO");
-    expect(toolCallTarget({ title: "Thinking" })).toBe("Thinking");
-    expect(toolCallTarget({})).toBe("");
-  });
-
-  test("summarizes a multi-location edit instead of naming only the first file", () => {
-    expect(toolCallTarget({ kind: "edit", locations: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }] })).toBe(
-      "a.ts +2 more",
-    );
-    expect(toolCallTarget({ kind: "edit", locations: [{ path: "a.ts" }] })).toBe("a.ts");
-  });
-
-  test("collects the result body from content blocks and rawOutput", () => {
-    expect(
-      toolCallDetail({
-        content: [{ type: "content", content: { type: "text", text: "line one" } }, { text: "line two" }],
-      }),
-    ).toBe("line one\nline two");
-    expect(toolCallDetail({ rawOutput: { output: "done" } })).toBe("done");
-    expect(toolCallDetail({ rawOutput: { exitCode: 0 } })).toBe(JSON.stringify({ exitCode: 0 }, null, 2));
-    expect(toolCallDetail({})).toBe("");
-  });
-
-  test("anything that is not a terminal status is still running", () => {
-    expect(["pending", "in_progress", undefined, "completed", "failed"].map(toolCallStatus)).toEqual([
-      "in-progress",
-      "in-progress",
-      "in-progress",
-      "completed",
-      "failed",
-    ]);
-  });
-});
-
-describe("Cursor plan translation", () => {
-  test("re-spells ACP's `in_progress` and drops empty entries", () => {
-    expect(
-      parseAcpPlan({
-        entries: [
-          { content: "Read the adapter", status: "completed" },
-          { content: "Wire the events", status: "in_progress" },
-          { content: "Ship", status: "pending" },
-          { content: "   ", status: "pending" },
-        ],
-      }),
-    ).toEqual([
-      { content: "Read the adapter", status: "completed" },
-      { content: "Wire the events", status: "in-progress" },
-      { content: "Ship", status: "pending" },
-    ]);
-  });
-
-  test("an empty plan is no plan at all", () => {
-    expect(parseAcpPlan({ entries: [] })).toBeUndefined();
-    expect(parseAcpPlan({})).toBeUndefined();
   });
 });
 

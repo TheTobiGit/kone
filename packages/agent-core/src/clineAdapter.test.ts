@@ -10,14 +10,10 @@ import {
   clineModelCatalog,
   clinePermissionAutoApproves,
   clinePermissionCommand,
-  clineToolDetail,
-  clineToolStatus,
-  clineToolTarget,
   isClineAuthRequired,
   mergeClineFeaturedModels,
   parseClineConfigOptions,
   parseClineFeaturedModels,
-  parseClinePlan,
   selectClinePermissionOption,
 } from "./adapters/clineProtocol.js";
 import { detectClineAuth, parseClineVersion, resolveClineBinary } from "./clineHome.js";
@@ -547,51 +543,6 @@ describe("Cline permission policy", () => {
     expect(buildClineApprovalRequest(permissionRequest("edit", { path: "a.ts" }, "Edit a.ts")).kind).toBe("file-change");
     expect(buildClineApprovalRequest(permissionRequest("read", {}, "Read a.ts")).kind).toBe("file-read");
     expect(buildClineApprovalRequest(permissionRequest("other", {}, "MCP call")).kind).toBe("permission");
-  });
-});
-
-describe("Cline tool-call and plan translation", () => {
-  // ACP-standard shapes, not Cline captures.
-  test("prefers the command, then the path, then the title", () => {
-    expect(clineToolTarget({ rawInput: { command: " ls -la " } })).toBe("ls -la");
-    expect(clineToolTarget({ rawInput: { path: "src/a.ts" } })).toBe("src/a.ts");
-    expect(clineToolTarget({ locations: [{ path: "a.ts" }, { path: "b.ts" }] })).toBe("a.ts +1 more");
-    expect(clineToolTarget({ title: "Search files" })).toBe("Search files");
-    expect(clineToolTarget({})).toBe("");
-  });
-
-  test("collects text blocks and raw output; unknown output shapes are stringified", () => {
-    expect(
-      clineToolDetail({ content: [{ type: "content", content: { type: "text", text: "hello" } }], rawOutput: { output: "world" } }),
-    ).toBe("hello\nworld");
-    expect(clineToolDetail({ rawOutput: { weird: 1 } })).toBe(`{\n  "weird": 1\n}`);
-    expect(clineToolDetail({})).toBe("");
-  });
-
-  test("only completed and failed close a tool row", () => {
-    expect(["pending", "in_progress", "completed", "failed", undefined].map(clineToolStatus)).toEqual([
-      "in-progress",
-      "in-progress",
-      "completed",
-      "failed",
-      "in-progress",
-    ]);
-  });
-
-  test("re-spells ACP's in_progress and drops empty entries", () => {
-    expect(
-      parseClinePlan({
-        entries: [
-          { content: "Read", status: "completed" },
-          { content: "Edit", status: "in_progress" },
-          { content: "  ", status: "pending" },
-        ],
-      }),
-    ).toEqual([
-      { content: "Read", status: "completed" },
-      { content: "Edit", status: "in-progress" },
-    ]);
-    expect(parseClinePlan({ entries: [] })).toBeUndefined();
   });
 });
 

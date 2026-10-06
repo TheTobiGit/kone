@@ -4,8 +4,6 @@ import type {
   ApprovalRequest,
   ApprovalRequestKind,
   ModelDescriptor,
-  PlanTask,
-  RuntimeItemStatus,
   UserInputAnswers,
   UserInputQuestion,
 } from "../types.js";
@@ -257,91 +255,3 @@ export function selectQuestionOption(
   return undefined;
 }
 
-// ── tool-call presentation ───────────────────────────────────────────────────
-
-/** ACP tool kinds → the canonical tool keyword kone's thread UI understands.
- *  Same contract CursorAdapter/DroidAdapter honor — the vocabulary is with
- *  the renderer, not the provider. */
-export const TOOL_KIND_NAMES: Record<string, string> = {
-  read: "read_file",
-  edit: "edit_file",
-  delete: "edit_file",
-  move: "edit_file",
-  execute: "run",
-  search: "search",
-  fetch: "web_search",
-  think: "tool",
-  switch_mode: "tool",
-  other: "tool",
-};
-
-/** A short, human inline target for a tool row: the command, path, or query —
- *  never the tool's own name, which travels separately as `name`. The server
- *  reports native command lines under several key spellings; all of them are
- *  read before falling back to the title. */
-export function antigravityToolTarget(update: AntigravityAcpRecord): string {
-  const rawInput = readValue(update, "rawInput");
-  const command =
-    readString(rawInput, "CommandLine") ??
-    readString(rawInput, "command_line") ??
-    readString(rawInput, "commandLine") ??
-    readString(rawInput, "command");
-  if (command?.trim()) return command.trim();
-
-  const targetPath =
-    readString(rawInput, "TargetFile") ?? readString(rawInput, "AbsolutePath") ?? readString(rawInput, "path");
-  if (targetPath?.trim()) return targetPath.trim();
-
-  const query =
-    readString(rawInput, "Query") ??
-    readString(rawInput, "query") ??
-    readString(rawInput, "pattern") ??
-    readString(rawInput, "Url") ??
-    readString(rawInput, "url");
-  if (query?.trim()) return query.trim();
-
-  return readString(update, "title") ?? "";
-}
-
-/** The expandable body of a tool row: text content blocks plus the raw output
- *  (or its JSON when the output is structured), preserved for storage and IPC. */
-export function antigravityToolDetail(update: AntigravityAcpRecord): string {
-  const parts: string[] = [];
-  const push = (text: string | undefined) => {
-    if (text !== undefined && text.length > 0) parts.push(text);
-  };
-  for (const block of acpArray(readValue(update, "content"))) {
-    push(readString(block, "content", "text") ?? readString(block, "text"));
-  }
-  const rawOutput = readValue(update, "rawOutput");
-  if (isAcpRecord(rawOutput)) {
-    const output =
-      readString(rawOutput, "content") ?? readString(rawOutput, "output") ?? readString(rawOutput, "combinedOutput");
-    push(output ?? JSON.stringify(rawOutput, null, 2));
-  } else {
-    push(acpText(rawOutput) ?? undefined);
-  }
-  return parts.join("\n");
-}
-
-export function antigravityToolStatus(raw: string | undefined): RuntimeItemStatus {
-  if (raw === "completed") return "completed";
-  if (raw === "failed") return "failed";
-  return "in-progress";
-}
-
-/** ACP plan entries are `{ content, status }` with `in_progress` spelled with
- *  an underscore; kone's PlanTaskStatus uses a hyphen. */
-export function parseAntigravityPlan(update: AntigravityAcpRecord): Omit<PlanTask, "id">[] | undefined {
-  const entries = acpArray(readValue(update, "entries"));
-  if (entries.length === 0) return undefined;
-  const out: Omit<PlanTask, "id">[] = [];
-  for (const entry of entries) {
-    const content = readString(entry, "content")?.trim();
-    if (!content) continue;
-    const rawStatus = readString(entry, "status");
-    const status = rawStatus === "completed" ? "completed" : rawStatus === "in_progress" ? "in-progress" : "pending";
-    out.push({ content, status });
-  }
-  return out.length > 0 ? out : undefined;
-}

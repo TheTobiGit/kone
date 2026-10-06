@@ -1,5 +1,5 @@
 import { ToolCallAccumulator } from "../toolCallAccumulator.js";
-import { acpObservation } from "./toolCalls.js";
+import { foldAcpToolCall, parseAcpPlan } from "./acpTools.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -579,22 +579,6 @@ export function resolveModeId(mode: InteractionMode, available: readonly string[
 
 // ── tool-call presentation ───────────────────────────────────────────────────
 
-/** ACP tool kinds → the canonical tool keyword kone's thread UI understands.
- *  Keep these in sync with ConversationThread.vue's TOOL_TABLE vocabulary, the
- *  same contract CodexAdapter's toRuntimeItemKind honors. */
-const TOOL_KIND_NAMES: Record<string, string> = {
-  read: "read_file",
-  edit: "edit_file",
-  delete: "edit_file",
-  move: "edit_file",
-  execute: "run",
-  search: "search",
-  fetch: "web_search",
-  think: "tool",
-  switch_mode: "tool",
-  other: "tool",
-};
-
 /** Body of an ACP `tool_call` / `tool_call_update` update, minus the
  *  `sessionUpdate` discriminator. `rawInput`/`rawOutput` stay raw JSON — tool
  *  arguments are whatever the agent sent — and are probed at the edge rather
@@ -614,65 +598,6 @@ export type AcpToolCallUpdate = {
  *  plan schema is undocumented, so entries are probed field by field. */
 export type AcpPlanUpdate = { entries?: JsonValue[] };
 
-/** A short, human inline target for a tool row: the command, path, or query —
- *  never the tool's own name, which travels separately as `name`. */
-export function toolCallTarget(update: AcpToolCallUpdate): string {
-  const rawInput = asRecord(update.rawInput);
-  const command = readString(rawInput, "command");
-  if (command) return command;
-
-  const path = readString(rawInput, "path") ?? readString(rawInput, "file_path");
-  if (path) return path;
-
-  const query = readString(rawInput, "query") ?? readString(rawInput, "pattern") ?? readString(rawInput, "url");
-  if (query) return query;
-
-  const locations = asArray(update.locations);
-  const firstPath = locations.length > 0 ? readString(locations[0], "path") : undefined;
-  if (firstPath) return locations.length > 1 ? `${firstPath} +${locations.length - 1} more` : firstPath;
-
-  return update.title ?? "";
-}
-
-/** The expandable body of a tool row. ACP puts results in `rawOutput` and/or a
- *  `content` array of text/diff/resource blocks. */
-export function toolCallDetail(update: AcpToolCallUpdate): string {
-  const parts: string[] = [];
-  for (const block of asArray(update.content)) {
-    const text = readString(block, "content", "text") ?? readString(block, "text");
-    if (text) parts.push(text);
-  }
-  const rawOutput = asRecord(update.rawOutput);
-  if (rawOutput) {
-    const output = readString(rawOutput, "content") ?? readString(rawOutput, "output") ?? readString(rawOutput, "stdout");
-    if (output) parts.push(output);
-    else parts.push(JSON.stringify(rawOutput, null, 2));
-  }
-  return parts.join("\n");
-}
-
-export function toolCallStatus(raw: string | undefined): RuntimeItemStatus {
-  if (raw === "completed") return "completed";
-  if (raw === "failed") return "failed";
-  return "in-progress";
-}
-
-/** ACP plan entries are `{ content, status }` with `in_progress` spelled with
- *  an underscore; kone's PlanTaskStatus uses a hyphen. */
-export function parseAcpPlan(update: AcpPlanUpdate): Omit<PlanTask, "id">[] | undefined {
-  const entries = asArray(update.entries);
-  if (entries.length === 0) return undefined;
-  const out: Omit<PlanTask, "id">[] = [];
-  for (const entry of entries) {
-    const content = readString(entry, "content")?.trim();
-    if (!content) continue;
-    const rawStatus = readString(entry, "status");
-    const status =
-      rawStatus === "completed" ? "completed" : rawStatus === "in_progress" ? "in-progress" : "pending";
-    out.push({ content, status });
-  }
-  return out.length > 0 ? out : undefined;
-}
 
 // ── session/update dispatch ─────────────────────────────────────────────────
 // ACP streams session progress as `session/update` notifications whose body is
@@ -1465,16 +1390,9 @@ export class CursorAdapter implements ProviderAdapter {
       session.items.set(itemId, buffer);
     }
 
-    const kind = update.kind;
-    const name = kind ? TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
     const state = buffer.toolState ??= new ToolCallAccumulator();
-    state.observe(acpObservation(update, name, toolCallDetail(update)));
-    const explicitStatus = update.status;
-    if (explicitStatus === "completed" && state.fileChanges) {
-      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
-    }
+    const status = foldAcpToolCall(state, update);
     Object.assign(buffer, state.snapshot());
-    const status = state.status;
     if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);

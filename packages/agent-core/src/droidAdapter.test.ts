@@ -6,10 +6,6 @@ import {
   resolveDroidAuthMethodId,
   resolveDroidModeId,
   toDroidModelDescriptor,
-  toolCallDetail,
-  toolCallStatus,
-  toolCallTarget,
-  parseDroidPlan,
 } from "./adapters/DroidAdapter.js";
 import { detectDroidAuth, droidHomeDir, parseDroidVersion, resolveDroidBinary } from "./droidHome.js";
 
@@ -251,95 +247,3 @@ describe("Droid session modes", () => {
   });
 });
 
-describe("Droid tool-call translation", () => {
-  test("prefers the command, then droid's file_path, then the title as the inline target", () => {
-    // execute tool_call (probe-tool-exec): the command is the row's inline text.
-    expect(
-      toolCallTarget({
-        sessionUpdate: "tool_call",
-        toolCallId: "call_00_ET_aJsMzt23x8jAcmr8DX7n1842",
-        title: "`echo HELLO_DROID` (low)",
-        kind: "execute", status: "pending",
-        rawInput: { command: "echo HELLO_DROID", summary: "Print test string", riskLevel: "low", riskLevelReason: "Read-only echo command printing a string to stdout." },
-      }),
-    ).toBe("echo HELLO_DROID");
-    // Write tool_call (probe-permission): droid puts the path in rawInput.file_path,
-    // and that beats the `locations` array — a spec-derived `path` read would
-    // miss it and fall through to the title.
-    expect(
-      toolCallTarget({
-        sessionUpdate: "tool_call",
-        toolCallId: "call_00_zUHvVe9cM1FkDYSq1Hs53194",
-        title: "Create /tmp/droid-probe/PROBE.txt",
-        kind: "edit", status: "pending",
-        rawInput: { file_path: "/tmp/droid-probe/PROBE.txt", content: "pwned\n" },
-        content: [{ type: "diff", path: "/tmp/droid-probe/PROBE.txt", oldText: null, newText: "pwned\n" }],
-        locations: [{ path: "/tmp/droid-probe/PROBE.txt" }],
-      }),
-    ).toBe("/tmp/droid-probe/PROBE.txt");
-    expect(toolCallTarget({ title: "Create /tmp/droid-probe/PROBE.txt" })).toBe("Create /tmp/droid-probe/PROBE.txt");
-    expect(toolCallTarget({})).toBe("");
-  });
-
-  test("collects the result body from rawOutput; unknown shapes are stringified, never dropped", () => {
-    // tool_call_update completed (probe-resume): rawOutput.text is not one of
-    // the known body keys, so the whole object is pretty-printed rather than
-    // discarded — losing a terminal transcript would be worse than a JSON dump.
-    expect(
-      toolCallDetail({
-        sessionUpdate: "tool_call_update",
-        toolCallId: "call_00_ET_aJsMzt23x8jAcmr8DX7n1842",
-        status: "completed",
-        rawOutput: { text: "HELLO_DROID\n\n\n[Process exited with code 0]" },
-      }),
-    ).toBe(`{\n  "text": "HELLO_DROID\\n\\n\\n[Process exited with code 0]"\n}`);
-    // A diff block carries no renderable text — the edit body stays empty.
-    expect(
-      toolCallDetail({
-        kind: "edit",
-        rawInput: { file_path: "/tmp/droid-probe/PROBE.txt" },
-        content: [{ type: "diff", path: "/tmp/droid-probe/PROBE.txt", oldText: null, newText: "pwned\n" }],
-      }),
-    ).toBe("");
-    expect(toolCallDetail({})).toBe("");
-  });
-
-  test("anything that is not a terminal status is still running", () => {
-    // pending/in_progress/undefined all mean the row is mid-flight; only
-    // completed and failed close it out.
-    expect(["pending", "in_progress", "completed", "failed", undefined].map(toolCallStatus)).toEqual([
-      "in-progress",
-      "in-progress",
-      "completed",
-      "failed",
-      "in-progress",
-    ]);
-  });
-});
-
-describe("Droid plan translation", () => {
-  test("re-spells ACP's `in_progress` and drops empty entries", () => {
-    // droid 0.186.0 never emitted a `plan` update across 364 live captures, so
-    // there is no verbatim droid plan to paste — this is the ACP-standard
-    // shape, identical to the one Cursor's live captures proved.
-    expect(
-      parseDroidPlan({
-        entries: [
-          { content: "Read the adapter", status: "completed" },
-          { content: "Wire the events", status: "in_progress" },
-          { content: "Ship", status: "pending" },
-          { content: "   ", status: "pending" },
-        ],
-      }),
-    ).toEqual([
-      { content: "Read the adapter", status: "completed" },
-      { content: "Wire the events", status: "in-progress" },
-      { content: "Ship", status: "pending" },
-    ]);
-  });
-
-  test("an empty plan is no plan at all", () => {
-    expect(parseDroidPlan({ entries: [] })).toBeUndefined();
-    expect(parseDroidPlan({})).toBeUndefined();
-  });
-});

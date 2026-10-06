@@ -1,5 +1,5 @@
 import { ToolCallAccumulator } from "../toolCallAccumulator.js";
-import { acpObservation } from "./toolCalls.js";
+import { foldAcpToolCall, parseAcpPlan } from "./acpTools.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 
@@ -18,7 +18,6 @@ import { refuseCriticalCommand } from "./acpSafety.js";
 import {
   CLINE_MODEL_CONFIG_IDS,
   CLINE_SIGN_IN_MESSAGE,
-  CLINE_TOOL_KIND_NAMES,
   acpArray,
   buildClineApprovalRequest,
   clineActModeToApply,
@@ -27,7 +26,6 @@ import {
   clinePermissionAutoApproves,
   clinePermissionCommand,
   clinePermissionToolKind,
-  clineToolDetail,
   findOption,
   isAcpRecord,
   isClineAuthRequired,
@@ -35,7 +33,6 @@ import {
   mergeClineFeaturedModels,
   parseClineConfigOptions,
   parseClineFeaturedModels,
-  parseClinePlan,
   readNumber,
   readString,
   readValue,
@@ -987,16 +984,9 @@ export class ClineAdapter implements ProviderAdapter {
       session.items.set(itemId, buffer);
     }
 
-    const kind = readString(update, "kind");
-    const name = kind ? CLINE_TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
     const state = buffer.toolState ??= new ToolCallAccumulator();
-    state.observe(acpObservation(update, name, clineToolDetail(update)));
-    const explicitStatus = readString(update, "status");
-    if (explicitStatus === "completed" && state.fileChanges) {
-      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
-    }
+    const status = foldAcpToolCall(state, update);
     Object.assign(buffer, state.snapshot());
-    const status = state.status;
     if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
@@ -1004,7 +994,7 @@ export class ClineAdapter implements ProviderAdapter {
 
   private handlePlan(session: ClineSession, update: ClineAcpRecord): void {
     if (!session.activeTurnId) return;
-    const snapshot = parseClinePlan(update);
+    const snapshot = parseAcpPlan(update);
     if (!snapshot) return;
 
     const itemId = `${session.activeTurnId}:plan`;

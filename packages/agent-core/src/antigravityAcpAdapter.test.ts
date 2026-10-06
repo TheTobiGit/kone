@@ -2,12 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { AntigravityAcpAdapter } from "./adapters/AntigravityAcpAdapter.js";
 import {
-  antigravityToolDetail,
-  antigravityToolStatus,
-  antigravityToolTarget,
   isAntigravityQuestion,
   parseAntigravityConfigOptions,
-  parseAntigravityPlan,
   selectQuestionOption,
   toAntigravityModelDescriptor,
   toAntigravityQuestion,
@@ -101,54 +97,6 @@ describe("toAntigravityQuestion + selectQuestionOption", () => {
       ),
     ).toBeUndefined();
     expect(toAntigravityQuestion(record({ toolCall: { toolCallId: "interaction_1" }, options: [] }))).toBeUndefined();
-  });
-});
-
-describe("antigravityToolTarget", () => {
-  test("prefers native command spellings, then paths, then the title", () => {
-    expect(antigravityToolTarget(record({ rawInput: { CommandLine: "ls -la" } }))).toBe("ls -la");
-    expect(antigravityToolTarget(record({ rawInput: { command: "pwd" } }))).toBe("pwd");
-    expect(antigravityToolTarget(record({ rawInput: { TargetFile: "/a/b.ts" } }))).toBe("/a/b.ts");
-    expect(antigravityToolTarget(record({ title: "Running build" }))).toBe("Running build");
-  });
-});
-
-describe("antigravityToolDetail", () => {
-  test("collects text blocks and structured output", () => {
-    expect(
-      antigravityToolDetail(
-        record({
-          content: [{ type: "content", content: { type: "text", text: "hello" } }],
-          rawOutput: { output: "done" },
-        }),
-      ),
-    ).toBe("hello\ndone");
-  });
-
-  test("preserves full output for storage and rendering", () => {
-    const detail = antigravityToolDetail(record({ rawOutput: "x".repeat(100_000) }));
-    expect(detail).toBe("x".repeat(100_000));
-  });
-});
-
-describe("antigravityToolStatus", () => {
-  test("maps the three states", () => {
-    expect(antigravityToolStatus("completed")).toBe("completed");
-    expect(antigravityToolStatus("failed")).toBe("failed");
-    expect(antigravityToolStatus("in_progress")).toBe("in-progress");
-    expect(antigravityToolStatus(undefined)).toBe("in-progress");
-  });
-});
-
-describe("parseAntigravityPlan", () => {
-  test("re-spells in_progress", () => {
-    expect(
-      parseAntigravityPlan(record({ entries: [{ content: "Step one", status: "in_progress" }] })),
-    ).toEqual([{ content: "Step one", status: "in-progress" }]);
-  });
-
-  test("ignores empty entry lists", () => {
-    expect(parseAntigravityPlan(record({ entries: [] }))).toBeUndefined();
   });
 });
 

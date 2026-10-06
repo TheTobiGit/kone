@@ -1,5 +1,5 @@
 import { ToolCallAccumulator } from "../toolCallAccumulator.js";
-import { acpObservation } from "./toolCalls.js";
+import { foldAcpToolCall, parseAcpPlan } from "./acpTools.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -456,86 +456,6 @@ export function toDroidModelDescriptor(
 
 // ── tool-call presentation ───────────────────────────────────────────────────
 
-/** ACP tool kinds → the canonical tool keyword kone's thread UI understands.
- *  Same contract CursorAdapter's TOOL_KIND_NAMES honors — the vocabulary is
- *  with the renderer, not the provider. */
-const TOOL_KIND_NAMES: Record<string, string> = {
-  read: "read_file",
-  edit: "edit_file",
-  delete: "edit_file",
-  move: "edit_file",
-  execute: "run",
-  search: "search",
-  fetch: "web_search",
-  think: "tool",
-  switch_mode: "tool",
-  other: "tool",
-};
-
-/** A short, human inline target for a tool row: the command, path, or query —
- *  never the tool's own name, which travels separately as `name`. droid's
- *  Write tool puts the path in `rawInput.file_path` (live capture). */
-export function toolCallTarget(update: DroidAcpRecord): string {
-  const rawInput = readValue(update, "rawInput");
-  const command = readString(rawInput, "command");
-  if (command) return command;
-
-  const path = readString(rawInput, "path") ?? readString(rawInput, "file_path");
-  if (path) return path;
-
-  const query = readString(rawInput, "query") ?? readString(rawInput, "pattern") ?? readString(rawInput, "url");
-  if (query) return query;
-
-  const locations = droidArray(readValue(update, "locations"));
-  const firstPath = locations.length > 0 ? readString(locations[0], "path") : undefined;
-  if (firstPath) return locations.length > 1 ? `${firstPath} +${locations.length - 1} more` : firstPath;
-
-  return readString(update, "title") ?? "";
-}
-
-/** The expandable body of a tool row. droid sends `content` arrays with
- *  `{ type: "diff", path, oldText, newText }` and `{ type: "content",
- *  content: { type: "text", text } }` blocks (live capture); results may land
- *  in `rawOutput`. */
-export function toolCallDetail(update: DroidAcpRecord): string {
-  const parts: string[] = [];
-  for (const block of droidArray(readValue(update, "content"))) {
-    const text = readString(block, "content", "text") ?? readString(block, "text");
-    if (text) parts.push(text);
-  }
-  const rawOutput = readValue(update, "rawOutput");
-  if (isDroidAcpRecord(rawOutput)) {
-    const output = readString(rawOutput, "content") ?? readString(rawOutput, "output") ?? readString(rawOutput, "stdout");
-    if (output) parts.push(output);
-    else parts.push(JSON.stringify(rawOutput, null, 2));
-  }
-  return parts.join("\n");
-}
-
-export function toolCallStatus(raw: string | undefined): RuntimeItemStatus {
-  if (raw === "completed") return "completed";
-  if (raw === "failed") return "failed";
-  return "in-progress";
-}
-
-/** ACP plan entries are `{ content, status }` with `in_progress` spelled with
- *  an underscore; kone's PlanTaskStatus uses a hyphen. Defensive ground truth:
- *  droid 0.186.0 never emitted a `plan` update across 364 live notifications,
- *  but the shape is the ACP standard and it costs nothing to keep. */
-export function parseDroidPlan(update: DroidAcpRecord): Omit<PlanTask, "id">[] | undefined {
-  const entries = droidArray(readValue(update, "entries"));
-  if (entries.length === 0) return undefined;
-  const out: Omit<PlanTask, "id">[] = [];
-  for (const entry of entries) {
-    const content = readString(entry, "content")?.trim();
-    if (!content) continue;
-    const rawStatus = readString(entry, "status");
-    const status =
-      rawStatus === "completed" ? "completed" : rawStatus === "in_progress" ? "in-progress" : "pending";
-    out.push({ content, status });
-  }
-  return out.length > 0 ? out : undefined;
-}
 
 export class DroidAdapter implements ProviderAdapter {
   readonly provider = "droid" as const;
@@ -1447,16 +1367,9 @@ export class DroidAdapter implements ProviderAdapter {
       session.items.set(itemId, buffer);
     }
 
-    const kind = readString(update, "kind");
-    const name = kind ? TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
     const state = buffer.toolState ??= new ToolCallAccumulator();
-    state.observe(acpObservation(update, name, toolCallDetail(update)));
-    const explicitStatus = readString(update, "status");
-    if (explicitStatus === "completed" && state.fileChanges) {
-      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
-    }
+    const status = foldAcpToolCall(state, update);
     Object.assign(buffer, state.snapshot());
-    const status = state.status;
     if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
@@ -1464,7 +1377,7 @@ export class DroidAdapter implements ProviderAdapter {
 
   private handlePlan(session: DroidSession, update: DroidAcpRecord): void {
     if (!session.activeTurnId) return;
-    const snapshot = parseDroidPlan(update);
+    const snapshot = parseAcpPlan(update);
     if (!snapshot) return;
 
     const itemId = `${session.activeTurnId}:plan`;

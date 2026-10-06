@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { JsonValue, JsonObject } from "../lib-jsonValue.js";
 import { ToolActionSchema, type ToolAction, type ToolCall, type ToolFileChange } from "@kone/protocol/tool-call";
 import { unifiedDiffFromTexts } from "@kone/protocol/unified-diff";
-import type { ToolObservation } from "../toolCallAccumulator.js";
 
 export function object(value: JsonValue): JsonObject | undefined {
   // SAFETY: decoded JSON objects exclude primitive values and arrays here.
@@ -61,52 +60,6 @@ export function describeTool(name?: string, input?: JsonValue, title?: string): 
   if (input !== undefined) tool.input = JSON.stringify(input, null, 2);
   if (transportMatch) tool.transport = { server: transportMatch[1]!, tool: transportMatch[2]! };
   return tool;
-}
-
-/** ACP updates are partial snapshots. A title never outranks structured input. */
-export function acpObservation(update: JsonValue, name: string | undefined, detail: string): ToolObservation {
-  const raw = object(update) ?? {};
-  const input = raw.rawInput;
-  const title = string(raw.title);
-  const target = inputTarget(input, inferAction(name));
-  const locations = Array.isArray(raw.locations) ? raw.locations : [];
-  const path = string(object(locations[0])?.path);
-  const kind = string(raw.kind);
-  const action = kind === "execute" ? "run" : kind === "fetch" ? "fetch"
-    : kind === "move" ? "edit" : kind === "think" || kind === "other" ? "other"
-    : kind && ["read", "edit", "delete", "search"].includes(kind) ? ToolActionSchema.parse(kind) : undefined;
-  const status = string(raw.status);
-  const observation: ToolObservation = {
-    title,
-    name: name ? { value: name, authority: kind ? "explicit" : "fallback" } : undefined,
-    action: { value: action ?? inferAction(name), authority: action ? "explicit" : "inferred" },
-    target: target !== undefined ? { value: target, authority: "explicit" }
-      : path ? { value: path, authority: "explicit" }
-      : title !== undefined ? { value: title, authority: "inferred" } : undefined,
-    input: input !== undefined ? JSON.stringify(input, null, 2) : undefined,
-    status: status === undefined ? undefined : status === "failed" ? "failed"
-      : status === "completed" ? "completed" : "in-progress",
-  };
-  if (detail) observation.detail = { value: detail, mode: "snapshot" };
-  const blocks = Array.isArray(raw.content) ? raw.content : [];
-  const changes: ToolFileChange[] = [];
-  for (const b of blocks) {
-    const block = object(b);
-    if (block?.type !== "diff") continue;
-    const file = string(block.path);
-    const before = string(block.oldText);
-    const after = string(block.newText);
-    if (file && before !== undefined && after !== undefined) changes.push({ path: file,
-      kind: before === "" ? "created" : after === "" ? "removed" : "edited",
-      diff: beforeAfterDiff(before, after), applied: status === "completed" });
-  }
-  const filePath = string(object(input)?.file_path) ?? string(object(input)?.path) ?? string(object(input)?.TargetFile) ?? path;
-  const mutation = action ?? inferAction(name);
-  if (!changes.length && filePath && ["edit", "write", "delete"].includes(mutation)) {
-    changes.push({ path: filePath, kind: mutation === "delete" ? "removed" : "edited", applied: status === "completed" });
-  }
-  if (changes.length) observation.fileChanges = changes;
-  return observation;
 }
 
 /** Before/after content has known line origins: diff it into numbered hunks
