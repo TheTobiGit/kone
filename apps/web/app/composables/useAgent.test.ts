@@ -808,6 +808,29 @@ describe("useAgent: a session that ends on its own", () => {
     expect(session.sessionState.value).toBe("stopped");
   });
 
+  test("an exit from another provider leaves the live session up", () => {
+    const { session } = harness();
+    session.session.value = live(session.threadId.value);
+    session.sessionState.value = "ready";
+
+    // A Claude session this thread was handed off from, ending late.
+    session.reduce({ ...exited(session.threadId.value), provider: "claudeAgent", source: "claude.sdk.lifecycle" });
+
+    expect(session.session.value).not.toBeNull();
+    expect(session.unstarted.value).toBe(false);
+    expect(session.sessionState.value).toBe("ready");
+  });
+
+  test("an exit naming a conversation the session left leaves the live session up", () => {
+    const { session } = harness();
+    session.session.value = { ...live(session.threadId.value), conversationId: "conv-now" };
+
+    session.reduce({ ...exited(session.threadId.value), refs: { conversationId: "conv-before" } });
+
+    expect(session.session.value).not.toBeNull();
+    expect(session.unstarted.value).toBe(false);
+  });
+
   test("a disposed thread is not re-armed by its own stop", async () => {
     const { session } = harness();
     await session.dispose();
