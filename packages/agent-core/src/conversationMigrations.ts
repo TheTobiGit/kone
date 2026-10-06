@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1257,6 +1257,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
+  { id: 29, name: "ToolCallMetadata", run: (db) => addColumn(db, "items", "tool_metadata_json", "TEXT CHECK (tool_metadata_json IS NULL OR json_valid(tool_metadata_json))") },
 ];
 
 export interface MigrationOptions {

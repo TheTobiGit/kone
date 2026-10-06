@@ -13,7 +13,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Database } from "bun:sqlite";
 import type { JsonRpcRequestHandler } from "../jsonRpc.js";
-import type { JsonValue } from "../lib-jsonValue.js";
+import { object } from "./toolCalls.js";
+import type { JsonObject, JsonValue } from "../lib-jsonValue.js";
 import type { SubagentRunSnapshot } from "../types.js";
 
 // Two hazards to dodge. First, the import chain reaches AttachmentStore →
@@ -271,7 +272,7 @@ function wiredCodexSession(conversationId: string) {
     turnId?: string;
     requestId?: string;
     subagentToolUseId?: string;
-    item?: { itemId: string; kind: string; name?: string; text: string; detail?: string; status: string };
+    item?: import("../types.js").RuntimeItem;
     subagent?: SubagentRunSnapshot;
   }> = [];
   const adapter = new helpers.CodexAdapter((event) => {
@@ -404,9 +405,10 @@ describe("CodexAdapter nests spawned subagents under the parent turn", () => {
   const CHILD = "child-conv";
   const PARENT_TURN = "parent-turn";
   const CHILD_TURN = "child-turn";
-  const SPAWN = "call_spawn";
+  const NATIVE_SPAWN = "call_spawn";
+  const SPAWN = `${NATIVE_SPAWN}:child:${CHILD}`;
 
-  function spawnActivity(kind: "started" | "interacted" | "interrupted" | "completed", id = SPAWN) {
+  function spawnActivity(kind: "started" | "interacted" | "interrupted" | "completed", id = NATIVE_SPAWN) {
     return {
       threadId: PARENT,
       turnId: PARENT_TURN,
@@ -492,7 +494,7 @@ describe("CodexAdapter nests spawned subagents under the parent turn", () => {
       turnId: PARENT_TURN,
       item: {
         type: "collabAgentToolCall",
-        id: SPAWN,
+        id: NATIVE_SPAWN,
         tool: "spawnAgent",
         status: "inProgress",
         senderThreadId: PARENT,
@@ -586,7 +588,7 @@ describe("CodexAdapter blocking Kone question history", () => {
     });
   });
 
-  test("another server's MCP call stays a generic mcp step", () => {
+  test("another server's MCP call retains server and tool identity", () => {
     const { events, notify } = wiredCodexSession("foreign-mcp-thread");
     notify("turn/started", { threadId: "foreign-mcp-thread", turn: { id: "foreign-turn" } });
     const item = { type: "mcpToolCall", id: "foreign-call", server: "github", tool: "ask_question",
@@ -596,9 +598,68 @@ describe("CodexAdapter blocking Kone question history", () => {
       ...item, status: "completed", result: { output: "fetched" },
     } });
     const started = events.find((e) => e.type === "item.started");
-    expect(started?.item).toMatchObject({ name: "mcp", text: "github: ask_question" });
+    expect(started?.item).toMatchObject({ name: "mcp__github__ask_question", text: "github: ask_question" });
     expect(started?.item?.detail).toBeUndefined();
     const completed = events.find((e) => e.type === "item.completed");
-    expect(completed?.item).toMatchObject({ name: "mcp", text: "github: ask_question", detail: "fetched" });
+    expect(completed?.item).toMatchObject({ name: "mcp__github__ask_question", text: "github: ask_question", detail: "fetched" });
+  });
+});
+
+
+describe("captured Codex tool calls", () => {
+  const captures = readFileSync(path.join(import.meta.dir, "fixtures/toolCalls/codex-app-server.jsonl"), "utf8")
+    .trim().split("\n").map((line) => {
+      // SAFETY: repository-owned capture fixtures have label/frame envelopes; item fields are probed below.
+      return JSON.parse(line) as { label: string; frame: { method?: string; params?: JsonObject } };
+    });
+
+  test("real completions surface output, structured files, web targets and MCP results", () => {
+    for (const capture of captures.filter((c) => c.frame.method === "item/completed")) {
+      const p = capture.frame.params;
+      const raw = object(p?.item);
+      if (!raw || !["commandExecution", "fileChange", "mcpToolCall", "webSearch"].includes(String(raw.type))) continue;
+      const { events, notify } = wiredCodexSession(String(p!.threadId));
+      notify("turn/started", { threadId: p!.threadId, turn: { id: p!.turnId } });
+      notify("item/completed", p);
+      const item = events.find((e) => e.type === "item.completed")?.item;
+      expect(item).toBeDefined();
+      if (raw.type === "commandExecution") {
+        expect(item?.detail).toBe(raw.aggregatedOutput);
+        expect(item?.status).toBe(raw.status);
+        expect(item?.tool?.action).toBe("run");
+      } else if (raw.type === "fileChange") {
+        expect(item?.fileChanges?.length).toBe(Array.isArray(raw.changes) ? raw.changes.length : 0);
+        expect(item?.fileChanges?.every((c) => c.applied)).toBe(true);
+        expect(item?.detail).toContain("@@");
+      } else if (raw.type === "mcpToolCall") {
+        expect(item?.tool?.transport).toEqual({ server: raw.server, tool: raw.tool });
+        expect(JSON.parse(item?.detail ?? "")).toEqual(raw.result);
+      } else {
+        expect(item?.tool?.target).toBe(raw.query);
+        expect(item?.detail).toBeDefined();
+      }
+    }
+  });
+
+  test("a final snapshot replaces partial stdout, and a late delta cannot reopen it", () => {
+    const { events, notify } = wiredCodexSession("snapshot-thread");
+    notify("turn/started", { threadId: "snapshot-thread", turn: { id: "snapshot-turn" } });
+    const item = { id: "command", type: "commandExecution", command: "echo hello" };
+    notify("item/started", { threadId: "snapshot-thread", turnId: "snapshot-turn", item });
+    notify("item/commandExecution/outputDelta", { threadId: "snapshot-thread", turnId: "snapshot-turn", itemId: "command", delta: "hel" });
+    notify("item/completed", { threadId: "snapshot-thread", turnId: "snapshot-turn", item: { ...item, status: "completed", aggregatedOutput: "hello\n" } });
+    notify("item/commandExecution/outputDelta", { threadId: "snapshot-thread", turnId: "snapshot-turn", itemId: "command", delta: "lo\n" });
+    expect(events.filter((e) => e.item?.itemId === "command").at(-1)?.item).toMatchObject({ status: "completed", detail: "hello\n" });
+  });
+
+  test("one spawn with multiple receivers creates distinct child rows", () => {
+    const { events, notify } = wiredCodexSession("fanout-thread");
+    notify("turn/started", { threadId: "fanout-thread", turn: { id: "fanout-turn" } });
+    const raw = { id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", receiverThreadIds: ["a", "b"] };
+    notify("item/started", { threadId: "fanout-thread", turnId: "fanout-turn", item: raw });
+    notify("item/completed", { threadId: "fanout-thread", turnId: "fanout-turn", item: { ...raw, status: "completed" } });
+    expect(events.filter((e) => e.type === "subagent.started").map((e) => e.subagent?.toolUseId)).toEqual(["spawn:child:a", "spawn:child:b"]);
+    expect(events.find((e) => e.type === "item.completed" && e.item?.itemId === "spawn")?.item?.status).toBe("completed");
+    expect(events.filter((e) => e.type === "subagent.completed")).toHaveLength(0);
   });
 });

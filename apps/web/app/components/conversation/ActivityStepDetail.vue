@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import type { ToolFileChange } from "@kone/protocol/tool-call";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   CommandLineIcon,
@@ -16,6 +17,8 @@ import ToolDiffView from "~/components/conversation/ToolDiffView.vue";
 
 const props = defineProps<{
   detail: string;
+  toolInput?: string;
+  fileChanges?: ToolFileChange[];
   toolName?: string;
   toolText?: string;
 }>();
@@ -74,8 +77,8 @@ type ParsedPayload =
   | { kind: "raw"; content: string };
 
 const payload = computed<ParsedPayload>(() => {
-  const raw = props.detail.trim();
-  if (!raw) return { kind: "raw", content: "" };
+  const raw = props.detail;
+  if (!raw.trim()) return { kind: "raw", content: raw };
 
   if (
     raw.startsWith("diff --git") ||
@@ -210,7 +213,17 @@ async function onCopy(): Promise<void> {
 <template>
   <div class="sdetail">
     <!-- Header bar with category and copy button -->
-    <div class="sdetail__head">
+    <details v-if="toolInput" class="sdetail__input">
+      <summary>Input</summary>
+      <CodeBlock :code="toolInput" info="json" />
+    </details>
+    <div v-if="fileChanges?.some((f) => f.diff)" class="sdetail__files">
+      <div v-for="change in fileChanges.filter((f) => f.diff)" :key="change.path">
+        <FileChip :path="change.path" />
+        <ToolDiffView :file="change.path" :raw-diff="change.diff" />
+      </div>
+    </div>
+    <div v-if="!fileChanges?.some((f) => f.diff)" class="sdetail__head">
       <div class="sdetail__meta">
         <template v-if="payload.kind === 'command'">
           <HugeiconsIcon :icon="CommandLineIcon" :size="13" :stroke-width="2" />
@@ -259,7 +272,7 @@ async function onCopy(): Promise<void> {
     </div>
 
     <!-- Body contents -->
-    <div class="sdetail__body">
+    <div v-if="!fileChanges?.some((f) => f.diff)" class="sdetail__body">
       <template v-if="payload.kind === 'command'">
         <CodeBlock :code="payload.command" info="bash" />
       </template>

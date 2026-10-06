@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { diffLines } from "diff";
+import { parseUnifiedDiff, type DiffLine } from "@kone/protocol/unified-diff";
 
 const props = defineProps<{
   file?: string;
@@ -9,13 +10,6 @@ const props = defineProps<{
   rawDiff?: string;
   codeContent?: string;
 }>();
-
-type DiffLine = {
-  kind: "add" | "del" | "context" | "hunk";
-  text: string;
-  oldNo?: number;
-  newNo?: number;
-};
 
 const lines = computed<DiffLine[]>(() => {
   if (props.targetContent !== undefined && props.replacementContent !== undefined) {
@@ -40,32 +34,7 @@ const lines = computed<DiffLine[]>(() => {
   }
 
   if (props.rawDiff) {
-    const rawLines = props.rawDiff.split("\n");
-    const out: DiffLine[] = [];
-    let oldNo = 1;
-    let newNo = 1;
-    for (const line of rawLines) {
-      if (
-        line.startsWith("diff --git") ||
-        line.startsWith("index ") ||
-        line.startsWith("---") ||
-        line.startsWith("+++")
-      ) {
-        continue;
-      }
-      if (line.startsWith("@@")) {
-        out.push({ kind: "hunk", text: line });
-      } else if (line.startsWith("+")) {
-        out.push({ kind: "add", text: line.slice(1), newNo: newNo++ });
-      } else if (line.startsWith("-")) {
-        out.push({ kind: "del", text: line.slice(1), oldNo: oldNo++ });
-      } else if (line.startsWith(" ")) {
-        out.push({ kind: "context", text: line.slice(1), oldNo: oldNo++, newNo: newNo++ });
-      } else {
-        out.push({ kind: "context", text: line, oldNo: oldNo++, newNo: newNo++ });
-      }
-    }
-    return out;
+    return parseUnifiedDiff(props.rawDiff);
   }
 
   if (props.codeContent) {

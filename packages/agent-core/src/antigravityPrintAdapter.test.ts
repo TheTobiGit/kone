@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import type { JsonObject } from "./lib-jsonValue.js";
 import type { RuntimeEvent } from "./types.js";
 
 class DatabaseSyncShim {
@@ -643,4 +644,42 @@ describe("print-mode questions use the live gateway", () => {
       rmSync(runDir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+test("captured Antigravity hooks recover output and confirmed diffs from the transcript", async () => {
+  const runDir = mkdtempSync(path.join(tmpdir(), "kone-agy-fixtures-"));
+  const fixtureDir = path.join(import.meta.dir, "adapters/fixtures/toolCalls");
+  const transcriptPath = path.join(runDir, "transcript.jsonl");
+  writeFileSync(transcriptPath, readFileSync(path.join(fixtureDir, "antigravity-transcript.jsonl"), "utf8"));
+  const hooks = readFileSync(path.join(fixtureDir, "antigravity-post-tool-hook.jsonl"), "utf8").trim().split("\n")
+     .map((line) => {
+      // SAFETY: these repository-owned raw hook fixtures carry the recorded conversation, step and tool call.
+      return JSON.parse(line) as { conversationId: string; stepIdx: number; toolCall: { name: string; args: JsonObject } };
+    });
+  const conversationId = hooks[0]!.conversationId;
+  const steps = [`pre-invocation\t${JSON.stringify({ conversationId, transcriptPath })}`];
+  for (const hook of hooks) {
+    const payload = { conversationId, transcriptPath, stepIdx: hook.stepIdx, toolCall: hook.toolCall };
+    steps.push(`pre-tool\t${JSON.stringify(payload)}`, `post-tool\t${JSON.stringify(payload)}`);
+  }
+  steps.push(`stop\t${JSON.stringify({ conversationId, fullyIdle: true })}`);
+  const scriptPath = writeScriptedCli(runDir, "fixture-replay.sh", steps);
+  const events: RuntimeEvent[] = [];
+  const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, { homeDir: TEST_HOME, resolveBinary: () => scriptPath });
+  try {
+    await adapter.startSession({ threadId: "t-fixture", provider: "antigravity", cwd: runDir, mode: "full-access" });
+    await adapter.sendTurn({ threadId: "t-fixture", input: "replay" });
+    await waitForEvent(events, (event) => event.type === "turn.completed");
+    const items = new Map(events.flatMap((event) => "item" in event ? [[event.item.itemId, event.item] as const] : []));
+    const commands = [...items.values()].filter((i) => i.name === "run_command");
+    expect(commands).toHaveLength(2);
+    expect(commands[0]?.detail).toContain("agy-capture-ok");
+    expect(commands[1]?.status).toBe("failed");
+    const edit = [...items.values()].find((i) => i.name === "replace_file_content");
+    expect(edit?.fileChanges?.[0]).toMatchObject({ path: "/tmp/kone-capture/agy-work/notes.txt", applied: true });
+    expect(edit?.fileChanges?.[0]?.diff).toContain("-beta\n+BETA");
+  } finally {
+    await adapter.stopSession("t-fixture");
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });

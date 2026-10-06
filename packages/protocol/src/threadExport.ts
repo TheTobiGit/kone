@@ -1,3 +1,4 @@
+import { ToolCallSchema, ToolFileChangeSchema, type ToolCall, type ToolFileChange } from "./toolCall.js";
 // Thread export contracts shared between the desktop main process (which reads
 // the store and writes the files) and the web renderer (which gates the export
 // affordance and interprets the outcome). Both sides import this module, so the
@@ -113,6 +114,8 @@ export type ThreadExportItem = {
   text: string;
   name?: string;
   detail?: string;
+  tool?: ToolCall;
+  fileChanges?: ToolFileChange[];
   tasks?: ThreadExportPlanTask[];
   subagent?: ThreadExportSubagentRun;
 };
@@ -147,6 +150,8 @@ const ExportItemSchema: z.ZodType<ThreadExportItem> = z.object({
   text: z.string(),
   name: z.string().optional(),
   detail: z.string().optional(),
+  tool: ToolCallSchema.optional(),
+  fileChanges: z.array(ToolFileChangeSchema).optional(),
   tasks: z.array(ExportPlanTaskSchema).optional(),
   subagent: z.lazy((): z.ZodType<ThreadExportSubagentRun> => ExportSubagentRunSchema).optional(),
 });

@@ -48,7 +48,7 @@ const everOpened = ref(false);
 const isThinking = computed(() => props.entry.type === "thinking");
 const tool = computed(() => (props.entry.type === "tool" ? props.entry.item : null));
 
-const meta = computed(() => (tool.value ? toolMeta(tool.value.name) : null));
+const meta = computed(() => (tool.value ? toolMeta(tool.value.name, tool.value.tool) : null));
 const status = computed(() => (tool.value ? toolStatus(tool.value) : "done"));
 
 // ── appearance rows ─────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ const hasThinkingBody = computed(() => isThinking.value && !!props.thinkingText?
 // An appearance call's own body replaces its result text rather than joining it:
 // the detail IS the record the palette was read from, so showing both would
 // print the data under the picture of itself.
-const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value);
+const hasToolBody = computed(() => !!(tool.value?.detail || tool.value?.tool?.input || tool.value?.fileChanges?.length) && !hasThemeBody.value);
 const clickable = computed(() => hasThinkingBody.value || hasToolBody.value || hasThemeBody.value);
 
 const hue = computed(() => (isThinking.value ? thinkingOrbHue() : meta.value?.hue));
@@ -160,6 +160,10 @@ function toggle(): void {
         </template>
       </span>
 
+      <span v-if="tool?.tool?.transport" class="astep__transport">
+        {{ tool.tool.transport.server }} / {{ tool.tool.transport.tool }}
+      </span>
+
       <ThemeSwatch
         v-if="rowColors"
         class="astep__swatch"
@@ -193,7 +197,9 @@ function toggle(): void {
           />
           <ActivityStepDetail
             v-else-if="hasToolBody"
-            :detail="tool!.detail!"
+            :detail="tool!.detail ?? ''"
+            :tool-input="tool!.tool?.input"
+            :file-changes="tool!.fileChanges"
             :tool-name="tool!.name"
             :tool-text="tool!.text"
           />
@@ -204,6 +210,15 @@ function toggle(): void {
 </template>
 
 <style scoped>
+.astep__transport {
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
 .astep {
   position: relative;
 }

@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { codexFileChanges, describeTool, object, string as jsonString } from "./toolCalls.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -118,6 +120,8 @@ const CODEX_INITIALIZE_PARAMS = {
 } as const;
 
 type CodexItemBuffer = {
+  toolState?: ToolCallAccumulator;
+  status?: RuntimeItemStatus;
   itemId: string;
   kind: RuntimeItemKind;
   name?: string;
@@ -573,10 +577,9 @@ function toRuntimeItemKind(rawType: CodexJsonValue | null | undefined): { kind: 
 }
 
 /** How one Codex item reads at a point in its lifecycle: its kind and tool
- *  identity, the one-line target, and the expandable body. `record` marks a
- *  body that is the call's whole record, which a completion keeps over
- *  anything streamed before it. */
-type CodexItemView = { kind: RuntimeItemKind; name?: string; text: string; detail: string; record?: true };
+ *  identity, the one-line target, and the expandable body. Completion bodies
+ *  are authoritative snapshots when present. */
+type CodexItemView = { kind: RuntimeItemKind; name?: string; text: string; detail?: string };
 
 /** The servers kone's gateway reaches Codex as. */
 const KONE_MCP_SERVERS = new Set(["kone", "kone_extra"]);
@@ -599,12 +602,12 @@ function codexItemView(
       if (raw.error) settled.error = raw.error;
       record = settled;
     }
-    return { kind: "tool_call", name: koneTool, text: "", detail: JSON.stringify(record, null, 2), record: true };
+    return { kind: "tool_call", name: koneTool, text: "", detail: JSON.stringify(record, null, 2) };
   }
   const mapped = toRuntimeItemKind(raw.type);
   if (!mapped) return null;
   if (lifecycle === "completed") {
-    return { kind: mapped.kind, name: mapped.defaultName, text: itemDetail(raw) ?? "", detail: itemDetailBody(raw) ?? "" };
+    return { kind: mapped.kind, name: mapped.defaultName, text: itemDetail(raw) ?? "", detail: itemDetailBody(raw) };
   }
   const isTextKind =
     mapped.kind === "assistant_text" || mapped.kind === "reasoning_text" || mapped.kind === "plan_text";
@@ -684,7 +687,7 @@ export function formatCodexThreadResumeError(cause: unknown, threadId: string): 
 
 /** The richer body for a tool call's expandable `detail` — a diff, a before/
  *  after text pair, stdout/stderr, or a changed-file list. Only consulted on
- *  completion, when a delta stream hasn't already accumulated one. */
+ *  completion; a supplied body replaces the accumulated delta stream. */
 function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
   if (!item) return undefined;
   const nestedResult = asRecord(item.result);
@@ -704,8 +707,10 @@ function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
   const stderr = item.stderr && !(item.stderr instanceof Object) ? String(item.stderr) : undefined;
   if (stdout || stderr) return [stdout, stderr].filter((v): v is string => Boolean(v)).join("\n");
 
+  const aggregatedOutput = jsonString(item.aggregatedOutput);
+  if (aggregatedOutput !== undefined) return aggregatedOutput;
   const output = stringIn([item.output, nestedResult?.output]);
-  if (output && output.trim().length > 0) return output;
+  if (output !== undefined) return output;
 
   const fileList = Array.isArray(item.files) ? item.files : Array.isArray(item.paths) ? item.paths : undefined;
   if (fileList) {
@@ -716,6 +721,10 @@ function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
     if (joined.length > 0) return joined;
   }
 
+  if (nestedResult) return JSON.stringify(nestedResult, null, 2);
+  if (item.results !== undefined) return JSON.stringify(item.results, null, 2);
+  const changes = codexFileChanges(item);
+  if (changes?.length) return changes.map((f) => `--- ${f.oldPath ?? f.path}\n+++ ${f.path}\n${f.diff ?? ""}`).join("\n");
   return undefined;
 }
 
@@ -1727,7 +1736,9 @@ export class CodexAdapter implements ProviderAdapter {
 
     if (lifecycle === "started") {
       if (!view) return;
-      const buffer: CodexItemBuffer = { itemId, kind: view.kind, name: view.name, text: view.text, detail: view.detail };
+      const previous = session.items.get(itemId);
+      const buffer: CodexItemBuffer = { itemId, kind: view.kind, name: view.name, text: view.text, detail: view.detail ?? "", toolState: previous?.toolState, status: previous?.status };
+      this.observeTool(buffer, raw, "in-progress");
       session.items.set(itemId, buffer);
       this.emitItem(session, "item.started", buffer, "in-progress", turnId, run);
       if (run && buffer.kind === "tool_call") {
@@ -1741,15 +1752,17 @@ export class CodexAdapter implements ProviderAdapter {
     const existing = session.items.get(itemId);
     const kind = existing?.kind ?? view?.kind;
     if (!kind) return;
-    // What streamed outranks the completion's scavenged text, unless the
-    // completion carries the call's whole record.
+    // Narrative keeps its accumulated text; tool fields use the completion
+    // snapshot when supplied, preserving earlier fields when omitted.
     const buffer: CodexItemBuffer = {
       itemId,
       kind,
-      name: existing?.name ?? view?.name,
-      text: existing?.text || view?.text || "",
-      detail: view?.record ? view.detail : existing?.detail || view?.detail || "",
+      name: view?.name ?? existing?.name,
+      text: kind === "tool_call" ? view?.text || existing?.text || "" : existing?.text || view?.text || "",
+      detail: view?.detail ?? existing?.detail ?? "",
+      toolState: existing?.toolState,
     };
+    this.observeTool(buffer, raw, mapCodexItemStatus(readString(raw, "status"), Boolean(asRecord(raw.error))));
     session.items.set(itemId, buffer);
     this.emitItem(
       session,
@@ -1792,8 +1805,8 @@ export class CodexAdapter implements ProviderAdapter {
    *  `receiverThreadIds`, with the brief and model it gave them. It opens the
    *  same runs a `subAgentActivity` start does; whichever arrives second only
    *  fills in what the first didn't know. The call itself returns as soon as the
-   *  child exists, but it stays open until the child settles, so the step
-   *  reads as running for as long as the child does. */
+   *  child exists. Each receiver has its own synthetic row tracking the child
+   *  until it settles; the native spawn call completes on acknowledgement. */
   private handleSpawnCall(
     session: CodexSession,
     raw: CodexJsonObject,
@@ -1801,6 +1814,12 @@ export class CodexAdapter implements ProviderAdapter {
     turnId: string,
     lifecycle: "started" | "completed",
   ): void {
+    let call = session.items.get(itemId);
+    if (!call) {
+      call = { itemId, kind: "tool_call", name: "spawn_agent", text: readString(raw, "prompt") ?? "", detail: "" };
+      session.items.set(itemId, call);
+      this.emitItem(session, "item.started", call, "in-progress", turnId);
+    }
     const receivers = Array.isArray(raw.receiverThreadIds)
       ? raw.receiverThreadIds.filter((id): id is string => Boolean(id) && !(id instanceof Object)).map(String)
       : [];
@@ -1814,15 +1833,11 @@ export class CodexAdapter implements ProviderAdapter {
     }
     if (lifecycle !== "completed") return;
     const failed = mapCodexItemStatus(readString(raw, "status"), Boolean(asRecord(raw.error))) === "failed";
-    const runs = [...session.subagentRuns.values()].filter((run) => run.snapshot.toolUseId === itemId);
+    const runs = [...session.subagentRuns.values()].filter((run) => run.snapshot.toolUseId.startsWith(`${itemId}:child:`));
     if (failed) {
       for (const run of runs) this.settleSubagentRun(session, run, "failed");
     }
-    // A spawn that named no child has no run to close the call later.
-    if (runs.length === 0) {
-      const buffer = session.items.get(itemId);
-      if (buffer) this.emitItem(session, "item.completed", buffer, failed ? "failed" : "completed", turnId);
-    }
+    this.emitItem(session, "item.completed", call, failed ? "failed" : "completed", turnId);
   }
 
   /** Open (or fill in) the run for one spawned child. Opening emits the spawn
@@ -1835,6 +1850,8 @@ export class CodexAdapter implements ProviderAdapter {
     turnId: string,
     spawn: { agentPath?: string; prompt?: string; model?: string; effort?: string },
   ): void {
+    const nativeCallId = toolUseId;
+    toolUseId = `${nativeCallId}:child:${childThreadId}`;
     const description = subagentLabel(spawn.agentPath);
     const existing = session.subagentRuns.get(childThreadId);
     if (existing) {
@@ -1863,6 +1880,9 @@ export class CodexAdapter implements ProviderAdapter {
     let buffer = session.items.get(toolUseId);
     if (!buffer) {
       buffer = { itemId: toolUseId, kind: "tool_call", name: "agent", text: description ?? "", detail: "" };
+      buffer.toolState = new ToolCallAccumulator();
+      buffer.toolState.observe({ action: { value: "agent", authority: "explicit" }, name: { value: "agent", authority: "explicit" } });
+      buffer.toolState.tool.nativeCallId = nativeCallId;
       session.items.set(toolUseId, buffer);
       this.emitItem(session, "item.started", buffer, "in-progress", turnId);
     }
@@ -1911,6 +1931,35 @@ export class CodexAdapter implements ProviderAdapter {
     this.emit({ ...this.base(session), type, turnId: run.turnId, subagent: { ...run.snapshot } });
   }
 
+  private observeTool(buffer: CodexItemBuffer, raw: CodexJsonObject, status: RuntimeItemStatus): void {
+    if (buffer.kind !== "tool_call") return;
+    const state = buffer.toolState ??= new ToolCallAccumulator();
+    const type = normalizeItemType(raw.type);
+    const nativeTool = readString(raw, "tool");
+    const server = readString(raw, "server");
+    const name = server && nativeTool ? koneMcpToolName(raw) ?? `mcp__${server}__${nativeTool}` : nativeTool ?? buffer.name;
+    const info = describeTool(name, raw.arguments);
+    const changes = codexFileChanges(raw);
+    const action = object(raw.action);
+    const target = changes?.map((c) => c.path).join(", ")
+      ?? readString(raw, "command") ?? (readString(raw, "query") || jsonString(action?.url)) ?? info.target;
+    const semantic = type === "command execution" ? "run" : type === "file change" ? "edit"
+      : type === "web search" ? action?.type === "openPage" ? "fetch" : "web-search" : info.action;
+    state.observe({
+      name: name ? { value: name, authority: nativeTool ? "explicit" : "inferred" } : undefined,
+      action: { value: semantic, authority: type === "mcp tool call" ? "inferred" : "explicit" },
+      target: target ? { value: target, authority: "explicit" } : buffer.text ? { value: buffer.text, authority: "inferred" } : undefined,
+      transport: server && nativeTool ? { server, tool: nativeTool } : undefined,
+      input: info.input,
+      title: readString(raw, "title"),
+      detail: (buffer.detail || jsonString(raw.aggregatedOutput) !== undefined) && (state.status === "in-progress" || status !== "in-progress")
+        ? { value: buffer.detail, mode: "snapshot" } : undefined,
+      status,
+      fileChanges: changes,
+    });
+    Object.assign(buffer, state.snapshot());
+  }
+
   private handleDelta(session: CodexSession, params: CodexJsonValue | null | undefined, run?: CodexSubagentRun): void {
     const payload = asRecord(params);
     if (!payload) return;
@@ -1924,7 +1973,11 @@ export class CodexAdapter implements ProviderAdapter {
     // deltas (command stdout, file-change progress) accumulate in `detail`
     // instead so they never clobber the short inline summary.
     if (buffer.kind === "tool_call") {
-      buffer.detail += delta;
+      if (buffer.status && buffer.status !== "in-progress") return;
+      if (buffer.toolState) {
+        buffer.toolState.observe({ detail: { value: delta, mode: "delta" } });
+        buffer.detail = buffer.toolState.detail;
+      } else buffer.detail += delta;
     } else {
       buffer.text += delta;
     }
@@ -1949,6 +2002,13 @@ export class CodexAdapter implements ProviderAdapter {
     run?: CodexSubagentRun,
   ): void {
     if (!turnId) return;
+    if (buffer.toolState) {
+      buffer.toolState.observe({ status, provisional: true });
+      status = buffer.toolState.status;
+    } else if (buffer.status && buffer.status !== "in-progress" && status === "in-progress") {
+      status = buffer.status;
+    }
+    buffer.status = status;
     const item: RuntimeItem = {
       itemId: buffer.itemId,
       kind: buffer.kind,
@@ -1958,6 +2018,11 @@ export class CodexAdapter implements ProviderAdapter {
     };
     if (buffer.tasks?.length) item.tasks = buffer.tasks;
     if (buffer.detail.length > 0) item.detail = buffer.detail;
+    if (buffer.toolState) {
+      const snapshot = buffer.toolState.snapshot();
+      item.tool = snapshot.tool;
+      item.fileChanges = snapshot.fileChanges;
+    }
     const event: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = {
       ...this.base(session),
       type,

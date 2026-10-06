@@ -1,3 +1,4 @@
+import { beforeAfterDiff, number as jsonNumber } from "./toolCalls.js";
 import type { CanUseTool, HookInput, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ApprovalRequest,
@@ -186,7 +187,13 @@ export function fileEditDiffBody(structuredResult: ClaudeWirePayload): string | 
   if (Array.isArray(patch) && patch.length > 0) {
     const lines: string[] = [];
     for (const hunk of patch) {
-      const hunkLines = asRecord(hunk)?.lines;
+      const record = asRecord(hunk);
+      const hunkLines = record?.lines;
+      const oldStart = jsonNumber(record?.oldStart);
+      const newStart = jsonNumber(record?.newStart);
+      if (oldStart !== undefined && newStart !== undefined) {
+        lines.push(`@@ -${oldStart},${jsonNumber(record?.oldLines) ?? 0} +${newStart},${jsonNumber(record?.newLines) ?? 0} @@`);
+      }
       if (!Array.isArray(hunkLines)) continue;
       for (const line of hunkLines) {
         if (line && !(line instanceof Object)) lines.push(String(line));
@@ -201,11 +208,7 @@ export function fileEditDiffBody(structuredResult: ClaudeWirePayload): string | 
     !(record.content instanceof Object) &&
     String(record.content).length > 0
   ) {
-    return String(record.content)
-      .replace(/\n$/, "")
-      .split("\n")
-      .map((line) => `+${line}`)
-      .join("\n");
+    return beforeAfterDiff("", String(record.content));
   }
   return undefined;
 }

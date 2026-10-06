@@ -1,10 +1,8 @@
-// Derive the set of files the agent has touched this thread — the model behind
-// the corner "Changes" dock. It reads the same `tool_call` items the thread
-// timeline renders and keeps one row per repo-relative path, tagged by what the
-// last touch did to it (created / edited / removed) and carrying the +added /
-// −removed line counts parsed from the tool's diff body. Mirrors the write /
-// edit / delete tool families ConversationThread paints; read, search, run,
-// web, and code-intel tools don't mutate the tree, so they're absent here.
+import { diffStats } from "@kone/protocol/unified-diff";
+import type { RuntimeItem } from "~/types/desktop";
+// The Changes dock folds confirmed per-file records across the thread,
+// including subagent transcripts. Historical items retain a conservative
+// single-file fallback; diff statistics only come from numbered hunks.
 
 import type { ThreadBlock } from "~/composables/useAgent";
 
@@ -96,17 +94,7 @@ function splitPath(path: string): Pick<ChangedFile, "name" | "dir"> {
 // Count added/removed lines from a tool's diff body — unified-diff `+`/`-`
 // lines, ignoring the `+++`/`---` file headers. Bodies that aren't diffs
 // (command stdout) simply contribute nothing meaningful, which is fine.
-function countDiff(detail: string | undefined): Pick<ChangedFile, "added" | "removed"> {
-  if (!detail) return { added: 0, removed: 0 };
-  let added = 0;
-  let removed = 0;
-  for (const line of detail.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) added += 1;
-    else if (line.startsWith("-")) removed += 1;
-  }
-  return { added, removed };
-}
+const countDiff = diffStats;
 
 // Fold a fresh touch onto a file's running kind. Removal is the terminal fate;
 // a created file stays "created" through later edits (it's still new to the
@@ -127,33 +115,46 @@ export function deriveChangedFiles(blocks: ThreadBlock[]): ChangedFilesState {
   const byPath = new Map<string, ChangedFile>();
   let anyLive = false;
 
-  for (const b of blocks) {
-    if (b.role !== "assistant") continue;
-    for (const it of b.items) {
-      if (it.kind !== "tool_call") continue;
+  function touch(path: string, kind: ChangeKind, detail: string | undefined, live: boolean): void {
+    if (!path) return;
+    anyLive ||= live;
+    const { added, removed } = countDiff(detail);
+    const existing = byPath.get(path);
+    if (existing) {
+      existing.kind = mergeKind(existing.kind, kind);
+      existing.added += added;
+      existing.removed += removed;
+      existing.streaming ||= live;
+    } else {
+      order.push(path);
+      byPath.set(path, { id: path, path, ...splitPath(path), kind, added, removed, streaming: live });
+    }
+  }
+
+  function visit(items: RuntimeItem[]): void {
+    for (const it of items) {
+      if (it.subagent) visit(it.subagent.items);
+      if (it.kind !== "tool_call" || it.status === "failed") continue;
+      if (it.fileChanges !== undefined) {
+        for (const change of it.fileChanges) {
+          if (!change.applied) continue;
+          if (change.kind === "renamed" && change.oldPath) touch(change.oldPath, "removed", undefined, false);
+          touch(change.path, change.kind === "renamed" ? "created" : change.kind, change.diff, it.status === "in-progress");
+        }
+        continue;
+      }
+      // Historical rows lack structured file records. Only successful, single-path
+      // file calls qualify; display summaries and pending proposals aren't files.
+      if (it.status !== "completed" || it.tool !== undefined) continue;
       const baseKind = kindForTool(it.name);
       if (!baseKind) continue;
       const path = pathFromText(it.text, it.name);
-      if (!path) continue;
-      const live = it.status === "in-progress";
-      if (live) anyLive = true;
-      const { added, removed } = countDiff(it.detail);
-      // The diff body can override the tool's kind (a generic edit tool that
-      // actually added or deleted the file) — trust it when it speaks.
-      const kind = kindFromDiff(it.detail) ?? baseKind;
-
-      const existing = byPath.get(path);
-      if (existing) {
-        existing.kind = mergeKind(existing.kind, kind);
-        existing.added += added;
-        existing.removed += removed;
-        existing.streaming = live;
-      } else {
-        const { name, dir } = splitPath(path);
-        order.push(path);
-        byPath.set(path, { id: path, path, name, dir, kind, added, removed, streaming: live });
-      }
+      if (!path || /\s(?:\+\d+ more|·)|\n/.test(path)) continue;
+      touch(path, kindFromDiff(it.detail) ?? baseKind, it.detail, false);
     }
+  }
+  for (const block of blocks) {
+    if (block.role === "assistant") visit(block.items);
   }
 
   const files = order.map((p) => byPath.get(p)!);

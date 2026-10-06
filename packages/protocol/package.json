@@ -67,6 +67,14 @@
     "./steer-split": {
       "types": "./src/steerSplit.ts",
       "default": "./src/steerSplit.ts"
+    },
+    "./tool-call": {
+      "types": "./src/toolCall.ts",
+      "default": "./src/toolCall.ts"
+    },
+    "./unified-diff": {
+      "types": "./src/unifiedDiff.ts",
+      "default": "./src/unifiedDiff.ts"
     }
   },
   "dependencies": {

@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { acpObservation } from "./toolCalls.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 
@@ -26,8 +28,6 @@ import {
   clinePermissionCommand,
   clinePermissionToolKind,
   clineToolDetail,
-  clineToolStatus,
-  clineToolTarget,
   findOption,
   isAcpRecord,
   isClineAuthRequired,
@@ -202,6 +202,7 @@ const CLINE_TEARDOWN_GRACE_MS = 5_000;
 const JSON_RPC_INVALID_PARAMS = -32602;
 
 type ClineItemBuffer = {
+  toolState?: ToolCallAccumulator;
   itemId: string;
   kind: RuntimeItemKind;
   name?: string;
@@ -987,15 +988,16 @@ export class ClineAdapter implements ProviderAdapter {
     }
 
     const kind = readString(update, "kind");
-    if (kind) buffer.name = CLINE_TOOL_KIND_NAMES[kind] ?? "tool";
-    if (!buffer.name) buffer.name = "tool";
-    const target = clineToolTarget(update);
-    if (target) buffer.text = target;
-    const detail = clineToolDetail(update);
-    if (detail) buffer.detail = detail;
-
-    const status = clineToolStatus(readString(update, "status"));
-    if (isNew) this.emitItem(session, "item.started", buffer, status);
+    const name = kind ? CLINE_TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
+    const state = buffer.toolState ??= new ToolCallAccumulator();
+    state.observe(acpObservation(update, name, clineToolDetail(update)));
+    const explicitStatus = readString(update, "status");
+    if (explicitStatus === "completed" && state.fileChanges) {
+      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
+    }
+    Object.assign(buffer, state.snapshot());
+    const status = state.status;
+    if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
   }
@@ -1146,8 +1148,13 @@ export class ClineAdapter implements ProviderAdapter {
     turnId: string | undefined = session.activeTurnId,
   ): void {
     if (!turnId) return;
-    if (type === "item.completed") session.openItemIds.delete(buffer.itemId);
+    if (status !== "in-progress") session.openItemIds.delete(buffer.itemId);
     else session.openItemIds.add(buffer.itemId);
+    if (buffer.toolState) {
+      buffer.toolState.observe({ status, provisional: true });
+      status = buffer.toolState.status;
+      if (status !== "in-progress") session.openItemIds.delete(buffer.itemId);
+    }
     const item: RuntimeItem = {
       itemId: buffer.itemId,
       kind: buffer.kind,
@@ -1157,6 +1164,11 @@ export class ClineAdapter implements ProviderAdapter {
     };
     if (buffer.tasks?.length) item.tasks = buffer.tasks;
     if (buffer.detail.length > 0) item.detail = buffer.detail;
+    if (buffer.toolState) {
+      const snapshot = buffer.toolState.snapshot();
+      item.tool = snapshot.tool;
+      item.fileChanges = snapshot.fileChanges;
+    }
     this.emit({ ...this.base(session), type, turnId, item });
   }
 

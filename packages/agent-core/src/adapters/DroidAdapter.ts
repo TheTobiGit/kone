@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { acpObservation } from "./toolCalls.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -183,6 +185,7 @@ const DROID_MODE_PREFERENCES = {
 } satisfies Record<InteractionMode, readonly string[]>;
 
 type DroidItemBuffer = {
+  toolState?: ToolCallAccumulator;
   itemId: string;
   kind: RuntimeItemKind;
   name?: string;
@@ -506,7 +509,7 @@ export function toolCallDetail(update: DroidAcpRecord): string {
     if (output) parts.push(output);
     else parts.push(JSON.stringify(rawOutput, null, 2));
   }
-  return parts.join("\n").trim();
+  return parts.join("\n");
 }
 
 export function toolCallStatus(raw: string | undefined): RuntimeItemStatus {
@@ -1445,15 +1448,16 @@ export class DroidAdapter implements ProviderAdapter {
     }
 
     const kind = readString(update, "kind");
-    if (kind) buffer.name = TOOL_KIND_NAMES[kind] ?? "tool";
-    if (!buffer.name) buffer.name = "tool";
-    const target = toolCallTarget(update);
-    if (target) buffer.text = target;
-    const detail = toolCallDetail(update);
-    if (detail) buffer.detail = detail;
-
-    const status = toolCallStatus(readString(update, "status"));
-    if (isNew) this.emitItem(session, "item.started", buffer, status);
+    const name = kind ? TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
+    const state = buffer.toolState ??= new ToolCallAccumulator();
+    state.observe(acpObservation(update, name, toolCallDetail(update)));
+    const explicitStatus = readString(update, "status");
+    if (explicitStatus === "completed" && state.fileChanges) {
+      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
+    }
+    Object.assign(buffer, state.snapshot());
+    const status = state.status;
+    if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
   }
@@ -1588,8 +1592,13 @@ export class DroidAdapter implements ProviderAdapter {
     turnId: string | undefined = session.activeTurnId,
   ): void {
     if (!turnId) return;
-    if (type === "item.completed") session.openItemIds.delete(buffer.itemId);
+    if (status !== "in-progress") session.openItemIds.delete(buffer.itemId);
     else session.openItemIds.add(buffer.itemId);
+    if (buffer.toolState) {
+      buffer.toolState.observe({ status, provisional: true });
+      status = buffer.toolState.status;
+      if (status !== "in-progress") session.openItemIds.delete(buffer.itemId);
+    }
     const item: RuntimeItem = {
       itemId: buffer.itemId,
       kind: buffer.kind,
@@ -1599,6 +1608,11 @@ export class DroidAdapter implements ProviderAdapter {
     };
     if (buffer.tasks?.length) item.tasks = buffer.tasks;
     if (buffer.detail.length > 0) item.detail = buffer.detail;
+    if (buffer.toolState) {
+      const snapshot = buffer.toolState.snapshot();
+      item.tool = snapshot.tool;
+      item.fileChanges = snapshot.fileChanges;
+    }
     this.emit({ ...this.base(session), type, turnId, item });
   }
 

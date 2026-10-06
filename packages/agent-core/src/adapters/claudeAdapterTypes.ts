@@ -1,3 +1,5 @@
+import type { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import type { ToolFileChange } from "@kone/protocol/tool-call";
 import type {
   EffortLevel,
   ModelInfo,
@@ -73,6 +75,8 @@ export const CURATED_CLAUDE_MODELS: ModelDescriptor[] = [
 ];
 
 export type ClaudeItemBuffer = {
+  toolState?: ToolCallAccumulator;
+  fileChanges?: ToolFileChange[];
   itemId: string;
   kind: RuntimeItemKind;
   name?: string;

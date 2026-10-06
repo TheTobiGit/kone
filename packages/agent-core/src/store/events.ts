@@ -248,6 +248,12 @@ export class EventIngestRepo {
           } else {
             this.streamItemText(db, event.threadId, event.turnId, it, event.subagentToolUseId ?? null);
           }
+          if (it.tool !== undefined || it.fileChanges !== undefined) {
+            const metadata = JSON.stringify({ tool: it.tool, fileChanges: it.fileChanges });
+            this.dbh.prepare(db, `UPDATE items SET tool_metadata_json = ?
+              WHERE thread_id = ? AND turn_id = ? AND item_id = ?
+              AND tool_metadata_json IS NOT ?`).run(metadata, event.threadId, event.turnId, it.itemId, metadata);
+          }
           break;
         }
         case "subagent.started":

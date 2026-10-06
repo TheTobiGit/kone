@@ -445,7 +445,7 @@ onBeforeUnmount(() => ro?.disconnect());
 type Glyph = { icon: HugeIcon; hue: string; label: string };
 function glyphOf(e: ActivityEntry): Glyph {
   if (e.type === "thinking") return { icon: AiBrain01Icon, hue: thinkingOrbHue(), label: "Thinking" };
-  const m = toolMeta(e.item.name);
+  const m = toolMeta(e.item.name, e.item.tool);
   return { icon: m.icon, hue: m.hue, label: m.label };
 }
 

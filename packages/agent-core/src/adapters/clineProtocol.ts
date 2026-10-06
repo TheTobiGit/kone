@@ -368,8 +368,7 @@ export function clineToolTarget(update: ClineAcpRecord): string {
 export function clineToolDetail(update: ClineAcpRecord): string {
   const parts: string[] = [];
   const push = (text: string | undefined) => {
-    const trimmed = text?.trim();
-    if (trimmed) parts.push(trimmed.length > 8000 ? trimmed.slice(-8000) : trimmed);
+    if (text !== undefined && text.length > 0) parts.push(text);
   };
   for (const block of acpArray(readValue(update, "content"))) {
     push(readString(block, "content", "text") ?? readString(block, "text"));
@@ -385,7 +384,7 @@ export function clineToolDetail(update: ClineAcpRecord): string {
   } else {
     push(acpText(rawOutput) ?? undefined);
   }
-  return parts.join("\n").trim();
+  return parts.join("\n");
 }
 
 export function clineToolStatus(raw: string | undefined): RuntimeItemStatus {

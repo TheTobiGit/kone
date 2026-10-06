@@ -1,3 +1,4 @@
+import type { ToolCall, ToolFileChange } from "@kone/protocol/tool-call";
 import { z } from "zod";
 
 // ── Agent provider data model ───────────────────────────────────────────────
@@ -1495,6 +1496,8 @@ export type RuntimeItem = {
    *  changed-file list — shown on demand. Undefined when there's nothing to
    *  expand. */
   detail?: string;
+  tool?: ToolCall;
+  fileChanges?: ToolFileChange[];
   /** For a `tool_call` that spawned a provider-native subagent (Claude's
    *  Task/Agent tool): the child run and its own transcript. Consumers build
    *  this from the `subagent.*` events plus the `item.*` events tagged with the

@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { describeTool, openCodeFileChanges } from "./toolCalls.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -498,6 +500,7 @@ class OpenCodeModelProbeError extends Error {
 }
 
 export class OpenCodeAdapter implements ProviderAdapter {
+  private readonly toolCalls = new WeakMap<OpenCodeSession, Map<string, ToolCallAccumulator>>();
   readonly provider = "opencode" as const;
   /** `in-session`: every prompt carries its own `model` in the request body
    *  (see sendTurn), so a switch is the next turn's field rather than a new
@@ -708,7 +711,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // `serviceTier` / `contextWindow` are deliberately not applied: opencode's
     // model surface advertises no fast/context axes, so the picker never
     // offers them — a per-turn value could only arrive from a stale selection.
-    const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { session.activeTurnId = turnId; session.lastEmittedTokenUsageKey = undefined; this.emit({ ...base(session), type: "turn.started", turnId }); }
+    const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { this.toolCalls.delete(session); session.activeTurnId = turnId; session.lastEmittedTokenUsageKey = undefined; this.emit({ ...base(session), type: "turn.started", turnId }); }
     const variant = input.effort ?? session.variant;
     try {
       await session.dialect.prompt(session.client, session.openCodeSessionId, {
@@ -935,9 +938,35 @@ export class OpenCodeAdapter implements ProviderAdapter {
      if (part.type === "text" || part.type === "reasoning") { const role = part.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(partId); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(partId), String(part.text ?? "")); session.emittedTextByPartId.set(partId, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) { const updated: Extract<RuntimeEvent, { type: "item.started" | "item.updated" }> = { ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: partId, kind, status: "in-progress", text: merged.text } }; if (subagentToolUseId) updated.subagentToolUseId = subagentToolUseId; this.emit(updated); } if (record(part.time)?.end && !session.completedTextPartIds.has(partId)) { session.completedTextPartIds.add(partId); const completed: Extract<RuntimeEvent, { type: "item.completed" }> = { ...base(session), type: "item.completed", turnId, item: { itemId: partId, kind, status: "completed", text: merged.text } }; if (subagentToolUseId) completed.subagentToolUseId = subagentToolUseId; this.emit(completed); } return; }
      if (part.type !== "tool") return; const state = record(part.state) ?? {}; const kind = toolKind(String(part.tool ?? "tool"));
     if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(String(state.status)), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; const planEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item }; if (subagentToolUseId) planEvent.subagentToolUseId = subagentToolUseId; this.emit(planEvent); return; }
-    const item: RuntimeItem = { itemId: String(part.callID ?? partId), kind: "tool_call", status: toolStatus(String(state.status)), text: String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool") };
+    const info = describeTool(String(part.tool ?? "tool"), state.input, textField(state.title));
+    const exit = record(state.metadata)?.exit;
+    const status = jsonNumber(exit) && exit !== 0 && state.status === "completed"
+      ? "failed" : toolStatus(String(state.status));
+    const item: RuntimeItem = { itemId: String(part.callID ?? partId), kind: "tool_call", status,
+      text: info.target ?? String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool"), tool: info };
+    item.fileChanges = openCodeFileChanges(state.metadata, status === "completed");
+    if (item.fileChanges === undefined && info.target && status === "completed" && ["write", "edit", "delete"].includes(info.action)) {
+      item.fileChanges = [{ path: info.target, kind: info.action === "delete" ? "removed" : "edited", applied: true }];
+    }
     const detail = detailForTool(state);
     if (detail) item.detail = detail;
+    const patches = item.fileChanges?.flatMap((f) => f.diff ? [`--- ${f.path}\n+++ ${f.path}\n${f.diff}`] : []);
+    if (patches?.length) item.detail = patches.join("\n");
+    let calls = this.toolCalls.get(session);
+    if (!calls) this.toolCalls.set(session, calls = new Map());
+    const key = `${turnId}:${item.itemId}`;
+    let accumulated = calls.get(key);
+    if (!accumulated) calls.set(key, accumulated = new ToolCallAccumulator());
+    accumulated.observe({
+      name: { value: item.name!, authority: item.name === "tool" ? "fallback" : "explicit" },
+      action: { value: info.action, authority: "inferred" },
+      target: info.target !== undefined ? { value: info.target, authority: "explicit" }
+        : state.title !== undefined ? { value: String(state.title), authority: "inferred" } : undefined,
+      title: info.title, input: info.input, transport: info.transport,
+      detail: item.detail !== undefined ? { value: item.detail, mode: "snapshot" } : undefined,
+      fileChanges: item.fileChanges, status,
+    });
+    Object.assign(item, accumulated.snapshot());
     const toolEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item };
     if (subagentToolUseId) toolEvent.subagentToolUseId = subagentToolUseId;
     this.emit(toolEvent);

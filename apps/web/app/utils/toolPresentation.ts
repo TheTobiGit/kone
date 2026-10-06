@@ -104,7 +104,12 @@ const TOOL_TABLE: Record<string, ToolMetaInput> = {
   send_message: { icon: WorkflowSquare01Icon, label: "Message", family: "agent" },
 };
 
-export function toolMeta(name: string | undefined): ToolMeta {
+const ACTION_TOOL_NAMES = { read: "read_file", list: "list_dir", search: "search", write: "write",
+  edit: "edit_file", delete: "delete_file", run: "run", fetch: "web_fetch", "web-search": "web_search",
+  agent: "agent", plan: "todowrite", image: "generate_image", other: "tool" };
+
+export function toolMeta(name: string | undefined, tool?: RuntimeItem["tool"]): ToolMeta {
+  if (tool && tool.action !== "other") name = ACTION_TOOL_NAMES[tool.action];
   const families = activeHues().families;
   // Canonicalized here rather than by the caller: providers spell kone's tools
   // three different ways, and a table that answers to only one of them is a
@@ -169,7 +174,7 @@ function peelStamp(raw: string, name: string): string {
  *  `toolDetailFull`. */
 function toolTargetText(t: RuntimeItem): string {
   const name = (t.name ?? "").trim();
-  const peeled = peelStamp((t.text ?? "").trim(), name);
+  const peeled = peelStamp((t.tool?.target ?? t.text ?? "").trim(), name);
   return words(peeled) === words(name) ? "" : peeled;
 }
 
@@ -271,11 +276,11 @@ export function toolPhrase(t: RuntimeItem): ToolPhrase {
   const fail = status === "error";
   const detail = toolTarget(t);
   const full = toolTargetRaw(t);
-  const name = (t.name ?? "").trim();
+  const name = t.tool && t.tool.action !== "other" ? ACTION_TOOL_NAMES[t.tool.action] : (t.name ?? "").trim();
 
   // kone's own tools act on the app, not on a path or a command — each says
   // what it did in its own words.
-  const koneTool = koneToolPresentation(canonicalToolName(name));
+  const koneTool = koneToolPresentation(canonicalToolName(t.name));
   if (koneTool) return plain(ing ? koneTool.running : fail ? koneTool.failed : koneTool.done);
 
   // grep-style "query · N matches"

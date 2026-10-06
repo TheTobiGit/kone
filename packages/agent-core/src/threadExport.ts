@@ -372,6 +372,8 @@ function toExportItem(item: RuntimeItem): ThreadExportItem {
   // The full body: this document is the lossless export, so the wire cap
   // never applies here.
   if (item.detail !== undefined) out.detail = item.detail;
+  if (item.tool !== undefined) out.tool = item.tool;
+  if (item.fileChanges !== undefined) out.fileChanges = item.fileChanges;
   if (item.tasks !== undefined) {
     out.tasks = item.tasks.map((t): ThreadExportPlanTask => {
       const task: ThreadExportPlanTask = { id: t.id, content: t.content, status: t.status };

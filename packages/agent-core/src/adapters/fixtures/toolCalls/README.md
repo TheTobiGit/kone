@@ -29,3 +29,23 @@ Facts these captures settled:
 
 Cursor, Droid and Cline were not installed; their ACP fixtures elsewhere are
 synthetic and do not establish real-provider coverage.
+
+Implementation coverage:
+
+- `adapters/codexAdapter.test.ts` replays captured completions through the
+  actual adapter, including command failure, file creation, multiple files,
+  MCP content and web results. Synthetic sequences additionally cover streamed
+  versus final output and multi-receiver spawning.
+- `adapters/toolCalls.test.ts` replays the OpenCode v2 translation and checks
+  retained input, exit metadata and per-file patch extraction.
+- `antigravityPrintAdapter.test.ts` replays the captured hooks and transcript
+  through a scripted CLI, checking recovered output, failure and file changes.
+- ACP lifecycle observations are synthetic protocol coverage. Cursor, Droid,
+  Cline and Antigravity ACP have no live-provider capture in this change.
+
+The first implementation retains executable wrapper input and output. It does
+not reconstruct inner calls from wrapper code. Codex grandchildren and full
+child approval linkage remain outside this pass. Structured file records apply
+to new calls; historical rows retain conservative single-file interpretation.
+Full output is now retained across IPC as well as local storage; the fixtures'
+original capture clipping remains documented above.

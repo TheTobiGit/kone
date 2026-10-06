@@ -1,3 +1,4 @@
+import { ToolCallSchema, ToolFileChangeSchema } from "@kone/protocol/tool-call";
 import { z } from "zod";
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
 import { decodeChunkArray, decodeStoredText } from "./store/itemTextChunks.js";
@@ -492,6 +493,7 @@ export type ItemRow = {
   name: string | null;
   detail: string | null;
   tasks_json: string | null;
+  tool_metadata_json?: string | null;
   subagent_tool_use_id: string | null;
 };
 
@@ -663,6 +665,13 @@ export function rowToItem(row: ItemRow): RuntimeItem {
     name: row.name ?? undefined,
     detail: row.detail ?? undefined,
   };
+  if (row.tool_metadata_json) {
+    const metadata = parseJsonObject<{ tool?: unknown; fileChanges?: unknown }>(row.tool_metadata_json);
+    const tool = ToolCallSchema.safeParse(metadata?.tool);
+    const changes = ToolFileChangeSchema.array().safeParse(metadata?.fileChanges);
+    if (tool.success) item.tool = tool.data;
+    if (changes.success) item.fileChanges = changes.data;
+  }
   if (tasks?.length) item.tasks = tasks;
   return item;
 }

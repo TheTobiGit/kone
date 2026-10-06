@@ -238,6 +238,15 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     return { ...block, text: shown.text, sender: shown.sender };
   }
 
+  function mergeItem(previous: RuntimeItem, item: RuntimeItem): RuntimeItem {
+    const merged = { ...previous, ...item };
+    for (const key of ["name", "detail", "tool", "fileChanges", "tasks"] as const) {
+      if (item[key] === undefined && previous[key] !== undefined) Object.assign(merged, { [key]: previous[key] });
+    }
+    if (previous.status !== "in-progress" && item.status === "in-progress") merged.status = previous.status;
+    return merged;
+  }
+
   function upsertItem(block: AssistantBlock, item: RuntimeItem): void {
     const idx = block.items.findIndex((i) => i.itemId === item.itemId);
     // A tool_call that spawned a subagent keeps the run we've already nested on
@@ -245,7 +254,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     // the child's transcript.
     if (idx === -1) block.items.push(item);
     else {
-      const merged: RuntimeItem = { ...item };
+      const previous = block.items[idx]!;
+      const merged: RuntimeItem = mergeItem(previous, item);
       const existingSubagent = block.items[idx]!.subagent;
       if (existingSubagent) merged.subagent = existingSubagent;
       block.items[idx] = merged;
@@ -492,7 +502,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
         if (run) {
           const idx = run.items.findIndex((i) => i.itemId === item.itemId);
           if (idx === -1) run.items.push(item);
-          else run.items[idx] = item;
+          else run.items[idx] = mergeItem(run.items[idx]!, item);
           run.items = [...run.items];
         } else if (!event.subagentToolUseId) {
           upsertItem(block, item);

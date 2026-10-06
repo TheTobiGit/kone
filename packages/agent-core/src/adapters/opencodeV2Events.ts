@@ -120,7 +120,7 @@ export function normalizeV2Event(state: V2SessionState, event: OpenCodeEvent): O
       if (!id) return event;
       const name = textField(p.name) ?? knownToolName(state, id, "tool");
       const input = record(p.input);
-      const toolState: RecordLike = { status: "running", title: textField(p.text) ?? name };
+      const toolState: RecordLike = { ...record(state.partById.get(id)?.state), status: "running", title: textField(p.text) ?? name };
       if (input) toolState.input = input;
       return {
         type: "message.part.updated",
@@ -137,7 +137,9 @@ export function normalizeV2Event(state: V2SessionState, event: OpenCodeEvent): O
       const failed = event.type === "session.tool.error";
       const name = textField(p.name) ?? knownToolName(state, id, "tool");
       const content = toolContentText(p);
-      const toolState: RecordLike = failed ? { status: "error", title: name } : { status: "completed", title: name };
+      const toolState: RecordLike = { ...record(state.partById.get(id)?.state), status: failed ? "error" : "completed", title: name };
+      if (p.metadata !== undefined) toolState.metadata = p.metadata;
+      if (p.input !== undefined) toolState.input = p.input;
       if (content !== undefined) toolState[failed ? "error" : "output"] = content;
       return {
         type: "message.part.updated",

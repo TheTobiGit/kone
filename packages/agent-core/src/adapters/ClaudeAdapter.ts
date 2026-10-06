@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { describeTool, parsedInput, string as jsonString } from "./toolCalls.js";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -1433,6 +1435,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       const diffBody = isClaudeFileEditTool(buffer.toolName)
         ? fileEditDiffBody(structuredResult)
         : undefined;
+      if (!failed && isClaudeFileEditTool(buffer.toolName)) {
+        const args = parsedInput(buffer.toolInputRaw);
+        const path = jsonString(args?.file_path) ?? jsonString(args?.path);
+        if (path) buffer.fileChanges = [{ path, kind: asRecord(structuredResult)?.originalFile === null ? "created" : "edited", diff: diffBody, applied: true }];
+      }
       if (diffBody) buffer.detail = diffBody;
       else if (resultText.length > 0) buffer.detail = resultText;
       this.emitItem(session, scope, "item.completed", buffer, failed ? "failed" : "completed");
@@ -2116,6 +2123,23 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (buffer.tasks?.length) item.tasks = buffer.tasks;
     if (buffer.name) item.name = buffer.name;
     if (buffer.detail.length > 0) item.detail = buffer.detail;
+    if (buffer.kind === "tool_call") {
+      const info = describeTool(buffer.name, parsedInput(buffer.toolInputRaw));
+      const state = buffer.toolState ??= new ToolCallAccumulator();
+      state.observe({
+        name: buffer.name ? { value: buffer.name, authority: "explicit" } : undefined,
+        action: { value: info.action, authority: "inferred" },
+        target: info.target !== undefined ? { value: info.target, authority: "explicit" } : undefined,
+        input: info.input, transport: info.transport,
+        detail: buffer.detail ? { value: buffer.detail, mode: "snapshot" } : undefined,
+        status, fileChanges: buffer.fileChanges,
+      });
+      const snapshot = state.snapshot();
+      item.tool = snapshot.tool;
+      item.fileChanges = snapshot.fileChanges;
+      item.status = snapshot.status;
+      if (snapshot.tool.target !== undefined) item.text = snapshot.text;
+    }
     // Items produced inside a subagent run carry its tool-use id, so consumers
     // nest them under the spawning tool call instead of the parent turn's body.
     const itemEvent: Extract<

@@ -313,8 +313,8 @@ function copyForkSatellites(
   if (turnIds.length === 0) return;
   const placeholders = turnIds.map(() => "?").join(",");
   db.prepare(
-    `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, text_json, name, detail, tasks_json, subagent_tool_use_id, at)
-     SELECT item_id, ?, turn_id, kind, status, text, text_json, name, detail, tasks_json, subagent_tool_use_id, at
+    `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, text_json, name, detail, tasks_json, tool_metadata_json, subagent_tool_use_id, at)
+     SELECT item_id, ?, turn_id, kind, status, text, text_json, name, detail, tasks_json, tool_metadata_json, subagent_tool_use_id, at
        FROM items
       WHERE thread_id = ? AND turn_id IN (${placeholders})
       ORDER BY seq`,

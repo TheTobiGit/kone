@@ -304,13 +304,11 @@ export function antigravityToolTarget(update: AntigravityAcpRecord): string {
 }
 
 /** The expandable body of a tool row: text content blocks plus the raw output
- *  (or its JSON when the output is structured). Bounded — a chatty tool must
- *  not push megabytes through IPC into the transcript. */
+ *  (or its JSON when the output is structured), preserved for storage and IPC. */
 export function antigravityToolDetail(update: AntigravityAcpRecord): string {
   const parts: string[] = [];
   const push = (text: string | undefined) => {
-    const trimmed = text?.trim();
-    if (trimmed) parts.push(trimmed.length > 8000 ? `${trimmed.slice(-8000)}` : trimmed);
+    if (text !== undefined && text.length > 0) parts.push(text);
   };
   for (const block of acpArray(readValue(update, "content"))) {
     push(readString(block, "content", "text") ?? readString(block, "text"));
@@ -323,7 +321,7 @@ export function antigravityToolDetail(update: AntigravityAcpRecord): string {
   } else {
     push(acpText(rawOutput) ?? undefined);
   }
-  return parts.join("\n").trim();
+  return parts.join("\n");
 }
 
 export function antigravityToolStatus(raw: string | undefined): RuntimeItemStatus {

@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { acpObservation } from "./toolCalls.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -30,8 +32,6 @@ import {
   TOOL_KIND_NAMES,
   acpArray,
   antigravityToolDetail,
-  antigravityToolStatus,
-  antigravityToolTarget,
   buildAntigravityApprovalRequestWithWarnings,
   findOption,
   isAcpRecord,
@@ -195,6 +195,7 @@ const CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 const TEARDOWN_GRACE_MS = 5_000;
 
 type AntigravityAcpItemBuffer = {
+  toolState?: ToolCallAccumulator;
   itemId: string;
   kind: RuntimeItemKind;
   name?: string;
@@ -1084,15 +1085,16 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     }
 
     const kind = readString(update, "kind");
-    if (kind) buffer.name = TOOL_KIND_NAMES[kind] ?? "tool";
-    if (!buffer.name) buffer.name = "tool";
-    const target = antigravityToolTarget(update);
-    if (target) buffer.text = target;
-    const detail = antigravityToolDetail(update);
-    if (detail) buffer.detail = detail;
-
-    const status = antigravityToolStatus(readString(update, "status"));
-    if (isNew) this.emitItem(session, "item.started", buffer, status);
+    const name = kind ? TOOL_KIND_NAMES[kind] ?? "tool" : undefined;
+    const state = buffer.toolState ??= new ToolCallAccumulator();
+    state.observe(acpObservation(update, name, antigravityToolDetail(update)));
+    const explicitStatus = readString(update, "status");
+    if (explicitStatus === "completed" && state.fileChanges) {
+      state.observe({ fileChanges: state.fileChanges.map((f) => ({ ...f, applied: true })) });
+    }
+    Object.assign(buffer, state.snapshot());
+    const status = state.status;
+    if (isNew && status === "in-progress") this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
   }
@@ -1235,8 +1237,13 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     turnId: string | undefined = session.activeTurnId,
   ): void {
     if (!turnId || !buffer) return;
-    if (type === "item.completed") session.openItemIds.delete(buffer.itemId);
+    if (status !== "in-progress") session.openItemIds.delete(buffer.itemId);
     else session.openItemIds.add(buffer.itemId);
+    if (buffer.toolState) {
+      buffer.toolState.observe({ status, provisional: true });
+      status = buffer.toolState.status;
+      if (status !== "in-progress") session.openItemIds.delete(buffer.itemId);
+    }
     const item: RuntimeItem = {
       itemId: buffer.itemId,
       kind: buffer.kind,
@@ -1246,6 +1253,11 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     };
     if (buffer.tasks?.length) item.tasks = buffer.tasks;
     if (buffer.detail.length > 0) item.detail = buffer.detail;
+    if (buffer.toolState) {
+      const snapshot = buffer.toolState.snapshot();
+      item.tool = snapshot.tool;
+      item.fileChanges = snapshot.fileChanges;
+    }
     this.emit({ ...this.base(session), type, turnId, item });
   }
 

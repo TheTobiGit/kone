@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 28 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 29 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -264,6 +264,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 26, name: "InboxUncertainAt" },
       { migration_id: 27, name: "QueuedTurnDurableRowid" },
       { migration_id: 28, name: "TurnSeals" },
+      { migration_id: 29, name: "ToolCallMetadata" },
     ]);
 
     const idx = raw
@@ -1715,14 +1716,14 @@ describe("loadThreadPage user-anchored windows", () => {
   });
 });
 
-describe("IPC wire projection (tool-call payload slimming)", () => {
-  test("long tool_call details are capped for the wire, short ones pass through untouched", async () => {
+describe("IPC wire projection (lossless tool-call payloads)", () => {
+  test("tool details cross the wire intact", async () => {
     const { projectRuntimeItemForIpc, projectRuntimeEventForIpc, TOOL_DETAIL_WIRE_CAP } =
       await import("./ConversationStore.js");
     const long = "x".repeat(TOOL_DETAIL_WIRE_CAP + 5000);
     const item = { itemId: "i-1", kind: "tool_call" as const, status: "completed" as const, text: "run", detail: long };
     const projected = projectRuntimeItemForIpc(item);
-    expect(projected.detail!.length).toBeLessThan(TOOL_DETAIL_WIRE_CAP + 200);
+    expect(projected.detail).toBe(long);
     expect(projected.detail!.startsWith("x".repeat(TOOL_DETAIL_WIRE_CAP))).toBe(true);
 
     const short = { itemId: "i-2", kind: "tool_call" as const, status: "completed" as const, text: "run", detail: "tiny" };
@@ -1742,17 +1743,15 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
       item,
     };
     const projectedEvent = projectRuntimeEventForIpc(event);
-    expect(projectedEvent).not.toBe(event);
+    expect(projectedEvent).toBe(event);
     // SAFETY: the projected event wraps the same item shape this test built.
-    expect((projectedEvent as { item: typeof item }).item.detail!.length).toBeLessThan(
-      TOOL_DETAIL_WIRE_CAP + 200,
-    );
+    expect((projectedEvent as { item: typeof item }).item.detail).toBe(long);
     // Non-item events cross untouched (same object).
     const other = { type: "turn.completed" as const, threadId: "t-1", provider: "opencode" as const, at: 1, source: "kone.store" as const, turnId: "turn-1" };
     expect(projectRuntimeEventForIpc(other)).toBe(other);
   });
 
-  test("the store keeps the full payload; only the wire copy is capped", async () => {
+  test("the store and wire keep the full payload", async () => {
     const { projectStoredThreadForIpc } = await import("./ConversationStore.js");
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
@@ -1774,8 +1773,7 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
     const projected = projectStoredThreadForIpc(stored);
     // SAFETY: projection preserves the block/item order of the stored thread.
     const projectedItem = (projected.blocks[0] as { items: Array<{ detail?: string }> }).items[0]!;
-    expect(projectedItem.detail!.length).toBeLessThan(10_000);
-    expect(projectedItem.detail!.endsWith("local history)")).toBe(true);
+    expect(projectedItem.detail).toBe(long);
   });
 
   test("nested subagent run items are projected too", async () => {
@@ -1803,8 +1801,7 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
       },
     };
     const projected = projectRuntimeItemForIpc(parent);
-    expect(projected.subagent!.items[0]!.detail!.length).toBeLessThan(TOOL_DETAIL_WIRE_CAP + 100);
-    expect(projected.subagent!.items[0]!.detail!.endsWith("local history)")).toBe(true);
+    expect(projected.subagent!.items[0]!.detail).toBe(long);
     // Parent detail unchanged → the parent's own body crosses untouched.
     expect(projected.detail).toBe("short");
   });
@@ -1987,6 +1984,21 @@ describe("queued turns schema", () => {
         thread_id  TEXT PRIMARY KEY,
         agent_id   TEXT,
         settled_at INTEGER NOT NULL
+      );
+      CREATE TABLE items (
+        seq INTEGER PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        text TEXT NOT NULL DEFAULT '',
+        name TEXT,
+        detail TEXT,
+        tasks_json TEXT,
+        subagent_tool_use_id TEXT,
+        at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(thread_id, turn_id, item_id)
       );
       CREATE TABLE schema_migrations (
         migration_id INTEGER PRIMARY KEY,
@@ -2913,4 +2925,21 @@ describe("turn checkpoints (v6)", () => {
     expect(store.deleteThread("cp-6")).toEqual({ ok: true });
     expect(store.listTurnCheckpoints("cp-6")).toEqual([]);
   });
+});
+
+test("tool metadata and confirmed file patches survive reload without clipping JSON", () => {
+  const store = freshStore();
+  store.ensureThread({ threadId: "t-metadata", projectPath: "/p", provider: "opencode" });
+  store.applyEvent(turnStarted("t-metadata", "turn-metadata", 10));
+  const item: import("./types.js").RuntimeItem = {
+    itemId: "edit-many", kind: "tool_call", status: "completed", name: "mcp__files__edit", text: "Edit two files",
+    tool: { action: "edit", target: "a.ts", transport: { server: "files", tool: "edit" }, input: JSON.stringify({ content: "x".repeat(12_000) }) },
+    fileChanges: [{ path: "a.ts", kind: "edited", applied: true, diff: "@@ -10 +10 @@\n-old\n+new\n" }, { path: "b.ts", kind: "removed", applied: true }],
+    detail: JSON.stringify({ output: "y".repeat(12_000) }),
+  };
+  store.applyEvent({ type: "item.completed", threadId: "t-metadata", provider: "opencode", at: 11,
+    source: "kone.store", turnId: "turn-metadata", item });
+  const reopened = new ConversationStoreCtor();
+  const block = reopened.loadThread("t-metadata")?.blocks.find((b) => b.role === "assistant");
+  expect(block?.role === "assistant" && block.items[0]).toEqual(item);
 });

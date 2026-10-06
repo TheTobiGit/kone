@@ -1,3 +1,4 @@
+import type { ToolCall, ToolFileChange } from "@kone/protocol/tool-call";
 // Shape of the Electron preload bridge, as seen from the renderer.
 // Mirrors apps/desktop/src/git.ts and apps/desktop/src/types/global.d.ts.
 export {};
@@ -1427,6 +1428,8 @@ export type RuntimeItem = {
   /** A tool_call's full result body (command output, a diff, a changed-file
    *  list) — shown on demand. Undefined when there's nothing to expand. */
   detail?: string;
+  tool?: ToolCall;
+  fileChanges?: ToolFileChange[];
   /** For a Task/Agent `tool_call`: the nested run it spawned, assembled by the
    *  consumer from the `subagent.*` events plus items tagged with this run's
    *  `subagentToolUseId` — adapters emit the pieces, never the tree. */

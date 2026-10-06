@@ -125,9 +125,9 @@ describe("antigravityToolDetail", () => {
     ).toBe("hello\ndone");
   });
 
-  test("bounds runaway output", () => {
+  test("preserves full output for storage and rendering", () => {
     const detail = antigravityToolDetail(record({ rawOutput: "x".repeat(100_000) }));
-    expect(detail.length).toBeLessThanOrEqual(8000);
+    expect(detail).toBe("x".repeat(100_000));
   });
 });
 

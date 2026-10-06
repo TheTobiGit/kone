@@ -86,16 +86,16 @@ describe("deriveChangedFiles", () => {
     expect(files[1]).toMatchObject({ name: "README.md", dir: "" });
   });
 
-  test("streaming flags the live write and the whole state", () => {
+  test("pending edits do not count as applied changes", () => {
     const { files, streaming } = deriveChangedFiles([
       assistant([
         toolItem("write_to_file", "done.ts", "completed"),
         toolItem("edit_file", "live.ts", "in-progress"),
       ]),
     ]);
-    expect(streaming).toBe(true);
+    expect(streaming).toBe(false);
     expect(files.find((f) => f.name === "done.ts")?.streaming).toBe(false);
-    expect(files.find((f) => f.name === "live.ts")?.streaming).toBe(true);
+    expect(files.find((f) => f.name === "live.ts")).toBeUndefined();
   });
 
   test("strips the tool-name prefix the mock adds to the target", () => {
@@ -118,7 +118,7 @@ describe("deriveChangedFiles", () => {
           "completed",
           "@@ -1,3 +1,4 @@\n-  old line\n+  new line\n+  extra line\n",
         ),
-        toolItem("write_to_file", "b.ts", "completed", "+ export const x = 1;\n+ export const y = 2;\n"),
+        toolItem("write_to_file", "b.ts", "completed", "@@ -0,0 +1,2 @@\n+ export const x = 1;\n+ export const y = 2;\n"),
       ]),
     ]);
     expect(files[0]).toMatchObject({ name: "a.vue", added: 2, removed: 1 });
@@ -166,4 +166,19 @@ describe("deriveChangedFiles", () => {
     ]);
     expect(files.map((f) => f.name)).toEqual(["one.ts", "two.ts"]);
   });
+});
+
+test("confirmed multi-file edits inside a subagent use file records, not row titles", () => {
+  const child: RuntimeItem = { ...toolItem("edit_file", "Changed two files"), fileChanges: [
+    { path: "a.ts", kind: "edited", applied: true, diff: "@@ -10 +10 @@\n-a\n+b\n" },
+    { path: "b.ts", kind: "created", applied: true, diff: "@@ -0,0 +1 @@\n+new\n" },
+    { path: "proposed.ts", kind: "edited", applied: false },
+  ] };
+  const parent: RuntimeItem = { ...toolItem("agent", "Worker"), subagent: {
+    toolUseId: "child", status: "completed", startedAt: 1, items: [child],
+  } };
+  const state = deriveChangedFiles([assistant([parent, toolItem("edit_file", "failed.ts", "failed", "-no permission")])]);
+  expect(state.files.map((f) => f.path)).toEqual(["a.ts", "b.ts"]);
+  expect(state.totalAdded).toBe(2);
+  expect(state.totalRemoved).toBe(1);
 });

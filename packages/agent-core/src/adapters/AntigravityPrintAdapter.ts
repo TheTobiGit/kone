@@ -1,3 +1,5 @@
+import { ToolCallAccumulator } from "../toolCallAccumulator.js";
+import { beforeAfterDiff, describeTool, string as jsonString } from "./toolCalls.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -158,6 +160,8 @@ type PendingTool = {
  *  conversation id, which is the id its hook lines and its `sender=` message
  *  both carry — so it doubles as the run's `toolUseId`. */
 type AntigravitySubagentRun = {
+  toolResultsByStep: Map<number, TranscriptStep>;
+  toolItemsByStep: Map<number, { itemId: string; name: string; args?: AntigravityJsonRecord }>;
   snapshot: SubagentRunSnapshot;
   /** The child's transcript, tailed exactly like the parent's. */
   transcriptPath?: string;
@@ -202,6 +206,7 @@ type AntigravitySession = {
    *  the step it reported — an `invoke_subagent` run has to hang off its
    *  spawning item, and the result step that names the children arrives after
    *  the item has already closed. */
+  toolResultsByStep: Map<number, TranscriptStep>;
   toolItemsByStep: Map<number, { itemId: string; name: string; args?: AntigravityJsonRecord }>;
   nextToolSequence: number;
   /** Briefs from `invoke_subagent` calls whose result step has not named the
@@ -933,6 +938,7 @@ export async function ensureCapturePlugin(
 }
 
 export class AntigravityPrintAdapter implements ProviderAdapter {
+  private readonly toolCalls = new WeakMap<AntigravitySession, Map<string, ToolCallAccumulator>>();
   readonly provider: typeof PROVIDER = PROVIDER;
   readonly capabilities: AdapterCapabilities = {
     // `in-session`: a turn *is* an `agy -p` invocation, and it builds its own
@@ -1161,6 +1167,7 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
       processedSteps: new Set(),
       pendingTools: [],
       toolItemsByStep: new Map(),
+      toolResultsByStep: new Map(),
       nextToolSequence: 0,
       pendingSubagentSpecs: [],
       subagentRuns: new Map(),
@@ -1264,7 +1271,9 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     session.processedHookBytes = 0;
     session.processedSteps.clear();
     session.pendingTools = [];
+    this.toolCalls.delete(session);
     session.toolItemsByStep.clear();
+    session.toolResultsByStep.clear();
     session.nextToolSequence = 0;
     session.pendingSubagentSpecs = [];
     session.subagentRuns.clear();
@@ -1630,6 +1639,12 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     }
 
     if (step.type === "GENERIC") {
+      session.toolResultsByStep.set(stepIndex, step);
+      const tool = session.toolItemsByStep.get(stepIndex);
+      if (tool && step.content !== undefined) {
+        const failed = step.status === "ERROR" || /command exited with code (?!0\b)\d+/.test(step.content);
+        this.emitToolItem(session, tool.itemId, tool.name, failed ? "failed" : "completed", tool.args, undefined, step.content);
+      }
       // The `invoke_subagent` result: the step that turns each queued brief
       // into a real child with an id and a transcript of its own.
       const handles = parseCreatedSubagents(step.content);
@@ -1696,6 +1711,8 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     if (spec?.prompt) snapshot.prompt = spec.prompt;
     if (spec?.model) snapshot.model = spec.model;
     const run: AntigravitySubagentRun = {
+      toolResultsByStep: new Map(),
+      toolItemsByStep: new Map(),
       snapshot,
       transcriptPath:
         handle.transcriptPath ??
@@ -1775,6 +1792,15 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
         const stepIndex = step.step_index;
         if (!Number.isFinite(stepIndex) || run.processedSteps.has(stepIndex!)) continue;
         run.processedSteps.add(stepIndex!);
+        if (step.type === "GENERIC") {
+          run.toolResultsByStep.set(stepIndex!, step);
+          const tool = run.toolItemsByStep.get(stepIndex!);
+          if (tool && step.content !== undefined) {
+            const failed = step.status === "ERROR" || /command exited with code (?!0\b)\d+/.test(step.content);
+            this.emitToolItem(session, tool.itemId, tool.name, failed ? "failed" : "completed", tool.args, run, step.content);
+          }
+          continue;
+        }
         if (step.type !== "PLANNER_RESPONSE") continue;
         const content = trim(step.content);
         if (!content) continue;
@@ -1908,9 +1934,8 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
             run.snapshot.lastToolName = name;
             run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;
             this.emitSubagent(session, run, "subagent.updated");
-          } else {
-            session.toolItemsByStep.set(stepIndex, { itemId, name, args });
           }
+          owner.toolItemsByStep.set(stepIndex, { itemId, name, args });
           this.emitToolItem(session, itemId, name, "in-progress", args, run);
         }
       } else if (eventName === "post-tool" && stepIndex !== undefined) {
@@ -1958,6 +1983,16 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
   ): void {
     const turnId = session.activeTurnId;
     if (!turnId) return;
+    {
+      const owner = run ?? session;
+      const entry = [...owner.toolItemsByStep.entries()].find(([, t]) => t.itemId === itemId);
+      const result = entry ? owner.toolResultsByStep.get(entry[0]) : undefined;
+      if (result?.content !== undefined) {
+        output = result.content;
+        if (result.status === "ERROR" || /command exited with code (?!0\b)\d+/.test(output)) status = "failed";
+        else if (status === "in-progress") status = "completed";
+      }
+    }
     const summary = summarizeAntigravityTool(name, args);
     const item: RuntimeItem = {
       itemId,
@@ -1966,11 +2001,36 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
       text: summary.text,
       name,
     };
+    item.tool = describeTool(name, args);
+    const diff = output?.match(/\[diff_block_start\]\s*([\s\S]*?)\s*\[diff_block_end\]/)?.[1];
+    const path = item.tool.target;
+    if (path && status === "completed") {
+      if (diff) item.fileChanges = [{ path, kind: "edited", diff, applied: true }];
+      else if (name === "write_to_file" && output?.includes("Created file") && jsonString(args?.CodeContent) !== undefined) {
+        item.fileChanges = [{ path, kind: "created", diff: beforeAfterDiff("", jsonString(args?.CodeContent)!), applied: true }];
+      }
+    }
     if (output) {
       item.detail = output;
     } else if (summary.detail) {
       item.detail = summary.detail;
     }
+    let calls = this.toolCalls.get(session);
+    if (!calls) this.toolCalls.set(session, calls = new Map());
+    let state = calls.get(itemId);
+    const isNew = !state;
+    if (!state) calls.set(itemId, state = new ToolCallAccumulator());
+    state.observe({
+      name: { value: name, authority: "explicit" },
+      action: { value: item.tool.action, authority: "inferred" },
+      target: item.tool.target !== undefined ? { value: item.tool.target, authority: "explicit" } : undefined,
+      input: item.tool.input, transport: item.tool.transport,
+      detail: output !== undefined ? { value: output, mode: "snapshot" }
+        : isNew && item.detail !== undefined ? { value: item.detail, mode: "snapshot" } : undefined,
+      status, fileChanges: item.fileChanges,
+    });
+    Object.assign(item, state.snapshot());
+    status = item.status;
     const type = status === "in-progress" ? "item.started" : "item.completed";
     const event: Extract<RuntimeEvent, { type: "item.started" | "item.completed" }> = {
       ...this.base(session),
