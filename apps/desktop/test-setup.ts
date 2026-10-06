@@ -31,7 +31,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const startDir = tmpdir();
+// Normalized first: Windows takes TEMP=C:/tmp/... as given, forward slashes and all.
+const startDir = path.normalize(tmpdir());
 const runDirAt = startDir.split(path.sep).findIndex((part) => part.startsWith("kone-test-run-"));
 const tempRoot = runDirAt === -1 ? startDir : startDir.split(path.sep).slice(0, runDirAt).join(path.sep) || path.sep;
 const testRunDir = mkdtempSync(path.join(tempRoot, "kone-test-run-"));
