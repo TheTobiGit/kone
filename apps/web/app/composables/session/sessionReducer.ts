@@ -62,11 +62,9 @@ export type SessionReducerDeps = {
   blocks: Ref<ThreadBlock[]>;
   threadId: Ref<string>;
   touch: () => void;
-  /** Remember the freshest provider resume cursor riding the event envelope. */
-  noteResumeSessionAt: (resumeSessionAt: string) => void;
-  /** Remember the freshest provider conversation id riding this thread's
-   *  event envelopes. */
-  noteConversationId: (conversationId: string) => void;
+  /** Remember the conversation id and resume cursor riding this thread's
+   *  event envelopes, with the provider whose session reported them. */
+  noteRefs: (provider: ProviderKind, refs: { conversationId?: string; resumeSessionAt?: string }) => void;
   /** Whether an exit is the session this thread is on, rather than one it
    *  has since moved off — another provider's, or a conversation it left. */
   ownsExit: (event: Extract<RuntimeEvent, { type: "session.exited" }>) => boolean;
@@ -104,8 +102,7 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     blocks,
     threadId,
     touch,
-    noteResumeSessionAt,
-    noteConversationId,
+    noteRefs,
     ownsExit,
     noteSessionExited,
     sessionState,
@@ -328,9 +325,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     // re-stage it (Claude-only — other providers never set it). An exit says
     // nothing new about the conversation, and is checked against what was
     // noted before it (ownsExit).
-    if (event.type !== "session.exited") {
-      if (event.refs?.conversationId) noteConversationId(event.refs.conversationId);
-      if (event.refs?.resumeSessionAt) noteResumeSessionAt(event.refs.resumeSessionAt);
+    if (event.type !== "session.exited" && (event.refs?.conversationId || event.refs?.resumeSessionAt)) {
+      noteRefs(event.provider, event.refs);
     }
     switch (event.type) {
       case "session.state.changed":

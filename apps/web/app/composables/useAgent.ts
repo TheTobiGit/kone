@@ -73,6 +73,7 @@ import { useSessionGates } from "./session/sessionGates";
 import { useSessionTurnParams } from "./session/sessionTurnParams";
 import { useSessionTranscript, PAGE_LIMIT } from "./session/sessionTranscript";
 import { useSessionSteerWait } from "./session/sessionSteerWait";
+import { useSessionHandle } from "./session/sessionHandle";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
@@ -344,14 +345,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     blocks,
     threadId,
     touch,
-    noteResumeSessionAt: (resumeSessionAt: string) => {
-      lastResumeSessionAt = resumeSessionAt;
-    },
-    noteConversationId: (conversationId: string) => {
-      lastConversationId = conversationId;
-    },
-    ownsExit: (event) => ownsExit(event),
-    noteSessionExited: () => rearmAfterExit(),
+    noteRefs: (from, refs) => handle.noteRefs(from, refs),
+    ownsExit: (event) => handle.ownsExit(event),
+    noteSessionExited: () => handle.exited(),
     sessionState,
     warning,
     error,
@@ -400,14 +396,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  with the resume id on adopt/hibernate, consumed and cleared in start().
    *  Meaningless to any other provider — never sent unless the resume id is. */
   let pendingResumeSessionAt: string | undefined;
-  /** The freshest assistant-message uuid this session's provider reported (it
-   *  rides the event envelope's refs like conversationId). Kept so hibernate()
-   *  can re-stage a complete Claude resume cursor. */
-  let lastResumeSessionAt: string | undefined;
-  /** The freshest provider conversation id this thread's events carried. A
-   *  session reports its id once it is up, so the one start() was handed back
-   *  can be missing (a fresh conversation) or stale. */
-  let lastConversationId: string | undefined;
   // …and which provider minted it. A resume id means nothing to another CLI, so
   // start() drops the resume if the provider has moved on since it was staged.
   // This used to be implicit — the resume was consumed by the start() that
@@ -437,6 +425,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // happened to change — reading true long after the CLI came up.
   const deferred = ref(false);
   let starting: Promise<void> | null = null;
+  /** The live session's conversation, for resuming it, and its exits. */
+  const handle = useSessionHandle({
+    session,
+    deferred,
+    isForgotten: () => forgotten,
+    stageResume: (stage) => {
+      pendingResumeId = stage.resumeId;
+      pendingResumeProvider = stage.provider;
+      pendingResumeSessionAt = stage.resumeSessionAt;
+    },
+  });
 
   /** Latch the pending rehydrate closed without starting anything.
    *
@@ -542,6 +541,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     pendingResumeId = undefined;
     pendingResumeProvider = undefined;
     pendingResumeSessionAt = undefined;
+    // The session coming up reports its own conversation; nothing the last
+    // one said carries onto it.
+    handle.forgetConversation();
     // Declared out here so the catch can hand it back — a failed build must not
     // swallow the request that would let the user simply send again.
     let stagedWorkspace: SessionStartInput["workspace"];
@@ -1190,7 +1192,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const api = bridge();
     const wasLive = Boolean(api && session.value);
     if (api && session.value) {
-      restageResume(session.value);
+      handle.restageResume(session.value);
       try {
         await api.stopSession(threadId.value);
       } catch {
@@ -1205,45 +1207,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // Mark startable-on-demand again: the next send/start brings the CLI back
     // (see ensureStarted). Mirrors deferStart's contract, minus the optimistic
     // "ready" — a hibernated thread is genuinely stopped until it wakes.
-    deferred.value = true;
-  }
-
-  /** Stage the provider conversation again so the next start() resumes it
-   *  instead of minting a blank conversation. The provider's last
-   *  assistant-message uuid rides along for Claude (resumeSessionAt), so that
-   *  resume path keeps working too. */
-  function restageResume(live: Session): void {
-    const cid = lastConversationId ?? live.conversationId;
-    if (!cid) return;
-    pendingResumeId = cid;
-    pendingResumeProvider = provider.value ?? undefined;
-    // Claude resumes with the id + the last assistant message uuid; keep the
-    // freshest one we've seen so the re-staged cursor is complete.
-    if (lastResumeSessionAt) pendingResumeSessionAt = lastResumeSessionAt;
-  }
-
-  /** Whether an exit is the live session's. One from another provider, or
-   *  naming a conversation other than the one this session reported, is a
-   *  session the thread has since moved off — late, or stopped in a hand-in —
-   *  and the live one is still up. With no session here, any exit is news. */
-  function ownsExit(event: Extract<RuntimeEvent, { type: "session.exited" }>): boolean {
-    const live = session.value;
-    if (!live) return true;
-    if (event.provider !== live.provider) return false;
-    const ours = lastConversationId ?? live.conversationId;
-    const theirs = event.refs?.conversationId;
-    return !ours || !theirs || ours === theirs;
-  }
-
-  /** The provider session ended. A stop this side asked for — hibernate,
-   *  dispose, a restart — drops the session itself; this is for the one that
-   *  died on its own, which left the thread looking started, so the next send
-   *  went to a session nothing would answer from. Re-armed the way hibernate()
-   *  leaves it: the next send starts a session that resumes the conversation. */
-  function rearmAfterExit(): void {
-    if (forgotten || !session.value) return;
-    restageResume(session.value);
-    session.value = null;
     deferred.value = true;
   }
 
@@ -1282,7 +1245,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     carryThreadIdentity(previousThreadId, threadId.value);
     tokenUsage.value = null;
     // …and the old conversation is nothing it could resume.
-    lastConversationId = undefined;
+    handle.forgetConversation();
     // The re-born thread is a fresh conversation — no stored pages to walk.
     olderCursor.value = null;
     loadingOlder.value = false;
