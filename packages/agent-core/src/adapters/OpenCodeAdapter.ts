@@ -760,7 +760,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   // sealing in abortLiveTurn) for every session. The turn is sealed as
   // `interrupted` first (abortLiveTurn) or the journaled assistant block would
   // stay 'running' forever and the thread would reopen permanently busy.
-  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", session.dialect.interruptRoute(session.openCodeSessionId)); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
+  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", session.dialect.interruptRoute(session.openCodeSessionId)); } catch { /* best effort */ } await session.server.dispose(); if (this.sessions.get(threadId) === session) this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); await this.serverPool.dispose(); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); this.resolveApproval(session, requestId, decision); /* "Reject and stop" — the permission already gets its `reject` reply (toOpenCodeReply), and aborting the session turns that into an interrupted turn instead of a continued one. */ if (decision === "reject-and-stop") void this.interruptTurn(threadId); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> { const session = this.sessions.get(threadId); if (!session) return { owned: false }; const pending = session.pendingUserInputs.get(requestId); if (!pending) return { owned: false }; session.pendingUserInputs.delete(requestId); pending.resolve(answers); return { owned: true }; }
@@ -807,6 +807,18 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private unexpectedExit(session: OpenCodeSession, code: number | null, message?: string): void {
     if (session.disposed || session.exitNotified) return;
     session.exitNotified = true;
+    // Only the session the map still points at may retire the entry or speak
+    // for the thread: a second start for this threadId can claim it while
+    // this server is still on its way down.
+    const current = this.sessions.get(session.threadId);
+    if (current && current !== session) {
+      // A replacement owns the thread now — the old session's parked asks
+      // still die with it.
+      this.drain(session);
+      session.eventsAbort.abort();
+      return;
+    }
+    if (current) this.sessions.delete(session.threadId);
     // Settle parked approvals/questions so their resolvers resolve and the
     // renderer's modals clear — a crashed provider leaves no reply coming.
     this.drain(session);
@@ -825,7 +837,6 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (message) stateChanged.message = message;
     this.emit(stateChanged);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code });
-    this.sessions.delete(session.threadId);
     session.eventsAbort.abort();
   }
 

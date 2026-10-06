@@ -398,7 +398,8 @@ export class OpenCodeServerPool {
     return {
       baseUrl: "http://127.0.0.1:9",
       dialect: "v1",
-      child: { once: () => {} },
+      // Each server's exit listener, for a test to kill the server with.
+      child: { once: (_event: string, listener: (code: number | null) => void) => { Reflect.get(globalThis, "__koneOpenCodeExits")?.push(listener); } },
       dispose: async () => {},
     };
   }
@@ -1069,5 +1070,67 @@ describe("OpenCode gateway MCP registration", () => {
     expect(mcpBody?.config?.headers).toEqual({ Authorization: "Bearer thread-token" });
 
     await adapter.stopSession(THREAD);
+  });
+});
+
+describe("OpenCode exit of a session another start replaced", () => {
+  const THREAD = "replaced-thread";
+  const originalFetch = globalThis.fetch;
+  const exits: Array<(code: number | null) => void> = [];
+  let adapterModule: OpenCodeAdapterModule;
+
+  beforeAll(async () => {
+    adapterModule = await loadOpenCodeAdapterWithStubbedServer();
+  });
+
+  beforeEach(() => {
+    exits.length = 0;
+    Reflect.set(globalThis, "__koneOpenCodeExits", exits);
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const route = String(input).replace(/^https?:\/\/[^/]+/, "");
+      const method = init?.method ?? "GET";
+      if (method === "GET" && route === "/event") {
+        return new Response(new ReadableStream({ start() {} }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (method === "POST" && route === "/session") {
+        return new Response(JSON.stringify({ data: { id: "ses_1" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ data: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "__koneOpenCodeExits");
+    globalThis.fetch = originalFetch;
+  });
+
+  test("leaves the session that replaced it in place, and says nothing for the thread", async () => {
+    const events: RuntimeEvent[] = [];
+    const adapter = new adapterModule.OpenCodeAdapter((event) => events.push(event));
+    const start = () =>
+      adapter.startSession({ threadId: THREAD, provider: "opencode", cwd: "/tmp/kone-test-project" });
+    // Two starts in flight at once: neither finds the other to stop, so the
+    // second takes the thread over from the first.
+    await Promise.all([start(), start()]);
+    expect(exits).toHaveLength(2);
+
+    // The first one's server goes down.
+    exits[0]?.(1);
+
+    // Evicting the live session would leave the thread with no session while
+    // its process runs on, and its exit would tell the service the thread's
+    // session ended.
+    expect(await adapter.hasSession(THREAD)).toBe(true);
+    expect(ofType(events, "session.exited")).toHaveLength(0);
+    await adapter.stopAll();
   });
 });
