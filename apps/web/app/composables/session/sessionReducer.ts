@@ -64,6 +64,12 @@ export type SessionReducerDeps = {
   touch: () => void;
   /** Remember the freshest provider resume cursor riding the event envelope. */
   noteResumeSessionAt: (resumeSessionAt: string) => void;
+  /** Remember the freshest provider conversation id riding this thread's
+   *  event envelopes. */
+  noteConversationId: (conversationId: string) => void;
+  /** The provider session ended: re-arm the start-on-next-send, unless a stop
+   *  this side asked for has already dealt with it. */
+  noteSessionExited: () => void;
   sessionState: Ref<RuntimeSessionState>;
   warning: Ref<string | null>;
   error: Ref<string | null>;
@@ -96,6 +102,8 @@ export function useSessionReducer(deps: SessionReducerDeps) {
     threadId,
     touch,
     noteResumeSessionAt,
+    noteConversationId,
+    noteSessionExited,
     sessionState,
     warning,
     error,
@@ -314,6 +322,9 @@ export function useSessionReducer(deps: SessionReducerDeps) {
       return;
     }
     if (event.threadId !== threadId.value) return;
+    // Past the routing guard, so a spawned child's conversation never stands
+    // in for this thread's.
+    if (event.refs?.conversationId) noteConversationId(event.refs.conversationId);
     switch (event.type) {
       case "session.state.changed":
         sessionState.value = event.state;
@@ -342,6 +353,9 @@ export function useSessionReducer(deps: SessionReducerDeps) {
             ? { ...b, state: "failed", endedAt: event.at }
             : b,
         );
+        // A session that ended on its own is gone all the same: kept, the next
+        // send would go to a session nothing will answer from.
+        noteSessionExited();
         break;
       }
       case "thread.token-usage.updated": {

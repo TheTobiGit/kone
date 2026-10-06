@@ -16,7 +16,7 @@ import {
   useAgent,
   type UserBlock,
 } from "./useAgent";
-import type { AgentBaseEvent, ChatAttachment, RuntimeEvent } from "~/types/desktop";
+import type { AgentBaseEvent, ChatAttachment, RuntimeEvent, Session } from "~/types/desktop";
 import { createDevBridge } from "~/lib/devBridge";
 import { installDevBridge } from "~/utils/desktopBridge";
 
@@ -783,6 +783,39 @@ describe("useAgent durable turn queue", () => {
       }),
     );
     expect(session.queuedTurns.value).toHaveLength(0);
+  });
+});
+
+describe("useAgent: a session that ends on its own", () => {
+  /** A session the provider brought up, as start() would have kept it. */
+  function live(threadId: string): Session {
+    return { threadId, provider: "codex", cwd: "/tmp", status: "ready", mode: "ask" };
+  }
+  function exited(threadId: string): RuntimeEvent {
+    return { type: "session.exited", threadId, provider: "codex", at: Date.now(), source: "codex.rpc.lifecycle", code: 1 };
+  }
+
+  test("the next send starts it again instead of going to the dead one", () => {
+    const { session } = harness();
+    session.session.value = live(session.threadId.value);
+
+    session.reduce(exited(session.threadId.value));
+
+    // Kept, ensureStarted() was a no-op and every send went to a session
+    // nothing would answer from.
+    expect(session.session.value).toBeNull();
+    expect(session.unstarted.value).toBe(true);
+    expect(session.sessionState.value).toBe("stopped");
+  });
+
+  test("a disposed thread is not re-armed by its own stop", async () => {
+    const { session } = harness();
+    await session.dispose();
+    session.session.value = live(session.threadId.value);
+
+    session.reduce(exited(session.threadId.value));
+
+    expect(session.unstarted.value).toBe(false);
   });
 });
 

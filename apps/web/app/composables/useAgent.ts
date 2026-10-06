@@ -347,6 +347,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     noteResumeSessionAt: (resumeSessionAt: string) => {
       lastResumeSessionAt = resumeSessionAt;
     },
+    noteConversationId: (conversationId: string) => {
+      lastConversationId = conversationId;
+    },
+    noteSessionExited: () => rearmAfterExit(),
     sessionState,
     warning,
     error,
@@ -399,6 +403,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  rides the event envelope's refs like conversationId). Kept so hibernate()
    *  can re-stage a complete Claude resume cursor. */
   let lastResumeSessionAt: string | undefined;
+  /** The freshest provider conversation id this thread's events carried. A
+   *  session reports its id once it is up, so the one start() was handed back
+   *  can be missing (a fresh conversation) or stale. */
+  let lastConversationId: string | undefined;
   // …and which provider minted it. A resume id means nothing to another CLI, so
   // start() drops the resume if the provider has moved on since it was staged.
   // This used to be implicit — the resume was consumed by the start() that
@@ -1181,18 +1189,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const api = bridge();
     const wasLive = Boolean(api && session.value);
     if (api && session.value) {
-      // Stage the provider conversation id again so the next start() resumes
-      // it instead of minting a blank conversation. The provider's last
-      // assistant-message uuid rides along for Claude (resumeSessionAt), so
-      // that resume path keeps working too.
-      const cid = session.value.conversationId;
-      if (cid) {
-        pendingResumeId = cid;
-        pendingResumeProvider = provider.value ?? undefined;
-        // Claude resumes with the id + the last assistant message uuid; keep
-        // the freshest one we've seen so the re-staged cursor is complete.
-        if (lastResumeSessionAt) pendingResumeSessionAt = lastResumeSessionAt;
-      }
+      restageResume(session.value);
       try {
         await api.stopSession(threadId.value);
       } catch {
@@ -1207,6 +1204,32 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // Mark startable-on-demand again: the next send/start brings the CLI back
     // (see ensureStarted). Mirrors deferStart's contract, minus the optimistic
     // "ready" — a hibernated thread is genuinely stopped until it wakes.
+    deferred.value = true;
+  }
+
+  /** Stage the provider conversation again so the next start() resumes it
+   *  instead of minting a blank conversation. The provider's last
+   *  assistant-message uuid rides along for Claude (resumeSessionAt), so that
+   *  resume path keeps working too. */
+  function restageResume(live: Session): void {
+    const cid = lastConversationId ?? live.conversationId;
+    if (!cid) return;
+    pendingResumeId = cid;
+    pendingResumeProvider = provider.value ?? undefined;
+    // Claude resumes with the id + the last assistant message uuid; keep the
+    // freshest one we've seen so the re-staged cursor is complete.
+    if (lastResumeSessionAt) pendingResumeSessionAt = lastResumeSessionAt;
+  }
+
+  /** The provider session ended. A stop this side asked for — hibernate,
+   *  dispose, a restart — drops the session itself; this is for the one that
+   *  died on its own, which left the thread looking started, so the next send
+   *  went to a session nothing would answer from. Re-armed the way hibernate()
+   *  leaves it: the next send starts a session that resumes the conversation. */
+  function rearmAfterExit(): void {
+    if (forgotten || !session.value) return;
+    restageResume(session.value);
+    session.value = null;
     deferred.value = true;
   }
 
@@ -1244,6 +1267,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // when the process spawns, so a session that comes up nameless stays nameless.
     carryThreadIdentity(previousThreadId, threadId.value);
     tokenUsage.value = null;
+    // …and the old conversation is nothing it could resume.
+    lastConversationId = undefined;
     // The re-born thread is a fresh conversation — no stored pages to walk.
     olderCursor.value = null;
     loadingOlder.value = false;
