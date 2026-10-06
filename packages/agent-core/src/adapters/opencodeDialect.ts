@@ -1,4 +1,4 @@
-import { buildOpenCodeMcpServer } from "../gateway/injection.js";
+import { buildOpenCodeMcpServer, GATEWAY_TOOL_CALL_TIMEOUT_MS, OPENCODE_MCP_CATALOG_TIMEOUT_MS } from "../gateway/injection.js";
 import { isOpenCodeV2 } from "../opencodeHome.js";
 import type { OpenCodeServerDialect } from "../opencodeServer.js";
 import type { GatewayConnection, InteractionMode, ModelDescriptor } from "../types.js";
@@ -383,7 +383,13 @@ const openCodeDialectV2: OpenCodeDialect = {
 
   async registerMcp(client, connection, cwd) {
     const full = buildOpenCodeMcpServer(connection);
-    const config = { type: "remote", url: full.url, headers: full.headers, oauth: false };
+    // v2 splits the timeout: tools/list keeps opencode's short default, a tool
+    // call gets the long budget a blocking ask_question needs. A bare number
+    // here is a 400 from v2 (verified against opencode 2.0.16).
+    const config = {
+      type: "remote", url: full.url, headers: full.headers, oauth: false,
+      timeout: { catalog: OPENCODE_MCP_CATALOG_TIMEOUT_MS, execution: GATEWAY_TOOL_CALL_TIMEOUT_MS },
+    };
     const query = `?location[directory]=${encodeURIComponent(cwd)}`;
     await client.request("PUT", `/experimental/mcp/kone${query}`, { config });
   },

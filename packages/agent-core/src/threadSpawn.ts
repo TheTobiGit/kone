@@ -184,7 +184,7 @@ export interface SpawnEngineProviders {
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
-  ): Promise<{ owned: boolean; followUp?: string }>;
+  ): Promise<{ owned: boolean }>;
 }
 
 export interface SpawnEngineDeps {
@@ -1143,7 +1143,8 @@ class SpawnEngineImpl implements SpawnEngine {
         break;
       case "approval.resolved":
       case "user-input.resolved":
-        child.gate = null;
+        // A late word on an ask that already left takes nothing down with it.
+        if (child.gate?.requestId === event.requestId) child.gate = null;
         break;
       case "session.started":
         this.reviveSession(child);

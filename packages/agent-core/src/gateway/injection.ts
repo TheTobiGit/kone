@@ -146,14 +146,24 @@ export function claudeMcpServers(connection: GatewayConnection): Record<string, 
   return servers;
 }
 
+/** How long a provider may wait on one kone tool call. `ask_question` blocks
+ *  on a human, so the clients' own defaults (Codex 60s, OpenCode's MCP SDK
+ *  60s) would cut an unanswered question off mid-dialog. */
+export const GATEWAY_TOOL_CALL_TIMEOUT_MS = 60 * 60 * 1000;
+
+/** opencode's own default for listing a server's tools (catalog). */
+export const OPENCODE_MCP_CATALOG_TIMEOUT_MS = 5_000;
+
 /** One entry of opencode's remote-MCP config: where the server is, how to
- *  authorize against it, and whether it is live. */
+ *  authorize against it, whether it is live, and how long a call may take
+ *  (v1's single `timeout` covers both listing and tool execution). */
 export type OpenCodeMcpServer = {
   type: string;
   url: string;
   enabled: boolean;
   headers: Record<string, string>;
   oauth: boolean;
+  timeout: number;
 };
 
 /** The gateway as an opencode remote server, registered at runtime against a
@@ -165,6 +175,7 @@ export function buildOpenCodeMcpServer(connection: GatewayConnection): OpenCodeM
     enabled: true,
     headers: { Authorization: `Bearer ${connection.bearerToken}` },
     oauth: false,
+    timeout: GATEWAY_TOOL_CALL_TIMEOUT_MS,
   };
 }
 
@@ -196,6 +207,8 @@ export function codexGatewayConfigToml(endpointUrl: string, includeShellPolicy: 
     `[mcp_servers.${KONE_MCP_SERVER_NAME}]`,
     `url = ${tomlString(endpointUrl)}`,
     `bearer_token_env_var = ${tomlString(KONE_GATEWAY_TOKEN_ENV)}`,
+    // Human answers may take longer than Codex's default 60-second tool limit.
+    `tool_timeout_sec = ${GATEWAY_TOOL_CALL_TIMEOUT_MS / 1000}`,
   ];
   if (includeShellPolicy) {
     lines.push("", "[shell_environment_policy]", `exclude = [${tomlString(KONE_GATEWAY_TOKEN_ENV)}]`);

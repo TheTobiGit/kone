@@ -179,7 +179,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const gates = useSessionGates({
     threadId,
     bridge: ctx.bridge,
-    send,
     mockHasPendingApproval: (requestId) => mock?.hasPendingApproval(requestId) ?? false,
     mockRespondApproval: (requestId, decision) => mock?.respondApproval(requestId, decision) ?? false,
   });
@@ -361,7 +360,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     queueReturn,
     mergeQueueReturn,
     pendingQueueAnchors,
-    pendingUserInput,
+    parkedUserInput: gates.parkedUserInput,
     pendingApprovals,
     anchorFor,
     queuedBlockIdsOf,
@@ -2299,4 +2298,3 @@ export {
   setInlineThread,
   inlineThreadIds,
 } from "./agent/agentLive";
-

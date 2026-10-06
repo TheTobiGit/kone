@@ -29,10 +29,13 @@
 // kone vars (matching the design doc's shape); the flag lives inside the
 // script instead of the entry.
 //
-// Dependency-free (fetch / AbortController / URL / setTimeout().unref()), so
-// it runs on whichever node/bun/runtime backs `process.execPath`.
+// Dependency-free (fetch / node:http / AbortController / URL /
+// setTimeout().unref()), so it runs on whichever node/bun/runtime backs
+// `process.execPath`.
 
 import { spawn } from "node:child_process";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 
 if (process.versions.electron && process.env.ELECTRON_RUN_AS_NODE !== "1") {
   const child = spawn(process.execPath, process.argv.slice(1), {
@@ -191,6 +194,36 @@ function localInactiveResponse(message) {
   ];
 }
 
+/** POST one JSON-RPC body to the gateway. Not fetch: Node's fetch gives up
+ *  on a response whose headers take over 5 minutes, and the gateway answers a
+ *  tool call only once it returns — an ask_question waits on the user for as
+ *  long as they take. node:http sets no response deadline; the provider's own
+ *  call timeout and notifications/cancelled (the signal) still end it. */
+function postToGateway(body, bearer, signal) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = send(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer " + bearer,
+        "Content-Length": Buffer.byteLength(body),
+      },
+      signal,
+    }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => (text += chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 async function forwardMessage(message, controller) {
   const hasId = isRecord(message) && "id" in message;
   const id = hasId ? message.id : null;
@@ -200,21 +233,12 @@ async function forwardMessage(message, controller) {
   try {
     const resolvedToken = await resolveToken();
     if (!resolvedToken) return localInactiveResponse(message);
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        Authorization: "Bearer " + resolvedToken,
-      },
-      body: JSON.stringify(message),
-      signal: controller.signal,
-    });
+    const response = await postToGateway(JSON.stringify(message), resolvedToken, controller.signal);
     if (response.status === 202) {
       // Accepted-async: the gateway owns the outcome; nothing to write back.
       return [];
     }
-    const payload = await response.json();
+    const payload = JSON.parse(response.text);
     const messages = Array.isArray(payload) ? payload : [payload];
     return messages.filter((value) => value && value instanceof Object);
   } catch (error) {

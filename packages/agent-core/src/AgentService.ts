@@ -66,6 +66,7 @@ import { getThreadDispatcher } from "./dispatch.js";
 import { steeredBlockIds } from "@kone/protocol/steer-split";
 import type { GatewayHandle } from "./gateway/index.js";
 import { withViewBlock } from "./gateway/viewPreamble.js";
+import { UserQuestionRequests, type UserQuestionRequest } from "./userQuestionRequests.js";
 import type {
   ApprovalDecision,
   InteractionMode,
@@ -357,6 +358,7 @@ function failedCheckpoint(cause: unknown): FailedCheckpoint {
 type CancelScope = { queueIds: ReadonlySet<string> } | { upToRowid: number | null; spared: Set<string> };
 
 export class AgentService {
+  private readonly userQuestions = new UserQuestionRequests((event) => this.dispatch(event));
   private readonly adapters = new Map<ProviderKind, ProviderAdapter>();
   /** threadId → provider, so thread-scoped calls find the right adapter. */
   private readonly routing = new Map<string, ProviderKind>();
@@ -483,7 +485,11 @@ export class AgentService {
   private retentionStartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
-    const emit: EmitEvent = (event) => this.dispatch(event);
+    // A provider's questions join the thread's one question queue on their
+    // way out, so a provider's ask and Kone's own never show over each other.
+    const emit: EmitEvent = (event) => {
+      if (!this.userQuestions.admit(event)) this.dispatch(event);
+    };
     // Recovery bookkeeping listener: watches the merged stream to keep the
     // parked-ask snapshot, per-thread heartbeat, and live-turn map current.
     // Registered before any adapter, so nothing a provider emits escapes it.
@@ -1597,6 +1603,7 @@ export class AgentService {
   }
 
   async interruptTurn(threadId: string): Promise<void> {
+    this.userQuestions.cancel(threadId);
     this.endAsked.add(threadId);
     return this.adapterForThread(threadId).interruptTurn(threadId);
   }
@@ -1817,6 +1824,7 @@ export class AgentService {
   }
 
   async stopSession(threadId: string): Promise<void> {
+    this.userQuestions.cancel(threadId);
     const provider = this.routing.get(threadId);
     if (!provider) return;
     this.endAsked.add(threadId);
@@ -1948,6 +1956,7 @@ export class AgentService {
         break;
       case "turn.completed":
       case "turn.aborted":
+        this.userQuestions.end(threadId, event.turnId);
         // A turn kone steer ended: the next one says why. One that finished
         // on its own before the cancel reached it was not cut short.
         {
@@ -1971,6 +1980,7 @@ export class AgentService {
         break;
       case "session.state.changed":
         if (event.state === "stopped" || event.state === "error") {
+          this.userQuestions.end(threadId);
           this.activeTurns.delete(threadId);
           this.dropAllParked(threadId);
           this.forgetOpenItems(threadId);
@@ -1978,6 +1988,7 @@ export class AgentService {
         }
         break;
       case "session.exited":
+        this.userQuestions.end(threadId);
         // Read by every listener to this exit first (a seal takes its intent
         // from it), then gone with the session.
         queueMicrotask(() => this.endAsked.delete(threadId));
@@ -2308,7 +2319,16 @@ export class AgentService {
     requestId: string,
     answers: UserInputAnswers,
   ): Promise<UserInputRespondResult> {
+    if (requestId.startsWith("question:")) {
+      return { owned: this.userQuestions.respond(threadId, requestId, answers) };
+    }
     return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
+  }
+
+  /** The gateway awaits this promise; answering resumes the tool call itself. */
+  async askUser(request: UserQuestionRequest): Promise<UserInputAnswers> {
+    if (this.activeTurns.get(request.threadId) !== request.turnId || request.signal?.aborted) return {};
+    return this.userQuestions.ask(request);
   }
 
   // ── durable turn queue + steering ─────────────────────────────────────────
@@ -3311,6 +3331,7 @@ export class AgentService {
 
   /** Tear down everything — called on app quit so no agent subprocess is left. */
   async stopAll(): Promise<void> {
+    for (const threadId of this.routing.keys()) this.userQuestions.cancel(threadId);
     if (this.wedgeTimer) {
       clearInterval(this.wedgeTimer);
       this.wedgeTimer = null;

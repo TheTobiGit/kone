@@ -57,7 +57,7 @@ function makeSession() {
     queueReturn,
     mergeQueueReturn,
     pendingQueueAnchors: new Map<string, string>(),
-    pendingUserInput: ref<PendingUserInput | null>(null),
+    parkedUserInput: ref<PendingUserInput | null>(null),
     pendingApprovals: ref<PendingApproval[]>([]),
     anchorFor: () => undefined,
     queuedBlockIdsOf,

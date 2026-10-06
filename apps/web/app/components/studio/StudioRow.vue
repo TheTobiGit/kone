@@ -3,6 +3,7 @@ import HandOffChainBar from "~/components/thread/HandOffChainBar.vue";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useStudioRowView } from "~/composables/useViewContext";
 import { describePane } from "~/utils/viewPanes";
+import { claimDelegateColumn } from "~/utils/delegateColumns";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -597,21 +598,16 @@ function openLinkedThread(threadId: string): void {
 // column beside the agent that handed it over, the moment it is handed off —
 // the user watches the team work rather than one conversation. Opened without
 // taking focus: the user is still reading the agent that delegated. Workers
-// stay in that agent's Subagents dock. Once per child, so closing a column is
-// not undone by the next snapshot.
-const columnsOpenedFor = new Set<string>();
+// stay in that agent's Subagents dock. Once per child, and only for a child
+// handed off during this run (see claimDelegateColumn): a restored parent
+// re-seeds its children on every launch, and a closed delegate column must not
+// come back with them.
 watch(
-  () =>
-    agent.sessions.value.flatMap((session) =>
-      session.spawnedChildren.value
-        .filter((child) => child.handOff === "delegation" || child.handOff === "contract")
-        .map((child) => child.threadId),
-    ),
-  (delegates) => {
-    for (const threadId of delegates) {
-      if (columnsOpenedFor.has(threadId)) continue;
-      columnsOpenedFor.add(threadId);
-      void studio.open("thread", { threadId, focus: false });
+  () => agent.sessions.value.flatMap((session) => session.spawnedChildren.value),
+  (children) => {
+    for (const child of children) {
+      if (!claimDelegateColumn(child)) continue;
+      void studio.open("thread", { threadId: child.threadId, focus: false });
     }
   },
 );

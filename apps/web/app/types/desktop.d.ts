@@ -1339,14 +1339,10 @@ export type UserInputQuestion = {
  *  (multi-select), or null when skipped. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
 
-/** What answering a parked question settled (mirror packages/agent-core/src/types.ts).
- *  `owned` tells whether the backend still owned the request — false when it
- *  was already gone (stale or superseded), in which case the caller sends
- *  nothing. `followUp` carries the follow-up turn text only for a print-mode
- *  aftermath ask; absent for every live-question answer and for a dismissal. */
+/** Whether the backend still owned the parked question. Answers resolve
+ *  the waiting tool directly; stale or cancelled requests send no message. */
 export type UserInputRespondResult = {
   owned: boolean;
-  followUp?: string;
 };
 
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
@@ -1848,9 +1844,6 @@ export type RuntimeEvent =
       requestId: string;
       turnId?: string;
       questions: UserInputQuestion[];
-      /** Print-mode aftermath ask: the turn already settled, so answering
-       *  delivers the answers as a follow-up turn. */
-      postTurn?: boolean;
     })
   | (AgentBaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
   // The provider is asking for the user's go-ahead before the agent runs
@@ -3039,12 +3032,7 @@ export type KoneAgentApi = {
     requestId: string,
     decision: ApprovalDecision,
   ) => Promise<void>;
-  /** Answer a pending mid-turn question (AskUserQuestion / requestUserInput),
-   *  unblocking the parked turn. Resolves the ownership handoff: `owned`
-   *  tells whether the backend still owned the request, and `followUp`
-   *  carries the follow-up turn text for a print-mode aftermath ask — the
-   *  caller sends it as an ordinary turn, and sends nothing when unowned or
-   *  when there is no follow-up. */
+  /** Answer a pending question, resolving its waiting tool request. */
   respondUserInput: (
     threadId: string,
     requestId: string,

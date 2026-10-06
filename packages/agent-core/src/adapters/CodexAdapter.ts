@@ -47,6 +47,7 @@ import { emitCompacted } from "./emitCompacted.js";
 import { normalizeUserInputQuestions, readUserInputText } from "./userInputQuestions.js";
 import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from "../gateway/appContext.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "@kone/protocol/plan-tasks";
+import { currentKoneToolName, isKoneToolName } from "@kone/protocol/kone-tools";
 import {
   buildCodexAttachmentInput,
   composeTurnText,
@@ -569,6 +570,57 @@ function toRuntimeItemKind(rawType: CodexJsonValue | null | undefined): { kind: 
     return { kind: "tool_call", defaultName: type.includes("generat") ? "generate_image" : "image" };
   }
   return null; // review_entered, context_compaction, error, unknown
+}
+
+/** How one Codex item reads at a point in its lifecycle: its kind and tool
+ *  identity, the one-line target, and the expandable body. `record` marks a
+ *  body that is the call's whole record, which a completion keeps over
+ *  anything streamed before it. */
+type CodexItemView = { kind: RuntimeItemKind; name?: string; text: string; detail: string; record?: true };
+
+/** The servers kone's gateway reaches Codex as. */
+const KONE_MCP_SERVERS = new Set(["kone", "kone_extra"]);
+
+function codexItemView(
+  raw: CodexJsonObject,
+  itemType: string,
+  lifecycle: "started" | "completed",
+): CodexItemView | null {
+  // Codex files every MCP call under one item type. A call to kone's own
+  // gateway is named the tool it is, as every other provider's calls to it
+  // are, with its arguments and, once settled, its result as the record.
+  // Calls to any other server stay generic `mcp` steps.
+  const koneTool = itemType === "mcp tool call" ? koneMcpToolName(raw) : undefined;
+  if (koneTool) {
+    const args = raw.arguments ?? {};
+    let record: CodexJsonValue = args;
+    if (lifecycle === "completed") {
+      const settled: CodexJsonObject = { arguments: args, result: raw.result ?? null };
+      if (raw.error) settled.error = raw.error;
+      record = settled;
+    }
+    return { kind: "tool_call", name: koneTool, text: "", detail: JSON.stringify(record, null, 2), record: true };
+  }
+  const mapped = toRuntimeItemKind(raw.type);
+  if (!mapped) return null;
+  if (lifecycle === "completed") {
+    return { kind: mapped.kind, name: mapped.defaultName, text: itemDetail(raw) ?? "", detail: itemDetailBody(raw) ?? "" };
+  }
+  const isTextKind =
+    mapped.kind === "assistant_text" || mapped.kind === "reasoning_text" || mapped.kind === "plan_text";
+  // Identity keyword drives the icon/hue/phrasing; the target (command,
+  // path, query) rides along in `text`.
+  return { kind: mapped.kind, name: mapped.defaultName, text: isTextKind ? "" : (itemDetail(raw) ?? ""), detail: "" };
+}
+
+/** The kone tool an MCP call names, under its current name, or undefined when
+ *  the server or the tool is not kone's. */
+function koneMcpToolName(raw: CodexJsonObject): string | undefined {
+  const server = readString(raw, "server");
+  const tool = readString(raw, "tool");
+  if (!server || !tool || !KONE_MCP_SERVERS.has(server)) return undefined;
+  const current = currentKoneToolName(tool);
+  return isKoneToolName(current) ? current : undefined;
 }
 
 /** Join a multi-part string array (Codex sometimes sends `summary`/`content`
@@ -1671,21 +1723,11 @@ export class CodexAdapter implements ProviderAdapter {
       return;
     }
 
-    const mapped = toRuntimeItemKind(raw.type);
+    const view = codexItemView(raw, itemType, lifecycle);
 
     if (lifecycle === "started") {
-      if (!mapped) return;
-      const isTextKind =
-        mapped.kind === "assistant_text" || mapped.kind === "reasoning_text" || mapped.kind === "plan_text";
-      const buffer: CodexItemBuffer = {
-        itemId,
-        kind: mapped.kind,
-        // Identity keyword drives the icon/hue/phrasing; the target (command,
-        // path, query) rides along in `text`.
-        name: isTextKind ? undefined : mapped.defaultName,
-        text: isTextKind ? "" : (itemDetail(raw) ?? ""),
-        detail: "",
-      };
+      if (!view) return;
+      const buffer: CodexItemBuffer = { itemId, kind: view.kind, name: view.name, text: view.text, detail: view.detail };
       session.items.set(itemId, buffer);
       this.emitItem(session, "item.started", buffer, "in-progress", turnId, run);
       if (run && buffer.kind === "tool_call") {
@@ -1697,16 +1739,16 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     const existing = session.items.get(itemId);
-    const kind = existing?.kind ?? mapped?.kind;
+    const kind = existing?.kind ?? view?.kind;
     if (!kind) return;
-    const label = itemDetail(raw);
-    const body = itemDetailBody(raw);
+    // What streamed outranks the completion's scavenged text, unless the
+    // completion carries the call's whole record.
     const buffer: CodexItemBuffer = {
       itemId,
       kind,
-      name: existing?.name ?? mapped?.defaultName,
-      text: existing?.text && existing.text.length > 0 ? existing.text : (label ?? existing?.text ?? ""),
-      detail: existing?.detail && existing.detail.length > 0 ? existing.detail : (body ?? existing?.detail ?? ""),
+      name: existing?.name ?? view?.name,
+      text: existing?.text || view?.text || "",
+      detail: view?.record ? view.detail : existing?.detail || view?.detail || "",
     };
     session.items.set(itemId, buffer);
     this.emitItem(

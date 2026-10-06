@@ -109,7 +109,7 @@ type FakeEngine = {
   answerChildInput(
     caller: FakeCaller,
     request: { threadId: string; requestId: string; answers: Record<string, string | string[] | null> },
-  ): Promise<{ threadId: string; requestId: string; owned: boolean; followUp?: string }>;
+  ): Promise<{ threadId: string; requestId: string; owned: boolean }>;
   isInSubtree(rootThreadId: string, threadId: string): boolean;
   waitFor(input: FakeWaitInput): Promise<{
     threads: SpawnedThread[];

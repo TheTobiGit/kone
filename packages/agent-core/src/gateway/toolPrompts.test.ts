@@ -10,6 +10,7 @@ import { createLaunchTools } from "./tools/launch.js";
 import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
+import { createQuestionTools } from "./tools/questions.js";
 
 // The real tool set, built the way createGateway builds it. Only the tool
 // DEFINITIONS are under test — no handler runs — so each factory gets the
@@ -35,6 +36,7 @@ const TOOLS: ToolEntry[] = [
   ...createLaunchTools(),
   ...createLspTools(),
   ...createAstTools(),
+  ...createQuestionTools(),
 ];
 
 /** Every tool the gateway would actually serve. */

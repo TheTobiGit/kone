@@ -70,7 +70,7 @@ import {
   v2PermissionAction,
 } from "./adapters/opencodeDialect.js";
 import type { RecordLike } from "./adapters/opencodeJson.js";
-import type { RuntimeEvent } from "./types.js";
+import type { ProviderAdapter, QueuedTurnStore, RuntimeEvent } from "./types.js";
 
 function ofType<T extends RuntimeEvent["type"]>(events: RuntimeEvent[], type: T) {
   return events.filter((e): e is Extract<RuntimeEvent, { type: T }> => e.type === type);
@@ -1132,5 +1132,35 @@ describe("OpenCode exit of a session another start replaced", () => {
     expect(await adapter.hasSession(THREAD)).toBe(true);
     expect(ofType(events, "session.exited")).toHaveLength(0);
     await adapter.stopAll();
+  });
+
+  test("a server that goes down leaves the service with no live session for the thread", async () => {
+    const { AgentService } = await import("./AgentService.js");
+    const { ConversationStore } = await import("./ConversationStore.js");
+    const store = new ConversationStore();
+    const service = new AgentService({
+      // SAFETY: the real store satisfies the queue slice the service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: store as unknown as QueuedTurnStore,
+      adapters: (emit) =>
+        // SAFETY: the stubbed-server copy is OpenCodeAdapter itself.
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [new adapterModule.OpenCodeAdapter(emit) as unknown as ProviderAdapter],
+    });
+    try {
+      store.ensureThread({ threadId: THREAD, projectPath: "/tmp/kone-test-project", provider: "opencode" });
+      await service.startSession({ threadId: THREAD, provider: "opencode", cwd: "/tmp/kone-test-project" });
+      expect(service.hasLiveSession(THREAD)).toBe(true);
+
+      exits[0]?.(1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // Announced while the adapter still held it, the exit read as a stale
+      // one and the thread stayed routed to a session that was gone: no send
+      // or wake ever restarted it.
+      expect(service.hasLiveSession(THREAD)).toBe(false);
+    } finally {
+      await service.stopAll();
+    }
   });
 });

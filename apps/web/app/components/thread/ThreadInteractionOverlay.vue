@@ -39,6 +39,7 @@ const emit = defineEmits<{
 <template>
   <UiUserInputModal
     v-if="props.userInput && !props.suppressed"
+    :key="props.userInput.requestId"
     contained
     :request-id="props.userInput.requestId"
     :questions="props.userInput.questions"

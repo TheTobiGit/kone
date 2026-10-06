@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createRegistry } from "./registry.js";
+import { createQuestionTools } from "./tools/questions.js";
 
 import {
   buildCodexTurnCollaborationMode,
@@ -109,6 +111,23 @@ describe("kone host context (app-context injection)", () => {
     expect(renderKoneHostContext(TOOLS, "worker", { toolSearch: true })).not.toContain("ToolSearch");
   });
 
+  test("every prompt channel names the same blocking question tool", () => {
+    const tools = createRegistry(createQuestionTools(async () => ({}))).listToolPrompts();
+    const guidance = tools.flatMap((tool) => tool.guidelines);
+    expect(guidance.length).toBeGreaterThan(0);
+    const channels = [
+      renderKoneHostContext(tools, "worker"),
+      renderKoneHostContext(tools, "assistant"),
+      claudeSystemPromptAppend({ gateway: { tools } }),
+      codexDeveloperInstructions({ gateway: { tools } }) ?? "",
+      koneHostContextForFirstRun({ prompt: "work", runOrdinal: 1, gateway: { tools } }),
+    ];
+    for (const block of channels) {
+      expect(block).toContain("`ask_question`");
+      for (const line of guidance) expect(block).toContain(line);
+    }
+  });
+
   test("claude channel: block when connected, empty append when not", () => {
     expect(claudeSystemPromptAppend({ gateway: grant() })).toBe(renderKoneHostContext(TOOLS));
     expect(claudeSystemPromptAppend({})).toBe("");
@@ -132,6 +151,16 @@ describe("kone host context (app-context injection)", () => {
     expect(appContext).toContain(KONE_HOST_CONTEXT_MARKER);
     expect(appContext).toContain("scratchpad_read");
     expect(codexDeveloperInstructions({})).toBeUndefined();
+  });
+
+  test("Codex prefers the blocking question tool when Kone serves it", () => {
+    const block = codexDeveloperInstructions({ gateway: grant([
+      ...TOOLS, { name: "ask_question", snippet: "Ask the user in a dialog.", guidelines: [], needsApproval: false, onDemand: false },
+    ]) });
+    expect(block).toContain("use Kone's `ask_question` MCP tool");
+    expect(block).toContain("waits for the answer as its tool result");
+    expect(block).not.toContain("ask the user directly with a concise plain-text question");
+    expect(codexDeveloperInstructions({ gateway: grant() })).not.toContain("use Kone's `ask_question` MCP tool");
   });
 
   test("codex turn envelope: gated on the gateway, carries model/effort, envelopes default when unknown", () => {

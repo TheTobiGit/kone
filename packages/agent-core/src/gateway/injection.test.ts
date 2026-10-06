@@ -11,10 +11,12 @@ import { existsSync } from "node:fs";
 import {
   acpAgentSupportsHttp,
   acpMcpServers,
+  buildOpenCodeMcpServer,
   claudeMcpServers,
   CODEX_MANAGED_REGION_BEGIN,
   CODEX_MANAGED_REGION_END,
   codexGatewayConfigToml,
+  GATEWAY_TOOL_CALL_TIMEOUT_MS,
   hasShellEnvironmentPolicyTable,
   insertShellEnvPolicyExclude,
   KONE_GATEWAY_TOKEN_ENV,
@@ -25,6 +27,8 @@ import {
   STDIO_PROXY_PATH,
   stripCodexManagedRegion,
 } from "./injection.js";
+import { dialectForServer, type DialectClient } from "../adapters/opencodeDialect.js";
+import type { OpenCodeJsonValue } from "../adapters/opencodeJson.js";
 
 const CONNECTION = { url: "http://127.0.0.1:41231/mcp", bearerToken: "kone_gw_token-1" };
 
@@ -96,12 +100,43 @@ describe("acpMcpServers", () => {
   });
 });
 
+describe("opencode gateway entry", () => {
+  // OpenCode's MCP SDK otherwise cuts every tool call at 60s, which kills an
+  // ask_question the user has not answered yet.
+  test("v1 config gives tool calls the long gateway budget", () => {
+    expect(buildOpenCodeMcpServer(CONNECTION)).toEqual({
+      type: "remote",
+      url: CONNECTION.url,
+      enabled: true,
+      headers: { Authorization: `Bearer ${CONNECTION.bearerToken}` },
+      oauth: false,
+      timeout: GATEWAY_TOOL_CALL_TIMEOUT_MS,
+    });
+    expect(GATEWAY_TOOL_CALL_TIMEOUT_MS).toBe(3_600_000);
+  });
+
+  test("v2 runtime add splits the timeout into catalog and execution", async () => {
+    const calls: Array<{ method: string; path: string; body?: OpenCodeJsonValue }> = [];
+    const client: DialectClient = { request: async (method, path, body) => { calls.push({ method, path, body }); return {}; } };
+    await dialectForServer({ dialect: "v2" }).registerMcp(client, CONNECTION, "/work");
+    expect(calls).toEqual([{
+      method: "PUT",
+      path: "/experimental/mcp/kone?location[directory]=%2Fwork",
+      body: { config: {
+        type: "remote", url: CONNECTION.url, headers: { Authorization: `Bearer ${CONNECTION.bearerToken}` }, oauth: false,
+        timeout: { catalog: 5_000, execution: GATEWAY_TOOL_CALL_TIMEOUT_MS },
+      } },
+    }]);
+  });
+});
+
 describe("codexGatewayConfigToml", () => {
   test("names the server, the endpoint URL, and the token env var — never a token value", () => {
     const toml = codexGatewayConfigToml(CONNECTION.url, true);
     expect(toml).toContain("[mcp_servers.kone]");
     expect(toml).toContain(`url = "${CONNECTION.url}"`);
     expect(toml).toContain(`bearer_token_env_var = "${KONE_GATEWAY_TOKEN_ENV}"`);
+    expect(toml).toContain("tool_timeout_sec = 3600");
     expect(toml).not.toContain(CONNECTION.bearerToken);
   });
 

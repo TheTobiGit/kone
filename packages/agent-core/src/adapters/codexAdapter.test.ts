@@ -271,7 +271,7 @@ function wiredCodexSession(conversationId: string) {
     turnId?: string;
     requestId?: string;
     subagentToolUseId?: string;
-    item?: { itemId: string; kind: string; name?: string; text: string; status: string };
+    item?: { itemId: string; kind: string; name?: string; text: string; detail?: string; status: string };
     subagent?: SubagentRunSnapshot;
   }> = [];
   const adapter = new helpers.CodexAdapter((event) => {
@@ -545,5 +545,60 @@ describe("CodexAdapter nests spawned subagents under the parent turn", () => {
     const settledAt = events.findIndex((e) => e.type === "subagent.completed");
     const abortedAt = events.findIndex((e) => e.type === "turn.aborted");
     expect(settledAt).toBeLessThan(abortedAt);
+  });
+});
+
+describe("CodexAdapter blocking Kone question history", () => {
+  test("keeps the question and tool result inside the original assistant turn", () => {
+    const { events, notify } = wiredCodexSession("blocking-question-thread");
+    notify("turn/started", { threadId: "blocking-question-thread", turn: { id: "blocking-turn" } });
+    const item = { type: "mcpToolCall", id: "question-call", server: "kone", tool: "ask_question",
+      arguments: { questions: [{ question: "Which color?", options: ["Blue", "Green"] }] } };
+    notify("item/started", { threadId: "blocking-question-thread", turnId: "blocking-turn", item });
+    notify("item/completed", { threadId: "blocking-question-thread", turnId: "blocking-turn", item: {
+      ...item, status: "completed", result: { content: [{ type: "text", text: "Blue" }] },
+    } });
+    const completed = events.find((e) => e.type === "item.completed");
+    expect(completed).toMatchObject({ turnId: "blocking-turn", item: { name: "ask_question", kind: "tool_call", text: "" } });
+    expect(completed?.item?.detail).toContain("Which color?");
+    expect(completed?.item?.detail).toContain('"text": "Blue"');
+    expect(events.filter((e) => e.type === "turn.started")).toHaveLength(1);
+  });
+
+  test("names every kone tool canonically and keeps its arguments over streamed output", () => {
+    const { events, notify } = wiredCodexSession("kone-tool-thread");
+    notify("turn/started", { threadId: "kone-tool-thread", turn: { id: "kone-turn" } });
+    // Served under a former name, through the deferred-tools server.
+    const item = { type: "mcpToolCall", id: "message-call", server: "kone_extra", tool: "kone_irc_send",
+      arguments: { to: "main", message: "done" } };
+    notify("item/started", { threadId: "kone-tool-thread", turnId: "kone-turn", item });
+    const started = events.find((e) => e.type === "item.started");
+    expect(started?.item).toMatchObject({ name: "agent_message", text: "" });
+    expect(JSON.parse(started?.item?.detail ?? "")).toEqual({ to: "main", message: "done" });
+    notify("item/mcpToolCall/progress", { threadId: "kone-tool-thread", turnId: "kone-turn", itemId: "message-call", delta: "sending" });
+    notify("item/completed", { threadId: "kone-tool-thread", turnId: "kone-turn", item: {
+      ...item, status: "failed", error: { message: "no such agent" }, result: null,
+    } });
+    const completed = events.find((e) => e.type === "item.completed");
+    expect(completed?.item).toMatchObject({ name: "agent_message", status: "failed", text: "" });
+    expect(JSON.parse(completed?.item?.detail ?? "")).toEqual({
+      arguments: { to: "main", message: "done" }, result: null, error: { message: "no such agent" },
+    });
+  });
+
+  test("another server's MCP call stays a generic mcp step", () => {
+    const { events, notify } = wiredCodexSession("foreign-mcp-thread");
+    notify("turn/started", { threadId: "foreign-mcp-thread", turn: { id: "foreign-turn" } });
+    const item = { type: "mcpToolCall", id: "foreign-call", server: "github", tool: "ask_question",
+      title: "github: ask_question", arguments: { q: "x" } };
+    notify("item/started", { threadId: "foreign-mcp-thread", turnId: "foreign-turn", item });
+    notify("item/completed", { threadId: "foreign-mcp-thread", turnId: "foreign-turn", item: {
+      ...item, status: "completed", result: { output: "fetched" },
+    } });
+    const started = events.find((e) => e.type === "item.started");
+    expect(started?.item).toMatchObject({ name: "mcp", text: "github: ask_question" });
+    expect(started?.item?.detail).toBeUndefined();
+    const completed = events.find((e) => e.type === "item.completed");
+    expect(completed?.item).toMatchObject({ name: "mcp", text: "github: ask_question", detail: "fetched" });
   });
 });
