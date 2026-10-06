@@ -761,6 +761,16 @@ describe("OpenCode liveness", () => {
     await settle();
     expect(alive).toEqual([]);
   });
+
+  test("only a busy or retrying status counts, not one it does not know", async () => {
+    const alive: string[] = [];
+    await running(alive);
+    push!(data({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "retry" } } }));
+    push!(data({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "compacting" } } }));
+    push!(data({ type: "session.status", properties: { sessionID: "ses_1" } }));
+    await settle();
+    expect(alive).toEqual([THREAD]);
+  });
 });
 
 // ── OpenCode tool status ladder (real event-pump translation) ───────────────
