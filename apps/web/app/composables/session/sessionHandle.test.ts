@@ -71,3 +71,43 @@ describe("the conversation a session resumes", () => {
     expect(staged.at(-1)).toEqual({ resumeId: "conv-2", provider: "claudeAgent" });
   });
 });
+
+describe("a hand-in", () => {
+  test("leaves the session it adopted started", () => {
+    const { handle, deferred, staged, session } = handleOn("codex", "codex-conv");
+    handle.beginHandIn();
+
+    // The desktop side stops the old session on the way.
+    handle.exited();
+    const target: Session = { threadId: "t", provider: "claudeAgent", cwd: "/tmp", status: "ready", mode: "ask" };
+    handle.adoptHandIn(target);
+
+    // Left deferred, the next send's ensureStarted() started a second session
+    // over the one the hand-in had just brought up.
+    expect(deferred.value).toBe(false);
+    expect(session.value).toBe(target);
+    // Its stop is the swap, not a session to resume.
+    expect(staged).toEqual([]);
+  });
+
+  test("that fails after stopping the old session leaves the next send to start one", () => {
+    const { handle, deferred, session } = handleOn("codex", "codex-conv");
+    handle.beginHandIn();
+    handle.exited();
+
+    handle.handInFailed();
+
+    expect(session.value).toBeNull();
+    expect(deferred.value).toBe(true);
+  });
+
+  test("that fails before stopping anything keeps the live session", () => {
+    const { handle, deferred, session } = handleOn("codex", "codex-conv");
+    handle.beginHandIn();
+
+    handle.handInFailed();
+
+    expect(session.value).not.toBeNull();
+    expect(deferred.value).toBe(false);
+  });
+});

@@ -995,6 +995,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (busy.value) await interrupt();
     mock?.stopMock();
     touch();
+    handle.beginHandIn();
     try {
       const result = await api.handIn({
         threadId: threadId.value,
@@ -1005,7 +1006,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // The desktop side already stopped the old session and started the
       // target one against this same thread. startSession is not idempotent,
       // so adopt that handle rather than starting a second one here.
-      session.value = result.session;
+      handle.adoptHandIn(result.session);
       // Usage is counted per provider session; the new hands start at zero.
       tokenUsage.value = null;
       sessionState.value = "ready";
@@ -1015,6 +1016,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       await loadHandIns();
       return "handed";
     } catch (e) {
+      handle.handInFailed();
       error.value = peelIpcError(e, "Could not hand this thread over");
       return "failed";
     }
