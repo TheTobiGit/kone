@@ -679,6 +679,90 @@ describe("OpenCode subagents at the turn boundary", () => {
   });
 });
 
+// The wedge watchdog's liveness hook, driven through the adapter's own SSE
+// pump: a turn moving with nothing for the transcript says so, and the
+// server's keepalives, or another session's traffic, never do — a turn whose
+// provider has hung would otherwise never be reset.
+describe("OpenCode liveness", () => {
+  const THREAD = "liveness-thread";
+  const originalFetch = globalThis.fetch;
+  let adapterModule: OpenCodeAdapterModule;
+  let push: ((frame: string) => void) | null = null;
+  let closeStream: (() => void) | null = null;
+
+  beforeAll(async () => {
+    adapterModule = await loadOpenCodeAdapterWithStubbedServer();
+  });
+
+  beforeEach(() => {
+    push = null;
+    closeStream = null;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const route = String(input).replace(/^https?:\/\/[^/]+/, "");
+      const method = init?.method ?? "GET";
+      if (method === "GET" && route === "/event") {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder();
+              push = (frame) => controller.enqueue(encoder.encode(frame));
+              closeStream = () => controller.close();
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (method === "POST" && route === "/session") {
+        return new Response(JSON.stringify({ data: { id: "ses_1" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (route.startsWith("/session/ses_1/")) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: `unhandled ${method} ${route}` }), { status: 404 });
+    };
+  });
+
+  afterEach(() => {
+    closeStream?.();
+    globalThis.fetch = originalFetch;
+  });
+
+  async function running(alive: string[]) {
+    const adapter = new adapterModule.OpenCodeAdapter(() => {});
+    adapter.setLivenessHook((threadId) => alive.push(threadId));
+    await adapter.startSession({ threadId: THREAD, provider: "opencode", cwd: "/tmp/kone-test-project", model: "opencode-go/deepseek-v4-flash" });
+    await adapter.sendTurn({ threadId: THREAD, provider: "opencode", input: "go" });
+    const wired = Date.now() + 1_000;
+    while (!push && Date.now() < wired) await new Promise((resolve) => setTimeout(resolve, 2));
+    if (!push) throw new Error("event stream never opened");
+    return adapter;
+  }
+
+  const data = (event: RecordLike) => `data: ${JSON.stringify(event)}\n\n`;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  test("a step starting and a busy status keep the turn alive", async () => {
+    const alive: string[] = [];
+    await running(alive);
+    push!(data({ type: "session.step.started", properties: { sessionID: "ses_1" } }));
+    push!(data({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "busy" } } }));
+    await settle();
+    expect(alive).toEqual([THREAD, THREAD]);
+  });
+
+  test("keepalives and another session's traffic do not", async () => {
+    const alive: string[] = [];
+    await running(alive);
+    push!(": heartbeat\n\n");
+    push!(data({ type: "server.connected", properties: {} }));
+    push!(data({ type: "server.heartbeat", properties: {} }));
+    push!(data({ type: "session.status", properties: { sessionID: "ses_other", status: { type: "busy" } } }));
+    push!(data({ type: "session.step.started", properties: { sessionID: "ses_other" } }));
+    await settle();
+    expect(alive).toEqual([]);
+  });
+});
+
 // ── OpenCode tool status ladder (real event-pump translation) ───────────────
 // The steer harness above drains an immediately-closed event stream; this
 // harness keeps the stream open and feeds real `message.part.updated` tool

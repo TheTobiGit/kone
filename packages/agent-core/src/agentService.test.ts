@@ -81,6 +81,11 @@ class FakeAdapter {
     );
   }
   async stopAll(): Promise<void> {}
+  /** The service's liveness hook, as a real adapter keeps it. */
+  alive: (threadId: string) => void = () => {};
+  setLivenessHook(hook: (threadId: string) => void): void {
+    this.alive = hook;
+  }
   // The fake is injected as a `ProviderAdapter` wholesale (see the cast where
   // `adapters` is built); these stub methods are never called by the tests, so
   // they return the emptiest thing that reads as "nothing here".
@@ -462,6 +467,37 @@ describe("AgentService wedge watchdog", () => {
     await new Promise((r) => setTimeout(r, 150));
     clearInterval(heartbeat);
     expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+
+  // A model that thinks without streaming text: the adapter sees the provider
+  // working and says so through the liveness hook, with no event at all.
+  test("a turn its adapter reports alive is not reset, though it emits nothing", async () => {
+    const thread = "t-thinking";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-t" });
+    const codex = FakeAdapter.instances.find((a) => a.provider === "codex")!;
+    const before = received.length;
+    const thinking = setInterval(() => codex.alive(thread), 10);
+    await new Promise((r) => setTimeout(r, 150));
+    clearInterval(thinking);
+    expect(FakeAdapter.stopped).not.toContain(thread);
+    // Kone-internal: nothing reached the event stream.
+    expect(received.slice(before).filter((e) => e.threadId === thread)).toEqual([]);
+  }, 5_000);
+
+  test("liveness for another thread, or for a thread with no turn, keeps nobody alive", async () => {
+    const thread = "t-silent";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    const codex = FakeAdapter.instances.find((a) => a.provider === "codex")!;
+    // Before the turn: nothing to keep alive, so nothing is remembered.
+    codex.alive(thread);
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-s" });
+    const elsewhere = setInterval(() => codex.alive("t-someone-else"), 10);
+    await new Promise((r) => setTimeout(r, 150));
+    clearInterval(elsewhere);
+    expect(FakeAdapter.stopped).toContain(thread);
   }, 5_000);
 
   test("a thread with an open item is not reset at the short silence threshold", async () => {

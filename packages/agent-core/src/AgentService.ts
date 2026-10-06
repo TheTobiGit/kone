@@ -524,6 +524,14 @@ export class AgentService {
 
   private register(adapter: ProviderAdapter): void {
     this.adapters.set(adapter.provider, adapter);
+    adapter.setLivenessHook?.((threadId) => this.noteAlive(threadId));
+  }
+
+  /** An adapter saw a thread's running turn make progress no event carries
+   *  (setLivenessHook): the wedge watchdog's clock restarts. Outside a turn it
+   *  means nothing — the watchdog only watches live turns. */
+  private noteAlive(threadId: string): void {
+    if (this.activeTurns.has(threadId)) this.lastActivity.set(threadId, Date.now());
   }
 
   private adapter(provider: ProviderKind): ProviderAdapter {
