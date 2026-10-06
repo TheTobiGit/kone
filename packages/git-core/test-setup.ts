@@ -3,9 +3,9 @@
 // Every suite builds its scratch space with mkdtemp under os.tmpdir(), so
 // pointing the temp vars at a directory of this run's own contains all of it
 // — and removing that one directory once every test file has run cleans up
-// without touching a single test file. A nested run's tmpdir already sits
-// inside its parent's run dir, so it simply gets a subdir of its own and
-// removes only that. The same block lives in
+// without touching a single test file. A nested run inherits its parent's
+// run dir as tmpdir; it makes its own beside that one, not inside it, so a
+// parent that finishes first cannot take a live nested run's dir with it. The same block lives in
 // packages/agent-core/test-setup.ts and apps/desktop/test-setup.ts, one per
 // `bun test` process.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,7 +13,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll } from "bun:test";
 
-const testRunDir = mkdtempSync(path.join(tmpdir(), "kone-test-run-"));
+const startDir = tmpdir();
+const runDirAt = startDir.split(path.sep).findIndex((part) => part.startsWith("kone-test-run-"));
+const tempRoot = runDirAt === -1 ? startDir : startDir.split(path.sep).slice(0, runDirAt).join(path.sep) || path.sep;
+const testRunDir = mkdtempSync(path.join(tempRoot, "kone-test-run-"));
 process.env.TMPDIR = testRunDir;
 process.env.TMP = testRunDir;
 process.env.TEMP = testRunDir; // Windows reads TEMP/TMP, not TMPDIR.
