@@ -87,11 +87,17 @@ function backtrack(trace: Int32Array[], a: string[], b: string[], offset: number
     const prevK = down ? k + 1 : k - 1;
     const prevX = v[offset + prevK]!;
     const prevY = prevX - prevK;
-    while (x > prevX && y > prevY) edits.push({ op: "keep", line: a[--x]! }), y--;
+    while (x > prevX && y > prevY) {
+      edits.push({ op: "keep", line: a[--x]! });
+      y--;
+    }
     if (down) edits.push({ op: "add", line: b[--y]! });
     else edits.push({ op: "del", line: a[--x]! });
   }
-  while (x > 0 && y > 0) edits.push({ op: "keep", line: a[--x]! }), y--;
+  while (x > 0 && y > 0) {
+    edits.push({ op: "keep", line: a[--x]! });
+    y--;
+  }
   return edits.reverse();
 }
 

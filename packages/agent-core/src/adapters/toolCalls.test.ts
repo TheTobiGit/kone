@@ -88,8 +88,10 @@ describe("shell wrappers", () => {
 describe("captured Codex commands", () => {
   const completed = readFileSync(path.join(import.meta.dir, "fixtures/toolCalls/codex-app-server.jsonl"), "utf8")
     .trim().split("\n")
-    // SAFETY: repository-owned app-server fixtures use label/frame envelopes of decoded JSON-RPC frames.
-    .map((line) => JSON.parse(line) as { label: string; frame: { method?: string; params?: { item?: { type?: string } } } })
+    .map((line) => {
+      // SAFETY: repository-owned app-server fixtures use label/frame envelopes of decoded JSON-RPC frames.
+      return JSON.parse(line) as { label: string; frame: { method?: string; params?: { item?: { type?: string } } } };
+    })
     .filter(({ frame }) => frame.method === "item/completed" && frame.params?.item?.type === "commandExecution");
   const view = (label: string) => codexCommandView(completed.find((c) => c.label === label)!.frame.params!.item!);
 
