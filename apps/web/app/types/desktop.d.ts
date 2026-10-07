@@ -3696,6 +3696,19 @@ export type KoneAvatarApi = {
 };
 
 /**
+ * Images on disk that an agent's reply shows. The renderer cannot load a path
+ * itself: main checks the file — an image, inside the thread's repository or a
+ * temp folder — and answers with an opaque, expiring `local-image://` URL for
+ * exactly that file.
+ */
+export type KoneLocalImageApi = {
+  /** A URL for the image at `path`, or null when main won't vouch for it.
+   *  Main looks up `threadId`'s working directory itself; its repository is
+   *  where the thread's own images may come from. */
+  grant: (input: { path: string; threadId?: string | null }) => Promise<{ url: string } | null>;
+};
+
+/**
  * A preset sub-agent as it lives in the store (mirrors the desktop
  * `SubagentPresetRecord`, store v26).
  *
@@ -3932,6 +3945,7 @@ export type KoneDesktopApi = {
   roster: KoneRosterApi;
   presets: KonePresetsApi;
   avatars: KoneAvatarApi;
+  localImage: KoneLocalImageApi;
   window: KoneWindowApi;
 };
 
