@@ -25,6 +25,7 @@ import {
   TextFontIcon,
   UserGroupIcon,
   UserMultiple02Icon,
+  WebDesign01Icon,
   WorkflowSquare01Icon,
 } from "@hugeicons/core-free-icons";
 import type { ToolOrbFamily } from "~/utils/toolOrbDraw";
@@ -161,6 +162,18 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Previewing a rewrite",
     "Previewed a rewrite",
     "Couldn't preview a rewrite",
+  ]),
+
+  // pages
+  page_preview: kone(WebDesign01Icon, "Page", "write", [
+    "Checking a page",
+    "Checked a page",
+    "Couldn't render the page",
+  ]),
+  page_show: kone(WebDesign01Icon, "Page", "write", [
+    "Showing a page",
+    "Showed a page",
+    "Couldn't show the page",
   ]),
 
   // app — agents

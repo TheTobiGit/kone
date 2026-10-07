@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatSpawnResult } from "@kone/protocol/spawn-record";
+import { formatPageShown } from "@kone/protocol/page-render";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 import { DEFAULT_DISPLAYS, RESPONSE_OPTIONS, type ResponseDisplay } from "./responseDisplay";
@@ -34,11 +35,21 @@ const spawn = (id: string): RuntimeItem => ({
   }),
 });
 
+const page = (id: string): RuntimeItem => ({
+  itemId: id,
+  kind: "tool_call",
+  status: "completed",
+  name: "page_show",
+  text: "",
+  detail: formatPageShown({ attachmentId: `att_${id}`, title: "t", height: 200 }),
+});
+
 /** A group as a short tag: steps list their items, text its item, spawns their child. */
 function tag(g: RenderGroup): string {
   if (g.kind === "steps") return `steps:${g.segments.flatMap((s) => s.items.map((i) => i.itemId)).join(",")}`;
   if (g.kind === "text") return `text:${g.seg.items.map((i) => i.itemId).join(",")}`;
   if (g.kind === "decision") return `decision:${g.item.itemId}`;
+  if (g.kind === "page") return `page:${g.page.attachmentId}`;
   return `spawn:${g.record.threadId}`;
 }
 const tags = (groups: RenderGroup[] | null) => (groups ?? []).map(tag);
@@ -127,6 +138,13 @@ describe("planTurn when it's done", () => {
     const plan = planTurn(block([...TURN, spawn("s1")], "completed"), STUDIO);
     expect(tags(plan.inline)).toEqual(["text:reply", "spawn:child-s1"]);
     expect(plan.toggle).toEqual({ open: false });
+  });
+
+  test("a turn whose answer is a page folds its work away, the page standing as the reply", () => {
+    const plan = planTurn(block([tool("p0"), page("01"), tool("r1")], "completed"), STUDIO);
+    expect(tags(plan.inline)).toEqual(["page:att_01"]);
+    expect(tags(plan.fold)).toEqual(["steps:p0,r1"]);
+    expect(plan.foldOpen).toBe(false);
   });
 
   test("a turn that ended on a tool call folds open, having no reply", () => {
