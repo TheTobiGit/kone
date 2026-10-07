@@ -32,8 +32,7 @@ type SkillRoot = {
   readonly scope: "user" | "project";
 };
 
-// The user/global roots kone scans across installed agent providers.
-// Per online docs 2026 + Synara parity:
+// The user/global roots kone scans across installed agent providers:
 // - Claude Code: ~/.claude/skills (global) + plugin cache ~/.claude/plugins/cache
 // - Codex CLI: ~/.codex/skills (global, includes .system)
 // - Cursor: ~/.cursor/skills + legacy ~/.cursor/skills-cursor (global)

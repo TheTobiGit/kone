@@ -181,7 +181,6 @@ export function useGitClone() {
   }
 
   return {
-    // state
     raw,
     repo,
     valid,

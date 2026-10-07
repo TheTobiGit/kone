@@ -653,7 +653,7 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
 }
 
 /* ── name field ── borderless; reads as text until focused. Leading glyph
-   firms on focus. Matches the clone reference field. */
+   firms on focus. */
 .cp-field {
   display: flex;
   align-items: center;

@@ -13,7 +13,7 @@ import { ORIGIN_ORDER, brandsForOrigin, originLabel } from "~/utils/detailFormat
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 
-// Cards like the Discover reference — flat top, no gradient, no byline.
+// Skill cards: flat top, no gradient, no byline.
 // Logos are the providers the skill is reachable from. `agents` = shared
 // (shows all providers except claude), others = single provider.
 
@@ -723,7 +723,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 .search input::placeholder { color: var(--faint); }
 
-/* grid like the Discover reference: 2-col on desktop, 1 on narrow */
+/* 2-col on desktop, 1 on narrow */
 .grid {
   list-style: none;
   margin: 0;
