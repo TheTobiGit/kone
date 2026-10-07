@@ -1271,11 +1271,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   return {
     key,
-    // identity
     threadId,
     provider,
     title,
-    // side-chat state
     isSideChat,
     sideChatSource,
     forkContext,
@@ -1335,14 +1333,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     reasoning,
     serviceTier,
     contextWindow,
-    // reduction (manager calls this for our events)
     reduce,
     worktreePath,
     envMode,
     workspacePending,
     requestedBranch,
     workspaceSteps,
-    // actions
     start,
     stageWorkspace,
     beginWorkspaceSteps,
@@ -2234,7 +2230,6 @@ export function useAgent(options: UseAgentOptions) {
     // so the sweep never disposes a session sitting in a visible column.
     pinToPane,
     unpinFromPane,
-    // actions
     start,
     restart,
     switchProvider,

@@ -438,7 +438,6 @@ export function useFolderPicker() {
     canAscend,
     parentName,
     ascend,
-    // actions
     descend,
     climbTo,
     goToPath,

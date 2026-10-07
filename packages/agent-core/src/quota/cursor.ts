@@ -7,8 +7,8 @@ import type { KeychainOutcome } from "./security.js";
 import { dollars, emptyReport, percent } from "./types.js";
 import type { QuotaProviderReport, QuotaWindow } from "./types.js";
 
-// Cursor's own dashboard usage endpoint — a Connect RPC service on
-// wires two REST fallbacks (`cursor.com/api/usage`, `/api/usage-summary`) plus
+// Cursor's own dashboard usage endpoint — a Connect RPC service.
+// The dashboard wires two REST fallbacks (`cursor.com/api/usage`, `/api/usage-summary`) plus
 // a Stripe balance read and a usage-events CSV export, but every one of those
 // requires deriving a `WorkosCursorSessionToken` cookie from the access
 // token's JWT `sub` claim (`<userId>::<token>`, URL-encoded) — a second,
@@ -332,7 +332,7 @@ async function fetchCreditGrants(accessToken: string, deps: CursorDeps, signal?:
  *  optionally-fetched plan name and credit-grant balance) into a report.
  *  Exported for tests — the window shape is worth locking down independent
  *  of the network. Field names below (`planUsage.totalPercentUsed`,
- *  `spendLimitUsage.individualLimit`, …) are ported straight from
+ *  `spendLimitUsage.individualLimit`, …) match Cursor's API response.
  */
 export function decodeCursorUsage(
   body: CursorUsagePayload,
