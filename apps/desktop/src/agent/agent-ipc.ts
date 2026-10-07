@@ -31,6 +31,7 @@ import { inboxHistoryView, waitingInbox } from "@kone/agent-core/inboxView.js";
 import { configureIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
+import { previewPage } from "../pagePreview.js";
 import { currentAppearance, currentThemeRoster } from "../modules/system/system.js";
 import {
   currentAgentRoster,
@@ -251,6 +252,8 @@ export function registerAgentIpc(): void {
     // back here is what lets app_get_theme_state describe the actual window
     // instead of the last theme an agent asked for.
     readAppearance: () => currentAppearance(),
+    // Pages render off screen in a hidden window of the app's own browser.
+    previewPage,
     // Likewise the library: an install's themes are its built-ins plus whatever
     // the user imported or authored, and the renderer is the only one that
     // knows the whole set.
