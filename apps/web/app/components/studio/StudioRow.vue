@@ -194,11 +194,6 @@ const { clear: dockClear } = useDockClearance(composerDockEl, {
 // out behind the card rather than under it.
 const dockFade = computed(() => dockClear.value - STRIP_DOCK_FLOAT);
 
-// Subagents get exactly one host: the row above the composer while it is open,
-// the bottom-left corner the rest of the time. Both placements read this one
-// value, so they can't both render — or both vanish.
-const subagentsAbove = computed(() => composerOpen.value);
-
 // A pad pane briefly pulses its index dash after a thread → pad append.
 const pulseScratchpadKey = ref<string | null>(null);
 
@@ -1845,7 +1840,7 @@ useStudioRowView(registryPath, () =>
             :composer-open="composerOpen"
             :changes="activeChanges"
             :plan="activePlan"
-            :delegates="subagentsAbove ? activeDelegates : null"
+            :delegates="activeDelegates"
             :project-path="project.path"
             :thread-key="focusedKey"
             position-mode="fixed"
@@ -1917,35 +1912,6 @@ useStudioRowView(registryPath, () =>
       </div>
     </Transition>
 
-    <!-- Subagents dock — the nested runs the agent delegated to this turn. It's
-         a taller, wider panel than the Changes/Tasks cards, so at rest it lives
-         in the bottom-LEFT corner (free on the studio — the folder only perches
-         there on home) instead of crowding the right-hand stack. While the
-         composer is open it joins the dock row above the composer instead, so
-         this corner copy steps aside to avoid a duplicate. -->
-    <Transition
-      enter-active-class="transition-opacity duration-150 ease-out"
-      enter-from-class="opacity-0"
-      leave-active-class="transition-opacity duration-150 ease-in"
-      leave-to-class="opacity-0"
-    >
-      <div
-        v-if="visible && !blocked && focusedThread && !isOverview && !subagentsAbove"
-        data-agent-dock
-        class="sub-dock-corner"
-      >
-        <AnimatePresence :initial="false" mode="wait">
-          <AgentSubagentDock
-            v-if="activeDelegates.rows.length"
-            :key="`agent-subagents-dock-${focusedKey}`"
-            :rows="activeDelegates.rows"
-            :streaming="activeDelegates.streaming"
-            @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
-          />
-        </AnimatePresence>
-      </div>
-    </Transition>
-
     <!-- The full providers → models → effort picker, in the folder-picker shell.
          In handoff mode it picks where the source thread continues instead of
          retuning this row's session (see onPickerSelect). -->
@@ -1994,28 +1960,6 @@ useStudioRowView(registryPath, () =>
 .composer-dock--open {
   z-index: 46;
 }
-
-
-/* ── Subagents dock (bottom-left) ─────────────────────────────────────────── */
-/* The nested-run panel lives in the opposite corner from the Changes/Tasks
-   stack: it's the widest of the three and grows downward as more subagents
-   spawn, so the right-hand column stays uncrowded. The container ignores
-   pointer events; the card re-enables them for itself. */
-.sub-dock-corner {
-  position: fixed;
-  left: 2rem;
-  bottom: 2rem;
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  pointer-events: none;
-  transform-origin: 0 100%;
-  transition:
-    opacity 0.15s ease,
-    transform 0.15s ease;
-}
-
 
 /* Each layer holds the viewport and centres its content, exactly as the old
    is-work / is-chat `<main>` did — that shaping now lives on the layer so the

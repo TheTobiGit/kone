@@ -1,27 +1,28 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
-import { cardSpring } from "~/utils/cardSpring";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowLeft01Icon, ArrowRight01Icon, ArrowExpand01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowLeft01Icon, ArrowExpand01Icon } from "@hugeicons/core-free-icons";
 import FileIcon from "~/components/file/FileIcon.vue";
+import DockSection from "~/components/thread/DockSection.vue";
+import { useDockSection } from "~/composables/useDockSections";
 import type { ChangedFile } from "~/utils/changedFiles";
 import type { GitFileDiff } from "~/types/desktop";
 import type { DiffRow } from "~/composables/useDiff";
 
-// The corner "Changes" dock — a sibling of the Tasks dock (PlanTaskList) in the
-// same folder-picker shell, docked bottom-right while a turn works the tree. It
-// lists every file the agent has created, edited, or removed this thread: the
-// real file-type logo, the filename, and its +added / −removed diffstat, with
-// the aggregate +/− in the header — the same diff vocabulary the change cards
-// use.
+// The Changes section of the thread dock — a sibling of the Tasks section
+// (PlanTaskList) in the same shell. It lists every file the agent has created,
+// edited, or removed this thread: the real file-type logo, the filename, and
+// its +added / −removed diffstat, with the aggregate +/− in the head — the same
+// diff vocabulary the change cards use.
 //
-// Picking a row doesn't leave the corner: the dock itself morphs. The shell
-// widens in place, the header swaps its title for a back step + the file's own
-// name, and the body cross-fades from the row list to that file's unified diff
-// (the same highlighted rows the full detail view builds). From there, Back
-// returns to the list and Open hands the file up to the full-screen detail.
+// Picking a row doesn't leave the dock: the section itself morphs. It asks the
+// shell for the wide stance, the head swaps its title for a back step + the
+// file's own name, and the body cross-fades from the row list to that file's
+// unified diff (the same highlighted rows the full detail view builds). From
+// there, Back returns to the list and Open hands the file up to the full-screen
+// detail.
 
 const props = defineProps<{
   files: ChangedFile[];
@@ -43,14 +44,12 @@ const emit = defineEmits<{
 
 const { cue } = useSound();
 
-// Open only when the dock mounts into a live turn — the user is here watching
-// work happen. Reopening a settled thread mounts collapsed: they came back to
-// read the response, not to re-scan the file list. A write starting mid-thread
-// still opens it via the streaming watch below.
+// Open only when the section mounts into a live turn — the user is here
+// watching work happen. Reopening a settled thread mounts collapsed: they came
+// back to read the response, not to re-scan the file list. A write starting
+// mid-thread still opens it via the streaming watch below.
 const expanded = ref(props.streaming ?? false);
-const shellEl = ref<HTMLElement | null>(null);
-const cardHeight = ref<number | null>(null);
-let ro: ResizeObserver | null = null;
+const { setWide } = useDockSection("changes", expanded);
 
 const totalAdded = computed(() => props.totalAdded ?? 0);
 const totalRemoved = computed(() => props.totalRemoved ?? 0);
@@ -163,10 +162,9 @@ watch(scheme, async () => {
   peekRows.value = rows;
 });
 
-function syncHeight(): void {
-  const el = shellEl.value;
-  if (el) cardHeight.value = el.offsetHeight;
-}
+// A diff wants room: the shell widens while one is open — and only while the
+// section is open to show it.
+watch([peekPath, expanded], ([path, open]) => setWide(Boolean(path) && open), { immediate: true });
 
 function toggle(): void {
   expanded.value = !expanded.value;
@@ -182,10 +180,6 @@ watch(
   },
 );
 
-watch([expanded, () => props.files, peekPath, peekRows], () => {
-  void nextTick(syncHeight);
-});
-
 // Esc steps back out of the diff before anything else takes it — the dock's own
 // share of the board's back stack.
 useEventListener(window, "keydown", (e) => {
@@ -193,18 +187,6 @@ useEventListener(window, "keydown", (e) => {
   e.preventDefault();
   e.stopPropagation();
   closePeek();
-});
-
-onMounted(() => {
-  syncHeight();
-  ro = new ResizeObserver(syncHeight);
-  if (shellEl.value) ro.observe(shellEl.value);
-  window.addEventListener("resize", syncHeight);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", syncHeight);
-  ro?.disconnect();
 });
 
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
@@ -223,285 +205,169 @@ function isEmptyNew(file: ChangedFile): boolean {
 </script>
 
 <template>
-  <motion.div
-    class="chg-dock"
-    :class="{ 'chg-dock--peek': peekFile }"
-    :style="{ transformOrigin: '100% 100%' }"
-    :initial="{ opacity: 0, y: 16, scale: 0.94 }"
-    :animate="{ opacity: 1, y: 0, scale: 1 }"
-    :exit="{ opacity: 0, y: 12, scale: 0.95 }"
-    :transition="cardSpring"
-    aria-label="Changed files"
-  >
-    <div
-      class="plan-card"
-      :class="{ 'plan-card--collapsed': !expanded }"
-      :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-    >
-      <div ref="shellEl" class="plan-shell" :class="{ 'plan-shell--collapsed': !expanded }">
-        <!-- Peeking a file: the header becomes the way back out of it — a back
-             step carrying the file's own name, its diffstat, and the escalation
-             to the full-screen detail. The fold chevron stays put through the
-             swap so the dock never loses its collapse. -->
-        <div v-if="peekFile" class="picker-header plan-header plan-header--peek">
+  <DockSection label="Changes" :expanded="expanded" @toggle="toggle">
+    <!-- Peeking a file: the head becomes the way back out of it — a back step
+         carrying the file's own name, its diffstat, and the escalation to the
+         full-screen detail. The fold chevron stays put through the swap so the
+         section never loses its collapse. -->
+    <template v-if="peekFile" #head="{ toggle: fold }">
+      <div class="dock-section__head peek-head">
+        <button
+          type="button"
+          class="peek-back"
+          title="Back to changed files"
+          aria-label="Back to changed files"
+          @click="closePeek"
+        >
+          <HugeiconsIcon :icon="ArrowLeft01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
+          <FileIcon :path="peekFile.name" :size="15" />
+          <span class="peek-name" :title="peekFile.path">{{ peekFile.name }}</span>
+        </button>
+        <span class="dock-section__trail">
+          <span class="chg-total">
+            <span v-if="peekFile.added > 0" class="chg-add">+{{ peekFile.added }}</span>
+            <span v-if="peekFile.removed > 0" class="chg-del">−{{ peekFile.removed }}</span>
+          </span>
           <button
             type="button"
-            class="peek-back"
-            title="Back to changed files"
-            aria-label="Back to changed files"
-            @click="closePeek"
+            class="peek-open"
+            title="Open the full file"
+            aria-label="Open the full file"
+            @click="openFull"
           >
-            <HugeiconsIcon :icon="ArrowLeft01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
-            <FileIcon :path="peekFile.name" :size="15" />
-            <span class="peek-name" :title="peekFile.path">{{ peekFile.name }}</span>
+            <HugeiconsIcon :icon="ArrowExpand01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
+            <span>Open</span>
           </button>
-          <span class="plan-header__trail">
-            <span class="chg-total">
-              <span v-if="peekFile.added > 0" class="chg-add">+{{ peekFile.added }}</span>
-              <span v-if="peekFile.removed > 0" class="chg-del">−{{ peekFile.removed }}</span>
-            </span>
-            <button
-              type="button"
-              class="peek-open"
-              title="Open the full file"
-              aria-label="Open the full file"
-              @click="openFull"
-            >
-              <HugeiconsIcon :icon="ArrowExpand01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
-              <span>Open</span>
-            </button>
-            <button
-              type="button"
-              class="peek-fold"
-              :aria-expanded="expanded"
-              :aria-label="expanded ? 'Collapse' : 'Expand'"
-              @click="toggle"
-            >
-              <motion.span
-                class="plan-chev"
-                :animate="{ rotate: expanded ? 90 : 0 }"
-                :transition="chevSpring"
-                aria-hidden="true"
-              >
-                <HugeiconsIcon :icon="ArrowRight01Icon" :size="14" :stroke-width="2" />
-              </motion.span>
-            </button>
-          </span>
-        </div>
-
-        <button
-          v-else
-          type="button"
-          class="picker-header plan-header"
-          :aria-expanded="expanded"
-          @click="toggle"
-        >
-          <span class="plan-title">Changes</span>
-          <span class="plan-header__trail">
-            <AnimatePresence mode="wait">
-              <motion.span
-                v-if="!expanded && liveFile"
-                :key="liveFile.id"
-                class="plan-peek"
-                :title="liveFile.path"
-                :initial="{ opacity: 0, x: 8 }"
-                :animate="{ opacity: 1, x: 0 }"
-                :exit="{ opacity: 0, x: -6 }"
-                :transition="{ duration: 0.22, ease: fadeEase }"
-              >
-                {{ liveFile.name }}
-              </motion.span>
-            </AnimatePresence>
-            <span class="chg-total" :class="{ 'chg-total--muted': !hasTotals }">
-              <template v-if="hasTotals">
-                <span v-if="totalAdded > 0" class="chg-add">+{{ totalAdded }}</span>
-                <span v-if="totalRemoved > 0" class="chg-del">−{{ totalRemoved }}</span>
-              </template>
-              <span v-else>{{ streaming ? "…" : files.length }}</span>
-            </span>
+          <button
+            type="button"
+            class="peek-fold"
+            :aria-expanded="expanded"
+            :aria-label="expanded ? 'Collapse' : 'Expand'"
+            @click="fold"
+          >
             <motion.span
-              class="plan-chev"
-              :animate="{ rotate: expanded ? 90 : 0 }"
+              class="dock-section__chev"
+              :animate="{ rotate: expanded ? 180 : 0 }"
               :transition="chevSpring"
               aria-hidden="true"
             >
-              <HugeiconsIcon :icon="ArrowRight01Icon" :size="14" :stroke-width="2" />
+              <HugeiconsIcon :icon="ArrowDown01Icon" :size="14" :stroke-width="2" />
             </motion.span>
-          </span>
-        </button>
-
-        <div class="plan-body" :class="{ 'plan-body--open': expanded }">
-          <div class="plan-body-inner">
-            <!-- The diff, in the dock: one unified column, syntax-highlighted
-                 with word-level emphasis on the changed spans — the same rows
-                 the full detail builds, set at dock scale. -->
-            <div v-if="peekFile" class="picker-scroll peek-scroll">
-              <div v-if="peekLoading" class="peek-skeleton">
-                <span
-                  v-for="n in 7"
-                  :key="n"
-                  class="peek-skeleton__row"
-                  :style="{ '--i': n, width: `${32 + ((n * 37) % 56)}%` }"
-                />
-              </div>
-              <p v-else-if="peekNote" class="plan-empty">{{ peekNote }}</p>
-              <template v-else>
-                <template v-for="(row, i) in peekRows" :key="i">
-                  <div v-if="row.kind === 'gap'" class="pdl__gap" aria-hidden="true">
-                    <span /><span />
-                  </div>
-                  <div v-else class="pdl" :class="`pdl--${row.kind}`">
-                    <span class="pdl__no">{{ row.newNo ?? row.oldNo ?? "" }}</span>
-                    <span class="pdl__sign" aria-hidden="true">{{ row.kind === "add" ? "+" : row.kind === "del" ? "−" : "" }}</span>
-                    <span class="pdl__text"><span
-                      v-for="(c, j) in row.chunks"
-                      :key="j"
-                      :class="{ pdl__emph: c.emph }"
-                      :style="{ color: c.color }"
-                    >{{ c.text }}</span></span>
-                  </div>
-                </template>
-              </template>
-            </div>
-
-            <div v-else class="picker-scroll plan-scroll">
-              <AnimatePresence mode="wait">
-                <motion.p
-                  v-if="!props.files.length"
-                  key="empty"
-                  class="plan-empty"
-                  :initial="{ opacity: 0, y: 6 }"
-                  :animate="{ opacity: 1, y: 0 }"
-                  :exit="{ opacity: 0, y: -4 }"
-                  :transition="{ duration: 0.2, ease: fadeEase }"
-                >
-                  {{ streaming ? "Working…" : "No changes" }}
-                </motion.p>
-              </AnimatePresence>
-
-              <AnimatePresence :initial="false">
-                <motion.div
-                  v-for="(file, index) in props.files"
-                  :key="file.id"
-                  class="chg-row"
-                  :class="{
-                    'chg-row--removed': file.kind === 'removed',
-                    'chg-row--pick': canPeek,
-                  }"
-                  :role="canPeek ? 'button' : undefined"
-                  :tabindex="canPeek ? 0 : undefined"
-                  @click="openPeek(file, $event)"
-                  @keydown.enter.prevent="openPeek(file, $event)"
-                  @keydown.space.prevent="openPeek(file, $event)"
-                  layout
-                  :initial="{ opacity: 0, y: 8, scale: 0.98 }"
-                  :animate="{ opacity: 1, y: 0, scale: 1 }"
-                  :exit="{ opacity: 0, y: -6, scale: 0.98 }"
-                  :transition="{ ...rowSpring, delay: rowDelay(index) }"
-                >
-                  <span class="chg-icon" aria-hidden="true">
-                    <FileIcon :path="file.name" :size="16" />
-                  </span>
-                  <span class="chg-name" :title="file.path">{{ file.name }}</span>
-                  <span class="chg-stat">
-                    <span v-if="file.kind === 'removed' && !file.removed" class="chg-tag">removed</span>
-                    <span v-else-if="isEmptyNew(file)" class="chg-tag">new</span>
-                    <template v-else>
-                      <span v-if="file.added > 0" class="chg-add">+{{ file.added }}</span>
-                      <span v-if="file.removed > 0" class="chg-del">−{{ file.removed }}</span>
-                    </template>
-                  </span>
-                </motion.div>
-              </AnimatePresence>
-            </div>
-          </div>
-        </div>
+          </button>
+        </span>
       </div>
+    </template>
+
+    <template #trail>
+      <AnimatePresence mode="wait">
+        <motion.span
+          v-if="!expanded && liveFile"
+          :key="liveFile.id"
+          class="dock-peek"
+          :title="liveFile.path"
+          :initial="{ opacity: 0, x: 8 }"
+          :animate="{ opacity: 1, x: 0 }"
+          :exit="{ opacity: 0, x: -6 }"
+          :transition="{ duration: 0.22, ease: fadeEase }"
+        >
+          {{ liveFile.name }}
+        </motion.span>
+      </AnimatePresence>
+      <span class="chg-total" :class="{ 'chg-total--muted': !hasTotals }">
+        <template v-if="hasTotals">
+          <span v-if="totalAdded > 0" class="chg-add">+{{ totalAdded }}</span>
+          <span v-if="totalRemoved > 0" class="chg-del">−{{ totalRemoved }}</span>
+        </template>
+        <span v-else>{{ streaming ? "…" : files.length }}</span>
+      </span>
+    </template>
+
+    <!-- The diff, in the dock: one unified column, syntax-highlighted with
+         word-level emphasis on the changed spans — the same rows the full
+         detail builds, set at dock scale. -->
+    <div v-if="peekFile" class="dock-scroll peek-scroll">
+      <div v-if="peekLoading" class="peek-skeleton">
+        <span
+          v-for="n in 7"
+          :key="n"
+          class="peek-skeleton__row"
+          :style="{ '--i': n, width: `${32 + ((n * 37) % 56)}%` }"
+        />
+      </div>
+      <p v-else-if="peekNote" class="dock-empty">{{ peekNote }}</p>
+      <template v-else>
+        <template v-for="(row, i) in peekRows" :key="i">
+          <div v-if="row.kind === 'gap'" class="pdl__gap" aria-hidden="true">
+            <span /><span />
+          </div>
+          <div v-else class="pdl" :class="`pdl--${row.kind}`">
+            <span class="pdl__no">{{ row.newNo ?? row.oldNo ?? "" }}</span>
+            <span class="pdl__sign" aria-hidden="true">{{ row.kind === "add" ? "+" : row.kind === "del" ? "−" : "" }}</span>
+            <span class="pdl__text"><span
+              v-for="(c, j) in row.chunks"
+              :key="j"
+              :class="{ pdl__emph: c.emph }"
+              :style="{ color: c.color }"
+            >{{ c.text }}</span></span>
+          </div>
+        </template>
+      </template>
     </div>
-  </motion.div>
+
+    <div v-else class="dock-scroll">
+      <AnimatePresence mode="wait">
+        <motion.p
+          v-if="!props.files.length"
+          key="empty"
+          class="dock-empty"
+          :initial="{ opacity: 0, y: 6 }"
+          :animate="{ opacity: 1, y: 0 }"
+          :exit="{ opacity: 0, y: -4 }"
+          :transition="{ duration: 0.2, ease: fadeEase }"
+        >
+          {{ streaming ? "Working…" : "No changes" }}
+        </motion.p>
+      </AnimatePresence>
+
+      <AnimatePresence :initial="false">
+        <motion.div
+          v-for="(file, index) in props.files"
+          :key="file.id"
+          class="chg-row"
+          :class="{
+            'chg-row--removed': file.kind === 'removed',
+            'chg-row--pick': canPeek,
+          }"
+          :role="canPeek ? 'button' : undefined"
+          :tabindex="canPeek ? 0 : undefined"
+          @click="openPeek(file, $event)"
+          @keydown.enter.prevent="openPeek(file, $event)"
+          @keydown.space.prevent="openPeek(file, $event)"
+          layout
+          :initial="{ opacity: 0, y: 8, scale: 0.98 }"
+          :animate="{ opacity: 1, y: 0, scale: 1 }"
+          :exit="{ opacity: 0, y: -6, scale: 0.98 }"
+          :transition="{ ...rowSpring, delay: rowDelay(index) }"
+        >
+          <span class="chg-icon" aria-hidden="true">
+            <FileIcon :path="file.name" :size="16" />
+          </span>
+          <span class="chg-name" :title="file.path">{{ file.name }}</span>
+          <span class="chg-stat">
+            <span v-if="file.kind === 'removed' && !file.removed" class="chg-tag">removed</span>
+            <span v-else-if="isEmptyNew(file)" class="chg-tag">new</span>
+            <template v-else>
+              <span v-if="file.added > 0" class="chg-add">+{{ file.added }}</span>
+              <span v-if="file.removed > 0" class="chg-del">−{{ file.removed }}</span>
+            </template>
+          </span>
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  </DockSection>
 </template>
 
 <style scoped>
-/* Shares the Tasks dock's folder-picker shell (plan-card / plan-shell /
-   picker-header / plan-body) so the two corner docks read as one family — only
-   the row content differs. */
-.chg-dock {
-  width: min(17rem, calc(100vw - 2.5rem));
-  pointer-events: auto;
-  will-change: transform, opacity;
-  /* The morph: the same card widens in place when a file opens inside it, so the
-     diff arrives in the corner rather than in a new surface. */
-  transition: width 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.chg-dock--peek {
-  width: min(37rem, calc(100vw - 2.5rem));
-}
-
-.plan-card {
-  background: var(--panel);
-  border-radius: 18px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
-  overflow: hidden;
-  transition: height 0.24s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.plan-shell {
-  --band-bg: var(--band);
-  --band-arc: 14px;
-  padding: 0 0 0.75rem 0.75rem;
-  transition: padding-bottom 0.2s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.plan-shell--collapsed {
-  padding-bottom: 0;
-}
-
-.plan-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: calc(100% + 0.75rem);
-  margin: 0 0 0 -0.75rem;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-  color: inherit;
-  transition: opacity 0.18s ease;
-}
-.plan-header:hover {
-  opacity: 0.88;
-}
-
-.plan-title {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 20px;
-  letter-spacing: -0.01em;
-  color: var(--ink-soft);
-}
-
-.plan-header__trail {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  height: 20px;
-}
-
-.plan-peek {
-  display: block;
-  min-width: 0;
-  max-width: 6.5rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 20px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--ink-soft);
-}
-
 /* Header diffstat — the aggregate +/− (or a plain count until anything's
    measured), in the same mono/tabular treatment as the change cards. */
 .chg-total {
@@ -518,86 +384,12 @@ function isEmptyNew(file: ChangedFile): boolean {
   color: var(--muted);
 }
 
-.plan-chev {
-  display: inline-flex;
-  flex: none;
-  opacity: 0.45;
-}
-
-.picker-header {
-  position: relative;
-  padding: 0.625rem 1rem;
-  background-color: var(--band-bg);
-}
-.plan-card--collapsed .picker-header::before,
-.plan-card--collapsed .picker-header::after {
-  opacity: 0;
-}
-.picker-header::before,
-.picker-header::after {
-  content: "";
-  position: absolute;
-  width: var(--band-arc);
-  height: var(--band-arc);
-  top: 100%;
-  pointer-events: none;
-  transition: opacity 0.14s ease;
-}
-.picker-header::before {
-  left: 0;
-  background: radial-gradient(circle at bottom right, transparent var(--band-arc), var(--band-bg) 0);
-}
-.picker-header::after {
-  right: 0;
-  background: radial-gradient(circle at bottom left, transparent var(--band-arc), var(--band-bg) 0);
-}
-
-.plan-body {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.2s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.plan-body--open {
-  grid-template-rows: 1fr;
-}
-.plan-body-inner {
-  overflow: hidden;
-  min-height: 0;
-}
-
-.plan-scroll {
-  /* Grow to fit the changed-files list; only scroll once it would run off-screen. */
-  max-height: min(28rem, calc(100vh - 8rem));
-}
-
-.picker-scroll {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.125rem 0.75rem 0.125rem 0;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--muted) 40%, transparent) transparent;
-}
-.picker-scroll::-webkit-scrollbar {
-  width: 6px;
-}
-.picker-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.picker-scroll::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 35%, transparent);
-}
-
 .chg-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0.5rem;
-  border-radius: 10px;
+  gap: 0.55rem;
+  padding: 0.38rem 0.55rem;
+  border-radius: 9px;
 }
 /* A row is a way in — it lights on hover like the peek drawer's rows do. */
 .chg-row--pick {
@@ -616,16 +408,15 @@ function isEmptyNew(file: ChangedFile): boolean {
   color: var(--ink);
 }
 
-/* ── peek header ──────────────────────────────────────────────────────────── */
-/* The header the list swaps for while a file is open: back on the left (chevron,
-   file logo, name), diffstat + Open + the fold chevron on the right. */
-.plan-header--peek {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: calc(100% + 0.75rem);
-  margin: 0 0 0 -0.75rem;
+/* ── peek head ────────────────────────────────────────────────────────────── */
+/* The head the list swaps for while a file is open: back on the left (chevron,
+   file logo, name), diffstat + Open + the fold chevron on the right. It is not
+   itself a button, so it doesn't light as one. */
+.peek-head {
+  cursor: default;
+}
+.peek-head:hover {
+  background-color: transparent;
 }
 .peek-back {
   display: inline-flex;
@@ -707,10 +498,9 @@ function isEmptyNew(file: ChangedFile): boolean {
    carrying the colour, so a whole new file never becomes a green block. Long
    lines run out to their own horizontal scroll instead of wrapping, which would
    break the code's shape at this width. */
-.peek-scroll {
-  max-height: min(26rem, calc(100vh - 10rem));
+.dock-scroll.peek-scroll {
   overflow-x: auto;
-  padding: 0.25rem 0.75rem 0.25rem 0;
+  padding: 0.25rem 0.55rem 0.35rem 0;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.6;
@@ -827,7 +617,7 @@ function isEmptyNew(file: ChangedFile): boolean {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
@@ -863,31 +653,13 @@ function isEmptyNew(file: ChangedFile): boolean {
   color: var(--muted);
 }
 
-.plan-empty {
-  margin: 0;
-  padding: 0.35rem 0.5rem;
-  font-size: 13px;
-  color: var(--muted);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .plan-card,
-  .plan-shell,
-  .plan-body,
-  .chg-dock,
-  .picker-header::before,
-  .picker-header::after {
-    transition: none;
-  }
   .peek-scroll {
     animation: none;
   }
   .peek-skeleton__row {
     animation: none;
     opacity: 0.6;
-  }
-  .chg-dock {
-    will-change: auto;
   }
 }
 </style>

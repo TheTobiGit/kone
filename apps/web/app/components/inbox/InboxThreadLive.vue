@@ -17,7 +17,6 @@ import HandOffChainBar from "~/components/thread/HandOffChainBar.vue";
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
-import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ThreadBranchDrift from "~/components/inbox/ThreadBranchDrift.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
@@ -293,11 +292,6 @@ const { clear: bodyPadBottom } = useDockClearance(dockEl, { resting: 132, float:
 // edge-fade observes — so tell it by hand, once the new padding is laid out.
 watch(bodyPadBottom, () => void nextTick(measure));
 
-// Subagents get exactly one host: the row above the composer while it is open,
-// the bottom-left corner the rest of the time. Both placements read this one
-// value, so they can't both render — or both vanish.
-const subagentsAbove = computed(() => composerOpen.value);
-
 watch(blocks, () => void nextTick(measure));
 
 // Opening a thread should land at the latest message, not the top.
@@ -440,6 +434,22 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       />
     </div>
 
+    <!-- The thread dock — Changes, Tasks and Subagents in one shell, resting in
+         the pane's bottom-right corner; a rail on the right edge while the
+         composer is open. Pane-level, not inside the composer rail, so the rail
+         can centre on the pane. -->
+    <ThreadDockStack
+      v-if="!modalOpen"
+      :composer-open="composerOpen"
+      :changes="activeChanges"
+      :plan="activePlan"
+      :delegates="activeDelegates"
+      :project-path="projectPath"
+      :thread-key="row.threadId"
+      position-mode="absolute-pane"
+      @stop-subagent="onStopSubagent"
+    />
+
     <!-- Laid over the transcript rather than under it, the way it is on the
          board: the composer keeps its own footprint and the conversation
          scrolls behind it, so the thread does not resize every time the card
@@ -450,17 +460,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
            about whether the turn happens at all, and this is about where it
            would land — so the nearer-term obstacle sits nearer the composer. -->
       <ThreadBranchDrift class="live__banner" :drift="branchDrift" />
-
-      <ThreadDockStack
-        :composer-open="composerOpen"
-        :changes="activeChanges"
-        :plan="activePlan"
-        :delegates="subagentsAbove ? activeDelegates : null"
-        :project-path="projectPath"
-        :thread-key="row.threadId"
-        position-mode="absolute-dock"
-        @stop-subagent="onStopSubagent"
-      />
 
       <HandOffChainBar :thread-id="session?.threadId.value" :spawned="session?.spawnedChildren.value ?? []" />
       <AgentComposer
@@ -527,16 +526,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
       @decide="onRespondApproval"
-    />
-
-    <!-- The subagent corner — delegated runs bottom-left. While the composer
-         is open the dock joins the Changes/Tasks row above the composer
-         instead, so this corner copy steps aside to avoid a duplicate. -->
-    <ThreadSubagentDock
-      v-if="!subagentsAbove"
-      :rows="activeDelegates.rows"
-      :streaming="activeDelegates.streaming"
-      @stop-subagent="onStopSubagent"
     />
 
     <!-- The full providers → models → effort picker. It is the surface's to
