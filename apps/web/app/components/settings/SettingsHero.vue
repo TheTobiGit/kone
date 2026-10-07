@@ -6,9 +6,8 @@ import { computed } from "vue";
 // lives here because it's the one setting about the person rather than the tool.
 //
 // The drawing behind it is ambient, not information. A few contour lines drift
-// slowly past, one of them in the accent, and a ring turns around the avatar
-// with a mote on it. It moves slowly enough to stay out of the way, and holds
-// still under prefers-reduced-motion.
+// slowly past, one of them in the accent. It moves slowly enough to stay out of
+// the way, and holds still under prefers-reduced-motion.
 
 defineProps<{ tabbable: boolean }>();
 const emit = defineEmits<{ open: [] }>();
@@ -61,14 +60,6 @@ const contours = [
     </svg>
 
     <span class="hero__avatar-wrap" aria-hidden="true">
-      <svg class="hero__orbit" viewBox="0 0 60 60">
-        <circle class="ring" cx="30" cy="30" r="27" pathLength="100" />
-        <g class="mote">
-          <g class="boost">
-            <circle cx="30" cy="3" r="2.4" />
-          </g>
-        </g>
-      </svg>
       <span class="hero__avatar" :style="avatarStyle">
         <template v-if="!image">{{ initial }}</template>
       </span>
@@ -171,9 +162,8 @@ const contours = [
   animation-play-state: running;
 }
 
-/* ── avatar and its orbit ──────────────────────────────────────────────────── */
+/* ── avatar ─────────────────────────────────────────────────────────────────── */
 .hero__avatar-wrap {
-  position: relative;
   display: grid;
   place-items: center;
   width: 52px;
@@ -195,38 +185,6 @@ const contours = [
   from {
     transform: scale(0.6);
     opacity: 0;
-  }
-}
-.hero__orbit {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-.ring {
-  fill: none;
-  stroke: color-mix(in srgb, var(--ink) 16%, transparent);
-  stroke-width: 1;
-  stroke-dasharray: 2 4;
-  transform-origin: 30px 30px;
-  animation: spin 40s linear infinite;
-}
-.mote {
-  transform-origin: 30px 30px;
-  animation: spin 7s linear infinite;
-}
-.mote .boost {
-  transform-origin: 30px 30px;
-  animation: spin 3.2s linear infinite paused;
-}
-.mote circle {
-  fill: var(--accent);
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 70%, transparent));
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
   }
 }
 
