@@ -15,7 +15,6 @@
 
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
-import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
@@ -142,16 +141,13 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 watch(blocks, () => void nextTick(measure));
 
-// The corner docks overlay the transcript's bottom corners — bottom-left for
-// the subagents, bottom-right for Changes/Tasks — so the floor has to clear
-// the taller of the two, expanded or not. They perch 12px off the pane's
-// bottom, with 24px of air under the last line; with no docks the floor is the
-// pane's own resting padding. There is no composer here, so subagents always
-// live in the corner: nothing else can claim them.
-const subDockEl = ref<InstanceType<typeof ThreadSubagentDock>>();
+// The corner dock overlays the transcript's bottom-right corner, so the floor
+// has to clear it, expanded or not. It perches 12px off the pane's bottom, with
+// 24px of air under the last line; with no dock the floor is the pane's own
+// resting padding.
 const dockStackEl = ref<InstanceType<typeof ThreadDockStack>>();
 const { clear: bodyPadBottom, refresh: refreshDockClearance } = useDockClearance(
-  [subDockEl, dockStackEl],
+  dockStackEl,
   { resting: 24, float: 12, air: 24 },
 );
 // The docks mount empty and fill once the stored page lands, and a dock that
@@ -227,17 +223,12 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
       />
     </div>
 
-    <!-- The subagent corner — delegated runs bottom-left. -->
-    <ThreadSubagentDock
-      ref="subDockEl"
-      :rows="storedDelegates.rows"
-    />
-
-    <!-- Corner dock stack — Changes above Tasks, bottom-right. -->
+    <!-- Corner dock — Changes, Tasks and Subagents in one shell, bottom-right. -->
     <ThreadDockStack
       ref="dockStackEl"
       :changes="storedChanges"
       :plan="storedPlan"
+      :delegates="storedDelegates"
       :thread-key="row.threadId"
       position-mode="absolute-pane"
     />

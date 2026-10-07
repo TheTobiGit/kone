@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
-import { cardSpring } from "~/utils/cardSpring";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowRight01Icon, AiBrain01Icon, StopIcon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, StopIcon } from "@hugeicons/core-free-icons";
+import DockSection from "~/components/thread/DockSection.vue";
+import { useDockSection } from "~/composables/useDockSections";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { SESSION_BRAND } from "~/types/session";
@@ -21,9 +22,9 @@ import {
 } from "~/composables/useAgent";
 import type { ApprovalDecision } from "~/types/desktop";
 
-// The corner "Subagents" dock — a sibling of the Changes dock (ChangedFilesList)
-// and the Tasks dock (PlanTaskList) in the same folder-picker shell, docked
-// bottom-right while a turn hands work off. It lists everything the agent has
+// The Subagents section of the thread dock — a sibling of the Changes section
+// (ChangedFilesList) and the Tasks section (PlanTaskList) in the same shell,
+// shown while a turn hands work off. It lists everything the agent has
 // delegated to this thread in one chronological list, of two kinds: provider-
 // native nested runs (ephemeral, one turn long) and spawned kone threads
 // (real, persistent conversations that outlive the parent's turn).
@@ -82,14 +83,12 @@ function decideRowApproval(row: DelegateRow, decision: ApprovalDecision): void {
 // read the response, not to re-scan the run list. The streaming watch below
 // still opens it when a turn starts mid-thread.
 const expanded = ref(props.streaming ?? false);
-const shellEl = ref<HTMLElement | null>(null);
+useDockSection("subagents", expanded);
 const scrollEl = ref<HTMLElement | null>(null);
-const cardHeight = ref<number | null>(null);
 // Scrolling is only enabled once the list has *settled* and truly overflows —
 // otherwise a spawning row's spring overshoot briefly exceeds the container and
 // `overflow: auto` flashes a scrollbar for a run that never needed one.
 const canScroll = ref(false);
-let ro: ResizeObserver | null = null;
 let measureTimer: ReturnType<typeof setTimeout> | null = null;
 
 const running = computed(() => props.rows.filter((r) => r.live).length);
@@ -119,11 +118,6 @@ function scheduleMeasure(): void {
   }, 340);
 }
 
-function syncHeight(): void {
-  const el = shellEl.value;
-  if (el) cardHeight.value = el.offsetHeight;
-}
-
 function toggle(): void {
   expanded.value = !expanded.value;
   cue(expanded.value ? "expand" : "collapse");
@@ -150,21 +144,9 @@ watch(
   },
 );
 
-watch([expanded, () => props.rows], () => {
-  void nextTick(syncHeight);
-  scheduleMeasure();
-});
-
-onMounted(() => {
-  syncHeight();
-  ro = new ResizeObserver(syncHeight);
-  if (shellEl.value) ro.observe(shellEl.value);
-  window.addEventListener("resize", syncHeight);
-});
+watch([expanded, () => props.rows], scheduleMeasure);
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", syncHeight);
-  ro?.disconnect();
   if (collapseTimer) clearTimeout(collapseTimer);
   if (measureTimer) clearTimeout(measureTimer);
 });
@@ -172,7 +154,6 @@ onBeforeUnmount(() => {
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
 const fadeEase = [0.22, 1, 0.36, 1] as const;
 const stateFade = { duration: 0.16, ease: fadeEase } as const;
-const chevSpring = { type: "spring", stiffness: 520, damping: 30, mass: 0.45 } as const;
 
 function rowDelay(index: number): number {
   return Math.min(index * 0.045, 0.28);
@@ -189,329 +170,221 @@ function rowBrand(row: DelegateRow): BrandKey {
 </script>
 
 <template>
-  <motion.div
-    class="sub-dock"
-    data-agent-dock
-    :style="{ transformOrigin: '0% 100%' }"
-    :initial="{ opacity: 0, y: 16, scale: 0.94 }"
-    :animate="{ opacity: 1, y: 0, scale: 1 }"
-    :exit="{ opacity: 0, y: 12, scale: 0.95 }"
-    :transition="cardSpring"
-    aria-label="Agent subagents"
-  >
-    <div
-      class="sub-card"
-      :class="{ 'sub-card--collapsed': !expanded }"
-      :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-    >
-      <div ref="shellEl" class="sub-shell" :class="{ 'sub-shell--collapsed': !expanded }">
-        <button
-          type="button"
-          class="picker-header sub-header"
-          :aria-expanded="expanded"
-          @click="toggle"
+  <DockSection label="Subagents" :expanded="expanded" @toggle="toggle">
+    <template #trail>
+      <AnimatePresence mode="wait">
+        <motion.span
+          v-if="!expanded && liveRun"
+          :key="liveRun.id"
+          class="dock-peek"
+          :title="liveRun.title"
+          :initial="{ opacity: 0, x: 8 }"
+          :animate="{ opacity: 1, x: 0 }"
+          :exit="{ opacity: 0, x: -6 }"
+          :transition="{ duration: 0.22, ease: fadeEase }"
         >
-          <span class="sub-title">Subagents</span>
-          <span class="sub-header__trail">
-            <AnimatePresence mode="wait">
+          {{ liveRun.title }}
+        </motion.span>
+      </AnimatePresence>
+      <span class="sub-meta-wrap">
+        <AnimatePresence mode="wait">
+          <motion.span
+            :key="meta"
+            class="dock-count"
+            :class="{ 'dock-count--live': streaming }"
+            :initial="{ opacity: 0, y: 4 }"
+            :animate="{ opacity: 1, y: 0 }"
+            :exit="{ opacity: 0, y: -4 }"
+            :transition="{ duration: 0.18, ease: fadeEase }"
+          >
+            {{ meta }}
+          </motion.span>
+        </AnimatePresence>
+      </span>
+    </template>
+
+    <div ref="scrollEl" class="dock-scroll sub-scroll" :class="{ 'sub-scroll--scroll': canScroll }">
+      <AnimatePresence mode="wait">
+        <motion.p
+          v-if="!props.rows.length"
+          key="empty"
+          class="dock-empty"
+          :initial="{ opacity: 0, y: 6 }"
+          :animate="{ opacity: 1, y: 0 }"
+          :exit="{ opacity: 0, y: -4 }"
+          :transition="{ duration: 0.2, ease: fadeEase }"
+        >
+          {{ streaming ? "Delegating…" : "No subagents" }}
+        </motion.p>
+      </AnimatePresence>
+
+      <AnimatePresence :initial="false">
+        <motion.div
+          v-for="(row, index) in props.rows"
+          :key="row.id"
+          class="sub-row"
+          :class="{
+            'sub-row--live': row.live,
+            'sub-row--done': row.state === 'done',
+            'sub-row--failed': row.state === 'failed',
+          }"
+          layout
+          :initial="{ opacity: 0, y: 8, scale: 0.98 }"
+          :animate="{ opacity: 1, y: 0, scale: 1 }"
+          :exit="{ opacity: 0, y: -6, scale: 0.98 }"
+          :transition="{ ...rowSpring, delay: rowDelay(index) }"
+        >
+          <span class="sub-state" aria-hidden="true">
+            <span class="sub-state-stack">
+              <!-- Every non-terminal state wears the working orb, which
+                   is what a native run already does for `starting` as
+                   well as `running`. A spawned thread parked on the
+                   user, or one that hasn't turned yet, is still a
+                   delegate in flight; its hint line says which. -->
               <motion.span
-                v-if="!expanded && liveRun"
-                :key="liveRun.id"
-                class="sub-peek"
-                :title="liveRun.title"
-                :initial="{ opacity: 0, x: 8 }"
-                :animate="{ opacity: 1, x: 0 }"
-                :exit="{ opacity: 0, x: -6 }"
-                :transition="{ duration: 0.22, ease: fadeEase }"
+                class="sub-state-orb"
+                :animate="{
+                  opacity: row.live || row.state === 'idle' ? 1 : 0,
+                  scale: row.live || row.state === 'idle' ? 1 : 0.9,
+                }"
+                :transition="stateFade"
               >
-                {{ liveRun.title }}
+                <TurnOrb
+                  :state="row.thinking ? 'thinking' : 'working'"
+                  :size="14"
+                  :aria-label="row.thinking ? 'Thinking' : 'Running'"
+                />
               </motion.span>
-            </AnimatePresence>
-            <span class="sub-meta-wrap">
+              <motion.span
+                class="sub-state-mark sub-state-mark--done"
+                :animate="{
+                  opacity: row.state === 'done' ? 1 : 0,
+                  scale: row.state === 'done' ? 1 : 0.88,
+                }"
+                :transition="stateFade"
+              >
+                <span class="sub-state-glyph sub-state-glyph--done">✓</span>
+              </motion.span>
+              <motion.span
+                class="sub-state-mark sub-state-mark--failed"
+                :animate="{
+                  opacity: row.state === 'failed' ? 1 : 0,
+                  scale: row.state === 'failed' ? 1 : 0.88,
+                }"
+                :transition="stateFade"
+              >
+                <span class="sub-state-glyph sub-state-glyph--failed">×</span>
+              </motion.span>
+            </span>
+          </span>
+
+          <span class="sub-run">
+            <span class="sub-run-title" :title="row.title">{{ row.title }}</span>
+
+            <span class="sub-run-meta">
+              <span class="sub-run-model">
+                <ProviderLogo
+                  v-if="rowBrand(row) !== 'generic'"
+                  :brand="rowBrand(row)"
+                  :size="13"
+                />
+                <span class="sub-run-model-name" :title="subagentModel(row).name">
+                  {{ subagentModel(row).name }}
+                </span>
+                <span
+                  v-if="subagentEffort(row)"
+                  class="sub-run-effort"
+                  :title="`Reasoning effort: ${subagentEffort(row)!.label}`"
+                >
+                  <span class="sub-brains" :class="{ 'sub-brains--glow': subagentEffort(row)!.glow }">
+                    <HugeiconsIcon
+                      v-for="i in brainStack(subagentEffort(row)!.brains)"
+                      :key="i"
+                      :icon="AiBrain01Icon"
+                      :size="12"
+                      :stroke-width="2"
+                      :style="{ color: subagentEffort(row)!.hue }"
+                    />
+                  </span>
+                </span>
+              </span>
+
               <AnimatePresence mode="wait">
                 <motion.span
-                  :key="meta"
-                  class="sub-meta"
-                  :class="{ 'sub-meta--live': streaming }"
-                  :initial="{ opacity: 0, y: 4 }"
+                  v-if="row.hint"
+                  :key="row.hint"
+                  class="sub-run-hint"
+                  :title="row.hintFull ?? row.hint"
+                  :initial="{ opacity: 0, y: 3 }"
                   :animate="{ opacity: 1, y: 0 }"
-                  :exit="{ opacity: 0, y: -4 }"
+                  :exit="{ opacity: 0, y: -3 }"
                   :transition="{ duration: 0.18, ease: fadeEase }"
                 >
-                  {{ meta }}
+                  <span class="sub-run-hint-dot" aria-hidden="true">·</span>
+                  {{ row.hint }}
                 </motion.span>
               </AnimatePresence>
             </span>
-            <motion.span
-              class="sub-chev"
-              :animate="{ rotate: expanded ? 90 : 0 }"
-              :transition="chevSpring"
-              aria-hidden="true"
-            >
-              <HugeiconsIcon :icon="ArrowRight01Icon" :size="14" :stroke-width="2" />
-            </motion.span>
-          </span>
-        </button>
 
-        <div class="sub-body" :class="{ 'sub-body--open': expanded }">
-          <div class="sub-body-inner">
-            <div ref="scrollEl" class="picker-scroll sub-scroll" :class="{ 'sub-scroll--scroll': canScroll }">
-              <AnimatePresence mode="wait">
-                <motion.p
-                  v-if="!props.rows.length"
-                  key="empty"
-                  class="sub-empty"
-                  :initial="{ opacity: 0, y: 6 }"
-                  :animate="{ opacity: 1, y: 0 }"
-                  :exit="{ opacity: 0, y: -4 }"
-                  :transition="{ duration: 0.2, ease: fadeEase }"
-                >
-                  {{ streaming ? "Delegating…" : "No subagents" }}
-                </motion.p>
-              </AnimatePresence>
-
-              <AnimatePresence :initial="false">
-                <motion.div
-                  v-for="(row, index) in props.rows"
-                  :key="row.id"
-                  class="sub-row"
-                  :class="{
-                    'sub-row--live': row.live,
-                    'sub-row--done': row.state === 'done',
-                    'sub-row--failed': row.state === 'failed',
-                  }"
-                  layout
-                  :initial="{ opacity: 0, y: 8, scale: 0.98 }"
-                  :animate="{ opacity: 1, y: 0, scale: 1 }"
-                  :exit="{ opacity: 0, y: -6, scale: 0.98 }"
-                  :transition="{ ...rowSpring, delay: rowDelay(index) }"
-                >
-                  <span class="sub-state" aria-hidden="true">
-                    <span class="sub-state-stack">
-                      <!-- Every non-terminal state wears the working orb, which
-                           is what a native run already does for `starting` as
-                           well as `running`. A spawned thread parked on the
-                           user, or one that hasn't turned yet, is still a
-                           delegate in flight; its hint line says which. -->
-                      <motion.span
-                        class="sub-state-orb"
-                        :animate="{
-                          opacity: row.live || row.state === 'idle' ? 1 : 0,
-                          scale: row.live || row.state === 'idle' ? 1 : 0.9,
-                        }"
-                        :transition="stateFade"
-                      >
-                        <TurnOrb
-                          :state="row.thinking ? 'thinking' : 'working'"
-                          :size="14"
-                          :aria-label="row.thinking ? 'Thinking' : 'Running'"
-                        />
-                      </motion.span>
-                      <motion.span
-                        class="sub-state-mark sub-state-mark--done"
-                        :animate="{
-                          opacity: row.state === 'done' ? 1 : 0,
-                          scale: row.state === 'done' ? 1 : 0.88,
-                        }"
-                        :transition="stateFade"
-                      >
-                        <span class="sub-state-glyph sub-state-glyph--done">✓</span>
-                      </motion.span>
-                      <motion.span
-                        class="sub-state-mark sub-state-mark--failed"
-                        :animate="{
-                          opacity: row.state === 'failed' ? 1 : 0,
-                          scale: row.state === 'failed' ? 1 : 0.88,
-                        }"
-                        :transition="stateFade"
-                      >
-                        <span class="sub-state-glyph sub-state-glyph--failed">×</span>
-                      </motion.span>
-                    </span>
-                  </span>
-
-                  <span class="sub-run">
-                    <span class="sub-run-title" :title="row.title">{{ row.title }}</span>
-
-                    <span class="sub-run-meta">
-                      <span class="sub-run-model">
-                        <ProviderLogo
-                          v-if="rowBrand(row) !== 'generic'"
-                          :brand="rowBrand(row)"
-                          :size="13"
-                        />
-                        <span class="sub-run-model-name" :title="subagentModel(row).name">
-                          {{ subagentModel(row).name }}
-                        </span>
-                        <span
-                          v-if="subagentEffort(row)"
-                          class="sub-run-effort"
-                          :title="`Reasoning effort: ${subagentEffort(row)!.label}`"
-                        >
-                          <span class="sub-brains" :class="{ 'sub-brains--glow': subagentEffort(row)!.glow }">
-                            <HugeiconsIcon
-                              v-for="i in brainStack(subagentEffort(row)!.brains)"
-                              :key="i"
-                              :icon="AiBrain01Icon"
-                              :size="12"
-                              :stroke-width="2"
-                              :style="{ color: subagentEffort(row)!.hue }"
-                            />
-                          </span>
-                        </span>
-                      </span>
-
-                      <AnimatePresence mode="wait">
-                        <motion.span
-                          v-if="row.hint"
-                          :key="row.hint"
-                          class="sub-run-hint"
-                          :title="row.hintFull ?? row.hint"
-                          :initial="{ opacity: 0, y: 3 }"
-                          :animate="{ opacity: 1, y: 0 }"
-                          :exit="{ opacity: 0, y: -3 }"
-                          :transition="{ duration: 0.18, ease: fadeEase }"
-                        >
-                          <span class="sub-run-hint-dot" aria-hidden="true">·</span>
-                          {{ row.hint }}
-                        </motion.span>
-                      </AnimatePresence>
-                    </span>
-
-                    <!-- A spawned child parked on an approval can be answered
-                         right here — the ask is not reachable through the parent
-                         session, so this reads the registry-level inbox and
-                         decides via agent:respond. -->
-                    <AnimatePresence mode="wait">
-                      <motion.span
-                        v-if="rowApproval(row)"
-                        :key="rowApproval(row)!.requestId"
-                        class="sub-approve"
-                        :initial="{ opacity: 0, y: 3 }"
-                        :animate="{ opacity: 1, y: 0 }"
-                        :exit="{ opacity: 0, y: -3 }"
-                        :transition="{ duration: 0.18, ease: fadeEase }"
-                      >
-                        <span class="sub-approve-ask" :title="rowApproval(row)!.approval.title">
-                          {{ rowApproval(row)!.approval.title }}
-                        </span>
-                        <span class="sub-approve-actions">
-                          <button
-                            type="button"
-                            class="sub-approve-btn"
-                            @click="decideRowApproval(row, 'reject-once')"
-                          >Reject</button>
-                          <button
-                            type="button"
-                            class="sub-approve-btn"
-                            @click="decideRowApproval(row, 'allow-always')"
-                          >Always</button>
-                          <button
-                            type="button"
-                            class="sub-approve-btn sub-approve-btn--allow"
-                            @click="decideRowApproval(row, 'allow-once')"
-                          >Allow</button>
-                        </span>
-                      </motion.span>
-                    </AnimatePresence>
-                  </span>
-
-                  <!-- Stop a live nested run right from the dock — the parent
-                       turn keeps running. Spawned threads aren't stop-able
-                       here (their session is theirs); only provider-native
-                       runs carry the affordance, and only while live. -->
+            <!-- A spawned child parked on an approval can be answered
+                 right here — the ask is not reachable through the parent
+                 session, so this reads the registry-level inbox and
+                 decides via agent:respond. -->
+            <AnimatePresence mode="wait">
+              <motion.span
+                v-if="rowApproval(row)"
+                :key="rowApproval(row)!.requestId"
+                class="sub-approve"
+                :initial="{ opacity: 0, y: 3 }"
+                :animate="{ opacity: 1, y: 0 }"
+                :exit="{ opacity: 0, y: -3 }"
+                :transition="{ duration: 0.18, ease: fadeEase }"
+              >
+                <span class="sub-approve-ask" :title="rowApproval(row)!.approval.title">
+                  {{ rowApproval(row)!.approval.title }}
+                </span>
+                <span class="sub-approve-actions">
                   <button
-                    v-if="row.target.kind === 'run' && row.live"
                     type="button"
-                    class="sub-stop"
-                    :aria-label="`Stop ${row.title}`"
-                    :title="`Stop ${row.title}`"
-                    @click="emit('stop-subagent', row.target.toolUseId)"
-                  >
-                    <HugeiconsIcon :icon="StopIcon" :size="13" :stroke-width="2" />
-                  </button>
-                </motion.div>
-              </AnimatePresence>
-            </div>
-          </div>
-        </div>
-      </div>
+                    class="sub-approve-btn"
+                    @click="decideRowApproval(row, 'reject-once')"
+                  >Reject</button>
+                  <button
+                    type="button"
+                    class="sub-approve-btn"
+                    @click="decideRowApproval(row, 'allow-always')"
+                  >Always</button>
+                  <button
+                    type="button"
+                    class="sub-approve-btn sub-approve-btn--allow"
+                    @click="decideRowApproval(row, 'allow-once')"
+                  >Allow</button>
+                </span>
+              </motion.span>
+            </AnimatePresence>
+          </span>
+
+          <!-- Stop a live nested run right from the dock — the parent
+               turn keeps running. Spawned threads aren't stop-able
+               here (their session is theirs); only provider-native
+               runs carry the affordance, and only while live. -->
+          <button
+            v-if="row.target.kind === 'run' && row.live"
+            type="button"
+            class="sub-stop"
+            :aria-label="`Stop ${row.title}`"
+            :title="`Stop ${row.title}`"
+            @click="emit('stop-subagent', row.target.toolUseId)"
+          >
+            <HugeiconsIcon :icon="StopIcon" :size="13" :stroke-width="2" />
+          </button>
+        </motion.div>
+      </AnimatePresence>
     </div>
-  </motion.div>
+  </DockSection>
 </template>
 
 <style scoped>
-.sub-dock {
-  width: min(18rem, calc(100vw - 2.5rem));
-  pointer-events: auto;
-  will-change: transform, opacity;
-}
-
-.sub-card {
-  background: var(--ground);
-  border-radius: 18px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
-  overflow: hidden;
-  transition: height 0.24s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.sub-shell {
-  --band-bg: var(--band);
-  --band-arc: 14px;
-  padding: 0 0 0.75rem 0.75rem;
-  transition: padding-bottom 0.2s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.sub-shell--collapsed {
-  padding-bottom: 0;
-}
-
-.sub-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: calc(100% + 0.75rem);
-  margin: 0 0 0 -0.75rem;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-  color: inherit;
-  transition: opacity 0.18s ease;
-}
-.sub-header:hover {
-  opacity: 0.88;
-}
-
-.sub-title {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 20px;
-  letter-spacing: -0.01em;
-  color: var(--ink-soft);
-}
-
-.sub-header__trail {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  height: 20px;
-}
-
-.sub-peek {
-  display: block;
-  min-width: 0;
-  max-width: 7rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 20px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--ink-soft);
-}
-
 .sub-meta-wrap {
   display: inline-flex;
   align-items: center;
@@ -520,94 +393,12 @@ function rowBrand(row: DelegateRow): BrandKey {
   justify-content: flex-end;
 }
 
-.sub-meta {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-}
-.sub-meta--live {
-  color: var(--ink-soft);
-}
-
-.sub-chev {
-  display: inline-flex;
-  flex: none;
-  opacity: 0.45;
-}
-
-.picker-header {
-  position: relative;
-  padding: 0.625rem 1rem;
-  background-color: var(--band-bg);
-}
-.sub-card--collapsed .picker-header::before,
-.sub-card--collapsed .picker-header::after {
-  opacity: 0;
-}
-.picker-header::before,
-.picker-header::after {
-  content: "";
-  position: absolute;
-  width: var(--band-arc);
-  height: var(--band-arc);
-  top: 100%;
-  pointer-events: none;
-  transition: opacity 0.14s ease;
-}
-.picker-header::before {
-  left: 0;
-  background: radial-gradient(circle at bottom right, transparent var(--band-arc), var(--band-bg) 0);
-}
-.picker-header::after {
-  right: 0;
-  background: radial-gradient(circle at bottom left, transparent var(--band-arc), var(--band-bg) 0);
-}
-
-.sub-body {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.2s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.sub-body--open {
-  grid-template-rows: 1fr;
-}
-.sub-body-inner {
-  overflow: hidden;
-  min-height: 0;
-}
-
-.sub-scroll {
-  max-height: min(28rem, calc(100vh - 8rem));
-  /* Hidden by default; only the settled-overflow check flips it to auto. */
+/* Hidden by default; only the settled-overflow check flips it to auto. */
+.dock-scroll.sub-scroll {
   overflow-y: hidden;
 }
-.sub-scroll--scroll {
+.dock-scroll.sub-scroll--scroll {
   overflow-y: auto;
-}
-
-.picker-scroll {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  overflow-x: hidden;
-  padding: 0.125rem 0.75rem 0.125rem 0;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--muted) 40%, transparent) transparent;
-}
-.picker-scroll::-webkit-scrollbar {
-  width: 6px;
-}
-.picker-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.picker-scroll::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 35%, transparent);
 }
 
 .sub-row {
@@ -615,8 +406,8 @@ function rowBrand(row: DelegateRow): BrandKey {
   align-items: flex-start;
   gap: 0.55rem;
   width: 100%;
-  padding: 0.5rem 0.5rem;
-  border-radius: 12px;
+  padding: 0.45rem 0.55rem;
+  border-radius: 9px;
 }
 
 /* Stop affordance for a live nested run — quiet square that lifts on hover,
@@ -706,7 +497,7 @@ function rowBrand(row: DelegateRow): BrandKey {
 
 .sub-run-title {
   min-width: 0;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.3;
@@ -858,23 +649,4 @@ function rowBrand(row: DelegateRow): BrandKey {
   opacity: 0.85;
 }
 
-.sub-empty {
-  margin: 0;
-  padding: 0.4rem 0.5rem;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sub-card,
-  .sub-shell,
-  .sub-body,
-  .picker-header::before,
-  .picker-header::after {
-    transition: none;
-  }
-  .sub-dock {
-    will-change: auto;
-  }
-}
 </style>
