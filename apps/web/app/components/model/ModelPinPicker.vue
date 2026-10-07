@@ -104,7 +104,7 @@ function selectProvider(p: ProviderKind) {
 }
 
 function pickModel(p: ProviderKind, opt: ModelOption) {
-  cue("toggle");
+  cue("toggle", { off: modelOn(p, opt.key) });
   const next: AgentModelRef = { provider: p, model: opt.key, label: opt.label };
   const chain = props.fallbacks !== undefined;
 

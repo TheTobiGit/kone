@@ -30,8 +30,7 @@ export type SettingsGlyphKind =
   | "assistant"
   | "providers"
   | "skills"
-  | "usage"
-  | "limits";
+  | "usage";
 
 defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
 </script>
@@ -200,14 +199,6 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         <g class="rise" style="--k: 1"><rect class="bar" x="9.4" y="6" width="2.6" height="12" rx="1" /></g>
         <g class="rise" style="--k: 2"><rect class="bar" x="13.8" y="9" width="2.6" height="9" rx="1" /></g>
         <g class="rise" style="--k: 3"><rect class="bar" x="18.2" y="13" width="2.6" height="5" rx="1" /></g>
-      </template>
-
-      <!-- Limits: a gauge whose needle sweeps and the reading fills behind it. -->
-      <template v-else-if="kind === 'limits'">
-        <g class="d"><path d="M4 17a8 8 0 0 1 16 0" pathLength="1" /></g>
-        <path class="fill" d="M4 17a8 8 0 0 1 16 0" pathLength="1" />
-        <path class="needle" d="M12 17 12 10.5" />
-        <circle cx="12" cy="17" r="1.3" fill="currentColor" stroke="none" />
       </template>
     </svg>
   </SettingsGlyphTile>
@@ -572,37 +563,6 @@ svg * {
 @keyframes sg-bars {
   0%, 100% { transform: scaleY(1); }
   50% { transform: scaleY(0.45); }
-}
-
-/* ── limits ────────────────────────────────────────────────────────────────── */
-.fill {
-  stroke: var(--accent);
-  stroke-width: 2.2;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 0.62;
-  opacity: 0;
-  transition: opacity 250ms ease;
-}
-.needle {
-  stroke-width: 1.8;
-  transform-box: view-box;
-  transform-origin: 12px 17px;
-  transform: rotate(-20deg);
-}
-.gt--live .fill {
-  opacity: 1;
-  animation: sg-fill 2.2s var(--gt-ease) infinite;
-}
-.gt--live .needle {
-  animation: sg-sweep 2.2s var(--gt-ease) infinite;
-}
-@keyframes sg-sweep {
-  0%, 100% { transform: rotate(-80deg); }
-  55%, 70% { transform: rotate(52deg); }
-}
-@keyframes sg-fill {
-  0%, 100% { stroke-dashoffset: 1; }
-  55%, 70% { stroke-dashoffset: 0.21; }
 }
 
 /* Reduced motion: the tile stops every animation, so the intro wrappers are

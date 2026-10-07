@@ -11,7 +11,7 @@ import type {
   SpendTile,
   TrendPoint,
 } from "~/types/desktop";
-import type { QuotaProvider, useAgentSettings } from "~/composables/useAgentSettings";
+import { quotaTone, type QuotaProvider, type QuotaTone, type useAgentSettings } from "~/composables/useAgentSettings";
 
 // The Limits section: one card per provider the picker offers, so a provider is
 // never silently missing from the page. Every *number* on a card comes from
@@ -25,9 +25,12 @@ import type { QuotaProvider, useAgentSettings } from "~/composables/useAgentSett
 // price is excluded from the totals and named, rather than silently counted as
 // free. Zero and unknown look identical on a meter and mean opposite things.
 
+// With `provider` set the section reads one provider only, inside a page that
+// already names it — so the card drops its own logo and name and keeps just the
+// figures, the plan and the controls.
 const props = withDefaults(
-  defineProps<{ space: ReturnType<typeof useAgentSettings>; foot?: boolean }>(),
-  { foot: true },
+  defineProps<{ space: ReturnType<typeof useAgentSettings>; foot?: boolean; provider?: ProviderKind }>(),
+  { foot: true, provider: undefined },
 );
 
 const PROVIDER_LABEL = {
@@ -95,22 +98,33 @@ function stateFor(p: ProviderKind): CardState {
   return { kind: "none" };
 }
 
+/** The one place the embedded mode is decided; the cards read it as data. */
+const embedded = computed(() => props.provider !== undefined);
+
 const cards = computed(() =>
-  props.space.limitsProviders.value.map((p) => {
-    const state = stateFor(p);
-    return {
-      provider: p,
-      /** The narrowed quota handle — present exactly when the quota machinery
-       *  answers for this provider (the unreadable card state never reaches it). */
-      quotaProvider: props.space.isReadable(p) ? p : undefined,
-      label: providerLabel(p),
-      brand: providerBrand(p),
-      connectCopy: props.space.isReadable(p) ? CONNECT_COPY[p] : undefined,
-      unreadableCopy: state.kind === "unreadable" ? unreadableCopyFor(p) : undefined,
-      state,
-      planLabel: state.kind === "connected" || state.kind === "error" ? state.report.planLabel : null,
-    };
-  }),
+  props.space.limitsProviders.value
+    .filter((p) => !props.provider || p === props.provider)
+    .map((p) => {
+      const state = stateFor(p);
+      const planLabel = state.kind === "connected" || state.kind === "error" ? state.report.planLabel : null;
+      return {
+        provider: p,
+        /** The narrowed quota handle — present exactly when the quota machinery
+         *  answers for this provider (the unreadable card state never reaches it). */
+        quotaProvider: props.space.isReadable(p) ? p : undefined,
+        label: providerLabel(p),
+        brand: providerBrand(p),
+        connectCopy: props.space.isReadable(p) ? CONNECT_COPY[p] : undefined,
+        unreadableCopy: state.kind === "unreadable" ? unreadableCopyFor(p) : undefined,
+        state,
+        planLabel,
+        // Outside a provider's own page every card names itself. Embedded, the
+        // page already has, so the name goes — and a head left with no plan
+        // and no control (a card still loading) has nothing to say at all.
+        showIdentity: !embedded.value,
+        showHead: !embedded.value || Boolean(planLabel) || state.kind === "connected",
+      };
+    }),
 );
 
 // ── two tiers ────────────────────────────────────────────────────────────────
@@ -247,14 +261,14 @@ function resetLine(w: QuotaWindow): string | null {
 const pct = (n: number | null) => Math.round((n ?? 0) * 100);
 
 /** The one place colour carries meaning on this page: comfortable accent until
- *  a window gets tight, amber past three-quarters, the destructive red only
- *  once a window is nearly exhausted. */
-function fillColor(percent: number | null): string {
-  if (percent === null) return "var(--accent)";
-  if (percent > 0.9) return "var(--diff-del)";
-  if (percent > 0.75) return "color-mix(in srgb, #d98324 82%, var(--accent))";
-  return "var(--accent)";
-}
+ *  a window gets tight, amber once it is, the destructive red only once it's
+ *  nearly exhausted. Where those lines fall is quotaTone's call, not this one's. */
+const TONE_COLOR = {
+  ok: "var(--accent)",
+  tight: "color-mix(in srgb, #d98324 82%, var(--accent))",
+  low: "var(--diff-del)",
+} satisfies Record<QuotaTone, string>;
+const fillColor = (percent: number | null) => TONE_COLOR[quotaTone(percent)];
 
 // ── sparkline ────────────────────────────────────────────────────────────────
 // A 30-day trend drawn small enough to read as texture rather than a chart —
@@ -301,16 +315,18 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 </script>
 
 <template>
-  <section class="limits" aria-label="Limits">
+  <section class="limits" :class="{ 'limits--one': embedded }" aria-label="Limits">
     <!-- ══ tier 1 — providers reporting a number ═══════════════════════════ -->
     <div v-if="reporting.length" class="group">
       <div class="cards">
       <article v-for="card in reporting" :key="card.provider" class="card">
         <!-- ── head ─────────────────────────────────────────────────────────── -->
-        <header class="card__head">
+        <header v-if="card.showHead" class="card__head">
           <div class="card__id">
-            <ProviderLogo :brand="card.brand" :size="16" />
-            <span class="card__name">{{ card.label }}</span>
+            <template v-if="card.showIdentity">
+              <ProviderLogo :brand="card.brand" :size="16" />
+              <span class="card__name">{{ card.label }}</span>
+            </template>
             <span v-if="card.planLabel" class="chip">{{ card.planLabel }}</span>
           </div>
 
@@ -462,8 +478,10 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
       <ul class="rows">
         <li v-for="card in quiet" :key="card.provider" class="row">
           <div class="row__head">
-            <ProviderLogo :brand="card.brand" :size="15" />
-            <span class="row__name">{{ card.label }}</span>
+            <template v-if="card.showIdentity">
+              <ProviderLogo :brand="card.brand" :size="15" />
+              <span class="row__name">{{ card.label }}</span>
+            </template>
             <span class="row__status">{{ quietStatus(card.state.kind) }}</span>
 
             <button
@@ -526,6 +544,29 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 .group {
   display: flex;
   flex-direction: column;
+}
+
+/* One provider, embedded: no separators to draw and no column to scan, so the
+   card and row lose their rhythm padding, the note stops hanging off a logo
+   that isn't there, and the controls stay visible — there is only one card to
+   be reading. */
+.limits--one {
+  gap: 0;
+  padding-bottom: 0;
+}
+.limits--one .card {
+  padding: 0;
+  gap: 18px;
+}
+.limits--one .card__actions {
+  opacity: 1;
+  margin-left: auto;
+}
+.limits--one .row {
+  padding: 0;
+}
+.limits--one .row__note {
+  padding-left: 0;
 }
 
 /* One card per row, read top to bottom.

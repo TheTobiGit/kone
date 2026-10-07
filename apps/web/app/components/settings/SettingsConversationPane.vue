@@ -52,7 +52,7 @@ function pickSurface(id: ConversationSurface): void {
   if (surface.value === id) return;
   surface.value = id;
   displayPreview.clear();
-  cue("toggle");
+  cue("select");
 }
 
 const current = computed(() => prefs.displays.value[surface.value]);
@@ -60,12 +60,12 @@ const isDefault = computed(() => sameDisplay(current.value, DEFAULT_DISPLAYS[sur
 
 function reset(): void {
   prefs.reset(surface.value);
-  cue("toggle");
+  cue("press");
 }
 
 function choose(opt: ChoiceOption): void {
   prefs.set(surface.value, opt);
-  cue("toggle");
+  cue("select");
 }
 
 // ── preview overrides: one mechanism for both dimensions ────────────────────
@@ -95,7 +95,7 @@ const probing = computed(() => displayPreview.active.value || stylePreview.activ
 
 function chooseStyle(next: ConversationStyle): void {
   conversationStyle.set(next);
-  cue("toggle");
+  cue("select");
 }
 
 const preview = useConversationPreview();

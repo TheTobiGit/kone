@@ -95,7 +95,7 @@ watch(pane, () => void nextTick(measure));
 
 function openSection(target: SettingsPane) {
   pane.value = target;
-  cue("press");
+  cue("open");
 }
 
 // ── the root list ────────────────────────────────────────────────────────────
@@ -151,7 +151,6 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
       },
       { pane: "agentSkills", label: "Skills", glyph: "skills" },
       { pane: "agentsUsage", label: "Usage", glyph: "usage" },
-      { pane: "providerLimits", label: "Provider limits", glyph: "limits" },
     ],
   },
 ]);
@@ -213,7 +212,7 @@ const openEpoch = ref(0);
 
 function backToRoot() {
   pane.value = "root";
-  cue("toggle");
+  cue("leave");
 }
 
 // Esc is a natural "up": from a detail pane → back to root; from root → close.
@@ -230,6 +229,7 @@ function onKeydown(e: KeyboardEvent) {
     backToRoot();
     return;
   }
+  cue("dismiss");
   emit("close");
 }
 onMounted(() => {
@@ -293,8 +293,6 @@ watch(
     <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
 
     <SettingsAgentsUsagePane v-if="pane === 'agentsUsage'" :open="open" @back="backToRoot" />
-
-    <SettingsProviderLimitsPane v-if="pane === 'providerLimits'" :open="open" @back="backToRoot" />
 
     <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
 

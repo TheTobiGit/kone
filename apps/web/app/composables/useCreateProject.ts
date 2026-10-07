@@ -139,7 +139,6 @@ export function useCreateProject() {
   }
 
   return {
-    // state
     name,
     trimmedName,
     valid,
@@ -148,14 +147,12 @@ export function useCreateProject() {
     createError,
     parentDisplay,
     projectPathDisplay,
-    // "more" options
     useGit,
     useReadme,
     useRemote,
     repoName,
     visibility,
     command,
-    // actions
     ensureHome,
     setParent,
     create,

@@ -698,6 +698,7 @@ const { isUnread } = useStripUnread({
                     :link-handoffs="true"
                     :allow-branch="true"
                     :hand-ins="c.session.handInRecords.value"
+                    :cwd="c.session.worktreePath.value ?? projectPath ?? null"
                     @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
                     @retry="(text) => onRetryTurn(c, text)"
                     @resend="(text) => onResendTurn(c, text)"

@@ -1,11 +1,12 @@
 // What one assistant turn puts on screen, under the reader's choices.
 //
 // A turn is an ordered list of parts (renderGroups): batches of steps (thinking
-// and tool calls), text, and spawn lines. The reader's ResponseDisplay decides
-// which of those show, and when — this turns the two into a plan the thread
-// renders as-is. Kept pure and apart from the component so every combination of
-// choices can be pinned down in tests, and so the real thread and the settings
-// page's preview can't disagree: both render through this.
+// and tool calls), text, and the things the agent said it did — spawn lines,
+// decisions, pages. The reader's ResponseDisplay decides which of those show,
+// and when — this turns the two into a plan the thread renders as-is. Kept pure
+// and apart from the component so every combination of choices can be pinned
+// down in tests, and so the real thread and the settings page's preview can't
+// disagree: both render through this.
 //
 // A turn reads by its `live…` choices while it runs and by its `done…` choices
 // once it settles. The rules, in the order they bite:
@@ -14,8 +15,8 @@
 //   · The final reply always shows once the turn is over — the one constant.
 //     It's the text after the turn's last batch of work.
 //   · Otherwise the turn reads in arrival order: its steps unless tool calls
-//     are hidden, the updates between them unless those are hidden, spawn lines
-//     (things it *said*) always.
+//     are hidden, the updates between them unless those are hidden, and what
+//     it *said* (spawn lines, decisions, pages) always.
 //   · While it runs, the live batch carries the working orb — or, with tool
 //     calls hidden, one status line says what the agent is doing.
 //   · Done with its work and updates both hidden, the turn folds down to its
@@ -75,10 +76,17 @@ function activityFor(tools: Tools): ActivityFold {
 }
 
 /** Where the reply starts: past the turn's last batch of work. Only text is
- *  ever reply or update — a spawn line stands in the open wherever it falls,
- *  so which side of this it lands on changes nothing. */
+ *  ever reply or update — a group placed in the reply stands in the open
+ *  wherever it falls, so which side of this it lands on changes nothing. */
 function replyStartOf(groups: RenderGroup[]): number {
   return groups.findLastIndex((g) => g.kind === "steps") + 1;
+}
+
+/** Whether a group is the turn's reply: something the agent said, or the text
+ *  after its last batch of work. The one test for what a folded turn leaves in
+ *  the open, and for whether it has anything to leave. */
+function isReply(g: RenderGroup, i: number, replyStart: number): boolean {
+  return g.placement === "reply" || i >= replyStart;
 }
 
 /** Add a group, joining it to a batch just before it. Adjacent batches read as
@@ -103,11 +111,11 @@ function partition(groups: RenderGroup[], filter: Filter, running: boolean): Par
   let held = false;
   groups.forEach((g, i) => {
     const show =
-      g.kind === "steps"
-        ? filter.tools !== "hidden"
-        : g.kind === "text"
-          ? filter.updates === "show" || (!running && i >= replyStart)
-          : true;
+      g.placement === "reply"
+        ? true
+        : g.kind === "steps"
+          ? filter.tools !== "hidden"
+          : filter.updates === "show" || (!running && i >= replyStart);
     if (show) append(shown, g);
     else held = true;
   });
@@ -159,11 +167,11 @@ function planDone(block: AssistantBlock, display: ResponseDisplay, manual?: bool
     const fold: WorkGroup[] = [];
     const inline: RenderGroup[] = [];
     all.forEach((g, i) => {
-      if (g.kind === "spawn" || g.kind === "decision" || i >= replyStart) inline.push(g);
-      else append(fold, g);
+      if (g.placement === "work" && !isReply(g, i, replyStart)) append(fold, g);
+      else inline.push(g);
     });
     // A turn with no reply to leave open shows its work rather than nothing.
-    const foldOpen = manual ?? !inline.some((g) => g.kind === "text");
+    const foldOpen = manual ?? inline.length === 0;
     return {
       fold,
       foldOpen,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatSpawnResult } from "@kone/protocol/spawn-record";
+import { formatPageShown } from "@kone/protocol/page-render";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 import { renderGroups } from "./conversationSegments";
@@ -38,7 +39,9 @@ const groupTags = (items: RuntimeItem[]) =>
         ? `text:${g.seg.items.map((i) => i.itemId).join(",")}`
         : g.kind === "decision"
           ? `decision:${g.item.itemId}`
-          : `spawn:${g.record.threadId}`,
+          : g.kind === "page"
+            ? `page:${g.page.attachmentId}`
+            : `spawn:${g.record.threadId}`,
   );
 
 describe("renderGroups", () => {
@@ -103,5 +106,35 @@ describe("renderGroups", () => {
 
   test("a replayed spawn of the same worker is said once", () => {
     expect(groupTags([spawn("s1", "child-1"), spawn("s2", "child-1")])).toEqual(["spawn:child-1"]);
+  });
+
+  test("a shown page stands in the reply where it landed, splitting the tool run", () => {
+    const shown: RuntimeItem = {
+      ...tool("p1", "page_show"),
+      detail: formatPageShown({ attachmentId: "att_1234", title: "Latency", height: 320 }),
+    };
+    expect(groupTags([tool("r1"), shown, tool("r2"), text("z", "Done.")])).toEqual([
+      "steps:r1",
+      "page:att_1234",
+      "steps:r2",
+      "text:z",
+    ]);
+  });
+
+  test("a page kone put in the turn and the provider's own report of the call stand once", () => {
+    const detail = formatPageShown({ attachmentId: "att_1234", title: "Latency", height: 320 });
+    const reported: RuntimeItem = { ...tool("p1", "page_show"), detail };
+    const put: RuntimeItem = { ...tool("page:att_1234", "page_show"), detail };
+    expect(groupTags([reported, tool("r1"), put])).toEqual(["page:att_1234", "steps:r1"]);
+  });
+
+  test("a page call still running, or refused, stays a step", () => {
+    const running: RuntimeItem = {
+      ...tool("p1", "page_show"),
+      status: "in-progress",
+      detail: formatPageShown({ attachmentId: "att_1234", title: "Latency", height: 320 }),
+    };
+    const refused: RuntimeItem = { ...tool("p2", "page_show"), detail: "invalid_input: No file at: /tmp/a.png." };
+    expect(groupTags([running, refused])).toEqual(["steps:p1,p2"]);
   });
 });

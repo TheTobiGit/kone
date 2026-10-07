@@ -16,8 +16,11 @@ import {
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
+import AgentSettingsLimits from "~/components/agent/AgentSettingsLimits.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
-import { buildModelCatalog, type BrandKey } from "~/utils/modelCatalog";
+import ProviderDeckLimits, { deckReadout, pctLabel, type DeckReadout } from "~/components/provider/ProviderDeckLimits.vue";
+import ProviderModelMeta from "~/components/provider/ProviderModelMeta.vue";
+import { buildModelCatalog, type BrandKey, type ModelOption } from "~/utils/modelCatalog";
 import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/desktop";
 
 // The agent-provider surface, as a place rather than a drawer pane.
@@ -47,6 +50,10 @@ const { cue } = useSound();
 const providers = useAgentProviders();
 const providerSettings = useProviderSettings();
 const upkeep = useProviderMaintenance();
+// Limits are global by nature — a quota belongs to the machine, not a project —
+// so the reading is unscoped. Only the limits half is ever loaded here: this page
+// has no use for the usage scan or the inventory walk.
+const limits = useAgentSettings(() => null);
 
 // Static per-provider facts no probe carries: what to call it, whose it is, its
 // logomark, the gradient its card wears, the command that signs it in, and where
@@ -172,6 +179,8 @@ type Row = {
   enabled: boolean;
   /** What this provider's spine is asking for, or null when it's quiet. */
   signal: SpineSignal | null;
+  /** What the card draws about limits, folded and open. */
+  limits: DeckReadout;
 };
 
 const rows = computed<Row[]>(() =>
@@ -185,6 +194,7 @@ const rows = computed<Row[]>(() =>
       upkeep: maint,
       enabled: providerSettings.isEnabled(provider),
       signal: spineSignal(status, maint),
+      limits: deckReadout(limits.isReadable(provider) ? limits.quotas.value[provider] : null),
     };
   }),
 );
@@ -195,10 +205,20 @@ const current = computed<Row>(
   () => rows.value.find((r) => r.provider === selected.value) ?? (rows.value[0] as Row),
 );
 
+/** The card's spoken name: the provider, what it's asking for, and its primary
+ *  window — the gauge and pip are drawn for the eye only. */
+function cardLabel(row: Row): string {
+  const parts = [row.meta.label];
+  if (row.signal) parts.push(row.signal.label);
+  const spine = row.limits.spine;
+  if (spine) parts.push(`${spine.label} ${pctLabel(spine)} used`);
+  return parts.join(" — ");
+}
+
 function select(provider: ProviderKind) {
   if (selected.value === provider) return;
   selected.value = provider;
-  cue("toggle");
+  cue("select");
 }
 
 // ── the masthead ──────────────────────────────────────────────────────────────
@@ -265,7 +285,7 @@ async function refresh(force: boolean) {
  *  preference: pressing Check is itself the consent. */
 async function recheck() {
   cue("press");
-  await refresh(true);
+  await Promise.all([refresh(true), limits.loadLimits()]);
 }
 
 // On entry, the version lookup happens only if the user left it on: it's a
@@ -276,6 +296,7 @@ watch(
     if (!open) return;
     void providerSettings.load();
     void refresh(false);
+    void limits.loadLimits();
   },
   { immediate: true },
 );
@@ -469,7 +490,7 @@ function commitBinary() {
   const provider = current.value.provider;
   if (binaryDraft.value.trim() === providerSettings.binaryPath(provider)) return;
   void providerSettings.setBinaryPath(provider, binaryDraft.value);
-  cue("toggle");
+  cue("saved");
   // A different binary is a different install: everything this page says about
   // channel, version and standing has to be re-read.
   void upkeep.check({ force: true, checkLatest: providerSettings.updateChecks.value });
@@ -477,7 +498,7 @@ function commitBinary() {
 
 async function toggleEnabled() {
   const provider = current.value.provider;
-  cue("toggle");
+  cue("toggle", { off: providerSettings.isEnabled(provider) });
   await providerSettings.setEnabled(provider, !providerSettings.isEnabled(provider));
   // Re-probe so statuses converge now: without this the composer's error strip
   // lingers on the stale row until the next manual "Check again".
@@ -507,20 +528,17 @@ type ModelRow = {
   key: string;
   label: string;
   brand: BrandKey;
-  vendor: string;
-  meta: string;
+  model: ModelOption;
+  /** The descriptor's own context size, for a family that lists no windows. */
+  contextTokens: number | undefined;
   hidden: boolean;
 };
 
-/** Turn a native context capacity into a compact badge — "200K", "1M". */
-function contextLabel(tokens: number | undefined): string | null {
-  if (!tokens || tokens <= 0) return null;
-  if (tokens >= 1_000_000) {
-    const m = tokens / 1_000_000;
-    return `${Number.isInteger(m) ? m : m.toFixed(1)}M context`;
-  }
-  return `${Math.round(tokens / 1000)}K context`;
-}
+/** Whether the open provider's brand is a harness (opencode/cursor/cline) — then
+ *  a model's own vendor is worth naming, since the catalog spans many vendors. */
+const showVendor = computed(() =>
+  ["opencode", "cursor", "cline"].includes(current.value.provider),
+);
 
 /** The model families of the open provider, each with a one-line summary of what
  *  it can do and whether it's currently shown in the picker. */
@@ -530,29 +548,13 @@ const modelRows = computed<ModelRow[]>(() => {
   const byId = new Map(descriptors.map((d) => [d.id, d]));
   return buildModelCatalog(descriptors, provider).map((fam) => {
     const rep = fam.efforts[0]?.modelId ? byId.get(fam.efforts[0].modelId) : undefined;
-    const tokens =
-      fam.contextWindows?.find((w) => w.isDefault)?.tokens ??
-      fam.contextWindows?.[0]?.tokens ??
-      rep?.contextWindowTokens;
-
-    const bits: string[] = [];
-    const ctx = contextLabel(tokens);
-    if (ctx) bits.push(ctx);
-    // Reasoning breadth as a span — "low → max" — rather than a rung count.
-    const real = fam.efforts.filter((e) => e.tier !== "base");
-    if (real.length > 1) {
-      bits.push(`${real[0]!.label} → ${real[real.length - 1]!.label} reasoning`);
-    } else if (real.length === 1) {
-      bits.push(`${real[0]!.label} reasoning`);
-    }
-    if (fam.fastTier) bits.push("fast tier");
 
     return {
       key: fam.key,
       label: fam.label,
       brand: fam.brand,
-      vendor: fam.vendor,
-      meta: bits.join(" · "),
+      model: fam,
+      contextTokens: rep?.contextWindowTokens,
       hidden: providerSettings.isModelHidden(provider, fam.key),
     };
   });
@@ -565,21 +567,15 @@ const hiddenCount = computed(() =>
   ),
 );
 
-/** Whether the open provider's brand is a harness (opencode/cursor/cline) — then
- *  a model's own vendor is worth naming, since the catalog spans many vendors. */
-const showVendor = computed(() =>
-  ["opencode", "cursor", "cline"].includes(current.value.provider),
-);
-
 function toggleModel(key: string) {
   const provider = current.value.provider;
   providerSettings.setModelHidden(provider, key, !providerSettings.isModelHidden(provider, key));
-  cue("toggle");
+  cue("toggle", { off: providerSettings.isModelHidden(provider, key) });
 }
 
 function toggleUpdateChecks() {
   providerSettings.updateChecks.value = !providerSettings.updateChecks.value;
-  cue("toggle");
+  cue("toggle", { off: !providerSettings.updateChecks.value });
   if (providerSettings.updateChecks.value) void upkeep.check({ force: true });
 }
 
@@ -594,7 +590,7 @@ async function copy(text: string) {
   try {
     await navigator.clipboard.writeText(text);
     copied.value = text;
-    cue("success");
+    cue("copy");
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
       copied.value = null;
@@ -665,7 +661,7 @@ async function copy(text: string) {
           :style="{ '--grad': row.meta.grad }"
           role="tab"
           :aria-selected="selected === row.provider ? 'true' : 'false'"
-          :aria-label="row.signal ? `${row.meta.label} — ${row.signal.label}` : row.meta.label"
+          :aria-label="cardLabel(row)"
           :tabindex="open ? 0 : -1"
           @click="select(row.provider)"
           @keydown.enter.prevent="select(row.provider)"
@@ -686,6 +682,9 @@ async function copy(text: string) {
             :class="[`pp__pip--${row.signal.tone}`, { 'pp__pip--show': selected !== row.provider }]"
             aria-hidden="true"
           />
+
+          <!-- Limits: a gauge down the folded spine, meters across the open card. -->
+          <ProviderDeckLimits :readout="row.limits" :open="selected === row.provider" />
 
           <!-- The open card's foot: name + standing on the left, one pill right. -->
           <div class="pp__foot">
@@ -858,6 +857,15 @@ async function copy(text: string) {
             </div>
           </section>
 
+          <!-- ── limits ───────────────────────────────────────────────────── -->
+          <!-- What this provider has left, read the same way the provider
+               itself accounts for it; a provider with nothing readable still
+               gets its one line saying why. -->
+          <section class="pp__block pp__limits" aria-label="Limits">
+            <p class="pp__blocklabel">Limits</p>
+            <AgentSettingsLimits :space="limits" :provider="current.provider" :foot="false" />
+          </section>
+
           <!-- ── executable ───────────────────────────────────────────────── -->
           <section class="pp__block" aria-label="Executable">
             <p class="pp__blocklabel">Executable</p>
@@ -930,11 +938,11 @@ async function copy(text: string) {
                 <ProviderLogo :brand="row.brand" :size="16" class="pp__modelmark" />
                 <span class="pp__modeltext">
                   <span class="pp__modelname">{{ row.label }}</span>
-                  <span v-if="row.meta || showVendor" class="pp__modelmeta">
-                    <template v-if="showVendor && row.vendor">{{ row.vendor }}</template
-                    ><template v-if="showVendor && row.vendor && row.meta"> · </template
-                    >{{ row.meta }}
-                  </span>
+                  <ProviderModelMeta
+                    :model="row.model"
+                    :fallback-tokens="row.contextTokens"
+                    :show-vendor="showVendor"
+                  />
                 </span>
                 <button
                   type="button"
@@ -969,7 +977,8 @@ async function copy(text: string) {
     <template #foot>
       {{ readyCount }} of {{ ORDER.length }} ready<template v-if="note"> · {{ note }}</template> —
       kone drives the agent CLIs you've already signed into, with your own subscription, and never
-      stores your credentials.
+      stores your credentials. Limits are read locally and never sent; a
+      <span class="pp__tilde">~</span> marks spend kone estimated from token counts.
     </template>
   </SettingsPageShell>
 </template>
@@ -1409,6 +1418,13 @@ async function copy(text: string) {
   gap: 8px;
   min-width: 0;
 }
+.pp__limits {
+  align-items: stretch;
+}
+.pp__tilde {
+  font-family: var(--font-mono);
+  color: var(--ink-soft);
+}
 .pp__blocklabel {
   font-size: 10px;
   letter-spacing: 0.08em;
@@ -1579,14 +1595,6 @@ async function copy(text: string) {
   line-height: 1.25;
   letter-spacing: -0.1px;
   color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pp__modelmeta {
-  font-size: 11px;
-  line-height: 1.3;
-  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

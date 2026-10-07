@@ -42,6 +42,8 @@ export const SLASH_COMMANDS: Record<string, SlashCommandDef> = {
     icon: UserCircle02Icon,
     gatedBy: "agent",
     keepDraft: true,
+    // The picker it opens makes the sound; a chime as well would be two at once.
+    silent: true,
   },
   branch: {
     description: "Switch or fork the thread branch",
@@ -57,6 +59,7 @@ export const SLASH_COMMANDS: Record<string, SlashCommandDef> = {
     description: "Open model picker",
     icon: AiChipIcon,
     gatedBy: "model",
+    silent: true,
   },
   new: {
     description: "Start a new thread",

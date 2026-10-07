@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import type { UserInputAnswers, UserInputQuestion } from "~/types/desktop";
 import { useModalExit } from "~/composables/useModalExit";
+import { useSound } from "~/composables/useSound";
 import {
   buildUserInputAnswers,
   emptyUserInputDraft,
@@ -26,6 +27,8 @@ const props = defineProps<{
    *  bottom-centre over the composer's spot. */
   contained?: boolean;
 }>();
+
+const { cue } = useSound();
 
 const emit = defineEmits<{
   answer: [requestId: string, answers: UserInputAnswers];
@@ -84,17 +87,19 @@ const bandTitle = computed(() =>
 function submit(): void {
   const ready = answers.value;
   if (!ready || closing.value) return;
+  cue("press");
   close(() => emit("answer", props.requestId, ready));
 }
 
 // Dismiss the question — hands the parked tool call an empty answer, which the
 // adapter treats as "declined" so the turn can carry on.
 function cancel(): void {
-  close(() => emit("cancel", props.requestId));
+  if (closing.value) return;
+  dismiss(() => emit("cancel", props.requestId));
 }
 
 // surface, but bottom-centre over the composer's spot ───────────────────────────
-const { shown, closing, close } = useModalExit();
+const { shown, closing, close, dismiss } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;

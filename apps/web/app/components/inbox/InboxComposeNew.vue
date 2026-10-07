@@ -109,7 +109,7 @@ const { cue } = useSound();
 const projectPickerOpen = ref(false);
 
 function openProjectPicker(): void {
-  cue("select");
+  cue("expand");
   projectPickerOpen.value = true;
 }
 

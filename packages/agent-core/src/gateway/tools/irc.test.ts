@@ -523,13 +523,11 @@ describe("IrcMailbox core engine", () => {
     expect(mailbox.getUnreadCount("thread-2")).toBe(1);
     expect(mailbox.getUnreadCount("thread-3")).toBe(1);
 
-    // Clear specific thread
     mailbox.clear("thread-2");
     expect(mailbox.getUnreadCount("thread-2")).toBe(0);
     expect(mailbox.getThread("thread-2")).toBeUndefined();
     expect(mailbox.getThread("thread-1")).toBeDefined();
 
-    // Clear all
     mailbox.clear();
     expect(mailbox.getUnreadCount("thread-3")).toBe(0);
   });

@@ -57,9 +57,7 @@ describe("git-core checkpoint", () => {
   });
 
   it("creates a checkpoint on a dirty worktree with untracked files and preserves metadata", async () => {
-    // Modify tracked file
     writeFileSync(path.join(tempDir, "file1.txt"), "modified tracked\n");
-    // Add untracked file
     writeFileSync(path.join(tempDir, "untracked.txt"), "fresh untracked\n");
 
     const cp = await createCheckpoint(tempDir, {
@@ -177,7 +175,6 @@ describe("git-core checkpoint", () => {
     writeFileSync(path.join(tempDir, "staged.txt"), "corrupted in worktree\n");
     writeFileSync(path.join(tempDir, "extra.txt"), "extra\n");
 
-    // Hard restore
     await restoreCheckpoint(tempDir, cp.id, { hard: true });
 
     // Staged change in real index should still be staged
@@ -218,7 +215,6 @@ describe("git-core checkpoint", () => {
     writeFileSync(path.join(tempDir, "file1.txt"), "bad edit\n");
     writeFileSync(path.join(tempDir, "untracked.txt"), "untracked\n");
 
-    // Hard restore cp1
     await restoreCheckpoint(tempDir, cp1.id, { hard: true });
 
     // HEAD remains at secondHead

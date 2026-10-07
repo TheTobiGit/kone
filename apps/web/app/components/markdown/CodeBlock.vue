@@ -81,7 +81,7 @@ async function copy() {
   if (!import.meta.client) return;
   try {
     await navigator.clipboard.writeText(props.code.replace(/\n$/, ""));
-    cue("success");
+    cue("copy");
     copied.value = true;
     window.setTimeout(() => (copied.value = false), 1600);
   } catch {

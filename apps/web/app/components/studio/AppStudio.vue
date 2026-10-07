@@ -265,7 +265,7 @@ function exitStudioOverview(): void {
 
 function toggleStudioOverview(): void {
   if (empty.value) return;
-  cue("toggle");
+  cue("toggle", { off: studioOverview.value });
   if (studioOverview.value) {
     exitStudioOverview();
   } else {
@@ -324,7 +324,7 @@ const destinations = computed<StudioDestination[]>(() =>
 function onSwitchRow(projectPath: string): void {
   if (projectPath === focusedPath.value) return;
   if (focusRow(projectPath)) cue("select");
-  else cue("error");
+  else cue("refuse");
 }
 
 function stepRow(delta: number): boolean {
@@ -376,13 +376,15 @@ function onStudioWheel(e: WheelEvent): void {
     wheelResetTimer = null;
   }, 100);
 
+  // Silent, unlike the arrow keys: a flick of the wheel lands several steps in
+  // a row, and a sound per step turns one scroll into a rattle.
   const THRESHOLD = 24;
   if (wheelAccumulator >= THRESHOLD) {
-    if (stepOverviewRow(1)) cue("select");
+    stepOverviewRow(1);
     wheelAccumulator = 0;
     wheelCooldownUntil = now + 90;
   } else if (wheelAccumulator <= -THRESHOLD) {
-    if (stepOverviewRow(-1)) cue("select");
+    stepOverviewRow(-1);
     wheelAccumulator = 0;
     wheelCooldownUntil = now + 90;
   }
@@ -419,10 +421,19 @@ function resolveTargetProjectPath(surface: SurfaceId): string | null {
   return props.activeProject?.path ?? null;
 }
 
+/** A row step from the keyboard: the camera moved, or it hit the edge of the
+ *  plane. A held key repeats the step many times a second, so only the first
+ *  press is heard — the camera gliding on is feedback enough. */
+function stepCue(moved: boolean, direction: "forward" | "back", e: KeyboardEvent): void {
+  if (e.repeat) return;
+  if (moved) cue("step", { direction });
+  else cue("refuse");
+}
+
 const refusal = ref(false);
 let refusalTimer: ReturnType<typeof setTimeout> | null = null;
 function refuse(): void {
-  cue("error");
+  cue("refuse");
   refusal.value = true;
   if (refusalTimer) clearTimeout(refusalTimer);
   refusalTimer = setTimeout(() => (refusal.value = false), 2600);
@@ -459,14 +470,12 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
       }
       if (e.key === "ArrowUp" || matchesShortcut("focus-row-up", e)) {
         e.preventDefault();
-        if (stepOverviewRow(-1)) cue("select");
-        else cue("error");
+        stepCue(stepOverviewRow(-1), "back", e);
         return;
       }
       if (e.key === "ArrowDown" || matchesShortcut("focus-row-down", e)) {
         e.preventDefault();
-        if (stepOverviewRow(1)) cue("select");
-        else cue("error");
+        stepCue(stepOverviewRow(1), "forward", e);
         return;
       }
       if (e.key === "ArrowLeft") {
@@ -488,14 +497,12 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 
     if (matchesShortcut("focus-row-up", e)) {
       e.preventDefault();
-      if (stepRow(-1)) cue("select");
-      else cue("error"); // the top of the plane; say so rather than swallow it
+      stepCue(stepRow(-1), "back", e); // the top of the plane says so rather than swallow it
       return;
     }
     if (matchesShortcut("focus-row-down", e)) {
       e.preventDefault();
-      if (stepRow(1)) cue("select");
-      else cue("error");
+      stepCue(stepRow(1), "forward", e);
       return;
     }
 
@@ -580,7 +587,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 });
 
 function close(): void {
-  cue("collapse");
+  cue("leave");
   emit("close");
 }
 

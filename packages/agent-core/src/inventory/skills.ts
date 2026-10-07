@@ -21,7 +21,7 @@ const MAX_PROJECT_ANCESTORS = 1;
 // unbounded — eight is more than any real skill has ever had.
 const MAX_SHADOWED_COPIES = 8;
 
-// v1 stable uses claude + agents only (t3 parity: .claude/skills + .agents/skills).
+// v1 stable uses claude + agents only (.claude/skills + .agents/skills).
 // Other origins (codex/cursor/factory/opencode) deferred to v2 — type kept wide
 // so the deferred plugin scanners still typecheck while unused.
 type SkillOrigin = "claude" | "codex" | "opencode" | "cursor" | "factory" | "agents";
@@ -32,8 +32,7 @@ type SkillRoot = {
   readonly scope: "user" | "project";
 };
 
-// The user/global roots kone scans across installed agent providers.
-// Per online docs 2026 + Synara parity:
+// The user/global roots kone scans across installed agent providers:
 // - Claude Code: ~/.claude/skills (global) + plugin cache ~/.claude/plugins/cache
 // - Codex CLI: ~/.codex/skills (global, includes .system)
 // - Cursor: ~/.cursor/skills + legacy ~/.cursor/skills-cursor (global)

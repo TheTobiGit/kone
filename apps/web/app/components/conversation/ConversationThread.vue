@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, toRef, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -49,6 +49,7 @@ import { useThreadContract } from "~/composables/useThreadContract";
 import type { AgentSender } from "~/types/desktop";
 import { isSpeakingSender, type SpeakingSender } from "~/utils/messageSpeaker";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
+import { IMAGE_CWD_KEY, IMAGE_THREAD_KEY } from "~/utils/markdownImageSource";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import ReplyRef from "~/components/conversation/ReplyRef.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
@@ -161,7 +162,15 @@ const props = defineProps<{
   /** Draw the thread in this style instead of the reader's — the Conversation
    *  settings page previews a style before it is picked. */
   conversationStyle?: ConversationStyle;
+  /** The folder the agent works in — its worktree, or the project checkout.
+   *  Images its replies name by path resolve against it, and its repository is
+   *  where they may come from. Absent where a thread has no folder of its own. */
+  cwd?: string | null;
 }>();
+
+provide(IMAGE_CWD_KEY, () => props.cwd ?? null);
+// The session's own id, present from the start; `threadId` is absent on a blank column.
+provide(IMAGE_THREAD_KEY, () => props.agentSeed ?? props.threadId ?? null);
 
 const emit = defineEmits<{
   "to-scratchpad": [text: string];
@@ -477,7 +486,7 @@ function openLightbox(att: ChatAttachment, turnAttachments?: ChatAttachment[]) {
     allImages: images.length ? images : [att],
     index: Math.max(0, idx),
   };
-  cue("toggle");
+  cue("show");
 }
 
 function closeLightbox() {
@@ -520,7 +529,7 @@ async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
   if (!block.text || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(block.text);
-    cue("success");
+    cue("copy");
     copied.value = block.id;
     window.setTimeout(() => {
       if (copied.value === block.id) copied.value = null;
@@ -532,14 +541,14 @@ async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
 function addUserRequestToScratchpad(block: Extract<ThreadBlock, { role: "user" }>) {
   if (!allowScratchpad.value || !block.text?.trim()) return;
   emit("to-scratchpad", block.text);
-  cue("press");
+  cue("saved");
 }
 async function copy(block: AssistantBlock) {
   const text = assistantText(block);
   if (!text || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(text);
-    cue("success");
+    cue("copy");
     copied.value = block.id;
     window.setTimeout(() => {
       if (copied.value === block.id) copied.value = null;
@@ -554,7 +563,7 @@ function addToScratchpad(block: AssistantBlock) {
   const text = assistantText(block);
   if (!text.trim()) return;
   emit("to-scratchpad", text);
-  cue("press");
+  cue("saved");
 }
 
 // Whether a settled assistant turn offers a file restore: the session seeded
@@ -2229,7 +2238,9 @@ watch(
   max-height: 84vh;
   object-fit: contain;
   border-radius: 8px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 16px 40px -12px rgba(0, 0, 0, 0.35);
   user-select: none;
 }
 .lightbox-nav-btn {

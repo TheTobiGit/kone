@@ -181,7 +181,6 @@ export function useGitClone() {
   }
 
   return {
-    // state
     raw,
     repo,
     valid,
@@ -195,7 +194,6 @@ export function useGitClone() {
     destPath,
     destPathDisplay,
     homePath,
-    // actions
     ensureHome,
     setDestParent,
     runClone,

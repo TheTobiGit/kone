@@ -47,7 +47,6 @@ export async function createCheckpoint(
     const scratchIndex = path.join(scratch, "index");
     const env = { GIT_INDEX_FILE: scratchIndex };
 
-    // Get current HEAD commit if available
     let headHash: string | null = null;
     try {
       headHash = (await git(root, ["rev-parse", "HEAD"])).trim();

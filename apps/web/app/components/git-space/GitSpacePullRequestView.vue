@@ -84,7 +84,7 @@ watch([tab, pr], async () => {
  *  thing with a re-read. */
 async function refresh() {
   if (refreshing.value) return;
-  cue("toggle");
+  cue("press");
   refreshing.value = true;
   const number = props.number;
   const d = await props.space.prDetail(number, true);
@@ -192,7 +192,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 function setTab(next: Tab) {
   if (tab.value === next) return;
-  cue("toggle");
+  cue("select");
   tab.value = next;
   openPath.value = null;
 }
@@ -200,9 +200,10 @@ function setTab(next: Tab) {
 function toggleFile(path: string) {
   if (openPath.value === path) {
     openPath.value = null;
+    cue("collapse");
     return;
   }
-  cue("toggle");
+  cue("expand");
   openPath.value = path;
 }
 
