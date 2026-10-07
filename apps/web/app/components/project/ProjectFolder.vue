@@ -387,8 +387,8 @@ html.dark .folder {
     color-mix(in srgb, var(--ink) 3.5%, var(--ground)) 100%
   );
   --pocket-shadow: color-mix(in srgb, var(--ink) 7%, transparent) 0 1px 0 inset,
-    color-mix(in srgb, var(--sunken) 22%, transparent) 0 -10px 18px inset,
-    color-mix(in srgb, var(--sunken) 30%, transparent) 0 4px 10px;
-  --paper-shadow: color-mix(in srgb, var(--sunken) 45%, transparent) 0 4px 10px;
+    color-mix(in srgb, var(--sunken) 14%, transparent) 0 -10px 18px inset,
+    color-mix(in srgb, var(--sunken) 16%, transparent) 0 4px 10px;
+  --paper-shadow: color-mix(in srgb, var(--sunken) 18%, transparent) 0 4px 10px;
 }
 </style>

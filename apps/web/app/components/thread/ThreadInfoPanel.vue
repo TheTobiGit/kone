@@ -508,7 +508,7 @@ onBeforeUnmount(() => {
   border-radius: 18px;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 22px 48px -20px color-mix(in srgb, #000 42%, transparent);
+    0 12px 28px -10px color-mix(in srgb, var(--ink) 16%, transparent);
   overflow: hidden;
   transform-origin: top center;
   animation: tip-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);

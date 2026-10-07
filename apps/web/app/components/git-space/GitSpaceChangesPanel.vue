@@ -528,7 +528,7 @@ html.dark .empty {
   --branch-ink: color-mix(in srgb, var(--ink) 87%, var(--ground));
   --branch-mark: var(--faint);
 }
-html.dark .empty__sheet { box-shadow: #0000002e 0 4px 12px; }
-html.dark .empty__sheet--front { box-shadow: #00000038 0 6px 16px; }
+html.dark .empty__sheet { box-shadow: #00000014 0 4px 12px; }
+html.dark .empty__sheet--front { box-shadow: #0000001c 0 6px 16px; }
 html.dark .ch__dot--idle { background-color: color-mix(in srgb, var(--faint) 43%, var(--raised-high)); }
 </style>

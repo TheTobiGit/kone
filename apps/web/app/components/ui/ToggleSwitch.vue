@@ -62,7 +62,7 @@ function toggle() {
   height: 18px;
   border-radius: 999px;
   background: #fff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.14), 0 0 0 0.5px rgb(0 0 0 / 0.04);
   transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .switch.is-on .knob {
