@@ -25,6 +25,18 @@ import { USAGE_RANGE_IDS } from "~/utils/usageRanges";
 export type QuotaProvider = QuotaProviderReport["provider"];
 const QUOTA_CAPABLE: QuotaProvider[] = ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
 
+/** How tight a quota window is running — the one place the thresholds live, so
+ *  every surface that colours a window agrees on where "tight" starts. Past
+ *  three-quarters is tight; past nine-tenths the window is nearly exhausted. A
+ *  window with no measured fraction is never tight. */
+export type QuotaTone = "ok" | "tight" | "low";
+export function quotaTone(percent: number | null): QuotaTone {
+  if (percent === null) return "ok";
+  if (percent > 0.9) return "low";
+  if (percent > 0.75) return "tight";
+  return "ok";
+}
+
 /** Installed providers the Limits section still shows a card for, even though
  *  kone cannot read a single number from them. A card with the honest "nothing
  *  to read" note beats no card at all — the absence of a meter should be
@@ -54,7 +66,7 @@ const NO_CONSENT_NEEDED: QuotaProvider[] = ["opencode", "antigravity"];
 const CONNECTED_KEY = "kone:quota:connected";
 
 // ── stale-while-revalidate caches ────────────────────────────────────────────
-// Every pane that shows agent data (usage settings, provider limits, the agents
+// Every pane that shows agent data (usage settings, the providers page, the agents
 // space) makes its own useAgentSettings, and Vue tears that state down the moment
 // the pane closes — so without this, every reopen is a cold scan and the
 // skeleton reflashes while the disk is walked again. These module-level maps
@@ -334,6 +346,10 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
     await Promise.all(QUOTA_CAPABLE.filter(isConnected).map((p) => loadQuota(p)));
   }
 
+  async function loadLimits(): Promise<void> {
+    await detectCredentials().then(loadConnectedQuotas);
+  }
+
   // ── inventory ──────────────────────────────────────────────────────────────
   const inventory = ref<AgentInventory | null>(null);
   const inventoryLoading = ref(false);
@@ -379,12 +395,12 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
   async function load(): Promise<void> {
     if (entered) return;
     entered = true;
-    await Promise.all([loadUsage(), detectCredentials().then(loadConnectedQuotas), loadInventory()]);
+    await Promise.all([loadUsage(), loadLimits(), loadInventory()]);
   }
 
   /** The masthead's refresh — re-reads everything currently on screen. */
   async function refresh(): Promise<void> {
-    await Promise.all([loadUsage(), detectCredentials().then(loadConnectedQuotas), loadInventory()]);
+    await Promise.all([loadUsage(), loadLimits(), loadInventory()]);
   }
 
   const busy = computed(() => usageLoading.value || inventoryLoading.value);
@@ -412,6 +428,9 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
     connect,
     disconnect,
     loadQuota,
+    /** The credential probe and every connected quota, and nothing else — for a
+     *  page that shows limits without the usage scan or inventory walk. */
+    loadLimits,
     // inventory
     inventory: inventory,
     inventoryLoading: inventoryLoading,
