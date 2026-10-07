@@ -7,6 +7,10 @@ import { Image02Icon } from "@hugeicons/core-free-icons";
 // width-capped frame with a soft tonal placeholder while it loads and an inline
 // caption drawn from the alt text. A broken source degrades to a labelled tile
 // rather than the browser's default torn-image glyph.
+//
+// While it loads the image stays laid out, only invisible, over the
+// placeholder. A lazy image with no box is never fetched, so hiding it with
+// display:none would hold the placeholder forever: no load, and no error either.
 
 const props = defineProps<{ src: string; alt?: string }>();
 
@@ -17,8 +21,9 @@ const state = ref<"loading" | "ok" | "error">("loading");
   <figure class="mdimg">
     <div class="mdimg__frame" :class="`mdimg__frame--${state}`">
       <img
-        v-show="state === 'ok'"
+        v-show="state !== 'error'"
         class="mdimg__img"
+        :class="{ 'mdimg__img--pending': state === 'loading' }"
         :src="src"
         :alt="alt ?? ''"
         loading="lazy"
@@ -55,6 +60,13 @@ const state = ref<"loading" | "ok" | "error">("loading");
   max-width: 100%;
   height: auto;
   border-radius: 12px;
+}
+.mdimg__img--pending {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
 }
 .mdimg__shimmer {
   position: absolute;
