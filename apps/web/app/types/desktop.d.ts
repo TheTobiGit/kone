@@ -3902,6 +3902,9 @@ export type KoneDesktopApi = {
       scheme: "light" | "dark";
       locked: boolean;
       themes?: KoneThemeRosterEntry[];
+      /** The theme on screen as an agent's page receives it, so a page is
+       *  previewed in the colours the user will see it in. */
+      pageTheme?: { appearance: "light" | "dark"; variables: Record<string, string> };
     },
   ) => Promise<void>;
   /** Mirrors what the renderer knows about itself and the shell cannot derive:

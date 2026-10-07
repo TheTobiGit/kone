@@ -10,6 +10,7 @@ import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
 import { installMainLog } from "./mainLog.js";
 import { resolveAttachmentProtocolPath } from "./attachmentProtocol.js";
+import { servePage } from "./pageProtocol.js";
 import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./modules/fs/fs.js";
@@ -125,7 +126,8 @@ const PROD_CSP = [
   "object-src 'none'",
   "base-uri 'self' app:",
   "form-action 'none'",
-  "frame-src 'none'",
+  // Agents' pages, and nothing else: each runs sandboxed on its own scheme.
+  "frame-src kone-page:",
 ].join("; ");
 
 let mainWindow: BrowserWindow | null = null;
@@ -148,6 +150,16 @@ protocol.registerSchemesAsPrivileged([
       supportFetchAPI: true,
       corsEnabled: true,
       stream: true,
+    },
+  },
+  {
+    // Standard and secure so a page gets a real URL to resolve against and a
+    // secure context for the APIs that need one; no fetch or CORS privileges,
+    // since nothing is ever meant to read a page but the frame showing it.
+    scheme: "kone-page",
+    privileges: {
+      secure: true,
+      standard: true,
     },
   },
 ]);
@@ -210,6 +222,11 @@ function registerAttachmentProtocol() {
     return net.fetch(pathToFileURL(filePath).toString());
   });
 }
+
+function registerPageProtocol() {
+  protocol.handle("kone-page", (request) => servePage(request.url));
+}
+
 // One kone at a time. A second launch must not open a fresh process: every
 // fresh process runs the conversation store's recovery pass on its first DB
 // open, which seals the first instance's live turns as orphaned
@@ -399,6 +416,15 @@ async function createWindow() {
     if (externalUrl) void shell.openExternal(externalUrl);
   });
 
+  // An agent's page stays the page it was shown as: a frame on the page
+  // scheme that tries to go anywhere else is stopped, whatever the CSP in
+  // force (dev has none). Links the reader clicks reach the browser through
+  // the frame's own message, not by navigating.
+  mainWindow.webContents.on("will-frame-navigate", (event) => {
+    if (event.isMainFrame) return;
+    if (event.frame?.url.startsWith("kone-page:") && !event.url.startsWith("kone-page:")) event.preventDefault();
+  });
+
   if (isDev) {
     // A failed dev load (server not up yet, renderer died mid-load) must log,
     // not reject into an unhandled promise from the whenReady chain.
@@ -446,6 +472,7 @@ if (gotSingleInstanceLock) {
       registerAppProtocol();
     }
     registerAttachmentProtocol();
+    registerPageProtocol();
 
     const devIcon = getDevIconPath();
     if (devIcon) {

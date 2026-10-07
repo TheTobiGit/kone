@@ -4,6 +4,7 @@ import { initAppSteering } from "~/composables/useAppSteering";
 import { isCustom, isImported } from "~/theme/library";
 import { colorsFor, type ThemeDefinition, type ThemeScheme } from "~/theme/roles";
 import type { KoneThemeRosterEntry } from "~/types/desktop";
+import { readRootPageTheme } from "~/utils/pageTheme";
 
 /** A theme's two defining colours, flattened for the shell.
  *
@@ -54,7 +55,12 @@ export default defineNuxtPlugin(() => {
   // looking at and to change it. The roster rides along because the library is
   // the renderer's alone — an imported or user-authored theme exists nowhere
   // else, and an agent that can't see one can neither offer it nor apply it.
-  const push = () => {
+  //
+  // The page theme is the computed colours, so it is read a frame after the
+  // change, once the window has painted it; changes inside one frame push once.
+  let pending = 0;
+  const send = () => {
+    pending = 0;
     void bridge.setTheme(modeLocked.value ? scheme.value : mode.value, {
       themeId: themeId.value,
       themeLabel: theme.value.label,
@@ -62,9 +68,19 @@ export default defineNuxtPlugin(() => {
       scheme: scheme.value,
       locked: modeLocked.value,
       themes: themes.value.map(rosterEntry),
+      pageTheme: readRootPageTheme(),
     });
+  };
+  const push = () => {
+    if (!pending) pending = requestAnimationFrame(send);
   };
 
   push();
   watch([mode, modeLocked, scheme, themeId, themes], push);
+  // A theme edited or previewed live changes the window's colours without
+  // changing which theme is chosen; the root element is where both show.
+  new MutationObserver(push).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["style", "class", "data-theme", "data-scheme"],
+  });
 });
