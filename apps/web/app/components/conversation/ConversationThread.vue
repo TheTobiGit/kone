@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, toRef, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -49,6 +49,7 @@ import { useThreadContract } from "~/composables/useThreadContract";
 import type { AgentSender } from "~/types/desktop";
 import { isSpeakingSender, type SpeakingSender } from "~/utils/messageSpeaker";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
+import { IMAGE_CWD_KEY, IMAGE_THREAD_KEY } from "~/utils/markdownImageSource";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import ReplyRef from "~/components/conversation/ReplyRef.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
@@ -161,7 +162,15 @@ const props = defineProps<{
   /** Draw the thread in this style instead of the reader's — the Conversation
    *  settings page previews a style before it is picked. */
   conversationStyle?: ConversationStyle;
+  /** The folder the agent works in — its worktree, or the project checkout.
+   *  Images its replies name by path resolve against it, and its repository is
+   *  where they may come from. Absent where a thread has no folder of its own. */
+  cwd?: string | null;
 }>();
+
+provide(IMAGE_CWD_KEY, () => props.cwd ?? null);
+// The session's own id, present from the start; `threadId` is absent on a blank column.
+provide(IMAGE_THREAD_KEY, () => props.agentSeed ?? props.threadId ?? null);
 
 const emit = defineEmits<{
   "to-scratchpad": [text: string];

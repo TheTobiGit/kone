@@ -211,6 +211,7 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
     >
       <ConversationThread
         :blocks="blocks"
+        :cwd="row.worktreePath ?? null"
         :display="responseDisplays.inbox"
         :compactions="compactions"
         :now="now"

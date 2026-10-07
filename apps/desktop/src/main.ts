@@ -3,13 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, globalShortcut, Menu, nativeTheme, net, protocol, shell } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeTheme, net, protocol, shell } from "electron";
+import { z } from "zod";
 
 import { getAgentService, prepareQuitResumeForQuit, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
+import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
 import { installMainLog } from "./mainLog.js";
 import { resolveAttachmentProtocolPath } from "./attachmentProtocol.js";
+import { createLocalImageGrants } from "./localImageProtocol.js";
 import { servePage } from "./pageProtocol.js";
 import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
@@ -110,7 +113,9 @@ configureLinuxShell();
 // No "unsafe-eval", no remote scripts: scripts/styles come from the bundle
 // itself ("self"/app:), with "unsafe-inline" kept because Nuxt emits inline
 // <script>/<style> (theme boot script, Vue SFC styles). Images/fonts may also
-// come from attachment:, data:, blob: and https: (avatars, repo logos).
+// come from attachment:, data:, blob: and https: (avatars, repo logos), and
+// from local-image: (files on disk an agent's reply shows, each one vouched
+// for by main before the renderer can name it).
 // Dev (localhost:3001) intentionally gets no CSP — Vite HMR needs
 // unsafe-eval/inline, and the dev warning is silenced via
 // ELECTRON_DISABLE_SECURITY_WARNINGS in scripts/dev.ts instead.
@@ -118,7 +123,7 @@ const PROD_CSP = [
   "default-src 'self' app:",
   "script-src 'self' app: 'unsafe-inline'",
   "style-src 'self' app: 'unsafe-inline' https:",
-  "img-src 'self' app: attachment: data: blob: https:",
+  "img-src 'self' app: attachment: local-image: data: blob: https:",
   "font-src 'self' app: data: https:",
   "connect-src 'self' app: attachment: https:",
   "media-src 'self' app: attachment: data: blob:",
@@ -150,6 +155,15 @@ protocol.registerSchemesAsPrivileged([
       supportFetchAPI: true,
       corsEnabled: true,
       stream: true,
+    },
+  },
+  {
+    // Images only: no fetch or CORS privileges, so a granted file can be
+    // shown in an <img> but its bytes can't be read back by script.
+    scheme: "local-image",
+    privileges: {
+      secure: true,
+      standard: true,
     },
   },
   {
@@ -220,6 +234,39 @@ function registerAttachmentProtocol() {
     }
 
     return net.fetch(pathToFileURL(filePath).toString());
+  });
+}
+
+const LocalImageGrantInput = z.object({
+  path: z.string(),
+  threadId: z.string().nullish(),
+});
+type LocalImageGrantInput = z.infer<typeof LocalImageGrantInput>;
+
+function registerLocalImageProtocol() {
+  const localImageGrants = createLocalImageGrants({
+    threadCwd: (threadId) => {
+      const store = getConversationStore();
+      return store.threadWorkspace(threadId)?.worktreePath ?? store.threadProjectPath(threadId);
+    },
+  });
+
+  protocol.handle("local-image", async (request) => {
+    const filePath = await localImageGrants.resolve(request.url);
+
+    if (filePath === null) {
+      return new Response("Not found", { status: 404 });
+    }
+
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
+
+  ipcMain.handle("local-image:grant", async (_event, input: LocalImageGrantInput) => {
+    // The type is the renderer's promise; the parse is what holds it to it.
+    const parsed = LocalImageGrantInput.safeParse(input);
+    if (!parsed.success) return null;
+    const url = await localImageGrants.grant(parsed.data.path, parsed.data.threadId);
+    return url === null ? null : { url };
   });
 }
 
@@ -472,6 +519,7 @@ if (gotSingleInstanceLock) {
       registerAppProtocol();
     }
     registerAttachmentProtocol();
+    registerLocalImageProtocol();
     registerPageProtocol();
 
     const devIcon = getDevIconPath();

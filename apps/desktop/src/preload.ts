@@ -871,6 +871,13 @@ const api = {
     fetch: (input: AvatarFetchInput): Promise<AvatarFetchResult> =>
       ipcRenderer.invoke("avatars:fetch", input),
   },
+  // Images on disk that an agent's reply shows. Main checks the file and
+  // answers with an opaque local-image:// URL for it, or null — the renderer
+  // never gets a URL that reads a path of its choosing.
+  localImage: {
+    grant: (input: { path: string; threadId?: string | null }): Promise<{ url: string } | null> =>
+      ipcRenderer.invoke("local-image:grant", input),
+  },
 };
 
 contextBridge.exposeInMainWorld("koneDesktop", api);
