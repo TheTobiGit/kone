@@ -32,6 +32,8 @@ export const KONE_WORKER_TOOL_NAMES = [
   "code_lsp",
   "code_find_calls",
   "code_preview_rewrite",
+  "page_preview",
+  "page_show",
 ] as const;
 
 export type KoneWorkerToolName = (typeof KONE_WORKER_TOOL_NAMES)[number];
