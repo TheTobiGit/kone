@@ -85,7 +85,7 @@ const editInput = ref<HTMLTextAreaElement | null>(null);
 function startEdit(): void {
   editing.value = true;
   draft.value = props.block.text;
-  cue("toggle");
+  cue("press");
   void nextTick(() => {
     editInput.value?.focus();
     editInput.value?.select();

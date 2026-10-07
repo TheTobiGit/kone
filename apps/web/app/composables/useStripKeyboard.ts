@@ -47,6 +47,13 @@ export function useStripKeyboard(deps: {
     return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
   }
 
+  // Focus moving between columns. A held arrow repeats the step many times a
+  // second; only the first press is heard, and the strip sliding on carries the
+  // rest.
+  function stepCue(e: KeyboardEvent, direction: "forward" | "back"): void {
+    if (!e.repeat) cue("step", { direction });
+  }
+
   useEventListener(window, "keydown", (e: KeyboardEvent) => {
     if (overview.value) {
       if (e.key === "Escape") {
@@ -57,22 +64,22 @@ export function useStripKeyboard(deps: {
     }
     if (matchesShortcut("focus-thread-left", e)) {
       e.preventDefault();
-      cue("press");
+      stepCue(e, "back");
       return emits.shift(-1);
     }
     if (matchesShortcut("focus-thread-right", e)) {
       e.preventDefault();
-      cue("press");
+      stepCue(e, "forward");
       return emits.shift(1);
     }
     if (matchesShortcut("move-thread-left", e)) {
       e.preventDefault();
-      cue("press");
+      if (!e.repeat) cue("select", { direction: "back" });
       return emits.move(-1);
     }
     if (matchesShortcut("move-thread-right", e)) {
       e.preventDefault();
-      cue("press");
+      if (!e.repeat) cue("select", { direction: "forward" });
       return emits.move(1);
     }
     if (matchesShortcut("cycle-thread-width", e)) {
@@ -113,11 +120,11 @@ export function useStripKeyboard(deps: {
     if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || isTyping()) return;
     if (e.key === "ArrowLeft") {
       e.preventDefault();
-      cue("press");
+      stepCue(e, "back");
       emits.shift(-1);
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
-      cue("press");
+      stepCue(e, "forward");
       emits.shift(1);
     }
   });

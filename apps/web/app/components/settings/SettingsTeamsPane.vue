@@ -75,7 +75,7 @@ function pickTab(next: Tab) {
   dealt.add(tab.value);
   direction.value = TABS.indexOf(next) > TABS.indexOf(tab.value) ? "fwd" : "back";
   tab.value = next;
-  cue("toggle");
+  cue("select", { direction: direction.value === "fwd" ? "forward" : "back" });
 }
 
 // Arrow keys walk the tablist, and focus follows the selection so the pill and
@@ -119,12 +119,12 @@ function closeOverlay() {
 
 function openAgent(id: string) {
   overlay.value = { kind: "agent", id };
-  cue("press");
+  cue("open");
 }
 
 function openPreset(id: string) {
   overlay.value = { kind: "preset", id };
-  cue("press");
+  cue("open");
 }
 
 /** The routing list opens its own editor, so on that tab the button asks it to. */
@@ -136,7 +136,7 @@ function startCreate() {
     return;
   }
   overlay.value = tab.value === "agents" ? { kind: "createAgent" } : { kind: "createSubagent" };
-  cue("open");
+  cue("show");
 }
 
 function onAgentCreated(agent: Agent) {

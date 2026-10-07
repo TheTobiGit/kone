@@ -96,7 +96,7 @@ function basename(path: string): string {
 // ── tree interaction ──────────────────────────────────────────────────────────
 function onRow(entry: { path: string; kind: "dir" | "file" }): void {
   if (entry.kind === "dir") {
-    cue("toggle");
+    cue(tree.isOpen(entry.path) ? "collapse" : "expand");
     tree.toggle(entry.path);
   } else {
     openFile(entry.path);

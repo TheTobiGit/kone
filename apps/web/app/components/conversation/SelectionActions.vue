@@ -100,7 +100,7 @@ const evaluate = useDebounceFn(() => {
   positionBubble(range);
   capturedText.value = extractMarkdown(sel, body);
   sourceKey.value = key;
-  if (!visible.value) cue("toggle");
+  // Silent: selecting text is reading, not a command, and it happens all day.
   visible.value = true;
 }, 120);
 
@@ -133,13 +133,13 @@ watch(
 
 function onCopy(): void {
   emit("dispatch", { type: "copy", text: capturedText.value });
-  cue("press");
+  cue("copy");
   hide();
 }
 
 function onScratchpad(): void {
   emit("dispatch", { type: "capture-text", text: capturedText.value, from: sourceKey.value });
-  cue("press");
+  cue("saved");
   hide();
 }
 

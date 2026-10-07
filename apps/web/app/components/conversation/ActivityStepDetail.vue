@@ -198,7 +198,7 @@ async function onCopy(): Promise<void> {
   if (!copyText.value || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(copyText.value);
-    cue("success");
+    cue("copy");
     copied.value = true;
     window.setTimeout(() => (copied.value = false), 1600);
   } catch {

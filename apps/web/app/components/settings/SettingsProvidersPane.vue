@@ -218,7 +218,7 @@ function cardLabel(row: Row): string {
 function select(provider: ProviderKind) {
   if (selected.value === provider) return;
   selected.value = provider;
-  cue("toggle");
+  cue("select");
 }
 
 // ── the masthead ──────────────────────────────────────────────────────────────
@@ -490,7 +490,7 @@ function commitBinary() {
   const provider = current.value.provider;
   if (binaryDraft.value.trim() === providerSettings.binaryPath(provider)) return;
   void providerSettings.setBinaryPath(provider, binaryDraft.value);
-  cue("toggle");
+  cue("saved");
   // A different binary is a different install: everything this page says about
   // channel, version and standing has to be re-read.
   void upkeep.check({ force: true, checkLatest: providerSettings.updateChecks.value });
@@ -498,7 +498,7 @@ function commitBinary() {
 
 async function toggleEnabled() {
   const provider = current.value.provider;
-  cue("toggle");
+  cue("toggle", { off: providerSettings.isEnabled(provider) });
   await providerSettings.setEnabled(provider, !providerSettings.isEnabled(provider));
   // Re-probe so statuses converge now: without this the composer's error strip
   // lingers on the stale row until the next manual "Check again".
@@ -570,12 +570,12 @@ const hiddenCount = computed(() =>
 function toggleModel(key: string) {
   const provider = current.value.provider;
   providerSettings.setModelHidden(provider, key, !providerSettings.isModelHidden(provider, key));
-  cue("toggle");
+  cue("toggle", { off: providerSettings.isModelHidden(provider, key) });
 }
 
 function toggleUpdateChecks() {
   providerSettings.updateChecks.value = !providerSettings.updateChecks.value;
-  cue("toggle");
+  cue("toggle", { off: !providerSettings.updateChecks.value });
   if (providerSettings.updateChecks.value) void upkeep.check({ force: true });
 }
 
@@ -590,7 +590,7 @@ async function copy(text: string) {
   try {
     await navigator.clipboard.writeText(text);
     copied.value = text;
-    cue("success");
+    cue("copy");
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
       copied.value = null;

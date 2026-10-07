@@ -19,7 +19,7 @@ const emit = defineEmits<{
 const { cue } = useSound();
 
 function open(): void {
-  cue("select");
+  cue("open");
   emit("open-thread", props.mark.threadId);
 }
 </script>

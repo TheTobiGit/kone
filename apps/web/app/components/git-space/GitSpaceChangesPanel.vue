@@ -112,7 +112,7 @@ const dotsOverflow = computed(() =>
 
 // Changed-lane Discard — every unstaged change, staged work untouched.
 function discardUnstaged() {
-  cue("press");
+  cue("discard");
   emit("discardPaths", unstaged.value.map((c) => c.path));
 }
 </script>

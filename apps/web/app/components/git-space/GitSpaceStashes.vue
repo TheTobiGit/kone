@@ -28,7 +28,7 @@ const busy = computed(() => props.space.op.value !== null);
 const dirty = computed(() => !props.git.clean.value);
 
 async function startStash() {
-  cue("toggle");
+  cue("expand");
   naming.value = true;
   message.value = "";
   await nextTick();
@@ -44,14 +44,19 @@ async function submit() {
     message: message.value.trim() || undefined,
     includeUntracked: true,
   });
+  cue(ok ? "saved" : "error");
   if (ok) cancel();
 }
 
-function apply(index: number, pop: boolean) {
+// Applying can stop on a conflict, so it sounds where it lands, not only
+// where it starts.
+async function apply(index: number, pop: boolean) {
   cue("press");
-  void props.space.applyStash(index, pop);
+  cue((await props.space.applyStash(index, pop)) ? "success" : "error");
 }
+// Behind a hold-to-confirm; the hold finishing is the commit.
 function drop(index: number) {
+  cue("discard");
   void props.space.dropStash(index);
 }
 </script>

@@ -56,7 +56,7 @@ const canCompose = computed(
 );
 
 async function startCompose() {
-  cue("toggle");
+  cue("expand");
   created.value = null;
   composing.value = true;
   base.value = defaultBase.value;
@@ -101,7 +101,7 @@ function titleFromBranch(name: string) {
 
 function setState(next: "open" | "all") {
   if (props.space.prState.value === next) return;
-  cue("toggle");
+  cue("select");
   void props.space.loadPrs(next);
 }
 
@@ -196,7 +196,7 @@ const REVIEW = {
           class="gsp__act"
           :class="{ 'gsp__act--on': draft }"
           :aria-pressed="draft"
-          @click="cue('toggle'); draft = !draft"
+          @click="cue('toggle', { off: draft }); draft = !draft"
         >
           Draft
         </button>

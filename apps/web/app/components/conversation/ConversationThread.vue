@@ -477,7 +477,7 @@ function openLightbox(att: ChatAttachment, turnAttachments?: ChatAttachment[]) {
     allImages: images.length ? images : [att],
     index: Math.max(0, idx),
   };
-  cue("toggle");
+  cue("show");
 }
 
 function closeLightbox() {
@@ -520,7 +520,7 @@ async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
   if (!block.text || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(block.text);
-    cue("success");
+    cue("copy");
     copied.value = block.id;
     window.setTimeout(() => {
       if (copied.value === block.id) copied.value = null;
@@ -532,14 +532,14 @@ async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
 function addUserRequestToScratchpad(block: Extract<ThreadBlock, { role: "user" }>) {
   if (!allowScratchpad.value || !block.text?.trim()) return;
   emit("to-scratchpad", block.text);
-  cue("press");
+  cue("saved");
 }
 async function copy(block: AssistantBlock) {
   const text = assistantText(block);
   if (!text || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(text);
-    cue("success");
+    cue("copy");
     copied.value = block.id;
     window.setTimeout(() => {
       if (copied.value === block.id) copied.value = null;
@@ -554,7 +554,7 @@ function addToScratchpad(block: AssistantBlock) {
   const text = assistantText(block);
   if (!text.trim()) return;
   emit("to-scratchpad", text);
-  cue("press");
+  cue("saved");
 }
 
 // Whether a settled assistant turn offers a file restore: the session seeded

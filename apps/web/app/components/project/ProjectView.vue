@@ -158,6 +158,7 @@ function toLauncher() {
 // return glyph — the file detail, a commit, a pull request — so it never has to
 // answer for a layer it can't see.
 function onBack() {
+  cue("leave");
   if (surface.value !== "overview") {
     surface.value = "overview";
     return;
@@ -176,7 +177,6 @@ const gitMounted = ref(false);
 const gitDepth = ref(0);
 function openGitSpace() {
   if (!g.repo.value) return;
-  cue("open");
   gitMounted.value = true;
   surface.value = "git";
   void space.load();
@@ -203,11 +203,14 @@ const NAV = PROJECT_SURFACES.map((id) => ({ id, label: PROJECT_SURFACE_LABEL[id]
 const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
 function goSurface(target: ProjectSurface) {
   if (target === surface.value) return;
+  // The nav is one segmented row, so every surface — the repository included —
+  // sounds as a choice along it, rising or falling with the way it moved.
+  const ahead = NAV.findIndex((n) => n.id === target) > navIndex.value;
+  cue("select", { direction: ahead ? "forward" : "back" });
   if (target === "git") {
     openGitSpace();
     return;
   }
-  cue("press");
   if (target === "files") filesMounted.value = true;
   if (target === "space") spaceMounted.value = true;
   surface.value = target;
@@ -243,7 +246,7 @@ const { pillThreads, onDismissThread, markSeen } = useThreadPills({
 // Opening a pill takes the same path everything else does: the row puts the
 // thread on screen, and the plane comes forward to show it.
 function onOpenPill(threadId: string) {
-  cue("press");
+  cue("open");
   // Mark its current turn seen so it won't linger once we step away — but only
   // if it has already settled. Marking a still-running turn seen would suppress
   // its completion pill if the user opens it and leaves before it finishes (the
@@ -283,8 +286,8 @@ function openBranchPicker() {
 }
 function onBranchSwitched() {
   // The picker already awaited g.refresh() before it closed (so the new branch's
-  // changes are already on screen) — just chime and dismiss.
-  cue("toggle");
+  // changes are already on screen) — just sound the choice and dismiss.
+  cue("select");
   branchPickerOpen.value = false;
 }
 
@@ -462,7 +465,7 @@ function onStageAll() {
   g.stageAll();
 }
 function onUnstageAll() {
-  cue("toggle");
+  cue("toggle", { off: true });
   g.unstageAll();
 }
 // Discard is hold-to-confirm (HoldToConfirm) in the Changed lane — by the time
@@ -477,7 +480,7 @@ function onPeekDiscard() {
   onDiscardPaths(changeItems.value.filter((c) => !c.staged).map((c) => c.path));
 }
 function onCommit() {
-  cue("expand");
+  cue("show");
   commitModalOpen.value = true;
 }
 
@@ -537,13 +540,13 @@ function onStageFile(path: string) {
   g.stagePaths([path]);
 }
 function onUnstageFile(path: string) {
-  cue("toggle");
+  cue("toggle", { off: true });
   g.unstagePaths([path]);
 }
 // Discarding from the detail closes it — the file's gone; the auto-close watcher
 // also covers it, but clearing here avoids a frame of stale content.
 function onDiscardFile(path: string) {
-  cue("press");
+  cue("discard");
   g.discardPaths([path]);
   activePath.value = null;
 }

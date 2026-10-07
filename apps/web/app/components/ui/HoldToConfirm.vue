@@ -43,7 +43,7 @@ function begin() {
   if (holding.value) return;
   holding.value = true;
   startTs = 0;
-  cue("toggle"); // a soft tick the instant the hold takes
+  cue("press"); // a soft tap the instant the hold takes; the caller sounds the commit
   raf = requestAnimationFrame(tick);
 }
 

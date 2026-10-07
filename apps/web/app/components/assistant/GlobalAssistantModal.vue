@@ -195,6 +195,7 @@ const { shown, close: playExit } = useModalExit();
  *  outside the card too, so it is handed the exit rather than asked to guess:
  *  while this card is mounted, its `close` plays the animation first. */
 function requestClose(): void {
+  cue("dismiss");
   close();
 }
 
@@ -210,8 +211,8 @@ onClickOutside(historyWrap, () => {
 });
 
 function toggleHistory(): void {
-  cue("press");
   showHistoryDropdown.value = !showHistoryDropdown.value;
+  cue(showHistoryDropdown.value ? "expand" : "collapse");
   if (showHistoryDropdown.value) void refreshThreads();
 }
 

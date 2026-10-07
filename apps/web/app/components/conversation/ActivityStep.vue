@@ -88,7 +88,7 @@ function toggle(): void {
   if (!clickable.value) return;
   open.value = !open.value;
   if (open.value) everOpened.value = true;
-  cue("toggle");
+  cue(open.value ? "expand" : "collapse");
 }
 </script>
 

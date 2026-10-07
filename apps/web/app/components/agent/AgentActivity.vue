@@ -195,7 +195,7 @@ function toggleExpanded(): void {
   if (view.value === "rows") void unfurlStrip();
   else if (view.value === "strip") foldStrip();
   chosen.value = view.value === "strip" ? "rows" : "strip";
-  cue("toggle");
+  cue(chosen.value === "rows" ? "expand" : "collapse");
 }
 
 // ── Screen-reader announcements ────────────────────────────────────────────────

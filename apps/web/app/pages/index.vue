@@ -44,8 +44,8 @@ const isLauncherModalOpen = computed(
 function onStart(key: "create" | "open" | "clone") {
   if (pending.value) return;
 
-  // Acknowledge the chosen way to begin — one soft press as the flow commits.
-  cue("press");
+  // Acknowledge the chosen way to begin — every door opens a dialog.
+  cue("show");
 
   if (key === "open") {
     pending.value = "open";
@@ -181,7 +181,7 @@ const {
 } = useSettingsSurface();
 
 function onOpenProfile() {
-  cue("press");
+  cue("show");
   openDrawer("profile");
 }
 
@@ -308,7 +308,7 @@ function onSurfaceHotkey(e: KeyboardEvent) {
   if (matchesShortcut("search-conversations", e)) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
-    cue("press");
+    cue(searchOpen.value ? "dismiss" : "show");
     searchOpen.value = !searchOpen.value;
     return;
   }
@@ -340,14 +340,14 @@ function onSurfaceHotkey(e: KeyboardEvent) {
   if (matchesShortcut("toggle-settings", e)) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
-    cue("press");
+    cue(settingsOpen.value ? "dismiss" : "show");
     settingsOpen.value = !settingsOpen.value;
     return;
   }
   if (matchesShortcut("open-assistant", e)) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
-    cue("press");
+    cue(assistantOpen.value ? "dismiss" : "show");
     toggleAssistant();
     return;
   }
@@ -363,8 +363,8 @@ function onSurfaceHotkey(e: KeyboardEvent) {
     e.preventDefault();
     const next = Math.min(MAX_INTERFACE_FONT_SIZE, Math.max(MIN_INTERFACE_FONT_SIZE, scale));
     if (next === typePrefs.value.sizeInterface) return;
+    cue("select", { direction: next > typePrefs.value.sizeInterface ? "forward" : "back" });
     setTypeSize("interface", next);
-    cue("select");
   }
 }
 onMounted(() => window.addEventListener("keydown", onSurfaceHotkey));

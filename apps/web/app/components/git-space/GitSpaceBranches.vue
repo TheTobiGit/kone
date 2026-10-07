@@ -57,7 +57,7 @@ function hasLocal(remoteRef: string) {
 }
 
 async function startCreate() {
-  cue("toggle");
+  cue("expand");
   creating.value = true;
   newName.value = "";
   await nextTick();
@@ -70,13 +70,17 @@ function cancelCreate() {
 async function submitCreate() {
   const name = newName.value.trim();
   if (!name) return cancelCreate();
+  // Another operation holds the repo. Enter in the name field reaches here
+  // even while the button is disabled, so say no rather than swallow it.
+  if (busy.value) return cue("refuse");
   cue("press");
   const ok = await props.space.createBranch(name, { checkout: true });
+  cue(ok ? "success" : "error");
   if (ok) cancelCreate();
 }
 
 async function startRename(name: string) {
-  cue("toggle");
+  cue("expand");
   renaming.value = name;
   renameTo.value = name;
   await nextTick();
@@ -97,14 +101,20 @@ function switchTo(name: string) {
   cue("press");
   void props.space.switchBranch(name);
 }
-function merge(name: string) {
+async function merge(name: string) {
+  // A merge can stop on a conflict, so it's the one switch-like move that
+  // sounds where it lands — the user has to know whether to go look.
+  if (busy.value) return cue("refuse");
   cue("press");
-  void props.space.mergeBranch(name);
+  cue((await props.space.mergeBranch(name)) ? "success" : "error");
 }
+// Both deletes sit behind a hold-to-confirm; the hold finishing is the commit.
 function remove(name: string) {
+  cue("discard");
   void props.space.deleteBranch(name);
 }
 function removeRemote(remoteRef: string) {
+  cue("discard");
   void props.space.deleteBranch(localNameOf(remoteRef), { remote: true });
 }
 function checkoutRemote(remoteRef: string) {
