@@ -32,6 +32,10 @@
       "types": "./src/modelPreferences.ts",
       "default": "./src/modelPreferences.ts"
     },
+    "./page-render": {
+      "types": "./src/pageRender.ts",
+      "default": "./src/pageRender.ts"
+    },
     "./plan-tasks": {
       "types": "./src/planTasks.ts",
       "default": "./src/planTasks.ts"
