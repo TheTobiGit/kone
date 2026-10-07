@@ -194,7 +194,6 @@ export function useGitClone() {
     destPath,
     destPathDisplay,
     homePath,
-    // actions
     ensureHome,
     setDestParent,
     runClone,

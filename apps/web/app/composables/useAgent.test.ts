@@ -1121,7 +1121,6 @@ describe("useAgent single blank thread invariant", () => {
     const { agent, session: s0 } = harness();
     s0.blocks.value = [userBlock("b0", "thread 0")];
 
-    // Create a non-blank second thread
     const s1Key = await agent.newThreadAt(1);
     const s1 = agent.sessions.value.find((s) => s.key === s1Key)!;
     s1.blocks.value = [userBlock("b1", "thread 1")];

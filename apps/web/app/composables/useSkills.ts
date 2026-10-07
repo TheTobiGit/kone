@@ -82,7 +82,7 @@ export type UseSkillsOptions = {
   bridge?: () => UseSkillsBridge | undefined;
 };
 
-/** v1 stable — t3 parity: on/off only. Claude's four-value override
+/** v1 stable: on/off only. Claude's four-value override
  *  (on/name-only/user-invocable-only/off) is kept in the backend for compat,
  *  but the UI only offers enabled/disabled. The backend maps the two middle
  *  values to enabled, so a v1 toggle never leaves a skill in a half-state.

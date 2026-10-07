@@ -112,15 +112,15 @@ describe("Antigravity language-server discovery", () => {
   test("the bare agy process needs no language_server marker or csrf", () => {
     // The app's language_server path requires the marker + a real csrf token,
     // so a bare `agy` process (which hosts the RPC in-process) only resolves
-    // through the lsof-port path — exercised live on this machine.
+    // through the lsof-port path.
     expect(parseAntigravityLanguageServerLine("agy")).toBeNull();
   });
 
   test("parseListeningPorts reads LISTEN ports from lsof output", () => {
     const output = [
       "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME",
-      "agy 28532 gideonsarfo 10u IPv4 0x6c296b21601495ab 0t0 TCP 127.0.0.1:61501 (LISTEN)",
-      "agy 28532 gideonsarfo 11u IPv4 0x6c9eeb6de515db09 0t0 TCP 127.0.0.1:61502 (LISTEN)",
+      "agy 28532 testuser 10u IPv4 0x6c296b21601495ab 0t0 TCP 127.0.0.1:61501 (LISTEN)",
+      "agy 28532 testuser 11u IPv4 0x6c9eeb6de515db09 0t0 TCP 127.0.0.1:61502 (LISTEN)",
       "other 1 root 12u IPv6 0x0 0t0 TCP *:8080 (LISTEN)",
       "curl 999 root 5u IPv4 0x0 0t0 TCP 127.0.0.1:54321 (ESTABLISHED)",
     ].join("\n");
