@@ -78,6 +78,8 @@ export type GitChange = {
   /** Lines inserted in this file (working tree vs HEAD), when known. */
   added?: number;
   removed?: number;
+  /** When the file on disk was last written (epoch ms); absent for a deletion. */
+  modifiedAt?: number;
 };
 
 export type GitDiffLine = {
