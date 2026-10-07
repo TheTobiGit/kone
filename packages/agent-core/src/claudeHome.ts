@@ -106,6 +106,10 @@ export async function buildClaudeEnv(base: NodeJS.ProcessEnv = process.env): Pro
   }
   // Identify kone in the SDK's User-Agent.
   env.CLAUDE_AGENT_SDK_CLIENT_APP = "kone/0.1.0";
+  // The task tools (TaskCreate / TaskUpdate / TaskList / TaskGet) are off in
+  // SDK sessions unless asked for, and they are what fills the thread dock's
+  // Tasks section (claudeTaskTracker). A user's own setting still wins.
+  env.CLAUDE_CODE_ENABLE_TASKS ??= "1";
   return env;
 }
 
