@@ -336,6 +336,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "code_lsp",
       "code_find_calls",
       "code_preview_rewrite",
+      "page_preview",
+      "page_show",
     ]);
     // A deferring client reaches the same endpoint as two servers: the core
     // set loaded up front, and the rarely needed rest behind its tool search.
@@ -500,6 +502,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_get_view",
       "code_find_calls",
       "code_preview_rewrite",
+      "page_preview",
+      "page_show",
     ]);
 
     // Every tool it was handed is one the host-context block will name — the
