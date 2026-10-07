@@ -151,7 +151,6 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
       },
       { pane: "agentSkills", label: "Skills", glyph: "skills" },
       { pane: "agentsUsage", label: "Usage", glyph: "usage" },
-      { pane: "providerLimits", label: "Provider limits", glyph: "limits" },
     ],
   },
 ]);
@@ -293,8 +292,6 @@ watch(
     <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
 
     <SettingsAgentsUsagePane v-if="pane === 'agentsUsage'" :open="open" @back="backToRoot" />
-
-    <SettingsProviderLimitsPane v-if="pane === 'providerLimits'" :open="open" @back="backToRoot" />
 
     <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
 
