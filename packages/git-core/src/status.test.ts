@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { rm, writeFile } from "node:fs/promises";
+import { rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "./core.js";
@@ -102,6 +102,28 @@ describe("status line counts", () => {
     expect(change?.added).toBe(0);
     expect(change?.removed).toBe(0);
     expect(Number.isNaN(change?.added)).toBe(false);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("dates every change that has a file, and no deletion", async () => {
+    const dir = await makeRepo();
+    await writeFile(path.join(dir, "kept.txt"), "one\n");
+    await writeFile(path.join(dir, "gone.txt"), "one\n");
+    await git(dir, ["add", "-A"]);
+    await git(dir, ["commit", "-m", "one"]);
+    await writeFile(path.join(dir, "kept.txt"), "one\ntwo\n");
+    await writeFile(path.join(dir, "fresh.txt"), "a\n");
+    await rm(path.join(dir, "gone.txt"));
+    // Pin the times so the assertion can't pass on a coincidence of the clock.
+    await utimes(path.join(dir, "kept.txt"), 1_000, 1_000);
+    await utimes(path.join(dir, "fresh.txt"), 2_000, 2_000);
+
+    const byPath = new Map((await status(dir))!.changes.map((c) => [c.path, c]));
+    expect(byPath.get("kept.txt")?.modifiedAt).toBe(1_000_000);
+    expect(byPath.get("fresh.txt")?.modifiedAt).toBe(2_000_000);
+    expect(byPath.get("gone.txt")?.status).toBe("deleted");
+    expect(byPath.get("gone.txt")?.modifiedAt).toBeUndefined();
 
     await rm(dir, { recursive: true, force: true });
   });

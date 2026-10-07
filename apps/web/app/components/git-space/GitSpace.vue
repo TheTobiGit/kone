@@ -148,7 +148,7 @@ function openPr(number: number) {
 }
 function back() {
   if (!stack.value.length) return;
-  cue("collapse");
+  cue("leave");
   stack.value = stack.value.slice(0, -1);
 }
 
@@ -262,25 +262,35 @@ const whoEmail = computed<string | null>(() => {
 
 const activeIndex = computed(() => SECTIONS.findIndex((s) => s.id === section.value));
 
+// These run for seconds against a remote, long enough to look away, so each
+// one sounds where it lands as well as where it starts. The buttons are
+// disabled while an operation runs, so a `false` here is git refusing, never
+// a busy no-op. A fetch only moves remote refs, so it lands silently and
+// speaks up only when it fails.
+async function landed(op: Promise<boolean>, quietOnSuccess = false): Promise<void> {
+  const ok = await op;
+  if (!ok) cue("error");
+  else if (!quietOnSuccess) cue("success");
+}
 function onFetch() {
-  cue("toggle");
-  void props.space.fetch();
+  cue("press");
+  void landed(props.space.fetch(), true);
 }
 function onPull() {
   cue("press");
-  void props.space.pull();
+  void landed(props.space.pull());
 }
 function onPush() {
   cue("press");
-  void props.space.push(upstream.value ? undefined : { setUpstream: true });
+  void landed(props.space.push(upstream.value ? undefined : { setUpstream: true }));
 }
 function onContinue() {
   cue("press");
-  void props.space.continueOperation();
+  void landed(props.space.continueOperation());
 }
 function onAbort() {
   cue("press");
-  void props.space.abortOperation();
+  void landed(props.space.abortOperation(), true);
 }
 </script>
 

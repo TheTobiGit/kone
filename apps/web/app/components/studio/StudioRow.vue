@@ -1429,7 +1429,7 @@ function onComposerMode(next: InteractionMode): void {
 function onModelSelect(picked: ModelPick) {
   void applyModelEffort(picked);
   modelPickerOpen.value = false;
-  cue("toggle");
+  cue("select");
 }
 
 
@@ -1603,7 +1603,7 @@ watch(
 );
 
 function onOpenThread(threadId: string) {
-  cue("press");
+  cue("open");
   // The pill's thread is usually already a pane (adopted while it ran); focus it.
   // If it was evicted since, open a fresh pane bound to its id — studio.open's
   // thread adapter reloads its transcript through agent.openThread.
@@ -2073,7 +2073,9 @@ useStudioRowView(registryPath, () =>
   border-radius: 999px;
   background: var(--sunken);
   border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-  box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+  box-shadow:
+    0 4px 14px -2px rgb(0 0 0 / 0.12),
+    0 1px 3px rgb(0 0 0 / 0.06);
   color: var(--ink-soft);
   font-size: 12.5px;
   line-height: 1.4;

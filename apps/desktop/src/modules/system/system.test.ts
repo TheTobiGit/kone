@@ -32,7 +32,7 @@ mock.module("electron", () => ({
 }));
 
 const electron = await import("electron");
-const { currentAppearance, currentThemeRoster, reveal, setTheme } = await import("./system.js");
+const { currentAppearance, currentPageTheme, currentThemeRoster, reveal, setTheme } = await import("./system.js");
 
 // Electron mocks leak across files: whichever test file stubs the package
 // first wins for the rest of the suite. Re-bind the spies onto the live
@@ -198,5 +198,28 @@ describe("appearance mirror", () => {
     push([entry("northlight", { appearance: "light", schemes: [] })]);
 
     expect(currentThemeRoster()?.[0]?.schemes).toEqual(["light"]);
+  });
+
+  test("mirrors the page theme, keeping only the variables a page is promised", () => {
+    setTheme("dark", {
+      themeId: "nocturne",
+      pageTheme: {
+        appearance: "dark",
+        variables: { "--ground": " #0f1018 ", "--ink": "#f4f4f5", "--unrelated": "red", "--muted": " " },
+      },
+    });
+
+    expect(currentPageTheme()).toEqual({ appearance: "dark", variables: { "--ground": "#0f1018", "--ink": "#f4f4f5" } });
+  });
+
+  test("keeps the last page theme when a push carries none it can read", () => {
+    setTheme("dark", { themeId: "nocturne", pageTheme: { appearance: "dark", variables: { "--ink": "#fff" } } });
+    setTheme("light", { themeId: "nocturne" });
+    // What crosses IPC is whatever the renderer sent; a payload of another shape
+    // arrives parsed, never typed.
+    const malformed: AppearancePush = JSON.parse('{"themeId":"nocturne","pageTheme":{"appearance":"dim"}}');
+    setTheme("light", malformed);
+
+    expect(currentPageTheme()).toEqual({ appearance: "dark", variables: { "--ink": "#fff" } });
   });
 });

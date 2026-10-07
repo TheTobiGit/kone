@@ -225,7 +225,7 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
     }
 
     abandon();
-    cue("expand");
+    cue("open");
     const wasOpen = openRefs[portal].value;
 
     if (!wasOpen) {
@@ -299,8 +299,9 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
 
     const back = trail.pop();
 
+    // Silent: whatever dismissed the portal already sounded the way back, and
+    // the reopening is the same step, not a second one.
     if (back !== undefined) {
-      cue("expand");
       openRefs[back].value = true;
     }
   }
@@ -310,8 +311,10 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
    *  being left is still painted, so this lands back on it rather than letting
    *  the pending switch carry through to the page. */
   function toggle(portal: PortalId): void {
-    if (openRefs[portal].value && activePortal.value === portal) dismiss(portal);
-    else summon(portal);
+    if (openRefs[portal].value && activePortal.value === portal) {
+      cue("leave");
+      dismiss(portal);
+    } else summon(portal);
   }
 
   function toggleStudio(): void {

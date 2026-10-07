@@ -172,7 +172,7 @@ const listRef = ref<{ reload: (silent?: boolean) => void } | null>(null);
 const newThreadRef = ref<InstanceType<typeof InboxNewThread> | null>(null);
 
 function startNewThread(): void {
-  cue("select");
+  cue("show");
   // The selection underneath is kept, not cleared — the composer covers it,
   // and dismissing the composer puts you back where you were.
   paneState.composing = true;
@@ -249,7 +249,7 @@ async function onOpenProjectThread(
   const summary = await resolveThreadSummary(projectPath, threadId, projectName);
 
   if (!summary) return;
-  cue("select");
+  cue("open");
   openThread(paneState, summary);
   void intake
     .adoptInboxThread({
@@ -378,7 +378,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 });
 
 function close(): void {
-  cue("collapse");
+  cue("leave");
   emit("close");
 }
 </script>

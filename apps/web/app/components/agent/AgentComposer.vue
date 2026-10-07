@@ -415,7 +415,7 @@ const agentTriggerEl = ref<HTMLElement | null>(null);
 function openAgentPicker() {
   if (!canSwitchAgent.value) return;
   agentPickerOpen.value = true;
-  cue("toggle");
+  cue("expand");
 }
 
 function pickAgent(id: string | null) {
@@ -473,7 +473,7 @@ const modelBrand = computed(
 function openModels() {
   if (!canSwitchModel.value) return;
   emit("open-models");
-  cue("toggle");
+  cue("expand");
 }
 // Cycle the effort: each click steps to the next real effort for this model and
 // wraps at the end. No dropdown — the brain-stack + label carry the state.
@@ -486,7 +486,7 @@ function cycleEffort() {
   if (!next) return;
   emit("update:modelId", next.modelId);
   emit("update:reasoning", next.tier);
-  cue("toggle");
+  cue("select", { direction: "forward" });
   // A quick tactile bump so the step registers.
   bumping.value = false;
   void nextTick(() => {
@@ -502,7 +502,7 @@ function brainStack(n: number): number[] {
 function toggleFastMode() {
   if (!fastTier.value) return;
   emit("update:fastMode", !props.fastMode);
-  cue("toggle");
+  cue("toggle", { off: props.fastMode });
 }
 // Cycle the context window: step to the next one for this family and wrap. Two
 // windows (200k/1m) makes this a toggle; the label carries the state.
@@ -513,7 +513,7 @@ function cycleContextWindow() {
   const next = windows[(idx + 1) % windows.length];
   if (!next) return;
   emit("update:contextWindow", next.id);
-  cue("toggle");
+  cue("select", { direction: "forward" });
 }
 
 // ── permission mode (how much the agent may do without asking) ─────────────────
@@ -533,7 +533,7 @@ function cycleMode() {
   const idx = MODES.findIndex((m) => m.id === currentMode.value.id);
   const next = MODES[(idx + 1) % MODES.length]!;
   emit("update:mode", next.id);
-  cue("toggle");
+  cue("select", { direction: "forward" });
   modeBump.value = false;
   void nextTick(() => {
     modeBump.value = true;
@@ -589,7 +589,7 @@ const skills = useComposerSkills({
   setEditorFromText: (value, saved) => setMentionEditorFromText(value, saved),
   markSkillChips: (isAvailable) => markSkillChips(isAvailable),
   getSetDraft: () => setDraft,
-  cueError: () => cue("error"),
+  cueError: () => cue("refuse"),
   flashNotice: (message) => flash(message),
 });
 
@@ -1007,14 +1007,14 @@ function dispatchDraft(intent: "queued" | "draft" = "queued", opposite = false) 
   // up. Refused rather than silently downgraded to a draft: which shelf it
   // lands on is the user's decision, not a fallback.
   if (isJob.value && intent === "queued" && !hasProject.value) {
-    cue("error");
+    cue("refuse");
     emit("open-project");
     return;
   }
   // Nothing to send it to. Return before clearComposerEditor() below — a send refused
   // for a reason the user hasn't fixed yet must not also cost them their draft.
   if (props.blockedReason) {
-    cue("error");
+    cue("refuse");
     return;
   }
   // A turn is valid with text, attachments, skills, or any mix — an
@@ -1062,7 +1062,7 @@ function send() {
   // interrupting it.
   if (props.busy && !armed.value) {
     emit("interrupt");
-    cue("press");
+    cue("stop");
     return;
   }
   dispatchDraft();

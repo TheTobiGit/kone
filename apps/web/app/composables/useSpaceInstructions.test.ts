@@ -108,14 +108,12 @@ describe("useSpaceInstructions", () => {
     expect(inst.agents.value.detected).toBe(false);
     expect(inst.claude.value.detected).toBe(false);
 
-    // Create AGENTS.md
     await inst.create("agents");
     await nextTick();
 
     expect(inst.agents.value.detected).toBe(true);
     expect(inst.agents.value.path).toBe("AGENTS.md");
 
-    // Create CLAUDE.md
     await inst.create("claude");
     await nextTick();
 

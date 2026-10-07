@@ -4,6 +4,7 @@ import ApprovalPrompt from "~/components/agent/ApprovalPrompt.vue";
 import type { PendingApproval } from "~/composables/useAgent";
 import type { ApprovalDecision, ApprovalRequest } from "~/types/desktop";
 import { useModalExit } from "~/composables/useModalExit";
+import { approvalCue, useSound } from "~/composables/useSound";
 
 // The agent's request for a go-ahead before it runs something, in the same
 // scrim + elastic card shell the pickers and the question modal wear — anchored
@@ -68,6 +69,7 @@ function next(): void {
 
 function decide(decision: ApprovalDecision): void {
   if (closing.value) return;
+  cue(approvalCue(decision));
   const reqId = active.value.requestId;
   const remaining = props.queue?.length ?? 1;
 
@@ -83,6 +85,7 @@ function decide(decision: ApprovalDecision): void {
 
 // it reads as one surface, but bottom-centre over the composer's spot ──────────
 const { shown, closing, close } = useModalExit();
+const { cue } = useSound();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;

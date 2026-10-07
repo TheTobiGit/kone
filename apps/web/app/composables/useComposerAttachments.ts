@@ -66,7 +66,7 @@ export function useComposerAttachments(deps: {
 
   function settleAdded(added: number): void {
     if (added === 0) return;
-    cue("toggle");
+    cue("press");
     if (!isOpen()) void wake();
     syncSoon();
   }
@@ -108,7 +108,7 @@ export function useComposerAttachments(deps: {
     const at = attachments.value.find((a) => a.id === id);
     if (at?.previewUrl) URL.revokeObjectURL(at.previewUrl);
     attachments.value = attachments.value.filter((a) => a.id !== id);
-    cue("toggle");
+    cue("collapse");
     syncSoon();
   }
 

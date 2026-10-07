@@ -44,9 +44,15 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
-const { shown, close } = useModalExit();
-function dismiss(): void {
+const { shown, close, dismiss } = useModalExit();
+function closeQuietly(): void {
   close(() => emit("close"));
+}
+
+/** The user sending the palette away — Escape, the scrim, the close button.
+ *  A pick closes it too, but quietly: it already sounds as the thread it opens. */
+function cancel(): void {
+  dismiss(() => emit("close"));
 }
 
 // ── query + results ─────────────────────────────────────────────────────────
@@ -154,7 +160,7 @@ function onKeydown(e: KeyboardEvent): void {
     e.preventDefault();
     // The palette owns this press — see the capture registration on mount.
     e.stopPropagation();
-    dismiss();
+    cancel();
     return;
   }
   if (e.key === "ArrowDown") {
@@ -183,7 +189,7 @@ async function selectHit(hit: ConversationSearchHit): Promise<void> {
     notice.value = "That conversation was deleted.";
     hits.value = hits.value.filter((h) => h.threadId !== hit.threadId);
     activeIndex.value = 0;
-    cue("collapse");
+    cue("refuse");
     return;
   }
   const projectPath = stored.projectPath;
@@ -193,7 +199,7 @@ async function selectHit(hit: ConversationSearchHit): Promise<void> {
     projectPath;
   const blockId = scrollBlockIdForHit(hit);
   cue("open");
-  dismiss();
+  closeQuietly();
   emit("jump", { projectPath, projectName, threadId: hit.threadId, blockId });
 }
 
@@ -230,7 +236,7 @@ onBeforeUnmount(() => {
     :shown="shown"
     from="above"
     class="z-50 items-start justify-center px-4 pt-[12vh]"
-    @dismiss="dismiss"
+    @dismiss="cancel"
   >
     <div
       v-bind="card"
@@ -253,7 +259,7 @@ onBeforeUnmount(() => {
           spellcheck="false"
           @input="onInput"
         />
-        <button type="button" class="picker-action text-muted" aria-label="Close search" @click="dismiss">
+        <button type="button" class="picker-action text-muted" aria-label="Close search" @click="cancel">
           <HugeiconsIcon :icon="Cancel01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
         </button>
       </div>

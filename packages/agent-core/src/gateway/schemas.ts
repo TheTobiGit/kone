@@ -24,6 +24,18 @@ import { ContractTermsSchema } from "@kone/protocol/contract";
 import type { ProviderKind } from "../types.js";
 import { PROVIDER_KIND_VALUES as PROVIDER_KINDS } from "../types.js";
 import { LSP_ACTIONS } from "../lsp/types.js";
+import {
+  clampPageHeight,
+  PAGE_COLUMN_WIDTH,
+  PAGE_NARROWEST_WIDTH,
+  PAGE_VIEWER_WIDTH,
+  PAGE_MAX_HTML_LENGTH,
+  PAGE_MAX_HEIGHT,
+  PAGE_MAX_TITLE_LENGTH,
+  PAGE_MIN_HEIGHT,
+  PAGE_PREVIEW_MAX_WIDTH,
+  PAGE_PREVIEW_MIN_WIDTH,
+} from "@kone/protocol/page-render";
 
 /** One decoded gateway payload — validated tool arguments, structured tool
  *  results, and error detail are all plain JSON data, so consumers branch on
@@ -67,8 +79,14 @@ export type ScratchpadPayload = {
   savedAt: number;
 };
 
+/** One block of a tool result: prose for the model, or an image it can look
+ *  at (a page preview's screenshot). */
+export type GatewayToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export type GatewayToolResult = {
-  content: Array<{ type: "text"; text: string }>;
+  content: GatewayToolContent[];
   isError?: boolean;
   structuredContent?: GatewayRecord;
 };
@@ -2574,3 +2592,66 @@ export const LSP_JSON_SCHEMA = {
 
 export type LspToolInput = z.infer<typeof LspToolInputSchema>;
 
+
+// ── pages ────────────────────────────────────────────────────────────────────
+
+const PAGE_HTML_DESCRIPTION =
+  "One complete, self-contained HTML document, with its styles and scripts inline. Local images written as absolute file paths (src=\"/abs/shot.png\", CSS url(/abs/bg.webp), or a JS string) are embedded automatically; remote https URLs, such as a chart library on a CDN, load as they are.";
+
+const PAGE_HEIGHT_DESCRIPTION = `The frame's height in CSS pixels before the page reports its own: page_preview's contentHeight. It is brought into ${PAGE_MIN_HEIGHT}-${PAGE_MAX_HEIGHT}; the frame then fits the page as it renders, up to ${PAGE_MAX_HEIGHT}px, past which the page scrolls inside it.`;
+
+export const PageShowInputSchema = z.object({
+  html: z.string().min(1).max(PAGE_MAX_HTML_LENGTH).describe(PAGE_HTML_DESCRIPTION),
+  title: z.string().trim().min(1).max(PAGE_MAX_TITLE_LENGTH).describe("A short name for the page."),
+  // Any height is taken and brought into range rather than refused: the value
+  // the agent has is page_preview's contentHeight, which is whatever the page
+  // needs, and a long page is not a mistake.
+  height: z.number().int().transform(clampPageHeight).describe(PAGE_HEIGHT_DESCRIPTION),
+});
+
+export const PAGE_SHOW_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    html: { type: "string", description: PAGE_HTML_DESCRIPTION },
+    title: { type: "string", description: "A short name for the page." },
+    height: { type: "integer", description: PAGE_HEIGHT_DESCRIPTION },
+  },
+  required: ["html", "title", "height"],
+} satisfies GatewayRecord;
+
+export type PageShowInput = z.infer<typeof PageShowInputSchema>;
+
+export const PagePreviewInputSchema = z.object({
+  html: z.string().min(1).max(PAGE_MAX_HTML_LENGTH).describe(PAGE_HTML_DESCRIPTION),
+  width: z
+    .number()
+    .int()
+    .min(PAGE_PREVIEW_MIN_WIDTH)
+    .max(PAGE_PREVIEW_MAX_WIDTH)
+    .optional()
+    .describe(
+      `Viewport width in CSS pixels, ${PAGE_PREVIEW_MIN_WIDTH}-${PAGE_PREVIEW_MAX_WIDTH}. Defaults to ${PAGE_COLUMN_WIDTH}, the reply column; use ${PAGE_NARROWEST_WIDTH} to check the assistant panel or a narrow thread, and ${PAGE_VIEWER_WIDTH} for the full-size view.`,
+    ),
+  appearance: z.enum(["dark", "light"]).optional().describe("The appearance to preview in. Defaults to the one on the user's screen."),
+});
+
+export const PAGE_PREVIEW_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    html: { type: "string", description: PAGE_HTML_DESCRIPTION },
+    width: {
+      type: "integer",
+      minimum: PAGE_PREVIEW_MIN_WIDTH,
+      maximum: PAGE_PREVIEW_MAX_WIDTH,
+      description: `Viewport width in CSS pixels, ${PAGE_PREVIEW_MIN_WIDTH}-${PAGE_PREVIEW_MAX_WIDTH}. Defaults to ${PAGE_COLUMN_WIDTH}, the reply column; use ${PAGE_NARROWEST_WIDTH} to check the assistant panel or a narrow thread, and ${PAGE_VIEWER_WIDTH} for the full-size view.`,
+    },
+    appearance: {
+      type: "string",
+      enum: ["dark", "light"],
+      description: "The appearance to preview in. Defaults to the one on the user's screen.",
+    },
+  },
+  required: ["html"],
+} satisfies GatewayRecord;
+
+export type PagePreviewInput = z.infer<typeof PagePreviewInputSchema>;

@@ -46,7 +46,7 @@ async function copyPlan() {
   try {
     await navigator.clipboard.writeText(md);
     copied.value = true;
-    cue("press");
+    cue("copy");
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => (copied.value = false), 1400);
   } catch {
@@ -63,7 +63,7 @@ function syncHeight(): void {
 
 function toggle(): void {
   expanded.value = !expanded.value;
-  cue("toggle");
+  cue(expanded.value ? "expand" : "collapse");
 }
 
 // Drafting opens the body; a settled plan eases shut after a beat so the

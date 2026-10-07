@@ -35,7 +35,7 @@ export function useUser() {
     }
   }
 
-  // "gideon.sarfo" → "Gideon Sarfo"; "gideonsarfo" → "Gideonsarfo". Null while
+  // "alex.chen" → "Alex Chen"; "alexchen" → "Alexchen". Null while
   // unresolved; the greeting treats that as an anonymous "there".
   const displayName = computed(() => {
     const raw = username.value?.trim();

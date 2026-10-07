@@ -2,6 +2,19 @@ import { computed, ref } from "vue";
 import { latestAssistant } from "../agentPrefetch";
 import type { AssistantBlock, LiveAttentionItem } from "../agentTypes";
 import { registries, registryVersion } from "./agentRegistry";
+import type { ThreadSession } from "../useAgent";
+
+/** Visit every resident session in every project, reactively: a computed that
+ *  walks through here re-derives when a session's contents change *and* when a
+ *  project's registry appears or goes away (the Map itself is not reactive,
+ *  `registryVersion` stands in for it). Each app-wide projection below is one
+ *  of these walks. */
+function eachSession(visit: (s: ThreadSession, projectPath: string) => void): void {
+  void registryVersion.value;
+  for (const [projectPath, r] of registries.entries()) {
+    for (const s of r.sessions.value) visit(s, projectPath);
+  }
+}
 
 /** Every turn running anywhere in the app right now, keyed by thread id.
  *
@@ -12,16 +25,29 @@ import { registries, registryVersion } from "./agentRegistry";
  *  this is the join between "a row on disk" and "a turn in flight", and it is
  *  read-only by design: nothing here starts, adopts, or keeps a session alive. */
 export const liveTurns = computed<Map<string, AssistantBlock>>(() => {
-  void registryVersion.value;
   const out = new Map<string, AssistantBlock>();
-  for (const r of registries.values()) {
-    for (const s of r.sessions.value) {
-      const threadId = s.threadId.value;
-      if (!threadId) continue;
-      const block = latestAssistant(s.timelineBlocks.value);
-      if (block?.state === "running") out.set(threadId, block);
-    }
-  }
+  eachSession((s) => {
+    const threadId = s.threadId.value;
+    if (!threadId) return;
+    const block = latestAssistant(s.timelineBlocks.value);
+    if (block?.state === "running") out.set(threadId, block);
+  });
+  return out;
+});
+
+/** Every resident thread's newest turn — running or settled — keyed by the
+ *  session's stable registry key (a provider thread id can change under a
+ *  live session; the key never does).
+ *
+ *  `liveTurns` only says what is running; something that has to notice a turn
+ *  *finishing* anywhere in the app needs the settled states as well, and like
+ *  `liveTurns` it can't rely on whichever surface happens to be mounted. */
+export const latestTurns = computed<Map<string, Pick<AssistantBlock, "turnId" | "state">>>(() => {
+  const out = new Map<string, Pick<AssistantBlock, "turnId" | "state">>();
+  eachSession((s) => {
+    const block = latestAssistant(s.timelineBlocks.value);
+    if (block) out.set(s.key, { turnId: block.turnId, state: block.state });
+  });
   return out;
 });
 
@@ -40,28 +66,25 @@ export const liveTurns = computed<Map<string, AssistantBlock>>(() => {
  *  the two surfaces never disagree about what is waiting — only about which
  *  thread is in front of you (each host filters out the one it is showing). */
 export const liveAttention = computed<LiveAttentionItem[]>(() => {
-  void registryVersion.value;
   const out: LiveAttentionItem[] = [];
-  for (const [projectPath, r] of registries.entries()) {
-    for (const s of r.sessions.value) {
-      const attention = s.attention.value;
-      if (!attention) continue;
-      const threadId = s.threadId.value;
-      if (!threadId) continue;
-      const provider = s.provider.value;
-      if (!provider) continue;
-      out.push({
-        key: s.key,
-        threadId,
-        title: s.title.value,
-        provider,
-        model: s.model.value,
-        projectPath,
-        kind: attention.kind,
-        detail: attention.detail,
-      });
-    }
-  }
+  eachSession((s, projectPath) => {
+    const attention = s.attention.value;
+    if (!attention) return;
+    const threadId = s.threadId.value;
+    if (!threadId) return;
+    const provider = s.provider.value;
+    if (!provider) return;
+    out.push({
+      key: s.key,
+      threadId,
+      title: s.title.value,
+      provider,
+      model: s.model.value,
+      projectPath,
+      kind: attention.kind,
+      detail: attention.detail,
+    });
+  });
   return out;
 });
 

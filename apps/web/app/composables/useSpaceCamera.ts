@@ -88,7 +88,7 @@ export function useSpaceCamera<S extends string, C extends string>(options: {
 
   /** Send the camera to a section's first column and wash the section. */
   function scrollToSection(id: S): void {
-    if (activeSection.value !== id) cue("toggle");
+    if (activeSection.value !== id) cue("select");
     landed.value = id;
     if (landedTimer) clearTimeout(landedTimer);
     landedTimer = setTimeout(() => {

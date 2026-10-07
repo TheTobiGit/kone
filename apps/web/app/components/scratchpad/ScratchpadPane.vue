@@ -198,7 +198,7 @@ function onBarTextColor(id: string): void {
 
 function onBarClear(): void {
   editor.clearFormat();
-  cue("toggle");
+  cue("press");
   refreshMarks();
 }
 
@@ -208,7 +208,7 @@ async function copyAll(): Promise<void> {
   if (!md.trim() || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(md);
-    cue("toggle");
+    cue("copy");
   } catch {
     // clipboard blocked
   }
@@ -228,7 +228,7 @@ function exportFile(): void {
 
 function clearDoc(): void {
   props.session.doc.value = "";
-  cue("press");
+  cue("discard");
 }
 
 async function renderMarkdown(src: string): Promise<string> {

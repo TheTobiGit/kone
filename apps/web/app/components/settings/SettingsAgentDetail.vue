@@ -172,7 +172,7 @@ function toggleChatAction() {
 
   if (hasMultipleProjects.value) {
     menuOpen.value = !menuOpen.value;
-    cue("toggle");
+    cue(menuOpen.value ? "expand" : "collapse");
     return;
   }
 
@@ -223,7 +223,7 @@ async function handleDelete() {
   if (!agent.value) return;
   const ok = await deleteAgent(agent.value.id);
   if (ok) {
-    cue("press");
+    cue("discard");
     emit("back");
   }
 }

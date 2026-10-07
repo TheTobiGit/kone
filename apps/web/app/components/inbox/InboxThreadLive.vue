@@ -418,6 +418,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     >
       <ConversationThread
         :blocks="blocks"
+        :cwd="session?.worktreePath.value ?? row.worktreePath ?? projectPath"
         :display="responseDisplays.inbox"
         :compactions="session?.compactions.value ?? []"
         :checkpoints="session?.checkpoints.value ?? []"

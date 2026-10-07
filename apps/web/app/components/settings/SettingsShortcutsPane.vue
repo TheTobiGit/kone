@@ -61,7 +61,7 @@ function onCaptureKeydown(e: KeyboardEvent) {
   if (!res.ok) {
     if (res.reason === "escape") {
       cancelCapture();
-      cue("toggle");
+      cue("collapse");
     }
     return;
   }
@@ -69,18 +69,18 @@ function onCaptureKeydown(e: KeyboardEvent) {
   const conflict = conflictFor(res.binding, id);
   if (conflict) {
     captureMsg.value = `Already used by “${conflict.label}”`;
-    cue("error");
+    cue("refuse");
     return;
   }
   const ok = rebind(id, res.binding);
   if (!ok) {
     captureMsg.value = "That binding couldn't be set.";
-    cue("error");
+    cue("refuse");
     return;
   }
   capturingId.value = null;
   captureMsg.value = "";
-  cue("success");
+  cue("saved");
 }
 
 useEventListener(window, "keydown", onCaptureKeydown, { capture: true });

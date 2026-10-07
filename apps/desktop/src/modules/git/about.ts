@@ -227,7 +227,7 @@ export async function contributors(dir: string): Promise<GitContributors> {
   }
   const people: GitContributor[] = [];
   for (const rawLine of out.split("\n")) {
-    // "   164\tGideon Sarfo <aemonsarfo@outlook.com>" — leading spaces, count,
+    // "   164\tJane Doe <jane@example.com>" — leading spaces, count,
     // TAB, name, space, angle-bracketed email. A line that doesn't match (a
     // name git couldn't render) is skipped rather than failing the list.
     const m = /^(\d+)\t(.+?) <(.+)>$/.exec(rawLine.trim());

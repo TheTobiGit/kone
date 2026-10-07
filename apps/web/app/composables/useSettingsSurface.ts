@@ -26,7 +26,6 @@ export type SettingsPane =
   | "assistant"
   | "providers"
   | "agentsUsage"
-  | "providerLimits"
   | "agentSkills"
   | "teams";
 
@@ -71,7 +70,6 @@ const PANE_MEASURE = {
   assistant: "compact",
   providers: "page",
   agentsUsage: "page",
-  providerLimits: "compact",
   agentSkills: "page",
   teams: "page",
 } satisfies Record<SettingsPane, "column" | "page" | "compact">;

@@ -60,7 +60,7 @@ function keep(picture: AgentAvatar | null, whenEmpty: string) {
     return;
   }
   failed.value = null;
-  cue("success");
+  cue("saved");
   emit("update:avatar", picture);
 }
 
@@ -130,7 +130,7 @@ const previews = computed(() => {
 function shuffle() {
   if (!drawing) return;
   seed.value = drawing.newSeed();
-  cue("toggle");
+  cue("press");
 }
 
 function takePortrait(style: DicebearStyle) {
@@ -139,7 +139,7 @@ function takePortrait(style: DicebearStyle) {
 }
 
 function clear() {
-  cue("toggle");
+  cue("collapse");
   failed.value = null;
   emit("update:avatar", null);
 }

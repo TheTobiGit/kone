@@ -11,7 +11,7 @@ type IconGlyph = readonly (readonly [string, Readonly<Record<string, string | nu
 
 // The one frame every settings *page* sits in. A page (as opposed to the drawer's
 // narrow root list) is the widened surface — Profile, Keyboard shortcuts,
-// Providers, Usage, Provider limits, Thread strip — and until this existed each
+// Providers, Usage, Thread strip — and until this existed each
 // one hand-rolled its own
 // masthead, back glyph, scroll treatment and foot note, which is how they drifted
 // (one pane smoked its scroll edges, the next showed a bar; one back button had no

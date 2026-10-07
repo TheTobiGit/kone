@@ -49,7 +49,7 @@ function initSelection() {
 }
 
 function togglePath(path: string) {
-  cue("toggle");
+  cue("toggle", { off: selectedPaths.value.has(path) });
   const next = new Set(selectedPaths.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
@@ -57,7 +57,7 @@ function togglePath(path: string) {
 }
 
 function toggleAll() {
-  cue("toggle");
+  cue("toggle", { off: selectedPaths.value.size === props.changes.length });
   if (selectedPaths.value.size === props.changes.length) {
     selectedPaths.value = new Set();
   } else {
@@ -130,10 +130,13 @@ async function generateAiMessage() {
       stagedSummary,
     });
 
+    // A drafted message is a result to read over, not a confirmation.
     if (res.subject) {
+      cue("ready");
       animateTypewriter(res.subject, res.body);
     }
   } catch {
+    cue("error");
     errorMessage.value = "Failed to generate commit message";
   } finally {
     isGenerating.value = false;
@@ -203,8 +206,7 @@ async function executeCommit(action: GitStackedAction = "commit_push") {
 }
 
 function handleDone() {
-  cue("press");
-  close(() => emit("close"));
+  dismiss(() => emit("close"));
 }
 
 function parseFilePath(fullPath: string) {
@@ -215,7 +217,7 @@ function parseFilePath(fullPath: string) {
 }
 
 // ── Modal Shell State ────────────────────────────────────────────────────────
-const { shown, close } = useModalExit();
+const { shown, close, dismiss } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
@@ -233,7 +235,7 @@ watch(step, () => {
 
 function onCancel() {
   if (isSubmitting.value) return;
-  close(() => emit("close"));
+  dismiss(() => emit("close"));
 }
 
 function onKeydown(e: KeyboardEvent) {

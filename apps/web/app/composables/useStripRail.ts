@@ -280,7 +280,7 @@ export function useStripRail(deps: {
     // halfway through is the shakiest thing this feature can do, and a pinch gesture
     // asks for it constantly.
     if (zoomBusy.value) return;
-    cue("toggle");
+    cue("toggle", { off: overview.value });
     if (overview.value) void exitOverview();
     else void enterOverview();
   }

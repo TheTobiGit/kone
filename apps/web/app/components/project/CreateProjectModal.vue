@@ -78,11 +78,11 @@ function setRemote(on: boolean) {
   if (on) useGit.value = true;
 }
 
-// The visibility segment is its own control (not a ToggleSwitch), so it plays
-// the same discrete cue itself — only when the choice actually changes.
+// The visibility segment is its own control (not a ToggleSwitch), so it sounds
+// the choice itself — only when the choice actually changes.
 function setVisibility(next: "public" | "private") {
   if (visibility.value === next) return;
-  cue("toggle");
+  cue("select");
   visibility.value = next;
 }
 
@@ -653,7 +653,7 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
 }
 
 /* ── name field ── borderless; reads as text until focused. Leading glyph
-   firms on focus. Matches the clone reference field. */
+   firms on focus. */
 .cp-field {
   display: flex;
   align-items: center;

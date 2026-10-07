@@ -10,6 +10,7 @@ import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import SpawnWorkerMark from "~/components/conversation/SpawnWorkerMark.vue";
+import PageFrame from "~/components/conversation/PageFrame.vue";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import { segText, type RenderGroup } from "~/utils/conversationSegments";
 import type { ResponseDisplay } from "~/utils/responseDisplay";
@@ -98,7 +99,7 @@ const rows = computed<Row[]>(() => {
   }));
   if (p.live) {
     const first = p.live[0]?.key ?? `${props.block.id}:live-activity`;
-    out.push({ key: first, group: { kind: "steps", key: first, segments: p.live }, live: true, revealDelay: 0 });
+    out.push({ key: first, group: { kind: "steps", placement: "work", key: first, segments: p.live }, live: true, revealDelay: 0 });
   }
   const lead = out[0];
   if (lead?.group.kind === "steps") lead.key = `${props.block.id}:lead-batch`;
@@ -220,6 +221,7 @@ function onHeadClick(): void {
     <p v-else-if="grp.kind === 'decision'" class="decision-mark" :class="{ 'decision-mark--enter': !block.historical }">
       {{ grp.text }}
     </p>
+    <PageFrame v-else-if="grp.kind === 'page'" :page="grp.page" :animate="!block.historical" />
     <SpawnWorkerMark
       v-else
       :record="grp.record"

@@ -8,7 +8,7 @@ const emit = defineEmits<{ open: [] }>();
 const { cue } = useSound();
 
 function onClick() {
-  cue("press");
+  cue("show");
   emit("open");
 }
 </script>

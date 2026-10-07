@@ -77,7 +77,6 @@ export function useProfile() {
   );
 
   return {
-    // effective (read for display)
     name,
     handle,
     initial,
@@ -86,10 +85,8 @@ export function useProfile() {
     color,
     image,
     avatarStyle,
-    // raw overrides (bind in the edit UI)
     nameOverride,
     handleOverride,
-    // actions
     setName: (v: string) => (nameOverride.value = v),
     setHandle: (v: string) => (handleOverride.value = v),
     setColor: (v: string) => (color.value = v),

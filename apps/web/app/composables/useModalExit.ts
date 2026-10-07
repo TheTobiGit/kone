@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { useSound } from "./useSound";
 
 /**
  * How long a modal's exit runs. The caller is handed back control only once it
@@ -10,11 +11,13 @@ export const EXIT_MS = 240;
 
 /**
  * Drives a modal's show/exit lifecycle: bind `shown` to the card's animated state,
- * mount with `shown.value = true`, and route every dismissal through `close`.
+ * mount with `shown.value = true`, and route every dismissal through `close` —
+ * or through `dismiss` when the user is sending the modal away.
  */
 export function useModalExit() {
   const shown = ref(false);
   const closing = ref(false);
+  const { cue } = useSound();
 
   /**
    * Plays the exit, then hands control back to the caller. Calls made while an exit
@@ -28,5 +31,18 @@ export function useModalExit() {
     window.setTimeout(done, EXIT_MS);
   }
 
-  return { shown, closing, close };
+  /**
+   * `close`, for the user sending the modal away (Escape, the scrim, Cancel,
+   * Done), with the sound that says so. A modal that closes because something
+   * was picked or submitted calls plain `close`: that gesture already made its
+   * own sound, and a dismissal on top would be two at once. Shares the re-entry
+   * guard, so a second key inside the exit window is silent as well as inert.
+   */
+  function dismiss(done: () => void): void {
+    if (closing.value) return;
+    cue("dismiss");
+    close(done);
+  }
+
+  return { shown, closing, close, dismiss };
 }

@@ -1,6 +1,8 @@
-// The shipped tunings: every turn state × two sizes, baked from the
-// kone-only modes follow the same ranges). `count`/`size` are multipliers
-// over the base fine profiles; `speed` multiplies the shared clock.
+// The shipped tunings: every mode × both orb sizes (64px and 20px). The small
+// size runs fewer, larger, faster marks so the mode still reads at a glance —
+// except neutral, which only enlarges its marks; it is meant to sit still.
+// `count`/`size` are multipliers over the base fine profiles; `speed`
+// multiplies the shared clock.
 // Resolved once per (mode, size) pair and cached — the render loop sees
 // plain numbers.
 
@@ -20,12 +22,18 @@ export type ModeKey =
   | "erode"
   | "neutral";
 
-// reference mode is used: working = particles on tilted orbits, searching
-// = a scan meridian sweeping a dotted globe, solving = bands scrambling
-// back to solved, connecting = a constellation wiring itself, and the
-// own "Thinking…" ring for kone's quiet thinking beat. The
-// tool families with no reference counterpart (read / write / run / agent /
-// del / neutral) are their own modes at the same quality.
+// Which mode draws each turn state, and what the viewer sees:
+//   working  → orbits    particles on tilted orbits
+//   thinking → ring      a face-on ring whose radius slowly undulates
+//   read     → folio     an open book, a bright cursor row running down its pages
+//   write    → nib       a nib travelling across baselines, leaving ink behind
+//   search   → globe     a scan meridian sweeping a dotted globe
+//   intel    → rubik     bands scrambling, then clicking back to solved
+//   run      → gate      a chevron packet launching through a command gate
+//   web      → web       a constellation wiring itself, packets along its edges
+//   agent    → delegate  a parent node handing a packet to two children and back
+//   del      → erode     an erosion front eating the globe, dots draining to a sink
+//   neutral  → neutral   a quiet dotted ring around a soft core, barely turning
 export const STATE_TO_MODE = {
   working: "orbits",
   thinking: "ring",

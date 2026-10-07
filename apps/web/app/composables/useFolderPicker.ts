@@ -410,7 +410,6 @@ export function useFolderPicker() {
   }
 
   return {
-    // state
     homePath,
     trail,
     entries,
@@ -420,7 +419,6 @@ export function useFolderPicker() {
     rows,
     error,
     readError,
-    // layout
     childIndent,
     rowIndent,
     scrollEl,
@@ -440,7 +438,6 @@ export function useFolderPicker() {
     canAscend,
     parentName,
     ascend,
-    // actions
     descend,
     climbTo,
     goToPath,

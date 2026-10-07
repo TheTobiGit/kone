@@ -154,7 +154,7 @@ function persistDefault(picked: ModelPick) {
 function onModelSelect(picked: ModelPick) {
   persistDefault(picked);
   pickerOpen.value = false;
-  cue("toggle");
+  cue("select");
 }
 function onModelApply(picked: ModelPick) {
   persistDefault(picked);
@@ -181,7 +181,7 @@ function chooseMode(id: InteractionMode) {
   if (currentMode.value === id) return;
   currentMode.value = id;
   if (import.meta.client) localStorage.setItem(DEFAULT_MODE_KEY, id);
-  cue("toggle");
+  cue("select");
 }
 
 const modeIndex = computed(() => INTERACTION_MODES.findIndex((m) => m.id === currentMode.value));
@@ -241,7 +241,7 @@ const legend = computed(() =>
 function chooseSend(id: SendKey) {
   if (prefs.value.sendKey === id) return;
   composer.set("sendKey", id);
-  cue("toggle");
+  cue("select");
 }
 
 /** What a message written while the agent works does. */
@@ -256,7 +256,7 @@ const oppositeChord = computed(() => (prefs.value.sendKey === "enter" ? `${mod} 
 function chooseFollowUp(id: FollowUpBehavior) {
   if (prefs.value.followUp === id) return;
   composer.set("followUp", id);
-  cue("toggle");
+  cue("select");
 }
 
 type SwitchRow = {
@@ -288,7 +288,7 @@ const isDefault = computed(() =>
 );
 function resetBehaviour() {
   composer.reset();
-  cue("toggle");
+  cue("press");
 }
 </script>
 

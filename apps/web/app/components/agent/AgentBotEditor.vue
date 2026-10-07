@@ -56,7 +56,7 @@ function pick(over: Partial<AgentBot>) {
   if (base && base.form === next.form && base.color === next.color && base.expression === next.expression) {
     return;
   }
-  cue(base ? "toggle" : "expand");
+  cue("select");
   emit("update:bot", next);
 }
 

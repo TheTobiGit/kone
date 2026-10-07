@@ -12,6 +12,7 @@
 // both agree on exactly what a "segment" and an "activity entry" are.
 
 import { isSpawnToolName, parseSpawnRecords, type SpawnRecord } from "@kone/protocol/spawn-record";
+import { PAGE_SHOW_TOOL_NAME, parsePageShown, type PageRef } from "@kone/protocol/page-render";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 
@@ -58,14 +59,18 @@ export function toolCalls(seg: Segment): RuntimeItem[] {
   return seg.items.filter((i) => i.kind === "tool_call");
 }
 
+/** Whether an item is a tool call that finished, under a name `named` accepts:
+ *  a refused or still-running call carries no record to read back. */
+function settledToolCallOf(item: RuntimeItem, named: (name: string) => boolean): boolean {
+  return item.kind === "tool_call" && item.status === "completed" && item.name !== undefined && named(item.name);
+}
+
 /** The threads a settled spawn call opened — one for a spawn or delegation,
  *  each that opened for a batch — or none for any other item: a different
  *  tool, a call still running, or one that was refused and so recorded
  *  nothing. */
 export function spawnRecordsOf(item: RuntimeItem): SpawnRecord[] {
-  if (item.kind !== "tool_call" || item.status !== "completed") return [];
-  if (!item.name || !isSpawnToolName(item.name)) return [];
-  return parseSpawnRecords(item.detail);
+  return settledToolCallOf(item, isSpawnToolName) ? parseSpawnRecords(item.detail) : [];
 }
 
 // Thinking and tool calls are "steps" — rows in one continuous list. The agent's
@@ -80,20 +85,34 @@ export function spawnRecordsOf(item: RuntimeItem): SpawnRecord[] {
 // Each segment comes out as its own steps group. Whether adjacent batches read
 // as one depends on what shows between them, so the joining is utils/turnPlan's,
 // done once the reader's choices are known.
+//
+// `placement` is that split as data. A "reply" group is something the agent
+// said: it stands in the open wherever it falls and never folds. A "work"
+// group is steps or text, which fold or show by the reader's choices and by
+// where they fall in the turn. A new kind of thing the agent says is one more
+// "reply" member here, and nothing downstream changes.
 export type RenderGroup =
-  | { kind: "steps"; key: string; segments: Segment[] }
-  | { kind: "text"; seg: Segment }
-  | { kind: "spawn"; key: string; item: RuntimeItem; record: SpawnRecord }
-  | { kind: "decision"; key: string; item: RuntimeItem; text: string };
+  | { kind: "steps"; placement: "work"; key: string; segments: Segment[] }
+  | { kind: "text"; placement: "work"; seg: Segment }
+  | { kind: "spawn"; placement: "reply"; key: string; item: RuntimeItem; record: SpawnRecord }
+  | { kind: "decision"; placement: "reply"; key: string; item: RuntimeItem; text: string }
+  | { kind: "page"; placement: "reply"; key: string; item: RuntimeItem; page: PageRef };
 
 /** The groups a settled turn folds behind its work toggler. */
-export type WorkGroup = Exclude<RenderGroup, { kind: "spawn" } | { kind: "decision" }>;
+export type WorkGroup = Extract<RenderGroup, { placement: "work" }>;
+
+/** The page a settled page_show call put in the reply, or null for any other
+ *  item. A page is part of what the agent says, so like a hand-off it stands
+ *  in the reply rather than among the steps that folded away. */
+export function pageOf(item: RuntimeItem): PageRef | null {
+  return settledToolCallOf(item, (name) => name === PAGE_SHOW_TOOL_NAME) ? parsePageShown(item.detail) : null;
+}
 
 /** What a settled agent_keep_or_stop call said it decided — "Kept Frontend
  *  Auth running · stopped Auth API." — or null for any other item. Like a
  *  hand-off, it is something the agent says it did, not a step. */
 export function decisionTextOf(item: RuntimeItem): string | null {
-  if (item.kind !== "tool_call" || item.status !== "completed" || item.name !== "agent_keep_or_stop") return null;
+  if (!settledToolCallOf(item, (name) => name === "agent_keep_or_stop")) return null;
   const text = item.detail?.trim();
   return text ? text : null;
 }
@@ -101,10 +120,14 @@ export function decisionTextOf(item: RuntimeItem): string | null {
 export function renderGroups(block: AssistantBlock): RenderGroup[] {
   const out: RenderGroup[] = [];
   const spawned = new Set<string>();
-  const pushStep = (seg: Segment): void => void out.push({ kind: "steps", key: seg.key, segments: [seg] });
+  // kone puts each page in the turn itself, and a provider that reports the
+  // call carries the same page; it stands once, where it first landed.
+  const pages = new Set<string>();
+  const pushStep = (seg: Segment): void =>
+    void out.push({ kind: "steps", placement: "work", key: seg.key, segments: [seg] });
   for (const seg of segmentsOf(block)) {
     if (seg.kind === "text") {
-      out.push({ kind: "text", seg });
+      out.push({ kind: "text", placement: "work", seg });
       continue;
     }
     if (seg.kind === "thinking") {
@@ -126,7 +149,15 @@ export function renderGroups(block: AssistantBlock): RenderGroup[] {
       const decided = decisionTextOf(item);
       if (decided) {
         flush();
-        out.push({ kind: "decision", key: `${block.id}:${item.itemId}`, item, text: decided });
+        out.push({ kind: "decision", placement: "reply", key: `${block.id}:${item.itemId}`, item, text: decided });
+        continue;
+      }
+      const page = pageOf(item);
+      if (page) {
+        if (pages.has(page.attachmentId)) continue;
+        pages.add(page.attachmentId);
+        flush();
+        out.push({ kind: "page", placement: "reply", key: `${block.id}:${item.itemId}`, item, page });
         continue;
       }
       const records = spawnRecordsOf(item);
@@ -139,7 +170,7 @@ export function renderGroups(block: AssistantBlock): RenderGroup[] {
         // A retried call replays the same spawn; the work was handed off once.
         if (spawned.has(record.threadId)) continue;
         spawned.add(record.threadId);
-        out.push({ kind: "spawn", key: `${block.id}:${item.itemId}:${record.threadId}`, item, record });
+        out.push({ kind: "spawn", placement: "reply", key: `${block.id}:${item.itemId}:${record.threadId}`, item, record });
       }
     }
     flush();

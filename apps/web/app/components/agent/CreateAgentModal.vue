@@ -144,7 +144,7 @@ function toggleTeam(path: string) {
   if (joining) next.add(path);
   else next.delete(path);
   teamPaths.value = next;
-  cue(joining ? "select" : "collapse");
+  cue("toggle", { off: !joining });
 }
 
 const canSubmit = computed(
@@ -193,7 +193,7 @@ async function handleCreate() {
   if (!trimmed || isSubmitting.value) return;
   if (!pickedBot) {
     errorMsg.value = "Pick a bot — an agent needs its creature to work through.";
-    cue("error");
+    cue("refuse");
     return;
   }
 
@@ -242,7 +242,7 @@ async function handleSave() {
   if (!current || !trimmed || isSubmitting.value) return;
   if (!bot.value) {
     errorMsg.value = "Pick a bot — an agent needs its creature to work through.";
-    cue("error");
+    cue("refuse");
     return;
   }
 

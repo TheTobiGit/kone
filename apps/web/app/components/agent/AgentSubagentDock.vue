@@ -73,7 +73,7 @@ function rowApproval(row: DelegateRow): PendingApproval | null {
 function decideRowApproval(row: DelegateRow, decision: ApprovalDecision): void {
   const pending = rowApproval(row);
   if (!pending || row.target.kind !== "thread") return;
-  cue("press");
+  cue(approvalCue(decision));
   void decideChildApproval(row.target.threadId, pending.requestId, decision);
 }
 
@@ -126,7 +126,7 @@ function syncHeight(): void {
 
 function toggle(): void {
   expanded.value = !expanded.value;
-  cue("toggle");
+  cue(expanded.value ? "expand" : "collapse");
 }
 
 // A fresh spawn opens the body; once every run settles it eases shut after a
