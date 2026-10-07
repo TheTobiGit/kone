@@ -1280,7 +1280,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     sideChatSource,
     forkContext,
     timelineBlocks,
-    // state
     blocks,
     session,
     sessionState,
@@ -2195,11 +2194,9 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   return {
-    // identity (active-thread projection)
     threadId,
     provider,
     title,
-    // state (active-thread projection)
     blocks,
     spawnedChildren,
     session,

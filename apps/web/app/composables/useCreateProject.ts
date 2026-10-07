@@ -139,7 +139,6 @@ export function useCreateProject() {
   }
 
   return {
-    // state
     name,
     trimmedName,
     valid,

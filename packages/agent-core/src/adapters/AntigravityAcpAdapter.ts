@@ -104,8 +104,8 @@ export {
 // and a missing login is answered with "run `agy` once" — kone never runs a
 // sign-in and never touches a credential.
 //
-// Protocol facts, verified against t3code's ground truth for this exact
-// server (1.1.1) rather than guessed from the ACP spec:
+// Protocol facts verified for this exact server version (1.1.1) rather
+// than assumed from the ACP spec:
 //
 //  1. Resume is `session/resume` only — there is no `session/load`. A refused
 //     resume means the session is gone from the server's store: start fresh.
