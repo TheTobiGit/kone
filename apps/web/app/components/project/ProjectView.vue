@@ -305,8 +305,20 @@ function isNew(status: GitFileStatus): boolean {
   return status === "added" || status === "untracked";
 }
 
+// Most recently edited first: the lanes cap at two rows and bundle the rest, so
+// the order decides which files stay in sight, and the one just touched is the
+// one you came to look at. A deletion has no file to date, so it sits after
+// every dated change; ties keep a stable path order rather than shuffling on
+// each refresh.
+function byRecentEdit(a: { path: string; modifiedAt?: number }, b: { path: string; modifiedAt?: number }) {
+  const at = a.modifiedAt ?? -Infinity;
+  const bt = b.modifiedAt ?? -Infinity;
+  if (at !== bt) return bt - at;
+  return a.path.localeCompare(b.path);
+}
+
 const changeItems = computed<ChangeItem[]>(() =>
-  g.changes.value.map((c) => ({
+  g.changes.value.toSorted(byRecentEdit).map((c) => ({
     path: c.path,
     name: basename(c.path),
     added: c.added ?? 0,

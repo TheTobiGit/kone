@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -239,6 +239,22 @@ async function attachLineCounts(status: GitStatus): Promise<void> {
   );
 }
 
+/** Attach each change's on-disk modified time, in place. `lstat`, not `stat`:
+ *  a changed symlink is the link itself, and following it would date the change
+ *  by whatever it points at. A deletion has no file to read. */
+async function attachModifiedTimes(status: GitStatus): Promise<void> {
+  await Promise.all(
+    status.changes.map(async (change) => {
+      if (change.status === "deleted" || change.status === "ignored") return;
+      try {
+        change.modifiedAt = (await lstat(path.join(status.root, change.path))).mtimeMs;
+      } catch {
+        // Gone between the status read and now — the next refresh drops it.
+      }
+    }),
+  );
+}
+
 // ── public operations ────────────────────────────────────────────────────────
 
 /** Full working-tree status, or null when `dir` isn't inside a git repo. */
@@ -256,7 +272,7 @@ export async function status(dir: string): Promise<GitStatus | null> {
     "-z",
   ]);
   const parsed = parseStatus(root, out);
-  await attachLineCounts(parsed);
+  await Promise.all([attachLineCounts(parsed), attachModifiedTimes(parsed)]);
   return parsed;
 }
 

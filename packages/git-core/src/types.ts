@@ -27,6 +27,10 @@ export type GitChange = {
   added?: number;
   /** Lines deleted in this file (working tree vs HEAD). */
   removed?: number;
+  /** When the file on disk was last written (epoch ms), so a list can lead with
+   *  what was just edited. Absent for a deletion — there is no file to read a
+   *  time from — or when the file couldn't be read. */
+  modifiedAt?: number;
 };
 
 /** One rendered line of a file diff, carrying both side's line numbers so the
