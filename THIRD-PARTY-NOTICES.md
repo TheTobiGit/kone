@@ -1,7 +1,112 @@
 # Third-party notices
 
-Portions of this repository are derived from third-party work. Each entry below
-names the files that carry the derivation and reproduces the upstream licence.
+Kone builds on the work of the open-source projects credited below. Each entry
+identifies adapted material and implementation references, and includes the
+upstream licence or applicable notice.
+
+## T3 Code (t3code) — selected integration helpers
+
+Upstream: https://github.com/pingdotgg/t3code
+License: https://github.com/pingdotgg/t3code/blob/main/LICENSE
+
+Adapted material:
+
+- `packages/agent-core/src/antigravityAcpProfile.ts`: the browser-launch
+  interception helper that captures authentication URLs, and selected launch
+  environment filtering/setup, adapted from upstream
+  `apps/server/src/provider/antigravityAuthSupport.ts`.
+- `packages/agent-core/src/antigravityRelease.ts`: the pinned release manifest
+  structure and asset-resolution helper, adapted from upstream
+  `apps/server/src/provider/antigravityRelease.ts`.
+- `apps/desktop/scripts/dev.ts`: the Linux development launcher check for the
+  ownership and permissions of Electron's `chrome-sandbox`, and its conditional
+  launch argument, adapted from upstream
+  `apps/desktop/scripts/electron-launcher.mjs`.
+
+Documented implementation references:
+
+- `packages/git-core/src/processTree.ts`: process-tree discovery and descendant
+  termination helpers were informed by implementations in both T3 Code and
+  Synara.
+- `packages/agent-core/src/store/ConversationDb.ts`: the 200-entry prepared
+  statement cache budget was chosen with both projects as references.
+
+```
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Synara — side-chat context and theme palette
+
+Upstream: https://github.com/Emanuele-web04/synara
+License: https://github.com/Emanuele-web04/synara/blob/main/LICENSE
+
+Adapted material:
+
+- `packages/agent-core/src/sidechat.ts`: the side-chat boundary instruction
+  matches upstream `apps/server/src/orchestration/Layers/ProviderCommandReactor.ts`.
+  The original portable transcript bootstrap also adapted the framing and
+  selection policy in upstream `apps/server/src/orchestration/handoff.ts`:
+  six recent messages, 2,400-character recent excerpts, 320-character earlier
+  excerpts, and a 32,000-character history budget.
+- `apps/web/app/theme/themes/synara.ts`: the named Synara theme adapts its
+  light/dark surface, text, accent, diff, and skill palette from upstream
+  `apps/web/src/theme/theme.seed.generated.ts`.
+
+Documented implementation references:
+
+- `packages/agent-core/src/store/itemTextChunks.ts`: the append-only text chunk
+  approach was informed by upstream `apps/server/src/persistence/messageTextChunks.ts`,
+  as recorded in `docs/archive/conversation-features-plan.md`.
+- `packages/agent-core/src/store/ConversationDb.ts`: Synara informed SQLite
+  page-cache/mmap sizing and, together with T3 Code, the prepared statement
+  cache budget.
+- `packages/git-core/src/processTree.ts`: process-tree discovery and descendant
+  termination helpers were informed by implementations in both projects.
+
+```
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+Copyright (c) 2026 Emanuele Di Pietro
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## oh-my-pi (omp) — bundled agent prompts
 
