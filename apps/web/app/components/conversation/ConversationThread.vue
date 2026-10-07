@@ -2229,7 +2229,9 @@ watch(
   max-height: 84vh;
   object-fit: contain;
   border-radius: 8px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 16px 40px -12px rgba(0, 0, 0, 0.35);
   user-select: none;
 }
 .lightbox-nav-btn {

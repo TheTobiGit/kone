@@ -177,7 +177,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   background: var(--raised);
   box-shadow:
     0 0 0 1px var(--line-soft),
-    0 12px 28px -12px rgb(0 0 0 / 0.28);
+    0 8px 20px -8px color-mix(in srgb, var(--ink) 12%, transparent);
   animation: rm-in 130ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
