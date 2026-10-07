@@ -49,7 +49,7 @@ watch(
 
 function openRoute(kind: string) {
   editing.value = { kind };
-  cue("press");
+  cue("show");
 }
 
 /** Open a blank card. False when the list is full, so the caller can tell
@@ -57,7 +57,7 @@ function openRoute(kind: string) {
 function create(): boolean {
   if (!canAdd.value) return false;
   editing.value = { kind: null };
-  cue("open");
+  cue("show");
   return true;
 }
 defineExpose({ create });
@@ -76,7 +76,6 @@ function toggle(route: ModelPreference, on: boolean) {
     return;
   }
   void setEnabled(route.kind, on);
-  cue("toggle");
 }
 
 /** A route's model by name, or nothing when it has none — the row says "Not
@@ -106,12 +105,12 @@ function pressRemove(kind: string) {
   if (armed.value === kind) {
     armed.value = null;
     void removeRoute(kind);
-    cue("press");
+    cue("discard");
     return;
   }
   armed.value = kind;
   armTimer = setTimeout(() => (armed.value = null), 3000);
-  cue("toggle");
+  cue("press");
 }
 onBeforeUnmount(() => clearTimeout(armTimer));
 </script>

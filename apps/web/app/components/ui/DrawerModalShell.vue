@@ -54,7 +54,7 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
-const { shown, closing, close: fadeOut } = useModalExit();
+const { shown, close: fadeOut, dismiss } = useModalExit();
 
 // A row unfurls on the same tween the other modals' folds use.
 const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
@@ -83,9 +83,8 @@ function focusOpenRow() {
 }
 
 function close() {
-  if (closing.value || props.isSubmitting) return;
-  cue("collapse");
-  fadeOut(() => emit("close"));
+  if (props.isSubmitting) return;
+  dismiss(() => emit("close"));
 }
 
 function finish(done: () => void) {

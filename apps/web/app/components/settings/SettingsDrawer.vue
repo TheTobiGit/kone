@@ -95,7 +95,7 @@ watch(pane, () => void nextTick(measure));
 
 function openSection(target: SettingsPane) {
   pane.value = target;
-  cue("press");
+  cue("open");
 }
 
 // ── the root list ────────────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ const openEpoch = ref(0);
 
 function backToRoot() {
   pane.value = "root";
-  cue("toggle");
+  cue("leave");
 }
 
 // Esc is a natural "up": from a detail pane → back to root; from root → close.
@@ -229,6 +229,7 @@ function onKeydown(e: KeyboardEvent) {
     backToRoot();
     return;
   }
+  cue("dismiss");
   emit("close");
 }
 onMounted(() => {

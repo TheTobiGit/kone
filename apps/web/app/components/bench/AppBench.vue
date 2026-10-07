@@ -105,6 +105,7 @@ function onEscape(event: KeyboardEvent): void {
     composing.value = false;
     return;
   }
+  cue("leave");
   emit("close");
 }
 </script>

@@ -134,7 +134,6 @@ const detailRows = computed<DetailTableRow[]>(() => [
 ]);
 
 function toggleNative(enabled: boolean) {
-  cue("toggle");
   void configureNative(props.presetId, { enabled });
 }
 
@@ -163,7 +162,7 @@ async function handleDelete() {
   if (isNative.value || !customPreset.value) return;
   const ok = await deletePreset(customPreset.value.presetId);
   if (ok) {
-    cue("press");
+    cue("discard");
     emit("back");
   }
 }

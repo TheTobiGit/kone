@@ -100,20 +100,20 @@ export function useStripPresets(deps: {
   }
 
   function cycleWidth(key: string): void {
-    cue("press");
+    cue("select", { direction: "forward" });
     const next = (presetIndexFor(key) + 1) % PRESETS.length;
     setPreset(key, next);
     void nextTick(() => onScrollToColumn(key));
   }
 
   function growWidth(key: string): void {
-    cue("press");
+    cue("select", { direction: "forward" });
     setPreset(key, presetIndexFor(key) + 1);
     void nextTick(() => onScrollToColumn(key));
   }
 
   function shrinkWidth(key: string): void {
-    cue("press");
+    cue("select", { direction: "back" });
     setPreset(key, presetIndexFor(key) - 1);
     void nextTick(() => onScrollToColumn(key));
   }
@@ -121,10 +121,10 @@ export function useStripPresets(deps: {
   function toggleZen(): void {
     const currentFocusedId = focusedId();
     if (!currentFocusedId || panes().length === 0 || isSideChatPane(currentFocusedId)) return;
-    cue("toggle");
     const id = currentFocusedId;
     const pane = panes().find((p) => p.id === id);
     const next = !pane?.entry.zen;
+    cue("toggle", { off: !next });
     onZenEmit?.(id, next);
     if (!reducedMotionOn()) flagWidthAnim(id);
     void nextTick(() => onScrollToColumn(id));

@@ -61,7 +61,7 @@ const split = computed(() => {
 });
 
 function openUsage(): void {
-  cue("open");
+  cue("show");
   openDrawer("agentsUsage");
 }
 </script>

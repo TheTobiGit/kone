@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import type { UserInputAnswers, UserInputQuestion } from "~/types/desktop";
 import { useModalExit } from "~/composables/useModalExit";
+import { useSound } from "~/composables/useSound";
 
 // The agent's mid-turn question, in the same scrim + elastic card shell the
 // folder/model/branch pickers wear — but anchored bottom-centre where the agent
@@ -21,6 +22,8 @@ const props = defineProps<{
    *  bottom-centre over the composer's spot. */
   contained?: boolean;
 }>();
+
+const { cue } = useSound();
 
 const emit = defineEmits<{
   answer: [requestId: string, answers: UserInputAnswers];
@@ -101,17 +104,19 @@ function submit(): void {
       answers[q.id] = other[q.id] && custom ? custom : (picks[q.id]?.[0] ?? null);
     }
   }
+  cue("press");
   close(() => emit("answer", props.requestId, answers));
 }
 
 // Dismiss the question — hands the parked tool call an empty answer, which the
 // adapter treats as "declined" so the turn can carry on.
 function cancel(): void {
-  close(() => emit("cancel", props.requestId));
+  if (closing.value) return;
+  dismiss(() => emit("cancel", props.requestId));
 }
 
 // surface, but bottom-centre over the composer's spot ───────────────────────────
-const { shown, closing, close } = useModalExit();
+const { shown, closing, close, dismiss } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;

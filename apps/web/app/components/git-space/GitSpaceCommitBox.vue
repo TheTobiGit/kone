@@ -76,7 +76,9 @@ async function generateAiMessage() {
   isGenerating.value = true;
   try {
     const res = await props.space.generateCommitMessage();
+    // A drafted message is a result to read over, not a confirmation.
     if (res.subject) {
+      cue("ready");
       summary.value = res.subject;
       body.value = res.body || "";
       void nextTick(() => {
@@ -186,7 +188,7 @@ function onBodyKey(e: KeyboardEvent) {
             :class="{ 'cb__ghost--on': amend }"
             :disabled="busy"
             :aria-pressed="amend"
-            @click="cue('toggle'); amend = !amend"
+            @click="cue('toggle', { off: amend }); amend = !amend"
           >
             Amend
           </button>

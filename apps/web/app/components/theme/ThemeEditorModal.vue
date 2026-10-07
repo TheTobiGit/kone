@@ -62,7 +62,7 @@ const {
 } = useTheme();
 
 // ── Animation & Anchoring ───────────────────────────────────────────────────
-const { shown, closing, close } = useModalExit();
+const { shown, closing, close, dismiss } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardRef = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
@@ -182,7 +182,7 @@ function copyActiveTheme() {
     lightSpec.value = { ...spec.light };
     darkSpec.value = { ...spec.dark };
   }
-  cue("success");
+  cue("saved");
   void nextTick(() => syncHeight());
 }
 
@@ -259,7 +259,7 @@ function resetOverrides() {
   const base = { ground: current.ground, accent: current.accent };
   if (currentScheme.value === "light") lightSpec.value = base;
   else darkSpec.value = base;
-  cue("toggle");
+  cue("press");
   void nextTick(() => syncHeight());
 }
 
@@ -320,7 +320,8 @@ function closeWithTransition(done: () => void) {
 
 function cancel() {
   if (closing.value) return;
-  closeWithTransition(() => emit("close"));
+  cancelPreview();
+  dismiss(() => emit("close"));
 }
 
 onClickOutside(cardRef, () => {
@@ -420,7 +421,7 @@ const errorMessage = ref<string | null>(null);
 function save() {
   if (!label.value.trim()) {
     errorMessage.value = "Please name your theme.";
-    cue("error");
+    cue("refuse");
     return;
   }
   try {
@@ -451,7 +452,7 @@ function handleExport() {
   a.download = `${label.value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "custom-theme"}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  cue("success");
+  cue("saved");
 }
 </script>
 
@@ -500,7 +501,7 @@ function handleExport() {
                 backgroundColor: currentColors.ground,
                 borderColor: currentColors.lineSoft,
               }"
-              @click="kind === 'adaptive' && (activeTab = activeTab === 'light' ? 'dark' : 'light', cue('toggle'))"
+              @click="kind === 'adaptive' && (activeTab = activeTab === 'light' ? 'dark' : 'light', cue('select'))"
             >
               <div class="tem__hero-main">
                 <!-- Glowing Bead Swatch -->
@@ -547,7 +548,7 @@ function handleExport() {
                     color: activeTab === 'light' ? currentColors.ink : currentColors.muted,
                     boxShadow: activeTab === 'light' ? `0 1px 3px color-mix(in srgb, ${currentColors.ink} 12%, transparent)` : 'none',
                   }"
-                  @click="activeTab = 'light'; cue('toggle')"
+                  @click="activeTab = 'light'; cue('select')"
                 >
                   Light
                 </button>
@@ -560,7 +561,7 @@ function handleExport() {
                     color: activeTab === 'dark' ? currentColors.ink : currentColors.muted,
                     boxShadow: activeTab === 'dark' ? `0 1px 3px color-mix(in srgb, ${currentColors.ink} 12%, transparent)` : 'none',
                   }"
-                  @click="activeTab = 'dark'; cue('toggle')"
+                  @click="activeTab = 'dark'; cue('select')"
                 >
                   Dark
                 </button>
@@ -638,7 +639,7 @@ function handleExport() {
                           class="tem__seg-btn"
                           :class="{ 'is-active': kind === 'adaptive' }"
                           :aria-checked="kind === 'adaptive'"
-                          @click="kind = 'adaptive'; cue('toggle'); nextTick(() => syncHeight())"
+                          @click="kind = 'adaptive'; cue('select'); nextTick(() => syncHeight())"
                         >
                           Adaptive (Light + Dark)
                         </button>
@@ -648,7 +649,7 @@ function handleExport() {
                           class="tem__seg-btn"
                           :class="{ 'is-active': kind === 'fixed' && fixedAppearance === 'dark' }"
                           :aria-checked="kind === 'fixed' && fixedAppearance === 'dark'"
-                          @click="kind = 'fixed'; fixedAppearance = 'dark'; activeTab = 'dark'; cue('toggle'); nextTick(() => syncHeight())"
+                          @click="kind = 'fixed'; fixedAppearance = 'dark'; activeTab = 'dark'; cue('select'); nextTick(() => syncHeight())"
                         >
                           Fixed Dark
                         </button>
@@ -658,7 +659,7 @@ function handleExport() {
                           class="tem__seg-btn"
                           :class="{ 'is-active': kind === 'fixed' && fixedAppearance === 'light' }"
                           :aria-checked="kind === 'fixed' && fixedAppearance === 'light'"
-                          @click="kind = 'fixed'; fixedAppearance = 'light'; activeTab = 'light'; cue('toggle'); nextTick(() => syncHeight())"
+                          @click="kind = 'fixed'; fixedAppearance = 'light'; activeTab = 'light'; cue('select'); nextTick(() => syncHeight())"
                         >
                           Fixed Light
                         </button>

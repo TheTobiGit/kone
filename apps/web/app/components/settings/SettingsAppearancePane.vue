@@ -58,7 +58,7 @@ const MODE_LABEL = {
 function chooseMode(m: AppearanceMode) {
   if (modeLocked.value || mode.value === m) return;
   setMode(m);
-  cue("toggle");
+  cue("select");
 }
 
 // ── Mode tiles ───────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ const orderedThemes = computed(() => groups.value.flatMap((g) => g.rows));
 function chooseTheme(id: string) {
   if (themeId.value === id) return;
   setTheme(id);
-  cue("toggle");
+  cue("select");
 }
 
 const themeEls = ref<HTMLElement[]>([]);
@@ -198,21 +198,21 @@ function openCreateTheme() {
   editingTheme.value = null;
   isEditingTheme.value = false;
   editorOpen.value = true;
-  cue("toggle");
+  cue("show");
 }
 
 function openEditTheme(t: ThemeDefinition) {
   editingTheme.value = t;
   isEditingTheme.value = true;
   editorOpen.value = true;
-  cue("toggle");
+  cue("show");
 }
 
 function openDuplicateTheme(t: ThemeDefinition) {
   editingTheme.value = t;
   isEditingTheme.value = false;
   editorOpen.value = true;
-  cue("toggle");
+  cue("show");
 }
 
 function exportRow(t: ThemeDefinition) {
@@ -224,12 +224,12 @@ function exportRow(t: ThemeDefinition) {
   a.download = `${t.label.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "theme"}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  cue("success");
+  cue("saved");
 }
 
 function removeCustomRow(id: string) {
   removeCustomTheme(id);
-  cue("toggle");
+  cue("discard");
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────
@@ -263,7 +263,7 @@ async function onFilesPicked(event: Event) {
   const more = result.failures.length - 1;
   const suffix = more > 0 ? ` (and ${more} more)` : "";
   if (result.added.length > 0) {
-    cue("toggle");
+    cue("warning");
     showNotice(
       "error",
       `Imported ${result.added.length}. Couldn't import ${first.name} — ${first.reason}${suffix}`,
@@ -276,7 +276,7 @@ async function onFilesPicked(event: Event) {
 
 function removeRow(id: string) {
   removeImportedTheme(id);
-  cue("toggle");
+  cue("discard");
 }
 
 // ── Community browse ─────────────────────────────────────────────────────────

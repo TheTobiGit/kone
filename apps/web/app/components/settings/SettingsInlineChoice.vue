@@ -41,7 +41,7 @@ function pick(id: string) {
   open.value = false;
   if (id === props.value) return;
   emit("pick", id);
-  cue("toggle");
+  cue("select");
 }
 </script>
 

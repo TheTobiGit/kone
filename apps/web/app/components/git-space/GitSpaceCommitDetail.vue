@@ -54,9 +54,10 @@ const webUrl = computed(() => {
 async function toggleFile(f: GitCommitFile) {
   if (openPath.value === f.path) {
     openPath.value = null;
+    cue("collapse");
     return;
   }
-  cue("toggle");
+  cue("expand");
   openPath.value = f.path;
   diff.value = null;
   if (f.binary) return;
@@ -70,7 +71,7 @@ async function toggleFile(f: GitCommitFile) {
 async function copyHash() {
   try {
     await navigator.clipboard.writeText(props.hash);
-    cue("toggle");
+    cue("copy");
     copied.value = true;
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => (copied.value = false), 1400);

@@ -68,7 +68,7 @@ function toggle(): void {
   }
   const box = trigger.value?.getBoundingClientRect();
   if (!box) return;
-  cue("press");
+  cue("expand");
   // Right-aligned to the trigger and hung below it, then folded up when the row
   // is near the bottom of the window — the panel is short enough that flipping
   // is always enough and it never needs to be squeezed.

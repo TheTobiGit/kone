@@ -10,12 +10,13 @@ const emit = defineEmits<{ "update:modelValue": [boolean] }>();
 const el = ref<HTMLButtonElement | null>(null);
 defineExpose({ focus: () => el.value?.focus() });
 
-// Each flip plays the launcher's discrete "toggle" cue — a real user gesture,
-// so it never trips the browser autoplay gate.
+// Each flip plays the "toggle" cue — falling when it switches off — from a
+// real user gesture, so it never trips the browser autoplay gate. Callers
+// must not cue on top of it.
 const { cue } = useSound();
 
 function toggle() {
-  cue("toggle");
+  cue("toggle", { off: props.modelValue });
   emit("update:modelValue", !props.modelValue);
 }
 </script>

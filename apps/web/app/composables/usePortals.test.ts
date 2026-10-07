@@ -74,7 +74,7 @@ describe("usePortals — summon from the page", () => {
     portals.summon("studio");
     expect(portals.studioOpen.value).toBe(true);
     expect(portals.inboxOpen.value).toBe(false);
-    expect(cued).toEqual(["expand"]);
+    expect(cued).toEqual(["open"]);
     expect(frames.length).toBe(0);
   });
 
@@ -82,7 +82,7 @@ describe("usePortals — summon from the page", () => {
     const { portals, cued, frames } = harness();
     portals.summon("inbox");
     portals.summon("inbox");
-    expect(cued).toEqual(["expand"]);
+    expect(cued).toEqual(["open"]);
     expect(liveFrames({ frames }).length).toBe(0);
   });
 
@@ -93,7 +93,7 @@ describe("usePortals — summon from the page", () => {
     expect(portals.studioOpen.value).toBe(true);
     expect(portals.inboxOpen.value).toBe(true);
     portals.summon("inbox");
-    expect(cued).toEqual(["expand", "expand"]);
+    expect(cued).toEqual(["open", "open"]);
     expect(liveFrames({ frames }).length).toBe(0);
     expect(portals.studioOpen.value).toBe(true);
     expect(portals.inboxOpen.value).toBe(true);

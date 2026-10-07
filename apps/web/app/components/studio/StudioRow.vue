@@ -1433,7 +1433,7 @@ function onComposerMode(next: InteractionMode): void {
 function onModelSelect(picked: ModelPick) {
   void applyModelEffort(picked);
   modelPickerOpen.value = false;
-  cue("toggle");
+  cue("select");
 }
 
 
@@ -1607,7 +1607,7 @@ watch(
 );
 
 function onOpenThread(threadId: string) {
-  cue("press");
+  cue("open");
   // The pill's thread is usually already a pane (adopted while it ran); focus it.
   // If it was evicted since, open a fresh pane bound to its id — studio.open's
   // thread adapter reloads its transcript through agent.openThread.

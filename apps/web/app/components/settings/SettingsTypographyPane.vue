@@ -150,7 +150,7 @@ function openPicker(kind: FontKind) {
 }
 function onPick(value: string) {
   if (pickerFor.value) setFamily(pickerFor.value, value);
-  cue("toggle");
+  cue("select");
 }
 
 // ── banner ───────────────────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ const pct = (n: number) => `${Math.round(interfaceZoomFactor(n) * 100)}%`;
 
 function onReset() {
   resetTypography();
-  cue("toggle");
+  cue("press");
 }
 </script>
 
@@ -360,7 +360,7 @@ function onReset() {
             <ToggleSwitch
               :model-value="prefs.smoothing"
               aria-label="Font smoothing"
-              @update:model-value="setSmoothing($event); cue('toggle')"
+              @update:model-value="setSmoothing"
             />
           </div>
           <div class="ty__switch-row">
@@ -373,7 +373,7 @@ function onReset() {
             <ToggleSwitch
               :model-value="prefs.ligatures"
               aria-label="Ligatures"
-              @update:model-value="setLigatures($event); cue('toggle')"
+              @update:model-value="setLigatures"
             />
           </div>
         </div>

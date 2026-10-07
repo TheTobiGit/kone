@@ -79,12 +79,12 @@ const { cue } = useSound();
 const source = useAllRecentSessions({ archived: props.view === "archived" });
 
 function togglePin(row: SessionSummary): void {
-  cue("press");
+  cue("toggle", { off: row.pinned });
   source.togglePin(row.threadId);
 }
 
 function toggleDone(row: SessionSummary): void {
-  cue("press");
+  cue("toggle", { off: row.done });
   if (props.selected && props.view === "inbox") emit("clear", row.threadId);
   source.toggleDone(row.threadId);
 }
@@ -119,7 +119,7 @@ function archiveRow(row: SessionSummary): void {
 }
 
 function removeRow(row: SessionSummary): void {
-  cue("press");
+  cue("discard");
   if (props.selected) emit("clear", row.threadId);
   source.remove(row.threadId);
 }

@@ -63,10 +63,12 @@ function stage(path: string) {
   props.git.stagePaths([path]);
 }
 function unstage(path: string) {
-  cue("toggle");
+  cue("toggle", { off: true });
   props.git.unstagePaths([path]);
 }
+// Behind a hold-to-confirm; the hold finishing is the commit.
 function discard(path: string) {
+  cue("discard");
   props.git.discardPaths([path]);
 }
 function stageAll() {
@@ -74,7 +76,7 @@ function stageAll() {
   props.git.stageAll();
 }
 function unstageAll() {
-  cue("toggle");
+  cue("toggle", { off: true });
   props.git.unstageAll();
 }
 function stashAll() {

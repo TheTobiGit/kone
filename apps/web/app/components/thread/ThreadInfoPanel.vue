@@ -155,7 +155,7 @@ const waitingCount = computed(() => inbox.waiting.value.length);
 
 function pickView(next: "details" | "inbox"): void {
   if (next === view.value) return;
-  cue("toggle");
+  cue("select");
   view.value = next;
 }
 
@@ -172,7 +172,7 @@ const exportFormats = THREAD_EXPORT_FORMATS;
 function pickExportFormat(next: ThreadExportFormat): void {
   if (next === exportFormat.value) return;
   exportFormat.value = next;
-  cue("toggle");
+  cue("select");
 }
 
 const exportBusy = computed(

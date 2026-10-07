@@ -113,7 +113,7 @@ function onPick(next: AgentModelRef | null) {
 
 function onEffort(rung: Effort) {
   if (!model.value) return;
-  cue("toggle");
+  cue("select");
   place(model.value.provider, rung);
 }
 

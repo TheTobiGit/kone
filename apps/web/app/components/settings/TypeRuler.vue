@@ -47,15 +47,21 @@ const defaultAt = computed(() => indexOf(props.defaultValue));
 function set(i: number, held = false) {
   const next = Math.min(count.value - 1, Math.max(0, i));
   if (next === at.value) return;
+  const direction = next > at.value ? "forward" : "back";
   if (held) draft.value = valueAt(next);
   else emit("update:modelValue", valueAt(next));
-  cue("select");
+  // A drag sweeps across many ticks in a moment; one sound when it lands says
+  // the same thing without a rattle. Keys step one tick at a time, so each step
+  // speaks.
+  if (!dragging) cue("select", { direction });
 }
 
 // ── pointer ──────────────────────────────────────────────────────────────────
 const track = ref<HTMLElement>();
 const hover = ref<number | null>(null);
 let dragging = false;
+// The value a drag started from — so its release only sounds if it moved.
+let dragFrom = 0;
 
 function indexFromX(clientX: number): number {
   const el = track.value;
@@ -71,6 +77,7 @@ function indexFromX(clientX: number): number {
 function onDown(e: PointerEvent) {
   if (e.button !== 0) return;
   dragging = true;
+  dragFrom = shown.value;
   track.value?.setPointerCapture(e.pointerId);
   set(indexFromX(e.clientX), props.settle);
 }
@@ -80,6 +87,7 @@ function onMove(e: PointerEvent) {
   if (dragging) set(i, props.settle);
 }
 function onUp(e: PointerEvent) {
+  if (dragging && shown.value !== dragFrom) cue("select", { direction: shown.value > dragFrom ? "forward" : "back" });
   dragging = false;
   track.value?.releasePointerCapture(e.pointerId);
   if (draft.value !== null) {

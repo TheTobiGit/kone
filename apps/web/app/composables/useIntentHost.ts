@@ -294,11 +294,11 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
         void reveal(action.path);
         return;
       case "forget-project":
-        cue("press");
+        cue("dismiss");
         forget(action.path);
         return;
       case "pin-session":
-        cue("press");
+        cue("toggle");
         toggleSessionPin(action.threadId);
         return;
       case "archive-session": {
@@ -309,24 +309,23 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
       case "goto": {
         switch (action.view) {
           case "studio":
+            // The summon sounds the arrival itself.
             runWhenFree(() => {
-              cue("expand");
               options.summon("studio");
             });
             return;
           case "inbox":
             runWhenFree(() => {
-              cue("expand");
               options.summon("inbox");
             });
             return;
           case "launcher":
-            cue("collapse");
+            cue("leave");
             project.value = null;
             return;
           default: {
             // Every other go-to is one of the project page's spaces.
-            cue("press");
+            cue("open");
             goIntentSurface(action.view);
             return;
           }
@@ -334,12 +333,12 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
       }
       case "open-settings":
         runWhenFree(() => {
-          cue("press");
+          cue("show");
           settingsOpen.value = true;
         });
         return;
       case "back-to-page":
-        cue("collapse");
+        cue("leave");
         options.dismiss();
         return;
       case "open-row-page":

@@ -88,7 +88,7 @@ async function copyText(text: string | null, kind: InstructionKind): Promise<voi
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    cue("press");
+    cue("copy");
     copied.value = kind;
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
