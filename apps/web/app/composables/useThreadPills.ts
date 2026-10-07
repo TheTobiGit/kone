@@ -1,4 +1,4 @@
-// Away-from-thread status pills — and the sound a finished turn makes.
+// Away-from-thread status pills.
 //
 // A project can have several threads live at once. Any thread whose live (or
 // just-settled) turn is off-screen rides a dynamic-island pill in the corner,
@@ -6,11 +6,9 @@
 // finished reply waits there until you open it, at which point it's "seen" and
 // steps aside. The thread you're actually viewing never pills.
 //
-// The completion cue lives here too, because it answers the same question from
-// the other side: this decides *when a turn has just finished*, and both the
-// pill and the sound are consequences of that one edge. Splitting them would
-// mean two watchers computing the same signature and disagreeing about which
-// finishes were real.
+// The sound a finished turn makes is not here: a pill only exists on the
+// project page, and a reply that lands in the inbox or the studio has to be
+// heard too. That lives app-wide, in useAgentCues.
 
 import { computed, ref, watch } from "vue";
 import type { ComputedRef } from "vue";
@@ -77,40 +75,6 @@ export function useThreadPills(o: UseThreadPillsOptions) {
     seenTurns.value = { ...seenTurns.value, [threadId]: turnId };
   }
 
-  // ── the completion cue ──────────────────────────────────────────────────────
-  // A turn finishing is the one agent moment worth hearing: you can send, look
-  // away, and know from a soft resolve that a reply has landed. We watch each
-  // thread's live turn settle out of `running` and cue once on that edge —
-  // `ready` for a clean finish, `error` for a failed one. An interrupt is the
-  // user's own doing (already cued at the click), so it stays silent. Keyed by
-  // turn id so a single settle fires exactly once, never on re-render, and a
-  // brand-new thread's first turn isn't mistaken for a finish.
-  const settledTurns = ref<Record<string, string>>({});
-  // The first pass only records what's already settled — a rehydrated project
-  // mounts with every past turn in `completed`, and none of those just happened.
-  // Real finishes are the transitions we see *after* that baseline.
-  let settleWatcherPrimed = false;
-  watch(
-    turnSignature,
-    () => {
-      const settled = { ...settledTurns.value };
-      let touched = false;
-      for (const t of agent.threads.value) {
-        const block = t.block;
-        if (!block || block.state === "running") continue;
-        if (settled[t.threadId] === block.turnId) continue;
-        settled[t.threadId] = block.turnId;
-        touched = true;
-        if (!settleWatcherPrimed) continue; // baseline: seed, don't announce
-        if (block.state === "completed") cue("ready");
-        else if (block.state === "failed") cue("error");
-      }
-      if (touched) settledTurns.value = settled;
-      settleWatcherPrimed = true;
-    },
-    { immediate: true },
-  );
-
   // Pills the user has waved away, per thread → the turn they dismissed. Unlike
   // `seenTurns` this also silences a *running* turn: you've said you don't want to
   // be told about this one. The thread's next turn mints a new id, so a dismissal
@@ -118,7 +82,7 @@ export function useThreadPills(o: UseThreadPillsOptions) {
   const dismissedTurns = ref<Record<string, string>>({});
 
   function onDismissThread(threadId: string, turnId: string): void {
-    cue("press");
+    cue("collapse");
     dismissedTurns.value = { ...dismissedTurns.value, [threadId]: turnId };
     seenTurns.value = { ...seenTurns.value, [threadId]: turnId };
   }
