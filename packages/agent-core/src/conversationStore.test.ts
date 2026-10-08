@@ -3100,6 +3100,22 @@ describe("project scripts and settle candidates", () => {
     expect(store.threadIsBusy("t")).toBe(false);
   });
 
+  test("a queued-but-not-promoted follow-up keeps threadIsBusy true on an idle thread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ blockId: "ub-1", threadId: "t", text: "later", at: 100 });
+    store.enqueueQueuedTurn({
+      queueId: "q1",
+      threadId: "t",
+      userBlockId: "ub-1",
+      input: "later",
+      at: 100,
+    });
+    expect(store.threadIsBusy("t")).toBe(true);
+    store.cancelQueuedTurn("q1");
+    expect(store.threadIsBusy("t")).toBe(false);
+  });
+
   test("checked_at backoff advances a bounded candidate list past attempted threads", () => {
     const store = freshStore();
     for (let i = 0; i < 25; i++) {
