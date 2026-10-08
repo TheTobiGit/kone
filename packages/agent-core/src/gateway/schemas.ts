@@ -2333,6 +2333,52 @@ export type ArchiveAppThreadInput = z.infer<typeof ArchiveAppThreadInputSchema>;
 export type DeleteAppThreadInput = z.infer<typeof DeleteAppThreadInputSchema>;
 export type RenameAppThreadInput = z.infer<typeof RenameAppThreadInputSchema>;
 
+export const SetThreadPinnedInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to pin or unpin, as app_list_threads reports it."),
+  pinned: z.boolean().describe("True to pin the thread, false to unpin it."),
+});
+
+export const SET_THREAD_PINNED_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to pin or unpin, as app_list_threads reports it."),
+    pinned: { type: "boolean", description: "True to pin the thread, false to unpin it." },
+  },
+  required: ["threadId", "pinned"],
+} satisfies GatewayRecord;
+
+export const SetThreadDoneInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to mark done or not done, as app_list_threads reports it."),
+  done: z.boolean().describe("True to mark the thread done (settled), false to clear the mark."),
+});
+
+export const SET_THREAD_DONE_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to mark done or not done, as app_list_threads reports it."),
+    done: {
+      type: "boolean",
+      description: "True to mark the thread done (settled), false to clear the mark.",
+    },
+  },
+  required: ["threadId", "done"],
+} satisfies GatewayRecord;
+
+export const MarkThreadUnreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to mark unread, as app_list_threads reports it."),
+});
+
+export const MARK_THREAD_UNREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to mark unread, as app_list_threads reports it."),
+  },
+} satisfies GatewayRecord;
+
+export type SetThreadPinnedInput = z.infer<typeof SetThreadPinnedInputSchema>;
+export type SetThreadDoneInput = z.infer<typeof SetThreadDoneInputSchema>;
+export type MarkThreadUnreadInput = z.infer<typeof MarkThreadUnreadInputSchema>;
+
 // ── providers & usage ────────────────────────────────────────────────────────
 
 export const USAGE_RANGES = ["1d", "7d", "30d", "all"] as const;

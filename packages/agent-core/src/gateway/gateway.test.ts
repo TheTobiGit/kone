@@ -536,6 +536,10 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_archive_thread",
       "app_delete_thread",
       "app_rename_thread",
+      // Phase 6 thread-state tools: pin, done/settle, mark-unread.
+      "app_set_thread_pinned",
+      "app_set_thread_done",
+      "app_mark_thread_unread",
       "app_get_provider_status",
       "app_get_usage_report",
       "app_set_provider_enabled",

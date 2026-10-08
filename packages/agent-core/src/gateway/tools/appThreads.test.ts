@@ -286,6 +286,7 @@ function tools(
       threadId: string,
       title: string,
     ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
+    setThreadDone?: (threadId: string, done: boolean) => void;
   } = {},
 ) {
   const live = new Set(options.live ?? []);
@@ -317,6 +318,7 @@ function tools(
   if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
   if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
   if (options.renameThread) toolOptions.renameThread = options.renameThread;
+  if (options.setThreadDone) toolOptions.setThreadDone = options.setThreadDone;
   if (options.threadRuntime) toolOptions.threadRuntime = options.threadRuntime;
   // `runner: null` is the "no dispatcher behind the gateway" case, which is a
   // different thing from a runner nobody passed — the option has to be absent,
@@ -923,8 +925,11 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_archive_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_delete_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_rename_thread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_set_thread_pinned")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_set_thread_done")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_mark_thread_unread")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(8);
+    expect(entries).toHaveLength(11);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
@@ -1439,5 +1444,63 @@ describe("app_rename_thread", () => {
 
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("not_found");
+  });
+});
+
+describe("app_set_thread_pinned", () => {
+  it("pins and unpins through the store", async () => {
+    const pinned: Array<[string, boolean]> = [];
+    const store = makeStore({ setPinned: (threadId, value) => pinned.push([threadId, value]) });
+    const result = await tools({ store }).call(makeCtx(), "app_set_thread_pinned", {
+      threadId: "t-newest",
+      pinned: true,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(pinned).toEqual([["t-newest", true]]);
+    expect(result.structuredContent).toMatchObject({ threadId: "t-newest", pinned: true });
+  });
+});
+
+describe("app_set_thread_done", () => {
+  it("routes done through the canonical service callback when present", async () => {
+    const done: Array<[string, boolean]> = [];
+    const store = makeStore({ setDone: () => { throw new Error("store fallback should not run"); } });
+    const result = await tools({ store, setThreadDone: (id, value) => done.push([id, value]) }).call(
+      makeCtx(),
+      "app_set_thread_done",
+      { threadId: "t-newest", done: true },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(done).toEqual([["t-newest", true]]);
+    expect(result.structuredContent).toMatchObject({ threadId: "t-newest", done: true });
+  });
+
+  it("falls back to the store when no service callback is wired", async () => {
+    const done: Array<[string, boolean]> = [];
+    const store = makeStore({ setDone: (id, value) => done.push([id, value]) });
+    await tools({ store }).call(makeCtx(), "app_set_thread_done", {
+      threadId: "t-newest",
+      done: false,
+    });
+    expect(done).toEqual([["t-newest", false]]);
+  });
+});
+
+describe("app_mark_thread_unread", () => {
+  it("moves the visit below the latest activity, forcing it back", async () => {
+    const visited: Array<[string, number, boolean | undefined]> = [];
+    const store = makeStore({
+      setVisited: (threadId, at, force) => visited.push([threadId, at, force]),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_mark_thread_unread", {
+      threadId: "t-newest",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(visited).toHaveLength(1);
+    const [, at, force] = visited[0]!;
+    const meta = store.threadMeta("t-newest");
+    expect(force).toBe(true);
+    expect(at).toBeLessThan(meta?.lastActivityAt ?? 0);
+    expect(result.structuredContent).toMatchObject({ threadId: "t-newest", unread: true });
   });
 });
