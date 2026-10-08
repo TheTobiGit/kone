@@ -251,6 +251,22 @@ describe("OpenCode discovery", () => {
     expect(status.readiness).toBe("needs-login");
     expect(status.transient).toBeUndefined();
   });
+
+  test("a v2 model list that cold-starts the service empty is retried, not swapped for the bare list", async () => {
+    const modelList = JSON.stringify({
+      data: [{ providerID: "opencode-go", modelID: "glm-5.3", name: "GLM-5.3", variants: [{ id: "low" }, { id: "high" }] }],
+    });
+    script.current = {
+      "--version": [probed("ok", "opencode v2.0.16\n")],
+      api: [probed("ok", '{"data":[]}'), probed("ok", modelList)],
+      models: [probed("ok", "opencode-go/glm-5.3\n")],
+    };
+    const adapter = new adapterModule.OpenCodeAdapter(() => {});
+
+    const models = await adapter.listModels();
+
+    expect(models).toEqual([{ id: "opencode-go/glm-5.3", label: "GLM-5.3", reasoningEfforts: ["low", "high"], defaultReasoningEffort: "high" }]);
+  });
 });
 
 describe("discovery derives manual-compaction support", () => {
