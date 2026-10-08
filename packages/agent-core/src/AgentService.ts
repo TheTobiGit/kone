@@ -257,7 +257,7 @@ export type AgentServiceOptions = {
     | "setDone"
     | "threadMeta"
     | "staleThreadIds"
-    | "setTitle"
+    | "setTitleIfAuto"
     | "titleOrigin"
     | "titleMessages"
     | "threadWorkspace"
@@ -2778,34 +2778,36 @@ export class AgentService {
     if (!title?.trim()) return { ok: false, reason: "generation_failed" };
     title = title.trim();
 
-    const changed = title !== meta.title;
-    if (changed) {
-      history.setTitle(threadId, title);
-      this.dispatch({
-        type: "thread.title.updated",
-        threadId,
-        provider: meta.provider,
-        at: Date.now(),
-        source: "kone.store",
-        title,
-      });
-      // Follow the worktree branch rename off the hot path: a generated branch
-      // name came from the old title and should not outlive it.
-      const rename = this.options.renameWorkspaceBranch;
-      if (rename) {
-        try {
-          const workspace = history.threadWorkspace(threadId);
-          if (workspace?.worktreePath) {
-            void rename({ worktreePath: workspace.worktreePath, title }).catch((err) => {
-              console.warn("[thread-title] worktree branch rename failed:", err);
-            });
-          }
-        } catch {
-          // A workspace that cannot be read leaves the branch as it was.
+    if (title === meta.title) return { ok: true, title, changed: false };
+    // Commit only if the title is still the one the generator saw and is still
+    // auto-owned. A manual rename while the one-shot ran wins.
+    if (!history.setTitleIfAuto(threadId, meta.title ?? null, title)) {
+      return { ok: false, reason: "manual_title" };
+    }
+    this.dispatch({
+      type: "thread.title.updated",
+      threadId,
+      provider: meta.provider,
+      at: Date.now(),
+      source: "kone.store",
+      title,
+    });
+    // Follow the worktree branch rename off the hot path: a generated branch
+    // name came from the old title and should not outlive it.
+    const rename = this.options.renameWorkspaceBranch;
+    if (rename) {
+      try {
+        const workspace = history.threadWorkspace(threadId);
+        if (workspace?.worktreePath) {
+          void rename({ worktreePath: workspace.worktreePath, title }).catch((err) => {
+            console.warn("[thread-title] worktree branch rename failed:", err);
+          });
         }
+      } catch {
+        // A workspace that cannot be read leaves the branch as it was.
       }
     }
-    return { ok: true, title, changed };
+    return { ok: true, title, changed: true };
   }
 
   /** Link a pull request to a thread, replacing any previous link. The link is

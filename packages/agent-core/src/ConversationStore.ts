@@ -166,6 +166,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
+  setTitleIfAuto(threadId: string, expectedTitle: string | null, title: string): boolean {
+    return this.threads.setTitleIfAuto(threadId, expectedTitle, title);
+  }
+
+  /** @see ThreadRepo */
   renameThread(threadId: string, title: string): boolean {
     return this.threads.renameThread(threadId, title);
   }

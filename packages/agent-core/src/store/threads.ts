@@ -216,6 +216,29 @@ export class ThreadRepo {
     }
   }
 
+  /** Persist a regenerated title only while the title it was generated from is
+   *  still in place and still auto-owned. Returns false when a rename — or any
+   *  other write — won the race while the title was being generated, so the
+   *  caller drops its result instead of clobbering the user. The comparison is
+   *  `expectedTitle` rather than "whatever is current", so a second window's
+   *  generated title cannot be overwritten by an older one either. */
+  setTitleIfAuto(threadId: string, expectedTitle: string | null, title: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      const result = db
+        .prepare(
+          `UPDATE threads SET title = ?, title_origin = 'auto'
+            WHERE thread_id = ? AND title_origin = 'auto' AND title IS ?`,
+        )
+        .run(title, threadId, expectedTitle);
+      return result.changes > 0;
+    } catch (err) {
+      console.error("[conversation-store] setTitleIfAuto failed:", err);
+      return false;
+    }
+  }
+
   /** User-initiated rename (agent:rename-thread). Same title-only semantics as
    *  setTitle — recency ordering is untouched, and an unchanged title is a
    *  no-op — but marks the title `manual`, so a later regeneration leaves the
@@ -242,8 +265,7 @@ export class ThreadRepo {
     }
   }
 
-  /** Who owns the current title: `manual` when the user typed it, else `auto`. */
-  titleOrigin(threadId: string): "auto" | "manual" {
+  /** Who owns the current title: `manual` when the user typed it, else `auto`. */  titleOrigin(threadId: string): "auto" | "manual" {
     const db = this.dbh.handle();
     if (!db) return "auto";
     try {
