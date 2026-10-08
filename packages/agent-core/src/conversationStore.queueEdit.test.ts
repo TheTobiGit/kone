@@ -68,7 +68,7 @@ describe("editing a queued turn in place", () => {
     store.reorderQueuedTurns("t", ["q2", "q1"]);
     const before = store.listQueuedTurns("t").map((r) => [r.queueId, r.sortKey]);
 
-    expect(store.editQueuedTurn("q2", { input: "edited second" })).not.toBeNull();
+    expect(store.editQueuedTurn("t", "q2", { input: "edited second" })).not.toBeNull();
 
     const after = store.listQueuedTurns("t");
     expect(after.map((r) => r.queueId)).toEqual(["q2", "q1"]);
@@ -82,7 +82,7 @@ describe("editing a queued turn in place", () => {
     enqueue(store, "q1", "ub-1", "first", 100);
     enqueue(store, "q2", "ub-2", "second", 200);
     store.reorderQueuedTurns("t", ["q2", "q1"]);
-    store.editQueuedTurn("q2", { input: "edited second" });
+    store.editQueuedTurn("t", "q2", { input: "edited second" });
 
     const claimed = store.claimNextQueuedTurn("t");
     expect(claimed?.queueId).toBe("q2");
@@ -111,23 +111,68 @@ describe("editing a queued turn in place", () => {
     const store = freshStore();
     enqueue(store, "q1", "ub-1", "hello", 100);
     expect(store.claimNextQueuedTurn("t")?.queueId).toBe("q1");
-    expect(store.editQueuedTurn("q1", { input: "changed" })).toBeNull();
+    expect(store.editQueuedTurn("t", "q1", { input: "changed" })).toBeNull();
   });
 
   test("refuses a cancelled row and an unknown row", () => {
     const store = freshStore();
     enqueue(store, "q1", "ub-1", "hello", 100);
     store.cancelQueuedTurn("q1");
-    expect(store.editQueuedTurn("q1", { input: "changed" })).toBeNull();
-    expect(store.editQueuedTurn("missing", { input: "changed" })).toBeNull();
+    expect(store.editQueuedTurn("t", "q1", { input: "changed" })).toBeNull();
+    expect(store.editQueuedTurn("t", "missing", { input: "changed" })).toBeNull();
   });
 
   test("keeps the queued model unless the patch names one", () => {
     const store = freshStore();
     enqueue(store, "q1", "ub-1", "hello", 100, { model: "gpt-6-luna" });
-    store.editQueuedTurn("q1", { input: "hello again" });
+    store.editQueuedTurn("t", "q1", { input: "hello again" });
     expect(store.listQueuedTurns("t")[0]?.model).toBe("gpt-6-luna");
-    store.editQueuedTurn("q1", { input: "hello once more", model: "gpt-6-sol" });
+    store.editQueuedTurn("t", "q1", { input: "hello once more", model: "gpt-6-sol" });
     expect(store.listQueuedTurns("t")[0]?.model).toBe("gpt-6-sol");
+  });
+});
+
+describe("editing a queued turn in place — field preservation and ownership", () => {
+  test("a text-only edit keeps existing attachments and skills; explicit [] clears", () => {
+    const store = freshStore();
+    store.recordUserBlock({ blockId: "ub-1", threadId: "t", text: "hi", at: 100 });
+    store.enqueueQueuedTurn({
+      queueId: "q1",
+      threadId: "t",
+      userBlockId: "ub-1",
+      input: "hi",
+      attachments: [{ type: "file", id: "a1", name: "a.txt", mimeType: "text/plain", sizeBytes: 1 }],
+      skills: [{ name: "s", path: "/s" }],
+      at: 100,
+    });
+
+    store.editQueuedTurn("t", "q1", { input: "hi again" });
+    const kept = store.listQueuedTurns("t")[0]!;
+    expect(kept.attachments).toHaveLength(1);
+    expect(kept.skills).toHaveLength(1);
+
+    store.editQueuedTurn("t", "q1", { input: "hi once more", attachments: [], skills: [] });
+    expect(store.listQueuedTurns("t")[0]?.attachments ?? []).toEqual([]);
+    expect(store.listQueuedTurns("t")[0]?.skills ?? []).toEqual([]);
+  });
+
+  test("refuses a queue id that belongs to another thread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "u", projectPath: "/repo", provider: "codex" });
+    store.recordUserBlock({ blockId: "ub-1", threadId: "t", text: "hi", at: 100 });
+    store.enqueueQueuedTurn({ queueId: "q1", threadId: "t", userBlockId: "ub-1", input: "hi", at: 100 });
+    expect(store.editQueuedTurn("u", "q1", { input: "changed" })).toBeNull();
+    // The real owner can still edit it.
+    expect(store.editQueuedTurn("t", "q1", { input: "changed" })).not.toBeNull();
+  });
+});
+
+describe("queue cancel binds the row to its thread", () => {
+  test("a cross-thread queue id is refused", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "u", projectPath: "/repo", provider: "codex" });
+    enqueue(store, "q1", "ub-1", "hi", 100);
+    expect(store.cancelQueuedTurn("q1", "u")).toBe(false);
+    expect(store.cancelQueuedTurn("q1", "t")).toBe(true);
   });
 });

@@ -116,72 +116,92 @@ export class QueuedTurnRepo {
     return inserted;
   }
 
-  /** Edit a waiting follow-up in place, keeping its position. The paired
-   *  journaled user block is updated in the same transaction, so a promotion
-   *  later shows the edited words in the transcript where the row always sat.
+  /** Edit a WAITING follow-up in place, keeping its position.
    *
-   *  Refuses a row that is promoting or settled (promoted/cancelled): its words
-   *  are already with the provider or gone. `sort_key`, `state`, `created_at`
-   *  and `attempt_count` are never touched — an edit is not a requeue. The
-   *  content fields (input/attachments/skills) are always written; the picker
-   *  knobs only when the patch carries them, so an edit can change the prompt
-   *  without resetting the model it was queued with. Returns the updated row,
-   *  or null when the row is missing or not editable. */
-  editQueuedTurn(queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+   *  The read/state guard, the queue UPDATE and the hidden-block UPDATE run in
+   *  one transaction (`durably` for the fsync pragma, `atomically` for the
+   *  transaction), and the state is re-checked inside the UPDATE's WHERE, so a
+   *  competing promotion cannot interleave: if the row was claimed between the
+   *  read and the write, the UPDATE matches nothing and nothing is written.
+   *  The queue id is bound to its thread in every statement, so a caller cannot
+   *  edit thread B's row while claiming thread A. A failure in the block update
+   *  rolls the queue update back.
+   *
+   *  Only fields the patch carries are written: an omitted attachments/skills
+   *  keeps what the row has, while an explicit `[]` clears it. `sort_key`,
+   *  `state`, `created_at` and `attempt_count` are never touched — an edit is
+   *  not a requeue. Returns the updated row, or null when it is missing, not
+   *  waiting, or owned by another thread. */
+  editQueuedTurn(threadId: string, queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
     const db = this.dbh.handle();
     if (!db) return null;
     let updated: QueuedTurnRow | null = null;
     try {
       this.dbh.durably(db, () => {
-        // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
-        const row = db
-          .prepare(`SELECT * FROM queued_turns WHERE queue_id = ?`)
-          .get(queueId) as QueuedTurnDbRow | undefined;
-        if (!row) return;
-        if (row.state !== "queued" && row.state !== "failed") return;
-        const now = Date.now();
-        const attachmentsJson = serializeAttachments(patch.attachments);
-        const skillsJson = serializeSkillReferences(patch.skills);
-        const sets = ["input = ?", "attachments_json = ?", "skills_json = ?", "updated_at = ?"];
-        const values: Array<string | number | null> = [
-          patch.input,
-          attachmentsJson,
-          skillsJson,
-          now,
-        ];
-        if (patch.model !== undefined) {
-          sets.push("model = ?");
-          values.push(patch.model ?? null);
-        }
-        if (patch.mode !== undefined) {
-          sets.push("mode = ?");
-          values.push(patch.mode ?? null);
-        }
-        if (patch.effort !== undefined) {
-          sets.push("effort = ?");
-          values.push(patch.effort ?? null);
-        }
-        if (patch.serviceTier !== undefined) {
-          sets.push("service_tier = ?");
-          values.push(patch.serviceTier ?? null);
-        }
-        if (patch.contextWindow !== undefined) {
-          sets.push("context_window = ?");
-          values.push(patch.contextWindow ?? null);
-        }
-        values.push(queueId);
-        db.prepare(`UPDATE queued_turns SET ${sets.join(", ")} WHERE queue_id = ?`).run(...values);
-        // The block the row hid from the timeline is the same words; keep it in
-        // step so promotion does not reveal the pre-edit text.
-        db.prepare(
-          `UPDATE blocks SET text = ?, attachments_json = ?, skills_json = ?
-            WHERE thread_id = ? AND block_id = ?`,
-        ).run(patch.input, attachmentsJson, skillsJson, row.thread_id, row.user_block_id);
-        // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
-        const after = db
-          .prepare(`SELECT * FROM queued_turns WHERE queue_id = ?`)
-          .get(queueId) as QueuedTurnDbRow | undefined;
-        if (after) updated = rowToQueuedTurn(after);
+        this.dbh.atomically(db, () => {
+          // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
+          const row = db
+            .prepare(`SELECT * FROM queued_turns WHERE queue_id = ? AND thread_id = ?`)
+            .get(queueId, threadId) as QueuedTurnDbRow | undefined;
+          if (!row || row.state !== "queued") return;
+          const now = Date.now();
+          const sets = ["input = ?", "updated_at = ?"];
+          const values: Array<string | number | null> = [patch.input, now];
+          const blockSets = ["text = ?"];
+          const blockValues: Array<string | number | null> = [patch.input];
+          if (patch.attachments !== undefined) {
+            const attachmentsJson = serializeAttachments(patch.attachments);
+            sets.push("attachments_json = ?");
+            values.push(attachmentsJson);
+            blockSets.push("attachments_json = ?");
+            blockValues.push(attachmentsJson);
+          }
+          if (patch.skills !== undefined) {
+            const skillsJson = serializeSkillReferences(patch.skills);
+            sets.push("skills_json = ?");
+            values.push(skillsJson);
+            blockSets.push("skills_json = ?");
+            blockValues.push(skillsJson);
+          }
+          if (patch.model !== undefined) {
+            sets.push("model = ?");
+            values.push(patch.model ?? null);
+          }
+          if (patch.mode !== undefined) {
+            sets.push("mode = ?");
+            values.push(patch.mode ?? null);
+          }
+          if (patch.effort !== undefined) {
+            sets.push("effort = ?");
+            values.push(patch.effort ?? null);
+          }
+          if (patch.serviceTier !== undefined) {
+            sets.push("service_tier = ?");
+            values.push(patch.serviceTier ?? null);
+          }
+          if (patch.contextWindow !== undefined) {
+            sets.push("context_window = ?");
+            values.push(patch.contextWindow ?? null);
+          }
+          // Bind queue to thread AND require the row still waiting, in the same
+          // statement that writes — a competing claim makes this a no-op.
+          const result = db
+            .prepare(
+              `UPDATE queued_turns SET ${sets.join(", ")}
+                WHERE queue_id = ? AND thread_id = ? AND state = 'queued'`,
+            )
+            .run(...values, queueId, threadId);
+          if (Number(result.changes) === 0) return;
+          blockValues.push(threadId, row.user_block_id);
+          db.prepare(
+            `UPDATE blocks SET ${blockSets.join(", ")} WHERE thread_id = ? AND block_id = ?`,
+          ).run(...blockValues);
+          // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
+          const after = db
+            .prepare(`SELECT * FROM queued_turns WHERE queue_id = ? AND thread_id = ?`)
+            .get(queueId, threadId) as QueuedTurnDbRow | undefined;
+          if (after) updated = rowToQueuedTurn(after);
+        });
       });
     } catch (err) {
       console.error("[conversation-store] editQueuedTurn failed:", err);
@@ -478,25 +498,28 @@ export class QueuedTurnRepo {
    *  provably never started and its block has no reply and never will —
    *  leaving it would strand an unanswered prompt in the transcript.
    *  Returns whether a row flipped. */
-  cancelQueuedTurn(queueId: string): boolean {
+  cancelQueuedTurn(queueId: string, threadId?: string): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
+    const bind = threadId ? " AND thread_id = ?" : "";
+    const rowArgs = threadId ? [queueId, threadId] : [queueId];
+    const updateArgs = threadId ? [Date.now(), queueId, threadId] : [Date.now(), queueId];
     try {
       let cancelled = false;
       this.dbh.durably(db, () => {
         // SAFETY: the projection names only the row's thread + journaled block.
         const row = db
           .prepare(
-            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ? AND state IN ('queued', 'failed')`,
+            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
           )
-          .get(queueId) as { thread_id: string; user_block_id: string } | undefined;
+          .get(...rowArgs) as { thread_id: string; user_block_id: string } | undefined;
         if (!row) return;
         const result = db
           .prepare(
             `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE queue_id = ? AND state IN ('queued', 'failed')`,
+            WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
           )
-          .run(Date.now(), queueId);
+          .run(...updateArgs);
         if (Number(result.changes) === 0) return;
         this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
         cancelled = true;

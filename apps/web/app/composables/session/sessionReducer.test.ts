@@ -598,3 +598,70 @@ describe("a journaled message taken back", () => {
     expect(session.blocks.value).toEqual([]);
   });
 });
+
+describe("an in-place queued edit in the strip", () => {
+  test("restates the words and clears attachments/skills on an explicit empty array", () => {
+    const session = makeSession();
+    const row: QueuedTurnEntry = {
+      queueId: "q1",
+      threadId: "t",
+      userBlockId: "ub-1",
+      dispatchMode: "queue",
+      state: "queued",
+      input: "old words",
+      attemptCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      attachments: [{ type: "file", id: "a1", name: "a.txt", mimeType: "text/plain", sizeBytes: 1 }],
+      skills: [{ name: "s", path: "/s" }],
+      position: 1,
+    };
+    session.queuedTurnsRaw.value = [row];
+
+    session.reduce({
+      ...base,
+      type: "turn.queued-updated",
+      queueId: "q1",
+      state: "queued",
+      attemptCount: 0,
+      input: "new words",
+      attachments: [],
+      skills: [],
+    });
+
+    const updated = session.queuedTurnsRaw.value[0];
+    expect(updated?.input).toBe("new words");
+    expect(updated?.attachments ?? []).toEqual([]);
+    expect(updated?.skills ?? []).toEqual([]);
+  });
+
+  test("keeps attachments/skills when the update omits them", () => {
+    const session = makeSession();
+    session.queuedTurnsRaw.value = [
+      {
+        queueId: "q1",
+        threadId: "t",
+        userBlockId: "ub-1",
+        dispatchMode: "queue",
+        state: "queued",
+        input: "old",
+        attemptCount: 0,
+        createdAt: 1,
+        updatedAt: 1,
+        attachments: [{ type: "file", id: "a1", name: "a.txt", mimeType: "text/plain", sizeBytes: 1 }],
+        skills: [{ name: "s", path: "/s" }],
+        position: 1,
+      },
+    ];
+    session.reduce({
+      ...base,
+      type: "turn.queued-updated",
+      queueId: "q1",
+      state: "queued",
+      attemptCount: 0,
+      input: "changed",
+    });
+    expect(session.queuedTurnsRaw.value[0]?.attachments).toHaveLength(1);
+    expect(session.queuedTurnsRaw.value[0]?.skills).toHaveLength(1);
+  });
+});

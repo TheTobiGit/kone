@@ -15,6 +15,8 @@ export interface ReadScopeThread {
   projectPath: string;
   /** The thread this one was forked from (threads.source_thread_id), if any. */
   sourceThreadId?: string | null;
+  /** The spawned parent this thread belongs to (threads.parent_thread_id). */
+  parentThreadId?: string | null;
 }
 
 export interface ReadScopeInput {
@@ -34,6 +36,11 @@ export function canReadThread(input: ReadScopeInput): boolean {
   // the forks it spawned (the "read what it produced" direction).
   if (input.caller?.sourceThreadId === input.targetThreadId) return true;
   if (input.target.sourceThreadId === input.callerThreadId) return true;
+  // Spawned subtree reads either way, across projects: a parent (or an ancestor
+  // reading through its direct child link) sees the children it spawned, and a
+  // spawned child sees its parent. The spawn engine tracks these links.
+  if (input.caller?.parentThreadId === input.targetThreadId) return true;
+  if (input.target.parentThreadId === input.callerThreadId) return true;
   if (input.attachedReferences?.has(input.targetThreadId)) return true;
   return false;
 }

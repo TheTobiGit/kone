@@ -351,13 +351,13 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see QueuedTurnRepo */
-  editQueuedTurn(queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
-    return this.queuedTurns.editQueuedTurn(queueId, patch);
+  editQueuedTurn(threadId: string, queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+    return this.queuedTurns.editQueuedTurn(threadId, queueId, patch);
   }
 
   /** @see QueuedTurnRepo */
-  cancelQueuedTurn(queueId: string): boolean {
-    return this.queuedTurns.cancelQueuedTurn(queueId);
+  cancelQueuedTurn(queueId: string, threadId?: string): boolean {
+    return this.queuedTurns.cancelQueuedTurn(queueId, threadId);
   }
 
   /** @see QueuedTurnRepo */
