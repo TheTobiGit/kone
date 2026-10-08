@@ -64,6 +64,7 @@ import {
   type AppThreadsRunner,
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
+import { createAppForkTools } from "./tools/appForks.js";
 import type { ThreadGateKind } from "../types.js";
 import type { PendingInteraction } from "../eventSubscriptions.js";
 import {
@@ -97,6 +98,7 @@ export type { AppTypographyToolOptions, TypographyReading } from "./tools/appTyp
 export { createAppProjectTools } from "./tools/appProjects.js";
 export type { ProjectRosterEntry } from "./tools/appProjects.js";
 export { createAppThreadTools } from "./tools/appThreads.js";
+export { createAppForkTools } from "./tools/appForks.js";
 export type { AppThreadsRunner } from "./tools/appThreads.js";
 export { createAppProviderTools } from "./tools/appProviders.js";
 export type { AppProvidersToolOptions } from "./tools/appProviders.js";
@@ -317,6 +319,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppTypographyTools(appTypographyOptions),
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
+    ...createAppForkTools({ emit: input.emit }),
     ...createAppProviderTools(appProviderOptions),
     ...createAppViewTools(appViewOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));

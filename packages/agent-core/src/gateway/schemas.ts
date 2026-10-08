@@ -2778,3 +2778,81 @@ export const PAGE_PREVIEW_JSON_SCHEMA = {
 } satisfies GatewayRecord;
 
 export type PagePreviewInput = z.infer<typeof PagePreviewInputSchema>;
+
+// ── fork at a turn + merge-back ──────────────────────────────────────────────
+
+export const ForkAppThreadInputSchema = z.object({
+  sourceThreadId: z.string().min(1).describe("The finished thread to fork from."),
+  turnId: z.string().min(1).describe("The finished turn to continue from."),
+  userBlockId: z
+    .string()
+    .min(1)
+    .nullable()
+    .optional()
+    .describe("The turn's prompt block, when the caller has it."),
+  threadId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("A caller-minted id for the new thread; one is minted when omitted."),
+  requestId: z.string().min(1).describe("Idempotency key for this creation."),
+  target: z
+    .object({
+      provider: z.enum(PROVIDER_KINDS),
+      model: z.string().min(1).optional(),
+      effort: z.string().min(1).optional(),
+      mode: z.enum(["ask", "accept-edits", "full-access"]).optional(),
+    })
+    .optional()
+    .describe("The provider/model the fork continues on; the source's when omitted."),
+  title: z.string().min(1).max(200).optional(),
+});
+
+export const FORK_APP_THREAD_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    sourceThreadId: { type: "string", description: "The finished thread to fork from." },
+    turnId: { type: "string", description: "The finished turn to continue from." },
+    userBlockId: {
+      type: ["string", "null"],
+      description: "The turn's prompt block, when the caller has it.",
+    },
+    threadId: { type: "string", description: "A caller-minted id for the new thread." },
+    requestId: { type: "string", description: "Idempotency key for this creation." },
+    target: {
+      type: "object",
+      properties: {
+        provider: { type: "string", enum: [...PROVIDER_KINDS] },
+        model: { type: "string" },
+        effort: { type: "string" },
+        mode: { type: "string", enum: ["ask", "accept-edits", "full-access"] },
+      },
+      required: ["provider"],
+    },
+    title: { type: "string" },
+  },
+  required: ["sourceThreadId", "turnId", "requestId"],
+} satisfies GatewayRecord;
+
+export const MergeBackAppThreadInputSchema = z.object({
+  sourceThreadId: z.string().min(1).describe("The thread the fork came from."),
+  forkThreadId: z.string().min(1).describe("The fork whose outcome to deliver."),
+  summary: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The summary to deliver; the fork's latest reply when omitted."),
+});
+
+export const MERGE_BACK_APP_THREAD_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    sourceThreadId: { type: "string", description: "The thread the fork came from." },
+    forkThreadId: { type: "string", description: "The fork whose outcome to deliver." },
+    summary: { type: "string", description: "The summary to deliver." },
+  },
+  required: ["sourceThreadId", "forkThreadId"],
+} satisfies GatewayRecord;
+
+export type ForkAppThreadInput = z.infer<typeof ForkAppThreadInputSchema>;
+export type MergeBackAppThreadInput = z.infer<typeof MergeBackAppThreadInputSchema>;
