@@ -238,6 +238,53 @@ describe("forkThreadAtTurn", () => {
   });
 });
 
+describe("native forks", () => {
+  test("writes a no-import native fork row when the provider supports it", async () => {
+    const store = await seedTwoTurns();
+    store.captureConversationId("t-src", "codex-thread-1");
+    const result = forkThreadAtTurn({
+      requestId: "r-native",
+      threadId: "f-native",
+      sourceThreadId: "t-src",
+      turnId: "turn-1",
+      userBlockId: null,
+      supportsFork: true,
+    });
+    expect(result.status).toBe("created");
+    expect(store.loadThread("f-native")!.blocks).toEqual([]);
+    const ctx = store.threadForkContext("f-native")!;
+    expect(ctx.bootstrapStatus).toBe("completed");
+    expect(ctx.nativeFork).toEqual({ conversationId: "codex-thread-1", beforeTurnId: "turn-1" });
+  });
+
+  test("a Claude fork with no recorded uuid falls back to the portable import", async () => {
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+    store.ensureThread({
+      threadId: "t-claude",
+      projectPath: "/p",
+      provider: "claudeAgent",
+      model: "claude-sonnet-5",
+    });
+    store.recordUserBlock({ threadId: "t-claude", text: "hi", at: 1 });
+    store.applyEvent(turnStarted("t-claude", "turn-1", 2));
+    store.applyEvent(textItem("t-claude", "turn-1", "i-1", "hello"));
+    store.applyEvent(turnCompleted("t-claude", "turn-1", 5));
+    store.captureConversationId("t-claude", "claude-session-1");
+    forkThreadAtTurn({
+      requestId: "r-portable",
+      threadId: "f-portable",
+      sourceThreadId: "t-claude",
+      turnId: "turn-1",
+      userBlockId: null,
+      supportsFork: true,
+    });
+    const ctx = store.threadForkContext("f-portable")!;
+    expect(ctx.nativeFork).toBeUndefined();
+    expect(store.loadThread("f-portable")!.blocks.length).toBeGreaterThan(0);
+  });
+});
+
 describe("turn assistant uuid", () => {
   test("records the uuid a turn.completed carries, per turn", async () => {
     const { getConversationStore } = await import("./ConversationStore.js");
