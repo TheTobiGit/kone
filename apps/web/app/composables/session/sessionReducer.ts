@@ -613,6 +613,11 @@ export function useSessionReducer(deps: SessionReducerDeps) {
           const updated: QueuedTurnEntry = { ...rest, state: event.state };
           if (event.retryAt) updated.retryAt = event.retryAt;
           if (event.error) updated.error = event.error;
+          // An in-place edit restates the row's words where it sits; an
+          // ordinary state change carries none of these.
+          if (event.input !== undefined) updated.input = event.input;
+          if (event.attachments !== undefined) updated.attachments = event.attachments;
+          if (event.skills !== undefined) updated.skills = event.skills;
           return updated;
         });
         break;

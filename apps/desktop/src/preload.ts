@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, type IpcRendererEvent } from "electron";
 
+import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
+
 import type {
   AgentRecord,
   ConversationSearchHit,
@@ -564,6 +566,13 @@ const api = {
       ipcRenderer.invoke("agent:queue-cancel", threadId, queueId),
     reorderQueuedTurns: (threadId: string, queueIds: string[]): Promise<boolean> =>
       ipcRenderer.invoke("agent:queue-reorder", threadId, queueIds),
+    // Edit a waiting row in place; position is kept. The new words come back on
+    // turn.queued-updated.
+    editQueuedTurn: (
+      threadId: string,
+      queueId: string,
+      patch: QueuedTurnEditPatch,
+    ): Promise<boolean> => ipcRenderer.invoke("agent:queue-edit", threadId, queueId, patch),
     // Deliver one queued row now with the settings it was queued with; the
     // row stays in the queue unless the provider takes it.
     sendQueuedTurnNow: (threadId: string, queueId: string): Promise<boolean> =>

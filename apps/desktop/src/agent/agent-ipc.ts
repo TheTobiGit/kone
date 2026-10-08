@@ -5,6 +5,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
+import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
 import {
   getConversationStore,
   projectRuntimeEventForIpc,
@@ -788,6 +789,14 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
     svc.reorderQueuedTurns(threadId, queueIds),
+  );
+  // Edit a waiting follow-up in place, keeping its position. The store rewrites
+  // the row and its hidden transcript block, and turn.queued-updated carries the
+  // new words so the queue strip restates the row where it sits.
+  ipcMain.handle(
+    "agent:queue-edit",
+    (_event, threadId: string, queueId: string, patch: QueuedTurnEditPatch) =>
+      svc.editQueuedTurn(threadId, queueId, patch),
   );
   // "Send now" on a queued row: steered into the live turn, sent as a turn
   // when idle, or moved to the front when the provider can't steer. A failed

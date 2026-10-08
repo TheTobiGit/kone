@@ -985,6 +985,7 @@ export type QueuedTurnStore = Pick<
   | "pendingQueueIds"
   | "queueBoundary"
   | "reorderQueuedTurns"
+  | "editQueuedTurn"
   | "latestUserBlockId"
   | "loadThread"
   | "recoverStaleClaims"
@@ -1962,6 +1963,12 @@ export type RuntimeEvent =
       attemptCount: number;
       retryAt?: number;
       error?: string;
+      /** Present when this update is an in-place EDIT rather than a lifecycle
+       *  move: the row's new words, so the queue strip restates it where it
+       *  sits. Absent for ordinary state changes. */
+      input?: string;
+      attachments?: ChatAttachment[];
+      skills?: SkillReference[];
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was

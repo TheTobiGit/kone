@@ -342,6 +342,21 @@ export type QueuedTurnEnqueueInput = {
   contextWindow?: string;
 };
 
+/** The fields an in-place edit may change on a waiting queued follow-up. The
+ *  content fields (input/attachments/skills) are always written; the picker
+ *  knobs only when present, so an edit can change the prompt without resetting
+ *  the model the message was queued with. */
+export type QueuedTurnEditPatch = {
+  input: string;
+  attachments?: ChatAttachment[];
+  skills?: SkillReference[];
+  model?: string | null;
+  mode?: string | null;
+  effort?: string | null;
+  serviceTier?: string | null;
+  contextWindow?: string | null;
+};
+
 /** A queued turn as read back from the store — the shape the service layer
  *  promotes (claim returns it) and the UI lists. */
 export type QueuedTurnRow = {
