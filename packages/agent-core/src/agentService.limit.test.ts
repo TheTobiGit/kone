@@ -199,6 +199,33 @@ describe("AgentService usage limits", () => {
     }
   });
 
+  test("clearing the limit clears a snooze-until-reset too", async () => {
+    LimitFakeAdapter.emits.length = 0;
+    const { service, history } = build();
+    try {
+      await service.startSession({ threadId: "t-snooze", provider: "codex", cwd: "/tmp" });
+      lastEmit()({
+        type: "turn.aborted",
+        threadId: "t-snooze",
+        provider: "codex",
+        at: Date.now(),
+        source: "kone.store",
+        turnId: "turn-1",
+        reason: "failed",
+        message: "429 usage limit",
+        limitResetAt: RESET,
+      });
+      service.setThreadSnooze("t-snooze", RESET);
+      expect(history.snoozedUntil.get("t-snooze")).toBe(RESET);
+      // A user send accepted by the adapter clears the limit, and the snooze
+      // that was waiting out the same limit goes with it.
+      await service.sendTurn({ threadId: "t-snooze", input: "try again" });
+      expect(history.snoozedUntil.get("t-snooze")).toBeNull();
+    } finally {
+      await service.stopAll();
+    }
+  });
+
   test("a non-limit failure does not mark the thread limited", async () => {
     LimitFakeAdapter.emits.length = 0;
     const { service, history, continuations } = build();
