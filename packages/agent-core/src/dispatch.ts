@@ -3,6 +3,7 @@ import { z } from "zod";
 import { detect, diffStatBetween, snapshotWorkingTree } from "@kone/git-core/status.js";
 import { GitError } from "@kone/git-core/core.js";
 import type { AgentService } from "./AgentService.js";
+import { LIMIT_RESUME_CONTINUATION_KIND } from "./AgentService.js";
 import { threadWorkingDir, threadWorkspaceState } from "./threadWorkspace.js";
 import type { ThreadWorkspace } from "./threadWorkspace.js";
 import { workingDirFor } from "./assistantWorkspace.js";
@@ -86,6 +87,10 @@ export class ContinuationCancelled extends Error {
     this.name = "ContinuationCancelled";
   }
 }
+
+/** The silent turn a usage-limit resume sends once the provider's reset lands
+ *  (or a manual resume). App-authored, so it is never journaled. */
+const LIMIT_RESUME_PROMPT = "Continue where you left off — the usage limit has reset.";
 
 /** Where a starting thread runs, and whether that place is its own worktree.
  *  `worktreePath` is null for a thread sharing the project's checkout. */
@@ -221,6 +226,9 @@ export interface ThreadDispatcher {
    *  session with resume first, then dispatches without journaling — the prompt
    *  is the app's own voice, not something the user said. */
   dispatchQuitResumeTurn(threadId: string, prompt: string): Promise<void>;
+  /** Manual resume of a thread waiting out a usage limit: clear the mark,
+   *  cancel its scheduled resume, and wake it now with the silent resume turn. */
+  resumeLimitedThread(threadId: string): Promise<void>;
   /** Claim the quit-resume record (if any) and dispatch one continuation per
    *  surviving thread, serialized with a fresh re-check before each. Best-effort:
    *  resuming never fails boot — every failure is contained per thread and
@@ -635,6 +643,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     );
   }
 
+  async resumeLimitedThread(threadId: string): Promise<void> {
+    // Clear first: the resume turn is accepted as new work anyway, and the
+    // queue must be free to drain once the session is up.
+    this.service.clearThreadLimited(threadId);
+    await this.dispatchQuitResumeTurn(threadId, LIMIT_RESUME_PROMPT);
+  }
+
   async resumeQuitInterruptedChatsAtBoot(): Promise<{
     resumed: string[];
     skipped: QuitResumeSkipped[];
@@ -794,6 +809,16 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private continuationDecision(
     row: ContinuationRecord,
   ): { cancel: QuitResumeSkipReason } | { prompt: string } {
+    if (row.kind === LIMIT_RESUME_CONTINUATION_KIND) {
+      const meta = this.store.threadMeta(row.threadId);
+      if (!meta) return { cancel: "thread-missing" };
+      if ((meta.archivedAt ?? null) !== null) return { cancel: "thread-archived" };
+      if ((meta.doneAt ?? 0) > 0) return { cancel: "thread-settled" };
+      // New work (or a manual resume) already cleared the limit: the scheduled
+      // resume is stale.
+      if ((meta.limitedAt ?? null) === null) return { cancel: "limit-cleared" };
+      return { prompt: LIMIT_RESUME_PROMPT };
+    }
     const payload = parseContinuationPayload(row.payloadJson);
     const reason = quitResumeSkipReason(
       this.readQuitResumeSnapshot(row.threadId),

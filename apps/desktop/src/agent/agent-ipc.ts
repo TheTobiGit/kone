@@ -368,6 +368,13 @@ export function registerAgentIpc(): void {
         return { ok: true, title: cleaned, previousTitle };
       },
     },
+    // Snooze and manual resume for the app_snooze_thread / app_resume_thread
+    // gateway tools.
+    snoozeControls: {
+      setSnooze: (threadId, until) => svc.setThreadSnooze(threadId, until),
+      snoozeUntilReset: (threadId) => svc.snoozeUntilResetFor(threadId),
+      resumeLimited: (threadId) => dispatcher.resumeLimitedThread(threadId),
+    },
     // And the provider surface the service already keeps warm, so a thread is
     // never started on a CLI this machine cannot run.
     threadAvailability: async () => {
@@ -1104,6 +1111,19 @@ export function registerAgentIpc(): void {
   // thread.done.updated the way archive/restore fan out.
   ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
     svc.setThreadDone(threadId, done),
+  );
+  // Snooze: hold a thread out of the inbox until a time (or until its usage
+  // limit resets), and clear it. Wake-early rules live in limitState.
+  ipcMain.handle("agent:set-snooze", (_event, threadId: string, until: number | null) =>
+    svc.setThreadSnooze(threadId, until),
+  );
+  ipcMain.handle("agent:snooze-until-reset", (_event, threadId: string) =>
+    svc.setThreadSnooze(threadId, svc.snoozeUntilResetFor(threadId)),
+  );
+  // Manual resume of a thread waiting out a usage limit: clear the mark and
+  // wake it now, cancelling its scheduled resume.
+  ipcMain.handle("agent:resume-limited", (_event, threadId: string) =>
+    dispatcher.resumeLimitedThread(threadId),
   );
   // Run the thread-retention sweep now instead of waiting for its timer. The
   // inbox asks for one when it opens, so quiet threads settle while someone

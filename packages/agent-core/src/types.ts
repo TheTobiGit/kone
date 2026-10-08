@@ -1761,6 +1761,19 @@ export type RuntimeEvent =
   // lists; `doneAt` is the stamp the store wrote (the cleared sentinel when
   // un-marked), so consumers agree with the row on when the mark landed.
   | (BaseEvent & { type: "thread.done.updated"; done: boolean; doneAt: number })
+  // A thread's usage-limit state changed: a turn failed on a provider limit
+  // (limited true) with the provider's reset when it gave one, or the mark was
+  // cleared by real new work or a manual resume (limited false). `limitResetAt`
+  // is null when the provider gave no reset — never guessed.
+  | (BaseEvent & {
+      type: "thread.limit.updated";
+      limited: boolean;
+      limitedAt: number | null;
+      limitResetAt: number | null;
+    })
+  // A thread's snooze changed: `snoozedUntil` is the deadline (null clears).
+  // Lists move the row out of / back into the inbox without a reload.
+  | (BaseEvent & { type: "thread.snooze.updated"; snoozedUntil: number | null })
   // The provider rerouted the request to a different model mid-session (Codex
   // `model/rerouted`, Claude safeguard refusals falling back to another model).
   // Consumers update the session's model label; `reason` is the provider's own

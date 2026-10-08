@@ -2265,6 +2265,50 @@ export const STOP_APP_THREAD_JSON_SCHEMA = {
   },
 } satisfies GatewayRecord;
 
+export const SnoozeAppThreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to snooze, as app_list_threads reports it."),
+  until: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable()
+    .optional()
+    .describe(
+      "A future epoch-millis time to wake at; null clears an existing snooze. Omit with untilReset to use the provider reset.",
+    ),
+  untilReset: z
+    .boolean()
+    .optional()
+    .describe("Snooze until this thread's usage-limit reset; no-op when it has no reset."),
+});
+
+export const SNOOZE_APP_THREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to snooze, as app_list_threads reports it."),
+    until: {
+      type: ["number", "null"],
+      description:
+        "A future epoch-millis time to wake at; null clears an existing snooze. Omit with untilReset to use the provider reset.",
+    },
+    untilReset: {
+      type: "boolean",
+      description: "Snooze until this thread's usage-limit reset; no-op when it has no reset.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const ResumeAppThreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to resume, as app_list_threads reports it."),
+});
+
+export const RESUME_APP_THREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to resume, as app_list_threads reports it."),
+  },
+} satisfies GatewayRecord;
+
 export const ArchiveAppThreadInputSchema = ThreadIdInputSchema.extend({
   threadId: threadIdField("The thread to archive or unarchive, as app_list_threads reports it."),
   archived: z

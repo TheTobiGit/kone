@@ -493,6 +493,20 @@ export type CheckpointStore = {
   pruneTurnCheckpoints(threadId: string, keep: number): TurnCheckpointRecord[];
 };
 
+/** The continuation surface the usage-limit path drives: schedule a resume at a
+ *  provider reset, and cancel a thread's scheduled work when real new work
+ *  lands. Narrow so tests can inject a fake. */
+export type ContinuationStore = {
+  scheduleContinuation(input: {
+    threadId: string;
+    kind: string;
+    dueAt: number;
+    payloadJson?: string | null;
+    createdAt?: number;
+  }): { continuationId: string } | null;
+  cancelContinuationsForThread(threadId: string): number;
+};
+
 export type ItemRow = {
   item_id: string;
   turn_id: string;

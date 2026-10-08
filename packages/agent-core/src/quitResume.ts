@@ -89,6 +89,7 @@ export type QuitResumeSkipReason =
   | "thread-archived"
   | "thread-settled"
   | "cancelled"
+  | "limit-cleared"
   | "turn-in-flight"
   | "turn-completed"
   | "dispatch-failed";
