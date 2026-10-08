@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1290,6 +1290,18 @@ function migration0032Continuations(db: DatabaseSync): void {
   `);
 }
 
+/** Usage-limit and snooze state on a thread (v33). `limited_at` marks a turn
+ *  that failed on a provider usage limit; `limit_reset_at` is the provider's
+ *  reset when it gave one (never invented — NULL when it did not).
+ *  `snoozed_until` is when a snooze expires, `snoozed_at` when it was set, so a
+ *  wake-early rule can tell a failure or completion that came after it. */
+function migration0033LimitAndSnooze(db: DatabaseSync): void {
+  addColumn(db, "threads", "limited_at", "INTEGER");
+  addColumn(db, "threads", "limit_reset_at", "INTEGER");
+  addColumn(db, "threads", "snoozed_until", "INTEGER");
+  addColumn(db, "threads", "snoozed_at", "INTEGER");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1323,6 +1335,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 30, name: "TitleOrigin", run: migration0030TitleOrigin },
   { id: 31, name: "ThreadPullRequest", run: migration0031ThreadPullRequest },
   { id: 32, name: "Continuations", run: migration0032Continuations },
+  { id: 33, name: "LimitAndSnooze", run: migration0033LimitAndSnooze },
 ];
 
 export interface MigrationOptions {
