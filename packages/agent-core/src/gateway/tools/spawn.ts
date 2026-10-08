@@ -536,7 +536,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
           new GatewayToolError("not_found", `No message "${args.blockId}" in ${name}.`),
         );
       }
-      const message = readMessageRow(block, maxTextChars, textOffset);
+      const message = readMessageRow(block, maxTextChars, textOffset, true);
       return {
         content: [
           { type: "text", text: `Message ${message.blockId} from ${name}:\n\n${renderMessageLine(message)}` },
@@ -557,13 +557,17 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
           new GatewayToolError("capability_denied", "Cursor paging is not available in this session."),
         );
       }
-      const page = input.store.loadThreadPage(args.threadId, { limit, cursor: args.cursor });
+      const page = input.store.loadThreadPage(args.threadId, {
+        limit,
+        cursor: args.cursor,
+        countBlocks: true,
+      });
       if (!page) {
         return gatewayToolErrorResult(
           new GatewayToolError("not_found", `No readable thread "${args.threadId}".`),
         );
       }
-      const messages = page.blocks.map((block) => readMessageRow(block, maxTextChars, textOffset));
+      const messages = page.blocks.map((block) => readMessageRow(block, maxTextChars, textOffset, true));
       const heading =
         messages.length === 0
           ? `${name} has no older messages.`
@@ -580,12 +584,16 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       };
     }
 
-    const blocks = thread.blocks.slice(-limit);
+    const page = input.store.loadThreadPage
+      ? input.store.loadThreadPage(args.threadId, { limit, countBlocks: true })
+      : null;
+    const blocks = page ? page.blocks : thread.blocks.slice(-limit);
     const messages = blocks.map((block) => readMessageRow(block, maxTextChars, textOffset));
     const oldest = blocks[0];
-    const hasMore = thread.blocks.length > messages.length;
-    const nextCursor =
-      hasMore && oldest
+    const hasMore = page ? page.hasMore : thread.blocks.length > messages.length;
+    const nextCursor = page
+      ? page.nextCursor
+      : hasMore && oldest
         ? encodeThreadPageCursor({
             threadId: thread.threadId,
             beforeAnchorAt: oldest.at,

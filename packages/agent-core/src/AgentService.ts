@@ -780,26 +780,57 @@ export class AgentService {
     options.readBackTool = this.gateway ? "app_read_thread" : null;
     if (!provider) return options;
     options.tokenCap = handoffTokenCapFor(provider);
-    const window = this.handoffWindowFor(provider, model, threadId);
+    const effectiveModel = this.effectiveReceivingModel(provider, model, threadId);
+    const window = this.handoffWindowFor(provider, effectiveModel, threadId);
     if (window) options.windowTokens = window;
     return options;
   }
 
-  /** The effective context window for a replay on `provider`: the model's
-   *  catalog capacity, preferring the auto-compact window the thread selected
-   *  when the model offers a choice. Undefined when the catalog is not warm —
-   *  the budget then falls back to its conservative default. */
+  /** The model the receiving session will actually run: the turn's requested
+   *  model when it survives validation, else the live session's, else the
+   *  thread's stored one, else the provider's own default (undefined). Budget
+   *  sizing must use this, not the raw request — a follow-up that omits the
+   *  model still runs on the session's, and its window is what matters. */
+  private effectiveReceivingModel(
+    provider: ProviderKind,
+    model: string | undefined,
+    threadId: string,
+  ): string | undefined {
+    const candidate =
+      model ??
+      this.sessionInputs.get(threadId)?.model ??
+      this.historyStore?.threadMeta(threadId)?.model;
+    return this.validModelFor(provider, candidate);
+  }
+
+  /** The effective context window for a replay on `provider`, in the order the
+   *  spec names: the auto-compact window the thread selected, then the model's
+   *  catalog capacity, then the provider's last reported window for the thread,
+   *  then undefined (the budget's conservative 128k default). */
   private handoffWindowFor(
     provider: ProviderKind,
     model: string | undefined,
     threadId: string,
   ): number | undefined {
     const descriptor = model ? this.catalogFor(provider)?.find((entry) => entry.id === model) : undefined;
-    const selected = this.historyStore?.threadMeta(threadId)?.selection?.contextWindow;
+    const meta = this.historyStore?.threadMeta(threadId);
+    const selected = meta?.selection?.contextWindow;
     const selectedTokens = selected
       ? descriptor?.contextWindows?.find((entry) => entry.id === selected)?.tokens
       : undefined;
-    return selectedTokens ?? descriptor?.contextWindowTokens;
+    return selectedTokens ?? descriptor?.contextWindowTokens ?? meta?.contextWindow;
+  }
+
+  /** The context window a replay on this thread would be sized from, for the
+   *  effective receiving model (the request's, else the session's, else the
+   *  stored one). Undefined means the budget's conservative default applies.
+   *  Exposed so the resolution can be exercised without a live turn. */
+  handoffWindowTokensFor(threadId: string, model?: string): number | undefined {
+    const provider =
+      this.routing.get(threadId) ?? this.historyStore?.threadMeta(threadId)?.provider;
+    if (!provider) return undefined;
+    const effective = this.effectiveReceivingModel(provider, model, threadId);
+    return this.handoffWindowFor(provider, effective, threadId);
   }
 
   // ── install maintenance ─────────────────────────────────────────────────────

@@ -231,5 +231,11 @@ describe("handInThread", () => {
     expect(preamble).not.toBeNull();
     const pending = store.pendingHandIn("t-omit");
     expect(pending?.omittedBlockIds?.length).toBeGreaterThan(0);
+
+    // Rebuilding with a larger budget (nothing omitted) clears the stale ids
+    // rather than leaving them to claim history that is now included.
+    store.recordHandInOmittedHistory("t-omit", [], []);
+    expect(store.pendingHandIn("t-omit")?.omittedBlockIds).toBeUndefined();
+    expect(store.pendingHandIn("t-omit")?.omittedItemIds).toBeUndefined();
   });
 });

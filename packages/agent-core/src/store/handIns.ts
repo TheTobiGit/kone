@@ -159,7 +159,6 @@ export class HandInsRepo {
     omittedBlockIds: readonly string[],
     omittedItemIds: readonly string[],
   ): void {
-    if (omittedBlockIds.length === 0 && omittedItemIds.length === 0) return;
     const db = this.dbh.handle();
     if (!db) return;
     try {
@@ -171,6 +170,8 @@ export class HandInsRepo {
               WHERE thread_id = ? AND bootstrap_status = 'pending'`,
           )
           .run(
+            // Replace, never merge: a rebuilt bootstrap with a larger budget
+            // must clear ids that are now included. NULL means none.
             omittedBlockIds.length > 0 ? JSON.stringify(omittedBlockIds) : null,
             omittedItemIds.length > 0 ? JSON.stringify(omittedItemIds) : null,
             threadId,

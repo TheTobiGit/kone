@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  CHARS_PER_TOKEN,
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffBudget,
+  handoffWindowTokens,
   historicalBlockText,
-  promptFitsWithoutHistory,
   renderHistorySelection,
   selectHistoricalBlocks,
   type HistorySelection,
@@ -255,23 +256,21 @@ function replayForTurn(
   budget: HandoffBudgetOptions,
 ): { preamble: string; omittedBlockIds: string[]; omittedItemIds: string[] } | null {
   const boundary = boundaryBlock(input, framing.instruction);
-  const transportAvailable = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
-  const prompt = {
-    windowTokens: budget.windowTokens,
-    nativeTokens: budget.nativeTokens,
-    promptChars: boundary.length,
-    attachments: budget.attachments,
-    transportCharCap: transportAvailable,
-  };
-  if (!promptFitsWithoutHistory(prompt)) throw new Error(framing.tooLong);
+  // Charge every mandatory character of the rendered context — the boundary
+  // plus the kind's intro, title, branch line and delimiters — before any
+  // history. The selector reserves the coverage line from what remains.
+  const fixedChars = mandatoryFramingChars(framing.intro, thread.title, thread.branch, boundary.length);
+  const transportAvailable = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - fixedChars - 64;
   const budgetTokens = handoffBudget({
     tokenCap: budget.tokenCap ?? DEFAULT_HANDOFF_TOKEN_CAP,
     windowTokens: budget.windowTokens,
     nativeTokens: budget.nativeTokens,
-    promptChars: boundary.length,
+    fixedChars,
     attachments: budget.attachments,
     transportCharCap: transportAvailable,
   });
+  // No room even for the framing: the kind's up-front refusal.
+  if (budgetTokens <= 0) throw new Error(framing.tooLong);
   const replay = buildForkReplayContext(thread, {
     budgetTokens,
     intro: framing.intro,
@@ -280,7 +279,12 @@ function replayForTurn(
   });
   if (!replay) return null;
   const preamble = assembleSidechatPreamble(replay.context, input, framing.instruction);
-  if (preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS) {
+  const window = handoffWindowTokens({ reportedWindowTokens: budget.windowTokens });
+  const native = budget.nativeTokens != null && budget.nativeTokens > 0 ? budget.nativeTokens : 0;
+  if (
+    preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS ||
+    Math.ceil(preamble.length / CHARS_PER_TOKEN) > window - native
+  ) {
     throw new Error(framing.tooLong);
   }
   return {
@@ -288,6 +292,24 @@ function replayForTurn(
     omittedBlockIds: replay.omittedBlockIds,
     omittedItemIds: replay.omittedItemIds,
   };
+}
+
+/** The mandatory characters of a replay's rendered context, before any selected
+ *  message: the kind's intro, its title and branch lines, the
+ *  `<sidechat_context>` delimiters, and the boundary block (the instruction and
+ *  the user's message). The coverage line is reserved separately by the
+ *  selector, from the budget that remains after this. */
+function mandatoryFramingChars(
+  intro: string,
+  title: string | null | undefined,
+  branch: string | null | undefined,
+  boundaryLength: number,
+): number {
+  const lines = [intro];
+  if (title) lines.push(`Original conversation title: ${title}`);
+  if (branch) lines.push(`Git branch: ${branch}`);
+  const wrapper = "<sidechat_context>\n\n</sidechat_context>\n\n";
+  return lines.join("\n\n").length + wrapper.length + boundaryLength + 8;
 }
 
 /** The one-shot replay handed to a session born from a hand-in: the thread's

@@ -41,7 +41,7 @@ export interface SpawnToolStore {
   loadThread(threadId: string): StoredThread | null;
   /** Windowed read for paging older messages (agent_read's cursor). A store
    *  without it refuses cursor reads rather than paging the whole thread. */
-  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string }): StoredThreadPage | null;
+  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean }): StoredThreadPage | null;
   /** Every preset sub-agent, so a spawn can be cut from one by name. */
   listSubagentPresets(): SubagentPresetRecord[];
   /** One preset by id — tried before the name scan, since an id is exact. */

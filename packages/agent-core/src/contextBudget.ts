@@ -91,59 +91,40 @@ export function handoffWindowTokens(input: {
 }
 
 /**
- * The token budget available to imported history for one replay.
+ * The token budget available to selected history for one replay.
  *
- * `promptChars` is the whole new-prompt block (the boundary wrapper plus the
- * user's message) as it will be delivered; `transportCharCap` is how much of
- * the send-turn ceiling is left for history after that block. The result is
- * clamped to zero — a caller that needs to know whether even zero history
- * fits should compare `window - native - promptTokens` itself, or read the
- * `fitsWithoutHistory` helper below.
+ * `fixedChars` is every mandatory character of the rendered context — the
+ * boundary wrapper and the user's message, plus the kind's intro, title,
+ * branch line and `<sidechat_context>` delimiters. It is charged against the
+ * total budget (the provider cap, the transport ceiling, and the window after
+ * native usage and headroom), so framing that cannot fit leaves zero for
+ * history and the caller refuses. The coverage line is reserved separately by
+ * the selector, from what remains.
  */
 export function handoffBudget(input: {
   readonly tokenCap: number;
   readonly windowTokens?: number | null | undefined;
   readonly nativeTokens?: number | null | undefined;
-  readonly promptChars: number;
+  readonly fixedChars: number;
   readonly attachments?: readonly ChatAttachment[] | undefined;
   readonly transportCharCap: number;
 }): number {
   const window = handoffWindowTokens({ reportedWindowTokens: input.windowTokens });
   const native = input.nativeTokens != null && input.nativeTokens > 0 ? input.nativeTokens : 0;
-  const promptTokens =
-    Math.ceil(Math.max(0, input.promptChars) / CHARS_PER_TOKEN) +
-    attachmentTokenAllowance(input.attachments ?? []);
   const headroom = Math.max(
     HANDOFF_HEADROOM_MIN_TOKENS,
     Math.ceil(window / HANDOFF_HEADROOM_FRACTION),
   );
   const transportTokens = Math.floor(Math.max(0, input.transportCharCap) / CHARS_PER_TOKEN);
-  return Math.max(
-    0,
-    Math.min(
-      clampHandoffTokenCap(input.tokenCap),
-      transportTokens,
-      window - native - promptTokens - headroom,
-    ),
+  const total = Math.min(
+    clampHandoffTokenCap(input.tokenCap),
+    transportTokens,
+    window - native - headroom,
   );
-}
-
-/** Whether the new prompt can fit the target window at all, before any
- *  history is added — the "cannot fit even with zero history" test. */
-export function promptFitsWithoutHistory(input: {
-  readonly windowTokens?: number | null | undefined;
-  readonly nativeTokens?: number | null | undefined;
-  readonly promptChars: number;
-  readonly attachments?: readonly ChatAttachment[] | undefined;
-  readonly transportCharCap: number;
-}): boolean {
-  if (input.transportCharCap <= 0) return false;
-  const window = handoffWindowTokens({ reportedWindowTokens: input.windowTokens });
-  const native = input.nativeTokens != null && input.nativeTokens > 0 ? input.nativeTokens : 0;
-  const promptTokens =
-    Math.ceil(Math.max(0, input.promptChars) / CHARS_PER_TOKEN) +
+  const fixedTokens =
+    Math.ceil(Math.max(0, input.fixedChars) / CHARS_PER_TOKEN) +
     attachmentTokenAllowance(input.attachments ?? []);
-  return promptTokens <= window - native;
+  return Math.max(0, total - fixedTokens);
 }
 
 /** What one already-rendered message costs against the budget. */
@@ -250,9 +231,14 @@ export function historicalBlockText(block: StoredBlock): string | null {
       const name = (item.name ?? "").trim() || "tool";
       const summary = item.text.trim();
       const outcome = commandOutcome(item.detail);
-      const failed = item.status === "failed" ? " (failed)" : "";
+      const failed = item.status === "failed";
       const suffix = outcome ? ` — ${outcome}` : "";
-      lines.push(summary ? `[Tool] ${name}: ${summary}${suffix}${failed}` : `[Tool] ${name}${suffix}${failed}`);
+      const line = summary ? `[Tool] ${name}: ${summary}${suffix}` : `[Tool] ${name}${suffix}`;
+      // A failed tool's own diagnostic is part of the message and is kept
+      // whole, so the receiving agent sees why it failed; the message is
+      // dropped whole (with its ids) if it does not fit.
+      const diagnostic = failed && item.detail?.trim() ? `\n${item.detail.trim()}` : "";
+      lines.push(`${line}${failed ? " (failed)" : ""}${diagnostic}`);
       continue;
     }
     // reasoning_text: deliberately not replayed.

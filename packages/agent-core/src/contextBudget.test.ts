@@ -15,7 +15,6 @@ import {
   handoffBudget,
   handoffWindowTokens,
   historicalBlockText,
-  promptFitsWithoutHistory,
   renderHistorySelection,
   selectHistoricalBlocks,
 } from "./contextBudget.js";
@@ -76,16 +75,16 @@ describe("handoffWindowTokens", () => {
 });
 
 describe("handoffBudget", () => {
-  test("subtracts native usage, the prompt, attachments and headroom from the window", () => {
+  test("charges native usage, fixed framing and headroom against the window", () => {
     const window = 80_000;
-    const promptChars = 4_000; // 1k tokens
+    const fixedChars = 4_000; // 1k tokens
     const headroom = Math.max(16_000, Math.ceil(window / 4)); // 20k
-    const expected = window - 10_000 - (promptChars / CHARS_PER_TOKEN) - headroom;
+    const expected = window - 10_000 - (fixedChars / CHARS_PER_TOKEN) - headroom;
     const budget = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: window,
       nativeTokens: 10_000,
-      promptChars,
+      fixedChars,
       transportCharCap: 1_000_000,
     });
     expect(budget).toBe(expected);
@@ -95,7 +94,7 @@ describe("handoffBudget", () => {
     const budget = handoffBudget({
       tokenCap: DEFAULT_HANDOFF_TOKEN_CAP,
       windowTokens: 1_000_000,
-      promptChars: 0,
+      fixedChars: 0,
       transportCharCap: 1_000_000,
     });
     expect(budget).toBe(DEFAULT_HANDOFF_TOKEN_CAP);
@@ -105,7 +104,7 @@ describe("handoffBudget", () => {
     const budget = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: 1_000_000,
-      promptChars: 0,
+      fixedChars: 0,
       transportCharCap: 40_000,
     });
     expect(budget).toBe(10_000);
@@ -116,14 +115,14 @@ describe("handoffBudget", () => {
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: 200_000,
       nativeTokens: 190_000,
-      promptChars: 100,
+      fixedChars: 100,
       transportCharCap: 1_000_000,
     });
     const withImage = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: 200_000,
       nativeTokens: 190_000,
-      promptChars: 100,
+      fixedChars: 100,
       attachments: [image()],
       transportCharCap: 1_000_000,
     });
@@ -136,24 +135,35 @@ describe("handoffBudget", () => {
     // window still yields the cap rather than an under-sized budget.
     const budget = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
-      promptChars: 0,
+      fixedChars: 0,
       transportCharCap: 1_000_000,
     });
     expect(budget).toBe(MAX_HANDOFF_TOKEN_CAP);
   });
-});
 
-describe("promptFitsWithoutHistory", () => {
-  test("refuses a prompt that cannot fit the window even with no history", () => {
-    expect(
-      promptFitsWithoutHistory({ windowTokens: 8_000, promptChars: 40_000, transportCharCap: 1_000_000 }),
-    ).toBe(false);
-    expect(
-      promptFitsWithoutHistory({ windowTokens: 200_000, promptChars: 4_000, transportCharCap: 1_000_000 }),
-    ).toBe(true);
-    expect(
-      promptFitsWithoutHistory({ windowTokens: 200_000, promptChars: 4_000, transportCharCap: 0 }),
-    ).toBe(false);
+  test("mandatory framing that exceeds the cap leaves no history", () => {
+    // A 10k-character title plus the rest of the framing is ~2.5k tokens,
+    // over a 1,024-token cap: nothing is left for history.
+    const budget = handoffBudget({
+      tokenCap: 1_024,
+      windowTokens: 128_000,
+      fixedChars: 10_000,
+      transportCharCap: 1_000_000,
+    });
+    expect(budget).toBe(0);
+  });
+
+  test("an exact-boundary window leaves no room for history", () => {
+    // The window is exactly the framing's tokens, so headroom alone makes the
+    // total negative: no history can be selected.
+    const window = 20_000;
+    const budget = handoffBudget({
+      tokenCap: MAX_HANDOFF_TOKEN_CAP,
+      windowTokens: window,
+      fixedChars: window * CHARS_PER_TOKEN,
+      transportCharCap: 1_000_000,
+    });
+    expect(budget).toBe(0);
   });
 });
 
@@ -188,6 +198,24 @@ describe("historicalBlockText", () => {
     expect(text).toContain("[Plan]\n- [completed] Migrate");
     expect(text).toContain("[Tool] bash: npx prisma migrate dev — exit code 0");
     expect(text).toContain("[Tool] bash: bun test — exit code 1 (failed)");
+  });
+
+  test("carries a failed tool's own diagnostic", () => {
+    const text = historicalBlockText(
+      assistant([
+        {
+          itemId: "c1",
+          kind: "tool_call",
+          status: "failed",
+          name: "bash",
+          text: "bun test",
+          detail: "TypeError: broken\nexit code: 1",
+        },
+      ]),
+    );
+    expect(text).toContain("TypeError: broken");
+    expect(text).toContain("exit code 1");
+    expect(text).toContain("(failed)");
   });
 
   test("marks a failed turn and carries its error", () => {

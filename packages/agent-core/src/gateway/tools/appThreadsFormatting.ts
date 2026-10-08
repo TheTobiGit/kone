@@ -6,6 +6,7 @@
 
 import { ago, compact } from "../helpers.js";
 import type { GatewayRecord } from "../schemas.js";
+import { historicalBlockText } from "../../contextBudget.js";
 import type { StoredBlock, StoredThreadMeta, ThreadStatus } from "../../types.js";
 import type { ProjectRosterEntry } from "./appProjects.js";
 
@@ -45,25 +46,38 @@ export type ReadMessageRow = {
   at: string | null;
   text: string;
   itemIds?: string[];
-  nextTextOffset?: number;
+  /** Where the next slice begins, or null when this slice reached the end. */
+  nextTextOffset: number | null;
 };
 
 /** One block as a structured read row: its id (so a caller can address it
  *  again), its role and timestamp, and its text — whole, or a slice from
  *  `offset` when it is oversized, in which case `nextTextOffset` says where to
- *  resume. Assistant rows also carry their item ids. */
-export function readMessageRow(block: StoredBlock, maxChars: number, offset: number): ReadMessageRow {
-  const slice = sliceBlockText(blockText(block), offset, maxChars);
+ *  resume (null at the end). Assistant rows also carry their item ids.
+ *
+ *  `rich` selects the content: the default prose narrative, or the historical
+ *  representation (contextBudget.historicalBlockText) that also carries
+ *  commands, plans and a failed/interrupted turn's partial work. An addressed
+ *  or paged read uses the rich form so an omitted tool-only or failed block
+ *  can actually be recovered. */
+export function readMessageRow(
+  block: StoredBlock,
+  maxChars: number,
+  offset: number,
+  rich = false,
+): ReadMessageRow {
+  const source = rich ? (historicalBlockText(block) ?? "") : blockText(block);
+  const slice = sliceBlockText(source, offset, maxChars);
   const row: ReadMessageRow = {
     blockId: block.id,
     role: block.role,
     at: iso(block.at),
     text: slice.text,
+    nextTextOffset: slice.nextTextOffset,
   };
   if (block.role === "assistant" && block.items.length > 0) {
     row.itemIds = block.items.map((item) => item.itemId);
   }
-  if (slice.nextTextOffset !== null) row.nextTextOffset = slice.nextTextOffset;
   return row;
 }
 
@@ -71,7 +85,7 @@ export function readMessageRow(block: StoredBlock, maxChars: number, offset: num
  *  address the message again or pull the rest of it. */
 export function renderMessageLine(message: ReadMessageRow): string {
   const next =
-    message.nextTextOffset === undefined
+    message.nextTextOffset === null
       ? ""
       : `\n...[truncated] (continues at textOffset ${message.nextTextOffset})`;
   const text = message.text.trim();

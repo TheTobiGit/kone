@@ -828,7 +828,6 @@ export class LineageRepo {
     omittedBlockIds: readonly string[],
     omittedItemIds: readonly string[],
   ): void {
-    if (omittedBlockIds.length === 0 && omittedItemIds.length === 0) return;
     const db = this.dbh.handle();
     if (!db) return;
     try {
@@ -838,8 +837,13 @@ export class LineageRepo {
         .get(threadId) as { fork_context_json: string | null } | undefined;
       const ctx = parseJsonObject<ForkContext>(row?.fork_context_json ?? null);
       if (!ctx || ctx.bootstrapStatus !== "pending") return;
+      // Replace, never merge: a rebuilt bootstrap with a larger budget must
+      // clear ids that are now included, or the note would lie about what was
+      // omitted. Empty means delete, so a fully-fitted replay carries none.
       if (omittedBlockIds.length > 0) ctx.omittedBlockIds = [...omittedBlockIds];
+      else delete ctx.omittedBlockIds;
       if (omittedItemIds.length > 0) ctx.omittedItemIds = [...omittedItemIds];
+      else delete ctx.omittedItemIds;
       db.prepare(`UPDATE threads SET fork_context_json = ? WHERE thread_id = ?`).run(
         JSON.stringify(ctx),
         threadId,
