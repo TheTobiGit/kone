@@ -853,11 +853,16 @@ export function registerAgentIpc(): void {
   // `history-thread` only if paging comes back empty), so a full-thread
   // reconstruction here would be built and thrown away on every project open.
   ipcMain.handle("agent:history-latest", (_event, projectPath: string) => {
-    return store.latestThreadMeta(projectPath);
+    const meta = store.latestThreadMeta(projectPath);
+    // The renderer's inbox list reads the computed snooze alongside the raw
+    // deadline from the same payload.
+    return meta ? { ...meta, ...dispatcher.threadSnoozeState(meta.threadId) } : null;
   });
   ipcMain.handle("agent:history-thread", (_event, threadId: string) => {
     const thread = store.loadThread(threadId);
-    return thread ? projectStoredThreadForIpc(thread) : null;
+    return thread
+      ? { ...projectStoredThreadForIpc(thread), ...dispatcher.threadSnoozeState(thread.threadId) }
+      : null;
   });
   // Settled compaction boundaries for a thread, oldest first — the timeline's
   // "when/where compacted" markers. Few rows ever (one per boundary event),

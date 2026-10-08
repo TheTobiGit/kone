@@ -24,6 +24,7 @@ import {
   type RestartCancelledBackgroundWork,
 } from "./restartBackgroundNote.js";
 import type { ContinuationRecord } from "./store/continuations.js";
+import { isSnoozed } from "./limitState.js";
 import { renderSenderHeader, threadAgentName } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
 import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
@@ -77,6 +78,9 @@ const QUIT_RESUME_CONTINUATION_KIND = "quit-resume";
  *  attempts it gets before being dropped rather than retried forever. */
 const CONTINUATION_RETRY_BACKOFF_MS = 60_000;
 const MAX_CONTINUATION_ATTEMPTS = 5;
+
+/** Whether a thread is snoozed right now, and until when. */
+export type ThreadSnoozeState = { snoozed: boolean; snoozedUntil: number | null };
 
 /** Thrown when a continuation was cancelled (settled, archived, superseded or
  *  deleted) after its claim but before the handoff to the provider. The sweep
@@ -239,6 +243,9 @@ export interface ThreadDispatcher {
   dispatchDueContinuations(): Promise<{ resumed: string[]; skipped: QuitResumeSkipped[] }>;
   /** Stage one thread's restart-background note (the boot capture's reader). */
   stageRestartBackgroundNote(threadId: string, work: RestartCancelledBackgroundWork[]): void;
+  /** Whether a thread is snoozed right now, for the renderer's thread payload:
+   *  the computed boolean plus the raw deadline. */
+  threadSnoozeState(threadId: string): ThreadSnoozeState;
   /** Stage the restart-background notes captured at the boot seal: one note per
    *  thread that had live background work when the last process died. The note
    *  rides the thread's NEXT turn and never starts one, so a settled thread is
@@ -725,6 +732,33 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  turn and is consumed when a provider accepts it. */
   stageRestartBackgroundNote(threadId: string, work: RestartCancelledBackgroundWork[]): void {
     this.threadsNeedingRestartNote.set(threadId, work);
+  }
+
+  /** Whether a thread is snoozed right now, from the snooze and the wake-early
+   *  rules, for the renderer's thread payload. */
+  threadSnoozeState(threadId: string): ThreadSnoozeState {
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) return { snoozed: false, snoozedUntil: null };
+    const snapshot = this.readQuitResumeSnapshot(threadId);
+    const latestTurn = snapshot.turns.at(-1) ?? null;
+    const parked = this.service.pendingInteractions().some((ask) => ask.threadId === threadId);
+    const snoozed = isSnoozed(
+      {
+        snoozedUntil: meta.snoozedUntil ?? null,
+        snoozedAt: meta.snoozedAt ?? null,
+        parked,
+        latest:
+          latestTurn === null
+            ? null
+            : {
+                state: latestTurn.state,
+                at: latestTurn.endedAt ?? latestTurn.at,
+                limit: (meta.limitedAt ?? null) !== null,
+              },
+      },
+      Date.now(),
+    );
+    return { snoozed, snoozedUntil: meta.snoozedUntil ?? null };
   }
 
   /** Dispatch every continuation due now, then arm a timer for the next one.
