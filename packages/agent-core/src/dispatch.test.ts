@@ -120,7 +120,11 @@ beforeAll(async () => {
  *  with the thread already registered and its session up. */
 /** What the injected provisioner was asked for. The real one runs git; here the
  *  point is the ordering around it, not the checkout. */
-const provisioned: Array<{ projectPath: string; branch?: string; base?: string }> = [];
+/** A recorded provision request: the arguments that matter, without its
+ *  onProgress callback. */
+type ProvisionRecord = { projectPath: string; branch?: string; base?: string };
+
+const provisioned: Array<ProvisionRecord> = [];
 let provisionFails = false;
 /** Override what the fake provisioner reports about the branch it built. Absent
  *  means derived: a build with no requested branch reports a generated one, a
@@ -233,12 +237,12 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
     provisionWorkspace: async (request) => {
       // Record the request without its onProgress callback, so expectations
       // read as the arguments that matter.
-      const recorded: { projectPath: string; branch?: string; base?: string } = {
+      const recorded: ProvisionRecord = {
         projectPath: request.projectPath,
       };
       if (request.branch !== undefined) recorded.branch = request.branch;
       if (request.base !== undefined) recorded.base = request.base;
-      provisionHadProgress = typeof request.onProgress === "function";
+      provisionHadProgress = request.onProgress !== undefined;
       provisioned.push(recorded);
       if (provisionGate) await provisionGate;
       if (provisionFails) throw new Error("git said no");
