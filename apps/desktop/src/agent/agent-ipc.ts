@@ -4,6 +4,7 @@ import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
+import { handoffTokenCapFor } from "@kone/agent-core/providerSettings.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
 import {
   getConversationStore,
@@ -613,6 +614,18 @@ export function registerAgentIpc(): void {
     "agent:set-settings",
     (_event, provider: ProviderKind, config: ProviderConfig) =>
       svc.setProviderSettings(provider, config),
+  );
+
+  // The handoff history cap is part of provider settings, but its own getter
+  // and setter so a settings surface can read/write just the number without
+  // round-tripping the whole provider config. The setter merges, preserving
+  // every other field.
+  ipcMain.handle("agent:get-handoff-budget", (_event, provider: ProviderKind) =>
+    handoffTokenCapFor(provider, svc.getProviderSettings()),
+  );
+  ipcMain.handle(
+    "agent:set-handoff-budget",
+    (_event, provider: ProviderKind, cap: number) => svc.setProviderHandoffTokenCap(provider, cap),
   );
 
   // Install maintenance: how each CLI was installed, and whether it's behind.

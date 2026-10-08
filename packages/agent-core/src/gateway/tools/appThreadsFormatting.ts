@@ -25,6 +25,59 @@ export function truncateTo(text: string, maxChars: number): string {
   return `${text.slice(0, budget).trimEnd()}${TRUNCATION_MARKER}`;
 }
 
+/** A message's text from `offset`, capped at `maxChars`, plus where to resume
+ *  (null when the slice reached the end). Lets a reader pull an oversized
+ *  message in pieces: pass the returned `nextTextOffset` back as `textOffset`. */
+export function sliceBlockText(text: string, offset: number, maxChars: number) {
+  const start = Math.max(0, Math.min(offset, text.length));
+  const end = Math.min(text.length, start + Math.max(0, maxChars));
+  return {
+    text: text.slice(start, end),
+    nextTextOffset: end < text.length ? end : null,
+  };
+}
+
+/** One message as a history read returns it. Concrete fields rather than a
+ *  loose record so the prose renderer and the structured output agree. */
+export type ReadMessageRow = {
+  blockId: string;
+  role: "user" | "assistant";
+  at: string | null;
+  text: string;
+  itemIds?: string[];
+  nextTextOffset?: number;
+};
+
+/** One block as a structured read row: its id (so a caller can address it
+ *  again), its role and timestamp, and its text — whole, or a slice from
+ *  `offset` when it is oversized, in which case `nextTextOffset` says where to
+ *  resume. Assistant rows also carry their item ids. */
+export function readMessageRow(block: StoredBlock, maxChars: number, offset: number): ReadMessageRow {
+  const slice = sliceBlockText(blockText(block), offset, maxChars);
+  const row: ReadMessageRow = {
+    blockId: block.id,
+    role: block.role,
+    at: iso(block.at),
+    text: slice.text,
+  };
+  if (block.role === "assistant" && block.items.length > 0) {
+    row.itemIds = block.items.map((item) => item.itemId);
+  }
+  if (slice.nextTextOffset !== null) row.nextTextOffset = slice.nextTextOffset;
+  return row;
+}
+
+/** One read row as prose, with the id and the resume offset a reader needs to
+ *  address the message again or pull the rest of it. */
+export function renderMessageLine(message: ReadMessageRow): string {
+  const next =
+    message.nextTextOffset === undefined
+      ? ""
+      : `\n...[truncated] (continues at textOffset ${message.nextTextOffset})`;
+  const text = message.text.trim();
+  return `[${message.role}] [${message.blockId}] ${text || "(no text - tool calls only)"}${next}`;
+}
+
 /** A block's model-readable narrative: the prompt for user blocks, the ordered
  *  assistant text for assistant blocks. Tool calls stay out — the thread's raw
  *  tool traffic belongs to the thread, and a reader asking what was said is not

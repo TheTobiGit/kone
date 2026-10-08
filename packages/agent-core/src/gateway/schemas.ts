@@ -380,6 +380,15 @@ export const ReadResponseInputSchema = z.object({
    *  read for final and response (default 48000); truncated with a visible
    *  marker. */
   maxTextChars: z.number().int().min(200).optional(),
+  /** Transcript only: read one message by its blockId, whole (or a slice from
+   *  textOffset). */
+  blockId: z.string().min(1).optional(),
+  /** Transcript only: continue older messages from a previous reply's
+   *  nextCursor. */
+  cursor: z.string().min(1).optional(),
+  /** Transcript only: start this many characters into the message text (for
+   *  an oversized message). */
+  textOffset: z.number().int().min(0).optional(),
 });
 
 export const ContinueThreadInputSchema = z.object({
@@ -575,6 +584,18 @@ export const READ_RESPONSE_JSON_SCHEMA = {
     maxTextChars: {
       type: "integer",
       description: "Text cap: per message for transcript (default 1500), on the whole read for final and response (default 48000).",
+    },
+    blockId: {
+      type: "string",
+      description: "transcript only: read one message by its blockId, whole (or a slice from textOffset).",
+    },
+    cursor: {
+      type: "string",
+      description: "transcript only: continue older messages from a previous reply's nextCursor.",
+    },
+    textOffset: {
+      type: "integer",
+      description: "transcript only: start this many characters into the message text (for an oversized message).",
     },
   },
   required: ["threadId"],
@@ -2102,6 +2123,24 @@ export const ReadAppThreadInputSchema = z.object({
     .max(20_000)
     .optional()
     .describe("Truncate each message to this many characters (default 1500)."),
+  blockId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Read one message by its blockId, whole (or a slice from textOffset). Use it for a message a handoff omitted.",
+    ),
+  cursor: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Continue older messages from a previous reply's nextCursor."),
+  textOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Start this many characters into the message text (for an oversized message)."),
 });
 
 export const READ_APP_THREAD_JSON_SCHEMA = {
@@ -2115,6 +2154,16 @@ export const READ_APP_THREAD_JSON_SCHEMA = {
     maxTextChars: {
       type: "integer",
       description: "Truncate each message to this many characters (default 1500).",
+    },
+    blockId: {
+      type: "string",
+      description:
+        "Read one message by its blockId, whole (or a slice from textOffset). Use it for a message a handoff omitted.",
+    },
+    cursor: { type: "string", description: "Continue older messages from a previous reply's nextCursor." },
+    textOffset: {
+      type: "integer",
+      description: "Start this many characters into the message text (for an oversized message).",
     },
   },
   required: ["threadId"],

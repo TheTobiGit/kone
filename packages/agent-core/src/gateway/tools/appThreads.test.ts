@@ -771,6 +771,88 @@ describe("app_read_thread", () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("not_found");
   });
+
+  it("reads one message by id, whole, with its block and item ids", async () => {
+    const result = await tools().call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-2",
+      maxTextChars: 100,
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = result.structuredContent?.messages as GatewayRecord[];
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.blockId).toBe("a-2");
+    expect(messages[0]?.text).toBe("Done — two tools and a mirror.");
+    expect(Array.isArray(messages[0]?.itemIds)).toBe(true);
+  });
+
+  it("refuses an unknown block id", async () => {
+    const result = await tools().call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "nope",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
+  });
+
+  it("slices an oversized message from textOffset and reports where to resume", async () => {
+    const long = "x".repeat(250);
+    const store = makeStore({
+      loadThread: () => ({ ...TRANSCRIPT, blocks: [block("user", long, 1)] }),
+    });
+    const read = async (textOffset?: number) => {
+      const params: GatewayRecord = { threadId: "t-newest", blockId: "u-1", maxTextChars: 100 };
+      if (textOffset !== undefined) params.textOffset = textOffset;
+      const result = await tools({ store }).call(makeCtx(), "app_read_thread", params);
+      // SAFETY: the read handler always writes `messages` as an array of records.
+      const messages = (result.structuredContent?.messages ?? []) as GatewayRecord[];
+      return messages[0]!;
+    };
+
+    const first = await read();
+    expect(first.text).toBe("x".repeat(100));
+    expect(first.nextTextOffset).toBe(100);
+    const second = await read(100);
+    expect(second.text).toBe("x".repeat(100));
+    expect(second.nextTextOffset).toBe(200);
+    const third = await read(200);
+    expect(third.text).toBe("x".repeat(50));
+    expect(third.nextTextOffset).toBeUndefined();
+  });
+
+  it("pages older messages through a cursor", async () => {
+    const store = makeStore({
+      loadThreadPage: (threadId) => ({
+        threadId,
+        meta: thread({ threadId }),
+        blocks: [block("user", "older one", 0)],
+        nextCursor: null,
+        hasMore: false,
+      }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      cursor: "from-a-previous-reply",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = result.structuredContent?.messages as GatewayRecord[];
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.text).toBe("older one");
+    expect(result.structuredContent?.hasMore).toBe(false);
+  });
+
+  it("reports hasMore and a nextCursor when older messages exist", async () => {
+    const result = await tools().call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      limit: 1,
+    });
+
+    expect(result.structuredContent?.hasMore).toBe(true);
+    expect(result.structuredContent?.nextCursor).toEqual(expect.any(String));
+  });
 });
 
 describe("app_start_thread", () => {

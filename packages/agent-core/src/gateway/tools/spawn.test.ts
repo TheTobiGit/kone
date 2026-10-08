@@ -10,6 +10,7 @@ import type {
   SubagentPresetRecord,
 } from "../../ConversationStore.js";
 import type { GatewayToolContext, ToolEntry } from "../schemas.js";
+import { decodeThreadPageCursor, encodeThreadPageCursor, type StoredThreadPage } from "../../conversationStoreTypes.js";
 import {
   ANSWER_CHILD_INPUT_JSON_SCHEMA,
   CANCEL_WORKER_JSON_SCHEMA,
@@ -135,6 +136,7 @@ mock.module("../../threadSpawn.js", () => ({
 
 type SpawnToolStore = {
   loadThread(threadId: string): StoredThread | null;
+  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string }): StoredThreadPage | null;
   listSubagentPresets(): SubagentPresetRecord[];
   getSubagentPreset(presetId: string): SubagentPresetRecord | null;
   listNativeSubagentConfigs(): NativeSubagentConfig[];
@@ -189,6 +191,36 @@ function makeStore(
   const presetById = new Map(presets.map((p) => [p.presetId, p]));
   return {
     loadThread: (threadId) => byId.get(threadId) ?? null,
+    loadThreadPage: (threadId, options) => {
+      const thread = byId.get(threadId);
+      if (!thread) return null;
+      const limit = Math.max(1, options?.limit ?? 20);
+      let end = thread.blocks.length;
+      if (options?.cursor) {
+        const decoded = decodeThreadPageCursor(options.cursor);
+        if (decoded && decoded.threadId === threadId) {
+          const at = thread.blocks.findIndex((block) => block.id === decoded.beforeBlockId);
+          if (at >= 0) end = at;
+        }
+      }
+      const start = Math.max(0, end - limit);
+      const blocks = thread.blocks.slice(start, end);
+      const oldest = blocks[0];
+      return {
+        threadId,
+        meta: thread,
+        blocks,
+        nextCursor:
+          start > 0 && oldest
+            ? encodeThreadPageCursor({
+                threadId,
+                beforeAnchorAt: oldest.at,
+                beforeBlockId: oldest.id,
+              })
+            : null,
+        hasMore: start > 0,
+      };
+    },
     listSubagentPresets: () => presets,
     getSubagentPreset: (presetId) => presetById.get(presetId) ?? null,
     listNativeSubagentConfigs: () => nativeConfigs,
@@ -1148,12 +1180,13 @@ describe("spawn gateway tools", () => {
       sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
         ? sc.messages
         : [];
-    expect(messages[0]).toEqual({ role: "user", text: "second" });
+    expect(messages[0]).toMatchObject({ blockId: "b3", role: "user", text: "second" });
     expect(messages[1].role).toBe("assistant");
-    // Truncated with the visible marker, under the cap, tail intact.
-    expect(messages[1].text).toContain("…[truncated]");
+    // Sliced to the cap with a resume offset; the prose carries the marker.
     expect(messages[1].text.length).toBeLessThanOrEqual(200);
+    expect(messages[1].nextTextOffset).toBe(200);
     expect(messages[1].text.startsWith(longAnswer.slice(0, 20))).toBe(true);
+    expect(res.content[0]?.text ?? "").toContain("[truncated]");
     // The tool payload stayed out of the read.
     expect(JSON.stringify(res.structuredContent)).not.toContain("SECRET_PAYLOAD_DO_NOT_LEAK");
   });
@@ -1183,8 +1216,8 @@ describe("spawn gateway tools", () => {
         ? sc.messages
         : [];
     expect(messages).toHaveLength(20);
-    expect(messages[0]).toEqual({ role: "user", text: "message 5" });
-    expect(messages[19]).toEqual({ role: "user", text: "message 24" });
+    expect(messages[0]).toMatchObject({ blockId: "b5", role: "user", text: "message 5" });
+    expect(messages[19]).toMatchObject({ blockId: "b24", role: "user", text: "message 24" });
   });
 
   test("agent_read puts the transcript in the text content", async () => {
@@ -1231,10 +1264,10 @@ describe("spawn gateway tools", () => {
     const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope: "transcript" });
     const text = res.content[0]?.text ?? "";
     expect(text).toContain('Read 3 messages from "Ask Maya about teammates", oldest first:');
-    expect(text).toContain("[user] what teammates do you have?");
-    expect(text).toContain("[assistant] Zere, kone, Kwame.");
+    expect(text).toContain("[user] [b1] what teammates do you have?");
+    expect(text).toContain("[assistant] [b2] Zere, kone, Kwame.");
     // A turn that was all tool calls reads as empty rather than as a blank line.
-    expect(text).toContain("[assistant] (no text — tool calls only)");
+    expect(text).toContain("[assistant] [b3] (no text - tool calls only)");
     // The rendered transcript keeps the same tool-payload isolation as the read.
     expect(text).not.toContain("SECRET_PAYLOAD_DO_NOT_LEAK");
   });
@@ -1253,6 +1286,78 @@ describe("spawn gateway tools", () => {
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
     const res = await registry.call(ctx, "agent_read", { threadId: "child-1", scope: "transcript" });
     expect(res.content[0]?.text).toBe('"Child one" has no messages yet.');
+  });
+
+  test("agent_read reads one message by id and reports a resume offset", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const long = "x".repeat(500);
+    const thread: StoredThread = {
+      threadId: "child-1",
+      projectPath: "/proj",
+      provider: "codex",
+      createdAt: 1,
+      updatedAt: 2,
+      title: "Child one",
+      blocks: [{ id: "b1", role: "user", text: long, at: 1 }],
+    };
+    const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
+    const res = await registry.call(ctx, "agent_read", {
+      threadId: "child-1",
+      scope: "transcript",
+      blockId: "b1",
+      maxTextChars: 200,
+    });
+    const sc = res.structuredContent;
+    const messages =
+      sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
+        ? sc.messages
+        : [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ blockId: "b1", role: "user" });
+    expect(messages[0].text).toHaveLength(200);
+    expect(messages[0].nextTextOffset).toBe(200);
+  });
+
+  test("agent_read pages older messages through a cursor", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const blocks = Array.from({ length: 5 }, (_, i) => ({
+      id: `b${i}`,
+      role: "user" as const,
+      text: `message ${i}`,
+      at: i,
+    }));
+    const thread: StoredThread = {
+      threadId: "child-1",
+      projectPath: "/proj",
+      provider: "codex",
+      createdAt: 1,
+      updatedAt: 2,
+      title: "Child one",
+      blocks,
+    };
+    const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
+    const first = await registry.call(ctx, "agent_read", {
+      threadId: "child-1",
+      scope: "transcript",
+      limit: 2,
+    });
+    expect(first.structuredContent?.hasMore).toBe(true);
+    const cursor = first.structuredContent?.nextCursor;
+    expect(cursor).toEqual(expect.any(String));
+
+    const older = await registry.call(ctx, "agent_read", {
+      threadId: "child-1",
+      scope: "transcript",
+      limit: 2,
+      cursor: String(cursor),
+    });
+    const sc = older.structuredContent;
+    const messages =
+      sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
+        ? sc.messages
+        : [];
+    expect(messages[0]).toMatchObject({ blockId: "b1" });
+    expect(messages[1]).toMatchObject({ blockId: "b2" });
   });
 
   /** A child whose one turn read files, said something, ran tests, and
