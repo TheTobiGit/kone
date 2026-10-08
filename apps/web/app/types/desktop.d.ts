@@ -1785,6 +1785,10 @@ export type RuntimeEvent =
       attemptCount: number;
       retryAt?: number;
       error?: string;
+      /** Present on an in-place edit: the row's new words. */
+      input?: string;
+      attachments?: ChatAttachment[];
+      skills?: SkillReference[];
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -3059,6 +3063,22 @@ export type KoneAgentApi = {
    *  when no such row exists. */
   cancelQueuedTurn: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  /** Edit a waiting follow-up in place; its position is kept. The new words
+   *  arrive on turn.queued-updated. Resolves false for a promoting/settled row. */
+  editQueuedTurn: (
+    threadId: string,
+    queueId: string,
+    patch: {
+      input: string;
+      attachments?: QueuedTurnRow["attachments"];
+      skills?: QueuedTurnRow["skills"];
+      model?: string | null;
+      mode?: string | null;
+      effort?: string | null;
+      serviceTier?: string | null;
+      contextWindow?: string | null;
+    },
+  ) => Promise<boolean>;
   /** Deliver one queued row now, with the settings it was queued with: steered
    *  into the live turn, started when idle, or moved to the front of the queue
    *  when the provider can't steer. Rejects with the row back where it was;

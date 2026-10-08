@@ -23,7 +23,7 @@ import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnEditPatch, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -255,6 +255,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see QueuedTurnRepo */
   reorderQueuedTurns(threadId: string, queueIds: string[]): boolean {
     return this.queuedTurns.reorderQueuedTurns(threadId, queueIds);
+  }
+
+  /** @see QueuedTurnRepo */
+  editQueuedTurn(queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+    return this.queuedTurns.editQueuedTurn(queueId, patch);
   }
 
   /** @see QueuedTurnRepo */

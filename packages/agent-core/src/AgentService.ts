@@ -11,6 +11,7 @@ import {
   DONE_CLEARED,
   type CheckpointStore,
   type QueuedTurnEnqueueInput,
+  type QueuedTurnEditPatch,
   type TurnCheckpointRecord,
 } from "./conversationStoreTypes.js";
 import {
@@ -2535,6 +2536,37 @@ export class AgentService {
   async listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]> {
     const store = this.queueStore;
     return store.listQueuedTurns(threadId);
+  }
+
+  /** Edit a waiting queued follow-up in place. The store rewrites the row and
+   *  its hidden transcript block in one transaction; this emits
+   *  turn.queued-updated carrying the new content so the queue strip restates
+   *  the row without moving it. Refuses a row that is promoting or settled. */
+  async editQueuedTurn(
+    threadId: string,
+    queueId: string,
+    patch: QueuedTurnEditPatch,
+  ): Promise<boolean> {
+    const store = this.queueStore;
+    const row = store.editQueuedTurn(queueId, patch);
+    if (!row) return false;
+    const provider = this.routing.get(threadId);
+    if (provider) {
+      this.dispatch({
+        type: "turn.queued-updated",
+        threadId,
+        provider,
+        at: Date.now(),
+        source: "kone.store",
+        queueId: row.queueId,
+        state: row.state === "failed" ? "failed" : "queued",
+        attemptCount: row.attemptCount,
+        input: row.input,
+        attachments: row.attachments,
+        skills: row.skills,
+      });
+    }
+    return true;
   }
 
   /** Reorder the thread's active queued follow-ups. Emits

@@ -321,6 +321,12 @@ export type QueueBridge = {
   queuedTurns?: (threadId: string) => Promise<QueuedTurnRow[]>;
   cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  /** Edit a waiting row in place; position is kept. */
+  editQueuedTurn?: (
+    threadId: string,
+    queueId: string,
+    patch: import("@kone/agent-core/conversationStoreTypes.js").QueuedTurnEditPatch,
+  ) => Promise<boolean>;
   sendQueuedTurnNow?: (threadId: string, queueId: string) => Promise<boolean>;
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
   interruptStepWaitNow?: (threadId: string, waitId: string) => Promise<boolean>;

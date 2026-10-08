@@ -1,6 +1,6 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
+import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEditPatch, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
 import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
@@ -114,6 +114,80 @@ export class QueuedTurnRepo {
       if (inserted) this.highestRowid = Number(result.lastInsertRowid);
     });
     return inserted;
+  }
+
+  /** Edit a waiting follow-up in place, keeping its position. The paired
+   *  journaled user block is updated in the same transaction, so a promotion
+   *  later shows the edited words in the transcript where the row always sat.
+   *
+   *  Refuses a row that is promoting or settled (promoted/cancelled): its words
+   *  are already with the provider or gone. `sort_key`, `state`, `created_at`
+   *  and `attempt_count` are never touched — an edit is not a requeue. The
+   *  content fields (input/attachments/skills) are always written; the picker
+   *  knobs only when the patch carries them, so an edit can change the prompt
+   *  without resetting the model it was queued with. Returns the updated row,
+   *  or null when the row is missing or not editable. */
+  editQueuedTurn(queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    let updated: QueuedTurnRow | null = null;
+    try {
+      this.dbh.durably(db, () => {
+        // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
+        const row = db
+          .prepare(`SELECT * FROM queued_turns WHERE queue_id = ?`)
+          .get(queueId) as QueuedTurnDbRow | undefined;
+        if (!row) return;
+        if (row.state !== "queued" && row.state !== "failed") return;
+        const now = Date.now();
+        const attachmentsJson = serializeAttachments(patch.attachments);
+        const skillsJson = serializeSkillReferences(patch.skills);
+        const sets = ["input = ?", "attachments_json = ?", "skills_json = ?", "updated_at = ?"];
+        const values: Array<string | number | null> = [
+          patch.input,
+          attachmentsJson,
+          skillsJson,
+          now,
+        ];
+        if (patch.model !== undefined) {
+          sets.push("model = ?");
+          values.push(patch.model ?? null);
+        }
+        if (patch.mode !== undefined) {
+          sets.push("mode = ?");
+          values.push(patch.mode ?? null);
+        }
+        if (patch.effort !== undefined) {
+          sets.push("effort = ?");
+          values.push(patch.effort ?? null);
+        }
+        if (patch.serviceTier !== undefined) {
+          sets.push("service_tier = ?");
+          values.push(patch.serviceTier ?? null);
+        }
+        if (patch.contextWindow !== undefined) {
+          sets.push("context_window = ?");
+          values.push(patch.contextWindow ?? null);
+        }
+        values.push(queueId);
+        db.prepare(`UPDATE queued_turns SET ${sets.join(", ")} WHERE queue_id = ?`).run(...values);
+        // The block the row hid from the timeline is the same words; keep it in
+        // step so promotion does not reveal the pre-edit text.
+        db.prepare(
+          `UPDATE blocks SET text = ?, attachments_json = ?, skills_json = ?
+            WHERE thread_id = ? AND block_id = ?`,
+        ).run(patch.input, attachmentsJson, skillsJson, row.thread_id, row.user_block_id);
+        // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
+        const after = db
+          .prepare(`SELECT * FROM queued_turns WHERE queue_id = ?`)
+          .get(queueId) as QueuedTurnDbRow | undefined;
+        if (after) updated = rowToQueuedTurn(after);
+      });
+    } catch (err) {
+      console.error("[conversation-store] editQueuedTurn failed:", err);
+      return null;
+    }
+    return updated;
   }
 
   /** Claim the next queued turn for `threadId` (atomically — one statement:
