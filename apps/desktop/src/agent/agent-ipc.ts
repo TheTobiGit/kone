@@ -17,6 +17,7 @@ import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
 import { branchPullRequest, pullRequestState } from "../modules/git/github.js";
+import { checkThreadPullRequest } from "../modules/git/threadPullRequestCheck.js";
 import {
   runProjectScript,
   SETTLE_SCRIPT_TIMEOUT_MS,
@@ -160,7 +161,9 @@ const renameWorktreeBranchAfterTitle = ({
     hasPullRequest: (dir, branch) =>
       branchPullRequest(dir, branch).then(
         (pr) => pr !== null,
-        () => false,
+        // A lookup that failed is unknown, not proof there is no PR: fail
+        // closed and leave the branch name alone.
+        () => true,
       ),
   });
 
@@ -175,20 +178,17 @@ export function getAgentService(): AgentService {  if (!service) {
       // them, not construction.
       pullRequestChecker: async ({ projectPath, branch, worktreePath, link }) => {
         const dir = worktreePath ?? projectPath;
-        let state = await pullRequestState(dir, {
-          number: link?.number ?? null,
-          url: link?.url ?? null,
-        });
-        if (!state && branch) state = await branchPullRequest(dir, branch);
-        if (!state) return null;
-        return {
-          repository: link?.repository ?? "",
-          number: state.number,
-          url: state.url,
-          state: state.state,
-          checkedAt: Date.now(),
-          mergedAt: state.mergedAt ? Date.parse(state.mergedAt) : null,
-        };
+        const outcome = await checkThreadPullRequest(
+          { link, branch },
+          {
+            // Full identity only (URL or repository + number) — never a bare
+            // number in the local repo — so a foreign-repo link resolves to the
+            // right PR or to unknown.
+            fetchState: (ref) => pullRequestState(dir, ref),
+            fetchBranchPr: (head) => branchPullRequest(dir, head),
+          },
+        );
+        return outcome.link;
       },
       closeIdleShells: async ({ threadId, worktreePath }) => {
         // Only a thread's OWN worktree is ever touched, never the project

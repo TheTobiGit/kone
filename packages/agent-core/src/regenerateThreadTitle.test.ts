@@ -37,11 +37,15 @@ class FakeHistoryStore {
   threadWorkspace(_threadId: string) {
     return { envMode: "local" as const, worktreePath: this.workspacePath, requestedBranch: null };
   }
-  setTitle(threadId: string, title: string): void {
-    this.written.push({ threadId, title });
+  setTitleIfAuto(threadId: string, expectedTitle: string | null, title: string): boolean {
     const m = this.meta.get(threadId);
-    if (m) m.title = title;
+    if (!m) return false;
+    if (this.origins.get(threadId) === "manual") return false;
+    if (m.title !== expectedTitle) return false;
+    this.written.push({ threadId, title });
+    m.title = title;
     this.origins.set(threadId, "auto");
+    return true;
   }
   // Unused by these paths but part of the injected slice's shape.
   setArchived() {
@@ -58,6 +62,9 @@ let service: import("./AgentService.js").AgentService;
 const events: import("./types.js").RuntimeEvent[] = [];
 const renames: Array<{ worktreePath: string; title: string }> = [];
 let generateCalls: Array<{ cwd: string; context: string; provider: string; model?: string }> = [];
+/** When set, the generator waits on this before returning — lets a test act
+ *  while generation is in flight. */
+let generateGate: Promise<void> | null = null;
 
 beforeAll(async () => {
   AgentServiceCtor = (await import("./AgentService.js")).AgentService;
@@ -68,6 +75,7 @@ beforeAll(async () => {
     historyStore: history as unknown as import("./AgentService.js").AgentServiceOptions["historyStore"],
     generateContextTitle: async (input) => {
       generateCalls.push(input);
+      if (generateGate) await generateGate;
       return "Whole conversation title";
     },
     renameWorkspaceBranch: async (input) => {
@@ -87,6 +95,7 @@ beforeEach(() => {
   events.length = 0;
   renames.length = 0;
   generateCalls = [];
+  generateGate = null;
 });
 
 afterAll(() => {
@@ -153,5 +162,23 @@ describe("AgentService.regenerateThreadTitle", () => {
     // The rename is fired without awaiting; let its microtask land.
     await Promise.resolve();
     expect(renames).toEqual([{ worktreePath: "/repo/.worktrees/t5", title: "Whole conversation title" }]);
+  });
+
+  test("a manual rename during generation wins", async () => {
+    seedThread("t6", "Old title");
+    let release: () => void = () => {};
+    generateGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = service.regenerateThreadTitle("t6");
+    // While the one-shot runs, the user renames the thread.
+    history.origins.set("t6", "manual");
+    const meta = history.meta.get("t6");
+    if (meta) meta.title = "The user's title";
+    release();
+
+    expect(await pending).toEqual({ ok: false, reason: "manual_title" });
+    expect(history.meta.get("t6")?.title).toBe("The user's title");
+    expect(history.written).toHaveLength(0);
   });
 });

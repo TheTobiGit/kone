@@ -569,6 +569,25 @@ describe("pins, selection and rename", () => {
     store.setTitle("a", "Regenerated title");
     expect(store.titleOrigin("a")).toBe("auto");
   });
+
+  test("setTitleIfAuto commits only while the title is auto and unchanged", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    store.setTitle("a", "Generated");
+
+    // Commits when the expectation matches and ownership is auto.
+    expect(store.setTitleIfAuto("a", "Generated", "Regenerated")).toBe(true);
+    expect(store.getTitle("a")).toBe("Regenerated");
+
+    // A stale expectation is refused.
+    expect(store.setTitleIfAuto("a", "Generated", "Stale")).toBe(false);
+    expect(store.getTitle("a")).toBe("Regenerated");
+
+    // A manual rename blocks it.
+    store.renameThread("a", "Mine");
+    expect(store.setTitleIfAuto("a", "Mine", "Clobbered")).toBe(false);
+    expect(store.getTitle("a")).toBe("Mine");
+  });
 });
 
 describe("listThreads archive views", () => {

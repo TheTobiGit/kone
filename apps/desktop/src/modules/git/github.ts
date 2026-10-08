@@ -1016,24 +1016,30 @@ function pullRequestStateOf(
   };
 }
 
-/** The state of one pull request by number or URL, or null when gh cannot see
- *  it (no gh, no GitHub remote, a deleted PR, an absent reference). The
- *  settle-on-merge sweep reads this: it needs merged/open and a merge time,
- *  not the whole view, so the call stays cheap. */
+/** The state of one pull request, by its full URL or by repository + number —
+ *  never a bare number in whatever repo the directory happens to be. A link to
+ *  another repository is common (a thread can reference a PR anywhere), and a
+ *  bare number would silently query the local repo's PR 7 instead. Returns null
+ *  when the reference is incomplete or gh cannot see it. */
 export async function pullRequestState(
   dir: string,
-  ref: { number?: number | null; url?: string | null },
+  ref: { number?: number | null; url?: string | null; repository?: string | null },
 ): Promise<GitHubPullRequestState | null> {
-  const target =
-    ref.number && Number.isInteger(ref.number) && ref.number > 0
-      ? String(ref.number)
-      : ref.url?.trim();
-  if (!target) return null;
+  const url = ref.url?.trim();
+  const repository = ref.repository?.trim();
+  const number =
+    ref.number && Number.isInteger(ref.number) && ref.number > 0 ? ref.number : null;
+  if (!url && !(number && repository)) return null;
+  const target = url ? url : String(number);
   const root = await repoRoot(dir);
   if (!root) return null;
+  const args = ["pr", "view", target, "--json", PR_STATE_JSON_FIELDS];
+  // A URL is already repository-qualified; a bare number is not, so it must
+  // name its repository explicitly.
+  if (!url && repository) args.push("--repo", repository);
   let out: string;
   try {
-    out = await gh(root, ["pr", "view", target, "--json", PR_STATE_JSON_FIELDS]);
+    out = await gh(root, args);
   } catch (error) {
     if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
     // A reference that no longer exists is an empty view, not a broken one.
