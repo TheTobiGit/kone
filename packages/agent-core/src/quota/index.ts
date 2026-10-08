@@ -89,6 +89,54 @@ export function resetQuotaStateForTests(): void {
   resilience.reset();
 }
 
+/** The provider's own reset time from a report, epoch millis, only when at
+ *  least one window is exhausted and every exhausted window has a future reset
+ *  — the latest of them, since all must recover first. Null otherwise: a reset
+ *  is never invented from a nominal window. */
+export function exhaustedWindowReset(report: QuotaProviderReport, now: number): number | null {
+  const exhausted = report.windows.filter((window) => window.percent !== null && window.percent >= 1);
+  if (exhausted.length === 0) return null;
+  let latest = 0;
+  for (const window of exhausted) {
+    if (window.resetsAt === null) return null;
+    const at = Date.parse(window.resetsAt);
+    if (!Number.isFinite(at) || at <= now) return null;
+    if (at > latest) latest = at;
+  }
+  return latest > 0 ? latest : null;
+}
+
+/** The reset a cached report may supply, with the freshness guard: a report
+ *  fetched more than `maxAgeMs` ago is stale and supplies nothing. */
+export function limitResetFromCachedReport(
+  report: QuotaProviderReport | null,
+  fetchedAt: number,
+  now: number,
+  maxAgeMs: number,
+): number | null {
+  if (!report || now - fetchedAt > maxAgeMs) return null;
+  return exhaustedWindowReset(report, now);
+}
+
+/** The reset a provider's cached quota may supply for a limit failure, or null.
+ *  Cache-only — the failure path must not start a network or CLI read — and
+ *  guarded on age so a stale report counts as no report. */
+export function cachedLimitResetFor(
+  provider: QuotaCapableProvider,
+  now = Date.now(),
+  maxAgeMs = 15 * 60_000,
+): number | null {
+  const entry = cache.get(provider);
+  return limitResetFromCachedReport(entry?.report ?? null, entry?.at ?? 0, now, maxAgeMs);
+}
+
+/** Whether a provider kind can produce a quota report at all. */
+export function isQuotaCapableProvider(provider: string): provider is QuotaCapableProvider {
+  return QUOTA_CAPABLE_PROVIDERS.has(provider);
+}
+
+const QUOTA_CAPABLE_PROVIDERS = new Set<string>(quotaCapableProviders());
+
 /** Answers "is there something here to connect to" — no parsing beyond
  *  presence, and never a network call. Used both to gate the opt-in "Connect"
  *  affordance and, on failure, to fall back to a `disconnected` report without

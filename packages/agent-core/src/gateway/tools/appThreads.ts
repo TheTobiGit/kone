@@ -86,6 +86,7 @@ import {
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
+import { isSnoozed } from "../../limitState.js";
 import {
   blockText,
   iso,
@@ -417,7 +418,28 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     project: projects.get(meta.projectPath) ?? null,
     agentName: agentNameFor(store, meta.threadId),
     status: statusFor(facts),
+    snoozed: snoozedFor(meta, facts),
   });
+
+  /** Whether the thread is snoozed right now, from the snooze and the
+   *  wake-early rules. The inbox reads this boolean rather than reimplementing
+   *  the rule. */
+  const snoozedFor = (meta: StoredThreadMeta, facts: ReadingFacts): boolean => {
+    const lastState = facts.span?.lastState ?? null;
+    const lastAt = facts.span ? (facts.span.endedAt ?? facts.span.startedAt) : null;
+    return isSnoozed(
+      {
+        snoozedUntil: meta.snoozedUntil ?? null,
+        snoozedAt: meta.snoozedAt ?? null,
+        parked: facts.gate !== null,
+        latest:
+          lastState === null
+            ? null
+            : { state: lastState, at: lastAt ?? 0, limit: (meta.limitedAt ?? null) !== null },
+      },
+      Date.now(),
+    );
+  };
 
   /** One thread's rolled-up status, derived at read time — never stored, so a
    *  crash cannot leave a dead thread labelled "working". A parked gate

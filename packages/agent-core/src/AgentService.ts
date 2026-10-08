@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
+import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
 import {
   resolveModelWithFallback,
   type ModelCandidate,
@@ -2206,7 +2207,13 @@ export class AgentService {
         // (the adapter's own, or one the message carries) when it gave one.
         if (event.type === "turn.aborted" && event.reason === "failed") {
           const now = Date.now();
-          const resetAt = event.limitResetAt ?? limitResetFromError(event.message, now);
+          // Reset order: the adapter's own field, then a real Retry-After hint
+          // in the message, then the provider's cached quota (guarded on age and
+          // exhaustion). Never invented.
+          let resetAt = event.limitResetAt ?? limitResetFromError(event.message, now);
+          if (resetAt === null && isQuotaCapableProvider(event.provider)) {
+            resetAt = cachedLimitResetFor(event.provider, now);
+          }
           if (resetAt !== null || isQuotaOrRateLimitError(event.message)) {
             this.setThreadLimited(threadId, resetAt);
           }
@@ -2909,6 +2916,9 @@ export class AgentService {
     if (!meta || (meta.limitedAt ?? null) === null) return;
     const provider = meta.provider ?? this.routing.get(threadId);
     history.clearLimited(threadId);
+    // Resuming clears any "snooze until reset" along with the limit: the
+    // reason for the snooze is gone.
+    this.setThreadSnooze(threadId, null);
     try {
       this.continuationStore?.cancelContinuationsForThread(threadId);
     } catch (err) {
