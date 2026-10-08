@@ -71,6 +71,12 @@ import {
   READ_APP_THREAD_JSON_SCHEMA,
   RenameAppThreadInputSchema,
   RENAME_APP_THREAD_JSON_SCHEMA,
+  SetThreadPinnedInputSchema,
+  SET_THREAD_PINNED_JSON_SCHEMA,
+  SetThreadDoneInputSchema,
+  SET_THREAD_DONE_JSON_SCHEMA,
+  MarkThreadUnreadInputSchema,
+  MARK_THREAD_UNREAD_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
@@ -144,6 +150,12 @@ export interface AppThreadsStore {
    *  (recency untouched), but change-detecting — false when the row is missing
    *  or the title is unchanged, so callers only announce real changes. */
   renameThread?(threadId: string, title: string): boolean;
+  /** Thread-state marks (Phase 6). Pin, settle, and unread all read/write the
+   *  existing columns; the canonical done path goes through the service so the
+   *  done event fans out. */
+  setPinned?(threadId: string, pinned: boolean): void;
+  setDone?(threadId: string, done: boolean): void;
+  setVisited?(threadId: string, at: number, force?: boolean): void;
   setArchived?(
     threadId: string,
     archived: boolean,
@@ -258,6 +270,9 @@ export interface AppThreadsToolOptions {
     threadId: string,
     title: string,
   ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
+  /** Mark a thread done (or clear it). Canonical in production (the service
+   *  emits thread.done.updated); the store fallback writes the same column. */
+  setThreadDone?: (threadId: string, done: boolean) => void;
 }
 
 /** Tags this module's cursors, so one handed to another tool is refused rather
@@ -1122,6 +1137,54 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     });
   };
 
+  const pinHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = SetThreadPinnedInputSchema.parse(rawInput);
+    const { meta } = requireThread(input.threadId);
+    store.setPinned?.(input.threadId, input.pinned);
+    const verb = input.pinned ? "Pinned" : "Unpinned";
+    return singleLine(`${verb} thread "${meta?.title ?? input.threadId}".`, {
+      threadId: input.threadId,
+      pinned: input.pinned,
+    });
+  };
+
+  const doneHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = SetThreadDoneInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    // Canonical path first: the service owns the done event every surface
+    // reconciles from.
+    if (options.setThreadDone) options.setThreadDone(input.threadId, input.done);
+    else store.setDone?.(input.threadId, input.done);
+    const verb = input.done ? "Marked done" : "Reopened";
+    return singleLine(`${verb} thread "${input.threadId}".`, {
+      threadId: input.threadId,
+      done: input.done,
+    });
+  };
+
+  const unreadHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = MarkThreadUnreadInputSchema.parse(rawInput);
+    const { meta } = requireThread(input.threadId);
+    // Unread is derived as "last visit before the latest activity"; setting the
+    // visit just below that boundary makes it read unread again (the store's
+    // monotonic write needs `force` to move backwards).
+    const at = (meta?.lastActivityAt ?? Date.now()) - 1;
+    store.setVisited?.(input.threadId, at, true);
+    return singleLine(`Marked thread "${input.threadId}" unread.`, {
+      threadId: input.threadId,
+      unread: true,
+    });
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -1243,6 +1306,48 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Use `app_rename_thread` to give a conversation a clear, descriptive title that reflects its topic.",
       ],
       handler: renameHandler,
+    },
+    {
+      name: "app_set_thread_pinned",
+      description:
+        "Pin a conversation to the front of the project board, or unpin it. Pinning is a durable per-thread mark, not a reorder.",
+      inputSchema: SetThreadPinnedInputSchema,
+      jsonSchema: SET_THREAD_PINNED_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_set_thread_pinned`: pin or unpin a conversation.",
+      promptGuidelines: [
+        "Pin a thread only when the user asks, or when they call it important to keep in view.",
+      ],
+      handler: pinHandler,
+    },
+    {
+      name: "app_set_thread_done",
+      description:
+        "Mark a conversation done (settled) so it stops asking for attention, or clear the mark to reopen it. Done is an attention mark, not an archive: the thread stays in the live list.",
+      inputSchema: SetThreadDoneInputSchema,
+      jsonSchema: SET_THREAD_DONE_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_set_thread_done`: mark a conversation done, or reopen it.",
+      promptGuidelines: [
+        "Mark a thread done when the user says the work is finished; use app_archive_thread to put it away entirely.",
+      ],
+      handler: doneHandler,
+    },
+    {
+      name: "app_mark_thread_unread",
+      description:
+        "Mark a conversation unread, so it shows as needing attention again in the inbox and board.",
+      inputSchema: MarkThreadUnreadInputSchema,
+      jsonSchema: MARK_THREAD_UNREAD_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_mark_thread_unread`: mark a conversation unread.",
+      promptGuidelines: [
+        "Mark a thread unread when the user says they still need to look at it.",
+      ],
+      handler: unreadHandler,
     },
   ];
 }

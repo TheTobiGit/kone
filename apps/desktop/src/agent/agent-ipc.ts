@@ -294,8 +294,10 @@ export function registerAgentIpc(): void {
       ensureThreadSession: (threadId, options) => dispatcher.ensureThreadSession(threadId, options),
     },
     threadControls: {
-      stopThread: async (threadId) => {
-        const wasRunning = svc.hasLiveSession(threadId);
+      // Mark done through the service, so thread.done.updated fans out to every
+      // surface (the gateway tool's canonical path).
+      setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      stopThread: async (threadId) => {        const wasRunning = svc.hasLiveSession(threadId);
         await svc.stopSession(threadId);
         // `stopped` is the idempotent guarantee, not a torn-something-down
         // report: stopSession no-ops on an idle thread, which still leaves it
