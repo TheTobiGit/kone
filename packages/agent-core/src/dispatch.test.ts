@@ -601,6 +601,103 @@ describe("composeTurnDelivery", () => {
   });
 });
 
+describe("thread dispatcher: restart background note", () => {
+  beforeEach(() => {
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.turnCounter = 0;
+  });
+
+  test("a thread's next turn carries what the restart cancelled, once", async () => {
+    // First process: the turn is live with a subagent running and an open task.
+    const first = await harness();
+    const now = Date.now();
+    first.store.applyEvent({
+      type: "subagent.started",
+      threadId: THREAD,
+      provider: "codex",
+      at: now,
+      source: "codex.app-server",
+      turnId: "turn-live",
+      subagent: {
+        toolUseId: "tool-1",
+        taskId: "task-1",
+        parentItemId: "call-1",
+        agentType: "explore",
+        description: "trace the callers",
+        prompt: "trace them",
+        model: "claude-haiku-4-5",
+        status: "running",
+        tokens: 0,
+        toolUses: 0,
+        startedAt: now,
+      },
+    });
+    first.store.applyEvent({
+      type: "item.started",
+      threadId: THREAD,
+      provider: "codex",
+      at: now,
+      source: "codex.app-server",
+      turnId: "turn-live",
+      item: {
+        itemId: "plan-1",
+        kind: "plan_text",
+        status: "in-progress",
+        text: "the plan",
+        tasks: [{ id: "b", content: "write the tests", status: "in-progress" }],
+      },
+    });
+    first.store.close();
+
+    // The next process opens the same disk, seals the turn, and stages the note.
+    const second = await harness({ reopen: true });
+    second.dispatcher.recoverRestartBackgroundNotesAtBoot();
+    await second.dispatcher.sendThreadTurn({ threadId: THREAD, input: "carry on" });
+
+    const dispatched = FakeAdapter.sent[0] ?? "";
+    expect(dispatched).toContain("kone restarted");
+    expect(dispatched).toContain("- subagent: trace the callers");
+    expect(dispatched).toContain("- task: write the tests");
+    expect(dispatched).toEndWith("carry on");
+    // The note is app-authored context, not the user's words.
+    expect(userTexts(second.store)).toEqual(["carry on"]);
+
+    // One-shot: the turn after it is not told again.
+    await second.dispatcher.sendThreadTurn({ threadId: THREAD, input: "and again" });
+    expect(FakeAdapter.sent[1]).toBe("and again");
+  });
+
+  test("staging a note never wakes a settled thread", async () => {
+    const first = await harness();
+    first.store.applyEvent({
+      type: "subagent.started",
+      threadId: THREAD,
+      provider: "codex",
+      at: Date.now(),
+      source: "codex.app-server",
+      turnId: "turn-live",
+      subagent: {
+        toolUseId: "tool-9",
+        taskId: "task-9",
+        parentItemId: "call-9",
+        agentType: "explore",
+        description: "someone's long job",
+        prompt: "do it",
+        model: "claude-haiku-4-5",
+        status: "running",
+        tokens: 0,
+        toolUses: 0,
+        startedAt: Date.now(),
+      },
+    });
+    first.store.close();
+
+    const second = await harness({ reopen: true });
+    second.dispatcher.recoverRestartBackgroundNotesAtBoot();
+    // No turn was sent: nothing reached the provider, so nothing was woken.
+    expect(FakeAdapter.sent).toEqual([]);
+  });
+});
 // The global assistant has no project, and its project path says so: a
 // sentinel, not a directory. It is the right thing to store and to scope tools
 // by — and the wrong thing to hand a child process, which is what took the

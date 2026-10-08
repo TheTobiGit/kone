@@ -204,6 +204,11 @@ export function registerAgentIpc(): void {
   // behind (prepared from main's before-quit). Claimed and resumed inside the
   // dispatcher — before the window exists, so no client command can race the
   // consume. Best-effort: resuming never fails boot.
+  // Restart background notes: the boot seal captured the live subagents and
+  // task-tracker tasks the last process died with. Staged before quit-resume
+  // so a resumed continuation carries its thread's note; either way the note
+  // only ever rides a thread's next turn, never wakes one.
+  dispatcher.recoverRestartBackgroundNotesAtBoot();
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
 
   // The bench runner: queued jobs become threads through the same dispatcher

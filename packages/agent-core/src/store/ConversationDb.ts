@@ -6,6 +6,11 @@ import type { RelationshipToParent } from "../types.js";
 import { readAntigravityConversationUsage, resolveAntigravityContextWindow } from "../usage/local/antigravityScan.js";
 import { getUserDataDir } from "../userDataDir.js";
 import { REOPEN_COOLDOWN_MS, UnsupportedSchemaError, assistantBlockId, migrate } from "../conversationMigrations.js";
+import {
+  planTaskRestartWork,
+  subagentRestartWork,
+  type RestartCancelledBackgroundWork,
+} from "../restartBackgroundNote.js";
 import { orphanedInboxClaims, releaseOrphanedInboxClaims } from "./agentInbox.js";
 
 /** Max cached prepared statements per connection (FIFO eviction). 200 covers
@@ -51,6 +56,12 @@ export class ConversationDb {
   private inboxRecoveryTries = 0;
   private inboxRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly inboxRecoveredListeners = new Set<(threadIds: readonly string[]) => void>();
+
+  /** Work a restart cancels, captured as orphaned turns are sealed on the
+   *  first open of a fresh process. The dispatcher stages one note per thread
+   *  from this before the window opens; reading it clears it, so a note is
+   *  never delivered twice. Null until sealing has run. */
+  private restartCancelledBackgroundWork: Map<string, RestartCancelledBackgroundWork[]> | null = null;
 
   /** @param userDataDir per-user state dir; defaults to the one the host
    *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
@@ -234,6 +245,9 @@ export class ConversationDb {
    *  stale state, which is what we already had. */
   private sealOrphanedTurns(db: DatabaseSync): void {
     try {
+      // Capture first: the passages below seal these rows, and the note the
+      // next turn carries must name what was live, not what survives.
+      this.restartCancelledBackgroundWork = this.collectRestartCancelledBackgroundWork(db);
       const now = Date.now();
       db.prepare(
         `UPDATE blocks SET state = 'interrupted', ended_at = ?
@@ -253,6 +267,78 @@ export class ConversationDb {
     } catch (err) {
       console.error("[conversation-store] could not seal orphaned turns:", err);
     }
+  }
+
+  /** The background work a restart is about to cancel, grouped by thread.
+   *  Read before the seal above runs: subagents still 'starting'/'running' and
+   *  the still-open tasks of a live plan item. Never throws — a read failure
+   *  degrades to no note, which is the state kone had before this existed. */
+  private collectRestartCancelledBackgroundWork(
+    db: DatabaseSync,
+  ): Map<string, RestartCancelledBackgroundWork[]> {
+    const byThread = new Map<string, RestartCancelledBackgroundWork[]>();
+    const add = (threadId: string, work: RestartCancelledBackgroundWork): void => {
+      const list = byThread.get(threadId);
+      if (list) list.push(work);
+      else byThread.set(threadId, [work]);
+    };
+    try {
+      // SAFETY: the projection names only the four subagent columns the work
+      // mapper reads.
+      const subagentRows = db
+        .prepare(
+          `SELECT thread_id, tool_use_id, description, agent_type FROM subagents
+            WHERE status IN ('starting', 'running')`,
+        )
+        .all() as Array<{
+        thread_id: string;
+        tool_use_id: string;
+        description: string | null;
+        agent_type: string | null;
+      }>;
+      for (const entry of subagentRestartWork(
+        subagentRows.map((row) => ({
+          threadId: row.thread_id,
+          toolUseId: row.tool_use_id,
+          description: row.description,
+          agentType: row.agent_type,
+        })),
+      )) {
+        add(entry.threadId, entry.work);
+      }
+      // A live plan item is the Claude task-tracker checklist as it last
+      // stood; its tasks that are not completed died with the turn.
+      // SAFETY: the projection names only the three plan-item columns read.
+      const planRows = db
+        .prepare(
+          `SELECT thread_id, item_id, tasks_json FROM items
+            WHERE kind = 'plan_text' AND status = 'in-progress'`,
+        )
+        .all() as Array<{ thread_id: string; item_id: string; tasks_json: string | null }>;
+      for (const entry of planTaskRestartWork(
+        planRows.map((row) => ({
+          threadId: row.thread_id,
+          itemId: row.item_id,
+          tasksJson: row.tasks_json,
+        })),
+      )) {
+        add(entry.threadId, entry.work);
+      }
+    } catch (err) {
+      console.error("[conversation-store] could not collect restart background work:", err);
+      return new Map();
+    }
+    return byThread;
+  }
+
+  /** Take the work captured at the boot seal, clearing it. Empty before a
+   *  seal has run, or after this has been read once. Opens the database if it
+   *  is not open yet, which is what runs the seal and captures the work. */
+  takeRestartCancelledBackgroundWork(): Map<string, RestartCancelledBackgroundWork[]> {
+    this.handle();
+    const captured = this.restartCancelledBackgroundWork ?? new Map();
+    this.restartCancelledBackgroundWork = null;
+    return captured;
   }
 
   /** Mark half-created spawned children as failed. A spawn reserves its
