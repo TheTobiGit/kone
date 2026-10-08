@@ -325,7 +325,16 @@ export type QueueBridge = {
   editQueuedTurn?: (
     threadId: string,
     queueId: string,
-    patch: import("@kone/agent-core/conversationStoreTypes.js").QueuedTurnEditPatch,
+    patch: {
+      input: string;
+      attachments?: QueuedTurnRow["attachments"];
+      skills?: QueuedTurnRow["skills"];
+      model?: string | null;
+      mode?: string | null;
+      effort?: string | null;
+      serviceTier?: string | null;
+      contextWindow?: string | null;
+    },
   ) => Promise<boolean>;
   sendQueuedTurnNow?: (threadId: string, queueId: string) => Promise<boolean>;
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
