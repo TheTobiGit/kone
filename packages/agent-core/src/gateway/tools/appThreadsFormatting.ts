@@ -155,6 +155,9 @@ export function threadPayload(reading: ThreadReading, withProject: boolean): Gat
   if (unread) row.unread = true;
   if (done) row.done = true;
   if (meta.archivedAt !== null) row.archived = true;
+  // A snooze is a future deadline; a past one has already woken the thread.
+  if ((meta.snoozedUntil ?? 0) > Date.now()) row.snoozedUntil = iso(meta.snoozedUntil ?? 0);
+  if ((meta.limitResetAt ?? null) !== null) row.limitResetAt = iso(meta.limitResetAt ?? 0);
   return compact(row);
 }
 
@@ -181,6 +184,7 @@ export function threadLine(reading: ThreadReading, withProject: boolean): string
     unread ? "unread" : null,
     done ? "done" : null,
     meta.archivedAt !== null ? "archived" : null,
+    (meta.snoozedUntil ?? 0) > Date.now() ? "snoozed" : null,
   ].filter((mark): mark is string => mark !== null);
   return `- ${meta.title ?? "(untitled)"} — ${marks.join(" · ")}`;
 }

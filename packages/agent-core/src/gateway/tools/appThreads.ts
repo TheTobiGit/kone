@@ -468,6 +468,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     span: TurnSpan | null;
     gate: ThreadGateKind | null;
     live: boolean;
+    limited: boolean;
   }
 
   const readingFor = (
@@ -499,6 +500,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       running: (facts.span?.runningTurns ?? 0) > 0,
       lastState: facts.span?.lastState ?? null,
       hasLiveSession: facts.live,
+      limited: facts.limited,
     });
 
   // -- lifecycle plumbing (one place, not five handlers) ----------------------
@@ -695,6 +697,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         span: spanMap ? (spanMap.get(meta.threadId) ?? null) : (store.threadTurnSpan?.(meta.threadId) ?? null),
         gate: gateSnapshot.get(meta.threadId) ?? null,
         live: isLive(meta.threadId),
+        limited: (meta.limitedAt ?? null) !== null,
       }),
     );
     const last = listed[listed.length - 1]?.meta;
@@ -923,6 +926,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       span: store.threadTurnSpan?.(thread.threadId) ?? null,
       gate: options.pendingGateFor?.(thread.threadId) ?? null,
       live: isLive(thread.threadId),
+      limited: (thread.limitedAt ?? null) !== null,
     });
     const about = [
       `Thread ${thread.threadId}`,

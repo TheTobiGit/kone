@@ -130,6 +130,9 @@ export interface ThreadStatusInput {
   lastState: "running" | "completed" | "failed" | "interrupted" | null;
   /** Whether a live provider session still backs this thread. */
   hasLiveSession: boolean;
+  /** Set while the thread is waiting out a provider usage limit. A real state
+   *  distinct from a plain failure. */
+  limited?: boolean;
 }
 
 /** The full status input: the shared facts plus what "settled and quiet"
@@ -172,6 +175,12 @@ export function projectStatus(input: StatusProjectionInput): SpawnedThreadStatus
  *  never settles terminally. Pure: no store, no I/O, never throws. */
 export function projectThreadStatus(input: ThreadStatusInput): ThreadStatus {
   const status = projectStatus({ ...input, terminalKind: "idle" });
+  // A usage limit is a distinct quiet state: the thread is waiting out the
+  // provider, not broken. It sits below a parked gate and below anything live
+  // or running, and above a plain failure.
+  if (!input.gate && !input.running && input.lastState !== "running" && input.limited) {
+    return "limited";
+  }
   // SAFETY: terminalKind "idle" answers "starting", "idle" or a shared rung —
   // never "completed" or "stillborn" — so narrowing to ThreadStatus holds.
   return status as ThreadStatus;
