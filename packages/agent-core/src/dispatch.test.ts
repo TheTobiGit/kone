@@ -62,6 +62,8 @@ class FakeAdapter {
   static turnCounter = 0;
   /** The provider refuses the next turn sent to it. */
   static refuseNext: Error | null = null;
+  /** Makes the next session start fail, for startup-failure coverage. */
+  static startError: Error | null = null;
   constructor(readonly emit: EmitEvent) {}
   async discover(): Promise<never[]> {
     return [];
@@ -77,6 +79,7 @@ class FakeAdapter {
     FakeAdapter.startedCwds.push(input.cwd);
     FakeAdapter.startedAgents.push(input.agent);
     FakeAdapter.startedResumes.push(input.resume);
+    if (FakeAdapter.startError) throw FakeAdapter.startError;
     if (startGate) await startGate;
     return { threadId: input.threadId, provider: "codex" };
   }
@@ -120,7 +123,11 @@ beforeAll(async () => {
  *  with the thread already registered and its session up. */
 /** What the injected provisioner was asked for. The real one runs git; here the
  *  point is the ordering around it, not the checkout. */
-const provisioned: Array<{ projectPath: string; branch?: string; base?: string }> = [];
+/** A recorded provision request: the arguments that matter, without its
+ *  onProgress callback. */
+type ProvisionRecord = { projectPath: string; branch?: string; base?: string };
+
+const provisioned: Array<ProvisionRecord> = [];
 let provisionFails = false;
 /** Override what the fake provisioner reports about the branch it built. Absent
  *  means derived: a build with no requested branch reports a generated one, a
@@ -132,6 +139,13 @@ let releaseFails = false;
  *  anything while git is still writing, which is the whole point of it. */
 let provisionGate: Promise<void> | null = null;
 let openProvisionGate: (() => void) | null = null;
+
+/** The project's setup script, held open so a test can cancel during it. */
+let setupScriptGate: Promise<void> | null = null;
+let setupScriptStarted: (() => void) | null = null;
+/** Worktree-setup snapshots broadcast during a build. */
+type WorktreeSetupSnapshotLike = { phase: string; stages: Array<{ id: string; status: string }> };
+const worktreeSetups: WorktreeSetupSnapshotLike[] = [];
 
 function holdProvisioning(): void {
   provisionGate = new Promise<void>((resolve) => {
@@ -198,9 +212,12 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
   service: import("./AgentService.js").AgentService;
   mailbox: import("./gateway/tools/irc.js").IrcMailbox;
 }> {
-  // Reopening is the next process on the same disk: the last harness's store.
+  // A fresh process on the same disk for a reopen, else a fresh disk.
   if (!options.reopen) lastDataDir = mkdtempSync(path.join(tmpdir(), "kone-dispatch-test-"));
   setUserDataDir(lastDataDir);
+  setupScriptGate = null;
+  setupScriptStarted = null;
+  worktreeSetups.length = 0;
   const store = new ConversationStoreCtor();
   const mailbox = new IrcMailboxCtor(store);
   let captured: EmitEvent | undefined;
@@ -229,9 +246,18 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
         if (event.step === "fetch" && event.state === "done") fetchNotes.push(event.note);
         if (event.state === "failed") stepErrors.push(event.error);
       }
+      if (event.type === "thread.worktree.setup") worktreeSetups.push(event.snapshot);
     },
     provisionWorkspace: async (request) => {
-      provisioned.push(request);
+      // Record the request without its onProgress callback, so expectations
+      // read as the arguments that matter.
+      const recorded: ProvisionRecord = {
+        projectPath: request.projectPath,
+      };
+      if (request.branch !== undefined) recorded.branch = request.branch;
+      if (request.base !== undefined) recorded.base = request.base;
+      provisionHadProgress = request.onProgress !== undefined;
+      provisioned.push(recorded);
       if (provisionGate) await provisionGate;
       if (provisionFails) throw new Error("git said no");
       const branch = request.branch ?? "kone/deadbeef";
@@ -255,12 +281,21 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
       renamed.push(input);
       return null;
     },
+    runSetupScript: async ({ onOutput }) => {
+      setupScriptStarted?.();
+      if (setupScriptGate) await setupScriptGate;
+      onOutput?.("installing\n");
+      return { code: 0, output: "installing\n" };
+    },
   });
   store.ensureThread({ threadId: THREAD, projectPath: CWD, provider: "codex" });
   await dispatcher.startThread({ threadId: THREAD, provider: "codex", cwd: CWD });
   if (!captured) throw new Error("the fake adapter was not constructed");
   return { store, dispatcher, emit: captured, service, mailbox };
 }
+
+/** Whether the last provision request carried an onProgress callback. */
+let provisionHadProgress = false;
 
 /** Every prompt the dispatcher journaled, id and text — the raw journal,
  *  including prompts still waiting behind the running turn. loadThread hides
@@ -305,6 +340,7 @@ describe("thread dispatcher: a steer is the user speaking", () => {
   beforeEach(() => {
     FakeAdapter.sent.length = 0;
     FakeAdapter.turnCounter = 0;
+    FakeAdapter.startError = null;
   });
 
   test("a steer lands in the transcript, like a send", async () => {
@@ -721,6 +757,7 @@ describe("thread dispatcher: where a session is spawned", () => {
     });
 
     expect(provisioned).toEqual([{ projectPath: CWD, branch: "feature/foo" }]);
+    expect(provisionHadProgress).toBe(true);
     expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/feature-foo"]);
     // Both halves are recorded: what was asked for, and what was built. The
     // request clears once the directory exists.
@@ -1568,5 +1605,126 @@ describe("thread dispatcher: invoked skills", () => {
     // the first journaled before the second was called.
     expect(userTexts(store)).toEqual(["first message"]);
     await pending;
+  });
+});
+
+describe("worktree setup progress and cancellation", () => {
+  test("reports staged progress and finishes only after the session starts", async () => {
+    const { dispatcher } = await harness();
+
+    await dispatcher.startThread({
+      threadId: "t-stages",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "staged" },
+    });
+
+    const last = worktreeSetups.at(-1);
+    expect(last?.phase).toBe("done");
+    expect(last?.stages.map((s) => s.id)).toEqual([
+      "fetch",
+      "checkout",
+      "submodules",
+      "setup-script",
+      "agent",
+    ]);
+    expect(last?.stages.find((s) => s.id === "agent")?.status).toBe("done");
+    // fetch is reported running to the tracker, not only done.
+    expect(
+      worktreeSetups.some((s) => s.stages.find((x) => x.id === "fetch")?.status === "running"),
+    ).toBe(true);
+  });
+
+  test("a failed build reports the setup failed", async () => {
+    const { dispatcher } = await harness();
+    provisionFails = true;
+    try {
+      await expect(
+        dispatcher.startThread({
+          threadId: "t-setup-fail",
+          provider: "codex",
+          cwd: CWD,
+          workspace: { mode: "worktree", branch: "doomed" },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      provisionFails = false;
+    }
+    expect(worktreeSetups.at(-1)?.phase).toBe("failed");
+  });
+
+  test("a cancel during the setup script is honoured before linking", async () => {
+    const { store, dispatcher } = await harness();
+    store.setProjectScript(CWD, "setup", "echo installing");
+    let started: () => void = () => {};
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release: () => void = () => {};
+    setupScriptStarted = started;
+    setupScriptGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    released.length = 0;
+
+    const starting = dispatcher.startThread({
+      threadId: "t-cancel-script",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "long-install" },
+    });
+    await startedPromise;
+    dispatcher.cancelThreadWorkspace("t-cancel-script");
+    release();
+
+    const failure: unknown = await starting.then(
+      () => null,
+      (error) => error,
+    );
+    expect(isWorkspaceCancel(failure)).toBe(true);
+    // The worktree the cancel produced is undone, and no session started.
+    expect(released.map((r) => r.worktreePath)).toEqual(["/tmp/kone-worktrees/long-install"]);
+    expect(store.threadWorkspace("t-cancel-script")).toEqual({
+      envMode: "local",
+      worktreePath: null,
+      requestedBranch: null,
+    });
+  });
+
+  test("the agent stage runs while the session connects", async () => {
+    const { dispatcher } = await harness();
+    holdSessionStart();
+    const starting = dispatcher.startThread({
+      threadId: "t-connect",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "connect" },
+    });
+    await waitFor(() => FakeAdapter.startedCwds.includes("/tmp/kone-worktrees/connect"));
+
+    const during = worktreeSetups.at(-1);
+    expect(during?.phase).toBe("running");
+    expect(during?.stages.find((s) => s.id === "agent")?.status).toBe("running");
+
+    releaseSessionStart();
+    await starting;
+    expect(worktreeSetups.at(-1)?.stages.find((s) => s.id === "agent")?.status).toBe("done");
+  });
+
+  test("a provider startup failure leaves the agent stage failed", async () => {
+    const { dispatcher } = await harness();
+    FakeAdapter.startError = new Error("provider refused");
+    await expect(
+      dispatcher.startThread({
+        threadId: "t-start-fail",
+        provider: "codex",
+        cwd: CWD,
+        workspace: { mode: "worktree", branch: "start-fail" },
+      }),
+    ).rejects.toThrow();
+
+    const last = worktreeSetups.at(-1);
+    expect(last?.phase).toBe("failed");
+    expect(last?.stages.find((s) => s.id === "agent")?.status).toBe("failed");
   });
 });

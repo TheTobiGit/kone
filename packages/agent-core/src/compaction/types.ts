@@ -30,16 +30,3 @@ export interface CutPointResult {
   /** Tokens in the prefix eligible for compaction/summarization */
   compactedTokens: number;
 }
-
-export interface ExtractedBlockOperations {
-  filesRead: string[];
-  filesModified: string[];
-  commandsRun: string[];
-  keyPoints: string[];
-}
-
-export interface SemanticBranchSummary {
-  summary: string;
-  operations: ExtractedBlockOperations;
-  estimatedTokens: number;
-}

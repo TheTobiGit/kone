@@ -84,17 +84,12 @@ describe("renaming a worktree's placeholder branch", () => {
     );
   });
 
-  test("a branch someone named, or one already renamed, is left alone", async () => {
+  test("a branch someone named is left alone", async () => {
     const repo = await makeRepo();
     const mine = await provisionWorktree({ projectPath: repo, branch: "feature/mine" });
     expect(await renameGeneratedBranch(mine.path, "Something else")).toBeNull();
     expect(await branchAt(mine.path)).toBe("feature/mine");
     expect(await isKoneOwnedBranch(repo, "feature/mine")).toBe(false);
-
-    const made = await provisionWorktree({ projectPath: repo });
-    await renameGeneratedBranch(made.path, "First title");
-    expect(await renameGeneratedBranch(made.path, "Second title")).toBeNull();
-    expect(await branchAt(made.path)).toBe("kone/first-title");
   });
 
   test("removing the worktree reclaims the renamed branch like the placeholder", async () => {
@@ -117,5 +112,47 @@ describe("renaming a worktree's placeholder branch", () => {
     expect(await isKoneOwnedBranch(repo, "fix-login-for-real")).toBe(false);
     await removeWorktree(repo, { path: made.path, reclaimGeneratedBranch: true });
     expect(await hasBranch(repo, "fix-login-for-real")).toBe(true);
+  });
+});
+
+describe("renaming a placeholder that already left the repo", () => {
+  test("a pushed placeholder with an upstream keeps its name", async () => {
+    const repo = await makeRepo();
+    const made = await provisionWorktree({ projectPath: repo });
+
+    // Give the placeholder an upstream by pushing it to a local bare remote.
+    const remote = mkdtempSync(path.join(os.tmpdir(), "kone-wt-name-remote-"));
+    await git(remote, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "origin", remote]);
+    await git(repo, ["push", "-u", "origin", made.branch]);
+
+    // Renaming a pushed branch would break its upstream link, so it is refused.
+    expect(await renameGeneratedBranch(made.path, "Fix login redirect")).toBeNull();
+    expect(await branchAt(made.path)).toBe(made.branch);
+
+    await rm(remote, { recursive: true, force: true });
+  });
+});
+
+describe("regenerating a title-named branch", () => {
+  test("a branch kone named from a title can be named again", async () => {
+    const repo = await makeRepo();
+    const made = await provisionWorktree({ projectPath: repo });
+    const first = await renameGeneratedBranch(made.path, "First title");
+    expect(first).toBe("kone/first-title");
+
+    // The second rename is a regeneration: the branch is no longer a
+    // placeholder, but the ownership marker still names it.
+    const second = await renameGeneratedBranch(made.path, "Second title");
+    expect(second).toBe("kone/second-title");
+    expect(await branchAt(made.path)).toBe("kone/second-title");
+  });
+
+  test("a branch a person named is still left alone", async () => {
+    const repo = await makeRepo();
+    await git(repo, ["branch", "feature/manual"]);
+    const made = await provisionWorktree({ projectPath: repo, branch: "feature/manual" });
+    expect(await renameGeneratedBranch(made.path, "Some title")).toBeNull();
+    expect(await branchAt(made.path)).toBe("feature/manual");
   });
 });

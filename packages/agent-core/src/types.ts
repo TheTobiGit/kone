@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { WorktreeSetupSnapshot } from "./worktreeSetup.js";
+
 // ── Agent provider data model ───────────────────────────────────────────────
 // The load-bearing contract for kone's multi-provider agent layer. Everything
 // here is flat and serializable — it all crosses the IPC boundary to the
@@ -628,6 +630,12 @@ export type HandInRecord = {
   toModel?: string;
   /** Epoch millis when the thread changed hands. */
   at: number;
+  /** Block ids the one-shot replay omitted for lack of budget, recorded when
+   *  the bootstrap was built so the agent can read the rest back and the
+   *  timeline can say what was left out. Absent when nothing was omitted. */
+  omittedBlockIds?: string[];
+  /** Item ids inside the omitted blocks, for the same read-back. */
+  omittedItemIds?: string[];
 };
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
@@ -1064,6 +1072,12 @@ export type ForkContext = {
    *  what the timeline's "Handed from" marker names. Only written for
    *  `"handoff"` forks. */
   sourceModel?: string;
+  /** Block ids the one-shot replay omitted for lack of budget, recorded when
+   *  the bootstrap was built so the agent can read the rest back and the
+   *  timeline can say what was left out. Absent when nothing was omitted. */
+  omittedBlockIds?: string[];
+  /** Item ids inside the omitted blocks, for the same read-back. */
+  omittedItemIds?: string[];
 };
 
 /** The user-initiated fork kinds. `"side_chat"` borrows the transcript as
@@ -1694,6 +1708,14 @@ export type RuntimeEvent =
        *  step that finished. */
       note?: string;
     })
+  // The richer, staged view of the same window as thread.workspace.progress:
+  // fetch → checkout (with git's own percentage) → submodules → setup script →
+  // agent, each with logs and errors, as a whole snapshot on every change.
+  // Transient and never journaled, like the coarse steps above.
+  | (BaseEvent & {
+      type: "thread.worktree.setup";
+      snapshot: WorktreeSetupSnapshot;
+    })
   // The provider compacted the thread's context window — natively (Codex
   // `thread/compacted`, OpenCode `session.compacted`, Claude's
   // `compact_boundary`) or synthesized after a manual `/compact` turn settled
@@ -2240,6 +2262,11 @@ export type ProviderConfig = {
   antigravityGcpLocation?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays into
+   *  a session on this provider. The budget is still sized down from the target
+   *  model's window, native usage, the new prompt and headroom; this only caps
+   *  it. Absent uses the built-in default (see contextHandoff.ts). */
+  handoffTokenCap?: number;
 };
 
 /** Persisted install settings for every provider, keyed by provider. */

@@ -8,6 +8,48 @@ import type { ContractTerms } from "@kone/protocol/contract";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
 
+/** A pull request linked to a thread (mirrors agent-core ThreadPullRequestLink). */
+export type LinkedThreadPullRequest = {
+  repository: string;
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed" | "unknown";
+  checkedAt: number | null;
+  mergedAt: number | null;
+};
+
+/** The staged worktree-setup view (mirrors agent-core worktreeSetup). */
+export type WorktreeSetupStageId = "fetch" | "checkout" | "submodules" | "setup-script" | "agent";
+export type WorktreeSetupStageStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "skipped"
+  | "warning"
+  | "failed";
+export type WorktreeSetupStage = {
+  id: WorktreeSetupStageId;
+  status: WorktreeSetupStageStatus;
+  startedAt: number | null;
+  endedAt: number | null;
+  percent: number | null;
+  detail: string | null;
+  tail: string[];
+};
+export type WorktreeSetupSnapshot = {
+  threadId: string;
+  phase: "running" | "done" | "failed" | "cancelled";
+  startedAt: number;
+  endedAt: number | null;
+  branch: string | null;
+  baseRef: string | null;
+  worktreePath: string | null;
+  setupScript: { command: string } | null;
+  stages: WorktreeSetupStage[];
+  error: string | null;
+  sequence: number;
+};
+
 export type DirEntry = {
   name: string;
   path: string;
@@ -754,6 +796,9 @@ export type ProviderConfig = {
   binaryPath?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
+   *  this provider (default 16000; clamped 1024–64000). */
+  handoffTokenCap?: number;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
@@ -2939,6 +2984,11 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** The provider's handoff history cap in tokens. */
+  getHandoffBudget: (provider: ProviderKind) => Promise<number>;
+  /** Set one provider's handoff history cap; merges and resolves to the
+   *  updated full map. */
+  setHandoffBudget: (provider: ProviderKind, cap: number) => Promise<ProviderSettingsMap>;
   /** How each provider's CLI is installed, and whether it's behind. Passing
    *  `checkLatest: false` keeps it entirely local (no registry call). */
   maintenance: (options?: {
@@ -2978,6 +3028,44 @@ export type KoneAgentApi = {
    *  Does not touch recency ordering; the title.updated event follows on the
    *  runtime stream. */
   renameThread: (threadId: string, title: string) => Promise<boolean>;
+  /** Regenerate a thread's title from its whole conversation. Refuses a
+   *  manually-named title: resolves `{ ok: false, reason: "manual_title" }`. */
+  regenerateThreadTitle: (
+    threadId: string,
+  ) => Promise<
+    | { ok: true; title: string; changed: boolean }
+    | {
+        ok: false;
+        reason: "unknown" | "manual_title" | "no-workdir" | "empty" | "generation_failed";
+      }
+  >;
+  /** A pull request linked to a thread. `repository` is "owner/repo" (may be
+   *  empty when unknown). Durable; the settle sweep reads it on merge. */
+  linkThreadPullRequest: (
+    threadId: string,
+    link: {
+      repository?: string | null;
+      number?: number | null;
+      url: string;
+      state?: "open" | "merged" | "closed" | "unknown" | null;
+      checkedAt?: number | null;
+      mergedAt?: number | null;
+    },
+  ) => Promise<
+    | { ok: true; link: LinkedThreadPullRequest }
+    | { ok: false; reason: "invalid" | "unknown" }
+  >;
+  unlinkThreadPullRequest: (threadId: string) => Promise<boolean>;
+  threadPullRequestLink: (threadId: string) => Promise<LinkedThreadPullRequest | null>;
+  /** Per-project setup / settle scripts, stored against the project path. */
+  getProjectScript: (projectPath: string, kind: "setup" | "settle") => Promise<string | null>;
+  setProjectScript: (
+    projectPath: string,
+    kind: "setup" | "settle",
+    command: string | null,
+  ) => Promise<string | null>;
+  /** The live worktree-setup snapshot for a thread (null when none). */
+  worktreeSetup: (threadId: string) => Promise<WorktreeSetupSnapshot | null>;
   /** Native save dialog for a thread export — the main process owns the
    *  dialog, the renderer only suggests a file name. A dismissal resolves
    *  `{ canceled: true }`, distinct from the file outcome below. */

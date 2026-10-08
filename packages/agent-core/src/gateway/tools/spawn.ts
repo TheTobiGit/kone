@@ -25,7 +25,7 @@
 // through; anything else falls through to the registry's internal handling.
 
 import { SPAWN_WAIT_MAX_MS, type SpawnTargetsReport } from "../../threadSpawn.js";
-import type { InteractionMode, SpawnedThread, StoredBlock } from "../../types.js";
+import type { InteractionMode, SpawnedThread } from "../../types.js";
 import type { AgentModelRef } from "../../ConversationStore.js";
 import type { ContractTerms } from "@kone/protocol/contract";
 import {
@@ -34,6 +34,8 @@ import {
   type SpawnToolName,
 } from "@kone/protocol/spawn-record";
 import type { GatewayRecord, GatewayToolContext, GatewayToolResult, ToolEntry } from "../schemas.js";
+import { encodeThreadPageCursor } from "../../conversationStoreTypes.js";
+import { readMessageRow, renderMessageLine } from "./appThreadsFormatting.js";
 import {
   ContractAgentInputSchema,
   CONTRACT_AGENT_JSON_SCHEMA,
@@ -160,27 +162,6 @@ function modelPreferenceTargets(
   });
 }
 
-const TRUNCATION_MARKER = "\n…[truncated]";
-
-/** Truncate a message's text to `maxChars`, appending a visible marker so the
- *  reader knows the tail was cut rather than the model stopping mid-sentence. */
-function truncateTo(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const budget = Math.max(0, maxChars - TRUNCATION_MARKER.length);
-  return `${text.slice(0, budget).trimEnd()}${TRUNCATION_MARKER}`;
-}
-
-/** A block's model-readable narrative: the prompt for user blocks, the ordered
- *  assistant_text items for assistant blocks. Tool calls and their payloads are
- *  deliberately excluded — the child's raw tool use stays in its own thread. */
-function blockText(block: StoredBlock): string {
-  if (block.role === "user") return block.text;
-  return block.items
-    .filter((item) => item.kind === "assistant_text")
-    .map((item) => item.text)
-    .join("\n");
-}
-
 /** One child's outcome as prose. The summary is the whole point of the wait —
  *  a caller that only reads `content` (structuredContent is advisory, and a
  *  client is free to ignore it) would otherwise collect a receipt saying the
@@ -197,11 +178,6 @@ function waitThreadText(thread: SpawnedThread): string {
   const body = thread.summary?.trim() || thread.detail?.trim();
   if (body) return `${head}\n${body}`;
   return `${head}\n(no reply text — read the full transcript with agent_read)`;
-}
-
-/** One transcript message as prose, for the same reason. */
-function messageText(message: { role: string; text: string }): string {
-  return `[${message.role}] ${message.text.trim() || "(no text — tool calls only)"}`;
 }
 
 /** A single dispatch's tool result. The text is a record, not a sentence: the
@@ -503,7 +479,16 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
 
   const readResponseHandler = async (
     ctx: GatewayToolContext,
-    args: { threadId: string; scope?: AgentReadScope; limit?: number; maxTextChars?: number },
+    args: {
+      threadId: string;
+      scope?: AgentReadScope;
+      limit?: number;
+      maxTextChars?: number;
+      blockId?: string;
+      cursor?: string;
+      textOffset?: number;
+      representation?: "prose" | "rich";
+    },
   ): Promise<GatewayToolResult> => {
     const engine = requiredEngine();
     // Scoped to the caller's subtree, and the same answer a nonexistent thread
@@ -540,25 +525,103 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     }
     const limit = args.limit ?? 20;
     const maxTextChars = args.maxTextChars ?? 1500;
-    const messages = thread.blocks.slice(-limit).map((block) => ({
-      role: block.role,
-      text: truncateTo(blockText(block), maxTextChars),
-    }));
+    const textOffset = args.textOffset ?? 0;
+    const name = `"${thread.title ?? args.threadId}"`;
+
+    // One message by id: whole, or a slice from textOffset. This is what a
+    // coverage note points at for a message a handoff could not fit.
+    if (args.blockId) {
+      const block = thread.blocks.find((candidate) => candidate.id === args.blockId);
+      if (!block) {
+        return gatewayToolErrorResult(
+          new GatewayToolError("not_found", `No message "${args.blockId}" in ${name}.`),
+        );
+      }
+      const message = readMessageRow(block, maxTextChars, textOffset, args.representation ?? "rich");
+      return {
+        content: [
+          { type: "text", text: `Message ${message.blockId} from ${name}:\n\n${renderMessageLine(message)}` },
+        ],
+        structuredContent: {
+          thread: threadInfo,
+          scope,
+          messages: [message],
+          totalMessages: thread.blocks.length,
+        },
+      };
+    }
+
+    // Older pages from a previous reply's cursor.
+    if (args.cursor) {
+      if (!input.store.loadThreadPage) {
+        return gatewayToolErrorResult(
+          new GatewayToolError("capability_denied", "Cursor paging is not available in this session."),
+        );
+      }
+      const page = input.store.loadThreadPage(args.threadId, {
+        limit,
+        cursor: args.cursor,
+        countBlocks: true,
+      });
+      if (!page) {
+        return gatewayToolErrorResult(
+          new GatewayToolError("not_found", `No readable thread "${args.threadId}".`),
+        );
+      }
+      const messages = page.blocks.map((block) =>
+        readMessageRow(block, maxTextChars, textOffset, args.representation ?? "rich"),
+      );
+      const heading =
+        messages.length === 0
+          ? `${name} has no older messages.`
+          : `Read ${messages.length} older message${messages.length === 1 ? "" : "s"} from ${name}, oldest first:`;
+      return {
+        content: [{ type: "text", text: [heading, ...messages.map(renderMessageLine)].join("\n\n") }],
+        structuredContent: {
+          thread: threadInfo,
+          scope,
+          messages,
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+        },
+      };
+    }
+
+    const page = input.store.loadThreadPage
+      ? input.store.loadThreadPage(args.threadId, { limit, countBlocks: true })
+      : null;
+    const blocks = page ? page.blocks : thread.blocks.slice(-limit);
+    const messages = blocks.map((block) =>
+      readMessageRow(block, maxTextChars, textOffset, args.representation ?? "prose"),
+    );
+    const oldest = blocks[0];
+    const hasMore = page ? page.hasMore : thread.blocks.length > messages.length;
+    const nextCursor = page
+      ? page.nextCursor
+      : hasMore && oldest
+        ? encodeThreadPageCursor({
+            threadId: thread.threadId,
+            beforeAnchorAt: oldest.at,
+            beforeBlockId: oldest.id,
+          })
+        : null;
     const heading =
       messages.length === 0
-        ? `"${thread.title ?? args.threadId}" has no messages yet.`
-        : `Read ${messages.length} message${messages.length === 1 ? "" : "s"} from "${thread.title ?? args.threadId}", oldest first:`;
+        ? `${name} has no messages yet.`
+        : `Read ${messages.length} message${messages.length === 1 ? "" : "s"} from ${name}, oldest first:`;
     return {
       content: [
         {
           type: "text",
-          text: [heading, ...messages.map(messageText)].join("\n\n"),
+          text: [heading, ...messages.map(renderMessageLine)].join("\n\n"),
         },
       ],
       structuredContent: {
         thread: threadInfo,
         scope,
         messages,
+        nextCursor,
+        hasMore,
       },
     };
   };

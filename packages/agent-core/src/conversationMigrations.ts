@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 31;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1228,6 +1228,44 @@ function migration0028TurnSeals(db: DatabaseSync): void {
   `);
 }
 
+/** The block/item ids a hand-in's one-shot replay omitted for lack of budget,
+ *  so the agent can read the rest back and the timeline can say what was left
+ *  out. JSON arrays; NULL means nothing was recorded. */
+function migration0029HandInOmittedHistory(db: DatabaseSync): void {
+  db.exec(`
+    ALTER TABLE thread_hand_ins ADD COLUMN omitted_block_ids_json TEXT;
+    ALTER TABLE thread_hand_ins ADD COLUMN omitted_item_ids_json TEXT;
+  `);
+}
+
+/** Who owns a thread's current title. `auto` marks a title kone wrote (the
+ *  first-turn fallback or a generated one); `manual` marks a title the user
+ *  typed. Regeneration reads this and never overwrites `manual`. Kone is
+ *  unreleased, so there is no legacy case: every row is `auto` until a rename
+ *  makes it `manual`. */
+function migration0030TitleOrigin(db: DatabaseSync): void {
+  addColumn(
+    db,
+    "threads",
+    "title_origin",
+    "TEXT NOT NULL DEFAULT 'auto' CHECK (title_origin IN ('auto', 'manual'))",
+  );
+}
+
+/** A pull request the user linked to a thread. Nullable columns with no
+ *  default: a thread with no linked PR reads as all-null, which is exactly
+ *  what it is. `linked_pr_state` and `linked_pr_merged_at` are the last thing
+ *  a PR check saw, so the settle sweep can act on a merge without a live gh
+ *  call every time; a fresh check overwrites them. */
+function migration0031ThreadPullRequest(db: DatabaseSync): void {
+  addColumn(db, "threads", "linked_pr_repository", "TEXT");
+  addColumn(db, "threads", "linked_pr_number", "INTEGER");
+  addColumn(db, "threads", "linked_pr_url", "TEXT");
+  addColumn(db, "threads", "linked_pr_state", "TEXT");
+  addColumn(db, "threads", "linked_pr_checked_at", "INTEGER");
+  addColumn(db, "threads", "linked_pr_merged_at", "INTEGER");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1257,6 +1295,9 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
+  { id: 29, name: "HandInOmittedHistory", run: migration0029HandInOmittedHistory },
+  { id: 30, name: "TitleOrigin", run: migration0030TitleOrigin },
+  { id: 31, name: "ThreadPullRequest", run: migration0031ThreadPullRequest },
 ];
 
 export interface MigrationOptions {
