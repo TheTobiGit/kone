@@ -57,15 +57,42 @@ export async function forgetKoneOwnedBranch(dir: string, branch: string): Promis
   await git(dir, ["config", "--unset", `branch.${branch}.${OWNED_KEY}`]).catch(() => undefined);
 }
 
+/** Whether a branch has an upstream configured (it has been pushed with
+ *  `-u`). A generated branch that got pushed must not be renamed. */
+async function branchHasUpstream(dir: string, branch: string): Promise<boolean> {
+  try {
+    const out = (
+      await git(dir, ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`])
+    ).trim();
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Injected by the caller that owns a GitHub client, so this module stays free
+ *  of the electron import that the GitHub surface carries. Returns whether the
+ *  branch already heads a pull request. */
+export type BranchPullRequestCheck = (dir: string, branch: string) => Promise<boolean>;
+
+export interface RenameGeneratedBranchOptions {
+  /** Whether the branch already heads a PR, so it must not move. Absent reads
+   *  as "not checked"; the app passes one backed by gh. */
+  hasPullRequest?: BranchPullRequestCheck;
+}
+
 /**
  * Rename the placeholder branch a worktree is on after the thread's title.
  * Returns the new name, or null when there was nothing to rename — a branch
- * that is not a placeholder, a title with no usable words, a detached checkout.
- * Never throws: a thread keeps working on its placeholder either way.
+ * that is not a placeholder, a branch that has been pushed or already heads a
+ * pull request (renaming either would break the link), a title with no usable
+ * words, a detached checkout. Never throws: a thread keeps working on its
+ * placeholder either way.
  */
 export async function renameGeneratedBranch(
   worktreePath: string,
   title: string,
+  options?: RenameGeneratedBranchOptions,
 ): Promise<string | null> {
   try {
     const slug = branchSlugFromTitle(title);
@@ -78,6 +105,13 @@ export async function renameGeneratedBranch(
     return await withRepoMutation(root, async () => {
       const current = (await git(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
       if (!isGeneratedBranchName(current)) return null;
+      // A pushed branch or a PR head is no longer a private placeholder: its
+      // name is referenced outside this repository, and moving it would break
+      // the upstream and the pull request.
+      if (await branchHasUpstream(worktreePath, current)) return null;
+      if (options?.hasPullRequest && (await options.hasPullRequest(worktreePath, current))) {
+        return null;
+      }
       let target = `${PREFIX}${slug}`;
       for (let n = 2; await branchTaken(root, target); n++) {
         if (n > MAX_SUFFIX) return null;

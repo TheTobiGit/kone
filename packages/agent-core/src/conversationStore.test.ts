@@ -556,7 +556,8 @@ describe("pins, selection and rename", () => {
   test("setTitle marks a title auto, renameThread marks it manual", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
-    expect(store.titleOrigin("a")).toBeNull();
+    // Every fresh thread is auto-owned; there is no legacy null.
+    expect(store.titleOrigin("a")).toBe("auto");
 
     store.setTitle("a", "Generated title");
     expect(store.titleOrigin("a")).toBe("auto");
@@ -3038,15 +3039,35 @@ describe("project scripts and settle candidates", () => {
     expect(ids).toEqual(["linked", "wt"]);
   });
 
-  test("latestUserAuthoredAt reads the newest prompt, not assistant activity", () => {
+  test("latestUserAuthoredAt reads the newest prompt, not assistant activity or agent messages", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
     expect(store.latestUserAuthoredAt("t")).toBeNull();
     store.recordUserBlock({ threadId: "t", text: "first", at: 100 });
     store.applyEvent(turnStarted("t", "turn-1", 200));
     expect(store.latestUserAuthoredAt("t")).toBe(100);
+    // A message from an agent or kone lands in the same block table but is not
+    // the user, so it does not count as the user having written.
+    store.recordUserBlock({ threadId: "t", text: "note from an agent", at: 250, sender: { kind: "system" } });
+    expect(store.latestUserAuthoredAt("t")).toBe(100);
     store.recordUserBlock({ threadId: "t", text: "second", at: 300 });
     expect(store.latestUserAuthoredAt("t")).toBe(300);
+  });
+
+  test("worktreeHasOtherLiveThreads is true only for another non-settled sharer", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    store.ensureThread({ threadId: "b", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("a", { envMode: "worktree", worktreePath: "/p/.wt", requestedBranch: "x" });
+    // b is not on the worktree yet.
+    expect(store.worktreeHasOtherLiveThreads("/p/.wt", "a")).toBe(false);
+    store.setThreadWorkspace("b", { envMode: "worktree", worktreePath: "/p/.wt" });
+    expect(store.worktreeHasOtherLiveThreads("/p/.wt", "a")).toBe(true);
+    // A settled sharer no longer counts.
+    store.applyEvent(turnStarted("b", "turn-1", 10));
+    store.applyEvent(turnCompleted("b", "turn-1", 20));
+    store.setDone("b", true);
+    expect(store.worktreeHasOtherLiveThreads("/p/.wt", "a")).toBe(false);
   });
 
   test("threadIsBusy is true while a turn runs and false once it ends", () => {

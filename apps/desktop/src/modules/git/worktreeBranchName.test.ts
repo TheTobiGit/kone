@@ -119,3 +119,22 @@ describe("renaming a worktree's placeholder branch", () => {
     expect(await hasBranch(repo, "fix-login-for-real")).toBe(true);
   });
 });
+
+describe("renaming a placeholder that already left the repo", () => {
+  test("a pushed placeholder with an upstream keeps its name", async () => {
+    const repo = await makeRepo();
+    const made = await provisionWorktree({ projectPath: repo });
+
+    // Give the placeholder an upstream by pushing it to a local bare remote.
+    const remote = mkdtempSync(path.join(os.tmpdir(), "kone-wt-name-remote-"));
+    await git(remote, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "origin", remote]);
+    await git(repo, ["push", "-u", "origin", made.branch]);
+
+    // Renaming a pushed branch would break its upstream link, so it is refused.
+    expect(await renameGeneratedBranch(made.path, "Fix login redirect")).toBeNull();
+    expect(await branchAt(made.path)).toBe(made.branch);
+
+    await rm(remote, { recursive: true, force: true });
+  });
+});

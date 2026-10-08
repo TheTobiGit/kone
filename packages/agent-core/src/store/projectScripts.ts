@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import path from "node:path";
+
 import type { ConversationDb } from "./ConversationDb.js";
 
 /** The two per-project scripts kone runs around a thread's worktree. `setup`
@@ -52,7 +55,21 @@ export class ProjectScriptRepo {
 }
 
 /** The app_state key for one project's script. The path is the identity, so it
- *  is used verbatim after the kind prefix. */
+ *  is resolved to its real location first: a project opened by two different
+ *  spellings (a symlink, a relative path) is one project and must share one
+ *  script. A path that cannot be resolved uses its absolute form so the key is
+ *  still stable. */
 function scriptKey(projectPath: string, kind: ProjectScriptKind): string {
-  return `project_${kind}_script:${projectPath}`;
+  return `project_${kind}_script:${normalizeProjectPath(projectPath)}`;
+}
+
+/** Resolve a project path for use as a store key. Exported so callers can
+ *  compare on the same identity the store keys by. */
+export function normalizeProjectPath(projectPath: string): string {
+  const trimmed = projectPath.trim();
+  try {
+    return realpathSync.native(trimmed);
+  } catch {
+    return path.resolve(trimmed);
+  }
 }

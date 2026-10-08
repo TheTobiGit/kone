@@ -284,7 +284,10 @@ export async function addWorktree(
       await git(
         root,
         ["worktree", "add", "-b", branch, target, baseSha],
-        { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
+        {
+          timeoutMs: WORKTREE_EXEC_TIMEOUT_MS,
+          ...(input.onStderr ? { onStderr: input.onStderr } : {}),
+        },
       );
     } catch (error) {
       // `worktree add` can leave the branch behind when the checkout is what
@@ -320,7 +323,7 @@ export async function addWorktree(
  */
 export async function attachWorktree(
   dir: string,
-  input: { path: string; branch: string },
+  input: { path: string; branch: string; onStderr?: (chunk: string) => void },
 ): Promise<GitWorktree> {
   const branch = input.branch.trim();
   if (!branch) {
@@ -358,7 +361,10 @@ export async function attachWorktree(
       await git(
         root,
         ["worktree", "add", target, branch],
-        { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
+        {
+          timeoutMs: WORKTREE_EXEC_TIMEOUT_MS,
+          ...(input.onStderr ? { onStderr: input.onStderr } : {}),
+        },
       );
     } catch (error) {
       if (error instanceof GitError) throw classifyWorktreeError(error);

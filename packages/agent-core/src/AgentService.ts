@@ -171,6 +171,10 @@ const RETENTION_BATCH_PAUSE_MS = 50;
 const PR_SETTLE_SWEEP_MS = 2 * 60_000;
 const PR_SETTLE_INITIAL_DELAY_MS = 20_000;
 const PR_SETTLE_BATCH_SIZE = 20;
+/** A thread's PR is not re-checked more often than this. The sweep tick is the
+ *  same length, so `checked_at` backoff means one gh call per candidate per
+ *  tick at most, never a fan-out when many threads share a PR or gh is down. */
+const PR_CHECK_MIN_INTERVAL_MS = 2 * 60_000;
 
 /** A native compaction call gets this long before the service calls it failed
  *  — server-side compaction on a large thread takes minutes, not seconds. */
@@ -2909,7 +2913,10 @@ export class AgentService {
     const checker = this.options.pullRequestChecker;
     if (!history || !checker) return 0;
     let settled = 0;
-    for (const candidate of history.settleThreadPullRequestCandidates(PR_SETTLE_BATCH_SIZE)) {
+    for (const candidate of history.settleThreadPullRequestCandidates(
+      PR_SETTLE_BATCH_SIZE,
+      Date.now() - PR_CHECK_MIN_INTERVAL_MS,
+    )) {
       // Work that will wake the thread outranks a merge: leave it to finish.
       if (history.threadIsBusy(candidate.threadId)) continue;
       let checked: ThreadPullRequestLink | null = null;

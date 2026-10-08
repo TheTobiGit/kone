@@ -45,13 +45,16 @@ import {
   type ProvisionThreadWorkspace,
   type ReleaseThreadWorkspace,
   type RenameThreadWorkspaceBranch,
+  type RunThreadSetupScript,
 } from "./workspaceBuild.js";
+import { WorktreeSetupTracker, type WorktreeSetupSnapshot } from "./worktreeSetup.js";
 
 export type {
   FreshenThreadWorkspaceBase,
   ProvisionThreadWorkspace,
   ReleaseThreadWorkspace,
   RenameThreadWorkspaceBranch,
+  RunThreadSetupScript,
 } from "./workspaceBuild.js";
 
 // The thread dispatcher: the session lifecycle that used to live inside the
@@ -80,6 +83,9 @@ export interface ThreadDispatcherDeps {
   releaseWorkspace?: ReleaseThreadWorkspace;
   freshenWorkspaceBase?: FreshenThreadWorkspaceBase;
   renameWorkspaceBranch?: RenameThreadWorkspaceBranch;
+  /** Run the project's setup script in a freshly built worktree. Absent, the
+   *  setup-script stage is reported skipped. */
+  runSetupScript?: RunThreadSetupScript;
   /** The inbox kone's notices are kept in until a turn carries them. Absent,
    *  the app's mailbox, resolved when first needed. */
   mailbox?: IrcMailbox;
@@ -214,6 +220,10 @@ export interface ThreadDispatcher {
   onTurnCompleted(threadId: string): void;
   /** Drop per-thread bookkeeping when a thread is deleted. */
   forgetThread(threadId: string): void;
+  /** The live worktree-setup snapshot for a thread, or null when none is
+   *  tracked. A renderer attaching mid-setup reads this first, then follows the
+   *  thread.worktree.setup events. */
+  worktreeSetupSnapshot(threadId: string): WorktreeSetupSnapshot | null;
 }
 
 /** The transcript block an inbox message is written as. */
@@ -295,6 +305,29 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private readonly releaseWorkspace: ReleaseThreadWorkspace | undefined;
   private readonly freshenWorkspaceBase: FreshenThreadWorkspaceBase | undefined;
   private readonly renameWorkspaceBranch: RenameThreadWorkspaceBranch | undefined;
+  private readonly runSetupScript: RunThreadSetupScript | undefined;
+  /** Providers for threads with a setup in flight, so the tracker's snapshot
+   *  callback can stamp the event it broadcasts. */
+  private readonly worktreeSetupProviders = new Map<string, ProviderKind>();
+  /** The staged worktree-setup view (fetch → checkout % → submodules → setup
+   *  script → agent). On every change it broadcasts a whole snapshot on the
+   *  same runtime stream the coarse workspace steps ride. */
+  private readonly worktreeSetup = new WorktreeSetupTracker((snapshot) => {
+    const provider = this.worktreeSetupProviders.get(snapshot.threadId);
+    if (!provider) return;
+    if (snapshot.phase !== "running") this.worktreeSetupProviders.delete(snapshot.threadId);
+    this.broadcast(
+      {
+        type: "thread.worktree.setup",
+        threadId: snapshot.threadId,
+        provider,
+        at: Date.now(),
+        source: "kone.store",
+        snapshot,
+      },
+      false,
+    );
+  });
   /** Threads whose user backed out while their worktree was being built.
    *
    *  Cancelling is not "stop trying" — git is already mid-checkout and there is
@@ -334,10 +367,15 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.releaseWorkspace = deps.releaseWorkspace;
     this.freshenWorkspaceBase = deps.freshenWorkspaceBase;
     this.renameWorkspaceBranch = deps.renameWorkspaceBranch;
+    this.runSetupScript = deps.runSetupScript;
   }
 
   spawnParentTurnId(threadId: string): string | undefined {
     return this.spawnParentTurnIds.get(threadId);
+  }
+
+  worktreeSetupSnapshot(threadId: string): WorktreeSetupSnapshot | null {
+    return this.worktreeSetup.get(threadId);
   }
 
   async startThread(requested: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
@@ -891,6 +929,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.spawnParentTurnIds.delete(threadId);
     this.dispatchTails.delete(threadId);
     this.cancelledWorkspaces.delete(threadId);
+    this.worktreeSetup.forget(threadId);
+    this.worktreeSetupProviders.delete(threadId);
   }
 
   /** Persist a title and notify renderers. No-ops when the title is unchanged. */
@@ -1116,6 +1156,25 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (requestBranch.branch) request.branch = requestBranch.branch;
     if (requestBranch.base) request.base = requestBranch.base;
 
+    // The staged setup view for this build. Begin it before the first step so a
+    // renderer watching the thread already has somewhere for progress to land.
+    this.worktreeSetupProviders.set(input.threadId, input.provider);
+    this.worktreeSetup.begin({
+      threadId: input.threadId,
+      branch: requestBranch.branch ?? null,
+      baseRef: request.base ?? null,
+    });
+    let setupScript: string | null = null;
+    try {
+      setupScript = this.store.projectScript(input.cwd, "setup");
+    } catch {
+      setupScript = null;
+    }
+    this.worktreeSetup.setSnapshotFields(input.threadId, {
+      setupScript: setupScript ? { command: setupScript } : null,
+    });
+    request.onProgress = (progress) => this.worktreeSetup.stage(input.threadId, progress);
+
     // The starting point, made current first. Always reported, even when there
     // is nothing to fetch, because the stepper lists it and waits for it. Only
     // a new branch has a starting point to freshen — a named branch that
@@ -1128,6 +1187,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       freshNote = fresh.note;
     }
     step("fetch", "done", freshNote);
+    this.worktreeSetup.stage(input.threadId, {
+      stage: "fetch",
+      status: "done",
+      detail: freshNote ?? null,
+    });
 
     step("create", "running");
     let made: Awaited<ReturnType<ProvisionThreadWorkspace>>;
@@ -1135,16 +1199,16 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       made = await this.provisionWorkspace(request);
     } catch (error) {
       this.cancelledWorkspaces.delete(input.threadId);
-      step(
-        "create",
-        "failed",
+      const detail =
         error instanceof Error
           ? messageOf(error, "Could not create the worktree.")
-          : "Could not create the worktree.",
-      );
+          : "Could not create the worktree.";
+      step("create", "failed", detail);
+      this.worktreeSetup.finish(input.threadId, "failed", detail);
       throw error;
     }
     step("create", "done", describeCopiedFiles(made.copiedFiles));
+    this.worktreeSetup.setSnapshotFields(input.threadId, { worktreePath: made.path });
 
     // The cancel lands here, not earlier: git was already mid-checkout and
     // there was nothing to interrupt. What was made gets unmade, including
@@ -1159,13 +1223,52 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       });
       this.store.setThreadWorkspace(input.threadId, { envMode: "local", requestedBranch: null });
       step("link", "failed", "Cancelled.");
+      this.worktreeSetup.finish(input.threadId, "cancelled", "Cancelled.");
       throw GitError.classified("WORKSPACE_CANCELLED", "Preparing the worktree was cancelled.");
+    }
+
+    // The project's setup script runs after the tree exists and before the
+    // agent's first turn. It is the host's shell to run; here we only order it
+    // and report it. A failure is reported, not fatal — the worktree is still
+    // usable, and a broken setup command should not strand the thread.
+    if (setupScript && this.runSetupScript) {
+      this.worktreeSetup.stage(input.threadId, { stage: "setup-script", status: "running" });
+      let result: { code: number | null; output: string } = { code: null, output: "" };
+      try {
+        result = await this.runSetupScript({
+          projectPath: input.cwd,
+          cwd: made.path,
+          command: setupScript,
+          onOutput: (chunk) => {
+            for (const line of chunk.split(/\r?\n/)) {
+              if (line.trim()) this.worktreeSetup.appendTail(input.threadId, "setup-script", line);
+            }
+          },
+        });
+      } catch (err) {
+        console.warn("[agent] setup script failed to run:", err);
+      }
+      const tail = result.output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-4);
+      this.worktreeSetup.stage(input.threadId, {
+        stage: "setup-script",
+        status: result.code === 0 ? "done" : "failed",
+        detail: result.code === 0 ? null : `Exited ${result.code ?? "with signal"}`,
+        tail,
+      });
+    } else {
+      this.worktreeSetup.stage(input.threadId, { stage: "setup-script", status: "skipped" });
     }
 
     step("link", "running");
     this.store.setThreadWorkspace(input.threadId, { worktreePath: made.path, requestedBranch: null });
     step("link", "done");
     step("start", "running");
+    this.worktreeSetup.stage(input.threadId, { stage: "agent", status: "running" });
+    this.worktreeSetup.finish(input.threadId, "done");
     return made.path;
   }
 

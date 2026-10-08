@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { WorktreeSetupSnapshot } from "./worktreeSetup.js";
+
 // ── Agent provider data model ───────────────────────────────────────────────
 // The load-bearing contract for kone's multi-provider agent layer. Everything
 // here is flat and serializable — it all crosses the IPC boundary to the
@@ -1692,6 +1694,14 @@ export type RuntimeEvent =
        *  worktree started from, which private files came along. Only on a
        *  step that finished. */
       note?: string;
+    })
+  // The richer, staged view of the same window as thread.workspace.progress:
+  // fetch → checkout (with git's own percentage) → submodules → setup script →
+  // agent, each with logs and errors, as a whole snapshot on every change.
+  // Transient and never journaled, like the coarse steps above.
+  | (BaseEvent & {
+      type: "thread.worktree.setup";
+      snapshot: WorktreeSetupSnapshot;
     })
   // The provider compacted the thread's context window — natively (Codex
   // `thread/compacted`, OpenCode `session.compacted`, Claude's

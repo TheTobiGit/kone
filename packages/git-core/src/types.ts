@@ -259,6 +259,8 @@ export type CreateWorktreeOptions = {
   branch: string;
   /** Ref the new branch starts from. Defaults to HEAD. */
   base?: string;
+  /** Receive git's stderr while the checkout runs, for live progress. */
+  onStderr?: (chunk: string) => void;
 };
 
 export type GitCommitFile = {
