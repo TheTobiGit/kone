@@ -186,7 +186,7 @@ const composerOpen = ref(false);
 // the open card plus the pills row above it. Measured and published as CSS
 // vars the strip's columns consume (see col__body).
 const composerDockEl = ref<HTMLElement>();
-const { clear: composerClear } = useDockClearance(composerDockEl, {
+const { clear: composerClear, height: composerHeight } = useDockClearance(composerDockEl, {
   resting: STRIP_DOCK_RESTING,
   float: STRIP_DOCK_FLOAT,
   air: STRIP_DOCK_AIR,
@@ -1828,6 +1828,7 @@ useStudioRowView(registryPath, () =>
         v-if="visible && !blocked && activePaneIsThread && !showChooser && !isOverview && focusedThread"
         ref="threadDock"
         :composer-open="composerOpen"
+        :composer-top="composerHeight + STRIP_DOCK_FLOAT"
         :changes="activeChanges"
         :plan="activePlan"
         :delegates="activeDelegates"

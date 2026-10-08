@@ -290,7 +290,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 const dockEl = ref<HTMLElement>();
 const threadDock = ref<InstanceType<typeof ThreadDockStack> | null>(null);
 const cornerDock = computed(() => composerOpen.value ? null : threadDock.value);
-const { clear: composerClear } = useDockClearance(dockEl, { resting: 132, float: 18, air: 26 });
+const { clear: composerClear, height: composerHeight } = useDockClearance(dockEl, { resting: 132, float: 18, air: 26 });
 const { clear: cornerClear } = useDockClearance(cornerDock, { resting: 132, float: 12, air: 26 });
 const bodyPadBottom = computed(() => Math.max(composerClear.value, cornerClear.value));
 useThreadEscapeHost(() => !modalOpen.value);
@@ -441,13 +441,13 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     </div>
 
     <!-- The thread dock — Changes, Tasks and Subagents in one shell, resting in
-         the pane's bottom-right corner; a rail on the right edge while the
-         composer is open. Pane-level, not inside the composer rail, so the rail
-         can centre on the pane. -->
+         the pane's bottom-right corner; a rail on the right edge, just above the
+         composer, while it is open. -->
     <ThreadDockStack
       v-if="!modalOpen"
       ref="threadDock"
       :composer-open="composerOpen"
+      :composer-top="composerHeight + 18"
       :changes="activeChanges"
       :plan="activePlan"
       :delegates="activeDelegates"

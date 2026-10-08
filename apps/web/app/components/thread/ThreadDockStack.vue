@@ -23,6 +23,9 @@ const props = withDefaults(
     projectPath?: string;
     threadKey?: string | null;
     positionMode?: "absolute-pane" | "fixed";
+    /** Where the open composer's top edge sits, in px off the surface's
+     *  bottom — the rail rests just above it. */
+    composerTop?: number;
   }>(),
   {
     composerOpen: false,
@@ -32,6 +35,7 @@ const props = withDefaults(
     projectPath: undefined,
     threadKey: "dock",
     positionMode: "absolute-pane",
+    composerTop: 0,
   },
 );
 
@@ -49,8 +53,8 @@ const hasContent = computed(() => Boolean(hasChanges.value || props.plan || suba
 // Two stances. With the composer closed the shell rests in the bottom-right
 // corner, every section in it. With it open the space above the composer is
 // the user's, so the shell folds into a rail of tiles on the pane's right
-// edge — one per section, its count on it — and a tile opens the shell beside
-// the rail at that section.
+// edge, resting just above the composer — one per section, its count on it —
+// and a tile opens the shell beside the rail at that section.
 const railed = computed(() => props.composerOpen);
 
 /** The tile the shell was opened from, or none while only the rail shows. */
@@ -146,6 +150,7 @@ const meta = computed(() => {
     v-show="hasContent"
     class="thread-dock-stack"
     :class="railed ? `docks-rail docks-rail--${positionMode}` : `docks-corner docks-corner--${positionMode}`"
+    :style="railed ? { '--rail-lift': `${composerTop + 10}px` } : undefined"
   >
     <!-- The rail: a tile per section, the shell popping out beside it. -->
     <div v-if="railed" ref="railEl" data-agent-dock class="dock-rail">
@@ -183,7 +188,6 @@ const meta = computed(() => {
             :live="live"
             :meta="meta"
             :focus="popped"
-            origin="100% 50%"
           >
             <AnimatePresence :initial="false">
               <GitSpaceChangedFilesList
@@ -280,12 +284,10 @@ const meta = computed(() => {
   bottom: 2rem;
 }
 
-/* ── rail ── tiles down the right edge, vertically centred so they clear both
-   the pane's header and the open composer. */
+/* ── rail ── tiles on the right edge, resting just above the open composer. */
 .docks-rail {
-  top: 50%;
-  transform: translateY(-50%);
-  --dock-tray-max: min(30rem, calc(100vh - 12rem));
+  bottom: var(--rail-lift, 12px);
+  --dock-tray-max: min(30rem, calc(100vh - var(--rail-lift, 12px) - 8rem));
 }
 .docks-rail--absolute-pane {
   position: absolute;
@@ -372,12 +374,12 @@ const meta = computed(() => {
   }
 }
 
-/* The shell, popped out to the rail's left and centred on it. */
+/* The shell, popped out to the rail's left, bottom-aligned with it so it
+   grows upward and never drops over the composer. */
 .dock-rail__pop {
   position: absolute;
-  top: 50%;
+  bottom: 0;
   right: calc(100% + 10px);
-  translate: 0 -50%;
 }
 
 @media (prefers-reduced-motion: reduce) {
