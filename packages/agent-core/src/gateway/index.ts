@@ -64,6 +64,7 @@ import {
   type AppThreadsRunner,
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
+import { createAppSnoozeTools } from "./tools/snooze.js";
 import type { ThreadGateKind } from "../types.js";
 import type { PendingInteraction } from "../eventSubscriptions.js";
 import {
@@ -222,6 +223,14 @@ export interface GatewayInput {
     | "cancelQueuedTurn"
     | "promoteQueuedTurn"
   >;
+  /** Snooze and manual-resume controls for `app_snooze_thread` /
+   *  `app_resume_thread`. Service-backed in production; absent, those tools are
+   *  not registered. */
+  snoozeControls?: {
+    setSnooze(threadId: string, until: number | null): void;
+    snoozeUntilReset(threadId: string): number | null;
+    resumeLimited(threadId: string): Promise<void>;
+  };
   /** Provider status, quota, usage, and maintenance backing the app_* provider
    *  tools. Passed straight through to `createAppProviderTools` — the gateway
    *  adds no per-field mapping of its own, so the option names stay in one
@@ -326,6 +335,9 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppTypographyTools(appTypographyOptions),
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
+    ...(input.snoozeControls
+      ? createAppSnoozeTools({ store: input.store, ...input.snoozeControls })
+      : []),
     ...createAppProviderTools(appProviderOptions),
     ...createAppViewTools(appViewOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
