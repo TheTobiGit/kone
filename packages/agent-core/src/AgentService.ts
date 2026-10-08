@@ -796,11 +796,21 @@ export class AgentService {
     model: string | undefined,
     threadId: string,
   ): string | undefined {
-    const candidate =
-      model ??
-      this.sessionInputs.get(threadId)?.model ??
-      this.historyStore?.threadMeta(threadId)?.model;
-    return this.validModelFor(provider, candidate);
+    // Validate the requested override FIRST. If it is dropped, the adapter
+    // keeps running the live session's model, so that is the next candidate —
+    // not the dropped id, and not an unrelated stored one while a session is
+    // live. Only then the thread's stored model.
+    if (model) {
+      const requested = this.validModelFor(provider, model);
+      if (requested) return requested;
+    }
+    const sessionModel = this.sessionInputs.get(threadId)?.model;
+    if (sessionModel) {
+      const valid = this.validModelFor(provider, sessionModel);
+      if (valid) return valid;
+    }
+    const storedModel = this.historyStore?.threadMeta(threadId)?.model;
+    return storedModel ? this.validModelFor(provider, storedModel) : undefined;
   }
 
   /** The effective context window for a replay on `provider`, in the order the

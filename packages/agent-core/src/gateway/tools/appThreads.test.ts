@@ -879,6 +879,78 @@ describe("app_read_thread", () => {
     expect(String(messages[0]?.text)).toContain("[Turn failed: boom]");
   });
 
+  it("continues a default prose read in the same representation", async () => {
+    const long = "answer ".repeat(400);
+    const mixed: StoredBlock = {
+      id: "a-mix",
+      role: "assistant",
+      turnId: "t",
+      state: "completed",
+      at: 2,
+      items: [
+        { itemId: "i1", kind: "tool_call", status: "completed", name: "Read", text: "src/auth.ts" },
+        { itemId: "i2", kind: "assistant_text", status: "completed", text: long },
+      ],
+    };
+    const store = makeStore({ loadThread: () => ({ ...TRANSCRIPT, blocks: [mixed] }) });
+    const first = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      maxTextChars: 100,
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m1 = ((first.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(m1.representation).toBe("prose");
+    expect(m1.nextTextOffset).toBe(100);
+    // Continue in prose: the two slices reconstruct the prose exactly, with
+    // no tool prefix inserted at the offset.
+    const cont = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-mix",
+      textOffset: 100,
+      maxTextChars: 100,
+      representation: "prose",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m2 = ((cont.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(`${String(m1.text)}${String(m2.text)}`).toBe(long.slice(0, 200));
+  });
+
+  it("continues a rich read in the same representation", async () => {
+    const long = "answer ".repeat(400);
+    const rich = `[Tool] Read: src/auth.ts\n${long}`;
+    const mixed: StoredBlock = {
+      id: "a-mix",
+      role: "assistant",
+      turnId: "t",
+      state: "completed",
+      at: 2,
+      items: [
+        { itemId: "i1", kind: "tool_call", status: "completed", name: "Read", text: "src/auth.ts" },
+        { itemId: "i2", kind: "assistant_text", status: "completed", text: long },
+      ],
+    };
+    const store = makeStore({ loadThread: () => ({ ...TRANSCRIPT, blocks: [mixed] }) });
+    const first = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-mix",
+      maxTextChars: 100,
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m1 = ((first.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(m1.representation).toBe("rich");
+    expect(m1.nextTextOffset).toBe(100);
+    const cont = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-mix",
+      textOffset: 100,
+      maxTextChars: 100,
+      representation: "rich",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m2 = ((cont.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(`${String(m1.text)}${String(m2.text)}`).toBe(rich.slice(0, 200));
+  });
+
   it("pages older messages through a cursor", async () => {
     const store = makeStore({
       loadThreadPage: (threadId) => ({

@@ -40,12 +40,17 @@ export function sliceBlockText(text: string, offset: number, maxChars: number) {
 
 /** One message as a history read returns it. Concrete fields rather than a
  *  loose record so the prose renderer and the structured output agree. */
+export type ReadRepresentation = "prose" | "rich";
+
 export type ReadMessageRow = {
   blockId: string;
   role: "user" | "assistant";
   at: string | null;
   text: string;
   itemIds?: string[];
+  /** Which representation `text` is in, so a continuation at `nextTextOffset`
+   *  slices the same text rather than switching representations mid-message. */
+  representation: ReadRepresentation;
   /** Where the next slice begins, or null when this slice reached the end. */
   nextTextOffset: number | null;
 };
@@ -55,24 +60,26 @@ export type ReadMessageRow = {
  *  `offset` when it is oversized, in which case `nextTextOffset` says where to
  *  resume (null at the end). Assistant rows also carry their item ids.
  *
- *  `rich` selects the content: the default prose narrative, or the historical
- *  representation (contextBudget.historicalBlockText) that also carries
- *  commands, plans and a failed/interrupted turn's partial work. An addressed
- *  or paged read uses the rich form so an omitted tool-only or failed block
- *  can actually be recovered. */
+ *  `representation` selects the content: `"prose"` is the default narrative,
+ *  `"rich"` is the historical representation (contextBudget.historicalBlockText)
+ *  that also carries commands, plans and a failed/interrupted turn's partial
+ *  work. An addressed or paged read uses `"rich"` so an omitted tool-only or
+ *  failed block can be recovered; a continuation must pass the representation
+ *  the first slice reported. */
 export function readMessageRow(
   block: StoredBlock,
   maxChars: number,
   offset: number,
-  rich = false,
+  representation: ReadRepresentation = "prose",
 ): ReadMessageRow {
-  const source = rich ? (historicalBlockText(block) ?? "") : blockText(block);
+  const source = representation === "rich" ? (historicalBlockText(block) ?? "") : blockText(block);
   const slice = sliceBlockText(source, offset, maxChars);
   const row: ReadMessageRow = {
     blockId: block.id,
     role: block.role,
     at: iso(block.at),
     text: slice.text,
+    representation,
     nextTextOffset: slice.nextTextOffset,
   };
   if (block.role === "assistant" && block.items.length > 0) {

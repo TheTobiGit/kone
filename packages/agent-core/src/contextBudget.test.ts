@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import {
   ATTACHMENT_IMAGE_TOKENS,
   ATTACHMENT_OTHER_TOKENS,
-  CHARS_PER_TOKEN,
   DEFAULT_HANDOFF_TOKEN_CAP,
   HANDOFF_HISTORY_NOTE,
   MAX_HANDOFF_TOKEN_CAP,
@@ -75,95 +74,148 @@ describe("handoffWindowTokens", () => {
 });
 
 describe("handoffBudget", () => {
-  test("charges native usage, fixed framing and headroom against the window", () => {
+  test("charges prompt and framing once against cap, transport and window", () => {
     const window = 80_000;
-    const fixedChars = 4_000; // 1k tokens
-    const headroom = Math.max(16_000, Math.ceil(window / 4)); // 20k
-    const expected = window - 10_000 - (fixedChars / CHARS_PER_TOKEN) - headroom;
-    const budget = handoffBudget({
+    const headroom = Math.min(Math.max(16_000, Math.ceil(window / 4)), Math.floor(window / 2)); // 20k
+    const { fit, historyTokens } = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: window,
       nativeTokens: 10_000,
-      fixedChars,
+      promptChars: 4_000, // 1k tokens
+      framingChars: 2_000, // 500 tokens
       transportCharCap: 1_000_000,
     });
-    expect(budget).toBe(expected);
+    expect(fit).toBe(true);
+    expect(historyTokens).toBe(window - 10_000 - headroom - 1_000 - 500);
   });
 
-  test("caps at the provider token cap", () => {
-    const budget = handoffBudget({
-      tokenCap: DEFAULT_HANDOFF_TOKEN_CAP,
-      windowTokens: 1_000_000,
-      fixedChars: 0,
+  test("the cap binds with a nonzero prompt", () => {
+    const { fit, historyTokens } = handoffBudget({
+      tokenCap: 1_024,
+      windowTokens: 200_000,
+      promptChars: 100,
+      framingChars: 100,
       transportCharCap: 1_000_000,
     });
-    expect(budget).toBe(DEFAULT_HANDOFF_TOKEN_CAP);
+    expect(fit).toBe(true);
+    expect(historyTokens).toBe(1_024);
   });
 
-  test("caps at the send-turn transport ceiling", () => {
-    const budget = handoffBudget({
+  test("the transport ceiling binds with a nonzero prompt", () => {
+    const { fit, historyTokens } = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: 1_000_000,
-      fixedChars: 0,
+      promptChars: 100,
+      framingChars: 100,
       transportCharCap: 40_000,
     });
-    expect(budget).toBe(10_000);
+    expect(fit).toBe(true);
+    // T = 10k; minus the prompt (25) and framing (25).
+    expect(historyTokens).toBe(10_000 - 25 - 25);
   });
 
-  test("a saturated window yields zero, and attachments reduce it further", () => {
-    const base = handoffBudget({
+  test("the window binds with a nonzero prompt", () => {
+    const window = 12_000;
+    const headroom = Math.min(Math.max(16_000, Math.ceil(window / 4)), Math.floor(window / 2)); // 6k
+    const { fit, historyTokens } = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
-      windowTokens: 200_000,
-      nativeTokens: 190_000,
-      fixedChars: 100,
+      windowTokens: window,
+      promptChars: 100,
+      framingChars: 100,
       transportCharCap: 1_000_000,
     });
-    const withImage = handoffBudget({
+    expect(fit).toBe(true);
+    expect(historyTokens).toBe(window - headroom - 25 - 25);
+  });
+
+  test("a 65k-character prompt at cap 16k / window 200k is accepted", () => {
+    // Rowan's regression: the old double transport subtraction refused this.
+    const { fit, historyTokens } = handoffBudget({
+      tokenCap: DEFAULT_HANDOFF_TOKEN_CAP,
+      windowTokens: 200_000,
+      promptChars: 65_000,
+      framingChars: 500,
+      transportCharCap: 120_000,
+    });
+    expect(fit).toBe(true);
+    expect(historyTokens).toBeGreaterThan(0);
+  });
+
+  test("a 60k-character prompt at cap 64k is accepted", () => {
+    const { fit, historyTokens } = handoffBudget({
       tokenCap: MAX_HANDOFF_TOKEN_CAP,
       windowTokens: 200_000,
-      nativeTokens: 190_000,
-      fixedChars: 100,
+      promptChars: 60_000,
+      framingChars: 500,
+      transportCharCap: 120_000,
+    });
+    expect(fit).toBe(true);
+    expect(historyTokens).toBeGreaterThan(0);
+  });
+
+  test("go on an 8k model is accepted with whatever history fits", () => {
+    // The old headroom (16k) exceeded an 8k window and refused everything.
+    const window = 8_000;
+    const headroom = Math.min(Math.max(16_000, Math.ceil(window / 4)), Math.floor(window / 2)); // 4k
+    const { fit, historyTokens } = handoffBudget({
+      tokenCap: DEFAULT_HANDOFF_TOKEN_CAP,
+      windowTokens: window,
+      promptChars: 2,
+      framingChars: 200,
+      transportCharCap: 120_000,
+    });
+    expect(fit).toBe(true);
+    expect(historyTokens).toBe(window - headroom - 1 - 50);
+  });
+
+  test("refuses only when the mandatory content cannot fit", () => {
+    // F + P exceeds the window after headroom.
+    const refused = handoffBudget({
+      tokenCap: MAX_HANDOFF_TOKEN_CAP,
+      windowTokens: 8_000,
+      promptChars: 40_000, // 10k tokens
+      framingChars: 200,
+      transportCharCap: 120_000,
+    });
+    expect(refused.fit).toBe(false);
+    // F + P exceeds the transport ceiling.
+    const refusedTransport = handoffBudget({
+      tokenCap: MAX_HANDOFF_TOKEN_CAP,
+      windowTokens: 1_000_000,
+      promptChars: 130_000,
+      framingChars: 200,
+      transportCharCap: 120_000,
+    });
+    expect(refusedTransport.fit).toBe(false);
+  });
+
+  test("a just-above-zero history budget still fits (coverage is in framing)", () => {
+    // T = 151 tokens; prompt 500 chars (125) + framing 100 chars (25) = 150,
+    // so history is 1 token — accepted, never a refusal.
+    const { fit, historyTokens } = handoffBudget({
+      tokenCap: MAX_HANDOFF_TOKEN_CAP,
+      windowTokens: 1_000_000,
+      promptChars: 500,
+      framingChars: 100,
+      transportCharCap: 604,
+    });
+    expect(fit).toBe(true);
+    expect(historyTokens).toBe(1);
+  });
+
+  test("attachments are charged against the window only", () => {
+    const window = 20_000;
+    const { fit, historyTokens } = handoffBudget({
+      tokenCap: MAX_HANDOFF_TOKEN_CAP,
+      windowTokens: window,
+      promptChars: 100,
+      framingChars: 100,
       attachments: [image()],
       transportCharCap: 1_000_000,
     });
-    expect(base).toBe(0);
-    expect(withImage).toBe(0);
-  });
-
-  test("an unknown window falls back to the conservative default", () => {
-    // The default window (128k) is larger than the hard cap, so an unknown
-    // window still yields the cap rather than an under-sized budget.
-    const budget = handoffBudget({
-      tokenCap: MAX_HANDOFF_TOKEN_CAP,
-      fixedChars: 0,
-      transportCharCap: 1_000_000,
-    });
-    expect(budget).toBe(MAX_HANDOFF_TOKEN_CAP);
-  });
-
-  test("mandatory framing that exceeds the cap leaves no history", () => {
-    // A 10k-character title plus the rest of the framing is ~2.5k tokens,
-    // over a 1,024-token cap: nothing is left for history.
-    const budget = handoffBudget({
-      tokenCap: 1_024,
-      windowTokens: 128_000,
-      fixedChars: 10_000,
-      transportCharCap: 1_000_000,
-    });
-    expect(budget).toBe(0);
-  });
-
-  test("an exact-boundary window leaves no room for history", () => {
-    // The window is exactly the framing's tokens, so headroom alone makes the
-    // total negative: no history can be selected.
-    const window = 20_000;
-    const budget = handoffBudget({
-      tokenCap: MAX_HANDOFF_TOKEN_CAP,
-      windowTokens: window,
-      fixedChars: window * CHARS_PER_TOKEN,
-      transportCharCap: 1_000_000,
-    });
-    expect(budget).toBe(0);
+    const headroom = Math.min(Math.max(16_000, Math.ceil(window / 4)), Math.floor(window / 2)); // 10k
+    expect(fit).toBe(true);
+    expect(historyTokens).toBe(window - headroom - 25 - 25 - ATTACHMENT_IMAGE_TOKENS);
   });
 });
 
@@ -277,7 +329,7 @@ describe("selectHistoricalBlocks", () => {
       assistant([textItem("early answer", "early-item")], "completed", "a-early"),
       user("latest request", "u-last"),
     ];
-    const selection = selectHistoricalBlocks({ blocks, budgetTokens: 200, readThreadId: "thread-9" });
+    const selection = selectHistoricalBlocks({ blocks, budgetTokens: 60, readThreadId: "thread-9" });
     // The two shortest priority messages fit; the early answer is dropped.
     expect(selection.omittedBlockIds).toContain("a-early");
     expect(selection.omittedItemIds).toContain("early-item");
