@@ -207,4 +207,33 @@ describe("forkThreadAtTurn", () => {
       }),
     ).toThrow(/not part of this conversation/);
   });
+
+  test("the placeholder provider is replaced by the first send while no session exists", async () => {
+    const store = await seedTwoTurns();
+    forkThreadAtTurn({
+      requestId: "r5",
+      threadId: "f-5",
+      sourceThreadId: "t-src",
+      turnId: "turn-1",
+      userBlockId: null,
+    });
+    // The placeholder is the source's provider/model, and no session exists.
+    expect(store.threadMeta("f-5")?.provider).toBe("codex");
+    expect(store.threadMeta("f-5")?.model).toBe("gpt-x");
+    expect(store.threadMeta("f-5")?.conversationId).toBeUndefined();
+    // Nothing has claimed it as a hand-in or a continuation commitment.
+    expect(store.handInsForThread("f-5")).toEqual([]);
+    expect(store.continuationsFromSource("t-src").map((link) => link.threadId)).toEqual(["f-5"]);
+
+    // The first send registers its session with the chosen provider — the
+    // placeholder is overwritten, not treated as a commitment.
+    store.ensureThread({
+      threadId: "f-5",
+      projectPath: "/p",
+      provider: "claudeAgent",
+      model: "claude-sonnet-5",
+    });
+    expect(store.threadMeta("f-5")?.provider).toBe("claudeAgent");
+    expect(store.threadMeta("f-5")?.model).toBe("claude-sonnet-5");
+  });
 });
