@@ -138,7 +138,7 @@ describe("AgentService.stopThread", () => {
     }
   });
 
-  test("an interrupt during startup keeps the session and cancels only the first turn", async () => {
+  test("an interrupt during startup keeps the session and applies to the first turn", async () => {
     adapterCalls.length = 0;
     const service = buildService();
     try {
@@ -148,14 +148,16 @@ describe("AgentService.stopThread", () => {
         provider: "codex",
         cwd: "/tmp",
       });
-      const startingResult = starting.catch((err: Error) => err);
       await service.interruptTurn("t-start-int");
       releaseStart();
-      // The start rejects as cancelled so no caller sends the first prompt...
-      expect(await startingResult).toBeInstanceOf(StartCancelled);
-      // ...but the session itself is NOT stopped, and no adapter stop was asked.
+      // The start resolves normally: the session stays up and nothing is stopped.
+      await starting;
       expect(service.hasLiveSession("t-start-int")).toBe(true);
       expect(adapterCalls).toEqual([]);
+      // The interrupt is applied the moment the provider accepts the first turn.
+      await service.sendTurn({ threadId: "t-start-int", input: "first" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(adapterCalls).toEqual([{ kind: "interrupt", threadId: "t-start-int" }]);
     } finally {
       await service.stopAll();
     }

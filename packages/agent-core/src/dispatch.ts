@@ -77,6 +77,16 @@ const QUIT_RESUME_CONTINUATION_KIND = "quit-resume";
 const CONTINUATION_RETRY_BACKOFF_MS = 60_000;
 const MAX_CONTINUATION_ATTEMPTS = 5;
 
+/** Thrown when a continuation was cancelled (settled, archived, superseded or
+ *  deleted) after its claim but before the handoff to the provider. The sweep
+ *  drops the row silently; it is not a dispatch failure. */
+export class ContinuationCancelled extends Error {
+  constructor(readonly threadId: string) {
+    super(`Continuation for ${threadId} was cancelled before dispatch.`);
+    this.name = "ContinuationCancelled";
+  }
+}
+
 /** Where a starting thread runs, and whether that place is its own worktree.
  *  `worktreePath` is null for a thread sharing the project's checkout. */
 type ThreadPlace = { dir: string; worktreePath: string | null };
@@ -164,6 +174,10 @@ export interface StartThreadTurnOptions {
   /** Steer only: refused rather than queued when no announced turn can take
    *  it (AgentService.steerTurn). */
   liveOnly?: boolean;
+  /** A continuation row this turn delivers. The dispatcher re-checks it at the
+   *  actual handoff (after any dispatch-tail wait) and drops the turn if the
+   *  row was cancelled in between. */
+  continuationId?: string;
 }
 
 export interface ThreadDispatcher {
@@ -370,6 +384,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // dispatched on its own: a settled thread hears about the dead work only if
   // and when something wakes it.
   private readonly threadsNeedingRestartNote = new Map<string, RestartCancelledBackgroundWork[]>();
+
+  /** Threads whose restart note is reserved by an in-flight delivery, so a
+   *  second concurrent send composes no copy of it. */
+  private readonly restartNoteReserved = new Set<string>();
 
   // One timer for the next continuation due in the future; the boot sweep
   // covers everything already due. Nothing polls: each arm schedules exactly
@@ -737,11 +755,18 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         }
         await this.sendThreadTurn(
           { threadId: row.threadId, input: recheck.prompt },
-          { silent: true, generateTitle: false },
+          { silent: true, generateTitle: false, continuationId: row.continuationId },
         );
         this.store.deleteContinuation(row.continuationId);
         resumed.push(row.threadId);
       } catch (err) {
+        if (err instanceof ContinuationCancelled || err instanceof StartCancelled) {
+          // Cancelled after the claim (settled, archived, superseded) or the
+          // session was stopped during adoption: the row is done, not retried.
+          this.store.deleteContinuation(row.continuationId);
+          skipped.push({ threadId: row.threadId, reason: "cancelled" });
+          continue;
+        }
         console.warn(`[agent] continuation for thread ${row.threadId} could not be dispatched:`, err);
         // Back off and retry, but do not spin: each failure pushes the due time
         // out, and after a cap the row is dropped with a log.
@@ -927,11 +952,25 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       this.consumeRestartNotePreamble(named.threadId);
       options?.onAccepted?.(turnId);
     };
-    const started = this.dispatchComposed(named, destination, preamble, { ...options, onAccepted });
+    let started: Promise<TurnStartResult>;
+    try {
+      started = this.dispatchComposed(named, destination, preamble, { ...options, onAccepted });
+    } catch (err) {
+      // The composed turn never reached the service: release the note so the
+      // next send carries it.
+      this.releaseRestartNotePreamble(named.threadId);
+      throw err;
+    }
     return (async (): Promise<TurnStartResult> => {
-      const result = await started;
-      if (!result.queued) onAccepted(result.turnId);
-      return result;
+      try {
+        const result = await started;
+        if (!result.queued) onAccepted(result.turnId);
+        return result;
+      } catch (err) {
+        // A refused send leaves the note for the retry.
+        this.releaseRestartNotePreamble(named.threadId);
+        throw err;
+      }
     })();
   }
 
@@ -942,6 +981,17 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     preamble: string | null,
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
+    if (options?.continuationId !== undefined) {
+      // The row may have been cancelled while this turn waited on its thread's
+      // dispatch tail. Re-check at the actual handoff: a gone row, or a thread
+      // that has become busy with real work, drops the continuation silently.
+      if (
+        this.store.getContinuation(options.continuationId) === null ||
+        this.service.isThreadBusy(input.threadId)
+      ) {
+        return Promise.reject(new ContinuationCancelled(input.threadId));
+      }
+    }
     const delivery = composeTurnDelivery({
       message: input.input,
       preamble,
@@ -1571,16 +1621,25 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   /** The restart-background note for a thread, or null, without consuming it.
-   *  The note is consumed only once a provider accepts a turn that carries it,
-   *  so a refused send leaves it for the retry. */
+   *  Reserved for one in-flight delivery at a time: a second concurrent send
+   *  composes no note, so only one provider turn carries it. */
   private peekRestartNotePreamble(threadId: string): string | null {
+    if (this.restartNoteReserved.has(threadId)) return null;
     const work = this.threadsNeedingRestartNote.get(threadId);
-    if (!work || work.length === 0) return null;
+    if (!work) return null;
+    this.restartNoteReserved.add(threadId);
     return restartCancelledBackgroundWorkNote(work);
   }
 
   /** Consume a thread's restart note, once a turn carrying it was accepted. */
   private consumeRestartNotePreamble(threadId: string): void {
     this.threadsNeedingRestartNote.delete(threadId);
+    this.restartNoteReserved.delete(threadId);
+  }
+
+  /** Release a reservation after a refused or cancelled send, so a retry can
+   *  carry the note. */
+  private releaseRestartNotePreamble(threadId: string): void {
+    this.restartNoteReserved.delete(threadId);
   }
 }

@@ -29,7 +29,7 @@ import { MemoryAgentInbox } from "./store/agentInbox.js";
 import { startInboxDelivery, type InboxDelivery } from "./inboxDelivery.js";
 import type { ThreadRuntime } from "./recipientState.js";
 import { createMailboxReportSink, renderSettleReport, type SettledTurnReport, type SettleReportSink } from "./settleReports.js";
-import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH } from "./types.js";
+import { MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS, MAX_DELEGATION_DEPTH, StartCancelled } from "./types.js";
 import type {
   InteractionMode,
   ModelDescriptor,
@@ -318,6 +318,10 @@ class FakeDispatcher implements ThreadDispatcher {
   sent: Array<{ input: SendTurnInput; options?: StartThreadTurnOptions }> = [];
   failStart = false;
   failSend = false;
+  /** Throw a typed StartCancelled from startThread (a stop during startup). */
+  throwStartCancelled = false;
+  /** Briefs journaled without dispatch (the stopped-child path). */
+  recordedBriefs: Array<{ threadId: string; text: string }> = [];
   /** Errors thrown from startThread, in order, until the list is empty. */
   startErrors: Error[] = [];
   /** When set, invoked with the child id right before sendThreadTurn rejects —
@@ -334,6 +338,7 @@ class FakeDispatcher implements ThreadDispatcher {
     this.startedParentTurns.push(options?.parentTurnId);
     const queued = this.startErrors.shift();
     if (queued) throw queued;
+    if (this.throwStartCancelled) throw new StartCancelled(input.threadId);
     if (this.failStart) throw new Error("provider CLI crashed on boot");
     const session: Session = {
       threadId: input.threadId,
@@ -365,6 +370,11 @@ class FakeDispatcher implements ThreadDispatcher {
 
   noteSpawnParentTurn(threadId: string, parentTurnId: string): void {
     this.parentTurnsNoted.push({ threadId, parentTurnId });
+  }
+
+  recordAgentMessage(input: { threadId: string; text: string }): string {
+    this.recordedBriefs.push({ threadId: input.threadId, text: input.text });
+    return "block-1";
   }
 
   spawnParentTurnId(): string | undefined {
@@ -911,6 +921,24 @@ describe("spawn engine", () => {
     const projection = (failed as Extract<RuntimeEvent, { type: "thread.spawn-updated" }>).spawned;
     expect(projection.status).toBe("failed");
     expect(projection.terminal).toBe(true);
+  });
+
+  test("a stop during a child's startup marks it stopped, keeps the brief, and takes no failover", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+    dispatcher.throwStartCancelled = true;
+
+    const error = await engine.spawn(CALLER, REQUEST).catch((e) => e);
+
+    expect(error).toBeInstanceOf(SpawnError);
+    expect(spawnErrorOf(error).code).toBe("cancelled");
+    // The brief is kept in the transcript even though the session was stopped.
+    expect(dispatcher.recordedBriefs).toHaveLength(1);
+    expect(dispatcher.recordedBriefs[0]?.text).toBe(REQUEST.prompt);
+    // The child is not failed and its session is not torn down again.
+    const children = store.spawnedChildren(CALLER.threadId);
+    expect(children).toHaveLength(1);
+    expect(providers.stopped).not.toContain(children[0]?.threadId);
   });
 
   test("a sendThreadTurn rejection after the session started settles running turns so the child reads failed", async () => {

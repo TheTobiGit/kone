@@ -944,9 +944,9 @@ export class AgentService {
       return await starting;
     } finally {
       this.startingSessions.delete(input.threadId);
-      // A start that failed (or was never reached) leaves no cancellation to
-      // honour; a successful one has already consumed its flags above.
-      this.startInterrupted.delete(input.threadId);
+      // A start that failed (or was never reached) leaves no stop to honour. An
+      // interrupt is NOT cleared here: it is applied to the first turn the
+      // provider accepts, which may be after the start resolves.
       this.startStopRequested.delete(input.threadId);
       if (this.startingSessionPromises.get(input.threadId) === starting) {
         this.startingSessionPromises.delete(input.threadId);
@@ -991,13 +991,10 @@ export class AgentService {
       });
       throw new StartCancelled(input.threadId);
     }
-    // An interrupt that arrived while connecting cancels the pending first
-    // turn only: the session stays up and its queued follow-ups are untouched,
-    // but the start rejects as cancelled so no caller sends the first prompt.
-    if (this.startInterrupted.delete(input.threadId)) {
-      this.promoteQueuedTurns(input.threadId);
-      throw new StartCancelled(input.threadId);
-    }
+    // An interrupt that arrived while connecting is applied to the first turn
+    // once the provider accepts it (noteAccepted), exactly like a stop one
+    // instant after it started. The session stays up and the queue is
+    // untouched; the caller sends its first turn as usual.
     // Crash-recovery drain: queued rows survive a quit, so when the thread
     // reopens and a session comes up, any rows still waiting are promoted
     // into it (boot itself has no sessions, so there is nothing to drain
@@ -1446,6 +1443,14 @@ export class AgentService {
   /** Tell the caller the provider took the turn. Never throws: the turn is
    *  running whatever the bookkeeping does. */
   private noteAccepted(threadId: string, turnId: string, accepted: ((turnId: string) => void) | undefined): void {
+    // An interrupt that arrived while the session was connecting is applied
+    // here: the provider has just accepted the turn, so interrupt it exactly
+    // like a stop one instant after it started.
+    if (this.startInterrupted.delete(threadId)) {
+      void this.interruptTurn(threadId).catch((err) => {
+        console.warn(`[agent] applying the startup interrupt to ${threadId} failed:`, err);
+      });
+    }
     if (!accepted) return;
     try {
       accepted(turnId);
@@ -2018,6 +2023,9 @@ export class AgentService {
 
   async stopSession(threadId: string): Promise<void> {
     this.userQuestions.cancel(threadId);
+    // A session torn down before its first turn consumes any pending startup
+    // interrupt with it.
+    this.startInterrupted.delete(threadId);
     const provider = this.routing.get(threadId);
     if (!provider) return;
     this.endAsked.add(threadId);

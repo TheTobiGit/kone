@@ -11,6 +11,7 @@ import type {
   TrackedChild,
 } from "./threadSpawn.js";
 import { CONTINUE_THREAD_OP_KIND, fingerprintOf, SpawnError } from "./threadSpawn.js";
+import { StartCancelled } from "./types.js";
 import {
   isSpawnedRelationship,
   type AgentPersona,
@@ -151,6 +152,16 @@ export class ThreadContinuationManager {
           tracked.sessionStopped = true;
         }
         letGo();
+        // A stop during startup is the user stopping the child, not a provider
+        // failure: report cancelled so the caller can retry, and take no
+        // provider-unavailable path.
+        if (err instanceof StartCancelled) {
+          throw new SpawnError(
+            "cancelled",
+            `The child thread was stopped while it was starting; nothing was sent.`,
+            { threadId: request.threadId },
+          );
+        }
         const detail = err instanceof Error ? err.message : String(err);
         throw new SpawnError(
           "provider_unavailable",

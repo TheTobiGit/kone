@@ -12,6 +12,7 @@ import type {
   TrackedChild,
 } from "./threadSpawn.js";
 import { catalogOf, providerStatusOf, SpawnError } from "./threadSpawn.js";
+import { StartCancelled } from "./types.js";
 import type {
   InteractionMode,
   SendTurnInput,
@@ -151,6 +152,38 @@ export class SpawnFailoverRunner {
         });
         break;
       } catch (err) {
+        // A stop during startup is not a provider failure: the user stopped the
+        // child. Keep its opening brief in the transcript, mark it stopped (not
+        // failed), and take no failover path.
+        if (err instanceof StartCancelled) {
+          try {
+            this.deps.dispatcher.recordAgentMessage({
+              threadId,
+              text: request.prompt,
+              sender: agentSenderFor(
+                this.deps.store,
+                caller.threadId,
+                request.contract ? "contracting" : request.delegateToAgentId ? "delegator" : "parent",
+                "brief",
+              ),
+            });
+          } catch (journalErr) {
+            console.warn(`[agent] could not keep the stopped child's brief:`, journalErr);
+          }
+          child.hasLiveSession = false;
+          child.gate = null;
+          const at = Date.now();
+          for (const turn of child.turns) {
+            if (turn.state !== "running") continue;
+            turn.state = "interrupted";
+            turn.endedAt = at;
+          }
+          this.deps.recompute(child);
+          throw new SpawnError(
+            "cancelled",
+            `The child thread was stopped while it was starting. Its brief is kept in the transcript.`,
+          );
+        }
         const message = err instanceof Error ? err.message : String(err);
         const nextTarget = isQuotaOrRateLimitError(err)
           ? this.admitFallback(chain, admissionCounts)

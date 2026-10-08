@@ -64,6 +64,7 @@ export type GatewayErrorCode =
   | "not_found"
   | "invalid_input"
   | "provider_unavailable"
+  | "cancelled"
   | "internal";
 
 /** Who wrote a pad: an agent session, when known. `model` is the session's
