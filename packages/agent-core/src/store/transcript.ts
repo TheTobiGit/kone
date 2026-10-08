@@ -100,7 +100,7 @@ export class TranscriptRepo {
    * first-page request). */
   loadThreadPage(
     threadId: string,
-    options?: { limit?: number; maxRaw?: number; cursor?: string },
+    options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean },
   ): StoredThreadPage | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -185,7 +185,14 @@ export class TranscriptRepo {
       let userSeen = 0;
       for (const row of candidates) {
         kept.push(row);
-        if (row.role === "user" && !row.steered) {
+        // Two stopping rules: the user-anchored window (the default, for the
+        // app's windowed read) stops on the limit-th opening user prompt; the
+        // block-count window stops after `limit` physical blocks. The latter
+        // is what a history read pages with, so its cursor is always a real
+        // block — never a synthetic steer-continuation segment.
+        if (options?.countBlocks) {
+          if (kept.length >= limit) break;
+        } else if (row.role === "user" && !row.steered) {
           userSeen += 1;
           if (userSeen >= limit) break;
         }

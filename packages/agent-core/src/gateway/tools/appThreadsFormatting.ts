@@ -6,6 +6,7 @@
 
 import { ago, compact } from "../helpers.js";
 import type { GatewayRecord } from "../schemas.js";
+import { historicalBlockText } from "../../contextBudget.js";
 import type { StoredBlock, StoredThreadMeta, ThreadStatus } from "../../types.js";
 import type { ProjectRosterEntry } from "./appProjects.js";
 
@@ -23,6 +24,79 @@ export function truncateTo(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const budget = Math.max(0, maxChars - TRUNCATION_MARKER.length);
   return `${text.slice(0, budget).trimEnd()}${TRUNCATION_MARKER}`;
+}
+
+/** A message's text from `offset`, capped at `maxChars`, plus where to resume
+ *  (null when the slice reached the end). Lets a reader pull an oversized
+ *  message in pieces: pass the returned `nextTextOffset` back as `textOffset`. */
+export function sliceBlockText(text: string, offset: number, maxChars: number) {
+  const start = Math.max(0, Math.min(offset, text.length));
+  const end = Math.min(text.length, start + Math.max(0, maxChars));
+  return {
+    text: text.slice(start, end),
+    nextTextOffset: end < text.length ? end : null,
+  };
+}
+
+/** One message as a history read returns it. Concrete fields rather than a
+ *  loose record so the prose renderer and the structured output agree. */
+export type ReadRepresentation = "prose" | "rich";
+
+export type ReadMessageRow = {
+  blockId: string;
+  role: "user" | "assistant";
+  at: string | null;
+  text: string;
+  itemIds?: string[];
+  /** Which representation `text` is in, so a continuation at `nextTextOffset`
+   *  slices the same text rather than switching representations mid-message. */
+  representation: ReadRepresentation;
+  /** Where the next slice begins, or null when this slice reached the end. */
+  nextTextOffset: number | null;
+};
+
+/** One block as a structured read row: its id (so a caller can address it
+ *  again), its role and timestamp, and its text — whole, or a slice from
+ *  `offset` when it is oversized, in which case `nextTextOffset` says where to
+ *  resume (null at the end). Assistant rows also carry their item ids.
+ *
+ *  `representation` selects the content: `"prose"` is the default narrative,
+ *  `"rich"` is the historical representation (contextBudget.historicalBlockText)
+ *  that also carries commands, plans and a failed/interrupted turn's partial
+ *  work. An addressed or paged read uses `"rich"` so an omitted tool-only or
+ *  failed block can be recovered; a continuation must pass the representation
+ *  the first slice reported. */
+export function readMessageRow(
+  block: StoredBlock,
+  maxChars: number,
+  offset: number,
+  representation: ReadRepresentation = "prose",
+): ReadMessageRow {
+  const source = representation === "rich" ? (historicalBlockText(block) ?? "") : blockText(block);
+  const slice = sliceBlockText(source, offset, maxChars);
+  const row: ReadMessageRow = {
+    blockId: block.id,
+    role: block.role,
+    at: iso(block.at),
+    text: slice.text,
+    representation,
+    nextTextOffset: slice.nextTextOffset,
+  };
+  if (block.role === "assistant" && block.items.length > 0) {
+    row.itemIds = block.items.map((item) => item.itemId);
+  }
+  return row;
+}
+
+/** One read row as prose, with the id and the resume offset a reader needs to
+ *  address the message again or pull the rest of it. */
+export function renderMessageLine(message: ReadMessageRow): string {
+  const next =
+    message.nextTextOffset === null
+      ? ""
+      : `\n...[truncated] (continues at textOffset ${message.nextTextOffset})`;
+  const text = message.text.trim();
+  return `[${message.role}] [${message.blockId}] ${text || "(no text - tool calls only)"}${next}`;
 }
 
 /** A block's model-readable narrative: the prompt for user blocks, the ordered

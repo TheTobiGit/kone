@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1228,6 +1228,16 @@ function migration0028TurnSeals(db: DatabaseSync): void {
   `);
 }
 
+/** The block/item ids a hand-in's one-shot replay omitted for lack of budget,
+ *  so the agent can read the rest back and the timeline can say what was left
+ *  out. JSON arrays; NULL means nothing was recorded. */
+function migration0029HandInOmittedHistory(db: DatabaseSync): void {
+  db.exec(`
+    ALTER TABLE thread_hand_ins ADD COLUMN omitted_block_ids_json TEXT;
+    ALTER TABLE thread_hand_ins ADD COLUMN omitted_item_ids_json TEXT;
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1257,6 +1267,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
+  { id: 29, name: "HandInOmittedHistory", run: migration0029HandInOmittedHistory },
 ];
 
 export interface MigrationOptions {

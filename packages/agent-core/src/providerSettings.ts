@@ -6,6 +6,7 @@ import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { writeFileAtomicSync } from "@kone/agent-core/lib-atomicWrite.js";
 
 import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.js";
+import { DEFAULT_HANDOFF_TOKEN_CAP, clampHandoffTokenCap } from "./contextBudget.js";
 import { userDataPath } from "./userDataDir.js";
 
 // Persists the user's per-provider install settings (a custom CLI binary path,
@@ -25,6 +26,7 @@ const ProviderConfigWire = z.object({
   antigravityGcpProject: z.string().trim().min(1).optional(),
   antigravityGcpLocation: z.string().trim().min(1).optional(),
   enabled: z.boolean().optional(),
+  handoffTokenCap: z.number().optional(),
 });
 
 const ProviderSettingsWire = z.record(z.string(), ProviderConfigWire);
@@ -49,6 +51,11 @@ function sanitize(raw: JsonValue | null | undefined): ProviderSettingsMap {
     if (!entry) continue;
     const clean: ProviderConfig = { enabled: entry.enabled ?? true };
     if (entry.binaryPath) clean.binaryPath = entry.binaryPath;
+    // A handoff budget cap is a token count; clamp it here so a hand-edited
+    // file can never feed an out-of-range value into the send path.
+    if (entry.handoffTokenCap !== undefined) {
+      clean.handoffTokenCap = clampHandoffTokenCap(entry.handoffTokenCap);
+    }
     // Auth-method fields only ever persist for Antigravity — other providers
     // have no use for them and must not carry them.
     if (provider === "antigravity") {
@@ -117,6 +124,30 @@ export function setProviderEnabled(
 ): ProviderSettingsMap {
   const current = readProviderSettings()[provider] ?? {};
   return writeProviderSettings(provider, { ...current, enabled });
+}
+
+/** The effective handoff history cap, in tokens, for a provider — the stored
+ *  setting clamped to the module's bounds, or the built-in default when the
+ *  provider never set one. */
+export function handoffTokenCapFor(
+  provider: ProviderKind,
+  settings: ProviderSettingsMap = readProviderSettings(),
+): number {
+  const stored = settings[provider]?.handoffTokenCap;
+  return stored !== undefined ? clampHandoffTokenCap(stored) : DEFAULT_HANDOFF_TOKEN_CAP;
+}
+
+/** Set one provider's handoff history cap and persist it, preserving its other
+ *  settings. Returns the updated full map. */
+export function setProviderHandoffTokenCap(
+  provider: ProviderKind,
+  cap: number,
+): ProviderSettingsMap {
+  const current = readProviderSettings()[provider] ?? {};
+  return writeProviderSettings(provider, {
+    ...current,
+    handoffTokenCap: clampHandoffTokenCap(cap),
+  });
 }
 
 /** Throw the canonical "provider is disabled" error unless the provider is
