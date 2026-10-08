@@ -819,7 +819,64 @@ describe("app_read_thread", () => {
     expect(second.nextTextOffset).toBe(200);
     const third = await read(200);
     expect(third.text).toBe("x".repeat(50));
-    expect(third.nextTextOffset).toBeUndefined();
+    // Terminal slice: the offset is present and null, not absent.
+    expect(third.nextTextOffset).toBeNull();
+  });
+
+  it("a blockId read returns the rich content of a tool-only block", async () => {
+    const toolOnly: StoredBlock = {
+      id: "a-tool",
+      role: "assistant",
+      turnId: "t",
+      state: "completed",
+      at: 2,
+      items: [
+        { itemId: "i1", kind: "tool_call", status: "completed", name: "Bash", text: "bun test", detail: '{"exitCode":0}' },
+      ],
+    };
+    const store = makeStore({
+      loadThread: () => ({ ...TRANSCRIPT, blocks: [toolOnly] }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-tool",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = (result.structuredContent?.messages ?? []) as GatewayRecord[];
+    expect(String(messages[0]?.text)).toContain("[Tool] Bash: bun test");
+    expect(String(messages[0]?.text)).toContain("exit code 0");
+  });
+
+  it("a blockId read of a failed block carries its error", async () => {
+    const failed: StoredBlock = {
+      id: "a-fail",
+      role: "assistant",
+      turnId: "t",
+      state: "failed",
+      error: "boom",
+      at: 2,
+      items: [
+        {
+          itemId: "i1",
+          kind: "tool_call",
+          status: "failed",
+          name: "Bash",
+          text: "bun test",
+          detail: "TypeError: broken\nexit code: 1",
+        },
+      ],
+    };
+    const store = makeStore({
+      loadThread: () => ({ ...TRANSCRIPT, blocks: [failed] }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-fail",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = (result.structuredContent?.messages ?? []) as GatewayRecord[];
+    expect(String(messages[0]?.text)).toContain("TypeError: broken");
+    expect(String(messages[0]?.text)).toContain("[Turn failed: boom]");
   });
 
   it("pages older messages through a cursor", async () => {

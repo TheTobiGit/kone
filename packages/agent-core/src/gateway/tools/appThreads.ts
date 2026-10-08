@@ -103,7 +103,7 @@ export interface AppThreadsStore {
   /** Windowed read for paging older messages (app_read_thread's cursor). A
    *  store that does not offer it refuses cursor reads rather than paging the
    *  whole thread. */
-  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string }): StoredThreadPage | null;
+  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean }): StoredThreadPage | null;
   threadMeta?(threadId: string): StoredThreadMeta | null;
   /** The project's team, in roster order — the agents a thread here can be
    *  handed to. A thread is handed to a team member or to nobody: an agent the
@@ -685,7 +685,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           `kone holds no message "${params.blockId}" in thread "${params.threadId}".`,
         );
       }
-      const message = readMessageRow(block, maxTextChars, textOffset);
+      const message = readMessageRow(block, maxTextChars, textOffset, true);
       return {
         content: [
           {
@@ -726,11 +726,15 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           "Cursor paging is not available in this session.",
         );
       }
-      const page = store.loadThreadPage(params.threadId, { limit, cursor: params.cursor });
+      const page = store.loadThreadPage(params.threadId, {
+        limit,
+        cursor: params.cursor,
+        countBlocks: true,
+      });
       if (!page) {
         throw new GatewayToolError("not_found", `kone holds no thread "${params.threadId}".`);
       }
-      const messages = page.blocks.map((block) => readMessageRow(block, maxTextChars, textOffset));
+      const messages = page.blocks.map((block) => readMessageRow(block, maxTextChars, textOffset, true));
       const title = page.meta.title ?? params.threadId;
       const heading =
         messages.length === 0
@@ -763,12 +767,21 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     if (!thread) {
       throw new GatewayToolError("not_found", `kone holds no thread "${params.threadId}".`);
     }
-    const blocks = thread.blocks.slice(-limit);
+    // Prefer the store's physical-block page so the cursor is a real block:
+    // a cursor minted from an assembled block id can name a synthetic
+    // steer-continuation segment, and paging from it skips the steering
+    // prompt and duplicates the continuation. Fall back to the tail slice
+    // only for a store that has no page reader (tests).
+    const page = store.loadThreadPage
+      ? store.loadThreadPage(params.threadId, { limit, countBlocks: true })
+      : null;
+    const blocks = page ? page.blocks : thread.blocks.slice(-limit);
     const messages = blocks.map((block) => readMessageRow(block, maxTextChars, textOffset));
     const oldest = blocks[0];
-    const hasMore = thread.blocks.length > messages.length;
-    const nextCursor =
-      hasMore && oldest
+    const hasMore = page ? page.hasMore : thread.blocks.length > messages.length;
+    const nextCursor = page
+      ? page.nextCursor
+      : hasMore && oldest
         ? encodeThreadPageCursor({
             threadId: thread.threadId,
             beforeAnchorAt: oldest.at,
