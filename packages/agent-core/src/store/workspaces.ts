@@ -50,6 +50,50 @@ export class WorkspaceRepo {
     }
   }
 
+  /** Every thread's directory claim, one entry per row (archived threads
+   *  included: a restore must not clobber a put-away thread's checkout, and a
+   *  thread with no worktree claims its project's shared checkout). The
+   *  checkpoint-restore isolation guard reads this to find overlaps.
+   *
+   *  Throws when the store cannot be read, matching `threadWorkspace`: an
+   *  unreadable store is not a license to restore into whatever happens to be
+   *  on disk, so callers fail closed. */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }> {
+    const db = this.dbh.handle();
+    if (!db) throw new Error("Thread workspaces are unavailable: the conversation store could not be opened.");
+    try {
+      // SAFETY: the projection names only the five nullable/required columns
+      // the workspace state is built from.
+      const rows = db
+        .prepare(
+          `SELECT thread_id, project_path, env_mode, worktree_path, requested_branch FROM threads`,
+        )
+        .all() as Array<{
+        thread_id: string;
+        project_path: string;
+        env_mode: string | null;
+        worktree_path: string | null;
+        requested_branch: string | null;
+      }>;
+      return rows.map((row) => ({
+        threadId: row.thread_id,
+        projectPath: row.project_path,
+        workspace: {
+          envMode: threadEnvMode(row.env_mode),
+          worktreePath: row.worktree_path ?? null,
+          requestedBranch: row.requested_branch?.trim() ? row.requested_branch : null,
+        },
+      }));
+    } catch (err) {
+      console.error("[conversation-store] allThreadWorkspaces failed:", err);
+      throw err instanceof Error ? err : new Error("Thread workspaces are unavailable.");
+    }
+  }
+
   /** Record what a thread asked for, and where it ended up.
    *
    *  Each field is written only when given, so materializing a worktree does not

@@ -472,6 +472,14 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see WorkspaceRepo */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }> {
+    return this.workspaces.allThreadWorkspaces();
+  }
+  /** @see WorkspaceRepo */
   setThreadWorkspace(
     threadId: string,
     input: { envMode?: ThreadEnvMode; worktreePath?: string | null; requestedBranch?: string | null },
@@ -537,6 +545,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadRepo */
   latestUserBlockId(threadId: string): string | null {
     return this.threads.latestUserBlockId(threadId);
+  }
+
+  /** @see ThreadRepo */
+  turnUserBlockId(threadId: string, turnId: string): string | null {
+    return this.threads.turnUserBlockId(threadId, turnId);
   }
 
   /** @see TranscriptRepo */

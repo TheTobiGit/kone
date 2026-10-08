@@ -486,6 +486,28 @@ export class ThreadRepo {
     }
   }
 
+  /** The user block that started a turn, or null when the turn has none (a
+   *  steer, or a turn whose prompt was never journaled). The checkpoint-restore
+   *  safety refusal names it so the caller can reach the existing
+   *  branch-at-block rewind from a turn id. */
+  turnUserBlockId(threadId: string, turnId: string): string | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names only the nullable block_id of the user
+      // block for this turn.
+      const row = this.dbh.prepare(
+        db,
+        `SELECT block_id FROM blocks
+          WHERE thread_id = ? AND turn_id = ? AND role = 'user'
+          ORDER BY seq ASC LIMIT 1`,
+      ).get(threadId, turnId) as { block_id: string } | undefined;
+      return row?.block_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Every thread for a project (metadata only), newest first — the backing
    *  read for the "recent conversations" block. Only threads that have at
    *  least one user turn are returned (a started-but-empty session stays out

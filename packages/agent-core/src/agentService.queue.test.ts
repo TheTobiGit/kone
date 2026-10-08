@@ -1433,6 +1433,8 @@ describe("the turn slot carries the inbox, against the real store", () => {
     const checkpoints: CheckpointStore = {
       threadProjectPath: () => null,
       threadWorkspace: () => null,
+      allThreadWorkspaces: () => [],
+      turnUserBlockId: () => null,
       recordTurnCheckpoint: () => false,
       getTurnCheckpoint: () => {
         atCheckpoint.push(probe());
