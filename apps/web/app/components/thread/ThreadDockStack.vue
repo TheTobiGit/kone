@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { onClickOutside, useEventListener } from "@vueuse/core";
+import { onClickOutside } from "@vueuse/core";
+import { useThreadEscape } from "~/composables/useThreadEscape";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { CheckListIcon, FileEditIcon, UserMultipleIcon } from "@hugeicons/core-free-icons";
@@ -71,11 +72,7 @@ function closePopped(): void {
 }
 
 onClickOutside(railEl, closePopped);
-useEventListener(window, "keydown", (e) => {
-  if (e.key !== "Escape" || !popped.value) return;
-  e.preventDefault();
-  closePopped();
-});
+useThreadEscape()("rail", () => Boolean(popped.value), closePopped);
 
 // The popped shell belongs to the rail: leaving the rail (the composer
 // closing) or the thread drops it, and a section that empties takes its tile.

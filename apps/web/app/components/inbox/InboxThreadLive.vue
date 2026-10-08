@@ -25,6 +25,7 @@ import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
+import { useThreadEscapeHost } from "~/composables/useThreadEscape";
 import { useDockClearance } from "~/composables/useDockClearance";
 import { useStudioIntake } from "~/composables/useStudioIntake";
 import { getSideChatSource } from "~/composables/sideChats";
@@ -288,6 +289,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 // air keeps the last line from kissing the card.
 const dockEl = ref<HTMLElement>();
 const { clear: bodyPadBottom } = useDockClearance(dockEl, { resting: 132, float: 18, air: 26 });
+useThreadEscapeHost(() => !modalOpen.value);
 // Growing the floor changes what there is to scroll, but resizes no box the
 // edge-fade observes — so tell it by hand, once the new padding is laid out.
 watch(bodyPadBottom, () => void nextTick(measure));

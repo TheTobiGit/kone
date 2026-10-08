@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
+import { onClickOutside, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Note01Icon,
@@ -45,6 +45,7 @@ import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
 import { useComposerTrigger } from "~/composables/useComposerTrigger";
+import { useThreadEscape } from "~/composables/useThreadEscape";
 import { useComposerWake } from "~/composables/useComposerWake";
 import { useComposerSkills } from "~/composables/useComposerSkills";
 import { useWorktreeBranch } from "~/composables/useWorktreeBranch";
@@ -759,7 +760,7 @@ function onComposerKeyup(): void {
 }
 
 function onComposerKeydown(e: KeyboardEvent): void {
-  trigger.onKeydown(e);
+  if (trigger.onKeydown(e) && e.key === "Escape") e.stopImmediatePropagation();
 }
 
 /** Drop the draft for the trigger (a send, or a consumed command). */
@@ -934,15 +935,12 @@ onClickOutside(
     ignore: ["[data-agent-dock]"],
   },
 );
-onKeyStroke("Escape", () => {
-  // Escape walks out one layer at a time: a modal/picker over the bar goes first, so
-  // dismissing the picker doesn't also throw away the draft behind it.
-  if (agentPickerOpen.value) {
-    agentPickerOpen.value = false;
-    return;
-  }
-  close();
+const registerEscape = useThreadEscape();
+registerEscape("picker", () => Boolean(props.picking), null);
+registerEscape("picker", () => agentPickerOpen.value, () => {
+  agentPickerOpen.value = false;
 });
+registerEscape("composer", () => open.value && !props.alwaysOpen, close);
 
 /** The agent picker's Escape, taken in the capture phase so one press closes
  *  one layer: without this the surface behind the composer — a portal that
