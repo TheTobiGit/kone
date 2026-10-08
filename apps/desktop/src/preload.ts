@@ -767,6 +767,14 @@ const api = {
     // tracked). The thread.worktree.setup events carry later changes.
     worktreeSetup: (threadId: string): Promise<WorktreeSetupSnapshot | null> =>
       ipcRenderer.invoke("agent:worktree-setup", threadId),
+    // Move a local thread into a worktree of its own (rebinds + restarts the
+    // session). Refused while a turn runs.
+    moveThreadToWorktree: (
+      threadId: string,
+      branch?: string,
+    ): Promise<
+      { ok: true; worktreePath: string } | { ok: false; reason: "unknown" | "busy" | "failed"; detail?: string }
+    > => ipcRenderer.invoke("agent:move-thread-to-worktree", threadId, branch),
     // Native save dialog for a thread export — the main process owns the
     // dialog, the renderer only suggests a file name. A dismissal resolves
     // `{ canceled: true }`, distinct from the export outcome below.

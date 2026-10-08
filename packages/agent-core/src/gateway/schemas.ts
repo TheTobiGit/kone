@@ -2385,6 +2385,28 @@ export const UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA = {
 export type LinkThreadPullRequestInput = z.infer<typeof LinkThreadPullRequestInputSchema>;
 export type UnlinkThreadPullRequestInput = z.infer<typeof UnlinkThreadPullRequestInputSchema>;
 
+export const MoveAppThreadToWorktreeInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to move into its own worktree, as app_list_threads reports it."),
+  branch: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The branch to create for the worktree. Omit to let kone name it from the title."),
+});
+
+export const MOVE_APP_THREAD_TO_WORKTREE_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to move into its own worktree, as app_list_threads reports it."),
+    branch: {
+      type: "string",
+      description: "The branch to create for the worktree. Omit to let kone name it from the title.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export type MoveAppThreadToWorktreeInput = z.infer<typeof MoveAppThreadToWorktreeInputSchema>;
+
 // ── providers & usage ────────────────────────────────────────────────────────
 
 export const USAGE_RANGES = ["1d", "7d", "30d", "all"] as const;

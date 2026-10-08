@@ -1570,3 +1570,57 @@ describe("thread dispatcher: invoked skills", () => {
     await pending;
   });
 });
+
+describe("moving a thread into a worktree", () => {
+  test("builds a worktree, rebinds the session and resumes the conversation", async () => {
+    const { store, dispatcher } = await harness();
+    store.captureConversationId(THREAD, "conv-move");
+    FakeAdapter.startedCwds.length = 0;
+    FakeAdapter.startedResumes.length = 0;
+    provisioned.length = 0;
+
+    const result = await dispatcher.moveThreadToWorktree(THREAD);
+
+    expect(result).toEqual({ ok: true, worktreePath: "/tmp/kone-worktrees/kone-deadbeef" });
+    expect(provisioned).toHaveLength(1);
+    expect(store.threadWorkspace(THREAD)?.worktreePath).toBe("/tmp/kone-worktrees/kone-deadbeef");
+    // The session was restarted in the worktree, resuming the conversation.
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/kone-deadbeef"]);
+    expect(FakeAdapter.startedResumes).toEqual(["conv-move"]);
+  });
+
+  test("a thread already in a worktree is returned as-is, building nothing", async () => {
+    const { store, dispatcher } = await harness();
+    store.setThreadWorkspace(THREAD, {
+      envMode: "worktree",
+      worktreePath: "/tmp/kone-worktrees/already",
+    });
+    provisioned.length = 0;
+
+    expect(await dispatcher.moveThreadToWorktree(THREAD)).toEqual({
+      ok: true,
+      worktreePath: "/tmp/kone-worktrees/already",
+    });
+    expect(provisioned).toHaveLength(0);
+  });
+
+  test("an unknown thread is refused", async () => {
+    const { dispatcher } = await harness();
+    expect(await dispatcher.moveThreadToWorktree("nope")).toEqual({
+      ok: false,
+      reason: "unknown",
+    });
+  });
+
+  test("a provisioning failure is reported, not thrown", async () => {
+    const { dispatcher } = await harness();
+    provisionFails = true;
+    try {
+      const result = await dispatcher.moveThreadToWorktree(THREAD);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("failed");
+    } finally {
+      provisionFails = false;
+    }
+  });
+});
