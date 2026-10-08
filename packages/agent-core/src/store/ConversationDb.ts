@@ -324,6 +324,19 @@ export class ConversationDb {
       )) {
         add(entry.threadId, entry.work);
       }
+      // An interrupted session may have had background shells or monitors that
+      // leave no durable row. Give its thread an empty note so the provider is
+      // told those cannot be listed rather than hearing nothing.
+      // SAFETY: the projection names only the nullable thread_id of a running
+      // assistant block.
+      const interruptedRows = db
+        .prepare(
+          `SELECT DISTINCT thread_id FROM blocks WHERE role = 'assistant' AND state = 'running'`,
+        )
+        .all() as Array<{ thread_id: string }>;
+      for (const row of interruptedRows) {
+        if (!byThread.has(row.thread_id)) byThread.set(row.thread_id, []);
+      }
     } catch (err) {
       console.error("[conversation-store] could not collect restart background work:", err);
       return new Map();

@@ -22,7 +22,7 @@ import {
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
 import { checkpointRestoreIsolation, type RestorePathClaim } from "./checkpointRestoreSafety.js";
-import { copyTurnStamp, isCompactionSupported } from "./types.js";
+import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -165,7 +165,10 @@ const FALLBACK_COMPACT_TIMEOUT_MS = 10 * 60_000;
 /** How long a stop waits for a session start still in flight before answering
  *  with `confirmedStopped: false`. The start is separately marked cancelled, so
  *  it is torn down whenever it lands; this only bounds the caller's wait. */
-const STOP_START_WAIT_MS = 10_000;
+/** The whole stop — the wait for a start still in flight plus the teardown —
+ *  is bounded by one deadline, so a provider that never answers cannot hold
+ *  the caller open. */
+const STOP_TOTAL_TIMEOUT_MS = 20_000;
 /** How long a queued follow-up that failed to start waits before each retry.
  *  One delay per retry, so a row gets the first try plus this many more; when
  *  they run out the row is held for the user rather than retried forever. */
@@ -229,6 +232,8 @@ export type AgentServiceOptions = {
   compactFallbackTimeoutMs?: number;
   /** Queued-turn retry backoff (see QUEUE_RETRY_DELAYS_MS). Tests shrink it. */
   queueRetryDelaysMs?: readonly number[];
+  /** The whole-stop deadline (see STOP_TOTAL_TIMEOUT_MS). Tests shrink it. */
+  stopTotalTimeoutMs?: number;
   /** The conversation store's queue surface, injected by tests. Defaults to
    *  the app-wide store (getConversationStore) when absent. */
   store?: QueuedTurnStore;
@@ -236,7 +241,7 @@ export type AgentServiceOptions = {
    *  injected by tests. Defaults to the app-wide store when absent. */
   historyStore?: Pick<
     ConversationStore,
-    "setArchived" | "setDone" | "threadMeta" | "staleThreadIds"
+    "setArchived" | "setDone" | "threadMeta" | "staleThreadIds" | "cancelContinuationsForThread"
   >;
   /** The conversation store's turn-checkpoint slice the pre-turn snapshot
    *  path needs, injected by tests. Defaults to the app-wide store when
@@ -472,10 +477,12 @@ export class AgentService {
   /** The in-flight start per thread, so a stop issued while a session is
    *  connecting can wait for it and then tear it down instead of racing it. */
   private readonly startingSessionPromises = new Map<string, Promise<Session>>();
-  /** Threads whose in-flight session start a stop has cancelled. The start
-   *  still completes inside the adapter; this makes the service tear it down
-   *  before it can run a turn. */
-  private readonly startCancelled = new Set<string>();
+  /** Threads whose in-flight session start an interrupt has cancelled: the
+   *  session still comes up, but its pending first turn is not sent. */
+  private readonly startInterrupted = new Set<string>();
+  /** Threads whose in-flight session start a stop has cancelled: the session
+   *  is torn down on arrival and the start rejects as cancelled. */
+  private readonly startStopRequested = new Set<string>();
   /** Per-thread tail of queued-row deliveries — the drain and Send now share
    *  it, so one row at a time is handed to the provider (withQueueDelivery). */
   private readonly queueDeliveries = new Map<string, Promise<void>>();
@@ -938,8 +945,9 @@ export class AgentService {
     } finally {
       this.startingSessions.delete(input.threadId);
       // A start that failed (or was never reached) leaves no cancellation to
-      // honour; a successful one has already consumed it above.
-      this.startCancelled.delete(input.threadId);
+      // honour; a successful one has already consumed its flags above.
+      this.startInterrupted.delete(input.threadId);
+      this.startStopRequested.delete(input.threadId);
       if (this.startingSessionPromises.get(input.threadId) === starting) {
         this.startingSessionPromises.delete(input.threadId);
       }
@@ -974,11 +982,21 @@ export class AgentService {
     this.ensureWedgeWatchdog();
     this.ensureIdleReaper();
     // A stop that arrived while the session was connecting: the provider has
-    // taken the start, so tear the session down now rather than letting it run
-    // a turn. Queued work is not promoted into a session being stopped.
-    if (this.startCancelled.delete(input.threadId)) {
-      await this.stopSession(input.threadId);
-      return session;
+    // taken the start, so tear it down and reject as cancelled rather than
+    // returning a dead session a caller would dispatch into. Queued work is
+    // not promoted into a session being stopped.
+    if (this.startStopRequested.delete(input.threadId)) {
+      await this.stopSession(input.threadId).catch((err) => {
+        console.warn(`[agent] tearing down a stopped start for ${input.threadId} failed:`, err);
+      });
+      throw new StartCancelled(input.threadId);
+    }
+    // An interrupt that arrived while connecting cancels the pending first
+    // turn only: the session stays up and its queued follow-ups are untouched,
+    // but the start rejects as cancelled so no caller sends the first prompt.
+    if (this.startInterrupted.delete(input.threadId)) {
+      this.promoteQueuedTurns(input.threadId);
+      throw new StartCancelled(input.threadId);
     }
     // Crash-recovery drain: queued rows survive a quit, so when the thread
     // reopens and a session comes up, any rows still waiting are promoted
@@ -1465,7 +1483,7 @@ export class AgentService {
    *  and is never isolated. Reads fail closed — a store that cannot be read
    *  throws out of `runRevert`'s catch as a `failed` refusal, never as a
    *  silent restore. */
-  private checkpointRestoreRefusal(
+  checkpointRestoreRefusal(
     store: CheckpointStore,
     threadId: string,
     turnId: string,
@@ -1473,17 +1491,26 @@ export class AgentService {
   ): { ok: false; reason: "shared-checkout"; detail: string; rewind: ConversationRewindTarget } | null {
     const workspace = store.threadWorkspace(threadId);
     const others: RestorePathClaim[] = [];
+    const seen = new Set<string>();
+    const addClaim = (otherId: string, path: string | null): void => {
+      if (otherId === threadId || !path) return;
+      const key = `${otherId}\u0000${path}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      others.push({ threadId: otherId, path });
+    };
     for (const other of store.allThreadWorkspaces()) {
-      if (other.threadId === threadId) continue;
-      others.push({
-        threadId: other.threadId,
-        path: threadWorkingDir({ projectPath: other.projectPath, ...other.workspace }),
-      });
-      // A session can be started with a cwd that differs from the thread's
-      // stored place; its live directory is a second claim for the same
-      // thread, and the one a running turn is actually writing in.
-      const liveCwd = this.sessionInputs.get(other.threadId)?.cwd;
-      if (liveCwd) others.push({ threadId: other.threadId, path: liveCwd });
+      addClaim(
+        other.threadId,
+        threadWorkingDir({ projectPath: other.projectPath, ...other.workspace }),
+      );
+      addClaim(other.threadId, this.sessionInputs.get(other.threadId)?.cwd ?? null);
+    }
+    // Every live or starting session is a claim in its own right: a session can
+    // be running with no stored workspace row, or one that names another
+    // directory, and a restore under it would clobber that thread's work.
+    for (const [otherId, input] of this.sessionInputs) {
+      addClaim(otherId, input.cwd);
     }
     const isolation = checkpointRestoreIsolation({
       cwd: dir,
@@ -1717,42 +1744,61 @@ export class AgentService {
   async interruptTurn(threadId: string): Promise<void> {
     this.userQuestions.cancel(threadId);
     this.endAsked.add(threadId);
-    // A session still connecting has no adapter turn to interrupt yet. Record
-    // the request; startSessionNow tears the session down the moment the
-    // provider hands it back.
+    // A session still connecting has no adapter turn to interrupt yet. Cancel
+    // the pending first turn only — the session comes up and its queued
+    // follow-ups are untouched; startSession rejects as cancelled so no caller
+    // sends the first prompt.
     if (this.startingSessions.has(threadId)) {
-      this.startCancelled.add(threadId);
+      this.startInterrupted.add(threadId);
       return;
     }
     return this.adapterForThread(threadId).interruptTurn(threadId);
   }
 
-  /** Stop a thread, reporting the request and its confirmation separately. The
-   *  session teardown awaits a start still in flight first, so a stop issued
-   *  while a session is connecting acts on the real session rather than racing
-   *  it. Never throws. */
+  /** Stop a thread, reporting the request and its confirmation separately.
+   *  Never throws: the whole stop — a start still in flight plus the teardown —
+   *  is bounded by one deadline, an unresolved start counts as not confirmed,
+   *  and a teardown failure is reported rather than escaping. */
   async stopThread(threadId: string): Promise<ThreadStopResult> {
     const starting = this.startingSessionPromises.get(threadId);
     // A session still connecting counts as one that exists: the start is real,
     // and a caller reading this to narrate the stop must not call it idle.
     const wasRunning = this.hasLiveSession(threadId) || this.startingSessions.has(threadId);
     const interruptRequested = wasRunning || this.isBusy(threadId);
-    // A session coming up must not run a turn after this stop: mark it, and
-    // startSessionNow tears it down on arrival.
-    if (this.startingSessions.has(threadId)) this.startCancelled.add(threadId);
+    // A session coming up must not run a turn after this stop: startSessionNow
+    // tears it down and rejects as cancelled.
+    if (this.startingSessions.has(threadId)) this.startStopRequested.add(threadId);
+    const deadline = Date.now() + (this.options.stopTotalTimeoutMs ?? STOP_TOTAL_TIMEOUT_MS);
     if (starting) {
-      // Wait out the start so the teardown below reaches a session that
-      // exists, but never block the caller: a provider that never finishes
-      // connecting answers `confirmedStopped: false` and is still torn down
-      // when it does, because `startCancelled` is already set. A start that
-      // failed has nothing to stop.
-      await withTimeout(starting, STOP_START_WAIT_MS, "session start before stop").catch(
-        () => undefined,
+      const remaining = Math.max(0, deadline - Date.now());
+      const settled = await withTimeout(starting, remaining, "session start before stop").then(
+        () => "resolved" as const,
+        (err: Error) =>
+          err instanceof StartCancelled ? ("cancelled" as const) : ("timeout" as const),
       );
+      if (settled === "timeout") {
+        return {
+          interruptRequested,
+          confirmedStopped: false,
+          wasRunning,
+          detail: "the session start did not finish before the stop deadline",
+        };
+      }
+      // "cancelled": startSessionNow already tore the session down; the
+      // teardown below is then a no-op that confirms it.
     }
-    await this.stopSession(threadId);
+    let detail: string | undefined;
+    try {
+      const remaining = Math.max(0, deadline - Date.now());
+      await withTimeout(this.stopSession(threadId), remaining, "session teardown");
+    } catch (err) {
+      detail = err instanceof Error ? err.message : String(err);
+      console.warn(`[agent] stop teardown for ${threadId} did not confirm:`, err);
+    }
     const confirmedStopped = !this.hasLiveSession(threadId) && !this.isBusy(threadId);
-    return { interruptRequested, confirmedStopped, wasRunning };
+    return detail === undefined
+      ? { interruptRequested, confirmedStopped, wasRunning }
+      : { interruptRequested, confirmedStopped, wasRunning, detail };
   }
 
   /** Did somebody ask to end what `threadId` was doing — an interrupt or a
@@ -2725,6 +2771,8 @@ export class AgentService {
       const at = Date.now();
       if (archived) {
         this.cancelThreadQueue(id, provider, "archive");
+        // A continuation scheduled for a put-away thread is stale.
+        history.cancelContinuationsForThread(id);
         this.dispatch({
           type: "thread.archived",
           threadId: id,
@@ -2763,6 +2811,8 @@ export class AgentService {
     // skip the write too instead of stamping a row that doesn't exist.
     if (!provider) return;
     history.setDone(threadId, done);
+    // A continuation scheduled for a thread the user finished with is stale.
+    if (done) history.cancelContinuationsForThread(threadId);
     const at = Date.now();
     this.dispatch({
       type: "thread.done.updated",

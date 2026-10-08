@@ -45,7 +45,7 @@ import type {
   TurnSendOptions,
   TurnStartResult,
 } from "./types.js";
-import { turnLabel } from "./types.js";
+import { StartCancelled, turnLabel } from "./types.js";
 import { getIrcMailbox, type IrcMailbox } from "./gateway/tools/irc.js";
 import {
   describeCopiedFiles,
@@ -71,6 +71,11 @@ export type {
 
 /** The continuation kind quit-resume schedules; Phase 3 adds `limit-reset`. */
 const QUIT_RESUME_CONTINUATION_KIND = "quit-resume";
+
+/** How long a failed continuation waits before its next attempt, and how many
+ *  attempts it gets before being dropped rather than retried forever. */
+const CONTINUATION_RETRY_BACKOFF_MS = 60_000;
+const MAX_CONTINUATION_ATTEMPTS = 5;
 
 /** Where a starting thread runs, and whether that place is its own worktree.
  *  `worktreePath` is null for a thread sharing the project's checkout. */
@@ -207,6 +212,11 @@ export interface ThreadDispatcher {
    *  resuming never fails boot — every failure is contained per thread and
    *  reported as skipped. */
   resumeQuitInterruptedChatsAtBoot(): Promise<{ resumed: string[]; skipped: QuitResumeSkipped[] }>;
+  /** Dispatch every continuation due now (the boot sweep and the timer both
+   *  call this). Public so a test can drive it without a live timer. */
+  dispatchDueContinuations(): Promise<{ resumed: string[]; skipped: QuitResumeSkipped[] }>;
+  /** Stage one thread's restart-background note (the boot capture's reader). */
+  stageRestartBackgroundNote(threadId: string, work: RestartCancelledBackgroundWork[]): void;
   /** Stage the restart-background notes captured at the boot seal: one note per
    *  thread that had live background work when the last process died. The note
    *  rides the thread's NEXT turn and never starts one, so a settled thread is
@@ -645,7 +655,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       // No dispatcher is live yet on a fresh process: any claim belongs to a
       // boot that died before settling it, so release them all to become due.
       this.store.releaseOrphanedContinuationClaims();
-      const result = await this.sweepContinuations();
+      const result = await this.dispatchDueContinuations();
       const allSkipped = [...skipped, ...result.skipped];
       if (result.resumed.length > 0) {
         console.info(
@@ -668,12 +678,20 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   recoverRestartBackgroundNotesAtBoot(): void {
     try {
       for (const [threadId, work] of this.store.takeRestartCancelledBackgroundWork()) {
-        if (work.length === 0) continue;
-        this.threadsNeedingRestartNote.set(threadId, work);
+        // An empty list still stages: the note carries the "shells and monitors
+        // cannot be listed" line for an interrupted session with none of the
+        // enumerable kinds.
+        this.stageRestartBackgroundNote(threadId, work);
       }
     } catch (err) {
       console.warn("[agent] restart background work could not be read at boot:", err);
     }
+  }
+
+  /** Stage one thread's restart-background note: it rides the thread's next
+   *  turn and is consumed when a provider accepts it. */
+  stageRestartBackgroundNote(threadId: string, work: RestartCancelledBackgroundWork[]): void {
+    this.threadsNeedingRestartNote.set(threadId, work);
   }
 
   /** Dispatch every continuation due now, then arm a timer for the next one.
@@ -681,7 +699,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  a stale one is cancelled rather than resumed. Claims a dead boot left are
    *  released by the boot caller, not here — a timer sweep must not free an
    *  in-flight sweep's claims. */
-  private async sweepContinuations(): Promise<{
+  async dispatchDueContinuations(): Promise<{
     resumed: string[];
     skipped: QuitResumeSkipped[];
   }> {
@@ -702,13 +720,41 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         continue;
       }
       try {
-        await this.dispatchQuitResumeTurn(row.threadId, decision.prompt);
+        await this.ensureThreadSession(row.threadId, { resume: true });
+        // The wait above is where a settle, archive or user turn can land.
+        // Re-read the row (a cancellation deletes it) and re-run the skip rules
+        // immediately before the send, so a cancelled or now-ineligible
+        // continuation never reaches the provider.
+        if (this.store.getContinuation(row.continuationId) === null) {
+          skipped.push({ threadId: row.threadId, reason: "cancelled" });
+          continue;
+        }
+        const recheck = this.continuationDecision(row);
+        if ("cancel" in recheck) {
+          this.store.deleteContinuation(row.continuationId);
+          skipped.push({ threadId: row.threadId, reason: recheck.cancel });
+          continue;
+        }
+        await this.sendThreadTurn(
+          { threadId: row.threadId, input: recheck.prompt },
+          { silent: true, generateTitle: false },
+        );
         this.store.deleteContinuation(row.continuationId);
         resumed.push(row.threadId);
       } catch (err) {
         console.warn(`[agent] continuation for thread ${row.threadId} could not be dispatched:`, err);
-        // Release the claim so a later boot retries it rather than stranding it.
-        this.store.clearContinuationClaim(row.continuationId);
+        // Back off and retry, but do not spin: each failure pushes the due time
+        // out, and after a cap the row is dropped with a log.
+        const attempts = this.store.failContinuation(
+          row.continuationId,
+          Date.now() + CONTINUATION_RETRY_BACKOFF_MS,
+        );
+        if (attempts >= MAX_CONTINUATION_ATTEMPTS) {
+          this.store.deleteContinuation(row.continuationId);
+          console.warn(
+            `[agent] dropping continuation ${row.continuationId} for ${row.threadId} after ${attempts} failed attempts`,
+          );
+        }
         skipped.push({ threadId: row.threadId, reason: "dispatch-failed" });
       }
     }
@@ -750,7 +796,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const delay = Math.max(0, next - Date.now());
     const timer = setTimeout(() => {
       this.continuationTimer = null;
-      void this.sweepContinuations();
+      void this.dispatchDueContinuations();
     }, delay);
     timer.unref?.();
     this.continuationTimer = timer;
@@ -862,9 +908,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       }
     }
     // The replay and the restart note are read before anything below is
-    // journaled, so both end at the last thing the agent actually saw/ran.
+    // journaled, so both end at the last thing the agent actually saw/ran. The
+    // restart note is only *peeked* here: it is consumed when the provider
+    // accepts the turn, so a refused send leaves it for the retry.
     const replay = this.takeReplay(named.threadId);
-    const restartNote = this.takeRestartNotePreamble(named.threadId);
+    const restartNote = this.peekRestartNotePreamble(named.threadId);
     const preamble = [replay, restartNote]
       .filter((part): part is string => Boolean(part))
       .join("\n\n") || null;
@@ -875,6 +923,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const onAccepted = (turnId: string): void => {
       if (accepted) return;
       accepted = true;
+      // The provider took the turn, so the note it carried is delivered.
+      this.consumeRestartNotePreamble(named.threadId);
       options?.onAccepted?.(turnId);
     };
     const started = this.dispatchComposed(named, destination, preamble, { ...options, onAccepted });
@@ -978,6 +1028,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       try {
         return await sent;
       } catch (error) {
+        if (error instanceof StartCancelled) {
+          // The session start was cancelled (an interrupt or stop while it was
+          // connecting). The prompt is not lost: keep its block so a retry
+          // reads above it, and rethrow as cancelled rather than failed.
+          throw error;
+        }
         if (this.store.discardUnsentUserBlock(input.threadId, journaledId)) {
           this.announceUnjournaled(input.threadId, journaledId);
         }
@@ -1514,12 +1570,17 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return thread ? buildResumeContext(thread) : null;
   }
 
-  /** The restart-background note for a thread, or null. One-shot: the first
-   *  turn after boot carries it, and later turns are not told again. */
-  private takeRestartNotePreamble(threadId: string): string | null {
+  /** The restart-background note for a thread, or null, without consuming it.
+   *  The note is consumed only once a provider accepts a turn that carries it,
+   *  so a refused send leaves it for the retry. */
+  private peekRestartNotePreamble(threadId: string): string | null {
     const work = this.threadsNeedingRestartNote.get(threadId);
     if (!work || work.length === 0) return null;
-    this.threadsNeedingRestartNote.delete(threadId);
     return restartCancelledBackgroundWorkNote(work);
+  }
+
+  /** Consume a thread's restart note, once a turn carrying it was accepted. */
+  private consumeRestartNotePreamble(threadId: string): void {
+    this.threadsNeedingRestartNote.delete(threadId);
   }
 }
