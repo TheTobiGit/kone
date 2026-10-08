@@ -8,12 +8,15 @@ import { workingDirFor } from "./assistantWorkspace.js";
 import type { ConversationStore } from "./ConversationStore.js";
 import {
   claimQuitResumeRecordAtStartup,
-  resumeQuitInterruptedChats,
   type QuitResumeAssistantTurn,
   type QuitResumeSkipped,
   type QuitResumeThreadSnapshot,
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
+import {
+  restartCancelledBackgroundWorkNote,
+  type RestartCancelledBackgroundWork,
+} from "./restartBackgroundNote.js";
 import { renderSenderHeader, threadAgentName } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
 import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
@@ -171,6 +174,11 @@ export interface ThreadDispatcher {
    *  resuming never fails boot — every failure is contained per thread and
    *  reported as skipped. */
   resumeQuitInterruptedChatsAtBoot(): Promise<{ resumed: string[]; skipped: QuitResumeSkipped[] }>;
+  /** Stage the restart-background notes captured at the boot seal: one note per
+   *  thread that had live background work when the last process died. The note
+   *  rides the thread's NEXT turn and never starts one, so a settled thread is
+   *  never woken. */
+  recoverRestartBackgroundNotesAtBoot(): void;
   /** Back out of a worktree that is still being built. Does not interrupt git —
    *  the creation is awaited and what it made is then removed. */
   cancelThreadWorkspace(threadId: string): void;
@@ -313,6 +321,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // continuation.
   private readonly threadsNeedingReplay = new Set<string>();
 
+  // Threads whose background work (subagents, Claude task-tracker tasks) a
+  // restart cancelled. Staged once at boot from what the seal captured, and
+  // consumed by the thread's next turn (restartBackgroundNote.ts). It is never
+  // dispatched on its own: a settled thread hears about the dead work only if
+  // and when something wakes it.
+  private readonly threadsNeedingRestartNote = new Map<string, RestartCancelledBackgroundWork[]>();
   // Spawned children: threadId → the parent turn that spawned it, registered
   // at dispatch (startThread/sendThreadTurn parentTurnId). The IPC broadcast
   // choke point reads it to stamp every event the child emits with its
@@ -580,6 +594,19 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
   }
 
+  /** Stage one restart-background note per thread whose live background work
+   *  the boot seal cancelled. Best-effort: a store that cannot be read leaves
+   *  the threads without a note, exactly as before this existed. */
+  recoverRestartBackgroundNotesAtBoot(): void {
+    try {
+      for (const [threadId, work] of this.store.takeRestartCancelledBackgroundWork()) {
+        if (work.length === 0) continue;
+        this.threadsNeedingRestartNote.set(threadId, work);
+      }
+    } catch (err) {
+      console.warn("[agent] restart background work could not be read at boot:", err);
+    }
+  }
   /** The shared body of sendThreadTurn and steerThreadTurn. A steer is the same
    *  dispatch with a different destination: the user typed a message, so it is
    *  journaled and can name a thread exactly like a send, and only the service
@@ -675,9 +702,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         ? { ...requested, userBlockId: randomUUID() }
         : requested;
     if (options?.parentTurnId) this.spawnParentTurnIds.set(named.threadId, options.parentTurnId);
-    // The replay is read before anything below is journaled, so the digest
-    // ends at the last thing the agent actually saw.
     const replay = this.takeReplay(named.threadId);
+    const restartNote = this.takeRestartNotePreamble(named.threadId);
+    const preamble = [replay, restartNote]
+      .filter((part): part is string => Boolean(part))
+      .join("\n\n") || null;
     // What waits in the inbox is carried by the service's turn slot, not
     // here: a send that ends up queued would otherwise settle it before the
     // turn that carries it has run.
@@ -687,7 +716,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       accepted = true;
       options?.onAccepted?.(turnId);
     };
-    const started = this.dispatchComposed(named, destination, replay, { ...options, onAccepted });
+    const started = this.dispatchComposed(named, destination, preamble, { ...options, onAccepted });
     return (async (): Promise<TurnStartResult> => {
       const result = await started;
       if (!result.queued) onAccepted(result.turnId);
@@ -1322,5 +1351,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (!this.threadsNeedingReplay.delete(threadId)) return null;
     const thread = this.store.loadThread(threadId);
     return thread ? buildResumeContext(thread) : null;
+  }
+
+  /** The restart-background note for a thread, or null. One-shot: the first
+   *  turn after boot carries it, and later turns are not told again. */
+  private takeRestartNotePreamble(threadId: string): string | null {
+    const work = this.threadsNeedingRestartNote.get(threadId);
+    if (!work || work.length === 0) return null;
+    this.threadsNeedingRestartNote.delete(threadId);
+    return restartCancelledBackgroundWorkNote(work);
   }
 }
