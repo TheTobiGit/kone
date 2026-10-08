@@ -104,7 +104,11 @@ export async function renameGeneratedBranch(
     // cannot interleave with a removal reading the branch it is about to delete.
     return await withRepoMutation(root, async () => {
       const current = (await git(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-      if (!isGeneratedBranchName(current)) return null;
+      // A fresh placeholder, or one kone already renamed from a placeholder —
+      // the ownership marker still names it. A branch a person named is neither.
+      if (!isGeneratedBranchName(current) && !(await isKoneOwnedBranch(worktreePath, current))) {
+        return null;
+      }
       // A pushed branch or a PR head is no longer a private placeholder: its
       // name is referenced outside this repository, and moving it would break
       // the upstream and the pull request.
