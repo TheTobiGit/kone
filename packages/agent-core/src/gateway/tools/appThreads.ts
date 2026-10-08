@@ -60,7 +60,7 @@ import type {
   TurnStartResult,
 } from "../../types.js";
 import type { ConversationSearchHit, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
-import { encodeThreadPageCursor, type StoredThreadPage } from "../../conversationStoreTypes.js";
+import { encodeThreadPageCursor, GLOBAL_ASSISTANT_PROJECT_PATH, type StoredThreadPage } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import type { ThreadAgentBinding } from "../../rosterRecord.js";
@@ -723,12 +723,38 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
 
   // -- 2. app_read_thread ---------------------------------------------------
   const readHandler = async (
-    _ctx: GatewayToolContext,
+    ctx: GatewayToolContext,
     params: ReadAppThreadInput,
   ): Promise<GatewayToolResult> => {
     const limit = params.limit ?? 20;
     const maxTextChars = params.maxTextChars ?? 1500;
     const textOffset = params.textOffset ?? 0;
+
+    // Read scope, checked before any paging work. The assistant (kone's own
+    // co-pilot, on the sentinel project) reads across projects on the user's
+    // behalf; project threads may read themselves, their project, and their
+    // fork/source lineage.
+    const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
+    const assistantCaller = callerMeta?.projectPath === GLOBAL_ASSISTANT_PROJECT_PATH;
+    if (!assistantCaller) {
+      const targetMeta = store.threadMeta?.(params.threadId) ?? null;
+      const readable = canReadThread({
+        callerThreadId: ctx.threadId,
+        targetThreadId: params.threadId,
+        caller: callerMeta
+          ? { projectPath: callerMeta.projectPath, sourceThreadId: callerMeta.sourceThreadId }
+          : null,
+        target: targetMeta
+          ? { projectPath: targetMeta.projectPath, sourceThreadId: targetMeta.sourceThreadId }
+          : null,
+      });
+      if (!readable) {
+        throw new GatewayToolError(
+          "capability_denied",
+          `Thread "${params.threadId}" is outside what this conversation may read.`,
+        );
+      }
+    }
 
     // A single message read by id: whole, or a slice from textOffset. This is
     // what a handoff's coverage note points at for a message it omitted.

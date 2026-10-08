@@ -28,6 +28,15 @@ import {
 } from "./appThreads.js";
 
 const KONE = "/Users/dev/Developer/kone";
+/** The assistant's own thread lives on a sentinel project, not a repo; the
+ *  read scope exempts it so it can read across projects. The harness must hold
+ *  it, exactly as the real store does. */
+const ASSISTANT_PROJECT = "__kone_assistant__";
+const ASSISTANT_META = thread({
+  threadId: "assistant-1",
+  title: "kone",
+  projectPath: ASSISTANT_PROJECT,
+});
 const SITE = "/Users/dev/Developer/site";
 
 const PROJECTS: readonly ProjectRosterEntry[] = [
@@ -169,6 +178,7 @@ function makeStore(
     },
     loadThread: (threadId) => (threadId === "t-newest" ? TRANSCRIPT : null),
     threadMeta: (threadId) => {
+      if (threadId === "assistant-1") return ASSISTANT_META;
       const found = [...KONE_THREADS, ...SITE_THREADS].find((t) => t.threadId === threadId);
       return found ?? null;
     },
@@ -751,15 +761,42 @@ describe("app_read_thread", () => {
     expect(text(result)).not.toContain(long);
   });
 
-  it("reads a thread this conversation did not open", async () => {
-    // The point of the tool: the assistant is not in the thread's spawn tree,
-    // and is still allowed to read it.
-    const result = await tools().call(
-      makeCtx({ threadId: "somewhere-else" }),
-      "app_read_thread",
-      { threadId: "t-newest" },
-    );
+  it("lets the assistant read a thread it did not open", async () => {
+    // The point of the tool: the assistant (on its sentinel project, not in the
+    // thread's spawn tree) is exempt from the project read scope and may read
+    // across projects on the user's behalf.
+    const result = await tools().call(makeCtx(), "app_read_thread", { threadId: "t-newest" });
 
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent?.thread).toMatchObject({ threadId: "t-newest" });
+  });
+
+  it("refuses an unrelated project thread for a project caller", async () => {
+    const result = await tools().call(
+      makeCtx({ threadId: "t-done" }),
+      "app_read_thread",
+      { threadId: "t-site" },
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("outside what this conversation may read");
+  });
+
+  it("lets a fork read its source across projects (handoff read-back)", async () => {
+    const base = makeStore();
+    const forkMeta = thread({
+      threadId: "t-fork",
+      title: "Fork",
+      projectPath: SITE,
+      sourceThreadId: "t-newest",
+    });
+    const store: AppThreadsStore = {
+      ...base,
+      threadMeta: (threadId) =>
+        threadId === "t-fork" ? forkMeta : (base.threadMeta?.(threadId) ?? null),
+    };
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-fork" }), "app_read_thread", {
+      threadId: "t-newest",
+    });
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent?.thread).toMatchObject({ threadId: "t-newest" });
   });
