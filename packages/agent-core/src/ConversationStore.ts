@@ -632,6 +632,24 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     return this.handIns.pendingHandIn(threadId);
   }
 
+  /** Record the ids a hand-in's one-shot replay omitted. @see HandInsRepo */
+  recordHandInOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    this.handIns.recordHandInOmittedHistory(threadId, omittedBlockIds, omittedItemIds);
+  }
+
+  /** Record the ids a fork's one-shot replay omitted. @see LineageRepo */
+  recordForkOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    this.lineage.recordForkOmittedHistory(threadId, omittedBlockIds, omittedItemIds);
+  }
+
   /** @see LineageRepo */
   writeForkThread(input: Parameters<LineageRepo["writeForkThread"]>[0]): boolean {
     return this.lineage.writeForkThread(input);

@@ -771,6 +771,217 @@ describe("app_read_thread", () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("not_found");
   });
+
+  it("reads one message by id, whole, with its block and item ids", async () => {
+    const result = await tools().call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-2",
+      maxTextChars: 100,
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = result.structuredContent?.messages as GatewayRecord[];
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.blockId).toBe("a-2");
+    expect(messages[0]?.text).toBe("Done — two tools and a mirror.");
+    expect(Array.isArray(messages[0]?.itemIds)).toBe(true);
+  });
+
+  it("refuses an unknown block id", async () => {
+    const result = await tools().call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "nope",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
+  });
+
+  it("slices an oversized message from textOffset and reports where to resume", async () => {
+    const long = "x".repeat(250);
+    const store = makeStore({
+      loadThread: () => ({ ...TRANSCRIPT, blocks: [block("user", long, 1)] }),
+    });
+    const read = async (textOffset?: number) => {
+      const params: GatewayRecord = { threadId: "t-newest", blockId: "u-1", maxTextChars: 100 };
+      if (textOffset !== undefined) params.textOffset = textOffset;
+      const result = await tools({ store }).call(makeCtx(), "app_read_thread", params);
+      // SAFETY: the read handler always writes `messages` as an array of records.
+      const messages = (result.structuredContent?.messages ?? []) as GatewayRecord[];
+      return messages[0]!;
+    };
+
+    const first = await read();
+    expect(first.text).toBe("x".repeat(100));
+    expect(first.nextTextOffset).toBe(100);
+    const second = await read(100);
+    expect(second.text).toBe("x".repeat(100));
+    expect(second.nextTextOffset).toBe(200);
+    const third = await read(200);
+    expect(third.text).toBe("x".repeat(50));
+    // Terminal slice: the offset is present and null, not absent.
+    expect(third.nextTextOffset).toBeNull();
+  });
+
+  it("a blockId read returns the rich content of a tool-only block", async () => {
+    const toolOnly: StoredBlock = {
+      id: "a-tool",
+      role: "assistant",
+      turnId: "t",
+      state: "completed",
+      at: 2,
+      items: [
+        { itemId: "i1", kind: "tool_call", status: "completed", name: "Bash", text: "bun test", detail: '{"exitCode":0}' },
+      ],
+    };
+    const store = makeStore({
+      loadThread: () => ({ ...TRANSCRIPT, blocks: [toolOnly] }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-tool",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = (result.structuredContent?.messages ?? []) as GatewayRecord[];
+    expect(String(messages[0]?.text)).toContain("[Tool] Bash: bun test");
+    expect(String(messages[0]?.text)).toContain("exit code 0");
+  });
+
+  it("a blockId read of a failed block carries its error", async () => {
+    const failed: StoredBlock = {
+      id: "a-fail",
+      role: "assistant",
+      turnId: "t",
+      state: "failed",
+      error: "boom",
+      at: 2,
+      items: [
+        {
+          itemId: "i1",
+          kind: "tool_call",
+          status: "failed",
+          name: "Bash",
+          text: "bun test",
+          detail: "TypeError: broken\nexit code: 1",
+        },
+      ],
+    };
+    const store = makeStore({
+      loadThread: () => ({ ...TRANSCRIPT, blocks: [failed] }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-fail",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = (result.structuredContent?.messages ?? []) as GatewayRecord[];
+    expect(String(messages[0]?.text)).toContain("TypeError: broken");
+    expect(String(messages[0]?.text)).toContain("[Turn failed: boom]");
+  });
+
+  it("continues a default prose read in the same representation", async () => {
+    const long = "answer ".repeat(400);
+    const mixed: StoredBlock = {
+      id: "a-mix",
+      role: "assistant",
+      turnId: "t",
+      state: "completed",
+      at: 2,
+      items: [
+        { itemId: "i1", kind: "tool_call", status: "completed", name: "Read", text: "src/auth.ts" },
+        { itemId: "i2", kind: "assistant_text", status: "completed", text: long },
+      ],
+    };
+    const store = makeStore({ loadThread: () => ({ ...TRANSCRIPT, blocks: [mixed] }) });
+    const first = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      maxTextChars: 100,
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m1 = ((first.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(m1.representation).toBe("prose");
+    expect(m1.nextTextOffset).toBe(100);
+    // Continue in prose: the two slices reconstruct the prose exactly, with
+    // no tool prefix inserted at the offset.
+    const cont = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-mix",
+      textOffset: 100,
+      maxTextChars: 100,
+      representation: "prose",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m2 = ((cont.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(`${String(m1.text)}${String(m2.text)}`).toBe(long.slice(0, 200));
+  });
+
+  it("continues a rich read in the same representation", async () => {
+    const long = "answer ".repeat(400);
+    const rich = `[Tool] Read: src/auth.ts\n${long}`;
+    const mixed: StoredBlock = {
+      id: "a-mix",
+      role: "assistant",
+      turnId: "t",
+      state: "completed",
+      at: 2,
+      items: [
+        { itemId: "i1", kind: "tool_call", status: "completed", name: "Read", text: "src/auth.ts" },
+        { itemId: "i2", kind: "assistant_text", status: "completed", text: long },
+      ],
+    };
+    const store = makeStore({ loadThread: () => ({ ...TRANSCRIPT, blocks: [mixed] }) });
+    const first = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-mix",
+      maxTextChars: 100,
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m1 = ((first.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(m1.representation).toBe("rich");
+    expect(m1.nextTextOffset).toBe(100);
+    const cont = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      blockId: "a-mix",
+      textOffset: 100,
+      maxTextChars: 100,
+      representation: "rich",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const m2 = ((cont.structuredContent?.messages ?? []) as GatewayRecord[])[0]!;
+    expect(`${String(m1.text)}${String(m2.text)}`).toBe(rich.slice(0, 200));
+  });
+
+  it("pages older messages through a cursor", async () => {
+    const store = makeStore({
+      loadThreadPage: (threadId) => ({
+        threadId,
+        meta: thread({ threadId }),
+        blocks: [block("user", "older one", 0)],
+        nextCursor: null,
+        hasMore: false,
+      }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      cursor: "from-a-previous-reply",
+    });
+    // SAFETY: the read handler always writes `messages` as an array of records.
+    const messages = result.structuredContent?.messages as GatewayRecord[];
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.text).toBe("older one");
+    expect(result.structuredContent?.hasMore).toBe(false);
+  });
+
+  it("reports hasMore and a nextCursor when older messages exist", async () => {
+    const result = await tools().call(makeCtx(), "app_read_thread", {
+      threadId: "t-newest",
+      limit: 1,
+    });
+
+    expect(result.structuredContent?.hasMore).toBe(true);
+    expect(result.structuredContent?.nextCursor).toEqual(expect.any(String));
+  });
 });
 
 describe("app_start_thread", () => {

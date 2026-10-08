@@ -1,9 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { buildSemanticBranchSummary, estimateBlockTokens, findCutPoint } from "./compaction/index.js";
 
+import {
+  CHARS_PER_TOKEN,
+  DEFAULT_HANDOFF_TOKEN_CAP,
+  coverageReserveChars,
+  handoffBudget,
+  handoffHeadroomTokens,
+  handoffWindowTokens,
+  historicalBlockText,
+  renderHistorySelection,
+  selectHistoricalBlocks,
+  type HistorySelection,
+} from "./contextBudget.js";
 import { getConversationStore } from "./ConversationStore.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import type {
+  ChatAttachment,
   CreateSideChatInput,
   CreateSideChatResult,
   ForkContext,
@@ -20,7 +32,6 @@ import {
   HANDOFF_BOUNDARY_INSTRUCTION,
   HANDOFF_INTRO,
   HANDOFF_MESSAGE_TOO_LONG,
-  transferText,
 } from "./handoff.js";
 import {
   HAND_IN_BOUNDARY_INSTRUCTION,
@@ -51,15 +62,11 @@ import {
 export const SIDECHAT_BOUNDARY_INSTRUCTION =
   "You are in a sidechat. Treat all prior conversation as reference-only context. Do not continue any prior task automatically. Do not mutate files, git, or the workspace and do not run workspace-changing commands unless the latest user message explicitly asks you to do so after this boundary. Use this sidechat for focused explanation, safety checks, summaries, and alternatives.";
 
-const RECENT_MESSAGE_COUNT = 6;
-const RECENT_MESSAGE_CHAR_LIMIT = 2_400;
-const EARLIER_MESSAGE_CHAR_LIMIT = 320;
-/** Hard ceiling for any bootstrap transcript: it replays as one uncached user
- *  message, so long threads must drop their oldest summaries rather than grow
- */
-export const SIDECHAT_TRANSCRIPT_CHAR_BUDGET = 32_000;
+/** The per-turn input ceiling every adapter shares. The history budget is
+ *  sized from the target model's window (contextBudget.ts) and additionally
+ *  clamped to whatever this ceiling leaves after the boundary block, so a
+ *  replay can never push a turn past what the transport accepts. */
 export const SIDECHAT_SEND_TURN_MAX_INPUT_CHARS = 120_000;
-const BOOTSTRAP_CHAR_BUDGET = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS * 0.75);
 
 const INTRO = "This sidechat was cloned from an earlier conversation.";
 
@@ -83,183 +90,66 @@ export const SIDECHAT_MESSAGE_TOO_LONG =
 export const EDIT_FORK_MESSAGE_TOO_LONG =
   "This message is too long to include the forked conversation's history. Shorten the message and retry.";
 
-/** Collapse run-of-line whitespace so a long message stays a compact block
- */
-function normalize(text: string): string {
-  return text.replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-}
 
-function truncate(value: string, cap: number): string {
-  const flat = normalize(value);
-  if (flat.length <= cap) return flat;
-  const cut = cap > 3 ? cap - 3 : 0;
-  return `${flat.slice(0, cut).trimEnd()}...`;
-}
+/** The target-side inputs a replay budget is sized from. AgentService resolves
+ *  them from the target provider/model catalog and settings; the pure replay
+ *  path works without them, falling back to the conservative defaults. */
+export type HandoffBudgetOptions = {
+  /** Provider cap, in tokens (provider settings). */
+  tokenCap?: number;
+  /** The target model's effective context window, in tokens. */
+  windowTokens?: number;
+  /** Tokens the target session already occupies (0 for a fresh replay). */
+  nativeTokens?: number;
+  /** Attachments riding the new prompt. */
+  attachments?: readonly ChatAttachment[];
+  /** The gateway tool the coverage note may name for read-back, or null when
+   *  the receiving session has no gateway tools. */
+  readBackTool?: string | null;
+};
 
-/** Render one imported message verbatim (capped) — the label plus the text. A
- *  block with nothing transferable (no prose, no tool calls) renders as empty
- *  so the caller skips it instead of emitting a content-free stanza. */
-function renderVerbatim(block: StoredBlock): string {
-  const text = truncate(transferText(block) ?? "", RECENT_MESSAGE_CHAR_LIMIT);
-  if (!text) return "";
-  return block.role === "user" ? `User:\n${text}` : `Assistant:\n${text}`;
-}
-
-/** Render one imported message as a one-line summary for the earlier section. */
-function renderSummary(block: StoredBlock): string {
-  const text = truncate(transferText(block) ?? "", EARLIER_MESSAGE_CHAR_LIMIT);
-  if (!text) return "";
-  return block.role === "user" ? `- User: ${text}` : `- Assistant: ${text}`;
-}
-
-/** The model-visible narrative of a block: the prompt for user blocks, the
- *  joined assistant_text items for assistant blocks (tool calls are not
- */
-function blockText(block: StoredBlock): string {
-  if (block.role === "user") return block.text;
-  return block.items
-    .filter((item) => item.kind === "assistant_text")
-    .map((item) => item.text)
-    .join(" ");
-}
+/** A rendered replay: the selection plus the framed context block the caller
+ *  wraps in `<sidechat_context>…</sidechat_context>`. */
+export type ForkReplay = HistorySelection & { context: string };
 
 /**
- * The budgeted plain-text replay of a side chat's imported transcript, framed
- * so the receiving agent reads it as reference context rather than as
- *
- * - the last 6 imported messages verbatim (≤2,400 chars each),
- * - older messages as one-line summaries (≤320 chars each) newest-first until
- *   the budget,
- * - hard ceiling of 32,000 chars (75% of the send-turn cap),
- * - intro + source title + branch framing, wrapped by the caller in
- *   `<sidechat_context>…</sidechat_context>`.
- *
- * Returns null when there is nothing to replay (no imported blocks).
+ * The budgeted replay of a thread's imported transcript, framed so the
+ * receiving agent reads it in its kind's own terms. Whole messages only, in
+ * priority order; whatever did not fit is named in the coverage note with the
+ * call that reads it back. Returns null when there is nothing to replay (no
+ * matching blocks).
  */
-export function buildSidechatForkContext(
-  thread: Pick<StoredThread, "blocks" | "title" | "branch">,
-  maxChars = BOOTSTRAP_CHAR_BUDGET,
-  intro = INTRO,
-  /** Which blocks replay as context. Defaults to fork-imported rows only —
-   *  a side chat's own turns are its live conversation, not its import. An
-   *  edit fork instead replays everything before its edited message (a
-   *  nested fork's intermediate edits are native rows, but they are still
-   *  history the continuation needs). */
-  includeBlock: (block: StoredBlock, index: number, blocks: StoredBlock[]) => boolean = (block) =>
-    block.source === "fork-import",
-): string | null {
-  const imported = thread.blocks.filter(includeBlock);
-  if (imported.length === 0) return null;
-  const budget = Math.min(Math.max(0, maxChars), SIDECHAT_TRANSCRIPT_CHAR_BUDGET);
-
-  let cutIndex = 0;
-  if (imported.length > RECENT_MESSAGE_COUNT) {
-    const recentCandidate = imported.slice(-RECENT_MESSAGE_COUNT);
-    const keepTokens = recentCandidate.reduce((acc, b) => acc + estimateBlockTokens(b), 0);
-    const cutResult = findCutPoint(imported, keepTokens);
-    cutIndex = cutResult.cutIndex > 0 ? cutResult.cutIndex : Math.max(0, imported.length - RECENT_MESSAGE_COUNT);
-  }
-
-  const recent = imported.slice(cutIndex);
-  const earlier = imported.slice(0, cutIndex);
-
-  // One budget shared by the earlier-summary and recent-verbatim sections
-  // below — splitting it in two let the recent (most valuable) half grow past
-  // what was left, forcing a final truncate() to cut it instead of the
-  // earlier half. The recent section is reserved first (newest messages
-  // first, so a shortfall drops the oldest of the recent set rather than the
-  // newest), and the earlier summary only spends what recent didn't need.
-  const parts: string[] = [];
-  let used = 0;
-  const push = (line: string): void => {
-    parts.push(line);
-    used += line.length + 1;
-  };
-  push(intro);
-  if (thread.title) push(`Original conversation title: ${thread.title}`);
-  if (thread.branch) push(`Git branch: ${thread.branch}`);
-
-  const recentHeader = "Most recent imported messages:";
-  const recentLines: string[] = [];
-  let recentReserved = 0;
-  for (let i = recent.length - 1; i >= 0; i -= 1) {
-    const block = recent[i];
-    if (!block) continue;
-    const rendered = renderVerbatim(block);
-    if (rendered.length === 0) continue;
-    if (used + recentHeader.length + 1 + recentReserved + rendered.length > budget) break;
-    recentLines.unshift(rendered);
-    recentReserved += rendered.length + 1;
-  }
-  const recentBudget = budget - used - (recentLines.length > 0 ? recentHeader.length + 1 + recentReserved : 0);
-
-  // Earlier messages: newest-first one-line summaries, oldest dropped if the
-  // remaining budget runs out (the transcript must shrink, never blow the
-  // cap, and the recent section above always wins the shared budget first).
-  if (earlier.length > 0) {
-    const branchSummary = buildSemanticBranchSummary(earlier, {
+export function buildForkReplayContext(
+  thread: Pick<StoredThread, "blocks" | "title" | "branch" | "threadId">,
+  options: {
+    budgetTokens: number;
+    intro: string;
+    /** Which blocks replay as context. Defaults to fork-imported rows only —
+     *  a side chat's own turns are its live conversation, not its import. An
+     *  edit fork instead replays everything before its edited message (a
+     *  nested fork's intermediate edits are native rows, but they are still
+     *  history the continuation needs). */
+    include?: (block: StoredBlock, index: number, blocks: readonly StoredBlock[]) => boolean;
+    /** Tool to name in the coverage read-back note, or null to omit it. */
+    readBackTool?: string | null;
+  },
+): ForkReplay | null {
+  const selection = selectHistoricalBlocks({
+    blocks: thread.blocks,
+    budgetTokens: options.budgetTokens,
+    readThreadId: thread.threadId,
+    include: options.include ?? ((block: StoredBlock) => block.source === "fork-import"),
+    readBackTool: options.readBackTool,
+  });
+  if (selection.blocks.length === 0 && selection.omittedBlockIds.length === 0) return null;
+  return {
+    ...selection,
+    context: renderHistorySelection(selection, {
+      intro: options.intro,
       title: thread.title,
-      branch: thread.branch ?? undefined,
-      maxSummaryChars: budget,
-    });
-
-    const summaryLines: string[] = [];
-    let summaryChars = 0;
-    for (let i = earlier.length - 1; i >= 0; i -= 1) {
-      const block = earlier[i];
-      if (!block) continue;
-      const line = renderSummary(block);
-      if (line.length === 0) continue;
-      if (summaryChars + line.length > recentBudget) break;
-      summaryLines.unshift(line);
-      summaryChars += line.length + 1;
-    }
-    // What's left of the earlier section's share after the summary lines
-    // above — the operations lists below spend from this, never from what
-    // the recent section already reserved.
-    let earlierRemaining = recentBudget;
-    if (summaryLines.length > 0) {
-      const omitted = earlier.length - summaryLines.length;
-      const header = `Earlier conversation summary (${omitted} older message${omitted === 1 ? "" : "s"} omitted to fit the context budget):`;
-      push(header);
-      earlierRemaining -= header.length + 1;
-      for (const line of summaryLines) {
-        push(line);
-        earlierRemaining -= line.length + 1;
-      }
-    }
-
-    const pushIfFits = (line: string): void => {
-      if (line.length + 1 > earlierRemaining) return;
-      push(line);
-      earlierRemaining -= line.length + 1;
-    };
-    const { operations } = branchSummary;
-    if (operations.filesModified.length > 0) {
-      pushIfFits("Files Modified / Created:");
-      for (const file of operations.filesModified) {
-        pushIfFits(`- \`${file}\``);
-      }
-    }
-    if (operations.filesRead.length > 0) {
-      pushIfFits("Files Read / Inspected:");
-      for (const file of operations.filesRead) {
-        pushIfFits(`- \`${file}\``);
-      }
-    }
-    if (operations.commandsRun.length > 0) {
-      pushIfFits("Commands Executed:");
-      for (const cmd of operations.commandsRun) {
-        pushIfFits(`- \`${cmd}\``);
-      }
-    }
-  }
-
-  if (recentLines.length > 0) {
-    push(recentHeader);
-    for (const line of recentLines) push(line);
-  }
-  return truncate(parts.join("\n"), budget);
+      branch: thread.branch,
+    }),
+  };
 }
 
 /** The `<latest_user_message>`-wrapped boundary block that rides every side
@@ -292,7 +182,7 @@ type ForkFraming = {
   /** Refusal for a first message that leaves no room for the transcript. */
   tooLong: string;
   /** Which blocks replay as context. */
-  include: (block: StoredBlock, index: number, blocks: StoredBlock[]) => boolean;
+  include: (block: StoredBlock, index: number, blocks: readonly StoredBlock[]) => boolean;
 };
 
 /** Which blocks replay as context for an import: fork-imported rows only. A
@@ -348,45 +238,105 @@ function forkFraming(ctx: ForkContext): ForkFraming {
  *  here — a hand-in keeps the thread, so its native turns are exactly what
  *  the new provider has not seen. Everything but the message being sent is
  *  replayed; the message itself arrives in `<latest_user_message>`. */
-const handInFraming: ForkFraming = {
+export const handInFraming: ForkFraming = {
   intro: HAND_IN_INTRO,
   instruction: HAND_IN_BOUNDARY_INSTRUCTION,
   tooLong: HAND_IN_MESSAGE_TOO_LONG,
   include: () => true,
 };
 
-/** Assemble one replay: budget the transcript against the send-turn cap,
- *  frame it, and refuse a first message that leaves no room for it. Returns
- *  null when there is nothing worth replaying. Throws when the imported
- *  context plus the new message would exceed the cap — the turn is rejected
- *  up front rather than silently dropping context. */
-function replayForTurn(
-  thread: Pick<StoredThread, "blocks" | "title" | "branch">,
+/** Assemble one replay: budget the transcript against the target window and
+ *  the send-turn cap, frame it, and refuse a first message that leaves no
+ *  room for the history. Returns the preamble plus the omitted ids so the
+ *  caller can record them, or null when there is nothing worth replaying.
+ *  Throws the kind's too-long error when the new prompt cannot fit the target
+ *  window even with zero history — never a silent drop. */
+export function replayForTurn(
+  thread: Pick<StoredThread, "blocks" | "title" | "branch" | "threadId">,
   input: string,
   framing: ForkFraming,
-): string | null {
-  const boundary = boundaryBlock(input, framing.instruction);
-  const available = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
-  if (available <= 0) throw new Error(framing.tooLong);
-  const context = buildSidechatForkContext(thread, available, framing.intro, framing.include);
-  if (!context) return null;
-  const preamble = assembleSidechatPreamble(context, input, framing.instruction);
-  if (preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS) {
+  budget: HandoffBudgetOptions,
+): { preamble: string; omittedBlockIds: string[]; omittedItemIds: string[] } | null {
+  // Mandatory framing (F) is everything except the user's new prompt (P): the
+  // kind's intro/title/branch lines, the `<sidechat_context>` and boundary
+  // delimiters, and the widest coverage line the selector could render. Both
+  // are charged once against the transport ceiling and the window; history is
+  // what remains under the cap.
+  const readBackTool = budget.readBackTool === undefined ? "app_read_thread" : budget.readBackTool;
+  const coverageReserve = coverageReserveChars(thread.threadId, thread.blocks.length, readBackTool);
+  const framingChars = mandatoryFramingChars(framing, thread, coverageReserve);
+  const { fit, historyTokens } = handoffBudget({
+    tokenCap: budget.tokenCap ?? DEFAULT_HANDOFF_TOKEN_CAP,
+    windowTokens: budget.windowTokens,
+    nativeTokens: budget.nativeTokens,
+    promptChars: input.length,
+    framingChars,
+    attachments: budget.attachments,
+    transportCharCap: SIDECHAT_SEND_TURN_MAX_INPUT_CHARS,
+  });
+  // The only refusal: the mandatory content (framing + prompt, and the
+  // attachment allowance against the window) cannot fit even with no history.
+  if (!fit) throw new Error(framing.tooLong);
+  const replay = buildForkReplayContext(thread, {
+    budgetTokens: historyTokens,
+    intro: framing.intro,
+    include: framing.include,
+    readBackTool: budget.readBackTool,
+  });
+  if (!replay) return null;
+  const preamble = assembleSidechatPreamble(replay.context, input, framing.instruction);
+  // Defensive: assert both constraints on the REAL rendered size. The
+  // selection is already bounded, so this should never fire.
+  const window = handoffWindowTokens({ reportedWindowTokens: budget.windowTokens });
+  const native = budget.nativeTokens != null && budget.nativeTokens > 0 ? budget.nativeTokens : 0;
+  const windowBudget = window - native - handoffHeadroomTokens(budget.windowTokens);
+  const transportTokens = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS / CHARS_PER_TOKEN);
+  const renderedTokens = Math.ceil(preamble.length / CHARS_PER_TOKEN);
+  if (renderedTokens > transportTokens || renderedTokens > windowBudget) {
     throw new Error(framing.tooLong);
   }
-  return preamble;
+  return {
+    preamble,
+    omittedBlockIds: replay.omittedBlockIds,
+    omittedItemIds: replay.omittedItemIds,
+  };
+}
+
+/** The mandatory characters of a replay's rendered prompt, excluding the
+ *  user's own message: exactly what a zero-history replay renders (the kind's
+ *  intro, title and branch lines, a coverage line as wide as the widest the
+ *  selector could write, the `<sidechat_context>` and boundary delimiters).
+ *  Measured from the renderers themselves rather than summed by hand, so the
+ *  charge cannot drift from what is actually sent. */
+function mandatoryFramingChars(
+  framing: ForkFraming,
+  thread: Pick<StoredThread, "title" | "branch">,
+  coverageReserve: number,
+): number {
+  const context = renderHistorySelection(
+    { blocks: [], omittedBlockIds: [], omittedItemIds: [], coverage: " ".repeat(coverageReserve) },
+    { intro: framing.intro, title: thread.title, branch: thread.branch },
+  );
+  return assembleSidechatPreamble(context, "", framing.instruction).length;
 }
 
 /** The one-shot replay handed to a session born from a hand-in: the thread's
  *  own prior transcript, framed as the settled history of this same
  *  conversation, plus the user's message. Null when the thread has no
  *  pending hand-in, or has no history worth replaying. */
-function handInBootstrapForTurn(threadId: string, input: string): string | null {
+function handInBootstrapForTurn(
+  threadId: string,
+  input: string,
+  budget: HandoffBudgetOptions,
+): string | null {
   const store = getConversationStore();
   if (!store.pendingHandIn(threadId)) return null;
   const thread = store.loadThread(threadId);
   if (!thread) return null;
-  return replayForTurn(thread, input, handInFraming);
+  const replay = replayForTurn(thread, input, handInFraming, budget);
+  if (!replay) return null;
+  store.recordHandInOmittedHistory(threadId, replay.omittedBlockIds, replay.omittedItemIds);
+  return replay.preamble;
 }
 
 /**
@@ -406,13 +356,17 @@ function handInBootstrapForTurn(threadId: string, input: string): string | null 
  * send-turn cap — the turn is rejected up front rather than silently
  * dropping context.
  */
-export function sidechatBootstrapForTurn(threadId: string, input: string): string | null {
+export function sidechatBootstrapForTurn(
+  threadId: string,
+  input: string,
+  budget: HandoffBudgetOptions = {},
+): string | null {
   const store = getConversationStore();
   // A thread that has just changed hands replays first. Its bootstrap is not
   // a fork's — the thread is the same thread, so there is no import to find
   // and the native-turn gate below would refuse it outright (its history IS
   // native turns). The pending hand-in row is its own one-shot flag.
-  const handIn = handInBootstrapForTurn(threadId, input);
+  const handIn = handInBootstrapForTurn(threadId, input, budget);
   if (handIn) return handIn;
   const ctx = store.threadForkContext(threadId);
   if (!ctx || ctx.bootstrapStatus !== "pending") return null;
@@ -421,7 +375,10 @@ export function sidechatBootstrapForTurn(threadId: string, input: string): strin
 
   const thread = store.loadThread(threadId);
   if (!thread) return null;
-  return replayForTurn(thread, input, forkFraming(ctx));
+  const replay = replayForTurn(thread, input, forkFraming(ctx), budget);
+  if (!replay) return null;
+  store.recordForkOmittedHistory(threadId, replay.omittedBlockIds, replay.omittedItemIds);
+  return replay.preamble;
 }
 
 /** The blocks of a source thread that get imported into a side chat: every
@@ -429,11 +386,11 @@ export function sidechatBootstrapForTurn(threadId: string, input: string): strin
  *  source that is itself a side chat are NOT re-imported — their history is
  *  already the source's own (a nested import would duplicate it). Assistant
  *  blocks are reduced to their narrative text, or — when a turn ran tools and
- *  wrote no prose — to a one-line note naming those tools, so the replay can
- *  still show the work happened (imported rows keep no items to re-derive it
- *  from); genuinely empty blocks are skipped. Tool items are not imported.
- *  Ids are re-minted (randomUUID), `at` timestamps and attachments are kept,
- *  and nothing from the renderer-only timeline leaks through. */
+ *  wrote no prose — to the commands it ran, with their exit codes when known,
+ *  so the replay can still show the work happened; genuinely empty blocks are
+ *  skipped. Whole messages only — never cut. Ids are re-minted (randomUUID),
+ *  `at` timestamps and attachments are kept, and nothing from the
+ *  renderer-only timeline leaks through. */
 function buildImportedBlocks(source: StoredThread): ForkImportedBlock[] {
   const rows: ForkImportedBlock[] = [];
   for (const b of source.blocks) {
@@ -442,7 +399,7 @@ function buildImportedBlocks(source: StoredThread): ForkImportedBlock[] {
       const imported: ForkImportedBlock = {
         id: randomUUID(),
         role: "user",
-        text: blockText(b),
+        text: b.text,
         at: b.at,
       };
       if (b.attachments?.length) imported.attachments = b.attachments;
@@ -451,7 +408,7 @@ function buildImportedBlocks(source: StoredThread): ForkImportedBlock[] {
       rows.push(imported);
       continue;
     }
-    const text = transferText(b);
+    const text = historicalBlockText(b);
     if (!text) continue;
     rows.push({ id: randomUUID(), role: "assistant", text, at: b.at });
   }

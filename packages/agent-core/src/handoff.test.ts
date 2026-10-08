@@ -409,77 +409,6 @@ describe("createHandoffThread with a cut point", () => {
   });
 });
 
-describe("transferText — what one block contributes to a transfer", () => {
-  test("prose passes through, trimmed", async () => {
-    const { transferText } = await import("./handoff.js");
-    expect(
-      transferText({ id: "u", role: "user", text: "  hello  ", at: 1 }),
-    ).toBe("hello");
-  });
-
-  test("a tool-only turn contributes a one-line note naming its tools", async () => {
-    const { transferText } = await import("./handoff.js");
-    const note = transferText({
-      id: "a",
-      role: "assistant",
-      turnId: "turn-1",
-      items: [
-        { itemId: "i-1", kind: "tool_call", status: "completed", name: "Edit", text: "src/schema.prisma" },
-        { itemId: "i-2", kind: "tool_call", status: "completed", name: "Bash", text: "npx prisma migrate dev" },
-      ],
-      state: "completed",
-      at: 2,
-    });
-    expect(note).toContain("Edit(src/schema.prisma)");
-    expect(note).toContain("Bash(npx prisma migrate dev)");
-    // One line, and bracketed so it never reads as words anyone said.
-    expect(note).not.toContain("\n");
-    expect(note?.startsWith("[")).toBe(true);
-    expect(note?.endsWith("]")).toBe(true);
-  });
-
-  test("a tool-heavy turn collapses to one capped line, not a tool-by-tool log", async () => {
-    const { transferText } = await import("./handoff.js");
-    const items = Array.from({ length: 20 }, (_, i) => ({
-      itemId: `i-${i}`,
-      kind: "tool_call" as const,
-      status: "completed" as const,
-      name: "Bash",
-      text: `command number ${i} with a fairly long argument tail to spend characters`,
-    }));
-    const note = transferText({
-      id: "a",
-      role: "assistant",
-      turnId: "turn-1",
-      items,
-      state: "completed",
-      at: 2,
-    });
-    expect(note).toContain("(+14 more)");
-    expect(note && note.length).toBeLessThanOrEqual(240);
-    expect(note).not.toContain("\n");
-  });
-
-  test("a genuinely empty block contributes nothing", async () => {
-    const { transferText } = await import("./handoff.js");
-    expect(
-      transferText({ id: "a", role: "assistant", turnId: "t", items: [], state: "completed", at: 1 }),
-    ).toBeNull();
-    // Reasoning alone with no prose is not transferable work either.
-    expect(
-      transferText({
-        id: "a",
-        role: "assistant",
-        turnId: "t",
-        items: [{ itemId: "i-1", kind: "reasoning_text", status: "completed", text: "hmm" }],
-        state: "completed",
-        at: 1,
-      }),
-    ).toBeNull();
-    expect(transferText({ id: "u", role: "user", text: "   ", at: 1 })).toBeNull();
-  });
-});
-
 describe("createHandoffThread with a tool-only tail", () => {
   test("a handoff whose source ends in a silent work turn carries a trace of it", async () => {
     const { getConversationStore } = await import("./ConversationStore.js");
@@ -509,8 +438,8 @@ describe("createHandoffThread with a tool-only tail", () => {
     if (!row || row.role !== "assistant") throw new Error("expected an imported assistant row");
     // The import stores the note as the row's single narrative item.
     const narrative = row.items.map((i) => i.text).join(" ");
-    expect(narrative).toContain("Edit(src/schema.prisma)");
-    expect(narrative).toContain("Bash(npx prisma migrate dev)");
+    expect(narrative).toContain("[Tool] Edit: src/schema.prisma");
+    expect(narrative).toContain("[Tool] Bash: npx prisma migrate dev");
   });
 });
 

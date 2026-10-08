@@ -461,6 +461,12 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    /** The provider's handoff history cap in tokens (its own getter/setter so a
+     *  settings surface can read/write just the number; the setter merges). */
+    getHandoffBudget: (provider: ProviderKind): Promise<number> =>
+      ipcRenderer.invoke("agent:get-handoff-budget", provider),
+    setHandoffBudget: (provider: ProviderKind, cap: number): Promise<ProviderSettingsMap> =>
+      ipcRenderer.invoke("agent:set-handoff-budget", provider, cap),
     // How each provider's CLI is installed, and whether a newer one exists.
     // `checkLatest` is the network half — the settings pane asks for it when the
     // user is looking; nothing else in the app does.

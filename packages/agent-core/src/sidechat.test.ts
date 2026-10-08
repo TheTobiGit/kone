@@ -18,15 +18,17 @@ setUserDataDir("/tmp");
 
 const {
   assembleSidechatPreamble,
-  buildSidechatForkContext,
+  buildForkReplayContext,
+  handInFraming,
+  replayForTurn,
   SIDECHAT_BOUNDARY_INSTRUCTION,
   SIDECHAT_SEND_TURN_MAX_INPUT_CHARS,
-  SIDECHAT_TRANSCRIPT_CHAR_BUDGET,
 } = await import("./sidechat.js");
+const { HANDOFF_HISTORY_NOTE } = await import("./contextBudget.js");
 
 import type { StoredBlock, StoredThread } from "./types.js";
 
-// buildSidechatForkContext + assembleSidechatPreamble are pure — the store
+// buildForkReplayContext + assembleSidechatPreamble are pure — the store
 // (createSidechatThread, sidechatBootstrapForTurn) needs Electron's sqlite and
 // is exercised through the app like the rest of ConversationStore.
 
@@ -87,190 +89,108 @@ function thread(blocks: StoredBlock[], title = "A prior conversation"): StoredTh
   };
 }
 
-describe("buildSidechatForkContext", () => {
+const replay = (blocks: StoredBlock[], budgetTokens = 10_000, title = "A prior conversation") =>
+  buildForkReplayContext(thread(blocks, title), {
+    budgetTokens,
+    intro: "This sidechat was cloned from an earlier conversation.",
+  });
+
+describe("buildForkReplayContext", () => {
   test("nothing to replay when there are no imported blocks", () => {
-    expect(buildSidechatForkContext(thread([nativeBlock(1)]))).toBeNull();
-    expect(buildSidechatForkContext(thread([]))).toBeNull();
+    expect(replay([nativeBlock(1)])).toBeNull();
+    expect(replay([])).toBeNull();
   });
 
   test("frames the import as reference context with the source title", () => {
-    const context = buildSidechatForkContext(
-      thread(
-        [importedUser("Why did the build fail?", 1), importedAssistant("The test env was missing.", 2)],
-        "Fix the build",
-      ),
-    );
+    const result = replay([
+      importedUser("Why did the build fail?", 1),
+      importedAssistant("The test env was missing.", 2),
+    ]);
+    expect(result).not.toBeNull();
+    const context = result!.context;
     expect(context).toContain("This sidechat was cloned from an earlier conversation.");
-    expect(context).toContain("Original conversation title: Fix the build");
+    expect(context).toContain("Original conversation title: A prior conversation");
     expect(context).toContain("User:\nWhy did the build fail?");
     expect(context).toContain("Assistant:\nThe test env was missing.");
-    // A short import has no earlier-summary section and no omitted count.
-    expect(context).not.toContain("Earlier conversation summary");
+    expect(context).toContain(HANDOFF_HISTORY_NOTE);
   });
 
-  test("keeps the last 6 verbatim and folds older ones into summaries", () => {
-    const blocks: StoredBlock[] = [];
-    for (let i = 1; i <= 10; i++) {
-      blocks.push(importedUser(`question ${i}`, i * 2 - 1), importedAssistant(`answer ${i}`, i * 2));
-    }
-    const context = buildSidechatForkContext(thread(blocks));
-    expect(context).toContain("Most recent imported messages:");
-    // The newest exchange is verbatim…
-    expect(context).toContain("User:\nquestion 10");
-    expect(context).toContain("Assistant:\nanswer 10");
-    // …and the first exchange is only a summary line.
-    expect(context).toContain("- User: question 1");
-    expect(context).toContain("omitted to fit the context budget");
+  test("keeps messages whole — never a mid-message cut", () => {
+    const long = "x".repeat(50_000);
+    const result = replay([importedUser(long, 1)], 20_000);
+    expect(result).not.toBeNull();
+    // The 50k-char message is ~12.5k tokens, which fits a 20k budget, so it is
+    // kept entire — no truncation marker anywhere.
+    expect(result!.context).toContain(long);
+    expect(result!.context).not.toContain("...[truncated]");
   });
 
-  test("truncates an over-long recent message to the 2400-char cap", () => {
-    const long = "x".repeat(5_000);
-    const context = buildSidechatForkContext(thread([importedUser(long, 1)]));
-    expect(context).toContain("User:");
-    // 2400 cap minus the "..." tail — nothing longer survives.
-    const line = context?.split("\n").find((l) => l.includes("x".repeat(100))) ?? "";
-    expect(line.length).toBeLessThanOrEqual(2_403);
+  test("omits a message too big for the budget whole, and says how to read it", () => {
+    const long = "x".repeat(200_000);
+    const result = replay([importedUser(long, 1), importedUser("small question", 2)], 500);
+    expect(result).not.toBeNull();
+    expect(result!.context).toContain("small question");
+    expect(result!.context).not.toContain(long);
+    expect(result!.omittedBlockIds).toEqual(["iu-1"]);
+    expect(result!.context).toContain("omitted 1");
+    expect(result!.context).toContain('app_read_thread({ threadId: "side-chat-1"');
   });
 
-  test("respects the 32k transcript ceiling", () => {
+  test("honours the budget", () => {
     const blocks: StoredBlock[] = [];
     for (let i = 1; i <= 60; i++) {
       blocks.push(importedUser(`question ${i} `.repeat(200), i * 2 - 1));
       blocks.push(importedAssistant(`answer ${i} `.repeat(200), i * 2));
     }
-    const context = buildSidechatForkContext(thread(blocks));
-    expect(context && context.length).toBeLessThanOrEqual(SIDECHAT_TRANSCRIPT_CHAR_BUDGET);
+    const result = replay(blocks, 2_000);
+    expect(result).not.toBeNull();
+    // The whole rendered context is bounded by the budget (chars ≈ tokens*4)
+    // plus the framing wrapper.
+    expect(result!.context.length).toBeLessThanOrEqual(2_000 * 4 + 2_000);
+    // The newest exchange survives the squeeze.
+    expect(result!.context).toContain("question 60");
   });
 
-  test("a custom maxChars smaller than the ceiling is honoured", () => {
-    const blocks = [importedUser("a".repeat(2_000), 1), importedAssistant("b".repeat(2_000), 2)];
-    const context = buildSidechatForkContext(thread(blocks), 500);
-    expect(context && context.length).toBeLessThanOrEqual(500);
-  });
-  test("includes structured operations (files read/modified, commands run) in earlier conversation context", () => {
-    const blocks: StoredBlock[] = [
-      importedUser("Refactor database schema", 1),
-      {
-        id: "ia-2",
-        role: "assistant",
-        turnId: "it-2",
-        items: [
-          { itemId: "i1", kind: "tool_call", status: "completed", name: "read", text: "src/schema.prisma" },
-          { itemId: "i2", kind: "tool_call", status: "completed", name: "edit", text: "src/schema.prisma" },
-          { itemId: "i3", kind: "tool_call", status: "completed", name: "bash", text: "npx prisma migrate dev" },
-          { itemId: "i4", kind: "assistant_text", status: "completed", text: "Migration completed." },
-        ],
-        state: "completed",
-        at: 2,
-        endedAt: 2,
-        source: "fork-import",
-      },
-      importedUser("recent question 1", 3),
-      importedAssistant("recent answer 1", 4),
-      importedUser("recent question 2", 5),
-      importedAssistant("recent answer 2", 6),
-      importedUser("recent question 3", 7),
-      importedAssistant("recent answer 3", 8),
-    ];
-
-    const context = buildSidechatForkContext(thread(blocks, "Database Migration"));
-    expect(context).not.toBeNull();
-    expect(context).toContain("Files Modified / Created:");
-    expect(context).toContain("`src/schema.prisma`");
-    expect(context).toContain("Files Read / Inspected:");
-    expect(context).toContain("Commands Executed:");
-    expect(context).toContain("`npx prisma migrate dev`");
-    expect(context).toContain("Most recent imported messages:");
-    expect(context).toContain("User:\nrecent question 3");
-  });
-
-  test("shares one budget across the earlier and recent sections so the newest messages survive", () => {
-    // One long earlier exchange, then six short recent ones. Under a tight
-    // shared budget the earlier exchange must be the one sacrificed — never
-    // the recent verbatim messages, and never a mid-string cut of the last
-    // one from a final destructive truncate().
-    const blocks: StoredBlock[] = [
-      importedUser(`earlier context line `.repeat(40), 1),
-      importedAssistant(`earlier answer line `.repeat(40), 2),
-    ];
-    for (let i = 1; i <= 3; i++) {
-      blocks.push(importedUser(`recent question ${i}`, 10 + i * 2 - 1));
-      blocks.push(importedAssistant(`recent answer ${i}`, 10 + i * 2));
-    }
-
-    const context = buildSidechatForkContext(thread(blocks), 300);
-    expect(context).not.toBeNull();
-    for (let i = 1; i <= 3; i++) {
-      expect(context).toContain(`User:\nrecent question ${i}`);
-      expect(context).toContain(`Assistant:\nrecent answer ${i}`);
-    }
-    // The budget was too tight for the long earlier exchange to fit alongside
-    // the recent section that took priority.
-    expect(context).not.toContain("earlier context line");
-    expect(context && context.length).toBeLessThanOrEqual(300);
-  });
-
-  test("snaps recent cut point to user turn boundary when partitioning blocks", () => {
-    const blocks: StoredBlock[] = [
-      importedUser("Initial task", 1),
-      importedAssistant("Initial answer", 2),
-      importedUser("Intermediate task", 3),
-      importedAssistant("Intermediate answer", 4),
-      importedUser("Recent task 1", 5),
-      importedAssistant("Recent answer 1", 6),
-      importedUser("Recent task 2", 7),
-      importedAssistant("Recent answer 2", 8),
-    ];
-
-    const context = buildSidechatForkContext(thread(blocks));
-    expect(context).not.toBeNull();
-    expect(context).toContain("Earlier conversation summary");
-    expect(context).toContain("- User: Initial task");
-    expect(context).toContain("Most recent imported messages:");
-    expect(context).toContain("User:\nRecent task 2");
-  });
-
-  test("a tool-only turn replays as a one-line note, not an empty stanza", () => {
-    // Native rows keep their items (the hand-in replay and edit forks read
-    // them), so the tools a silent turn ran can still be named at replay time.
-    const context = buildSidechatForkContext(
+  test("a tool-only turn replays its commands, whole — not a truncated note", () => {
+    const result = buildForkReplayContext(
       thread([
         { id: "u-1", role: "user", text: "migrate the db", at: 1 },
         nativeToolOnly("src/schema.prisma", "Edit", 2),
       ]),
-      SIDECHAT_TRANSCRIPT_CHAR_BUDGET,
-      undefined,
-      () => true,
+      {
+        budgetTokens: 10_000,
+        intro: "This sidechat was cloned from an earlier conversation.",
+        include: () => true,
+      },
     );
-    expect(context).toContain("User:\nmigrate the db");
-    expect(context).toContain("Edit(src/schema.prisma)");
-    expect(context).toContain("[No written summary");
+    expect(result).not.toBeNull();
+    expect(result!.context).toContain("User:\nmigrate the db");
+    expect(result!.context).toContain("[Tool] Edit: src/schema.prisma");
+    expect(result!.context).not.toContain("[No written summary");
   });
 
   test("a genuinely empty block is skipped from the replay", () => {
-    const context = buildSidechatForkContext(
+    const result = buildForkReplayContext(
       thread([
         { id: "u-1", role: "user", text: "migrate the db", at: 1 },
         nativeEmpty(2),
       ]),
-      SIDECHAT_TRANSCRIPT_CHAR_BUDGET,
-      undefined,
-      () => true,
+      {
+        budgetTokens: 10_000,
+        intro: "This sidechat was cloned from an earlier conversation.",
+        include: () => true,
+      },
     );
-    expect(context).toContain("User:\nmigrate the db");
-    expect(context).not.toContain("Assistant:");
+    expect(result).not.toBeNull();
+    expect(result!.context).toContain("User:\nmigrate the db");
+    expect(result!.context).not.toContain("Assistant:");
   });
 
-  test("several tool-only turns respect the shared budget", () => {
-    const blocks: StoredBlock[] = [{ id: "u-0", role: "user", text: "do it all", at: 0 }];
-    for (let i = 1; i <= 12; i++) {
-      blocks.push(nativeToolOnly(`src/module-${i}.ts with a long trailing argument tail`, "Edit", i));
-    }
-    const context = buildSidechatForkContext(thread(blocks, "Big migration"), 2_000, undefined, () => true);
-    expect(context).not.toBeNull();
-    expect(context && context.length).toBeLessThanOrEqual(2_000);
-    // The newest work survives the squeeze.
-    expect(context).toContain("src/module-12.ts");
+  test("defaults to fork-imported rows only", () => {
+    const result = replay([nativeBlock(1), importedUser("imported prompt", 2)]);
+    expect(result).not.toBeNull();
+    expect(result!.context).toContain("imported prompt");
+    expect(result!.context).not.toContain("native prompt");
   });
 });
 
@@ -292,8 +212,34 @@ describe("assembleSidechatPreamble", () => {
   });
 
   test("the assembled first turn never exceeds the send cap", () => {
-    const context = "c".repeat(SIDECHAT_TRANSCRIPT_CHAR_BUDGET);
+    const context = "c".repeat(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - 2_000);
     const preamble = assembleSidechatPreamble(context, "short");
     expect(preamble.length).toBeLessThan(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS);
+  });
+});
+
+describe("replayForTurn mandatory framing", () => {
+  // One message too large for any history budget, so every replay below is a
+  // zero-history replay and its rendered size is exactly framing + prompt.
+  const oversized = thread([importedAssistant("x".repeat(400_000))], "Exact fit");
+  const render = (input: string, windowTokens: number) =>
+    replayForTurn(oversized, input, handInFraming, { windowTokens, tokenCap: 1_024 });
+  const framingChars = render("", 1_000_000)!.preamble.length;
+  const framingTokens = Math.ceil(framingChars / 4);
+
+  test("an exact transport fit with zero history is accepted, one token more is refused", () => {
+    const transportTokens = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS / 4);
+    const prompt = "p".repeat((transportTokens - framingTokens) * 4);
+    const fitted = render(prompt, 1_000_000);
+    expect(fitted?.omittedBlockIds).toEqual(["ia-2"]);
+    expect(fitted!.preamble.length).toBe(framingChars + prompt.length);
+    expect(() => render(`${prompt}p`, 1_000_000)).toThrow(handInFraming.tooLong);
+  });
+
+  test("an exact window fit with zero history is accepted, one token more is refused", () => {
+    // An 8k window keeps half as headroom, leaving 4k tokens.
+    const prompt = "p".repeat((4_000 - framingTokens) * 4);
+    expect(render(prompt, 8_000)?.preamble.length).toBe(framingChars + prompt.length);
+    expect(() => render(`${prompt}p`, 8_000)).toThrow(handInFraming.tooLong);
   });
 });
