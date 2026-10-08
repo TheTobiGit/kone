@@ -4,8 +4,10 @@ import {
   classifyProviderError,
   errorText,
   isNonFatalCodexError,
+  isQuotaOrRateLimitError,
   isRecoverableCodexResumeError,
   isResumeRefusalError,
+  limitResetFromError,
 } from "./errors.js";
 
 describe("classifyProviderError", () => {
@@ -109,5 +111,50 @@ describe("errorText", () => {
     expect(errorText(null)).toBe("");
     expect(errorText(undefined)).toBe("");
     expect(errorText("")).toBe("");
+  });
+});
+
+describe("quota classification", () => {
+  test("classifies limit shapes and messages as quota", () => {
+    expect(classifyProviderError("429 Too Many Requests")).toBe("quota");
+    expect(classifyProviderError("you have hit your usage limit")).toBe("quota");
+    expect(isQuotaOrRateLimitError({ status: 429 })).toBe(true);
+    expect(isQuotaOrRateLimitError({ code: "insufficient_quota" })).toBe(true);
+    expect(isQuotaOrRateLimitError(new Error("connection reset"))).toBe(false);
+  });
+});
+
+describe("limitResetFromError", () => {
+  const NOW = 1_800_000_000_000;
+  const LATER = NOW + 3_600_000;
+
+  test("reads an ISO reset nested in the payload", () => {
+    expect(limitResetFromError({ error: { resetsAt: new Date(LATER).toISOString() } }, NOW)).toBe(LATER);
+  });
+
+  test("reads Codex epoch-second resets and the codexErrorInfo container", () => {
+    expect(limitResetFromError({ reset_at: Math.floor(LATER / 1000) }, NOW)).toBe(LATER);
+    expect(
+      limitResetFromError({ error: { codexErrorInfo: { rate_limit: { resetsAt: LATER } } } }, NOW),
+    ).toBe(LATER);
+  });
+
+  test("reads a Retry-After duration and header", () => {
+    expect(limitResetFromError({ retry_after: 60 }, NOW)).toBe(NOW + 60_000);
+    expect(limitResetFromError({ headers: { "Retry-After": "90" } }, NOW)).toBe(NOW + 90_000);
+  });
+
+  test("never invents a reset: absent, past, or unrelated fields read null", () => {
+    expect(limitResetFromError({ message: "usage limit" }, NOW)).toBeNull();
+    expect(limitResetFromError({ resetsAt: new Date(NOW - 1).toISOString() }, NOW)).toBeNull();
+    expect(limitResetFromError({ retry_after: 0 }, NOW)).toBeNull();
+    expect(limitResetFromError(null, NOW)).toBeNull();
+    expect(limitResetFromError("429", NOW)).toBeNull();
+  });
+
+  test("a self-referential payload does not loop", () => {
+    const circular: unknown[] = [];
+    circular.push(circular);
+    expect(limitResetFromError(circular, NOW)).toBeNull();
   });
 });
