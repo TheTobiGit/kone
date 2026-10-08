@@ -1116,15 +1116,18 @@ export class AgentService {
   }
 
   /** Whether a thread must not be settled right now. Work can be in flight in
-   *  the service before the store knows: a claimed dispatch, a live or starting
-   *  provider session, or an in-flight compaction. The settle sweep consults
-   *  this as well as the store's own busy read. */
+   *  the service before the store knows: a claimed dispatch, a starting
+   *  provider session, an in-flight compaction, or parked work (a question or
+   *  approval the thread waits on). A quiescent CONNECTED session is
+   *  deliberately not a blocker — an idle session that has nothing queued or
+   *  parked may settle; the store's own busy read (history.threadIsBusy) covers
+   *  queued rows and running turns. */
   private settlementBlocked(threadId: string): boolean {
     return (
       this.isBusy(threadId) ||
-      this.hasLiveSession(threadId) ||
       this.startingSessions.has(threadId) ||
-      this.isCompacting(threadId)
+      this.isCompacting(threadId) ||
+      (this.parkedByThread.get(threadId)?.size ?? 0) > 0
     );
   }
 

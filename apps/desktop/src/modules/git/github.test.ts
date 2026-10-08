@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { initTestRepo } from "@kone/git-core/testRepo.js";
+import { git } from "@kone/git-core/core.js";
 
 import { classifyGhError } from "./ghError.js";
 
@@ -22,6 +23,25 @@ describe("branchPullRequest outcome", () => {
       const outcome = await branchPullRequest(dir, "feature");
       // gh is missing, unauthenticated, or has no remote here — all of which are
       // "unknown", never "there is no PR".
+      expect(outcome.available).toBe(false);
+      expect(outcome.pullRequest).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed repository resolution is unavailable, not a known-empty PR list", async () => {
+    const dir = await initTestRepo("kone-gh-branch-");
+    try {
+      // A remote gh cannot resolve: `gh pr list` fails with NOT_FOUND, which
+      // also covers a removed/inaccessible repository — never "no PR".
+      await git(dir, [
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/kone-nonexistent-org-xyz/nonexistent-repo-xyz.git",
+      ]);
+      const outcome = await branchPullRequest(dir, "feature");
       expect(outcome.available).toBe(false);
       expect(outcome.pullRequest).toBeNull();
     } finally {

@@ -118,10 +118,14 @@ class LiveAdapter {
     supportsModelList: false,
     supportsSubagents: false,
   };
+  /** When set, the service's session start waits on it — lets a test hold the
+   *  startingSessions window open. */
+  static startGate: Promise<void> | null = null;
   constructor(emit: (event: import("./types.js").RuntimeEvent) => void) {
     LiveAdapter.emit = emit;
   }
   async startSession(input: { threadId: string }) {
+    if (LiveAdapter.startGate) await LiveAdapter.startGate;
     return { threadId: input.threadId, provider: "codex" as const };
   }
   async stopSession() {}
@@ -180,6 +184,7 @@ beforeEach(() => {
   checkerGate = null;
   closeGate = null;
   closeStarted = null;
+  LiveAdapter.startGate = null;
 });
 
 afterAll(() => {});
@@ -310,18 +315,64 @@ describe("AgentService.sweepPullRequestSettlements", () => {
     expect(history.attempts).toContain("t1");
   });
 
-  test("a live session blocks settlement even when the store is not busy", async () => {
+  test("an idle live session settles", async () => {
     history.candidates = [candidate("t-live", merged)];
     checkerResult = merged;
     await service.startSession({ threadId: "t-live", provider: "codex", cwd: "/repo" });
     try {
-      expect(await service.sweepPullRequestSettlements()).toBe(0);
-      // Blocked before the lookup: no gh call for a thread with a live session.
-      expect(checkerCalls).toBe(0);
-      expect(history.done.has("t-live")).toBe(false);
+      // A quiescent connected session is not work in flight: it settles.
+      expect(await service.sweepPullRequestSettlements()).toBe(1);
+      expect(history.done.has("t-live")).toBe(true);
     } finally {
       await service.stopSession("t-live");
     }
+  });
+
+  test("a session still starting blocks settlement", async () => {
+    history.candidates = [candidate("t-startup", merged)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    LiveAdapter.startGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const starting = service.startSession({ threadId: "t-startup", provider: "codex", cwd: "/repo" });
+    try {
+      // startingSessions holds the id until the adapter answers; the sweep must
+      // not even look up.
+      expect(await service.sweepPullRequestSettlements()).toBe(0);
+      expect(checkerCalls).toBe(0);
+      expect(history.done.has("t-startup")).toBe(false);
+    } finally {
+      release();
+      await starting;
+      await service.stopSession("t-startup");
+    }
+  });
+
+  test("parked work (a pending question) blocks settlement", async () => {
+    history.candidates = [candidate("t-parked", merged)];
+    checkerResult = merged;
+    LiveAdapter.emit?.({
+      type: "user-input.requested",
+      threadId: "t-parked",
+      provider: "codex",
+      at: Date.now(),
+      source: "codex.acp",
+      requestId: "q-1",
+      questions: [],
+    });
+    expect(await service.sweepPullRequestSettlements()).toBe(0);
+    expect(history.done.has("t-parked")).toBe(false);
+    // Clear the parked ask so it does not leak into the next test.
+    LiveAdapter.emit?.({
+      type: "user-input.resolved",
+      threadId: "t-parked",
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      requestId: "q-1",
+      answers: {},
+    });
   });
 
   test("a turn dispatched while the lookup is deferred blocks settlement", async () => {
