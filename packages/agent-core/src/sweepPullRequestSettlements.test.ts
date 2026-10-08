@@ -23,7 +23,7 @@ class FakeSettleHistory {
   done = new Set<string>();
   metas = new Map<string, { provider: string }>();
 
-  settleThreadPullRequestCandidates(limit: number) {
+  settleThreadPullRequestCandidates(limit: number, _notCheckedAfter?: number) {
     return this.candidates.slice(0, limit);
   }
   threadIsBusy(threadId: string) {

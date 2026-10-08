@@ -31,8 +31,11 @@ describe("toThreadPullRequestLink", () => {
   });
 
   test("drops a non-positive number and coerces an unknown state", () => {
-    expect(toThreadPullRequestLink({ url: "u", number: -3, state: "weird" as never })?.number).toBe(0);
-    expect(toThreadPullRequestLink({ url: "u", state: "weird" as never })?.state).toBe("unknown");
+    // SAFETY: the schema's enum is enforced at the boundary; passing a value
+    // outside it is the point — prove the coercion, not the type.
+    const weirdState = "weird" as never;
+    expect(toThreadPullRequestLink({ url: "u", number: -3, state: weirdState })?.number).toBe(0);
+    expect(toThreadPullRequestLink({ url: "u", state: weirdState })?.state).toBe("unknown");
   });
 
   test("refuses an input naming no PR", () => {

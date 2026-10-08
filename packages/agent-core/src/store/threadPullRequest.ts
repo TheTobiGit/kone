@@ -195,11 +195,13 @@ export class ThreadPullRequestRepo {
    *  fallback — its own worktree (a local thread's `branch` is the shared repo
    *  branch, which would settle every thread on one PR, so it is excluded).
    *  `notCheckedAfter` backs off: candidates checked at or after that epoch are
-   *  skipped, so a two-minute tick does not fan out a gh call per thread. */
-  settleCandidates(limit: number, notCheckedAfter?: number): ThreadPullRequestCandidate[] {
+   *  skipped, so a two-minute tick does not fan out a gh call per thread. The
+   *  cutoff is required: a caller must say how stale a check may be, rather
+   *  than silently getting "everything is due". */
+  settleCandidates(limit: number, notCheckedAfter: number): ThreadPullRequestCandidate[] {
     const db = this.dbh.handle();
     if (!db) return [];
-    const backoff = notCheckedAfter ?? 0;
+    const backoff = notCheckedAfter;
     try {
       // SAFETY: the projection names the link columns plus the thread's
       // project/branch/place; branch falls back to requested_branch for a

@@ -284,10 +284,7 @@ export async function addWorktree(
       await git(
         root,
         ["worktree", "add", "-b", branch, target, baseSha],
-        {
-          timeoutMs: WORKTREE_EXEC_TIMEOUT_MS,
-          ...(input.onStderr ? { onStderr: input.onStderr } : {}),
-        },
+        { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS, onStderr: input.onStderr },
       );
     } catch (error) {
       // `worktree add` can leave the branch behind when the checkout is what
@@ -361,10 +358,7 @@ export async function attachWorktree(
       await git(
         root,
         ["worktree", "add", target, branch],
-        {
-          timeoutMs: WORKTREE_EXEC_TIMEOUT_MS,
-          ...(input.onStderr ? { onStderr: input.onStderr } : {}),
-        },
+        { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS, onStderr: input.onStderr },
       );
     } catch (error) {
       if (error instanceof GitError) throw classifyWorktreeError(error);
