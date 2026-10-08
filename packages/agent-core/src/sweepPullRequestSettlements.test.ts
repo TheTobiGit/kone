@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { setUserDataDir } from "./userDataDir.js";
 import type { ThreadPullRequestLink } from "./threadPullRequest.js";
 import type { ThreadPullRequestCandidate } from "./store/threadPullRequest.js";
-import type { ProviderAdapter } from "./types.js";
+import type { ProviderAdapter, RuntimeEvent } from "./types.js";
 
 const userDataDir = mkdtempSync(path.join(tmpdir(), "kone-pr-settle-test-"));
 setUserDataDir(userDataDir);
@@ -19,6 +19,9 @@ let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 class FakeSettleHistory {
   candidates: ThreadPullRequestCandidate[] = [];
   busy = new Set<string>();
+  /** Threads with a queued-but-not-promoted follow-up — the store's own busy
+   *  read that threadIsBusy folds in. */
+  queued = new Set<string>();
   userAt = new Map<string, number | null>();
   recorded: Array<{ threadId: string; state: string; mergedAt: number | null }> = [];
   attempts: string[] = [];
@@ -36,7 +39,7 @@ class FakeSettleHistory {
     return { ...base, link: this.links.get(threadId) ?? null };
   }
   threadIsBusy(threadId: string) {
-    return this.busy.has(threadId);
+    return this.busy.has(threadId) || this.queued.has(threadId);
   }
   threadIsSettleEligible(threadId: string) {
     return this.metas.has(threadId) && !this.done.has(threadId);
@@ -117,16 +120,35 @@ class LiveAdapter {
     supportsResume: false,
     supportsModelList: false,
     supportsSubagents: false,
+    compaction: { kind: "native" as const },
   };
   /** When set, the service's session start waits on it — lets a test hold the
    *  startingSessions window open. */
   static startGate: Promise<void> | null = null;
+  /** When set, the adapter's native compaction waits on it, holding the
+   *  compactingThreads claim open for a test. */
+  static compactGate: Promise<void> | null = null;
+  static compactStarted: (() => void) | null = null;
   constructor(emit: (event: import("./types.js").RuntimeEvent) => void) {
     LiveAdapter.emit = emit;
   }
   async startSession(input: { threadId: string }) {
     if (LiveAdapter.startGate) await LiveAdapter.startGate;
     return { threadId: input.threadId, provider: "codex" as const };
+  }
+  async compactThread(threadId: string) {
+    LiveAdapter.compactStarted?.();
+    if (LiveAdapter.compactGate) await LiveAdapter.compactGate;
+    // Announce the boundary runCompaction waits for, so the claim can clear.
+    const compacted: RuntimeEvent = {
+      type: "thread.state.changed",
+      threadId,
+      provider: "codex",
+      at: Date.now(),
+      source: "codex.acp",
+      state: "compacted",
+    };
+    LiveAdapter.emit?.(compacted);
   }
   async stopSession() {}
   async stopAll() {}
@@ -170,6 +192,7 @@ beforeAll(async () => {
 beforeEach(() => {
   history.candidates = [];
   history.busy.clear();
+  history.queued.clear();
   history.userAt.clear();
   history.recorded = [];
   history.attempts = [];
@@ -185,6 +208,8 @@ beforeEach(() => {
   closeGate = null;
   closeStarted = null;
   LiveAdapter.startGate = null;
+  LiveAdapter.compactGate = null;
+  LiveAdapter.compactStarted = null;
 });
 
 afterAll(() => {});
@@ -455,5 +480,95 @@ describe("AgentService.sweepPullRequestSettlements", () => {
     expect(await pending).toBe(1);
     // Shutdown was requested while cleanup ran: the script must not start.
     expect(scripts).toHaveLength(0);
+  });
+});
+
+describe("AgentService.sweepPullRequestSettlements — work that blocks settle", () => {
+  async function waitFor(condition: () => boolean): Promise<void> {
+    const deadline = Date.now() + 2000;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error("timed out waiting for the condition");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  test("a queued-but-not-promoted follow-up blocks settlement before the lookup", async () => {
+    history.candidates = [candidate("t-q", merged)];
+    checkerResult = merged;
+    history.queued.add("t-q");
+    expect(await service.sweepPullRequestSettlements()).toBe(0);
+    // Blocked before gh: no lookup for a thread with a queued follow-up.
+    expect(checkerCalls).toBe(0);
+    expect(history.done.has("t-q")).toBe(false);
+  });
+
+  test("a queued follow-up added during the lookup blocks settlement", async () => {
+    history.candidates = [candidate("t-q", merged)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    checkerGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = service.sweepPullRequestSettlements();
+    history.queued.add("t-q");
+    release();
+    expect(await pending).toBe(0);
+    expect(history.done.has("t-q")).toBe(false);
+    expect(closed).toHaveLength(0);
+    expect(scripts).toHaveLength(0);
+  });
+
+  test("an in-flight compaction blocks settlement before the lookup", async () => {
+    history.candidates = [candidate("t-c", merged)];
+    checkerResult = merged;
+    await service.startSession({ threadId: "t-c", provider: "codex", cwd: "/repo" });
+    let release: () => void = () => {};
+    LiveAdapter.compactGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started: () => void = () => {};
+    const compactStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    LiveAdapter.compactStarted = started;
+    const compacting = service.compactThread("t-c");
+    await compactStarted;
+    try {
+      expect(await service.sweepPullRequestSettlements()).toBe(0);
+      expect(checkerCalls).toBe(0);
+      expect(history.done.has("t-c")).toBe(false);
+    } finally {
+      release();
+      await compacting;
+      await service.stopSession("t-c");
+    }
+  });
+
+  test("a compaction started during the lookup blocks settlement", async () => {
+    history.candidates = [candidate("t-c", merged)];
+    checkerResult = merged;
+    await service.startSession({ threadId: "t-c", provider: "codex", cwd: "/repo" });
+    let releaseChecker: () => void = () => {};
+    checkerGate = new Promise<void>((resolve) => {
+      releaseChecker = resolve;
+    });
+    const pending = service.sweepPullRequestSettlements();
+
+    let releaseCompact: () => void = () => {};
+    LiveAdapter.compactGate = new Promise<void>((resolve) => {
+      releaseCompact = resolve;
+    });
+    const compacting = service.compactThread("t-c");
+    await waitFor(() => service.isCompacting("t-c"));
+    releaseChecker();
+    try {
+      expect(await pending).toBe(0);
+      expect(history.done.has("t-c")).toBe(false);
+      expect(closed).toHaveLength(0);
+    } finally {
+      releaseCompact();
+      await compacting;
+      await service.stopSession("t-c");
+    }
   });
 });
