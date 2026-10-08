@@ -103,9 +103,13 @@ let checkerGate: Promise<void> | null = null;
 let closeGate: Promise<void> | null = null;
 let closeStarted: (() => void) | null = null;
 
-/** A minimal provider so the service can hold a live session in a test. */
+/** A minimal provider so the service can hold a live session and receive real
+ *  turn events in a test. */
 class LiveAdapter {
   provider = "codex" as const;
+  /** The service's emit closure, as a real adapter holds it — used to deliver
+   *  the turn.started/turn.completed events that mark a thread busy. */
+  static emit: ((event: import("./types.js").RuntimeEvent) => void) | null = null;
   capabilities = {
     sessionModelSwitch: "unsupported" as const,
     streamsText: false,
@@ -114,11 +118,17 @@ class LiveAdapter {
     supportsModelList: false,
     supportsSubagents: false,
   };
+  constructor(emit: (event: import("./types.js").RuntimeEvent) => void) {
+    LiveAdapter.emit = emit;
+  }
   async startSession(input: { threadId: string }) {
     return { threadId: input.threadId, provider: "codex" as const };
   }
   async stopSession() {}
   async stopAll() {}
+  async sendTurn(input: { threadId: string }) {
+    return { threadId: input.threadId, turnId: "turn-live" };
+  }
   async listSessions(): Promise<unknown[]> {
     return [];
   }
@@ -138,9 +148,9 @@ beforeAll(async () => {
       return checkerResult;
     },
     // SAFETY: the minimal adapter is enough for a service that only starts a
-    // session to occupy a thread.
+    // session and receives turn events.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
-    adapters: () => [new LiveAdapter() as unknown as ProviderAdapter],
+    adapters: (emit) => [new LiveAdapter(emit) as unknown as ProviderAdapter],
     closeIdleShells: async ({ threadId }) => {
       closeStarted?.();
       if (closeGate) await closeGate;
@@ -312,6 +322,43 @@ describe("AgentService.sweepPullRequestSettlements", () => {
     } finally {
       await service.stopSession("t-live");
     }
+  });
+
+  test("a turn dispatched while the lookup is deferred blocks settlement", async () => {
+    history.candidates = [candidate("t1", merged)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    checkerGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = service.sweepPullRequestSettlements();
+
+    // While gh is in flight, the adapter starts a turn on the thread — the real
+    // event the service marks it busy on. The store's own busy read stays false.
+    LiveAdapter.emit?.({
+      type: "turn.started",
+      threadId: "t1",
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      turnId: "turn-during-lookup",
+    });
+    release();
+
+    expect(await pending).toBe(0);
+    expect(history.done.has("t1")).toBe(false);
+    expect(closed).toHaveLength(0);
+    expect(scripts).toHaveLength(0);
+
+    // End the turn so it does not leak into the next test.
+    LiveAdapter.emit?.({
+      type: "turn.completed",
+      threadId: "t1",
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      turnId: "turn-during-lookup",
+    });
   });
 
   test("drops a result when the branch or workspace changed while the check ran", async () => {
