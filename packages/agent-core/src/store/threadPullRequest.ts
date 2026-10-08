@@ -147,6 +147,47 @@ export class ThreadPullRequestRepo {
     }
   }
 
+  /** Advance a thread's check time without touching PR identity or state. Used
+   *  when a check could not produce a result (gh unavailable, an unreadable
+   *  link, or a busy thread) so the bounded candidate query moves past it
+   *  instead of returning the same first threads forever. */
+  recordAttempt(threadId: string, checkedAt: number): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET linked_pr_checked_at = ? WHERE thread_id = ?`).run(
+        checkedAt,
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest recordAttempt failed:", err);
+    }
+  }
+
+  /** Whether a thread is still a settle candidate right now: it exists, is not
+   *  archived, and is not already settled. Re-read immediately before actually
+   *  settling, because a check is asynchronous and these facts can change while
+   *  gh runs. */
+  threadIsSettleEligible(threadId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      // SAFETY: the projection is the constant 1 under the alias asked for.
+      const row = db
+        .prepare(
+          `SELECT 1 AS one FROM threads
+            WHERE thread_id = ? AND archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+            LIMIT 1`,
+        )
+        .get(threadId) as { one: number } | undefined;
+      return row !== null && row !== undefined;
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest threadIsSettleEligible failed:", err);
+      return false;
+    }
+  }
+
   /** Every thread that has a linked PR, newest check first — the settle
    *  sweep's candidate list. Bounded so one pass never loads an unbounded set. */
   linkedThreads(limit: number): LinkedPullRequestThread[] {

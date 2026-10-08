@@ -26,6 +26,7 @@ import { formatThreadTitleContext } from "./threadTitleContext.js";
 import {
   toThreadPullRequestLink,
   pullRequestMerged,
+  samePullRequest,
   type ThreadPullRequestLink,
   type ThreadPullRequestLinkInput,
 } from "./threadPullRequest.js";
@@ -266,6 +267,8 @@ export type AgentServiceOptions = {
     | "clearThreadPullRequestLink"
     | "settleThreadPullRequestCandidates"
     | "recordThreadPullRequestChecked"
+    | "recordThreadPullRequestAttempt"
+    | "threadIsSettleEligible"
     | "latestUserAuthoredAt"
     | "threadIsBusy"
   >;
@@ -584,6 +587,11 @@ export class AgentService {
    *  delay, cleared on stopAll. */
   private pullRequestTimer: ReturnType<typeof setInterval> | null = null;
   private pullRequestStartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The sweep currently running, so a second tick skips instead of selecting
+   *  the same threads and double-settling them. */
+  private pullRequestSweepInFlight: Promise<number> | null = null;
+  /** Set by stopAll to make a running pass bail at its next step. */
+  private pullRequestSweepAborted = false;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
     // A provider's questions join the thread's one question queue on their
@@ -2911,17 +2919,44 @@ export class AgentService {
    *
    *  Public for tests; the timer calls it. */
   async sweepPullRequestSettlements(): Promise<number> {
+    // One pass at a time. A tick that lands while a previous sweep is awaiting
+    // gh returns immediately, so the same threads cannot be selected twice and
+    // their settle actions cannot run twice.
+    if (this.pullRequestSweepInFlight) return 0;
+    const run = this.runPullRequestSweep().finally(() => {
+      this.pullRequestSweepInFlight = null;
+    });
+    this.pullRequestSweepInFlight = run;
+    return run;
+  }
+
+  private async runPullRequestSweep(): Promise<number> {
     const history = this.historyStore;
     const checker = this.options.pullRequestChecker;
     if (!history || !checker) return 0;
+    this.pullRequestSweepAborted = false;
     let settled = 0;
+    const sameLink = (
+      before: ThreadPullRequestLink | null,
+      after: ThreadPullRequestLink | null,
+    ): boolean => {
+      if (before === null || after === null) return before === null && after === null;
+      return samePullRequest(before, after);
+    };
     for (const candidate of history.settleThreadPullRequestCandidates(
       PR_SETTLE_BATCH_SIZE,
       Date.now() - PR_CHECK_MIN_INTERVAL_MS,
     )) {
+      if (this.pullRequestSweepAborted) break;
       // Work that will wake the thread outranks a merge: leave it to finish.
-      if (history.threadIsBusy(candidate.threadId)) continue;
+      // Record the attempt so a permanently busy thread does not head the
+      // bounded queue forever.
+      if (history.threadIsBusy(candidate.threadId)) {
+        history.recordThreadPullRequestAttempt(candidate.threadId, Date.now());
+        continue;
+      }
       let checked: ThreadPullRequestLink | null = null;
+      let failed = false;
       try {
         checked = await checker({
           threadId: candidate.threadId,
@@ -2931,11 +2966,20 @@ export class AgentService {
           link: candidate.link,
         });
       } catch (err) {
+        failed = true;
         console.warn(`[agent] PR check failed for ${candidate.threadId}:`, err);
+      }
+      if (this.pullRequestSweepAborted) break;
+      const checkedAt = Date.now();
+      // The link, workspace or thread state may have changed while gh ran.
+      // Drop the result if the thread no longer carries the link we checked, so
+      // an old lookup never writes into a new link's columns.
+      if (!sameLink(candidate.link, history.threadPullRequestLink(candidate.threadId))) continue;
+      if (failed || !checked) {
+        // No result: advance the backoff but write no PR state.
+        history.recordThreadPullRequestAttempt(candidate.threadId, checkedAt);
         continue;
       }
-      if (!checked) continue;
-      const checkedAt = Date.now();
       // Record what the check saw so the next pass can order candidates and a
       // merge survives a restart without another gh call.
       history.recordThreadPullRequestChecked(candidate.threadId, {
@@ -2944,6 +2988,10 @@ export class AgentService {
         checkedAt,
       });
       if (!pullRequestMerged(checked)) continue;
+      // Re-validate the admission facts immediately before settling: a turn may
+      // have started, or the thread been archived/marked done, while gh ran.
+      if (history.threadIsBusy(candidate.threadId)) continue;
+      if (!history.threadIsSettleEligible(candidate.threadId)) continue;
       if (
         !prMergeSettlesThread({
           mergedAt: checked.mergedAt,
@@ -3671,6 +3719,9 @@ export class AgentService {
       clearInterval(this.pullRequestTimer);
       this.pullRequestTimer = null;
     }
+    // Invalidate any pass already awaiting gh, so it bails instead of settling
+    // threads during shutdown.
+    this.pullRequestSweepAborted = true;
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();
     this.parkedByThread.clear();
