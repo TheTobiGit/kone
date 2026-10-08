@@ -26,12 +26,12 @@ import { userDataPath } from "./userDataDir.js";
 // - At the next start `claimQuitResumeRecordAtStartup` consumes the record
 //   before the window exists (one existence check when there is nothing to do;
 //   an atomic rename-then-delete when there is — a crash in between loses the
-//   resume rather than doubling it), and `resumeQuitInterruptedChats` filters
-//   out threads that moved on since, then dispatches one silent continuation
-//   turn per remaining thread. Dispatches run serialized with a fresh
-//   precondition re-check immediately before each, so a client command landing
-//   between the plan and a dispatch meets either the re-check or the busy
-//   claim of an already-dispatched turn, never a stale plan row.
+//   resume rather than doubling it). `planQuitResumeTurns` filters out threads
+//   that moved on since, and the dispatcher turns the survivors into durable
+//   continuation rows, dispatching each with a fresh precondition re-check
+//   immediately before it — so a client command landing between the plan and a
+//   dispatch meets either the re-check or the busy claim of an already-
+//   dispatched turn, never a stale plan row.
 //
 // Accepted residual windows (each needs a second quit or a new turn to land
 // within microseconds of the first): a turn that replaces the recorded one
@@ -131,6 +131,10 @@ export interface QuitResumeThreadSnapshot {
   /** No row for this id — deleted, or never existed here. */
   missing: boolean;
   archived: boolean;
+  /** The user finished with this thread (a done mark), so nothing automatic
+   *  should speak in it. Optional so snapshots written before the check still
+   *  read as not-done. */
+  done?: boolean;
   /** A turn is live on the service right now. */
   busy: boolean;
   /** Assistant turns oldest first; empty on a thread that never ran one. */
@@ -197,6 +201,7 @@ export function quitResumeSkipReason(
 ): QuitResumeSkipReason | null {
   if (snapshot === null || snapshot.missing) return "thread-missing";
   if (snapshot.archived) return "thread-archived";
+  if (snapshot.done) return "thread-settled";
   if (snapshot.busy) return "turn-in-flight";
   for (const turn of snapshot.turns) {
     // A block still marked running has an owner the snapshot cannot see (or
@@ -384,49 +389,4 @@ export async function prepareQuitResume(input: {
     recordedThreadIds: record.threads.map((entry) => entry.threadId),
     recordedAt: record.recordedAt,
   };
-}
-
-function missingSnapshot(threadId: string): QuitResumeThreadSnapshot {
-  return { threadId, missing: true, archived: false, busy: false, turns: [] };
-}
-
-/**
- * Boot-time consumer of a claimed record. Plans from one snapshot read per
- * thread, then dispatches serialized — one thread fully re-checked and sent
- * before the next begins — so a client command landing mid-loop meets either
- * the fresh re-check or the busy claim of a dispatched turn. Every failure is
- * contained per thread: resuming must never fail startup.
- */
-export async function resumeQuitInterruptedChats(input: {
-  claimed: QuitResumeRecordRead;
-  readSnapshot: (threadId: string) => QuitResumeThreadSnapshot | null;
-  dispatchResumeTurn: (threadId: string, prompt: string) => Promise<void>;
-}): Promise<{ resumed: string[]; skipped: QuitResumeSkipped[] }> {
-  const resumed: string[] = [];
-  const skipped: QuitResumeSkipped[] = [];
-  if (input.claimed.kind !== "record") return { resumed, skipped };
-  const record = input.claimed.record;
-  const plan = planQuitResumeTurns({
-    record,
-    snapshots: record.threads.map(
-      (entry) => input.readSnapshot(entry.threadId) ?? missingSnapshot(entry.threadId),
-    ),
-  });
-  for (const skip of plan.skipped) skipped.push(skip);
-  for (const threadId of plan.threadIds) {
-    const fresh = input.readSnapshot(threadId) ?? missingSnapshot(threadId);
-    const reason = quitResumeSkipReason(fresh, record.recordedAt);
-    if (reason !== null) {
-      skipped.push({ threadId, reason });
-      continue;
-    }
-    try {
-      await input.dispatchResumeTurn(threadId, record.continuationPrompt);
-      resumed.push(threadId);
-    } catch (err) {
-      console.warn(`[quit-resume] resume turn for thread ${threadId} failed:`, err);
-      skipped.push({ threadId, reason: "dispatch-failed" });
-    }
-  }
-  return { resumed, skipped };
 }

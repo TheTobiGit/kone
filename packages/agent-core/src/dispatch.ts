@@ -10,6 +10,7 @@ import type { ConversationStore } from "./ConversationStore.js";
 import {
   DEFAULT_QUIT_RESUME_PROMPT,
   claimQuitResumeRecordAtStartup,
+  planQuitResumeTurns,
   quitResumeSkipReason,
   type QuitResumeAssistantTurn,
   type QuitResumeSkipReason,
@@ -590,6 +591,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       threadId,
       missing: false,
       archived: (meta.archivedAt ?? null) !== null,
+      done: (meta.doneAt ?? 0) > 0,
       busy: this.service.isThreadBusy(threadId),
       turns,
     };
@@ -610,13 +612,23 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     skipped: QuitResumeSkipped[];
   }> {
     const claimed = claimQuitResumeRecordAtStartup();
+    const skipped: QuitResumeSkipped[] = [];
     if (claimed.kind === "record") {
-      // Turn the record into durable continuations before dispatching any:
-      // a boot that dies between here and a dispatch leaves rows behind, and
-      // the next boot's sweep recovers them instead of losing the resume.
-      for (const entry of claimed.record.threads) {
+      // The record-level plan is the one place the "did this thread move on"
+      // rules live. Turn its survivors into durable continuations before
+      // dispatching any: a boot that dies between here and a dispatch leaves
+      // rows behind, and the next boot's sweep recovers them instead of
+      // losing the resume.
+      const plan = planQuitResumeTurns({
+        record: claimed.record,
+        snapshots: claimed.record.threads.map((entry) =>
+          this.readQuitResumeSnapshot(entry.threadId),
+        ),
+      });
+      skipped.push(...plan.skipped);
+      for (const threadId of plan.threadIds) {
         const created = this.store.scheduleContinuation({
-          threadId: entry.threadId,
+          threadId,
           kind: QUIT_RESUME_CONTINUATION_KIND,
           dueAt: claimed.record.recordedAt,
           payloadJson: JSON.stringify({
@@ -625,7 +637,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
           }),
         });
         if (created === null) {
-          console.warn(`[agent] could not schedule the quit-resume continuation for ${entry.threadId}`);
+          console.warn(`[agent] could not schedule the quit-resume continuation for ${threadId}`);
         }
       }
     }
@@ -634,18 +646,19 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       // boot that died before settling it, so release them all to become due.
       this.store.releaseOrphanedContinuationClaims();
       const result = await this.sweepContinuations();
+      const allSkipped = [...skipped, ...result.skipped];
       if (result.resumed.length > 0) {
         console.info(
           `[agent] resumed ${result.resumed.length} chat(s) interrupted by the previous quit`,
         );
       }
-      if (result.skipped.length > 0) {
-        console.info("[agent] quit-resume skipped threads that moved on:", result.skipped);
+      if (allSkipped.length > 0) {
+        console.info("[agent] quit-resume skipped threads that moved on:", allSkipped);
       }
-      return result;
+      return { resumed: result.resumed, skipped: allSkipped };
     } catch (err) {
       console.warn("[agent] quit-resume failed — continuing boot without it:", err);
-      return { resumed: [], skipped: [] };
+      return { resumed: [], skipped };
     }
   }
 
@@ -703,17 +716,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return { resumed, skipped };
   }
 
-  /** Whether a claimed continuation still applies, and what to send. A thread
-   *  that is gone, archived or settled is cancelled outright; otherwise the
-   *  quit-resume staleness rules apply (busy, a turn in flight, or one that
-   *  completed after the continuation was recorded). */
+  /** Whether a claimed continuation still applies, and what to send. The
+   *  quit-resume staleness rules are the single source of truth: gone,
+   *  archived, settled, busy, or a turn in flight, or one that completed after
+   *  the continuation was recorded. */
   private continuationDecision(
     row: ContinuationRecord,
   ): { cancel: QuitResumeSkipReason } | { prompt: string } {
-    const meta = this.store.threadMeta(row.threadId);
-    if (!meta) return { cancel: "thread-missing" };
-    if ((meta.archivedAt ?? null) !== null) return { cancel: "thread-archived" };
-    if (meta.doneAt !== null && (meta.doneAt ?? 0) > 0) return { cancel: "thread-settled" };
     const payload = parseContinuationPayload(row.payloadJson);
     const reason = quitResumeSkipReason(
       this.readQuitResumeSnapshot(row.threadId),
