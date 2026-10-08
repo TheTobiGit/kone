@@ -1625,12 +1625,17 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.interrupting = false;
 
     if (message.subtype === "success" && !message.is_error) {
-      this.emit({
+      const completed: Extract<RuntimeEvent, { type: "turn.completed" }> = {
         ...this.base(session),
         type: "turn.completed",
         turnId,
         conversationId: session.sessionId,
-      });
+      };
+      // The turn's last assistant message uuid, for a native fork at this turn
+      // (Claude's forkSession / resumeSessionAt anchor). Kept optional so
+      // providers and older events without it stay valid.
+      if (session.lastAssistantUuid) completed.assistantUuid = session.lastAssistantUuid;
+      this.emit(completed);
       return;
     }
 

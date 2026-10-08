@@ -839,6 +839,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see TranscriptRepo */
+  turnAssistantUuid(threadId: string, turnId: string): string | null {
+    return this.transcript.turnAssistantUuid(threadId, turnId);
+  }
+
+  /** @see TranscriptRepo */
   threadTurnSpan(threadId: string): TurnSpan | null {
     return this.transcript.threadTurnSpan(threadId);
   }

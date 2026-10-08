@@ -414,6 +414,29 @@ export class TranscriptRepo {
     }
   }
 
+  /** The provider-native message uuid a turn's assistant block ended on, or
+   *  null when none was recorded (the provider names none, or an older turn).
+   *  A native fork at that turn resumes from this anchor. */
+  turnAssistantUuid(threadId: string, turnId: string): string | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names only blocks.assistant_uuid, filtered to
+      // the newest assistant block of the turn that recorded one.
+      const row = db
+        .prepare(
+          `SELECT assistant_uuid FROM blocks
+            WHERE thread_id = ? AND turn_id = ? AND role = 'assistant' AND assistant_uuid IS NOT NULL
+            ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(threadId, turnId) as { assistant_uuid: string } | undefined;
+      return row?.assistant_uuid ?? null;
+    } catch (err) {
+      console.error("[conversation-store] turnAssistantUuid failed:", err);
+      return null;
+    }
+  }
+
   /** One turn's last run of `assistant_text` items, concatenated in arrival
    *  order and trimmed — the narrative only (reasoning and plan never join a
    *  run). Walking back from the end, it skips the tool calls the turn ended

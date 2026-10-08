@@ -237,3 +237,31 @@ describe("forkThreadAtTurn", () => {
     expect(store.threadMeta("f-5")?.model).toBe("claude-sonnet-5");
   });
 });
+
+describe("turn assistant uuid", () => {
+  test("records the uuid a turn.completed carries, per turn", async () => {
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+    store.ensureThread({
+      threadId: "t-uuid",
+      projectPath: "/p",
+      provider: "claudeAgent",
+      model: "claude-sonnet-5",
+    });
+    store.recordUserBlock({ threadId: "t-uuid", text: "hi", at: 1 });
+    store.applyEvent(turnStarted("t-uuid", "turn-1", 2));
+    store.applyEvent(textItem("t-uuid", "turn-1", "i-1", "hello"));
+    store.applyEvent({
+      type: "turn.completed",
+      threadId: "t-uuid",
+      provider: "claudeAgent",
+      at: 5,
+      source: "kone.store",
+      turnId: "turn-1",
+      assistantUuid: "msg-uuid-1",
+    });
+    expect(store.turnAssistantUuid("t-uuid", "turn-1")).toBe("msg-uuid-1");
+    // A turn that recorded none answers null — the portable fork fallback.
+    expect(store.turnAssistantUuid("t-uuid", "turn-2")).toBeNull();
+  });
+});

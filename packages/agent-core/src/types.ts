@@ -2048,7 +2048,15 @@ export type RuntimeEvent =
       type: "turn.queued-reordered";
       queueIds: string[];
     })
-  | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
+  | (BaseEvent & {
+      type: "turn.completed";
+      turnId: string;
+      conversationId?: string;
+      /** Claude only: the last assistant message uuid this turn produced — the
+       *  anchor a native fork at this turn resumes from. Absent on providers
+       *  that name no per-turn message. */
+      assistantUuid?: string;
+    })
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
   // turn itself: it belongs in that run's `items`, not the assistant block's.
