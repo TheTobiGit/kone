@@ -1056,17 +1056,27 @@ export async function pullRequestState(
   return decoded === null ? null : pullRequestStateOf(decoded);
 }
 
+/** The result of asking git/GitHub for a branch's pull request. `available`
+ *  separates "there is no PR" from "I could not find out": a missing or
+ *  unauthenticated gh, a non-GitHub remote, or any other failure leaves
+ *  `available: false`, and the caller must fail closed rather than treat it as
+ *  no PR. */
+export interface GitHubBranchPullRequestOutcome {
+  available: boolean;
+  pullRequest: GitHubPullRequestState | null;
+}
+
 /** The pull request opened from `branch` in `dir`, if any — the branch fallback
  *  for a thread with no explicit link. `--state all` so a merged PR still
- *  answers; null when there is no such PR or gh is unavailable. */
+ *  answers. Distinguishes a known-empty branch from an unavailable lookup. */
 export async function branchPullRequest(
   dir: string,
   branch: string | null | undefined,
-): Promise<GitHubPullRequestState | null> {
+): Promise<GitHubBranchPullRequestOutcome> {
   const head = branch?.trim();
-  if (!head) return null;
+  if (!head) return { available: true, pullRequest: null };
   const root = await repoRoot(dir);
-  if (!root) return null;
+  if (!root) return { available: false, pullRequest: null };
   let out: string;
   try {
     out = await gh(root, [
@@ -1082,14 +1092,21 @@ export async function branchPullRequest(
       PR_STATE_JSON_FIELDS,
     ]);
   } catch (error) {
-    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
-    throw error;
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) {
+      return { available: false, pullRequest: null };
+    }
+    // A deleted branch is a known-empty answer; anything else is unknown.
+    if (error instanceof GitError && error.kind === "NOT_FOUND") {
+      return { available: true, pullRequest: null };
+    }
+    return { available: false, pullRequest: null };
   }
   const trimmed = out.trim();
-  if (!trimmed) return null;
+  if (!trimmed) return { available: true, pullRequest: null };
   const parsed = rows(PullRequestStateWire).safeParse(JSON.parse(trimmed));
-  if (!parsed.success || parsed.data.length === 0) return null;
-  return pullRequestStateOf(parsed.data[0]!);
+  if (!parsed.success) return { available: false, pullRequest: null };
+  if (parsed.data.length === 0) return { available: true, pullRequest: null };
+  return { available: true, pullRequest: pullRequestStateOf(parsed.data[0]!) };
 }
 
 /** Every file a pull request touches, already parsed into hunks. One `gh pr

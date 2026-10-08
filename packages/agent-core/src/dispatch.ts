@@ -409,6 +409,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // cannot defeat it.
     const place = await this.resolveThreadPlace(input);
     const workingDir = place.dir;
+    // The setup card's agent stage starts when the provider is asked, not when
+    // it answers, so a slow connection reads as "starting the agent", and a
+    // startup failure settles it as failed.
+    if (this.worktreeSetup.get(input.threadId)) {
+      this.worktreeSetup.stage(input.threadId, { stage: "agent", status: "running" });
+    }
     let session: Session;
     try {
       session = await this.service.startSession(
@@ -420,14 +426,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       const detail =
         error instanceof Error ? messageOf(error, "Could not start.") : "Could not start.";
       this.reportWorkspaceStep(input, "start", "failed", detail);
-      // The setup card's agent stage fails with the session, not before it.
+      // The setup card's agent stage fails with the session.
       this.worktreeSetup.finish(input.threadId, "failed", detail);
       throw error;
     }
     this.reportWorkspaceStep(input, "start", "done");
     // The card is done only now: the provider session actually came up.
     if (this.worktreeSetup.get(input.threadId)) {
-      this.worktreeSetup.stage(input.threadId, { stage: "agent", status: "running" });
       this.worktreeSetup.finish(input.threadId, "done");
     }
     // The provider conversation exists the moment startSession resolves.

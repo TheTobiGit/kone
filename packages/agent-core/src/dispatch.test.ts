@@ -62,6 +62,8 @@ class FakeAdapter {
   static turnCounter = 0;
   /** The provider refuses the next turn sent to it. */
   static refuseNext: Error | null = null;
+  /** Makes the next session start fail, for startup-failure coverage. */
+  static startError: Error | null = null;
   constructor(readonly emit: EmitEvent) {}
   async discover(): Promise<never[]> {
     return [];
@@ -77,6 +79,7 @@ class FakeAdapter {
     FakeAdapter.startedCwds.push(input.cwd);
     FakeAdapter.startedAgents.push(input.agent);
     FakeAdapter.startedResumes.push(input.resume);
+    if (FakeAdapter.startError) throw FakeAdapter.startError;
     if (startGate) await startGate;
     return { threadId: input.threadId, provider: "codex" };
   }
@@ -337,6 +340,7 @@ describe("thread dispatcher: a steer is the user speaking", () => {
   beforeEach(() => {
     FakeAdapter.sent.length = 0;
     FakeAdapter.turnCounter = 0;
+    FakeAdapter.startError = null;
   });
 
   test("a steer lands in the transcript, like a send", async () => {
@@ -1685,5 +1689,42 @@ describe("worktree setup progress and cancellation", () => {
       worktreePath: null,
       requestedBranch: null,
     });
+  });
+
+  test("the agent stage runs while the session connects", async () => {
+    const { dispatcher } = await harness();
+    holdSessionStart();
+    const starting = dispatcher.startThread({
+      threadId: "t-connect",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "connect" },
+    });
+    await waitFor(() => FakeAdapter.startedCwds.includes("/tmp/kone-worktrees/connect"));
+
+    const during = worktreeSetups.at(-1);
+    expect(during?.phase).toBe("running");
+    expect(during?.stages.find((s) => s.id === "agent")?.status).toBe("running");
+
+    releaseSessionStart();
+    await starting;
+    expect(worktreeSetups.at(-1)?.stages.find((s) => s.id === "agent")?.status).toBe("done");
+  });
+
+  test("a provider startup failure leaves the agent stage failed", async () => {
+    const { dispatcher } = await harness();
+    FakeAdapter.startError = new Error("provider refused");
+    await expect(
+      dispatcher.startThread({
+        threadId: "t-start-fail",
+        provider: "codex",
+        cwd: CWD,
+        workspace: { mode: "worktree", branch: "start-fail" },
+      }),
+    ).rejects.toThrow();
+
+    const last = worktreeSetups.at(-1);
+    expect(last?.phase).toBe("failed");
+    expect(last?.stages.find((s) => s.id === "agent")?.status).toBe("failed");
   });
 });

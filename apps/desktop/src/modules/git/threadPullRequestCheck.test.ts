@@ -87,7 +87,10 @@ describe("checkThreadPullRequest", () => {
   test("a thread with no link uses the branch PR", async () => {
     const outcome = await checkThreadPullRequest(
       { link: null, branch: "feature" },
-      { fetchState: async () => null, fetchBranchPr: async () => state({ number: 9, url: "u9" }) },
+      {
+        fetchState: async () => null,
+        fetchBranchPr: async () => ({ available: true, pullRequest: state({ number: 9, url: "u9" }) }),
+      },
     );
     expect(outcome.link).toMatchObject({ number: 9, state: "merged" });
     expect(outcome.unavailable).toBe(false);
@@ -106,10 +109,22 @@ describe("checkThreadPullRequest", () => {
     expect(outcome).toEqual({ link: null, unavailable: true });
   });
 
+  test("an unavailable branch lookup is unknown, not known-empty", async () => {
+    const outcome = await checkThreadPullRequest(
+      { link: null, branch: "feature" },
+      {
+        fetchState: async () => null,
+        // gh missing or unauthenticated.
+        fetchBranchPr: async () => ({ available: false, pullRequest: null }),
+      },
+    );
+    expect(outcome).toEqual({ link: null, unavailable: true });
+  });
+
   test("a branch with no PR is known-empty, not unknown", async () => {
     const outcome = await checkThreadPullRequest(
       { link: null, branch: "feature" },
-      { fetchState: async () => null, fetchBranchPr: async () => null },
+      { fetchState: async () => null, fetchBranchPr: async () => ({ available: true, pullRequest: null }) },
     );
     expect(outcome).toEqual({ link: null, unavailable: false });
   });

@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { setUserDataDir } from "./userDataDir.js";
 import type { ThreadPullRequestLink } from "./threadPullRequest.js";
 import type { ThreadPullRequestCandidate } from "./store/threadPullRequest.js";
+import type { ProviderAdapter } from "./types.js";
 
 const userDataDir = mkdtempSync(path.join(tmpdir(), "kone-pr-settle-test-"));
 setUserDataDir(userDataDir);
@@ -22,11 +23,17 @@ class FakeSettleHistory {
   recorded: Array<{ threadId: string; state: string; mergedAt: number | null }> = [];
   attempts: string[] = [];
   links = new Map<string, ThreadPullRequestLink | null>();
+  candidateById = new Map<string, ThreadPullRequestCandidate>();
   done = new Set<string>();
   metas = new Map<string, { provider: string }>();
 
   settleThreadPullRequestCandidates(limit: number, _notCheckedAfter?: number) {
     return this.candidates.slice(0, limit);
+  }
+  threadPullRequestCandidate(threadId: string): ThreadPullRequestCandidate | null {
+    const base = this.candidateById.get(threadId);
+    if (!base) return null;
+    return { ...base, link: this.links.get(threadId) ?? null };
   }
   threadIsBusy(threadId: string) {
     return this.busy.has(threadId);
@@ -92,6 +99,30 @@ let checkerResult: ThreadPullRequestLink | null = null;
 let checkerCalls = 0;
 /** When set, the checker waits on this before answering. */
 let checkerGate: Promise<void> | null = null;
+/** When set, closeIdleShells waits on this, and `closeStarted` fires first. */
+let closeGate: Promise<void> | null = null;
+let closeStarted: (() => void) | null = null;
+
+/** A minimal provider so the service can hold a live session in a test. */
+class LiveAdapter {
+  provider = "codex" as const;
+  capabilities = {
+    sessionModelSwitch: "unsupported" as const,
+    streamsText: false,
+    supportsToolEvents: false,
+    supportsResume: false,
+    supportsModelList: false,
+    supportsSubagents: false,
+  };
+  async startSession(input: { threadId: string }) {
+    return { threadId: input.threadId, provider: "codex" as const };
+  }
+  async stopSession() {}
+  async stopAll() {}
+  async listSessions(): Promise<unknown[]> {
+    return [];
+  }
+}
 
 beforeAll(async () => {
   AgentServiceCtor = (await import("./AgentService.js")).AgentService;
@@ -106,7 +137,13 @@ beforeAll(async () => {
       if (checkerGate) await checkerGate;
       return checkerResult;
     },
+    // SAFETY: the minimal adapter is enough for a service that only starts a
+    // session to occupy a thread.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    adapters: () => [new LiveAdapter() as unknown as ProviderAdapter],
     closeIdleShells: async ({ threadId }) => {
+      closeStarted?.();
+      if (closeGate) await closeGate;
       closed.push(threadId);
     },
     runSettleScript: async ({ cwd }) => {
@@ -123,6 +160,7 @@ beforeEach(() => {
   history.recorded = [];
   history.attempts = [];
   history.links.clear();
+  history.candidateById.clear();
   history.done.clear();
   history.metas.clear();
   closed.length = 0;
@@ -130,6 +168,8 @@ beforeEach(() => {
   checkerCalls = 0;
   checkerResult = null;
   checkerGate = null;
+  closeGate = null;
+  closeStarted = null;
 });
 
 afterAll(() => {});
@@ -137,13 +177,15 @@ afterAll(() => {});
 function candidate(threadId: string, link: ThreadPullRequestLink | null): ThreadPullRequestCandidate {
   history.metas.set(threadId, { provider: "claudeAgent" });
   history.links.set(threadId, link);
-  return {
+  const entry: ThreadPullRequestCandidate = {
     threadId,
     projectPath: "/repo",
     branch: "feature",
     worktreePath: "/repo/.worktrees/feature",
     link,
   };
+  history.candidateById.set(threadId, entry);
+  return entry;
 }
 
 const merged: ThreadPullRequestLink = {
@@ -256,5 +298,64 @@ describe("AgentService.sweepPullRequestSettlements", () => {
     expect(await service.sweepPullRequestSettlements()).toBe(0);
     expect(history.recorded).toHaveLength(0);
     expect(history.attempts).toContain("t1");
+  });
+
+  test("a live session blocks settlement even when the store is not busy", async () => {
+    history.candidates = [candidate("t-live", merged)];
+    checkerResult = merged;
+    await service.startSession({ threadId: "t-live", provider: "codex", cwd: "/repo" });
+    try {
+      expect(await service.sweepPullRequestSettlements()).toBe(0);
+      // Blocked before the lookup: no gh call for a thread with a live session.
+      expect(checkerCalls).toBe(0);
+      expect(history.done.has("t-live")).toBe(false);
+    } finally {
+      await service.stopSession("t-live");
+    }
+  });
+
+  test("drops a result when the branch or workspace changed while the check ran", async () => {
+    history.candidates = [candidate("t1", null)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    checkerGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = service.sweepPullRequestSettlements();
+    // The thread moves to a different worktree/branch while gh is in flight.
+    history.candidateById.set("t1", {
+      threadId: "t1",
+      projectPath: "/repo",
+      branch: "other",
+      worktreePath: "/repo/.worktrees/other",
+      link: null,
+    });
+    release();
+
+    expect(await pending).toBe(0);
+    expect(history.done.has("t1")).toBe(false);
+    // Cleanup is not run against the stale directory.
+    expect(closed).toHaveLength(0);
+    expect(scripts).toHaveLength(0);
+  });
+
+  test("does not start the settle script after stopAll during cleanup", async () => {
+    history.candidates = [candidate("t1", merged)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      closeStarted = resolve;
+    });
+    closeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = service.sweepPullRequestSettlements();
+    await started;
+    await service.stopAll();
+    release();
+
+    expect(await pending).toBe(1);
+    // Shutdown was requested while cleanup ran: the script must not start.
+    expect(scripts).toHaveLength(0);
   });
 });

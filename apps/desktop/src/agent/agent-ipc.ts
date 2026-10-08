@@ -160,9 +160,9 @@ const renameWorktreeBranchAfterTitle = ({
   renameGeneratedBranch(worktreePath, title, {
     hasPullRequest: (dir, branch) =>
       branchPullRequest(dir, branch).then(
-        (pr) => pr !== null,
-        // A lookup that failed is unknown, not proof there is no PR: fail
-        // closed and leave the branch name alone.
+        // A PR exists OR the lookup was unavailable — either way, do not move
+        // the branch. Only a known-empty answer allows the rename.
+        (outcome) => !outcome.available || outcome.pullRequest !== null,
         () => true,
       ),
   });
@@ -185,8 +185,7 @@ export function getAgentService(): AgentService {  if (!service) {
             // number in the local repo — so a foreign-repo link resolves to the
             // right PR or to unknown.
             fetchState: (ref) => pullRequestState(dir, ref),
-            fetchBranchPr: (head) => branchPullRequest(dir, head),
-          },
+            fetchBranchPr: (head) => branchPullRequest(dir, head),          },
         );
         return outcome.link;
       },

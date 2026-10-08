@@ -214,6 +214,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadPullRequestRepo */
+  threadPullRequestCandidate(threadId: string): ThreadPullRequestCandidate | null {
+    return this.threadPullRequests.threadPullRequestCandidate(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
   linkedThreadPullRequests(limit: number): LinkedPullRequestThread[] {
     return this.threadPullRequests.linkedThreads(limit);
   }

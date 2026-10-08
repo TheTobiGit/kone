@@ -3,6 +3,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { initTestRepo } from "@kone/git-core/testRepo.js";
+
 import { classifyGhError } from "./ghError.js";
 
 // github.ts imports electron's shell at module top (used only on PR-link
@@ -10,9 +12,23 @@ import { classifyGhError } from "./ghError.js";
 mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 
 // SAFETY: the dynamically imported module is exactly ./github's own exports.
-const { commitAuthors, contributors, me, prDetail, prs, repo, status } = (await import(
-  "./github.js"
-)) as typeof import("./github.js");
+const { branchPullRequest, commitAuthors, contributors, me, prDetail, prs, repo, status } =
+  (await import("./github.js")) as typeof import("./github.js");
+
+describe("branchPullRequest outcome", () => {
+  test("a repo with no GitHub remote reports the lookup unavailable, not no-PR", async () => {
+    const dir = await initTestRepo("kone-gh-branch-");
+    try {
+      const outcome = await branchPullRequest(dir, "feature");
+      // gh is missing, unauthenticated, or has no remote here — all of which are
+      // "unknown", never "there is no PR".
+      expect(outcome.available).toBe(false);
+      expect(outcome.pullRequest).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("classifyGhError", () => {
   test("maps gh auth failures to NOT_AUTHENTICATED", () => {

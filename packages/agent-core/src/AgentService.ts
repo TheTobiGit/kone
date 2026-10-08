@@ -269,6 +269,7 @@ export type AgentServiceOptions = {
     | "recordThreadPullRequestChecked"
     | "recordThreadPullRequestAttempt"
     | "threadIsSettleEligible"
+    | "threadPullRequestCandidate"
     | "latestUserAuthoredAt"
     | "threadIsBusy"
   >;
@@ -1112,6 +1113,19 @@ export class AgentService {
    *  running turn or start one. */
   isThreadBusy(threadId: string): boolean {
     return this.isBusy(threadId);
+  }
+
+  /** Whether a thread must not be settled right now. Work can be in flight in
+   *  the service before the store knows: a claimed dispatch, a live or starting
+   *  provider session, or an in-flight compaction. The settle sweep consults
+   *  this as well as the store's own busy read. */
+  private settlementBlocked(threadId: string): boolean {
+    return (
+      this.isBusy(threadId) ||
+      this.hasLiveSession(threadId) ||
+      this.startingSessions.has(threadId) ||
+      this.isCompacting(threadId)
+    );
   }
 
   /** Whether `provider` can take a message into a running turn. One that
@@ -2943,83 +2957,101 @@ export class AgentService {
       if (before === null || after === null) return before === null && after === null;
       return samePullRequest(before, after);
     };
-    for (const candidate of history.settleThreadPullRequestCandidates(
+    for (const initial of history.settleThreadPullRequestCandidates(
       PR_SETTLE_BATCH_SIZE,
       Date.now() - PR_CHECK_MIN_INTERVAL_MS,
     )) {
       if (this.pullRequestSweepAborted) break;
-      // Work that will wake the thread outranks a merge: leave it to finish.
-      // Record the attempt so a permanently busy thread does not head the
-      // bounded queue forever.
-      if (history.threadIsBusy(candidate.threadId)) {
-        history.recordThreadPullRequestAttempt(candidate.threadId, Date.now());
+      // Work that will wake the thread outranks a merge — in the store and in
+      // the service, where a claimed dispatch or a starting session may not
+      // have reached the store yet. Record the attempt so a permanently busy
+      // thread does not head the bounded queue forever.
+      if (history.threadIsBusy(initial.threadId) || this.settlementBlocked(initial.threadId)) {
+        history.recordThreadPullRequestAttempt(initial.threadId, Date.now());
         continue;
       }
       let checked: ThreadPullRequestLink | null = null;
       let failed = false;
       try {
         checked = await checker({
-          threadId: candidate.threadId,
-          projectPath: candidate.projectPath,
-          branch: candidate.branch,
-          worktreePath: candidate.worktreePath,
-          link: candidate.link,
+          threadId: initial.threadId,
+          projectPath: initial.projectPath,
+          branch: initial.branch,
+          worktreePath: initial.worktreePath,
+          link: initial.link,
         });
       } catch (err) {
         failed = true;
-        console.warn(`[agent] PR check failed for ${candidate.threadId}:`, err);
+        console.warn(`[agent] PR check failed for ${initial.threadId}:`, err);
       }
       if (this.pullRequestSweepAborted) break;
       const checkedAt = Date.now();
-      // The link, workspace or thread state may have changed while gh ran.
-      // Drop the result if the thread no longer carries the link we checked, so
-      // an old lookup never writes into a new link's columns.
-      if (!sameLink(candidate.link, history.threadPullRequestLink(candidate.threadId))) continue;
+      // Re-read the candidate after the await: its link, branch, worktree,
+      // project or thread state may all have moved while gh ran. Drop a result
+      // whose discovery inputs changed, so an old lookup cannot settle a thread
+      // on a PR it no longer points at or clean a worktree it has left.
+      const current = history.threadPullRequestCandidate(initial.threadId);
+      if (
+        !current ||
+        current.projectPath !== initial.projectPath ||
+        current.branch !== initial.branch ||
+        current.worktreePath !== initial.worktreePath ||
+        !sameLink(initial.link, current.link)
+      ) {
+        continue;
+      }
       if (failed || !checked) {
         // No result: advance the backoff but write no PR state.
-        history.recordThreadPullRequestAttempt(candidate.threadId, checkedAt);
+        history.recordThreadPullRequestAttempt(initial.threadId, checkedAt);
         continue;
       }
       // Record what the check saw so the next pass can order candidates and a
       // merge survives a restart without another gh call.
-      history.recordThreadPullRequestChecked(candidate.threadId, {
+      history.recordThreadPullRequestChecked(initial.threadId, {
         state: checked.state,
         mergedAt: checked.mergedAt,
         checkedAt,
       });
       if (!pullRequestMerged(checked)) continue;
       // Re-validate the admission facts immediately before settling: a turn may
-      // have started, or the thread been archived/marked done, while gh ran.
-      if (history.threadIsBusy(candidate.threadId)) continue;
-      if (!history.threadIsSettleEligible(candidate.threadId)) continue;
+      // have started (in the store or the service), or the thread been
+      // archived/marked done, while gh ran.
+      if (history.threadIsBusy(initial.threadId) || this.settlementBlocked(initial.threadId)) {
+        continue;
+      }
+      if (!history.threadIsSettleEligible(initial.threadId)) continue;
       if (
         !prMergeSettlesThread({
           mergedAt: checked.mergedAt,
-          lastUserAuthoredAt: history.latestUserAuthoredAt(candidate.threadId),
+          lastUserAuthoredAt: history.latestUserAuthoredAt(initial.threadId),
         })
       ) {
         continue;
       }
-      this.setThreadDone(candidate.threadId, true);
+      if (this.pullRequestSweepAborted) break;
+      this.setThreadDone(initial.threadId, true);
       settled++;
       const closeIdle = this.options.closeIdleShells;
       if (closeIdle) {
         await closeIdle({
-          threadId: candidate.threadId,
-          projectPath: candidate.projectPath,
-          worktreePath: candidate.worktreePath,
+          threadId: initial.threadId,
+          projectPath: current.projectPath,
+          worktreePath: current.worktreePath,
         }).catch((err) => {
-          console.warn(`[agent] closing idle shells for ${candidate.threadId} failed:`, err);
+          console.warn(`[agent] closing idle shells for ${initial.threadId} failed:`, err);
         });
+        // Shutdown may have been requested while cleanup ran; do not start the
+        // settle script after it.
+        if (this.pullRequestSweepAborted) break;
       }
       const runScript = this.options.runSettleScript;
       if (runScript) {
         await runScript({
-          threadId: candidate.threadId,
-          projectPath: candidate.projectPath,
-          cwd: candidate.worktreePath ?? candidate.projectPath,
+          threadId: initial.threadId,
+          projectPath: current.projectPath,
+          cwd: current.worktreePath ?? current.projectPath,
         }).catch((err) => {
-          console.warn(`[agent] settle script for ${candidate.threadId} failed:`, err);
+          console.warn(`[agent] settle script for ${initial.threadId} failed:`, err);
         });
       }
     }
