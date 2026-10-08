@@ -1861,6 +1861,13 @@ export class AgentService {
     return isCompactionSupported(this.adapter(provider).capabilities.compaction);
   }
 
+  /** Whether a provider can fork a prior conversation natively (Codex
+   *  `thread/fork`, Claude `forkSession`). False means the portable branch
+   *  import is the fork path. */
+  supportsFork(provider: ProviderKind): boolean {
+    return this.adapter(provider).capabilities.supportsFork === true;
+  }
+
   /** Trigger context compaction for the thread's session. Rejects when there
    *  is no live session, when a compaction is already running, when a turn is
    *  running, or when the provider supports no manual compaction.
