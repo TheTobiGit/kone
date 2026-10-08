@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -69,6 +69,10 @@ export interface GitExecOptions {
   /** Override the exec ceiling. Only for commands whose work scales with the
    *  repository, where the default would kill a healthy run on a large repo. */
   timeoutMs?: number;
+  /** Receive stderr as it arrives. When present the run streams through a
+   *  spawned child instead of buffering — used to read git's own progress
+   *  lines (`Updating files: 42%`) while a checkout runs. */
+  onStderr?: (chunk: string) => void;
 }
 
 /** Whether the third argument to {@link git} is an options object rather than
@@ -78,7 +82,7 @@ function isGitExecOptions(
   value: Record<string, string> | GitExecOptions,
 ): value is GitExecOptions {
   if (!(value instanceof Object)) return false;
-  return "env" in value || "timeoutMs" in value;
+  return "env" in value || "timeoutMs" in value || "onStderr" in value;
 }
 
 export async function git(cwd: string, args: string[]): Promise<string>;
@@ -101,6 +105,9 @@ export async function git(
   const timeoutMs = isGitExecOptions(envOrOptions)
     ? (envOrOptions.timeoutMs ?? GIT_EXEC_TIMEOUT_MS)
     : GIT_EXEC_TIMEOUT_MS;
+  if (isGitExecOptions(envOrOptions) && envOrOptions.onStderr) {
+    return runGitStreamed(cwd, args, extraEnv, timeoutMs, envOrOptions.onStderr);
+  }
   try {
     const { stdout } = await execFileAsync("git", args, {
       cwd,
@@ -132,6 +139,59 @@ export async function git(
     const code = Number.isInteger(rawCode) ? (rawCode as number) : null;
     throw new GitError(message, code, stdout);
   }
+}
+
+/** The streaming sibling of {@link git}: same env and timeout discipline, but
+ *  stderr is handed to `onStderr` chunk by chunk so a long checkout's progress
+ *  can be read live. Used where the command prints its own progress; everything
+ *  else keeps the buffered execFile path. */
+function runGitStreamed(
+  cwd: string,
+  args: string[],
+  extraEnv: Record<string, string> | undefined,
+  timeoutMs: number,
+  onStderr: (chunk: string) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, {
+      cwd,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", ...extraEnv },
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout.on("data", (buf: Buffer) => {
+      stdout += buf.toString();
+    });
+    child.stderr.on("data", (buf: Buffer) => {
+      const chunk = buf.toString();
+      stderr += chunk;
+      onStderr(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new GitError("The git command timed out.", null, stdout, "TIMEOUT"));
+        return;
+      }
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new GitError(stderr.trim() || `git exited ${code}`, code, stdout));
+    });
+  });
 }
 
 /** Resolve the repository root for `dir`, or null when it isn't in a repo. */

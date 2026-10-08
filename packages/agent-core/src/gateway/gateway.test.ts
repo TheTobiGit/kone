@@ -547,6 +547,9 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_reorder_queued_turns",
       "app_cancel_queued_turn",
       "app_promote_queued_turn",
+      // Phase 7 agent tools: link/unlink a thread's PR.
+      "app_link_thread_pr",
+      "app_unlink_thread_pr",
       "app_get_provider_status",
       "app_get_usage_report",
       "app_set_provider_enabled",

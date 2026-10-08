@@ -29,6 +29,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { truncateThreadTitle } from "../../threadTitle.js";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestLinkInput,
+} from "../../threadPullRequest.js";
 import { projectThreadStatus } from "../../spawnProjection.js";
 import {
   modelChainOf,
@@ -56,6 +60,7 @@ import type {
   TurnStartResult,
 } from "../../types.js";
 import type { ConversationSearchHit, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
+import { encodeThreadPageCursor, type StoredThreadPage } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import type { ThreadAgentBinding } from "../../rosterRecord.js";
@@ -90,6 +95,10 @@ import {
   CancelQueuedTurnJson,
   PromoteQueuedTurnInputSchema,
   PromoteQueuedTurnJson,
+  LinkThreadPullRequestInputSchema,
+  LINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+  UnlinkThreadPullRequestInputSchema,
+  UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
@@ -102,18 +111,19 @@ import {
   type ReadAppThreadInput,
   type SendAppThreadMessageInput,
   type StartAppThreadInput,
+  type LinkThreadPullRequestInput,
+  type UnlinkThreadPullRequestInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { collapseSearchHits } from "../searchCollapse.js";
 import { canReadThread } from "../readScope.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
 import {
-  blockText,
-  iso,
+  readMessageRow,
+  renderMessageLine,
   threadLine,
   THREAD_LINE_LEGEND,
   threadPayload,
-  truncateTo,
   type ThreadReading,
 } from "./appThreadsFormatting.js";
 
@@ -121,6 +131,10 @@ import {
 export interface AppThreadsStore {
   listThreads(projectPath: string, options?: { archived?: boolean }): StoredThreadMeta[];
   loadThread(threadId: string): StoredThread | null;
+  /** Windowed read for paging older messages (app_read_thread's cursor). A
+   *  store that does not offer it refuses cursor reads rather than paging the
+   *  whole thread. */
+  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean }): StoredThreadPage | null;
   threadMeta?(threadId: string): StoredThreadMeta | null;
   /** The project's team, in roster order — the agents a thread here can be
    *  handed to. A thread is handed to a team member or to nobody: an agent the
@@ -177,6 +191,12 @@ export interface AppThreadsStore {
     query: string,
     options?: { limit?: number },
   ): ConversationSearchHit[];
+  /** Persist (or clear) a linked pull request on a thread. The settle sweep
+   *  reads it to know when a merged PR means the thread is done. Absent, the
+   *  link tools refuse. */
+  setThreadPullRequestLink?(threadId: string, input: ThreadPullRequestLinkInput): boolean;
+  clearThreadPullRequestLink?(threadId: string): boolean;
+  threadPullRequestLink?(threadId: string): ThreadPullRequestLink | null;
   setArchived?(
     threadId: string,
     archived: boolean,
@@ -706,17 +726,131 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     _ctx: GatewayToolContext,
     params: ReadAppThreadInput,
   ): Promise<GatewayToolResult> => {
+    const limit = params.limit ?? 20;
+    const maxTextChars = params.maxTextChars ?? 1500;
+    const textOffset = params.textOffset ?? 0;
+
+    // A single message read by id: whole, or a slice from textOffset. This is
+    // what a handoff's coverage note points at for a message it omitted.
+    if (params.blockId) {
+      const thread = store.loadThread(params.threadId);
+      if (!thread) {
+        throw new GatewayToolError("not_found", `kone holds no thread "${params.threadId}".`);
+      }
+      const block = thread.blocks.find((candidate) => candidate.id === params.blockId);
+      if (!block) {
+        throw new GatewayToolError(
+          "not_found",
+          `kone holds no message "${params.blockId}" in thread "${params.threadId}".`,
+        );
+      }
+      const message = readMessageRow(block, maxTextChars, textOffset, params.representation ?? "rich");
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Message ${message.blockId} from "${thread.title ?? params.threadId}":`,
+              renderMessageLine(message),
+            ].join("\n\n"),
+          },
+        ],
+        structuredContent: {
+          thread: compact({
+            threadId: thread.threadId,
+            title: thread.title ?? null,
+            projectPath: thread.projectPath,
+            provider: thread.provider,
+            model: thread.model ?? null,
+            agent: agentNameFor(store, thread.threadId),
+            status: statusFor({
+              span: store.threadTurnSpan?.(thread.threadId) ?? null,
+              gate: options.pendingGateFor?.(thread.threadId) ?? null,
+              live: isLive(thread.threadId),
+            }),
+          }),
+          messages: [message],
+          totalMessages: thread.blocks.length,
+        },
+      };
+    }
+
+    // Paged read: continue older messages from a previous reply's cursor. The
+    // store walks backwards from the cursor in arrival order, so a cursor
+    // walk can never skip or repeat a message.
+    if (params.cursor) {
+      if (!store.loadThreadPage) {
+        throw new GatewayToolError(
+          "capability_denied",
+          "Cursor paging is not available in this session.",
+        );
+      }
+      const page = store.loadThreadPage(params.threadId, {
+        limit,
+        cursor: params.cursor,
+        countBlocks: true,
+      });
+      if (!page) {
+        throw new GatewayToolError("not_found", `kone holds no thread "${params.threadId}".`);
+      }
+      const messages = page.blocks.map((block) =>
+        readMessageRow(block, maxTextChars, textOffset, params.representation ?? "rich"),
+      );
+      const title = page.meta.title ?? params.threadId;
+      const heading =
+        messages.length === 0
+          ? `No older messages in "${title}".`
+          : `${messages.length} older message${messages.length === 1 ? "" : "s"} from "${title}", oldest first:`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: [heading, ...messages.map(renderMessageLine)].join("\n\n"),
+          },
+        ],
+        structuredContent: {
+          thread: compact({
+            threadId: page.meta.threadId,
+            title: page.meta.title ?? null,
+            projectPath: page.meta.projectPath,
+            provider: page.meta.provider,
+            model: page.meta.model ?? null,
+            agent: agentNameFor(store, page.meta.threadId),
+          }),
+          messages,
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+        },
+      };
+    }
+
     const thread = store.loadThread(params.threadId);
     if (!thread) {
       throw new GatewayToolError("not_found", `kone holds no thread "${params.threadId}".`);
     }
-    const limit = params.limit ?? 20;
-    const maxTextChars = params.maxTextChars ?? 1500;
-    const messages = thread.blocks.slice(-limit).map((block) => ({
-      role: block.role,
-      at: iso(block.at),
-      text: truncateTo(blockText(block), maxTextChars),
-    }));
+    // Prefer the store's physical-block page so the cursor is a real block:
+    // a cursor minted from an assembled block id can name a synthetic
+    // steer-continuation segment, and paging from it skips the steering
+    // prompt and duplicates the continuation. Fall back to the tail slice
+    // only for a store that has no page reader (tests).
+    const page = store.loadThreadPage
+      ? store.loadThreadPage(params.threadId, { limit, countBlocks: true })
+      : null;
+    const blocks = page ? page.blocks : thread.blocks.slice(-limit);
+    const messages = blocks.map((block) =>
+      readMessageRow(block, maxTextChars, textOffset, params.representation ?? "prose"),
+    );
+    const oldest = blocks[0];
+    const hasMore = page ? page.hasMore : thread.blocks.length > messages.length;
+    const nextCursor = page
+      ? page.nextCursor
+      : hasMore && oldest
+        ? encodeThreadPageCursor({
+            threadId: thread.threadId,
+            beforeAnchorAt: oldest.at,
+            beforeBlockId: oldest.id,
+          })
+        : null;
 
     const title = thread.title ?? params.threadId;
     const agent = agentNameFor(store, thread.threadId);
@@ -745,10 +879,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           type: "text",
           text: [
             [about, ...asksFor(thread.threadId).map((ask) => `Waiting on the user to ${ask}.`), heading].join("\n"),
-            ...messages.map(
-              (message) =>
-                `[${message.role}] ${message.text.trim() || "(no text - tool calls only)"}`,
-            ),
+            ...messages.map(renderMessageLine),
           ].join("\n\n"),
         },
       ],
@@ -764,6 +895,8 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         }),
         messages,
         totalMessages: thread.blocks.length,
+        nextCursor,
+        hasMore,
       },
     };
   };
@@ -1347,6 +1480,50 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     });
   };
 
+  const unlinkPullRequestHandler = async (
+    _ctx: GatewayToolContext,
+    params: UnlinkThreadPullRequestInput,
+  ): Promise<GatewayToolResult> => {
+    if (!store.clearThreadPullRequestLink) {
+      throw failInternal(params.threadId, "unlink pull request", "unsupported");
+    }
+    const changed = store.clearThreadPullRequestLink(params.threadId);
+    return singleLine(
+      changed
+        ? `Unlinked the pull request from thread "${params.threadId}".`
+        : `Thread "${params.threadId}" had no linked pull request.`,
+      { threadId: params.threadId, changed },
+    );
+  };
+
+  const linkPullRequestHandler = async (
+    _ctx: GatewayToolContext,
+    params: LinkThreadPullRequestInput,
+  ): Promise<GatewayToolResult> => {
+    if (!store.setThreadPullRequestLink) {
+      throw failInternal(params.threadId, "link pull request", "unsupported");
+    }
+    const link: ThreadPullRequestLinkInput = {
+      repository: params.repository ?? null,
+      number: params.number ?? null,
+      url: params.url,
+      state: params.state ?? null,
+      checkedAt: Date.now(),
+    };
+    if (!store.setThreadPullRequestLink(params.threadId, link)) {
+      throw failInternal(params.threadId, "link pull request", "missing");
+    }
+    return singleLine(`Linked ${params.url} to thread "${params.threadId}".`, {
+      threadId: params.threadId,
+      pullRequest: {
+        repository: link.repository ?? "",
+        number: link.number ?? 0,
+        url: link.url,
+        state: link.state ?? "unknown",
+      },
+    });
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -1588,6 +1765,33 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       promptSnippet: "`app_promote_queued_turn`: run a waiting follow-up now.",
       promptGuidelines: ["Promote only when the user asks to send that queued message now."],
       handler: queuedPromoteHandler,
+    },
+    {
+      name: "app_link_thread_pr",
+      description:
+        "Link a pull request to a conversation, so the app knows which PR the thread delivered and can settle the thread when that PR merges. Replaces any existing link. Pass the PR URL and, when known, its repository (owner/repo) and number.",
+      inputSchema: LinkThreadPullRequestInputSchema,
+      jsonSchema: LINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_link_thread_pr`: link a pull request to a conversation so it can settle on merge.",
+      promptGuidelines: [
+        "Link a PR when the user names one for a thread, or when a thread's work corresponds to a PR they opened. Do not invent a PR number or URL.",
+      ],
+      handler: linkPullRequestHandler,
+    },
+    {
+      name: "app_unlink_thread_pr",
+      description:
+        "Remove the pull request linked to a conversation. The thread then no longer settles on that PR's merge.",
+      inputSchema: UnlinkThreadPullRequestInputSchema,
+      jsonSchema: UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_unlink_thread_pr`: remove the pull request linked to a conversation.",
+      promptGuidelines: ["Unlink only when the user asks, or the link is for the wrong PR."],
+      handler: unlinkPullRequestHandler,
     },
   ];
 }

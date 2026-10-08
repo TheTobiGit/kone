@@ -30,6 +30,15 @@ import type { QuotaCapableProvider } from "@kone/agent-core/quota/index.js";
 import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
 import type { ThreadExportOutcome } from "@kone/agent-core/threadExport.js";
+import type {
+  RegenerateThreadTitleResult,
+  SetThreadPullRequestResult,
+} from "@kone/agent-core/AgentService.js";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestLinkInput,
+} from "@kone/agent-core/threadPullRequest.js";
+import type { WorktreeSetupSnapshot } from "@kone/agent-core/worktreeSetup.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type {
   ThreadExportDialogResult,
@@ -463,6 +472,12 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    /** The provider's handoff history cap in tokens (its own getter/setter so a
+     *  settings surface can read/write just the number; the setter merges). */
+    getHandoffBudget: (provider: ProviderKind): Promise<number> =>
+      ipcRenderer.invoke("agent:get-handoff-budget", provider),
+    setHandoffBudget: (provider: ProviderKind, cap: number): Promise<ProviderSettingsMap> =>
+      ipcRenderer.invoke("agent:set-handoff-budget", provider, cap),
     // How each provider's CLI is installed, and whether a newer one exists.
     // `checkLatest` is the network half — the settings pane asks for it when the
     // user is looking; nothing else in the app does.
@@ -739,6 +754,34 @@ const api = {
     // touch recency ordering; the title.updated event follows on the stream.
     renameThread: (threadId: string, title: string): Promise<boolean> =>
       ipcRenderer.invoke("agent:rename-thread", threadId, title),
+    // Regenerate a thread's title from its whole conversation. Refuses a
+    // manually-named title (reason manual_title) rather than overwriting it.
+    regenerateThreadTitle: (threadId: string): Promise<RegenerateThreadTitleResult> =>
+      ipcRenderer.invoke("agent:regenerate-thread-title", threadId),
+    // The PR linked to a thread, and link/unlink. The link is durable and is
+    // what the settle-on-merge sweep reads.
+    linkThreadPullRequest: (
+      threadId: string,
+      link: ThreadPullRequestLinkInput,
+    ): Promise<SetThreadPullRequestResult> =>
+      ipcRenderer.invoke("agent:link-thread-pr", threadId, link),
+    unlinkThreadPullRequest: (threadId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:unlink-thread-pr", threadId),
+    threadPullRequestLink: (threadId: string): Promise<ThreadPullRequestLink | null> =>
+      ipcRenderer.invoke("agent:thread-pr", threadId),
+    // Per-project setup / settle scripts (app_state, keyed by project path).
+    getProjectScript: (projectPath: string, kind: "setup" | "settle"): Promise<string | null> =>
+      ipcRenderer.invoke("agent:get-project-script", projectPath, kind),
+    setProjectScript: (
+      projectPath: string,
+      kind: "setup" | "settle",
+      command: string | null,
+    ): Promise<string | null> =>
+      ipcRenderer.invoke("agent:set-project-script", projectPath, kind, command),
+    // The live worktree-setup snapshot for a thread (null when none is
+    // tracked). The thread.worktree.setup events carry later changes.
+    worktreeSetup: (threadId: string): Promise<WorktreeSetupSnapshot | null> =>
+      ipcRenderer.invoke("agent:worktree-setup", threadId),
     // Native save dialog for a thread export — the main process owns the
     // dialog, the renderer only suggests a file name. A dismissal resolves
     // `{ canceled: true }`, distinct from the export outcome below.

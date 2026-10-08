@@ -1,6 +1,29 @@
 // What the dispatcher needs from the host to give a thread its own worktree,
 // and the pieces of building one that don't depend on dispatcher state.
 
+import type { WorktreeSetupStageId, WorktreeSetupStageStatus } from "./worktreeSetup.js";
+
+/** One stage update a provisioner reports while it builds: the checkout's own
+ *  percentage, a submodule note, a setup-script exit. The dispatcher maps it
+ *  onto the richer worktree-setup tracker. */
+export interface WorkspaceProvisionProgress {
+  stage: WorktreeSetupStageId;
+  status?: WorktreeSetupStageStatus;
+  percent?: number | null;
+  detail?: string | null;
+  tail?: string[];
+}
+
+/** Run the project's setup command in a freshly built worktree. Injected
+ *  because spawning the user's shell is a host capability, not dispatcher
+ *  state; the dispatcher decides when it runs and reports it on the tracker. */
+export type RunThreadSetupScript = (input: {
+  projectPath: string;
+  cwd: string;
+  command: string;
+  onOutput?: (chunk: string) => void;
+}) => Promise<{ code: number | null; output: string }>;
+
 /** Build the directory a worktree thread runs in. Injected because git lives in
  *  the desktop layer, and a headless host (a test, the spawn engine's own
  *  harness) can run every thread local without one. Absent means worktrees are
@@ -10,6 +33,8 @@ export type ProvisionThreadWorkspace = (input: {
   projectPath: string;
   branch?: string;
   base?: string;
+  /** Receive the git layer's stage updates for the setup card. */
+  onProgress?: (progress: WorkspaceProvisionProgress) => void;
 }) => Promise<{
   path: string;
   branch: string;

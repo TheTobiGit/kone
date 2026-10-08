@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { GitError, git, pathExists, repoRoot } from "@kone/git-core/core.js";
 import type { CreateWorktreeOptions, GitWorktree } from "@kone/git-core/types.js";
+import type { WorkspaceProvisionProgress } from "@kone/agent-core/workspaceBuild.js";
 import { addWorktree, attachWorktree, branchExists, canonical, removeWorktree, worktrees } from "./worktree.js";
 import { copyPrivateFiles } from "./worktreeInclude.js";
 import {
@@ -12,6 +13,7 @@ import {
   worktreeDirFor,
   worktreesRoot,
 } from "./worktreePaths.js";
+import { parseGitProgressPercent } from "@kone/agent-core/worktreeSetup.js";
 
 // Building a thread's worktree: the one call that turns "this conversation
 // wants its own branch" into a directory on disk.
@@ -56,6 +58,8 @@ export type ProvisionWorktreeInput = {
   branch?: string | null;
   /** Ref the branch starts from. Defaults to the project's HEAD. */
   base?: string | null;
+  /** Receive stage updates while the worktree is built, for the setup card. */
+  onProgress?: (progress: WorkspaceProvisionProgress) => void;
 };
 
 /** Whether a directory is absent or present-but-empty — the two cases
@@ -77,14 +81,35 @@ async function isUsableTarget(target: string): Promise<boolean> {
  *  Best effort throughout. A submodule that will not initialize (no network, a
  *  private URL, a broken pointer) is a worse worktree, not a failed one, and
  *  must not tear down work the user is waiting on. */
-async function populateSubmodules(worktreePath: string): Promise<void> {
-  if (!(await pathExists(path.join(worktreePath, ".gitmodules")))) return;
+async function populateSubmodules(
+  worktreePath: string,
+  onProgress?: (progress: WorkspaceProvisionProgress) => void,
+): Promise<void> {
+  if (!(await pathExists(path.join(worktreePath, ".gitmodules")))) {
+    onProgress?.({ stage: "submodules", status: "skipped" });
+    return;
+  }
+  onProgress?.({ stage: "submodules", status: "running" });
   try {
     await git(worktreePath, ["submodule", "update", "--init", "--recursive"], {
       timeoutMs: 5 * 60_000,
+      onStderr: (chunk) => {
+        for (const line of chunk.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (trimmed) onProgress?.({ stage: "submodules", status: "running", tail: [trimmed] });
+        }
+      },
     });
+    onProgress?.({ stage: "submodules", status: "done" });
   } catch (err) {
+    // A submodule that will not initialize is a worse worktree, not a failed
+    // one, and must not tear down work the user is waiting on.
     console.error("[git] could not populate submodules in the new worktree:", err);
+    onProgress?.({
+      stage: "submodules",
+      status: "warning",
+      detail: err instanceof Error ? err.message.trim().slice(0, 200) : "Submodules could not be initialized.",
+    });
   }
 }
 
@@ -190,13 +215,21 @@ export async function provisionWorktree(
   // question. Only a branch nothing holds reaches here — one already in a
   // worktree was adopted above.
   const attaching = await branchExists(project, branch);
+  const onProgress = input.onProgress;
+  // git prints its checkout percentage on stderr; pass it through so the setup
+  // card can show real progress rather than a spinner.
+  const onStderr = (chunk: string): void => {
+    const percent = parseGitProgressPercent(chunk);
+    if (percent !== null) onProgress?.({ stage: "checkout", status: "running", percent });
+  };
+  onProgress?.({ stage: "checkout", status: "running" });
 
   let created: GitWorktree;
   try {
     if (attaching) {
-      created = await attachWorktree(project, { path: target, branch });
+      created = await attachWorktree(project, { path: target, branch, onStderr });
     } else {
-      const request: CreateWorktreeOptions = { path: target, branch };
+      const request: CreateWorktreeOptions = { path: target, branch, onStderr };
       const base = input.base?.trim();
       if (base) request.base = base;
       created = await addWorktree(project, request);
@@ -204,10 +237,16 @@ export async function provisionWorktree(
   } catch (error) {
     // `addWorktree` already undoes a branch it created; the directory is ours.
     await rollbackDirectory(project, root, target);
+    onProgress?.({
+      stage: "checkout",
+      status: "failed",
+      detail: error instanceof Error ? error.message.trim().slice(0, 200) : "Could not create the worktree.",
+    });
     throw error;
   }
+  onProgress?.({ stage: "checkout", status: "done", percent: 100 });
 
-  await populateSubmodules(created.path);
+  await populateSubmodules(created.path, onProgress);
   const copiedFiles = await copyPrivateFiles(project, created.path);
   return { path: created.path, branch, generatedBranch, attachedExisting: attaching, copiedFiles };
 }

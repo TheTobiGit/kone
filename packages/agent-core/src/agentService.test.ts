@@ -7,10 +7,13 @@ import { Database } from "bun:sqlite";
 import { setUserDataDir } from "./userDataDir.js";
 import type { QueuedTurnEnqueueInput } from "./conversationStoreTypes.js";
 import type {
+  ModelDescriptor,
   ProviderAdapter,
+  ProviderKind,
   QueuedTurnRow,
   QueuedTurnStore,
   SendTurnInput,
+  StoredThreadMeta,
   ThreadCompactionCapability,
   TurnStartResult,
   UserInputRespondResult,
@@ -94,8 +97,10 @@ class FakeAdapter {
     return [];
   }
   async listModels(): Promise<unknown[]> {
-    return [];
+    return FakeAdapter.models[this.provider] ?? [];
   }
+  /** Per-provider catalogs the window-resolution tests warm. */
+  static models: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
   // eslint-disable-next-line anti-slop/no-unknown-returns
   async startSession(): Promise<unknown> {
     return {};
@@ -322,6 +327,7 @@ beforeAll(async () => {
   FakeAdapter.instances.length = 0;
   FakeAdapter.sentTurns.length = 0;
   FakeAdapter.turnCounter = 0;
+  FakeAdapter.models = {};
   fakeStore.reset();
   service = new AgentServiceCtor({
     wedgeSweepMs: 40,
@@ -2002,5 +2008,68 @@ describe("AgentService context compaction", () => {
     expect(svc.supportsThreadCompaction("codex")).toBe(true);
     expect(svc.supportsThreadCompaction("cursor")).toBe(true);
     expect(svc.supportsThreadCompaction("droid")).toBe(true);
+  });
+});
+
+describe("handoff window resolution", () => {
+  const meta = (overrides: Partial<StoredThreadMeta>): StoredThreadMeta => ({
+    threadId: "t-window",
+    projectPath: "/p",
+    provider: "codex",
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  });
+  const historyWith = (m: StoredThreadMeta) => {
+    // SAFETY: the service only reads threadMeta from this injected slice here.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    return { threadMeta: () => m } as unknown as import("./AgentService.js").AgentServiceOptions["historyStore"];
+  };
+
+  const serviceFor = (m: StoredThreadMeta) =>
+    new AgentServiceCtor({
+      // SAFETY: one fake codex adapter is the whole provider roster here.
+      adapters: (emit) =>
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [new FakeAdapter(emit, "codex") as unknown as ProviderAdapter],
+      historyStore: historyWith(m),
+    });
+
+  test("uses the stored model's catalog window when the turn omits a model", async () => {
+    FakeAdapter.models.codex = [{ id: "gpt-8k", label: "8k", contextWindowTokens: 8_000 }];
+    const service = serviceFor(meta({ model: "gpt-8k" }));
+    await service.listModels("codex");
+    expect(service.handoffWindowTokensFor("t-window")).toBe(8_000);
+  });
+
+  test("falls back to the thread's reported window for an uncatalogued model", async () => {
+    FakeAdapter.models.codex = [];
+    const service = serviceFor(meta({ model: "mystery", contextWindow: 8_000 }));
+    await service.listModels("codex");
+    expect(service.handoffWindowTokensFor("t-window")).toBe(8_000);
+  });
+
+  test("prefers the selected auto-compact window over the model capacity", async () => {
+    FakeAdapter.models.codex = [
+      {
+        id: "big",
+        label: "big",
+        contextWindowTokens: 1_000_000,
+        contextWindows: [{ id: "small", label: "200k", tokens: 200_000 }],
+      },
+    ];
+    const service = serviceFor(meta({ model: "big", selection: { contextWindow: "small" } }));
+    await service.listModels("codex");
+    expect(service.handoffWindowTokensFor("t-window")).toBe(200_000);
+  });
+
+  test("a dropped requested override falls back to the stored model, not the reported window", async () => {
+    // The adapter keeps running the stored model when an invalid override is
+    // dropped, so the budget must use that model's window — not the thread's
+    // reported 128k.
+    FakeAdapter.models.codex = [{ id: "small", label: "8k", contextWindowTokens: 8_000 }];
+    const service = serviceFor(meta({ model: "small", contextWindow: 128_000 }));
+    await service.listModels("codex");
+    expect(service.handoffWindowTokensFor("t-window", "foreign-model")).toBe(8_000);
   });
 });

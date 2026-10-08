@@ -4,6 +4,7 @@ import type { StoredThread } from "../types.js";
 import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSeal, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import { decodeChunkArray, decodeStoredText, itemChunkArraySql } from "./itemTextChunks.js";
+import type { ThreadTitleMessage } from "../threadTitleContext.js";
 
 export class TranscriptRepo {
   constructor(private readonly dbh: ConversationDb) {}
@@ -100,7 +101,7 @@ export class TranscriptRepo {
    * first-page request). */
   loadThreadPage(
     threadId: string,
-    options?: { limit?: number; maxRaw?: number; cursor?: string },
+    options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean },
   ): StoredThreadPage | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -185,7 +186,14 @@ export class TranscriptRepo {
       let userSeen = 0;
       for (const row of candidates) {
         kept.push(row);
-        if (row.role === "user" && !row.steered) {
+        // Two stopping rules: the user-anchored window (the default, for the
+        // app's windowed read) stops on the limit-th opening user prompt; the
+        // block-count window stops after `limit` physical blocks. The latter
+        // is what a history read pages with, so its cursor is always a real
+        // block — never a synthetic steer-continuation segment.
+        if (options?.countBlocks) {
+          if (kept.length >= limit) break;
+        } else if (row.role === "user" && !row.steered) {
           userSeen += 1;
           if (userSeen >= limit) break;
         }
@@ -442,6 +450,86 @@ export class TranscriptRepo {
     }
     const text = run.join("").trim();
     return text || null;
+  }
+
+  /** Every user prompt and every assistant text item, in arrival order, for a
+   *  whole-conversation title regeneration. Deliberately lightweight — it does
+   *  not assemble blocks or subagents the way loadThread does, because a title
+   *  needs only the prose: user blocks as `user`, assistant_text items as
+   *  `assistant`, and nothing else (reasoning and plan items are dropped by the
+   *  context builder, so they are not even read here). Rows are merged on `at`
+   *  so a turn's items and the prompt that started it interleave correctly. */
+  titleMessages(threadId: string): ThreadTitleMessage[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection names only the nullable TEXT columns plus the
+      // chunk array alias, exactly the shape read below.
+      const userRows = db
+        .prepare(
+          `SELECT text, at FROM blocks
+            WHERE thread_id = ? AND role = 'user'
+            ORDER BY seq`,
+        )
+        .all(threadId) as Array<{ text: string | null; at: number }>;
+      // SAFETY: same shape, with items' streaming chunks aliased in.
+      const itemRows = db
+        .prepare(
+          `SELECT text, text_json, at, ${itemChunkArraySql("items")} AS chunk_text FROM items
+            WHERE thread_id = ? AND kind = 'assistant_text'
+            ORDER BY seq`,
+        )
+        .all(threadId) as Array<{
+        text: string | null;
+        text_json: string | null;
+        at: number;
+        chunk_text: string | null;
+      }>;
+      const merged: Array<{ at: number; message: ThreadTitleMessage }> = [
+        ...userRows.map((row) => ({
+          at: row.at,
+          message: { role: "user" as const, text: row.text ?? "" },
+        })),
+        ...itemRows.map((row) => ({
+          at: row.at,
+          message: {
+            role: "assistant" as const,
+            text: decodeStoredText(row.text, row.text_json) + decodeChunkArray(row.chunk_text),
+          },
+        })),
+      ];
+      merged.sort((a, b) => a.at - b.at);
+      return merged.map((entry) => entry.message);
+    } catch (err) {
+      console.error("[conversation-store] titleMessages failed:", err);
+      return [];
+    }
+  }
+
+  /** The most recent user-authored prompt's `at`, or null when the thread has
+   *  none. The settle-on-merge sweep compares this with a PR's merge time:
+   *  a user who wrote after the merge still wants the thread, so it is not
+   *  settled. Messages from an agent or kone (a sender is recorded on the
+   *  block) are not the user and do not count. */
+  latestUserAuthoredAt(threadId: string): number | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: MAX over one INTEGER column under one alias. The user's own
+      // blocks carry no sender (encodeMessageSender returns null for kind
+      // "user"); an agent's or kone's does.
+      const row = db
+        .prepare(
+          `SELECT MAX(at) AS at FROM blocks
+            WHERE thread_id = ? AND role = 'user'
+              AND (sender_json IS NULL OR sender_json = '')`,
+        )
+        .get(threadId) as { at: number | null } | undefined;
+      return row?.at ?? null;
+    } catch (err) {
+      console.error("[conversation-store] latestUserAuthoredAt failed:", err);
+      return null;
+    }
   }
 
   /** The child's elapsed-time readout: when its first turn started, when its

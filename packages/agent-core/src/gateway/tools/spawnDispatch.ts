@@ -5,6 +5,7 @@
 // arguments onto an item.
 
 import type { SpawnCaller, SpawnEngine, SpawnRequest, SpawnTargetsReport } from "../../threadSpawn.js";
+import type { StoredThreadPage } from "../../conversationStoreTypes.js";
 import type {
   InteractionMode,
   ProviderKind,
@@ -38,6 +39,9 @@ import { GatewayToolError, type GatewayRecord } from "../schemas.js";
  *  substitute an in-memory fake. The real ConversationStore satisfies it. */
 export interface SpawnToolStore {
   loadThread(threadId: string): StoredThread | null;
+  /** Windowed read for paging older messages (agent_read's cursor). A store
+   *  without it refuses cursor reads rather than paging the whole thread. */
+  loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean }): StoredThreadPage | null;
   /** Every preset sub-agent, so a spawn can be cut from one by name. */
   listSubagentPresets(): SubagentPresetRecord[];
   /** One preset by id — tried before the name scan, since an id is exact. */
