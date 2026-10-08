@@ -1178,6 +1178,48 @@ export type ForkThreadAtBlockResult = {
   status: "created" | "exists";
 };
 
+/** Fork a thread from any finished run at a chosen turn — the conversation
+ *  taken from that run's end. Accepts exactly the shape a conversation-only
+ *  rewind names (`{ sourceThreadId, turnId, userBlockId }`), so a revert that
+ *  refuses a file restore can offer this fork as its alternative. Reuses the
+ *  branch continuation: the import is the source's history through the chosen
+ *  turn's last block. No provider session is started — the first send chooses
+ *  provider/model, falling back to the source's own as a placeholder. */
+export type ForkThreadAtTurnInput = {
+  /** Caller-chosen idempotency key, as create-handoff/create-side-chat use. */
+  requestId: string;
+  /** Renderer-minted id for the new fork thread. */
+  threadId: string;
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, when the caller has it. A turn whose assistant
+   *  block exists cuts at that block (the run's end); a turn that produced no
+   *  answer block falls back to the prompt block. */
+  userBlockId: string | null;
+  /** The provider/model the fork continues on. Omitted leaves the source's
+   *  provider/model as a placeholder — the first send may choose differently
+   *  while the fork has no session or conversation yet. */
+  target?: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  };
+  title?: string;
+};
+
+export type ForkThreadAtTurnResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  provider: ProviderKind;
+  model?: string;
+  /** `"created"` = the fork was written; `"exists"` = a thread with this id
+   *  was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
 /** Where a stored block came from: a live conversation row (`"native"`) or a
  *  fork import (`"fork-import"`). Imported rows carry their original `at` and
  *  are not activity — they never refresh a thread's `updated_at`. */
