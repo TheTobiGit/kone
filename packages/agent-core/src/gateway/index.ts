@@ -157,6 +157,9 @@ export interface GatewayInput {
    *  agent_list reads to tell a sender what a message would do. */
   threadRuntime?: (threadId: string) => ThreadRuntime | null;
   providerSteers?: (provider: ProviderKind) => boolean;
+  /** Whether a provider can fork natively (its adapter's supportsFork) — what
+   *  app_fork_thread reads to choose the native fork or the portable import. */
+  supportsFork?: (provider: ProviderKind) => boolean;
   /** What a thread is parked on, if anything — what the thread list reads to
    *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
    *  from one that is merely idle. Absent, no thread reads as parked, which
@@ -319,7 +322,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppTypographyTools(appTypographyOptions),
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
-    ...createAppForkTools({ emit: input.emit }),
+    ...createAppForkTools({ emit: input.emit, supportsFork: input.supportsFork }),
     ...createAppProviderTools(appProviderOptions),
     ...createAppViewTools(appViewOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));

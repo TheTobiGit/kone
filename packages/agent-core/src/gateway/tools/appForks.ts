@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getConversationStore } from "../../ConversationStore.js";
 import { mergeBackFork } from "../../mergeBack.js";
 import { forkThreadAtTurn } from "../../threadFork.js";
-import type { EmitEvent, ForkThreadAtTurnInput, MergeBackInput } from "../../types.js";
+import type { EmitEvent, ForkThreadAtTurnInput, MergeBackInput, ProviderKind } from "../../types.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import {
   ForkAppThreadInputSchema,
@@ -26,9 +26,9 @@ export interface AppForkToolOptions {
   emit?: EmitEvent;
   /** Mints the fork's thread id. Injected so a test can name it. */
   newThreadId?: () => string;
-  /** Whether the source provider can fork natively (its adapter's
-   *  supportsFork). Absent reads as false — the portable branch import. */
-  supportsFork?: (sourceThreadId: string) => boolean;
+  /** Whether a provider can fork natively (its adapter's supportsFork).
+   *  Absent reads as false — the portable branch import. */
+  supportsFork?: (provider: ProviderKind) => boolean;
 }
 
 function errorMessage(error: Error, fallback: string): string {
@@ -40,13 +40,14 @@ export function createAppForkTools(options: AppForkToolOptions): ToolEntry[] {
     _ctx: GatewayToolContext,
     params: ForkAppThreadInput,
   ): Promise<GatewayToolResult> => {
+    const sourceProvider = getConversationStore().threadMeta(params.sourceThreadId)?.provider;
     const input: ForkThreadAtTurnInput = {
       requestId: params.requestId,
       threadId: params.threadId ?? (options.newThreadId ?? randomUUID)(),
       sourceThreadId: params.sourceThreadId,
       turnId: params.turnId,
       userBlockId: params.userBlockId ?? null,
-      supportsFork: options.supportsFork?.(params.sourceThreadId) ?? false,
+      supportsFork: sourceProvider ? (options.supportsFork?.(sourceProvider) ?? false) : false,
     };
     if (params.target) input.target = params.target;
     if (params.title) input.title = params.title;
