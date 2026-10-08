@@ -503,20 +503,38 @@ export class TerminalManager {
     return snap;
   }
 
-  /** Close every ready terminal whose cwd is `cwd` and which has no running
-   *  subprocess — the "close idle shells" step when a thread settles. A shell
-   *  running something (a dev server, a test run) is left alone: it is not
-   *  idle, and closing it would kill work. Starting sessions are left alone
-   *  too — there is no cwd answer to trust yet. Returns the ids closed. */
+  /** Close every ready terminal whose cwd is `cwd` and which is proven idle by
+   *  a FRESH process snapshot — the "close idle shells" step when a thread
+   *  settles.
+   *
+   *  The cached `hasRunningSubprocess` flag is deliberately not trusted: it is
+   *  refreshed by the shared poll once a second and can lag up to a minute
+   *  after capture failures, so a shell that just started a build would still
+   *  read idle and be tree-killed. A fresh snapshot is taken per candidate,
+   *  immediately before closing it, and anything unproven — a failed capture,
+   *  a session that left since it was listed — counts as busy and is left
+   *  alone. A shell running something is not idle either. Returns the ids
+   *  closed. */
   async closeIdleInDir(cwd: string): Promise<string[]> {
     const target = path.resolve(cwd);
-    const targets = [...this.sessions.values()].filter(
-      (s) => s.status === "ready" && !s.hasRunningSubprocess && path.resolve(s.cwd) === target,
+    const candidates = [...this.sessions.values()].filter(
+      (s) => s.status === "ready" && path.resolve(s.cwd) === target,
     );
     const closed: string[] = [];
-    for (const s of targets) {
-      await this.close({ terminalId: s.terminalId }).catch(() => {});
-      closed.push(s.terminalId);
+    for (const s of candidates) {
+      let snapshot: ProcessChildrenMap | null = null;
+      try {
+        snapshot = await this.captureProcessTable();
+      } catch {
+        snapshot = null;
+      }
+      // Re-check the session after the await, then judge on the fresh snapshot.
+      const current = this.sessions.get(s.terminalId);
+      if (!current || current !== s || current.status !== "ready") continue;
+      const inspection = inspectSubprocessActivityInSnapshot(current.process.pid, snapshot);
+      if (!inspection.captureComplete || inspection.hasRunningSubprocess) continue;
+      await this.close({ terminalId: current.terminalId }).catch(() => {});
+      closed.push(current.terminalId);
     }
     return closed;
   }
