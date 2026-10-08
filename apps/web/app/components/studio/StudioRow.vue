@@ -186,11 +186,19 @@ const composerOpen = ref(false);
 // the open card plus the pills row above it. Measured and published as CSS
 // vars the strip's columns consume (see col__body).
 const composerDockEl = ref<HTMLElement>();
-const { clear: dockClear } = useDockClearance(composerDockEl, {
+const { clear: composerClear } = useDockClearance(composerDockEl, {
   resting: STRIP_DOCK_RESTING,
   float: STRIP_DOCK_FLOAT,
   air: STRIP_DOCK_AIR,
 });
+const threadDock = ref<InstanceType<typeof ThreadDockStack> | null>(null);
+const cornerDock = computed(() => composerOpen.value ? null : threadDock.value);
+const { clear: cornerClear } = useDockClearance(cornerDock, {
+  resting: STRIP_DOCK_RESTING,
+  float: STRIP_DOCK_FLOAT,
+  air: STRIP_DOCK_AIR,
+});
+const dockClear = computed(() => Math.max(composerClear.value, cornerClear.value));
 const threadEscape = useThreadEscapeHost(() => props.visible && !props.blocked && !isOverview.value);
 threadEscape.register("picker", () => Boolean(focusedPendingApproval.value || focusedPendingUserInput.value), null);
 // The column's smoke-fade starts where the dock does, so the last turns fade
@@ -1809,6 +1817,27 @@ useStudioRowView(registryPath, () =>
       @dispatch="studio.dispatch"
     />
 
+    <!-- Thread controls remain available while the parent waits for a response. -->
+    <Transition
+      enter-active-class="transition-opacity duration-150 ease-out"
+      enter-from-class="opacity-0"
+      leave-active-class="transition-opacity duration-150 ease-in"
+      leave-to-class="opacity-0"
+    >
+      <ThreadDockStack
+        v-if="visible && !blocked && activePaneIsThread && !showChooser && !isOverview && focusedThread"
+        ref="threadDock"
+        :composer-open="composerOpen"
+        :changes="activeChanges"
+        :plan="activePlan"
+        :delegates="activeDelegates"
+        :project-path="project.path"
+        :thread-key="focusedKey"
+        position-mode="fixed"
+        @open-file="(path, rect) => emit('openFile', path, rect)"
+        @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
+      />
+    </Transition>
     <!-- The agent composer docks dead-centre at the bottom of the BOARD, under
          a focused thread pane — dormant until you wake it, then it stretches
          into the input. It stays docked to the viewport while the column behind
@@ -1831,26 +1860,6 @@ useStudioRowView(registryPath, () =>
         :class="{ 'composer-dock--open': composerOpen }"
         :inert="blocked"
       >
-        <!-- Corner / above-composer dock stack (Tasks + Changes + Subagents) -->
-        <Transition
-          enter-active-class="transition-opacity duration-150 ease-out"
-          enter-from-class="opacity-0"
-          leave-active-class="transition-opacity duration-150 ease-in"
-          leave-to-class="opacity-0"
-        >
-          <ThreadDockStack
-            v-if="visible && !blocked && focusedThread"
-            :composer-open="composerOpen"
-            :changes="activeChanges"
-            :plan="activePlan"
-            :delegates="activeDelegates"
-            :project-path="project.path"
-            :thread-key="focusedKey"
-            position-mode="fixed"
-            @open-file="(path, rect) => emit('openFile', path, rect)"
-            @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
-          />
-        </Transition>
         <HandOffChainBar
           :thread-id="focusedThread?.threadId.value"
           :spawned="focusedThread?.spawnedChildren.value ?? []"

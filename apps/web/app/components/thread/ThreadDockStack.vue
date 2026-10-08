@@ -143,7 +143,7 @@ const meta = computed(() => {
 
 <template>
   <div
-    v-if="hasContent"
+    v-show="hasContent"
     class="thread-dock-stack"
     :class="railed ? `docks-rail docks-rail--${positionMode}` : `docks-corner docks-corner--${positionMode}`"
   >

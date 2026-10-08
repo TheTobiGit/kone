@@ -288,7 +288,11 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 // the pills row above it. It floats 18px above the pane bottom, and 26px of
 // air keeps the last line from kissing the card.
 const dockEl = ref<HTMLElement>();
-const { clear: bodyPadBottom } = useDockClearance(dockEl, { resting: 132, float: 18, air: 26 });
+const threadDock = ref<InstanceType<typeof ThreadDockStack> | null>(null);
+const cornerDock = computed(() => composerOpen.value ? null : threadDock.value);
+const { clear: composerClear } = useDockClearance(dockEl, { resting: 132, float: 18, air: 26 });
+const { clear: cornerClear } = useDockClearance(cornerDock, { resting: 132, float: 12, air: 26 });
+const bodyPadBottom = computed(() => Math.max(composerClear.value, cornerClear.value));
 useThreadEscapeHost(() => !modalOpen.value);
 // Growing the floor changes what there is to scroll, but resizes no box the
 // edge-fade observes — so tell it by hand, once the new padding is laid out.
@@ -442,6 +446,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
          can centre on the pane. -->
     <ThreadDockStack
       v-if="!modalOpen"
+      ref="threadDock"
       :composer-open="composerOpen"
       :changes="activeChanges"
       :plan="activePlan"
