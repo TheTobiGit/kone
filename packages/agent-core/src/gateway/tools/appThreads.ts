@@ -55,7 +55,7 @@ import type {
   ThreadStatus,
   TurnStartResult,
 } from "../../types.js";
-import type { ConversationSearchHit, TurnSpan } from "../../conversationStoreTypes.js";
+import type { ConversationSearchHit, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import type { ThreadAgentBinding } from "../../rosterRecord.js";
@@ -80,6 +80,16 @@ import {
   SearchAppThreadsInputSchema,
   SEARCH_APP_THREADS_JSON_SCHEMA,
   SEARCH_APP_THREADS_DEFAULT_LIMIT,
+  ListQueuedTurnsInputSchema,
+  ListQueuedTurnsJson,
+  EditQueuedTurnInputSchema,
+  EditQueuedTurnJson,
+  ReorderQueuedTurnsInputSchema,
+  ReorderQueuedTurnsJson,
+  CancelQueuedTurnInputSchema,
+  CancelQueuedTurnJson,
+  PromoteQueuedTurnInputSchema,
+  PromoteQueuedTurnJson,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
@@ -284,6 +294,13 @@ export interface AppThreadsToolOptions {
   /** Mark a thread done (or clear it). Canonical in production (the service
    *  emits thread.done.updated); the store fallback writes the same column. */
   setThreadDone?: (threadId: string, done: boolean) => void;
+  /** Queue controls (Phase 6). All canonical in production, where the service
+   *  keeps mirrors and broadcasts in step; absent, the tools refuse. */
+  listQueuedTurns?: (threadId: string) => QueuedTurnRow[];
+  editQueuedTurn?: (threadId: string, queueId: string, input: string) => Promise<boolean>;
+  reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
+  promoteQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
 }
 
 /** Tags this module's cursors, so one handed to another tool is refused rather
@@ -1241,6 +1258,95 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     );
   };
 
+  const queuedListHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = ListQueuedTurnsInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    const rows = options.listQueuedTurns?.(input.threadId) ?? [];
+    return singleLine(
+      `Thread "${input.threadId}" has ${rows.length} queued follow-up${rows.length === 1 ? "" : "s"}.`,
+      {
+        threadId: input.threadId,
+        queuedTurns: rows.map((row, index) => ({
+          queueId: row.queueId,
+          position: index + 1,
+          input: row.input,
+          state: row.state,
+        })),
+      },
+    );
+  };
+
+  const queuedCancelHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = CancelQueuedTurnInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.cancelQueuedTurn) {
+      throw failInternal(input.threadId, "cancel queued follow-up", "unsupported");
+    }
+    const ok = await options.cancelQueuedTurn(input.threadId, input.queueId);
+    return singleLine(`Cancelled queued row "${input.queueId}".`, {
+      threadId: input.threadId,
+      queueId: input.queueId,
+      ok,
+    });
+  };
+
+  const queuedPromoteHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = PromoteQueuedTurnInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.promoteQueuedTurn) {
+      throw failInternal(input.threadId, "run queued follow-up now", "unsupported");
+    }
+    const ok = await options.promoteQueuedTurn(input.threadId, input.queueId);
+    return singleLine(`Ran queued row "${input.queueId}" now.`, {
+      threadId: input.threadId,
+      queueId: input.queueId,
+      ok,
+    });
+  };
+
+  const queuedEditHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = EditQueuedTurnInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.editQueuedTurn) {
+      throw failInternal(input.threadId, "edit queued follow-up", "unsupported");
+    }
+    const ok = await options.editQueuedTurn(input.threadId, input.queueId, input.input);
+    return singleLine(
+      ok
+        ? `Edited queued row "${input.queueId}" in place.`
+        : `Could not edit queued row "${input.queueId}"; it may already be running.`,
+      { threadId: input.threadId, queueId: input.queueId, ok },
+    );
+  };
+
+  const queuedReorderHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = ReorderQueuedTurnsInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.reorderQueuedTurns) {
+      throw failInternal(input.threadId, "reorder queued follow-ups", "unsupported");
+    }
+    const ok = await options.reorderQueuedTurns(input.threadId, input.queueIds);
+    return singleLine(`Reordered ${input.queueIds.length} queued follow-up(s).`, {
+      threadId: input.threadId,
+      ok,
+    });
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -1419,6 +1525,69 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Use app_search_threads to find a thread the user is describing by its content, then app_read_thread to read it.",
       ],
       handler: searchHandler,
+    },
+    {
+      name: "app_list_queued_turns",
+      description:
+        "List a conversation's waiting follow-ups in the order they will run: queue id, position, prompt, and whether each is waiting, being handed to the provider, or held after a failed start. Queued follow-ups are messages the user sent while a turn was running.",
+      inputSchema: ListQueuedTurnsInputSchema,
+      jsonSchema: ListQueuedTurnsJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_list_queued_turns`: the follow-ups waiting on a conversation.",
+      promptGuidelines: [
+        "Use app_list_queued_turns before editing, reordering, cancelling or running a queued follow-up, so you have the queue ids.",
+      ],
+      handler: queuedListHandler,
+    },
+    {
+      name: "app_edit_queued_turn",
+      description:
+        "Edit a waiting follow-up's prompt in place, keeping its position in the queue. Refused for a row already running or settled.",
+      inputSchema: EditQueuedTurnInputSchema,
+      jsonSchema: EditQueuedTurnJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_edit_queued_turn`: change a waiting follow-up's text without moving it.",
+      promptGuidelines: [
+        "Edit a queued follow-up only when the user asks; the change is visible to them immediately.",
+      ],
+      handler: queuedEditHandler,
+    },
+    {
+      name: "app_reorder_queued_turns",
+      description:
+        "Set the order a conversation's waiting follow-ups will run in, by listing their queue ids in the desired order.",
+      inputSchema: ReorderQueuedTurnsInputSchema,
+      jsonSchema: ReorderQueuedTurnsJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_reorder_queued_turns`: change the order queued follow-ups will run in.",
+      promptGuidelines: ["Reorder only when the user asks for a different order."],
+      handler: queuedReorderHandler,
+    },
+    {
+      name: "app_cancel_queued_turn",
+      description: "Cancel one waiting follow-up so it never runs.",
+      inputSchema: CancelQueuedTurnInputSchema,
+      jsonSchema: CancelQueuedTurnJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_cancel_queued_turn`: drop a waiting follow-up.",
+      promptGuidelines: ["Cancel only when the user asks to drop that message."],
+      handler: queuedCancelHandler,
+    },
+    {
+      name: "app_promote_queued_turn",
+      description:
+        "Run one waiting follow-up now, through the same path as the composer's 'send now': steered into the running turn, or started when the thread is idle.",
+      inputSchema: PromoteQueuedTurnInputSchema,
+      jsonSchema: PromoteQueuedTurnJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_promote_queued_turn`: run a waiting follow-up now.",
+      promptGuidelines: ["Promote only when the user asks to send that queued message now."],
+      handler: queuedPromoteHandler,
     },
   ];
 }

@@ -287,6 +287,11 @@ function tools(
       title: string,
     ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
     setThreadDone?: (threadId: string, done: boolean) => void;
+    listQueuedTurns?: (threadId: string) => import("../../conversationStoreTypes.js").QueuedTurnRow[];
+    editQueuedTurn?: (threadId: string, queueId: string, input: string) => Promise<boolean>;
+    reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+    cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
+    promoteQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
   } = {},
 ) {
   const live = new Set(options.live ?? []);
@@ -319,6 +324,11 @@ function tools(
   if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
   if (options.renameThread) toolOptions.renameThread = options.renameThread;
   if (options.setThreadDone) toolOptions.setThreadDone = options.setThreadDone;
+  if (options.listQueuedTurns) toolOptions.listQueuedTurns = options.listQueuedTurns;
+  if (options.editQueuedTurn) toolOptions.editQueuedTurn = options.editQueuedTurn;
+  if (options.reorderQueuedTurns) toolOptions.reorderQueuedTurns = options.reorderQueuedTurns;
+  if (options.cancelQueuedTurn) toolOptions.cancelQueuedTurn = options.cancelQueuedTurn;
+  if (options.promoteQueuedTurn) toolOptions.promoteQueuedTurn = options.promoteQueuedTurn;
   if (options.threadRuntime) toolOptions.threadRuntime = options.threadRuntime;
   // `runner: null` is the "no dispatcher behind the gateway" case, which is a
   // different thing from a runner nobody passed — the option has to be absent,
@@ -929,8 +939,13 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_set_thread_done")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_mark_thread_unread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_search_threads")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_list_queued_turns")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_edit_queued_turn")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_reorder_queued_turns")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_cancel_queued_turn")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_promote_queued_turn")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(12);
+    expect(entries).toHaveLength(17);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
@@ -1551,5 +1566,75 @@ describe("app_search_threads", () => {
     const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
     // site-1 is another project with no lineage/reference to the caller.
     expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);
+  });
+});
+
+describe("queue gateway tools", () => {
+  const queuedRow = (
+    queueId: string,
+    input: string,
+  ): import("../../conversationStoreTypes.js").QueuedTurnRow => ({
+    queueId,
+    threadId: "t-newest",
+    userBlockId: `ub-${queueId}`,
+    dispatchMode: "queue",
+    state: "queued",
+    input,
+    attemptCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  it("lists a thread's waiting follow-ups in run order", async () => {
+    const result = await tools({
+      listQueuedTurns: () => [queuedRow("q1", "first"), queuedRow("q2", "second")],
+    }).call(makeCtx({ threadId: "t-newest" }), "app_list_queued_turns", { threadId: "t-newest" });
+    expect(result.isError).toBeUndefined();
+    // SAFETY: this tool's own payload always carries `queuedTurns`.
+    const rows = (result.structuredContent as { queuedTurns: Array<{ queueId: string; position: number }> })
+      .queuedTurns;
+    expect(rows.map((r) => [r.queueId, r.position])).toEqual([
+      ["q1", 1],
+      ["q2", 2],
+    ]);
+  });
+
+  it("edits a waiting row in place through the injected service path", async () => {
+    const edited: Array<[string, string, string]> = [];
+    const result = await tools({
+      editQueuedTurn: async (threadId, queueId, input) => {
+        edited.push([threadId, queueId, input]);
+        return true;
+      },
+    }).call(makeCtx({ threadId: "t-newest" }), "app_edit_queued_turn", {
+      threadId: "t-newest",
+      queueId: "q1",
+      input: "edited",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(edited).toEqual([["t-newest", "q1", "edited"]]);
+    expect(result.structuredContent).toMatchObject({ ok: true });
+  });
+
+  it("promotes through the injected send-now path", async () => {
+    const promoted: string[] = [];
+    await tools({
+      promoteQueuedTurn: async (_threadId, queueId) => {
+        promoted.push(queueId);
+        return true;
+      },
+    }).call(makeCtx({ threadId: "t-newest" }), "app_promote_queued_turn", {
+      threadId: "t-newest",
+      queueId: "q1",
+    });
+    expect(promoted).toEqual(["q1"]);
+  });
+
+  it("refuses when the host wires no queue control", async () => {
+    const result = await tools().call(makeCtx({ threadId: "t-newest" }), "app_cancel_queued_turn", {
+      threadId: "t-newest",
+      queueId: "q1",
+    });
+    expect(result.isError).toBe(true);
   });
 });
