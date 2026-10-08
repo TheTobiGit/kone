@@ -55,7 +55,7 @@ import type {
   ThreadStatus,
   TurnStartResult,
 } from "../../types.js";
-import type { TurnSpan } from "../../conversationStoreTypes.js";
+import type { ConversationSearchHit, TurnSpan } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import type { ThreadAgentBinding } from "../../rosterRecord.js";
@@ -77,6 +77,9 @@ import {
   SET_THREAD_DONE_JSON_SCHEMA,
   MarkThreadUnreadInputSchema,
   MARK_THREAD_UNREAD_JSON_SCHEMA,
+  SearchAppThreadsInputSchema,
+  SEARCH_APP_THREADS_JSON_SCHEMA,
+  SEARCH_APP_THREADS_DEFAULT_LIMIT,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
@@ -91,6 +94,8 @@ import {
   type StartAppThreadInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
+import { collapseSearchHits } from "../searchCollapse.js";
+import { canReadThread } from "../readScope.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
 import {
   blockText,
@@ -156,6 +161,12 @@ export interface AppThreadsStore {
   setPinned?(threadId: string, pinned: boolean): void;
   setDone?(threadId: string, done: boolean): void;
   setVisited?(threadId: string, at: number, force?: boolean): void;
+  /** Full-text conversation search (Phase 6). Returns raw ranked hits; the
+   *  tool collapses them to one best per thread. */
+  searchConversations?(
+    query: string,
+    options?: { limit?: number },
+  ): ConversationSearchHit[];
   setArchived?(
     threadId: string,
     archived: boolean,
@@ -1185,6 +1196,51 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     });
   };
 
+  const searchHandler = async (
+    ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = SearchAppThreadsInputSchema.parse(rawInput);
+    if (!store.searchConversations) {
+      throw failInternal(ctx.threadId, "search threads", "unsupported");
+    }
+    const limit = input.limit ?? SEARCH_APP_THREADS_DEFAULT_LIMIT;
+    // Ask for more than we return: collapse drops all but one hit per thread,
+    // and scope filtering drops unreadable threads.
+    const raw = store.searchConversations(input.query, { limit: limit * 8 });
+    const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
+    const caller = callerMeta
+      ? { projectPath: callerMeta.projectPath, sourceThreadId: callerMeta.sourceThreadId }
+      : null;
+    const results = collapseSearchHits(raw)
+      .filter((hit) => {
+        const meta = store.threadMeta?.(hit.threadId) ?? null;
+        return canReadThread({
+          callerThreadId: ctx.threadId,
+          targetThreadId: hit.threadId,
+          caller,
+          target: meta
+            ? { projectPath: meta.projectPath, sourceThreadId: meta.sourceThreadId }
+            : null,
+        });
+      })
+      .slice(0, limit)
+      .map((hit) => ({
+        threadId: hit.threadId,
+        title: store.threadMeta?.(hit.threadId)?.title ?? null,
+        snippet: hit.snippet,
+        entryKind: hit.entryKind,
+        at: hit.at,
+      }));
+
+    return singleLine(
+      results.length === 0
+        ? `No conversations matched "${input.query}".`
+        : `Found ${results.length} conversation${results.length === 1 ? "" : "s"} matching "${input.query}".`,
+      { query: input.query, results },
+    );
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -1348,6 +1404,21 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Mark a thread unread when the user says they still need to look at it.",
       ],
       handler: unreadHandler,
+    },
+    {
+      name: "app_search_threads",
+      description:
+        "Search across conversations' text and return one best match per conversation, with the user's own messages ranked above the agent's. Only conversations the caller may read are returned (same project, a fork/source relationship, or a reference the user attached).",
+      inputSchema: SearchAppThreadsInputSchema,
+      jsonSchema: SEARCH_APP_THREADS_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_search_threads`: find conversations by what was said in them, one best hit each.",
+      promptGuidelines: [
+        "Use app_search_threads to find a thread the user is describing by its content, then app_read_thread to read it.",
+      ],
+      handler: searchHandler,
     },
   ];
 }

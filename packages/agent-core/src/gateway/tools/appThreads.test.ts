@@ -928,8 +928,9 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_set_thread_pinned")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_set_thread_done")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_mark_thread_unread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_search_threads")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(11);
+    expect(entries).toHaveLength(12);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
@@ -1502,5 +1503,51 @@ describe("app_mark_thread_unread", () => {
     expect(force).toBe(true);
     expect(at).toBeLessThan(meta?.lastActivityAt ?? 0);
     expect(result.structuredContent).toMatchObject({ threadId: "t-newest", unread: true });
+  });
+});
+
+describe("app_search_threads", () => {
+  const searchHit = (
+    threadId: string,
+    entryKind: "block" | "item",
+    rank: number,
+  ): import("../../conversationStoreTypes.js").ConversationSearchHit => ({
+    threadId,
+    entryKind,
+    blockId: entryKind === "block" ? `b-${threadId}` : null,
+    turnId: null,
+    itemId: entryKind === "item" ? `i-${threadId}` : null,
+    at: 1,
+    snippet: `${threadId} snippet`,
+    rank,
+  });
+
+  it("collapses to one best hit per thread, user messages first", async () => {
+    const store = makeStore({
+      searchConversations: () => [
+        searchHit("t-newest", "item", 1),
+        searchHit("t-newest", "block", 5),
+        searchHit("t-done", "block", 2),
+      ],
+    });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+    });
+    expect(result.isError).toBeUndefined();
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    // One hit per thread, and both are user blocks: the lower rank first.
+    expect(results.map((r) => r.threadId)).toEqual(["t-done", "t-newest"]);
+  });
+
+  it("drops a thread the caller may not read", async () => {
+    const store = makeStore({
+      searchConversations: () => [searchHit("t-newest", "block", 2), searchHit("site-1", "block", 1)],
+    });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+    });
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    // site-1 is another project with no lineage/reference to the caller.
+    expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);
   });
 });

@@ -2364,8 +2364,7 @@ export const SET_THREAD_DONE_JSON_SCHEMA = {
   required: ["threadId", "done"],
 } satisfies GatewayRecord;
 
-export const MarkThreadUnreadInputSchema = ThreadIdInputSchema.extend({
-  threadId: threadIdField("The thread to mark unread, as app_list_threads reports it."),
+export const MarkThreadUnreadInputSchema = ThreadIdInputSchema.extend({  threadId: threadIdField("The thread to mark unread, as app_list_threads reports it."),
 });
 
 export const MARK_THREAD_UNREAD_JSON_SCHEMA = {
@@ -2378,6 +2377,36 @@ export const MARK_THREAD_UNREAD_JSON_SCHEMA = {
 export type SetThreadPinnedInput = z.infer<typeof SetThreadPinnedInputSchema>;
 export type SetThreadDoneInput = z.infer<typeof SetThreadDoneInputSchema>;
 export type MarkThreadUnreadInput = z.infer<typeof MarkThreadUnreadInputSchema>;
+
+export const SEARCH_APP_THREADS_DEFAULT_LIMIT = 10;
+export const SEARCH_APP_THREADS_MAX_LIMIT = 50;
+
+export const SearchAppThreadsInputSchema = z.object({
+  query: z.string().min(1).describe("The text to search for across conversations."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(SEARCH_APP_THREADS_MAX_LIMIT)
+    .optional()
+    .describe(`Maximum conversations to return (default ${SEARCH_APP_THREADS_DEFAULT_LIMIT}).`),
+});
+
+export const SEARCH_APP_THREADS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    query: { type: "string", description: "The text to search for across conversations." },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: SEARCH_APP_THREADS_MAX_LIMIT,
+      description: `Maximum conversations to return (default ${SEARCH_APP_THREADS_DEFAULT_LIMIT}).`,
+    },
+  },
+  required: ["query"],
+} satisfies GatewayRecord;
+
+export type SearchAppThreadsInput = z.infer<typeof SearchAppThreadsInputSchema>;
 
 // ── providers & usage ────────────────────────────────────────────────────────
 
