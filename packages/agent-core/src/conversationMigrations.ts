@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 33;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1266,6 +1266,28 @@ function migration0031ThreadPullRequest(db: DatabaseSync): void {
   addColumn(db, "threads", "linked_pr_merged_at", "INTEGER");
 }
 
+/** A turn whose work a file revert discarded. A revert to turn N's checkpoint
+ *  restores the tree to before N, so it rolls back N and every later turn of
+ *  the thread; all of them are stamped here. A fork refuses to start from a
+ *  rolled-back turn. Rows die with their thread. */
+function migration0032TurnRollbacks(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS turn_rollbacks (
+      thread_id      TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id        TEXT NOT NULL,
+      rolled_back_at INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+  `);
+}
+
+/** The provider-native message uuid a turn's assistant block ended on, for a
+ *  native fork at that turn (Claude's forkSession/resumeSessionAt anchor).
+ *  NULL for providers that name no per-turn message. */
+function migration0033TurnAssistantUuid(db: DatabaseSync): void {
+  addColumn(db, "blocks", "assistant_uuid", "TEXT");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1298,6 +1320,8 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 29, name: "HandInOmittedHistory", run: migration0029HandInOmittedHistory },
   { id: 30, name: "TitleOrigin", run: migration0030TitleOrigin },
   { id: 31, name: "ThreadPullRequest", run: migration0031ThreadPullRequest },
+  { id: 32, name: "TurnRollbacks", run: migration0032TurnRollbacks },
+  { id: 33, name: "TurnAssistantUuid", run: migration0033TurnAssistantUuid },
 ];
 
 export interface MigrationOptions {
