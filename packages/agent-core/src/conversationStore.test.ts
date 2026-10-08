@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 29 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 30 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(30);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -265,6 +265,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 27, name: "QueuedTurnDurableRowid" },
       { migration_id: 28, name: "TurnSeals" },
       { migration_id: 29, name: "TitleOrigin" },
+      { migration_id: 30, name: "ThreadPullRequest" },
     ]);
 
     const idx = raw
@@ -2931,5 +2932,61 @@ describe("turn checkpoints (v6)", () => {
     });
     expect(store.deleteThread("cp-6")).toEqual({ ok: true });
     expect(store.listTurnCheckpoints("cp-6")).toEqual([]);
+  });
+});
+
+describe("thread pull request link", () => {
+  test("link, read and clear round-trip through the thread row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "pr-1", projectPath: "/p", provider: "opencode" });
+    expect(store.threadPullRequestLink("pr-1")).toBeNull();
+
+    expect(
+      store.setThreadPullRequestLink("pr-1", {
+        repository: "acme/site",
+        number: 42,
+        url: "https://github.com/acme/site/pull/42",
+        state: "open",
+        checkedAt: 100,
+      }),
+    ).toBe(true);
+    expect(store.threadPullRequestLink("pr-1")).toEqual({
+      repository: "acme/site",
+      number: 42,
+      url: "https://github.com/acme/site/pull/42",
+      state: "open",
+      checkedAt: 100,
+      mergedAt: null,
+    });
+
+    // An input that names no PR is refused, and so is an unknown thread.
+    expect(store.setThreadPullRequestLink("pr-1", { url: "" })).toBe(false);
+    expect(store.setThreadPullRequestLink("ghost", { url: "u", number: 1 })).toBe(false);
+
+    expect(store.clearThreadPullRequestLink("pr-1")).toBe(true);
+    expect(store.threadPullRequestLink("pr-1")).toBeNull();
+  });
+
+  test("linkedThreadPullRequests lists only linked threads, oldest check first", () => {
+    const store = freshStore();
+    for (const id of ["a", "b", "c"]) {
+      store.ensureThread({ threadId: id, projectPath: "/p", provider: "opencode" });
+    }
+    store.setThreadPullRequestLink("a", {
+      url: "https://x/pull/1",
+      number: 1,
+      state: "open",
+      checkedAt: 200,
+    });
+    store.setThreadPullRequestLink("b", {
+      url: "https://x/pull/2",
+      number: 2,
+      state: "merged",
+      checkedAt: 100,
+    });
+    const rows = store.linkedThreadPullRequests(10);
+    expect(rows.map((r) => r.threadId)).toEqual(["b", "a"]);
+    expect(rows[0]?.link.state).toBe("merged");
+    expect(rows[0]?.projectPath).toBe("/p");
   });
 });

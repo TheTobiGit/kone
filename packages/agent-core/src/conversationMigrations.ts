@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1237,6 +1237,20 @@ function migration0029TitleOrigin(db: DatabaseSync): void {
   addColumn(db, "threads", "title_origin", "TEXT CHECK (title_origin IS NULL OR title_origin IN ('auto', 'manual'))");
 }
 
+/** A pull request the user linked to a thread. Nullable columns with no
+ *  default: a thread with no linked PR reads as all-null, which is exactly
+ *  what it is. `linked_pr_state` and `linked_pr_merged_at` are the last thing
+ *  a PR check saw, so the settle sweep can act on a merge without a live gh
+ *  call every time; a fresh check overwrites them. */
+function migration0030ThreadPullRequest(db: DatabaseSync): void {
+  addColumn(db, "threads", "linked_pr_repository", "TEXT");
+  addColumn(db, "threads", "linked_pr_number", "INTEGER");
+  addColumn(db, "threads", "linked_pr_url", "TEXT");
+  addColumn(db, "threads", "linked_pr_state", "TEXT");
+  addColumn(db, "threads", "linked_pr_checked_at", "INTEGER");
+  addColumn(db, "threads", "linked_pr_merged_at", "INTEGER");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1267,6 +1281,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
   { id: 29, name: "TitleOrigin", run: migration0029TitleOrigin },
+  { id: 30, name: "ThreadPullRequest", run: migration0030ThreadPullRequest },
 ];
 
 export interface MigrationOptions {

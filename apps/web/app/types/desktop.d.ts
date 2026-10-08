@@ -8,6 +8,16 @@ import type { ContractTerms } from "@kone/protocol/contract";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
 
+/** A pull request linked to a thread (mirrors agent-core ThreadPullRequestLink). */
+export type LinkedThreadPullRequest = {
+  repository: string;
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed" | "unknown";
+  checkedAt: number | null;
+  mergedAt: number | null;
+};
+
 export type DirEntry = {
   name: string;
   path: string;
@@ -2974,6 +2984,35 @@ export type KoneAgentApi = {
    *  Does not touch recency ordering; the title.updated event follows on the
    *  runtime stream. */
   renameThread: (threadId: string, title: string) => Promise<boolean>;
+  /** Regenerate a thread's title from its whole conversation. Refuses a
+   *  manually-named title: resolves `{ ok: false, reason: "manual_title" }`. */
+  regenerateThreadTitle: (
+    threadId: string,
+  ) => Promise<
+    | { ok: true; title: string; changed: boolean }
+    | {
+        ok: false;
+        reason: "unknown" | "manual_title" | "no-workdir" | "empty" | "generation_failed";
+      }
+  >;
+  /** A pull request linked to a thread. `repository` is "owner/repo" (may be
+   *  empty when unknown). Durable; the settle sweep reads it on merge. */
+  linkThreadPullRequest: (
+    threadId: string,
+    link: {
+      repository?: string | null;
+      number?: number | null;
+      url: string;
+      state?: "open" | "merged" | "closed" | "unknown" | null;
+      checkedAt?: number | null;
+      mergedAt?: number | null;
+    },
+  ) => Promise<
+    | { ok: true; link: LinkedThreadPullRequest }
+    | { ok: false; reason: "invalid" | "unknown" }
+  >;
+  unlinkThreadPullRequest: (threadId: string) => Promise<boolean>;
+  threadPullRequestLink: (threadId: string) => Promise<LinkedThreadPullRequest | null>;
   /** Native save dialog for a thread export — the main process owns the
    *  dialog, the renderer only suggests a file name. A dismissal resolves
    *  `{ canceled: true }`, distinct from the file outcome below. */

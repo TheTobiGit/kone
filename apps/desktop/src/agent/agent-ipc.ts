@@ -1184,6 +1184,29 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:regenerate-thread-title", (_event, threadId: string) =>
     svc.regenerateThreadTitle(String(threadId)),
   );
+  // Link / unlink a pull request on a thread, and read the current link. The
+  // store carries the link across restarts; the settle sweep reads it to know
+  // when the thread is done. The handler validates and reports why it refused,
+  // rather than writing a link that names no PR.
+  ipcMain.handle(
+    "agent:link-thread-pr",
+    (
+      _event,
+      threadId: string,
+      link: {
+        repository?: string | null;
+        number?: number | null;
+        url: string;
+        state?: "open" | "merged" | "closed" | "unknown" | null;
+      },
+    ) => svc.linkThreadPullRequest(String(threadId), link),
+  );
+  ipcMain.handle("agent:unlink-thread-pr", (_event, threadId: string) =>
+    svc.unlinkThreadPullRequest(String(threadId)),
+  );
+  ipcMain.handle("agent:thread-pr", (_event, threadId: string) =>
+    svc.threadPullRequestLink(String(threadId)),
+  );
 }
 
 /** Record in-flight turns for resume after quit, then interrupt them. Called

@@ -23,6 +23,11 @@ import {
 import { threadWorkingDir } from "./threadWorkspace.js";
 import { generateThreadTitleFromContext } from "./threadTitle.js";
 import { formatThreadTitleContext } from "./threadTitleContext.js";
+import {
+  toThreadPullRequestLink,
+  type ThreadPullRequestLink,
+  type ThreadPullRequestLinkInput,
+} from "./threadPullRequest.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -241,6 +246,9 @@ export type AgentServiceOptions = {
     | "titleOrigin"
     | "titleMessages"
     | "threadWorkspace"
+    | "threadPullRequestLink"
+    | "setThreadPullRequestLink"
+    | "clearThreadPullRequestLink"
   >;
   /** Whole-conversation title generation, injected by tests so no CLI spawns.
    *  Defaults to the real provider one-shot. */
@@ -319,6 +327,12 @@ export type RegenerateThreadTitleResult =
       ok: false;
       reason: "unknown" | "manual_title" | "no-workdir" | "empty" | "generation_failed";
     };
+
+/** Outcome of linking a PR to a thread. `invalid` means the input named no PR
+ *  (no URL and no positive number) or a URL that was blank. */
+export type SetThreadPullRequestResult =
+  | { ok: true; link: ThreadPullRequestLink }
+  | { ok: false; reason: "invalid" | "unknown" };
 
 /** The line in front of the turn kone steer ended the last one to deliver
  *  (docs/agent-delivery-design.md §7). */
@@ -2741,6 +2755,32 @@ export class AgentService {
       }
     }
     return { ok: true, title, changed };
+  }
+
+  /** Link a pull request to a thread, replacing any previous link. The link is
+   *  durable and revives nothing: it is a marker the settle sweep reads, not a
+   *  reason to wake the thread. Refuses an input that names no PR. */
+  linkThreadPullRequest(
+    threadId: string,
+    input: ThreadPullRequestLinkInput,
+  ): SetThreadPullRequestResult {
+    const history = this.historyStore;
+    if (!history) return { ok: false, reason: "unknown" };
+    if (!history.threadMeta(threadId)) return { ok: false, reason: "unknown" };
+    const link = toThreadPullRequestLink(input);
+    if (!link) return { ok: false, reason: "invalid" };
+    if (!history.setThreadPullRequestLink(threadId, link)) return { ok: false, reason: "unknown" };
+    return { ok: true, link };
+  }
+
+  /** Remove a thread's linked PR. Returns whether anything changed. */
+  unlinkThreadPullRequest(threadId: string): boolean {
+    return this.historyStore?.clearThreadPullRequestLink(threadId) ?? false;
+  }
+
+  /** The thread's linked PR, or null when none is set. */
+  threadPullRequestLink(threadId: string): ThreadPullRequestLink | null {
+    return this.historyStore?.threadPullRequestLink(threadId) ?? null;
   }
 
   /** The thread-retention sweep, in two passes over the same timer:
