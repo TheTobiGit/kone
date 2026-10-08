@@ -771,6 +771,25 @@ describe("app_read_thread", () => {
     expect(result.structuredContent?.thread).toMatchObject({ threadId: "t-newest" });
   });
 
+  it("lets a spawned child read its parent across projects", async () => {
+    const base = makeStore();
+    const childMeta = thread({
+      threadId: "t-child",
+      title: "Child",
+      projectPath: SITE,
+      parentThreadId: "t-newest",
+    });
+    const store: AppThreadsStore = {
+      ...base,
+      threadMeta: (threadId) =>
+        threadId === "t-child" ? childMeta : (base.threadMeta?.(threadId) ?? null),
+    };
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-child" }), "app_read_thread", {
+      threadId: "t-newest",
+    });
+    expect(result.isError).toBeUndefined();
+  });
+
   it("refuses an unrelated project thread for a project caller", async () => {
     const result = await tools().call(
       makeCtx({ threadId: "t-done" }),
@@ -1884,5 +1903,98 @@ describe("queue gateway tools", () => {
       queueId: "q1",
     });
     expect(result.isError).toBe(true);
+  });
+});
+
+describe("phase 6a review fixes", () => {
+  it("queue-list text carries the ids and prompts an agent must act on", async () => {
+    const row = (queueId: string, input: string): import("../../conversationStoreTypes.js").QueuedTurnRow => ({
+      queueId,
+      threadId: "t-newest",
+      userBlockId: `ub-${queueId}`,
+      dispatchMode: "queue",
+      state: "queued",
+      input,
+      attemptCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const result = await tools({ listQueuedTurns: () => [row("q1", "fix the auth bug")] }).call(
+      makeCtx({ threadId: "t-newest" }),
+      "app_list_queued_turns",
+      { threadId: "t-newest" },
+    );
+    // The production registry strips structuredContent, so the text must hold
+    // the queue id and prompt.
+    expect(text(result)).toContain("q1");
+    expect(text(result)).toContain("fix the auth bug");
+  });
+
+  it("search text carries the thread id and snippet", async () => {
+    const hit = (threadId: string, entryKind: "block" | "item"): import("../../conversationStoreTypes.js").ConversationSearchHit => ({
+      threadId,
+      entryKind,
+      blockId: entryKind === "block" ? `b-${threadId}` : null,
+      turnId: null,
+      itemId: entryKind === "item" ? `i-${threadId}` : null,
+      at: 1,
+      snippet: "matched words here",
+      rank: 1,
+    });
+    const store = makeStore({ searchConversations: () => [hit("t-newest", "block")] });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+    });
+    expect(text(result)).toContain("t-newest");
+    expect(text(result)).toContain("matched words here");
+  });
+
+  it("a false queue callback is a refusal, not success prose", async () => {
+    const result = await tools({ cancelQueuedTurn: async () => false }).call(
+      makeCtx({ threadId: "t-newest" }),
+      "app_cancel_queued_turn",
+      { threadId: "t-newest", queueId: "q1" },
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).not.toContain("Cancelled");
+  });
+
+  it("pages candidate hits so an eligible thread behind unreadable ones is found", async () => {
+    const siteHit = (i: number): import("../../conversationStoreTypes.js").ConversationSearchHit => ({
+      threadId: `site-${i}`,
+      entryKind: "block",
+      blockId: `b-${i}`,
+      turnId: null,
+      itemId: null,
+      at: 1,
+      snippet: "noise",
+      rank: i,
+    });
+    const eligible: import("../../conversationStoreTypes.js").ConversationSearchHit = {
+      threadId: "t-newest",
+      entryKind: "block",
+      blockId: "b-ok",
+      turnId: null,
+      itemId: null,
+      at: 1,
+      snippet: "the one eligible match",
+      rank: 500,
+    };
+    // Unreadable (other-project) hits fill every page below the cap; the
+    // eligible same-project match only appears once we widen far enough.
+    const store = makeStore({
+      searchConversations: (_query, options) => {
+        const limit = options?.limit ?? 10;
+        const filler = Array.from({ length: limit - (limit >= 200 ? 1 : 0) }, (_, i) => siteHit(i));
+        return limit >= 200 ? [...filler, eligible] : filler;
+      },
+    });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+      limit: 5,
+    });
+    // SAFETY: this tool's own payload always carries `results`.
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);
   });
 });

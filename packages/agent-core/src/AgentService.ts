@@ -2627,7 +2627,7 @@ export class AgentService {
    *  returns false when no such row exists. */
   async cancelQueuedTurn(threadId: string, queueId: string): Promise<boolean> {
     const store = this.queueStore;
-    const cancelled = store.cancelQueuedTurn(queueId);
+    const cancelled = store.cancelQueuedTurn(queueId, threadId);
     if (cancelled) {
       this.dropQueuedCount(threadId);
       // Its backoff goes with it; the rest of the queue needn't wait it out.
@@ -2680,6 +2680,9 @@ export class AgentService {
     if (!this.routing.has(threadId)) throw new Error(`No agent session for thread ${threadId}`);
     // Stopped already, though the store has yet to write it.
     if (this.cancelOwed(threadId, queueId)) return false;
+    // Bind the queue id to this thread: a row that belongs to another thread
+    // is refused rather than claimed and run under the wrong thread.
+    if (!store.listQueuedTurns(threadId).some((row) => row.queueId === queueId)) return false;
     const claimed = store.claimQueuedTurn(queueId);
     if (!claimed) return false;
     const { row, from } = claimed;
@@ -2770,7 +2773,7 @@ export class AgentService {
     patch: QueuedTurnEditPatch,
   ): Promise<boolean> {
     const store = this.queueStore;
-    const row = store.editQueuedTurn(queueId, patch);
+    const row = store.editQueuedTurn(threadId, queueId, patch);
     if (!row) return false;
     const provider = this.routing.get(threadId);
     if (provider) {
@@ -2784,8 +2787,10 @@ export class AgentService {
         state: row.state === "failed" ? "failed" : "queued",
         attemptCount: row.attemptCount,
         input: row.input,
-        attachments: row.attachments,
-        skills: row.skills,
+        // An explicit [] in the patch clears the field, so emit [] rather than
+        // undefined; undefined means "unchanged" to the reducer.
+        attachments: patch.attachments !== undefined ? patch.attachments : row.attachments,
+        skills: patch.skills !== undefined ? patch.skills : row.skills,
       });
     }
     return true;

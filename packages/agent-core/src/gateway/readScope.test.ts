@@ -72,6 +72,25 @@ describe("canReadThread", () => {
     ).toBe(true);
   });
 
+  test("a spawned child reads its parent across projects", () => {
+    expect(
+      canReadThread({
+        callerThreadId: "child",
+        targetThreadId: "parent",
+        caller: { projectPath: "/child-project", sourceThreadId: null, parentThreadId: "parent" },
+        target: { projectPath: "/parent-project", sourceThreadId: null, parentThreadId: null },
+      }),
+    ).toBe(true);
+    expect(
+      canReadThread({
+        callerThreadId: "parent",
+        targetThreadId: "child",
+        caller: { projectPath: "/parent-project", sourceThreadId: null, parentThreadId: null },
+        target: { projectPath: "/child-project", sourceThreadId: null, parentThreadId: "parent" },
+      }),
+    ).toBe(true);
+  });
+
   test("an unknown target is refused", () => {
     expect(
       canReadThread({

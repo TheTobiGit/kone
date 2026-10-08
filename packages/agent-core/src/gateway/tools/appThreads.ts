@@ -742,10 +742,18 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         callerThreadId: ctx.threadId,
         targetThreadId: params.threadId,
         caller: callerMeta
-          ? { projectPath: callerMeta.projectPath, sourceThreadId: callerMeta.sourceThreadId }
+          ? {
+              projectPath: callerMeta.projectPath,
+              sourceThreadId: callerMeta.sourceThreadId,
+              parentThreadId: callerMeta.parentThreadId,
+            }
           : null,
         target: targetMeta
-          ? { projectPath: targetMeta.projectPath, sourceThreadId: targetMeta.sourceThreadId }
+          ? {
+              projectPath: targetMeta.projectPath,
+              sourceThreadId: targetMeta.sourceThreadId,
+              parentThreadId: targetMeta.parentThreadId,
+            }
           : null,
       });
       if (!readable) {
@@ -1381,12 +1389,24 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       throw failInternal(ctx.threadId, "search threads", "unsupported");
     }
     const limit = input.limit ?? SEARCH_APP_THREADS_DEFAULT_LIMIT;
-    // Ask for more than we return: collapse drops all but one hit per thread,
-    // and scope filtering drops unreadable threads.
-    const raw = store.searchConversations(input.query, { limit: limit * 8 });
+    // Fetch candidate pages and widen until the store is exhausted (or a hard
+    // cap), THEN scope-filter, collapse and rank. Limiting raw FTS hits first
+    // would let a page full of unreadable or assistant hits hide an eligible
+    // user match further down the ranking.
+    const SEARCH_CANDIDATE_CAP = 1_000;
+    let fetchLimit = Math.max(limit * 8, 50);
+    let raw = store.searchConversations(input.query, { limit: fetchLimit });
+    while (raw.length === fetchLimit && fetchLimit < SEARCH_CANDIDATE_CAP) {
+      fetchLimit = Math.min(fetchLimit * 4, SEARCH_CANDIDATE_CAP);
+      raw = store.searchConversations(input.query, { limit: fetchLimit });
+    }
     const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
     const caller = callerMeta
-      ? { projectPath: callerMeta.projectPath, sourceThreadId: callerMeta.sourceThreadId }
+      ? {
+          projectPath: callerMeta.projectPath,
+          sourceThreadId: callerMeta.sourceThreadId,
+          parentThreadId: callerMeta.parentThreadId,
+        }
       : null;
     const results = collapseSearchHits(raw)
       .filter((hit) => {
@@ -1409,10 +1429,14 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         at: hit.at,
       }));
 
+    const lines = results.map(
+      (r) =>
+        `- ${r.threadId} [${r.entryKind}]${r.title ? ` "${r.title}"` : ""}: ${r.snippet.replace(/\s+/g, " ").trim()}`,
+    );
     return singleLine(
       results.length === 0
         ? `No conversations matched "${input.query}".`
-        : `Found ${results.length} conversation${results.length === 1 ? "" : "s"} matching "${input.query}".`,
+        : `Found ${results.length} conversation${results.length === 1 ? "" : "s"} matching "${input.query}":\n${lines.join("\n")}`,
       { query: input.query, results },
     );
   };
@@ -1424,8 +1448,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     const input = ListQueuedTurnsInputSchema.parse(rawInput);
     requireThread(input.threadId);
     const rows = options.listQueuedTurns?.(input.threadId) ?? [];
+    const lines = rows.map(
+      (row, index) => `- #${index + 1} ${row.queueId} [${row.state}] ${row.input}`,
+    );
     return singleLine(
-      `Thread "${input.threadId}" has ${rows.length} queued follow-up${rows.length === 1 ? "" : "s"}.`,
+      rows.length === 0
+        ? `Thread "${input.threadId}" has no queued follow-ups.`
+        : `Thread "${input.threadId}" has ${rows.length} queued follow-up${rows.length === 1 ? "" : "s"}:\n${lines.join("\n")}`,
       {
         threadId: input.threadId,
         queuedTurns: rows.map((row, index) => ({
@@ -1448,10 +1477,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       throw failInternal(input.threadId, "cancel queued follow-up", "unsupported");
     }
     const ok = await options.cancelQueuedTurn(input.threadId, input.queueId);
+    if (!ok) {
+      throw failInternal(input.threadId, "cancel queued follow-up", "no such waiting row");
+    }
     return singleLine(`Cancelled queued row "${input.queueId}".`, {
       threadId: input.threadId,
       queueId: input.queueId,
-      ok,
+      ok: true,
     });
   };
 
@@ -1465,10 +1497,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       throw failInternal(input.threadId, "run queued follow-up now", "unsupported");
     }
     const ok = await options.promoteQueuedTurn(input.threadId, input.queueId);
+    if (!ok) {
+      throw failInternal(input.threadId, "run queued follow-up now", "no such waiting row");
+    }
     return singleLine(`Ran queued row "${input.queueId}" now.`, {
       threadId: input.threadId,
       queueId: input.queueId,
-      ok,
+      ok: true,
     });
   };
 
@@ -1482,12 +1517,14 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       throw failInternal(input.threadId, "edit queued follow-up", "unsupported");
     }
     const ok = await options.editQueuedTurn(input.threadId, input.queueId, input.input);
-    return singleLine(
-      ok
-        ? `Edited queued row "${input.queueId}" in place.`
-        : `Could not edit queued row "${input.queueId}"; it may already be running.`,
-      { threadId: input.threadId, queueId: input.queueId, ok },
-    );
+    if (!ok) {
+      throw failInternal(input.threadId, "edit queued follow-up", "no such waiting row");
+    }
+    return singleLine(`Edited queued row "${input.queueId}" in place.`, {
+      threadId: input.threadId,
+      queueId: input.queueId,
+      ok: true,
+    });
   };
 
   const queuedReorderHandler = async (
@@ -1500,9 +1537,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       throw failInternal(input.threadId, "reorder queued follow-ups", "unsupported");
     }
     const ok = await options.reorderQueuedTurns(input.threadId, input.queueIds);
+    if (!ok) {
+      throw failInternal(input.threadId, "reorder queued follow-ups", "no waiting rows matched");
+    }
     return singleLine(`Reordered ${input.queueIds.length} queued follow-up(s).`, {
       threadId: input.threadId,
-      ok,
+      queueIds: input.queueIds,
+      ok: true,
     });
   };
 
