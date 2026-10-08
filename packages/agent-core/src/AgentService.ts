@@ -21,6 +21,7 @@ import {
   restoreCheckpoint,
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
+import { checkpointRestoreIsolation, type RestorePathClaim } from "./checkpointRestoreSafety.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -244,6 +245,17 @@ export type AgentServiceOptions = {
   adapters?: (emit: EmitEvent) => ProviderAdapter[];
 };
 
+/** Where the caller is sent for a conversation-only rewind when a file restore
+ *  is refused: the existing branch-at-block path, named by the turn that was
+ *  rolled back and the user block that started it. */
+export type ConversationRewindTarget = {
+  sourceThreadId: string;
+  turnId: string;
+  /** The user block that began the turn, or null when the turn has none (a
+   *  steer, or a prompt that was never journaled). */
+  userBlockId: string | null;
+};
+
 /** What restoring a turn's snapshot would change, without changing anything.
  *  `wouldWrite` names checkpoint files whose worktree content differs (the
  *  uncommitted work a restore would overwrite); `wouldDelete` names worktree
@@ -254,6 +266,12 @@ export type PreviewTurnCheckpointResult =
       ok: false;
       reason: "missing" | "no-workdir" | "checkpoint-gone" | "failed";
       detail?: string;
+    }
+  | {
+      ok: false;
+      reason: "shared-checkout";
+      detail: string;
+      rewind: ConversationRewindTarget;
     };
 
 /** Outcome of reverting a thread's working tree to a turn's pre-turn
@@ -264,11 +282,14 @@ export type PreviewTurnCheckpointResult =
  *  live on the thread and restoring under it would corrupt the running turn,
  *  `checkpoint-gone` means the row survived but the git object behind its ref
  *  did not (garbage-collected, or the repo was re-cloned — `detail` names the
- *  ref), `dirty` means the restore would overwrite uncommitted work and the
- *  caller did not pass `force` (`wouldWrite`/`wouldDelete` name exactly what
- *  would change, so the confirmation step can show it), and `failed` means the
- *  git restore itself refused or left the tree only partly reconciled
- *  (`detail` carries git's own message — nothing fails silently). */
+ *  ref), `shared-checkout` means the thread runs in a checkout another thread
+ *  also shares, so a file restore would clobber that thread's work — `detail`
+ *  names the overlap and `rewind` names the conversation-only alternative —
+ *  `dirty` means the restore would overwrite uncommitted work and the caller
+ *  did not pass `force` (`wouldWrite`/`wouldDelete` name exactly what would
+ *  change, so the confirmation step can show it), and `failed` means the git
+ *  restore itself refused or left the tree only partly reconciled (`detail`
+ *  carries git's own message — nothing fails silently). */
 export type RevertTurnCheckpointResult =
   | { ok: true }
   | {
@@ -276,7 +297,13 @@ export type RevertTurnCheckpointResult =
       reason: "missing" | "no-workdir" | "busy" | "checkpoint-gone" | "failed";
       detail?: string;
     }
-  | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] };
+  | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] }
+  | {
+      ok: false;
+      reason: "shared-checkout";
+      detail: string;
+      rewind: ConversationRewindTarget;
+    };
 
 /** The failure both checkpoint answers share. Factored so every catch in the
  *  preview/revert paths formats a thrown value or a leftover-files report the
@@ -1402,6 +1429,54 @@ export class AgentService {
     }
   }
 
+  /** Whether a file restore at `dir` is isolated to this thread, or the
+   *  refusal that sends the caller to a conversation-only rewind instead.
+   *  Null when the restore may proceed.
+   *
+   *  Every other thread counts, archived included: a put-away thread still owns
+   *  its checkout, and a hard reset under it would wipe work nobody is
+   *  watching. A thread with no worktree runs in its project's shared checkout
+   *  and is never isolated. Reads fail closed — a store that cannot be read
+   *  throws out of `runRevert`'s catch as a `failed` refusal, never as a
+   *  silent restore. */
+  private checkpointRestoreRefusal(
+    store: CheckpointStore,
+    threadId: string,
+    turnId: string,
+    dir: string,
+  ): { ok: false; reason: "shared-checkout"; detail: string; rewind: ConversationRewindTarget } | null {
+    const workspace = store.threadWorkspace(threadId);
+    const others: RestorePathClaim[] = [];
+    for (const other of store.allThreadWorkspaces()) {
+      if (other.threadId === threadId) continue;
+      others.push({
+        threadId: other.threadId,
+        path: threadWorkingDir({ projectPath: other.projectPath, ...other.workspace }),
+      });
+      // A session can be started with a cwd that differs from the thread's
+      // stored place; its live directory is a second claim for the same
+      // thread, and the one a running turn is actually writing in.
+      const liveCwd = this.sessionInputs.get(other.threadId)?.cwd;
+      if (liveCwd) others.push({ threadId: other.threadId, path: liveCwd });
+    }
+    const isolation = checkpointRestoreIsolation({
+      cwd: dir,
+      worktreePath: workspace?.worktreePath ?? null,
+      otherPaths: others,
+    });
+    if (isolation.isolated) return null;
+    return {
+      ok: false,
+      reason: "shared-checkout",
+      detail: isolation.detail,
+      rewind: {
+        sourceThreadId: threadId,
+        turnId,
+        userBlockId: store.turnUserBlockId(threadId, turnId),
+      },
+    };
+  }
+
   /** Snapshot the tree for a turn that was just accepted and record
    *  (thread, turn) → ref. Runs on the send path right after the adapter
    *  accepts the turn, while the returned turn id is fresh and before the
@@ -1471,6 +1546,11 @@ export class AgentService {
       const dir = this.checkpointDir(threadId);
       if (!dir) return { ok: false, reason: "no-workdir" };
       if (!existsSync(dir)) return { ok: false, reason: "no-workdir", detail: dir };
+      // Isolation is checked before the repo is touched at all: a refusal is a
+      // different action, not a failed restore, and must answer without a git
+      // call.
+      const shared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (shared) return shared;
       if (!(await checkpointExists(dir, row.checkpointId))) {
         return { ok: false, reason: "checkpoint-gone", detail: row.ref };
       }
@@ -1545,6 +1625,12 @@ export class AgentService {
       // read as no-workdir (with the expected path attached), never as a
       // restore into whatever happens to sit at a stale path.
       if (!existsSync(dir)) return { ok: false, reason: "no-workdir", detail: dir };
+      // A snapshot covers the whole checkout, so a hard restore is only safe
+      // when the checkout belongs to this thread alone. Refuse before touching
+      // the repo — and before the dirty check: the fix is a different action
+      // (rewind the conversation), not a confirmation.
+      const shared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (shared) return shared;
       // The row outlives its object when the ref is pruned or the repo was
       // re-cloned around it. Restoring from a dangling ref could only fail
       // inside git — say so up front, naming the dead ref.
