@@ -64,17 +64,16 @@ export function forkThreadAtTurn(input: ForkThreadAtTurnInput): ForkThreadAtTurn
   // The placeholder target: the source's own provider/model, so the fork opens
   // where the work was. It is not a commitment — the first send may choose a
   // different provider/model while the fork has no session or conversation.
-  const target = input.target ?? {
-    provider: source.provider,
-    ...(source.model ? { model: source.model } : {}),
-  };
-  return createHandoffThread({
+  const target = input.target ? { ...input.target } : { provider: source.provider };
+  if (!input.target && source.model) target.model = source.model;
+  const handoff: Parameters<typeof createHandoffThread>[0] = {
     requestId: input.requestId,
     threadId: input.threadId,
     sourceThreadId: input.sourceThreadId,
     kind: "branch",
     throughBlockId,
     target,
-    ...(input.title ? { title: input.title } : {}),
-  });
+  };
+  if (input.title) handoff.title = input.title;
+  return createHandoffThread(handoff);
 }
