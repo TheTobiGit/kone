@@ -231,7 +231,15 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
       }
     },
     provisionWorkspace: async (request) => {
-      provisioned.push(request);
+      // Record the request without its onProgress callback, so expectations
+      // read as the arguments that matter.
+      const recorded: { projectPath: string; branch?: string; base?: string } = {
+        projectPath: request.projectPath,
+      };
+      if (request.branch !== undefined) recorded.branch = request.branch;
+      if (request.base !== undefined) recorded.base = request.base;
+      provisionHadProgress = typeof request.onProgress === "function";
+      provisioned.push(recorded);
       if (provisionGate) await provisionGate;
       if (provisionFails) throw new Error("git said no");
       const branch = request.branch ?? "kone/deadbeef";
@@ -261,6 +269,9 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
   if (!captured) throw new Error("the fake adapter was not constructed");
   return { store, dispatcher, emit: captured, service, mailbox };
 }
+
+/** Whether the last provision request carried an onProgress callback. */
+let provisionHadProgress = false;
 
 /** Every prompt the dispatcher journaled, id and text — the raw journal,
  *  including prompts still waiting behind the running turn. loadThread hides
@@ -721,6 +732,7 @@ describe("thread dispatcher: where a session is spawned", () => {
     });
 
     expect(provisioned).toEqual([{ projectPath: CWD, branch: "feature/foo" }]);
+    expect(provisionHadProgress).toBe(true);
     expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/feature-foo"]);
     // Both halves are recorded: what was asked for, and what was built. The
     // request clears once the directory exists.

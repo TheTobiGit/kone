@@ -44,8 +44,8 @@ class FakeHistoryStore {
     this.origins.set(threadId, "auto");
   }
   // Unused by these paths but part of the injected slice's shape.
-  setArchived(): { ok: boolean } {
-    return { ok: false };
+  setArchived() {
+    return { ok: false as const, reason: "missing" as const };
   }
   setDone(): void {}
   staleThreadIds(): string[] {

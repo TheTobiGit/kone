@@ -924,7 +924,7 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_delete_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_rename_thread")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(8);
+    expect(entries).toHaveLength(10);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");

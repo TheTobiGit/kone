@@ -206,7 +206,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadPullRequestRepo */
   settleThreadPullRequestCandidates(
     limit: number,
-    notCheckedAfter?: number,
+    notCheckedAfter: number,
   ): ThreadPullRequestCandidate[] {
     return this.threadPullRequests.settleCandidates(limit, notCheckedAfter);
   }

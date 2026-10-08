@@ -3033,7 +3033,7 @@ describe("project scripts and settle candidates", () => {
     store.setArchived("archived", true);
 
     const ids = store
-      .settleThreadPullRequestCandidates(10)
+      .settleThreadPullRequestCandidates(10, Number.MAX_SAFE_INTEGER)
       .map((candidate) => candidate.threadId)
       .sort();
     expect(ids).toEqual(["linked", "wt"]);
