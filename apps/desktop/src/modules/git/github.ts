@@ -1091,14 +1091,11 @@ export async function branchPullRequest(
       "--json",
       PR_STATE_JSON_FIELDS,
     ]);
-  } catch (error) {
-    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) {
-      return { available: false, pullRequest: null };
-    }
-    // A deleted branch is a known-empty answer; anything else is unknown.
-    if (error instanceof GitError && error.kind === "NOT_FOUND") {
-      return { available: true, pullRequest: null };
-    }
+  } catch {
+    // ONLY a successful `gh pr list` with an empty result is known-empty. Any
+    // failed call is unknown — including NOT_FOUND, which gh returns both for a
+    // missing PR and for an inaccessible/unresolved repository. Reading that as
+    // "no PR" would let a rename proceed against a repo gh could not reach.
     return { available: false, pullRequest: null };
   }
   const trimmed = out.trim();
