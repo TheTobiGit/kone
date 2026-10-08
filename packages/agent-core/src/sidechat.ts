@@ -238,7 +238,7 @@ function forkFraming(ctx: ForkContext): ForkFraming {
  *  here — a hand-in keeps the thread, so its native turns are exactly what
  *  the new provider has not seen. Everything but the message being sent is
  *  replayed; the message itself arrives in `<latest_user_message>`. */
-const handInFraming: ForkFraming = {
+export const handInFraming: ForkFraming = {
   intro: HAND_IN_INTRO,
   instruction: HAND_IN_BOUNDARY_INSTRUCTION,
   tooLong: HAND_IN_MESSAGE_TOO_LONG,
@@ -251,13 +251,12 @@ const handInFraming: ForkFraming = {
  *  caller can record them, or null when there is nothing worth replaying.
  *  Throws the kind's too-long error when the new prompt cannot fit the target
  *  window even with zero history — never a silent drop. */
-function replayForTurn(
+export function replayForTurn(
   thread: Pick<StoredThread, "blocks" | "title" | "branch" | "threadId">,
   input: string,
   framing: ForkFraming,
   budget: HandoffBudgetOptions,
 ): { preamble: string; omittedBlockIds: string[]; omittedItemIds: string[] } | null {
-  const boundary = boundaryBlock(input, framing.instruction);
   // Mandatory framing (F) is everything except the user's new prompt (P): the
   // kind's intro/title/branch lines, the `<sidechat_context>` and boundary
   // delimiters, and the widest coverage line the selector could render. Both
@@ -265,13 +264,7 @@ function replayForTurn(
   // what remains under the cap.
   const readBackTool = budget.readBackTool === undefined ? "app_read_thread" : budget.readBackTool;
   const coverageReserve = coverageReserveChars(thread.threadId, thread.blocks.length, readBackTool);
-  const framingChars = mandatoryFramingChars(
-    framing.intro,
-    thread.title,
-    thread.branch,
-    boundary.length - input.length,
-    coverageReserve,
-  );
+  const framingChars = mandatoryFramingChars(framing, thread, coverageReserve);
   const { fit, historyTokens } = handoffBudget({
     tokenCap: budget.tokenCap ?? DEFAULT_HANDOFF_TOKEN_CAP,
     windowTokens: budget.windowTokens,
@@ -309,24 +302,22 @@ function replayForTurn(
   };
 }
 
-/** The mandatory characters of a replay's rendered context, before any selected
- *  message and excluding the user's prompt: the kind's intro, its title and
- *  branch lines, the `<sidechat_context>` delimiters, the boundary instruction
- *  and tags, and the reserved coverage line. The prompt is charged separately. */
+/** The mandatory characters of a replay's rendered prompt, excluding the
+ *  user's own message: exactly what a zero-history replay renders (the kind's
+ *  intro, title and branch lines, a coverage line as wide as the widest the
+ *  selector could write, the `<sidechat_context>` and boundary delimiters).
+ *  Measured from the renderers themselves rather than summed by hand, so the
+ *  charge cannot drift from what is actually sent. */
 function mandatoryFramingChars(
-  intro: string,
-  title: string | null | undefined,
-  branch: string | null | undefined,
-  boundaryFramingLength: number,
+  framing: ForkFraming,
+  thread: Pick<StoredThread, "title" | "branch">,
   coverageReserve: number,
 ): number {
-  const lines = [intro];
-  if (title) lines.push(`Original conversation title: ${title}`);
-  if (branch) lines.push(`Git branch: ${branch}`);
-  const wrapper = "<sidechat_context>\n\n</sidechat_context>\n\n";
-  return (
-    lines.join("\n\n").length + wrapper.length + boundaryFramingLength + coverageReserve + 16
+  const context = renderHistorySelection(
+    { blocks: [], omittedBlockIds: [], omittedItemIds: [], coverage: " ".repeat(coverageReserve) },
+    { intro: framing.intro, title: thread.title, branch: thread.branch },
   );
+  return assembleSidechatPreamble(context, "", framing.instruction).length;
 }
 
 /** The one-shot replay handed to a session born from a hand-in: the thread's

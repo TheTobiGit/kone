@@ -19,6 +19,8 @@ setUserDataDir("/tmp");
 const {
   assembleSidechatPreamble,
   buildForkReplayContext,
+  handInFraming,
+  replayForTurn,
   SIDECHAT_BOUNDARY_INSTRUCTION,
   SIDECHAT_SEND_TURN_MAX_INPUT_CHARS,
 } = await import("./sidechat.js");
@@ -213,5 +215,31 @@ describe("assembleSidechatPreamble", () => {
     const context = "c".repeat(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - 2_000);
     const preamble = assembleSidechatPreamble(context, "short");
     expect(preamble.length).toBeLessThan(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS);
+  });
+});
+
+describe("replayForTurn mandatory framing", () => {
+  // One message too large for any history budget, so every replay below is a
+  // zero-history replay and its rendered size is exactly framing + prompt.
+  const oversized = thread([importedAssistant("x".repeat(400_000))], "Exact fit");
+  const render = (input: string, windowTokens: number) =>
+    replayForTurn(oversized, input, handInFraming, { windowTokens, tokenCap: 1_024 });
+  const framingChars = render("", 1_000_000)!.preamble.length;
+  const framingTokens = Math.ceil(framingChars / 4);
+
+  test("an exact transport fit with zero history is accepted, one token more is refused", () => {
+    const transportTokens = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS / 4);
+    const prompt = "p".repeat((transportTokens - framingTokens) * 4);
+    const fitted = render(prompt, 1_000_000);
+    expect(fitted?.omittedBlockIds).toEqual(["ia-2"]);
+    expect(fitted!.preamble.length).toBe(framingChars + prompt.length);
+    expect(() => render(`${prompt}p`, 1_000_000)).toThrow(handInFraming.tooLong);
+  });
+
+  test("an exact window fit with zero history is accepted, one token more is refused", () => {
+    // An 8k window keeps half as headroom, leaving 4k tokens.
+    const prompt = "p".repeat((4_000 - framingTokens) * 4);
+    expect(render(prompt, 8_000)?.preamble.length).toBe(framingChars + prompt.length);
+    expect(() => render(`${prompt}p`, 8_000)).toThrow(handInFraming.tooLong);
   });
 });
