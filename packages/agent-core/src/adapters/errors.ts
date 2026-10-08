@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // CodexAdapter.toSessionError and codexAppServerManager.isRecoverableThreadResumeError).
 // One classifier so every adapter makes the same recovery decisions: which
 // failures mean "the session/thread is gone, fall back to a fresh
@@ -255,3 +257,164 @@ function logUnrecognized(payload: ErrorPayload): void {
     console.debug("[kone] unrecognized provider error payload:", payload);
   }
 }
+
+// ── provider reset times ─────────────────────────────────────────────────────
+
+/** The payload fields that can carry a reset time, and the containers one may
+ *  be nested under. Named rather than indexed so a dynamic read stays typed. */
+type ResetPayload = {
+  resetsAt?: unknown;
+  resets_at?: unknown;
+  resetAt?: unknown;
+  reset_at?: unknown;
+  resetTime?: unknown;
+  windowEnd?: unknown;
+  endDate?: unknown;
+  secondsRemaining?: unknown;
+  retry_after?: unknown;
+  error?: unknown;
+  data?: unknown;
+  detail?: unknown;
+  reason?: unknown;
+  description?: unknown;
+  cause?: unknown;
+  rate_limit?: unknown;
+  rate_limit_event?: unknown;
+  codexErrorInfo?: unknown;
+  additionalDetails?: unknown;
+  headers?: unknown;
+};
+
+/** An absolute reset timestamp. */
+const RESET_ABSOLUTE_FIELDS: ReadonlyArray<keyof ResetPayload> = [
+  "resetsAt",
+  "resets_at",
+  "resetAt",
+  "reset_at",
+  "resetTime",
+  "windowEnd",
+  "endDate",
+];
+/** A reset expressed as a duration from now (the provider's own Retry-After). */
+const RESET_DURATION_FIELDS: ReadonlyArray<keyof ResetPayload> = [
+  "secondsRemaining",
+  "retry_after",
+];
+/** Objects a reset may be nested inside. */
+const RESET_CONTAINER_FIELDS: ReadonlyArray<keyof ResetPayload> = [
+  "error",
+  "data",
+  "detail",
+  "reason",
+  "description",
+  "cause",
+  "rate_limit",
+  "rate_limit_event",
+  "codexErrorInfo",
+  "additionalDetails",
+  "headers",
+];
+
+/** Bounded so a hostile or deeply wrapped payload cannot walk forever. */
+const RESET_WALK_DEPTH = 6;
+
+/** A scalar a reset can be encoded as. Parsed at the payload boundary so the
+ *  readers below take a real domain type rather than `unknown`. */
+const ResetScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
+type ResetScalar = z.infer<typeof ResetScalarSchema>;
+
+/** The `Retry-After` header, in the spellings a transport is seen to use. */
+const RetryAfterHeaderSchema = z.object({
+  "retry-after": ResetScalarSchema.optional(),
+  "Retry-After": ResetScalarSchema.optional(),
+  retryAfter: ResetScalarSchema.optional(),
+  RetryAfter: ResetScalarSchema.optional(),
+});
+
+/** Read a provider reset time from an error/result payload, as epoch millis, or
+ *  null when the payload carries none. Only real provider fields are read —
+ *  absolute timestamps (epoch seconds or ms, or a parseable date) and the
+ *  provider's own Retry-After/seconds hints. A time at or before `now` is not a
+ *  reset and reads as null, and nothing is ever fabricated from a nominal
+ *  window. */
+export function limitResetFromError(cause: unknown, now: number): number | null {
+  return walkForReset(cause, now, 0, new Set());
+}
+
+function walkForReset(
+  cause: unknown,
+  now: number,
+  depth: number,
+  seen: Set<object>,
+): number | null {
+  if (depth > RESET_WALK_DEPTH || !(cause instanceof Object) || seen.has(cause)) return null;
+  seen.add(cause);
+  if (Array.isArray(cause)) {
+    for (const entry of cause) {
+      const nested = walkForReset(entry, now, depth + 1, seen);
+      if (nested !== null) return nested;
+    }
+    return null;
+  }
+  // SAFETY: cause is verified as a non-null, non-array Object; the reader
+  // touches only the named ResetPayload fields.
+  const payload = cause as ResetPayload;
+  for (const field of RESET_ABSOLUTE_FIELDS) {
+    const scalar = ResetScalarSchema.safeParse(payload[field]);
+    if (!scalar.success) continue;
+    const at = absoluteReset(scalar.data, now);
+    if (at !== null) return at;
+  }
+  for (const field of RESET_DURATION_FIELDS) {
+    const scalar = ResetScalarSchema.safeParse(payload[field]);
+    if (!scalar.success) continue;
+    const at = durationReset(scalar.data, now);
+    if (at !== null) return at;
+  }
+  const header = retryAfterHeader(payload.headers, now);
+  if (header !== null) return header;
+  for (const field of RESET_CONTAINER_FIELDS) {
+    const nested = walkForReset(payload[field], now, depth + 1, seen);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
+/** Parse an absolute reset value: epoch seconds, epoch millis, or a date. */
+function absoluteReset(value: ResetScalar, now: number): number | null {
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^\d{9,}$/.test(text)) {
+    const n = Number(text);
+    // Epoch seconds vs millis: anything this large in seconds is already a ms
+    // value, which is the only sane reading of a 13-digit number.
+    const ms = n > 1_000_000_000_000 ? n : n * 1_000;
+    return ms > now ? ms : null;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) && parsed > now ? parsed : null;
+}
+
+/** Parse a duration reset value: seconds from now, or an absolute date. */
+function durationReset(value: ResetScalar, now: number): number | null {
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^\d+$/.test(text)) {
+    const ms = now + Number(text) * 1_000;
+    return ms > now ? ms : null;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) && parsed > now ? parsed : null;
+}
+
+function retryAfterHeader(cause: unknown, now: number): number | null {
+  const parsed = RetryAfterHeaderSchema.safeParse(cause);
+  if (!parsed.success) return null;
+  const raw =
+    parsed.data["retry-after"] ??
+    parsed.data["Retry-After"] ??
+    parsed.data.retryAfter ??
+    parsed.data.RetryAfter;
+  return raw === undefined ? null : durationReset(raw, now);
+}
+
