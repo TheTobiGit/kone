@@ -16,7 +16,7 @@ import type { PlanTask } from "@kone/protocol/plan-tasks";
 //   subagents live, and the note competes with the actual request for the
 //   model's attention.
 
-export type RestartBackgroundWorkKind = "subagent" | "shell" | "monitor" | "task";
+export type RestartBackgroundWorkKind = "subagent" | "task";
 
 export interface RestartCancelledBackgroundWork {
   kind: RestartBackgroundWorkKind;
@@ -59,15 +59,20 @@ export function mergeRestartCancelledBackgroundWork(
   return merged;
 }
 
-/** The provider-facing note. Bounded so it cannot crowd out the turn. */
+/** The provider-facing note. Bounded so it cannot crowd out the turn, and it
+ *  always says plainly that background shells and monitors cannot be listed —
+ *  they have no durable registry — so an interrupted session with none of the
+ *  enumerable kinds still gets guidance rather than silence. Never invents a
+ *  count or a name for them. */
 export function restartCancelledBackgroundWorkNote(
   work: ReadonlyArray<RestartCancelledBackgroundWork>,
 ): string {
   const omitted = work.length - MAX_NOTE_ENTRIES;
   return [
-    "Note: kone restarted and this background work was cancelled before it finished. It will not report back:",
+    "Note: kone restarted, and background work this session started was stopped before it finished. It will not report back:",
     ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
+    "Background shells and monitors cannot be listed; any that were running were stopped too.",
   ].join("\n");
 }
 

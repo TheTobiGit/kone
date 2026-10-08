@@ -1298,6 +1298,11 @@ describe("AgentService thread archive + retention", () => {
       this.doneStamps.set(threadId, done ? Date.now() : 0);
     }
 
+    /** This fake has no continuations; the service calls it on settle/archive. */
+    cancelContinuationsForThread(_threadId: string): number {
+      return 0;
+    }
+
     threadMeta(threadId: string): { threadId: string; provider: string } | null {
       const provider = this.providers.get(threadId);
       if (provider === undefined) return null;

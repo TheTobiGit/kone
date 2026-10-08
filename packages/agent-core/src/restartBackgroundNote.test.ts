@@ -63,6 +63,19 @@ describe("restartCancelledBackgroundWorkNote", () => {
     expect(note).toContain("- and 3 more");
     expect(note.split("\n").filter((line) => line.startsWith("- subagent:"))).toHaveLength(10);
   });
+
+  test("always says shells and monitors cannot be listed", () => {
+    const note = restartCancelledBackgroundWorkNote([
+      { kind: "subagent", label: "review auth.ts", id: "s1" },
+    ]);
+    expect(note).toContain("Background shells and monitors cannot be listed");
+  });
+
+  test("an empty list still yields the shells-and-monitors note", () => {
+    const note = restartCancelledBackgroundWorkNote([]);
+    expect(note).toContain("Background shells and monitors cannot be listed");
+    expect(note).not.toContain("- subagent:");
+  });
 });
 
 describe("subagentRestartWork", () => {

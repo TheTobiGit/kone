@@ -94,7 +94,7 @@ describe("restart background work capture", () => {
     expect(store.takeRestartCancelledBackgroundWork().size).toBe(0);
   });
 
-  test("a settled turn leaves nothing to report", () => {
+  test("a settled subagent is not reported, but an interrupted session still gets a note", () => {
     let store = freshStore();
     const threadId = "t-settled";
     const turnId = "turn-1";
@@ -121,6 +121,10 @@ describe("restart background work capture", () => {
     store.close();
 
     store = reopenStore();
-    expect(store.takeRestartCancelledBackgroundWork().size).toBe(0);
+    // The completed subagent is not listed, but the turn was interrupted (a
+    // running assistant block sealed at boot), so the thread still gets an
+    // empty note — background shells and monitors cannot be listed.
+    const captured = store.takeRestartCancelledBackgroundWork();
+    expect(captured.get(threadId)).toEqual([]);
   });
 });

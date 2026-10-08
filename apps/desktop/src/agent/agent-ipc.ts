@@ -304,17 +304,10 @@ export function registerAgentIpc(): void {
         // with nothing running. The service splits the request
         // (interruptRequested) from its confirmation (confirmedStopped).
         const result = await svc.stopThread(threadId);
-        return { stopped: true, ...result };
+        return { ...result, stopped: result.confirmedStopped };
       },
       archiveThread: async (threadId, archived) => {
         const res = await svc.setThreadArchived(threadId, archived);
-        if (res.ok && archived) {
-          // A continuation scheduled for a put-away thread is stale.
-          for (const id of res.threadIds.length > 0 ? res.threadIds : [threadId]) {
-            store.cancelContinuationsForThread(id);
-          }
-          return { ok: true, threadIds: res.threadIds };
-        }
         if (res.ok) return { ok: true, threadIds: res.threadIds };
         return { ok: false, reason: res.reason };
       },
@@ -1109,11 +1102,9 @@ export function registerAgentIpc(): void {
   // asking again on its own the moment the agent speaks in it. Runs through
   // the service, not the bare store, so every window learns the mark over
   // thread.done.updated the way archive/restore fan out.
-  ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) => {
-    svc.setThreadDone(threadId, done);
-    // A continuation scheduled for a thread the user finished with is stale.
-    if (done) store.cancelContinuationsForThread(threadId);
-  });
+  ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
+    svc.setThreadDone(threadId, done),
+  );
   // Run the thread-retention sweep now instead of waiting for its timer. The
   // inbox asks for one when it opens, so quiet threads settle while someone
   // is looking rather than minutes later in the middle of a thread.

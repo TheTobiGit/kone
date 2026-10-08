@@ -16,6 +16,7 @@ export type ContinuationDbRow = {
   payload_json: string | null;
   created_at: number;
   claimed_at: number | null;
+  attempts: number;
 };
 
 export type ContinuationRecord = {
@@ -27,6 +28,8 @@ export type ContinuationRecord = {
   payloadJson: string | null;
   createdAt: number;
   claimedAt: number | null;
+  /** Failed dispatch attempts so far; the sweep backs off and then drops. */
+  attempts: number;
 };
 
 export function rowToContinuation(row: ContinuationDbRow): ContinuationRecord {
@@ -38,6 +41,7 @@ export function rowToContinuation(row: ContinuationDbRow): ContinuationRecord {
     payloadJson: row.payload_json,
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
+    attempts: row.attempts,
   };
 }
 
@@ -64,6 +68,7 @@ export class ContinuationRepo {
       payload_json: input.payloadJson ?? null,
       created_at: input.createdAt ?? Date.now(),
       claimed_at: null,
+      attempts: 0,
     };
     try {
       this.dbh.durably(db, () => {
@@ -129,6 +134,31 @@ export class ContinuationRepo {
     }
   }
 
+  /** Record a failed dispatch: bump the attempt count, clear the claim, and
+   *  push the due time out by the caller's backoff. Returns the new attempt
+   *  count, so the caller can drop the row once it passes a cap. */
+  fail(continuationId: string, nextDueAt: number): number {
+    const db = this.dbh.handle();
+    if (!db) return 0;
+    try {
+      let attempts = 0;
+      this.dbh.durably(db, () => {
+        // SAFETY: RETURNING attempts names one INTEGER column.
+        const row = db
+          .prepare(
+            `UPDATE continuations SET attempts = attempts + 1, claimed_at = NULL, due_at = ?
+              WHERE continuation_id = ? RETURNING attempts`,
+          )
+          .get(nextDueAt, continuationId) as { attempts: number } | undefined;
+        attempts = row?.attempts ?? 0;
+      });
+      return attempts;
+    } catch (err) {
+      console.error("[conversation-store] failContinuation failed:", err);
+      return 0;
+    }
+  }
+
   /** Put a claimed continuation back for a later attempt, after a dispatch
    *  threw. */
   clearClaim(continuationId: string): void {
@@ -139,8 +169,7 @@ export class ContinuationRepo {
         db.prepare(`UPDATE continuations SET claimed_at = NULL WHERE continuation_id = ?`).run(
           continuationId,
         );
-      });
-    } catch (err) {
+      });    } catch (err) {
       console.error("[conversation-store] clearContinuationClaim failed:", err);
     }
   }
@@ -158,9 +187,10 @@ export class ContinuationRepo {
     }
   }
 
-  /** Drop a thread's unclaimed continuations — new work, archive or settle
-   *  makes them stale. Claimed rows are mid-dispatch and settle themselves.
-   *  Returns how many were dropped. */
+  /** Drop a thread's continuations — new work, archive or settle makes them
+   *  stale. This includes a claimed-but-not-yet-dispatched row: a sweep that
+   *  has claimed one re-reads it before sending, so deleting it here stops the
+   *  send. Returns how many were dropped. */
   cancelForThread(threadId: string): number {
     const db = this.dbh.handle();
     if (!db) return 0;
@@ -168,7 +198,7 @@ export class ContinuationRepo {
       let dropped = 0;
       this.dbh.durably(db, () => {
         const result = db
-          .prepare(`DELETE FROM continuations WHERE thread_id = ? AND claimed_at IS NULL`)
+          .prepare(`DELETE FROM continuations WHERE thread_id = ?`)
           .run(threadId);
         dropped = Number(result.changes);
       });
@@ -176,6 +206,24 @@ export class ContinuationRepo {
     } catch (err) {
       console.error("[conversation-store] cancelContinuationsForThread failed:", err);
       return 0;
+    }
+  }
+
+  /** One continuation by id, or null when it is gone (cancelled, consumed or
+   *  never there). A sweep re-reads the row it claimed immediately before
+   *  dispatching, so a cancellation during session adoption is seen. */
+  getContinuation(continuationId: string): ContinuationRecord | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: SELECT * of continuations is exactly ContinuationDbRow.
+      const row = db
+        .prepare(`SELECT * FROM continuations WHERE continuation_id = ?`)
+        .get(continuationId) as ContinuationDbRow | undefined;
+      return row ? rowToContinuation(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] getContinuation failed:", err);
+      return null;
     }
   }
 

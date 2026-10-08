@@ -503,6 +503,16 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ContinuationRepo */
+  getContinuation(continuationId: string): ContinuationRecord | null {
+    return this.continuations.getContinuation(continuationId);
+  }
+
+  /** @see ContinuationRepo */
+  failContinuation(continuationId: string, nextDueAt: number): number {
+    return this.continuations.fail(continuationId, nextDueAt);
+  }
+
+  /** @see ContinuationRepo */
   releaseOrphanedContinuationClaims(): void {
     this.continuations.releaseOrphanedClaims();
   }

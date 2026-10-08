@@ -63,7 +63,7 @@ describe("continuation store", () => {
     expect(store.claimDueContinuations(200)).toHaveLength(1);
   });
 
-  test("unclaimed rows are cancelled for a thread, claimed ones are not", () => {
+  test("cancelling a thread drops every row, claimed included", () => {
     const store = freshStore();
     seedThread(store, "t-3");
     const due = store.scheduleContinuation({ threadId: "t-3", kind: "quit-resume", dueAt: 1 });
@@ -72,9 +72,11 @@ describe("continuation store", () => {
     expect(claimed).toBeDefined();
     expect(claimed?.continuationId).toBe(due?.continuationId);
 
-    expect(store.cancelContinuationsForThread("t-3")).toBe(1);
-    const left = store.listContinuationsForThread("t-3");
-    expect(left.map((r) => r.continuationId)).toEqual([claimed?.continuationId]);
+    // A claimed-but-undispatched row must be cancellable too: a sweep re-reads
+    // the row before sending, so deleting it stops the send.
+    expect(store.cancelContinuationsForThread("t-3")).toBe(2);
+    expect(store.listContinuationsForThread("t-3")).toEqual([]);
+    expect(store.getContinuation(claimed?.continuationId ?? "")).toBeNull();
   });
 
   test("nextDueAt reads the earliest unclaimed due time", () => {

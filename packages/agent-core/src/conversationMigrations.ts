@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1251,6 +1251,12 @@ function migration0029Continuations(db: DatabaseSync): void {
   `);
 }
 
+/** A dispatch attempt count on a continuation (v30), so a row that keeps
+ *  failing is retried with backoff and eventually dropped instead of spinning. */
+function migration0030ContinuationAttempts(db: DatabaseSync): void {
+  addColumn(db, "continuations", "attempts", "INTEGER NOT NULL DEFAULT 0");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1281,6 +1287,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
   { id: 29, name: "Continuations", run: migration0029Continuations },
+  { id: 30, name: "ContinuationAttempts", run: migration0030ContinuationAttempts },
 ];
 
 export interface MigrationOptions {
