@@ -67,6 +67,13 @@ export type {
  *  `worktreePath` is null for a thread sharing the project's checkout. */
 type ThreadPlace = { dir: string; worktreePath: string | null };
 
+/** Outcome of moving a thread into its own worktree. `busy` refuses a thread
+ *  with a turn in flight; a thread already in a worktree answers `ok` with the
+ *  directory it has. */
+export type MoveThreadToWorktreeResult =
+  | { ok: true; worktreePath: string }
+  | { ok: false; reason: "unknown" | "busy" | "failed"; detail?: string };
+
 /** The sentence worth showing from a failure, or `fallback` when it carries
  *  none worth reading. */
 function messageOf(error: Error, fallback: string): string {
@@ -224,6 +231,14 @@ export interface ThreadDispatcher {
    *  tracked. A renderer attaching mid-setup reads this first, then follows the
    *  thread.worktree.setup events. */
   worktreeSetupSnapshot(threadId: string): WorktreeSetupSnapshot | null;
+  /** Move a thread that runs in the shared checkout into a worktree of its
+   *  own: build it, then rebind the thread's session to the new directory and
+   *  restart it, resuming the provider conversation. Refused while a turn is
+   *  running — the session cannot change directory mid-turn. */
+  moveThreadToWorktree(
+    threadId: string,
+    options?: { branch?: string },
+  ): Promise<MoveThreadToWorktreeResult>;
 }
 
 /** The transcript block an inbox message is written as. */
@@ -546,6 +561,45 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (meta.selection?.mode) start.mode = meta.selection.mode;
     if (meta.selection?.effort) start.effort = meta.selection.effort;
     await this.startThread(start);
+  }
+
+  /** Move a local thread into a worktree of its own. */
+  async moveThreadToWorktree(
+    threadId: string,
+    options?: { branch?: string },
+  ): Promise<MoveThreadToWorktreeResult> {
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) return { ok: false, reason: "unknown" };
+    const recorded = this.store.threadWorkspace(threadId);
+    if (recorded && threadWorkspaceState(recorded) === "worktree-ready" && recorded.worktreePath) {
+      return { ok: true, worktreePath: recorded.worktreePath };
+    }
+    // A session cannot change directory mid-turn, and a half-built worktree
+    // under a running turn would be worse than a refusal.
+    if (this.service.isThreadBusy(threadId)) return { ok: false, reason: "busy" };
+
+    const input: SessionStartInput = {
+      threadId,
+      provider: meta.provider,
+      cwd: meta.projectPath,
+    };
+    if (meta.model) input.model = meta.model;
+    try {
+      const built = await this.buildThreadWorktree(input, { branch: options?.branch });
+      // The old session was started in the project checkout. Stop it and start
+      // a fresh one in the worktree, resuming the provider conversation so the
+      // move keeps its context.
+      if (this.service.hasLiveSession(threadId)) await this.service.stopSession(threadId);
+      await this.ensureThreadSession(threadId, { resume: true });
+      return { ok: true, worktreePath: built };
+    } catch (error) {
+      const normalised = error instanceof Error ? error : new Error(String(error));
+      return {
+        ok: false,
+        reason: "failed",
+        detail: messageOf(normalised, "Could not move the thread into a worktree."),
+      };
+    }
   }
 
   readQuitResumeSnapshot(threadId: string): QuitResumeThreadSnapshot {

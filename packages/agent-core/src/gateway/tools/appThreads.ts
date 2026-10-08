@@ -79,6 +79,8 @@ import {
   LINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
   UnlinkThreadPullRequestInputSchema,
   UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+  MoveAppThreadToWorktreeInputSchema,
+  MOVE_APP_THREAD_TO_WORKTREE_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
@@ -93,6 +95,7 @@ import {
   type StartAppThreadInput,
   type LinkThreadPullRequestInput,
   type UnlinkThreadPullRequestInput,
+  type MoveAppThreadToWorktreeInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
@@ -187,6 +190,14 @@ export interface AppThreadsRunner {
    *  the user has not touched since a restart has none. Absent, a message to
    *  such a thread is refused rather than sent at a session that is not there. */
   ensureThreadSession?(threadId: string, options: { resume: boolean }): Promise<void>;
+  /** Move a local thread into a worktree of its own, rebinding its session.
+   *  Absent, app_move_thread_to_worktree refuses. */
+  moveThreadToWorktree?(
+    threadId: string,
+    options?: { branch?: string },
+  ): Promise<
+    { ok: true; worktreePath: string } | { ok: false; reason: "unknown" | "busy" | "failed"; detail?: string }
+  >;
 }
 
 /** What providers and models can actually run right now. Absent, a thread runs
@@ -1182,6 +1193,24 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     });
   };
 
+  const moveToWorktreeHandler = async (
+    _ctx: GatewayToolContext,
+    params: MoveAppThreadToWorktreeInput,
+  ): Promise<GatewayToolResult> => {
+    if (!options.runner?.moveThreadToWorktree) {
+      throw failInternal(params.threadId, "move to worktree", "unsupported");
+    }
+    const result = await options.runner.moveThreadToWorktree(
+      params.threadId,
+      params.branch ? { branch: params.branch } : undefined,
+    );
+    if (!result.ok) throw failInternal(params.threadId, "move to worktree", result.reason);
+    return singleLine(
+      `Moved thread "${params.threadId}" into its own worktree at ${result.worktreePath}.`,
+      { threadId: params.threadId, worktreePath: result.worktreePath },
+    );
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -1330,6 +1359,21 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       promptSnippet: "`app_unlink_thread_pr`: remove the pull request linked to a conversation.",
       promptGuidelines: ["Unlink only when the user asks, or the link is for the wrong PR."],
       handler: unlinkPullRequestHandler,
+    },
+    {
+      name: "app_move_thread_to_worktree",
+      description:
+        "Move a conversation that runs in the project's shared checkout into a worktree of its own (its own branch and directory), rebinding and restarting its session so it keeps its context. Refused while a turn is running. Use when the user wants a thread's work isolated on its own branch.",
+      inputSchema: MoveAppThreadToWorktreeInputSchema,
+      jsonSchema: MOVE_APP_THREAD_TO_WORKTREE_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_move_thread_to_worktree`: move a conversation into its own worktree and branch.",
+      promptGuidelines: [
+        "Move a thread only when the user asks for isolation or a branch of its own; the thread's session restarts, which is disruptive.",
+      ],
+      handler: moveToWorktreeHandler,
     },
   ];
 }

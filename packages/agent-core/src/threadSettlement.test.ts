@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { markedMergedAt, prMergeSettlesThread } from "./threadSettlement.js";
+import { prMergeSettlesThread } from "./threadSettlement.js";
 
 describe("prMergeSettlesThread", () => {
   test("settles when the user never wrote", () => {
