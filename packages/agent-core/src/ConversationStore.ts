@@ -19,11 +19,13 @@ import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { ThreadPullRequestRepo } from "./store/threadPullRequest.js";
+import { ProjectScriptRepo, type ProjectScriptKind } from "./store/projectScripts.js";
 import type {
   ThreadPullRequestLink,
   ThreadPullRequestLinkInput,
 } from "./threadPullRequest.js";
 import type { LinkedPullRequestThread } from "./store/threadPullRequest.js";
+import type { ThreadPullRequestCandidate } from "./store/threadPullRequest.js";
 import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
@@ -56,6 +58,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
   private readonly threadPullRequests: ThreadPullRequestRepo;
+  private readonly projectScripts: ProjectScriptRepo;
   private readonly events: EventIngestRepo;
   private readonly search: SearchRepo;
 
@@ -65,6 +68,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.dbh = new ConversationDb(userDataDir);
     this.threads = new ThreadRepo(this.dbh);
     this.threadPullRequests = new ThreadPullRequestRepo(this.dbh);
+    this.projectScripts = new ProjectScriptRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
     this.handIns = new HandInsRepo(this.dbh);
     this.events = new EventIngestRepo(this.dbh, {
@@ -197,6 +201,31 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadPullRequestRepo */
   linkedThreadPullRequests(limit: number): LinkedPullRequestThread[] {
     return this.threadPullRequests.linkedThreads(limit);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  settleThreadPullRequestCandidates(limit: number): ThreadPullRequestCandidate[] {
+    return this.threadPullRequests.settleCandidates(limit);
+  }
+
+  /** @see ThreadLifecycleRepo */
+  threadIsBusy(threadId: string): boolean {
+    return this.threadLifecycle.threadIsBusy(threadId);
+  }
+
+  /** @see TranscriptRepo */
+  latestUserAuthoredAt(threadId: string): number | null {
+    return this.transcript.latestUserAuthoredAt(threadId);
+  }
+
+  /** @see ProjectScriptRepo */
+  projectScript(projectPath: string, kind: ProjectScriptKind): string | null {
+    return this.projectScripts.script(projectPath, kind);
+  }
+
+  /** @see ProjectScriptRepo */
+  setProjectScript(projectPath: string, kind: ProjectScriptKind, command: string | null): void {
+    return this.projectScripts.setScript(projectPath, kind, command);
   }
 
   /** @see ThreadRepo */

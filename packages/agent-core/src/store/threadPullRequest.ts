@@ -41,6 +41,17 @@ export interface LinkedPullRequestThread {
   link: ThreadPullRequestLink;
 }
 
+/** A thread the settle-on-merge sweep should check: an explicit link, a
+ *  worktree branch (whose PR git can discover), or both. `link` is null for a
+ *  branch-only candidate — the checker resolves the branch's PR. */
+export interface ThreadPullRequestCandidate {
+  threadId: string;
+  projectPath: string;
+  branch: string | null;
+  worktreePath: string | null;
+  link: ThreadPullRequestLink | null;
+}
+
 export class ThreadPullRequestRepo {
   constructor(private readonly dbh: ConversationDb) {}
 
@@ -173,6 +184,61 @@ export class ThreadPullRequestRepo {
       }));
     } catch (err) {
       console.error("[conversation-store] threadPullRequest linkedThreads failed:", err);
+      return [];
+    }
+  }
+
+  /** Threads the settle-on-merge sweep should check, oldest check first so a
+   *  single pass keeps every candidate moving. A thread qualifies when it has
+   *  an explicit link, or — the branch fallback — its own worktree on a branch
+   *  (a local thread's `branch` is the shared repo branch, which would settle
+   *  every thread on one PR, so it is deliberately excluded). Archived threads
+   *  are left out. */
+  settleCandidates(limit: number): ThreadPullRequestCandidate[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection names the link columns plus the thread's
+      // project/branch/place; branch falls back to requested_branch for a
+      // worktree whose live branch has not been read back yet.
+      const rows = db
+        .prepare(
+          `SELECT thread_id, project_path,
+                  COALESCE(NULLIF(branch, ''), requested_branch) AS branch,
+                  worktree_path, ${LINK_COLUMNS}
+             FROM threads
+            WHERE archived_at IS NULL
+              AND (
+                (linked_pr_url IS NOT NULL AND linked_pr_url <> '')
+                OR (worktree_path IS NOT NULL AND worktree_path <> '')
+              )
+            ORDER BY COALESCE(linked_pr_checked_at, 0) ASC
+            LIMIT ?`,
+        )
+        .all(limit) as Array<{
+        thread_id: string;
+        project_path: string;
+        branch: string | null;
+        worktree_path: string | null;
+        linked_pr_repository: string | null;
+        linked_pr_number: number | null;
+        linked_pr_url: string | null;
+        linked_pr_state: string | null;
+        linked_pr_checked_at: number | null;
+        linked_pr_merged_at: number | null;
+      }>;
+      return rows.map((row) => {
+        const link = rowToLink(row);
+        return {
+          threadId: row.thread_id,
+          projectPath: row.project_path,
+          branch: row.branch,
+          worktreePath: row.worktree_path,
+          link: link.url || link.number > 0 ? link : null,
+        };
+      });
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest settleCandidates failed:", err);
       return [];
     }
   }

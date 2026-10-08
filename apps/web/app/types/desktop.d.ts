@@ -3013,6 +3013,13 @@ export type KoneAgentApi = {
   >;
   unlinkThreadPullRequest: (threadId: string) => Promise<boolean>;
   threadPullRequestLink: (threadId: string) => Promise<LinkedThreadPullRequest | null>;
+  /** Per-project setup / settle scripts, stored against the project path. */
+  getProjectScript: (projectPath: string, kind: "setup" | "settle") => Promise<string | null>;
+  setProjectScript: (
+    projectPath: string,
+    kind: "setup" | "settle",
+    command: string | null,
+  ) => Promise<string | null>;
   /** Native save dialog for a thread export — the main process owns the
    *  dialog, the renderer only suggests a file name. A dismissal resolves
    *  `{ canceled: true }`, distinct from the file outcome below. */

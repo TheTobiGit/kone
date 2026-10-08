@@ -22,6 +22,7 @@ import {
   killProcessTree,
   type ProcessChildrenMap,
 } from "@kone/git-core/processTree.js";
+import path from "node:path";
 import { createModeReplayTracker, type ModeReplayTracker } from "./modeReplay.js";
 import { sanitizeTerminalHistoryChunk } from "./sanitize.js";
 import { renderScreenText } from "./screenText.js";
@@ -500,6 +501,24 @@ export class TerminalManager {
     );
     this.schedulePoll();
     return snap;
+  }
+
+  /** Close every ready terminal whose cwd is `cwd` and which has no running
+   *  subprocess — the "close idle shells" step when a thread settles. A shell
+   *  running something (a dev server, a test run) is left alone: it is not
+   *  idle, and closing it would kill work. Starting sessions are left alone
+   *  too — there is no cwd answer to trust yet. Returns the ids closed. */
+  async closeIdleInDir(cwd: string): Promise<string[]> {
+    const target = path.resolve(cwd);
+    const targets = [...this.sessions.values()].filter(
+      (s) => s.status === "ready" && !s.hasRunningSubprocess && path.resolve(s.cwd) === target,
+    );
+    const closed: string[] = [];
+    for (const s of targets) {
+      await this.close({ terminalId: s.terminalId }).catch(() => {});
+      closed.push(s.terminalId);
+    }
+    return closed;
   }
 
   /** Close a terminal: tree-kill the PTY (SIGTERM → SIGKILL), detach, and

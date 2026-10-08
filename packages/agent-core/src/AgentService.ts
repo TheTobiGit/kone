@@ -25,9 +25,11 @@ import { generateThreadTitleFromContext } from "./threadTitle.js";
 import { formatThreadTitleContext } from "./threadTitleContext.js";
 import {
   toThreadPullRequestLink,
+  pullRequestMerged,
   type ThreadPullRequestLink,
   type ThreadPullRequestLinkInput,
 } from "./threadPullRequest.js";
+import { prMergeSettlesThread } from "./threadSettlement.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -161,6 +163,15 @@ const SUBAGENT_WAKE_MAX = 5;
 const RETENTION_BATCH_SIZE = 25;
 const RETENTION_BATCH_PAUSE_MS = 50;
 
+/** Settle-on-merge: how often the PR sweep looks for a linked or branch PR that
+ *  has merged, how many threads it checks per pass, and how long after boot the
+ *  first pass waits. `pullRequestSweepMs: 0` disables it (tests, embedders
+ *  without a gh checker). Two minutes matches t3's PR watch cadence and is
+ *  cheap: one gh call per candidate at most. */
+const PR_SETTLE_SWEEP_MS = 2 * 60_000;
+const PR_SETTLE_INITIAL_DELAY_MS = 20_000;
+const PR_SETTLE_BATCH_SIZE = 20;
+
 /** A native compaction call gets this long before the service calls it failed
  *  — server-side compaction on a large thread takes minutes, not seconds. */
 const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
@@ -249,7 +260,37 @@ export type AgentServiceOptions = {
     | "threadPullRequestLink"
     | "setThreadPullRequestLink"
     | "clearThreadPullRequestLink"
+    | "settleThreadPullRequestCandidates"
+    | "recordThreadPullRequestChecked"
+    | "latestUserAuthoredAt"
+    | "threadIsBusy"
   >;
+  /** Settle-on-merge tuning. `pullRequestSweepMs: 0` disables the sweep. */
+  pullRequestSweepMs?: number;
+  pullRequestSweepInitialDelayMs?: number;
+  /** Reads a candidate's PR state. The desktop layer supplies a gh-backed one;
+   *  absent, the sweep does nothing. */
+  pullRequestChecker?: (input: {
+    threadId: string;
+    projectPath: string;
+    branch: string | null;
+    worktreePath: string | null;
+    link: ThreadPullRequestLink | null;
+  }) => Promise<ThreadPullRequestLink | null>;
+  /** Close the thread's idle shells when it settles. Injected by the desktop
+   *  layer, where the terminal manager lives. */
+  closeIdleShells?: (input: {
+    threadId: string;
+    projectPath: string;
+    worktreePath: string | null;
+  }) => Promise<void>;
+  /** Run the project's settle script when a thread settles. Injected by the
+   *  desktop layer, which owns script execution. */
+  runSettleScript?: (input: {
+    threadId: string;
+    projectPath: string;
+    cwd: string;
+  }) => Promise<void>;
   /** Whole-conversation title generation, injected by tests so no CLI spawns.
    *  Defaults to the real provider one-shot. */
   generateContextTitle?: (input: {
@@ -534,6 +575,11 @@ export class AgentService {
    *  sweep runs off a one-shot delay, the rest on the daily interval. */
   private retentionTimer: ReturnType<typeof setInterval> | null = null;
   private retentionStartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The settle-on-merge sweep timer — same shape as retention: started at
+   *  construction so a quiet app still settles, first pass off a one-shot
+   *  delay, cleared on stopAll. */
+  private pullRequestTimer: ReturnType<typeof setInterval> | null = null;
+  private pullRequestStartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
     // A provider's questions join the thread's one question queue on their
@@ -577,6 +623,7 @@ export class AgentService {
       }
     }
     this.ensureRetentionSweep();
+    this.ensurePullRequestSweep();
   }
 
   private register(adapter: ProviderAdapter): void {
@@ -2847,6 +2894,110 @@ export class AgentService {
     }
   }
 
+  /** Settle threads whose pull request has merged — the automation behind
+   *  docs/t3code-parity.md §2.6. A candidate is a thread with an explicit PR
+   *  link or its own worktree branch; the injected checker resolves the branch
+   *  PR and reports its current state. A thread is left alone when it has work
+   *  in flight (a running turn, a queued follow-up, a running subagent — work
+   *  that will wake it), or when the user wrote after the merge. Settling is
+   *  the same done mark the retention sweep writes, plus closing idle shells
+   *  and running the project's settle script. Returns how many settled.
+   *
+   *  Public for tests; the timer calls it. */
+  async sweepPullRequestSettlements(): Promise<number> {
+    const history = this.historyStore;
+    const checker = this.options.pullRequestChecker;
+    if (!history || !checker) return 0;
+    let settled = 0;
+    for (const candidate of history.settleThreadPullRequestCandidates(PR_SETTLE_BATCH_SIZE)) {
+      // Work that will wake the thread outranks a merge: leave it to finish.
+      if (history.threadIsBusy(candidate.threadId)) continue;
+      let checked: ThreadPullRequestLink | null = null;
+      try {
+        checked = await checker({
+          threadId: candidate.threadId,
+          projectPath: candidate.projectPath,
+          branch: candidate.branch,
+          worktreePath: candidate.worktreePath,
+          link: candidate.link,
+        });
+      } catch (err) {
+        console.warn(`[agent] PR check failed for ${candidate.threadId}:`, err);
+        continue;
+      }
+      if (!checked) continue;
+      const checkedAt = Date.now();
+      // Record what the check saw so the next pass can order candidates and a
+      // merge survives a restart without another gh call.
+      history.recordThreadPullRequestChecked(candidate.threadId, {
+        state: checked.state,
+        mergedAt: checked.mergedAt,
+        checkedAt,
+      });
+      if (!pullRequestMerged(checked)) continue;
+      if (
+        !prMergeSettlesThread({
+          mergedAt: checked.mergedAt,
+          lastUserAuthoredAt: history.latestUserAuthoredAt(candidate.threadId),
+        })
+      ) {
+        continue;
+      }
+      this.setThreadDone(candidate.threadId, true);
+      settled++;
+      const closeIdle = this.options.closeIdleShells;
+      if (closeIdle) {
+        await closeIdle({
+          threadId: candidate.threadId,
+          projectPath: candidate.projectPath,
+          worktreePath: candidate.worktreePath,
+        }).catch((err) => {
+          console.warn(`[agent] closing idle shells for ${candidate.threadId} failed:`, err);
+        });
+      }
+      const runScript = this.options.runSettleScript;
+      if (runScript) {
+        await runScript({
+          threadId: candidate.threadId,
+          projectPath: candidate.projectPath,
+          cwd: candidate.worktreePath ?? candidate.projectPath,
+        }).catch((err) => {
+          console.warn(`[agent] settle script for ${candidate.threadId} failed:`, err);
+        });
+      }
+    }
+    if (settled > 0) console.info(`[agent] settle-on-merge: settled ${settled} thread(s)`);
+    return settled;
+  }
+
+  /** Settle-on-merge runs on the same shape as retention: started at
+   *  construction, first pass off a one-shot delay, then a short interval.
+   *  Absent a checker (tests, embedders) the timer is not started. */
+  private ensurePullRequestSweep(): void {
+    if (
+      this.options.pullRequestSweepMs === 0 ||
+      !this.options.pullRequestChecker ||
+      this.pullRequestStartTimer
+    ) {
+      return;
+    }
+    this.pullRequestStartTimer = setTimeout(() => {
+      this.pullRequestStartTimer = null;
+      void this.sweepPullRequestSettlements().catch((err) => {
+        console.warn("[agent] settle-on-merge sweep failed:", err);
+      });
+      if (this.pullRequestTimer) return;
+      const timer = setInterval(() => {
+        void this.sweepPullRequestSettlements().catch((err) => {
+          console.warn("[agent] settle-on-merge sweep failed:", err);
+        });
+      }, this.options.pullRequestSweepMs ?? PR_SETTLE_SWEEP_MS);
+      timer.unref?.();
+      this.pullRequestTimer = timer;
+    }, this.options.pullRequestSweepInitialDelayMs ?? PR_SETTLE_INITIAL_DELAY_MS);
+    this.pullRequestStartTimer.unref?.();
+  }
+
   /** Retention is about stored rows, not live sessions, so its timer starts at
    *  construction — a quiet app that never opens a session still sweeps. The
    *  first pass waits out the boot window; the rest run daily. */
@@ -3502,6 +3653,14 @@ export class AgentService {
     if (this.retentionTimer) {
       clearInterval(this.retentionTimer);
       this.retentionTimer = null;
+    }
+    if (this.pullRequestStartTimer) {
+      clearTimeout(this.pullRequestStartTimer);
+      this.pullRequestStartTimer = null;
+    }
+    if (this.pullRequestTimer) {
+      clearInterval(this.pullRequestTimer);
+      this.pullRequestTimer = null;
     }
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();

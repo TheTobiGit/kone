@@ -16,6 +16,11 @@ import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
+import { branchPullRequest, pullRequestState } from "../modules/git/github.js";
+import {
+  runProjectScript,
+  SETTLE_SCRIPT_TIMEOUT_MS,
+} from "../modules/git/projectScripts.js";
 import { freshestBase } from "../modules/git/worktreeBase.js";
 import { renameGeneratedBranch } from "../modules/git/worktreeBranchName.js";
 import { startWorktreeSweeper, sweepIdleWorktrees } from "../modules/git/worktreeSweep.js";
@@ -141,12 +146,50 @@ export function getJobRunner(): JobRunner | null {
 
 /** The single AgentService instance (lazily created). */
 export function getAgentService(): AgentService {
-  // Title regeneration may rename a generated worktree branch; git lives out
-  // here, so the service is handed the capability rather than importing it.
-  if (!service)
+  if (!service) {
     service = new AgentService({
+      // Title regeneration may rename a generated worktree branch; git lives
+      // out here, so the service is handed the capability.
       renameWorkspaceBranch: ({ worktreePath, title }) => renameGeneratedBranch(worktreePath, title),
+      // Settle-on-merge: the service owns the decision, these three do the
+      // out-of-process work it calls for. All are lazy — the sweep invokes
+      // them, not construction.
+      pullRequestChecker: async ({ projectPath, branch, worktreePath, link }) => {
+        const dir = worktreePath ?? projectPath;
+        let state = await pullRequestState(dir, {
+          number: link?.number ?? null,
+          url: link?.url ?? null,
+        });
+        if (!state && branch) state = await branchPullRequest(dir, branch);
+        if (!state) return null;
+        return {
+          repository: link?.repository ?? "",
+          number: state.number,
+          url: state.url,
+          state: state.state,
+          checkedAt: Date.now(),
+          mergedAt: state.mergedAt ? Date.parse(state.mergedAt) : null,
+        };
+      },
+      closeIdleShells: async ({ projectPath, worktreePath }) => {
+        await getTerminalManager().closeIdleInDir(worktreePath ?? projectPath);
+      },
+      runSettleScript: async ({ projectPath, cwd }) => {
+        const command = getConversationStore().projectScript(projectPath, "settle");
+        if (!command) return;
+        const result = await runProjectScript({
+          cwd,
+          command,
+          timeoutMs: SETTLE_SCRIPT_TIMEOUT_MS,
+        });
+        if (result.code !== 0) {
+          console.warn(
+            `[agent] settle script for ${projectPath} exited ${result.timedOut ? "on timeout" : result.code}`,
+          );
+        }
+      },
     });
+  }
   return service;
 }
 
@@ -1206,6 +1249,21 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle("agent:thread-pr", (_event, threadId: string) =>
     svc.threadPullRequestLink(String(threadId)),
+  );
+  // Per-project setup and settle scripts. Stored in app_state keyed by the
+  // project path (kone has no per-project settings table); read by the
+  // worktree-setup path and the settle-on-merge sweep.
+  ipcMain.handle(
+    "agent:get-project-script",
+    (_event, projectPath: string, kind: "setup" | "settle") =>
+      store.projectScript(String(projectPath), kind),
+  );
+  ipcMain.handle(
+    "agent:set-project-script",
+    (_event, projectPath: string, kind: "setup" | "settle", command: string | null) => {
+      store.setProjectScript(String(projectPath), kind, command);
+      return store.projectScript(String(projectPath), kind);
+    },
   );
 }
 
