@@ -1534,6 +1534,7 @@ describe("app_search_threads", () => {
       query: "auth",
     });
     expect(result.isError).toBeUndefined();
+    // SAFETY: this tool's own payload always carries `results`.
     const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
     // One hit per thread, and both are user blocks: the lower rank first.
     expect(results.map((r) => r.threadId)).toEqual(["t-done", "t-newest"]);
@@ -1546,6 +1547,7 @@ describe("app_search_threads", () => {
     const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
       query: "auth",
     });
+    // SAFETY: this tool's own payload always carries `results`.
     const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
     // site-1 is another project with no lineage/reference to the caller.
     expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { canReadThread } from "./readScope.js";
 
-const thread = (projectPath: string, sourceThreadId?: string | null): { projectPath: string; sourceThreadId: string | null } => ({
+const thread = (projectPath: string, sourceThreadId?: string | null) => ({
   projectPath,
   sourceThreadId: sourceThreadId ?? null,
 });
