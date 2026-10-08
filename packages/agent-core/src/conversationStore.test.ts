@@ -3098,4 +3098,30 @@ describe("project scripts and settle candidates", () => {
     store.applyEvent(turnCompleted("t", "turn-1", 20));
     expect(store.threadIsBusy("t")).toBe(false);
   });
+
+  test("checked_at backoff advances a bounded candidate list past attempted threads", () => {
+    const store = freshStore();
+    for (let i = 0; i < 25; i++) {
+      store.ensureThread({ threadId: `w${i}`, projectPath: "/p", provider: "opencode" });
+      store.setThreadWorkspace(`w${i}`, {
+        envMode: "worktree",
+        worktreePath: `/p/.wt/${i}`,
+      });
+    }
+    const first = store.settleThreadPullRequestCandidates(20, Number.MAX_SAFE_INTEGER);
+    expect(first).toHaveLength(20);
+
+    // Every attempt advances the check time, even when there was no PR to see.
+    const now = Date.now();
+    for (const candidate of first) store.recordThreadPullRequestAttempt(candidate.threadId, now);
+
+    const next = store.settleThreadPullRequestCandidates(20, now - 1_000);
+    expect(next.map((c) => c.threadId).sort()).toEqual([
+      "w20",
+      "w21",
+      "w22",
+      "w23",
+      "w24",
+    ]);
+  });
 });

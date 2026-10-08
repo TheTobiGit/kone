@@ -20,6 +20,8 @@ class FakeSettleHistory {
   busy = new Set<string>();
   userAt = new Map<string, number | null>();
   recorded: Array<{ threadId: string; state: string; mergedAt: number | null }> = [];
+  attempts: string[] = [];
+  links = new Map<string, ThreadPullRequestLink | null>();
   done = new Set<string>();
   metas = new Map<string, { provider: string }>();
 
@@ -29,6 +31,9 @@ class FakeSettleHistory {
   threadIsBusy(threadId: string) {
     return this.busy.has(threadId);
   }
+  threadIsSettleEligible(threadId: string) {
+    return this.metas.has(threadId) && !this.done.has(threadId);
+  }
   latestUserAuthoredAt(threadId: string) {
     return this.userAt.get(threadId) ?? null;
   }
@@ -37,6 +42,9 @@ class FakeSettleHistory {
     input: { state: string; mergedAt: number | null },
   ) {
     this.recorded.push({ threadId, state: input.state, mergedAt: input.mergedAt });
+  }
+  recordThreadPullRequestAttempt(threadId: string) {
+    this.attempts.push(threadId);
   }
   threadMeta(threadId: string) {
     const meta = this.metas.get(threadId);
@@ -53,9 +61,11 @@ class FakeSettleHistory {
   staleThreadIds() {
     return [];
   }
-  setTitle() {}
+  setTitleIfAuto() {
+    return false;
+  }
   titleOrigin() {
-    return null;
+    return "auto" as const;
   }
   titleMessages() {
     return [];
@@ -63,8 +73,8 @@ class FakeSettleHistory {
   threadWorkspace() {
     return null;
   }
-  threadPullRequestLink() {
-    return null;
+  threadPullRequestLink(threadId: string) {
+    return this.links.get(threadId) ?? null;
   }
   setThreadPullRequestLink() {
     return false;
@@ -80,6 +90,8 @@ const closed: string[] = [];
 const scripts: string[] = [];
 let checkerResult: ThreadPullRequestLink | null = null;
 let checkerCalls = 0;
+/** When set, the checker waits on this before answering. */
+let checkerGate: Promise<void> | null = null;
 
 beforeAll(async () => {
   AgentServiceCtor = (await import("./AgentService.js")).AgentService;
@@ -91,6 +103,7 @@ beforeAll(async () => {
     historyStore: history as unknown as import("./AgentService.js").AgentServiceOptions["historyStore"],
     pullRequestChecker: async () => {
       checkerCalls++;
+      if (checkerGate) await checkerGate;
       return checkerResult;
     },
     closeIdleShells: async ({ threadId }) => {
@@ -108,18 +121,22 @@ beforeEach(() => {
   history.busy.clear();
   history.userAt.clear();
   history.recorded = [];
+  history.attempts = [];
+  history.links.clear();
   history.done.clear();
   history.metas.clear();
   closed.length = 0;
   scripts.length = 0;
   checkerCalls = 0;
   checkerResult = null;
+  checkerGate = null;
 });
 
 afterAll(() => {});
 
 function candidate(threadId: string, link: ThreadPullRequestLink | null): ThreadPullRequestCandidate {
   history.metas.set(threadId, { provider: "claudeAgent" });
+  history.links.set(threadId, link);
   return {
     threadId,
     projectPath: "/repo",
@@ -188,5 +205,56 @@ describe("AgentService.sweepPullRequestSettlements", () => {
     checkerResult = { ...merged, mergedAt: null };
     expect(await service.sweepPullRequestSettlements()).toBe(0);
     expect(history.done.has("t6")).toBe(false);
+  });
+
+  test("a second tick while a sweep is in flight does nothing", async () => {
+    history.candidates = [candidate("t1", merged)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    checkerGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = service.sweepPullRequestSettlements();
+    // The tick fires again while the first pass awaits its check.
+    expect(await service.sweepPullRequestSettlements()).toBe(0);
+    release();
+    expect(await first).toBe(1);
+    expect(scripts).toHaveLength(1);
+    expect(closed).toEqual(["t1"]);
+  });
+
+  test("drops a result when the link changed while the check ran", async () => {
+    history.candidates = [candidate("t1", merged)];
+    checkerResult = merged;
+    let release: () => void = () => {};
+    checkerGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = service.sweepPullRequestSettlements();
+    // The user links a different PR while gh is in flight.
+    history.links.set("t1", { ...merged, number: 99, url: "https://x/pull/99" });
+    release();
+
+    expect(await pending).toBe(0);
+    expect(history.done.has("t1")).toBe(false);
+    // No stale result written into the new link's columns.
+    expect(history.recorded).toHaveLength(0);
+  });
+
+  test("a busy thread is skipped and its check time advances", async () => {
+    history.candidates = [candidate("t1", merged)];
+    history.busy.add("t1");
+    checkerResult = merged;
+    expect(await service.sweepPullRequestSettlements()).toBe(0);
+    expect(checkerCalls).toBe(0);
+    expect(history.attempts).toContain("t1");
+  });
+
+  test("a null or failed check advances the backoff without writing state", async () => {
+    history.candidates = [candidate("t1", merged)];
+    checkerResult = null;
+    expect(await service.sweepPullRequestSettlements()).toBe(0);
+    expect(history.recorded).toHaveLength(0);
+    expect(history.attempts).toContain("t1");
   });
 });
