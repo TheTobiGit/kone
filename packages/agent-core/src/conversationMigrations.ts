@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 29;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1242,19 +1242,14 @@ function migration0029Continuations(db: DatabaseSync): void {
       due_at          INTEGER NOT NULL,
       payload_json    TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
       created_at      INTEGER NOT NULL,
-      claimed_at      INTEGER
+      claimed_at      INTEGER,
+      attempts        INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_continuations_due
       ON continuations (due_at) WHERE claimed_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_continuations_thread
       ON continuations (thread_id);
   `);
-}
-
-/** A dispatch attempt count on a continuation (v30), so a row that keeps
- *  failing is retried with backoff and eventually dropped instead of spinning. */
-function migration0030ContinuationAttempts(db: DatabaseSync): void {
-  addColumn(db, "continuations", "attempts", "INTEGER NOT NULL DEFAULT 0");
 }
 
 export const migrationEntries: readonly MigrationEntry[] = [
@@ -1287,7 +1282,6 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
   { id: 29, name: "Continuations", run: migration0029Continuations },
-  { id: 30, name: "ContinuationAttempts", run: migration0030ContinuationAttempts },
 ];
 
 export interface MigrationOptions {

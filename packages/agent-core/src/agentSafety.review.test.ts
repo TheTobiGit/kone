@@ -184,20 +184,38 @@ describe("P2 review regressions", () => {
 
   test("a live session with no stored row still blocks a restore", async () => {
     const adapter = new Adapter();
-    const svc = service(adapter);
-    await svc.startSession({ threadId: "unregistered", provider: "codex", cwd: "/tmp" });
     const checkpoints: CheckpointStore = {
-      threadProjectPath: () => "/tmp",
-      threadWorkspace: () => ({ envMode: "worktree", worktreePath: "/tmp", requestedBranch: null }),
+      threadProjectPath: () => dir,
+      threadWorkspace: () => ({ envMode: "worktree", worktreePath: dir, requestedBranch: null }),
       allThreadWorkspaces: () => [],
       turnUserBlockId: () => null,
       recordTurnCheckpoint: () => false,
-      getTurnCheckpoint: () => null,
+      getTurnCheckpoint: (threadId, turnId) => ({
+        threadId,
+        turnId,
+        checkpointId: "cp",
+        ref: "refs/kone/checkpoints/cp",
+        createdAt: 1,
+      }),
       listTurnCheckpoints: () => [],
       pruneTurnCheckpoints: () => [],
     };
-    const refusal = svc.checkpointRestoreRefusal(checkpoints, "owner", "t", "/tmp");
-    expect(refusal?.reason).toBe("shared-checkout");
+    const svc = new AgentService({
+      // SAFETY: the real store satisfies the queue slice the service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: store as unknown as QueuedTurnStore,
+      historyStore: store,
+      checkpointStore: checkpoints,
+      retentionSweepMs: 0,
+      stopTotalTimeoutMs: 60,
+      // SAFETY: one fake adapter is the whole provider roster here.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: () => [adapter as unknown as ProviderAdapter],
+    });
+    // A live session in the same directory, with no stored workspace row.
+    await svc.startSession({ threadId: "unregistered", provider: "codex", cwd: dir });
+    const result = await svc.previewTurnCheckpoint("owner", "t-1");
+    expect(result).toEqual(expect.objectContaining({ ok: false, reason: "shared-checkout" }));
     await svc.stopAll();
   });
 });

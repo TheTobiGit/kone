@@ -1483,7 +1483,7 @@ export class AgentService {
    *  and is never isolated. Reads fail closed — a store that cannot be read
    *  throws out of `runRevert`'s catch as a `failed` refusal, never as a
    *  silent restore. */
-  checkpointRestoreRefusal(
+  private checkpointRestoreRefusal(
     store: CheckpointStore,
     threadId: string,
     turnId: string,
