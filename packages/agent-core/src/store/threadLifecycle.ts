@@ -65,6 +65,34 @@ export class ThreadLifecycleRepo {
     return Boolean(runningSubagent);
   }
 
+  /** Whether a thread or any descendant has work in flight: a running turn or
+   *  subagent (subtreeBusy) or a queued follow-up. The settle-on-merge sweep
+   *  leaves such a thread alone — it will wake itself. Terminals are
+   *  deliberately NOT counted: a dev server left running does not protect a
+   *  thread from settling (docs/t3code-parity.md §2.6). Fails closed (busy)
+   *  when the store cannot be read. */
+  threadIsBusy(threadId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return true;
+    try {
+      const ids = this.subtreeIds(db, threadId);
+      if (ids.length === 0) return false;
+      if (this.subtreeBusy(db, ids)) return true;
+      const placeholders = ids.map(() => "?").join(",");
+      const queued = db
+        .prepare(
+          `SELECT 1 FROM queued_turns
+            WHERE thread_id IN (${placeholders}) AND state IN ${PENDING_QUEUE_STATES}
+            LIMIT 1`,
+        )
+        .get(...ids);
+      return Boolean(queued);
+    } catch (err) {
+      console.error("[conversation-store] threadIsBusy failed:", err);
+      return true;
+    }
+  }
+
   /** Pre-flight guard for the destructive IPC path: the ipc layer checks this
    *  BEFORE unlinking attachment files (which must happen before the rows go,
    *  so the registry can resolve the paths). */

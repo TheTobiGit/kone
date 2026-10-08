@@ -338,3 +338,72 @@ describe("TerminalManager", () => {
     expect(events.some((e) => e.type === "activity")).toBe(false);
   });
 });
+
+describe("TerminalManager.closeIdleInDir", () => {
+  test("closes only shells proven idle by a fresh snapshot", async () => {
+    const pids = [5001, 5002];
+    let next = 0;
+    const mgr = new TerminalManager({
+      spawn: async () => ({ ...fakePty().process, pid: pids[next++]! }),
+      // Disable the background poll so the only snapshots are the fresh ones
+      // closeIdleInDir takes.
+      subprocessPollIntervalMs: 10_000_000,
+      captureProcessTable: async () =>
+        // Terminal b has a dev server running; a is idle.
+        new Map([[5002, [{ pid: 6000, command: "npm run dev" }]]]),
+    });
+    const events: TerminalEvent[] = [];
+    mgr.onEvent((e) => events.push(e));
+    await mgr.open({ terminalId: "a", cwd: "/wt" });
+    await mgr.open({ terminalId: "b", cwd: "/wt" });
+
+    const closed = await mgr.closeIdleInDir("/wt");
+    const closedEvents = events.filter((e) => e.type === "closed").map((e) => e.terminalId);
+    await mgr.disposeAll();
+
+    expect(closed).toEqual(["a"]);
+    expect(closedEvents).toEqual(["a"]);
+  });
+
+  test("closes nothing when the process snapshot is unavailable", async () => {
+    const mgr = new TerminalManager({
+      spawn: async () => fakePty().process,
+      subprocessPollIntervalMs: 10_000_000,
+      captureProcessTable: async () => null,
+    });
+    await mgr.open({ terminalId: "a", cwd: "/wt" });
+    expect(await mgr.closeIdleInDir("/wt")).toEqual([]);
+    await mgr.disposeAll();
+  });
+
+  test("revalidates each shell right before closing it", async () => {
+    const pids = [5001, 5002];
+    let next = 0;
+    let captures = 0;
+    const mgr = new TerminalManager({
+      spawn: async () => ({ ...fakePty().process, pid: pids[next++]! }),
+      subprocessPollIntervalMs: 10_000_000,
+      captureProcessTable: async () => {
+        captures += 1;
+        // a reads idle; by the time b is checked a build has started on it.
+        return captures === 1 ? new Map() : new Map([[5002, [{ pid: 6000, command: "bun build" }]]]);
+      },
+    });
+    await mgr.open({ terminalId: "a", cwd: "/wt" });
+    await mgr.open({ terminalId: "b", cwd: "/wt" });
+
+    expect(await mgr.closeIdleInDir("/wt")).toEqual(["a"]);
+    await mgr.disposeAll();
+  });
+
+  test("ignores shells in another directory", async () => {
+    const mgr = new TerminalManager({
+      spawn: async () => fakePty().process,
+      subprocessPollIntervalMs: 10_000_000,
+      captureProcessTable: async () => new Map(),
+    });
+    await mgr.open({ terminalId: "a", cwd: "/other" });
+    expect(await mgr.closeIdleInDir("/wt")).toEqual([]);
+    await mgr.disposeAll();
+  });
+});

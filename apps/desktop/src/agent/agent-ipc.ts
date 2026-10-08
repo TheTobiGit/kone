@@ -17,6 +17,13 @@ import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
+import { branchPullRequest, pullRequestState } from "../modules/git/github.js";
+import { checkThreadPullRequest } from "../modules/git/threadPullRequestCheck.js";
+import {
+  runProjectScript,
+  SETTLE_SCRIPT_TIMEOUT_MS,
+  SETUP_SCRIPT_TIMEOUT_MS,
+} from "../modules/git/projectScripts.js";
 import { freshestBase } from "../modules/git/worktreeBase.js";
 import { renameGeneratedBranch } from "../modules/git/worktreeBranchName.js";
 import { startWorktreeSweeper, sweepIdleWorktrees } from "../modules/git/worktreeSweep.js";
@@ -140,9 +147,74 @@ export function getJobRunner(): JobRunner | null {
   return jobRunner;
 }
 
+/** Rename a thread's generated worktree branch after its title. Refuses when
+ *  the branch has an upstream or already heads a pull request: moving either
+ *  would break the link. The PR check lives here because gh/electron lives
+ *  here, not in the git branch-name module. */
+const renameWorktreeBranchAfterTitle = ({
+  worktreePath,
+  title,
+}: {
+  worktreePath: string;
+  title: string;
+}): Promise<string | null> =>
+  renameGeneratedBranch(worktreePath, title, {
+    hasPullRequest: (dir, branch) =>
+      branchPullRequest(dir, branch).then(
+        // A PR exists OR the lookup was unavailable — either way, do not move
+        // the branch. Only a known-empty answer allows the rename.
+        (outcome) => !outcome.available || outcome.pullRequest !== null,
+        () => true,
+      ),
+  });
+
 /** The single AgentService instance (lazily created). */
-export function getAgentService(): AgentService {
-  if (!service) service = new AgentService();
+export function getAgentService(): AgentService {  if (!service) {
+    service = new AgentService({
+      // Title regeneration may rename a generated worktree branch; git lives
+      // out here, so the service is handed the capability.
+      renameWorkspaceBranch: ({ worktreePath, title }) => renameWorktreeBranchAfterTitle({ worktreePath, title }),
+      // Settle-on-merge: the service owns the decision, these three do the
+      // out-of-process work it calls for. All are lazy — the sweep invokes
+      // them, not construction.
+      pullRequestChecker: async ({ projectPath, branch, worktreePath, link }) => {
+        const dir = worktreePath ?? projectPath;
+        const outcome = await checkThreadPullRequest(
+          { link, branch },
+          {
+            // Full identity only (URL or repository + number) — never a bare
+            // number in the local repo — so a foreign-repo link resolves to the
+            // right PR or to unknown.
+            fetchState: (ref) => pullRequestState(dir, ref),
+            fetchBranchPr: (head) => branchPullRequest(dir, head),          },
+        );
+        return outcome.link;
+      },
+      closeIdleShells: async ({ threadId, worktreePath }) => {
+        // Only a thread's OWN worktree is ever touched, never the project
+        // root (a shared checkout belongs to every thread). And if another
+        // live thread still shares the worktree, its shells are not ours.
+        if (!worktreePath) return;
+        const store = getConversationStore();
+        if (store.worktreeHasOtherLiveThreads(worktreePath, threadId)) return;
+        await getTerminalManager().closeIdleInDir(worktreePath);
+      },
+      runSettleScript: async ({ projectPath, cwd }) => {
+        const command = getConversationStore().projectScript(projectPath, "settle");
+        if (!command) return;
+        const result = await runProjectScript({
+          cwd,
+          command,
+          timeoutMs: SETTLE_SCRIPT_TIMEOUT_MS,
+        });
+        if (result.code !== 0) {
+          console.warn(
+            `[agent] settle script for ${projectPath} exited ${result.timedOut ? "on timeout" : result.code}`,
+          );
+        }
+      },
+    });
+  }
   return service;
 }
 
@@ -180,7 +252,7 @@ export function registerAgentIpc(): void {
     // copy is only behind, and from the user's copy whenever the latest would
     // drop commits or cannot be reached.
     freshenWorkspaceBase: ({ projectPath, base }) => freshestBase(projectPath, base),
-    renameWorkspaceBranch: ({ worktreePath, title }) => renameGeneratedBranch(worktreePath, title),
+    renameWorkspaceBranch: ({ worktreePath, title }) => renameWorktreeBranchAfterTitle({ worktreePath, title }),
     // Only ever a worktree this dispatcher just built and had to give back.
     // Not forced: a directory with work in it is never removed on a cancel, and
     // git refusing is the refusal to respect. A branch this build invented goes
@@ -191,6 +263,13 @@ export function registerAgentIpc(): void {
       }
       return removeWorktree(projectPath, { path: worktreePath });
     },
+    // The project's setup script, run between the worktree existing and the
+    // agent's first turn. Best effort: a failure is reported on the setup
+    // tracker and does not fail the start.
+    runSetupScript: ({ cwd, command, onOutput }) =>
+      runProjectScript({ cwd, command, timeoutMs: SETUP_SCRIPT_TIMEOUT_MS, onOutput }).then(
+        (result) => ({ code: result.code, output: result.output }),
+      ),
   });
   // Renderer event-stream subscriptions: who gets the live stream, plus the
   // reload-recovery replay of parked asks. One instance per process; broadcast
@@ -511,7 +590,7 @@ export function registerAgentIpc(): void {
       proposedTitle: event.title,
     });
     if (!accepted) return null;
-    store.renameThread(event.threadId, accepted);
+    store.setTitle(event.threadId, accepted);
     return { event: { ...event, title: accepted }, journal: false };
   }
 
@@ -1185,6 +1264,56 @@ export function registerAgentIpc(): void {
     }
     return changed;
   });
+  // Regenerate a thread's title from the whole conversation, on explicit
+  // request. The service refuses when the user typed the current title
+  // (manual_title) or when there is nothing to title from; a successful
+  // regeneration broadcasts on its own via thread.title.updated.
+  ipcMain.handle("agent:regenerate-thread-title", (_event, threadId: string) =>
+    svc.regenerateThreadTitle(String(threadId)),
+  );
+  // Link / unlink a pull request on a thread, and read the current link. The
+  // store carries the link across restarts; the settle sweep reads it to know
+  // when the thread is done. The handler validates and reports why it refused,
+  // rather than writing a link that names no PR.
+  ipcMain.handle(
+    "agent:link-thread-pr",
+    (
+      _event,
+      threadId: string,
+      link: {
+        repository?: string | null;
+        number?: number | null;
+        url: string;
+        state?: "open" | "merged" | "closed" | "unknown" | null;
+      },
+    ) => svc.linkThreadPullRequest(String(threadId), link),
+  );
+  ipcMain.handle("agent:unlink-thread-pr", (_event, threadId: string) =>
+    svc.unlinkThreadPullRequest(String(threadId)),
+  );
+  ipcMain.handle("agent:thread-pr", (_event, threadId: string) =>
+    svc.threadPullRequestLink(String(threadId)),
+  );
+  // Per-project setup and settle scripts. Stored in app_state keyed by the
+  // project path (kone has no per-project settings table); read by the
+  // worktree-setup path and the settle-on-merge sweep.
+  ipcMain.handle(
+    "agent:get-project-script",
+    (_event, projectPath: string, kind: "setup" | "settle") =>
+      store.projectScript(String(projectPath), kind),
+  );
+  ipcMain.handle(
+    "agent:set-project-script",
+    (_event, projectPath: string, kind: "setup" | "settle", command: string | null) => {
+      store.setProjectScript(String(projectPath), kind, command);
+      return store.projectScript(String(projectPath), kind);
+    },
+  );
+  // The live worktree-setup snapshot for a thread, or null. A renderer that
+  // attaches mid-setup reads this, then follows thread.worktree.setup events.
+  ipcMain.handle("agent:worktree-setup", (_event, threadId: string) =>
+    dispatcher.worktreeSetupSnapshot(String(threadId)),
+  );
 }
 
 /** Record in-flight turns for resume after quit, then interrupt them. Called

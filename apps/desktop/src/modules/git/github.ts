@@ -26,6 +26,7 @@ import type {
   GitHubPrFile,
   GitHubPullRequest,
   GitHubPullRequestDetail,
+  GitHubPullRequestState,
   GitHubRepoInfo,
   GitHubReview,
   GitHubStatus,
@@ -980,6 +981,129 @@ export async function prDetail(
     ...detail.comments.map((comment) => comment.author),
   ]);
   return detail;
+}
+
+/** One pull request's state, as the settle-on-merge sweep needs it: enough to
+ *  know merged/open and when. A compact projection of the same wire the list
+ *  uses, so the two cannot disagree about what "merged" means. */
+const PR_STATE_JSON_FIELDS = "number,state,url,headRefName,mergedAt";
+
+const PullRequestStateWire = z.object({
+  number: z.number().int().positive(),
+  state: z.string().catch(""),
+  url: z.string().catch(""),
+  headRefName: z.string().catch(""),
+  // gh reports merged PRs as CLOSED unless mergedAt is set — the timestamp is
+  // authoritative, exactly like the list's own decode.
+  mergedAt: WireText,
+});
+
+function pullRequestStateOf(
+  wire: z.output<typeof PullRequestStateWire>,
+): GitHubPullRequestState {
+  const state =
+    wire.mergedAt !== null || wire.state === "MERGED"
+      ? "merged"
+      : wire.state === "CLOSED"
+        ? "closed"
+        : "open";
+  return {
+    number: wire.number,
+    url: wire.url,
+    branch: wire.headRefName,
+    state,
+    mergedAt: wire.mergedAt,
+  };
+}
+
+/** The state of one pull request, by its full URL or by repository + number —
+ *  never a bare number in whatever repo the directory happens to be. A link to
+ *  another repository is common (a thread can reference a PR anywhere), and a
+ *  bare number would silently query the local repo's PR 7 instead. Returns null
+ *  when the reference is incomplete or gh cannot see it. */
+export async function pullRequestState(
+  dir: string,
+  ref: { number?: number | null; url?: string | null; repository?: string | null },
+): Promise<GitHubPullRequestState | null> {
+  const url = ref.url?.trim();
+  const repository = ref.repository?.trim();
+  const number =
+    ref.number && Number.isInteger(ref.number) && ref.number > 0 ? ref.number : null;
+  if (!url && !(number && repository)) return null;
+  const target = url ? url : String(number);
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  const args = ["pr", "view", target, "--json", PR_STATE_JSON_FIELDS];
+  // A URL is already repository-qualified; a bare number is not, so it must
+  // name its repository explicitly.
+  if (!url && repository) args.push("--repo", repository);
+  let out: string;
+  try {
+    out = await gh(root, args);
+  } catch (error) {
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
+    // A reference that no longer exists is an empty view, not a broken one.
+    if (error instanceof GitError && error.kind === "NOT_FOUND") return null;
+    throw error;
+  }
+  const trimmed = out.trim();
+  if (!trimmed) return null;
+  const decoded = decodeOrThrow(
+    trimmed,
+    PullRequestStateWire.nullable().catch(null),
+    "The GitHub CLI returned unparseable pull request state.",
+  );
+  return decoded === null ? null : pullRequestStateOf(decoded);
+}
+
+/** The result of asking git/GitHub for a branch's pull request. `available`
+ *  separates "there is no PR" from "I could not find out": a missing or
+ *  unauthenticated gh, a non-GitHub remote, or any other failure leaves
+ *  `available: false`, and the caller must fail closed rather than treat it as
+ *  no PR. */
+export interface GitHubBranchPullRequestOutcome {
+  available: boolean;
+  pullRequest: GitHubPullRequestState | null;
+}
+
+/** The pull request opened from `branch` in `dir`, if any — the branch fallback
+ *  for a thread with no explicit link. `--state all` so a merged PR still
+ *  answers. Distinguishes a known-empty branch from an unavailable lookup. */
+export async function branchPullRequest(
+  dir: string,
+  branch: string | null | undefined,
+): Promise<GitHubBranchPullRequestOutcome> {
+  const head = branch?.trim();
+  if (!head) return { available: true, pullRequest: null };
+  const root = await repoRoot(dir);
+  if (!root) return { available: false, pullRequest: null };
+  let out: string;
+  try {
+    out = await gh(root, [
+      "pr",
+      "list",
+      "--head",
+      head,
+      "--state",
+      "all",
+      "--limit",
+      "1",
+      "--json",
+      PR_STATE_JSON_FIELDS,
+    ]);
+  } catch {
+    // ONLY a successful `gh pr list` with an empty result is known-empty. Any
+    // failed call is unknown — including NOT_FOUND, which gh returns both for a
+    // missing PR and for an inaccessible/unresolved repository. Reading that as
+    // "no PR" would let a rename proceed against a repo gh could not reach.
+    return { available: false, pullRequest: null };
+  }
+  const trimmed = out.trim();
+  if (!trimmed) return { available: true, pullRequest: null };
+  const parsed = rows(PullRequestStateWire).safeParse(JSON.parse(trimmed));
+  if (!parsed.success) return { available: false, pullRequest: null };
+  if (parsed.data.length === 0) return { available: true, pullRequest: null };
+  return { available: true, pullRequest: pullRequestStateOf(parsed.data[0]!) };
 }
 
 /** Every file a pull request touches, already parsed into hunks. One `gh pr

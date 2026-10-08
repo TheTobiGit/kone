@@ -21,6 +21,16 @@ import {
   restoreCheckpoint,
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
+import { generateThreadTitleFromContext } from "./threadTitle.js";
+import { formatThreadTitleContext } from "./threadTitleContext.js";
+import {
+  toThreadPullRequestLink,
+  pullRequestMerged,
+  samePullRequest,
+  type ThreadPullRequestLink,
+  type ThreadPullRequestLinkInput,
+} from "./threadPullRequest.js";
+import { prMergeSettlesThread } from "./threadSettlement.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -157,6 +167,19 @@ const SUBAGENT_WAKE_MAX = 5;
 const RETENTION_BATCH_SIZE = 25;
 const RETENTION_BATCH_PAUSE_MS = 50;
 
+/** Settle-on-merge: how often the PR sweep looks for a linked or branch PR that
+ *  has merged, how many threads it checks per pass, and how long after boot the
+ *  first pass waits. `pullRequestSweepMs: 0` disables it (tests, embedders
+ *  without a gh checker). Two minutes matches t3's PR watch cadence and is
+ *  cheap: one gh call per candidate at most. */
+const PR_SETTLE_SWEEP_MS = 2 * 60_000;
+const PR_SETTLE_INITIAL_DELAY_MS = 20_000;
+const PR_SETTLE_BATCH_SIZE = 20;
+/** A thread's PR is not re-checked more often than this. The sweep tick is the
+ *  same length, so `checked_at` backoff means one gh call per candidate per
+ *  tick at most, never a fan-out when many threads share a PR or gh is down. */
+const PR_CHECK_MIN_INTERVAL_MS = 2 * 60_000;
+
 /** A native compaction call gets this long before the service calls it failed
  *  — server-side compaction on a large thread takes minutes, not seconds. */
 const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
@@ -234,8 +257,65 @@ export type AgentServiceOptions = {
    *  injected by tests. Defaults to the app-wide store when absent. */
   historyStore?: Pick<
     ConversationStore,
-    "setArchived" | "setDone" | "threadMeta" | "staleThreadIds"
+    | "setArchived"
+    | "setDone"
+    | "threadMeta"
+    | "staleThreadIds"
+    | "setTitleIfAuto"
+    | "titleOrigin"
+    | "titleMessages"
+    | "threadWorkspace"
+    | "threadPullRequestLink"
+    | "setThreadPullRequestLink"
+    | "clearThreadPullRequestLink"
+    | "settleThreadPullRequestCandidates"
+    | "recordThreadPullRequestChecked"
+    | "recordThreadPullRequestAttempt"
+    | "threadIsSettleEligible"
+    | "threadPullRequestCandidate"
+    | "latestUserAuthoredAt"
+    | "threadIsBusy"
   >;
+  /** Settle-on-merge tuning. `pullRequestSweepMs: 0` disables the sweep. */
+  pullRequestSweepMs?: number;
+  pullRequestSweepInitialDelayMs?: number;
+  /** Reads a candidate's PR state. The desktop layer supplies a gh-backed one;
+   *  absent, the sweep does nothing. */
+  pullRequestChecker?: (input: {
+    threadId: string;
+    projectPath: string;
+    branch: string | null;
+    worktreePath: string | null;
+    link: ThreadPullRequestLink | null;
+  }) => Promise<ThreadPullRequestLink | null>;
+  /** Close the thread's idle shells when it settles. Injected by the desktop
+   *  layer, where the terminal manager lives. */
+  closeIdleShells?: (input: {
+    threadId: string;
+    projectPath: string;
+    worktreePath: string | null;
+  }) => Promise<void>;
+  /** Run the project's settle script when a thread settles. Injected by the
+   *  desktop layer, which owns script execution. */
+  runSettleScript?: (input: {
+    threadId: string;
+    projectPath: string;
+    cwd: string;
+  }) => Promise<void>;
+  /** Whole-conversation title generation, injected by tests so no CLI spawns.
+   *  Defaults to the real provider one-shot. */
+  generateContextTitle?: (input: {
+    cwd: string;
+    context: string;
+    provider: ProviderKind;
+    model?: string;
+  }) => Promise<string | null>;
+  /** Rename a thread's generated worktree branch after its title. Injected by
+   *  the desktop layer, where git lives; absent in tests and embedders. */
+  renameWorkspaceBranch?: (input: {
+    worktreePath: string;
+    title: string;
+  }) => Promise<string | null>;
   /** The conversation store's turn-checkpoint slice the pre-turn snapshot
    *  path needs, injected by tests. Defaults to the app-wide store when
    *  absent; pass null to disable checkpoints. Which queue slice was injected
@@ -285,6 +365,26 @@ export type RevertTurnCheckpointResult =
  *  preview/revert paths formats a thrown value or a leftover-files report the
  *  same way, instead of each repeating the coercion. */
 type FailedCheckpoint = { ok: false; reason: "failed"; detail?: string };
+
+/** Outcome of regenerating a thread's title from its whole conversation.
+ *  `manual_title` is the refusal that matters: the user named the thread, so
+ *  kone leaves their words alone. `no-workdir` means the thread's directory
+ *  cannot be resolved, `empty` that the thread has no user/assistant prose to
+ *  title from, and `generation_failed` that the provider one-shot returned
+ *  nothing. `changed` false means the model proposed the title it already
+ *  had. */
+export type RegenerateThreadTitleResult =
+  | { ok: true; title: string; changed: boolean }
+  | {
+      ok: false;
+      reason: "unknown" | "manual_title" | "no-workdir" | "empty" | "generation_failed";
+    };
+
+/** Outcome of linking a PR to a thread. `invalid` means the input named no PR
+ *  (no URL and no positive number) or a URL that was blank. */
+export type SetThreadPullRequestResult =
+  | { ok: true; link: ThreadPullRequestLink }
+  | { ok: false; reason: "invalid" | "unknown" };
 
 /** The line in front of the turn kone steer ended the last one to deliver
  *  (docs/agent-delivery-design.md §7). */
@@ -486,6 +586,16 @@ export class AgentService {
    *  sweep runs off a one-shot delay, the rest on the daily interval. */
   private retentionTimer: ReturnType<typeof setInterval> | null = null;
   private retentionStartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The settle-on-merge sweep timer — same shape as retention: started at
+   *  construction so a quiet app still settles, first pass off a one-shot
+   *  delay, cleared on stopAll. */
+  private pullRequestTimer: ReturnType<typeof setInterval> | null = null;
+  private pullRequestStartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The sweep currently running, so a second tick skips instead of selecting
+   *  the same threads and double-settling them. */
+  private pullRequestSweepInFlight: Promise<number> | null = null;
+  /** Set by stopAll to make a running pass bail at its next step. */
+  private pullRequestSweepAborted = false;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
     // A provider's questions join the thread's one question queue on their
@@ -529,6 +639,7 @@ export class AgentService {
       }
     }
     this.ensureRetentionSweep();
+    this.ensurePullRequestSweep();
   }
 
   private register(adapter: ProviderAdapter): void {
@@ -1097,6 +1208,22 @@ export class AgentService {
    *  running turn or start one. */
   isThreadBusy(threadId: string): boolean {
     return this.isBusy(threadId);
+  }
+
+  /** Whether a thread must not be settled right now. Work can be in flight in
+   *  the service before the store knows: a claimed dispatch, a starting
+   *  provider session, an in-flight compaction, or parked work (a question or
+   *  approval the thread waits on). A quiescent CONNECTED session is
+   *  deliberately not a blocker — an idle session that has nothing queued or
+   *  parked may settle; the store's own busy read (history.threadIsBusy) covers
+   *  queued rows and running turns. */
+  private settlementBlocked(threadId: string): boolean {
+    return (
+      this.isBusy(threadId) ||
+      this.startingSessions.has(threadId) ||
+      this.isCompacting(threadId) ||
+      (this.parkedByThread.get(threadId)?.size ?? 0) > 0
+    );
   }
 
   /** Whether `provider` can take a message into a running turn. One that
@@ -2723,6 +2850,112 @@ export class AgentService {
     });
   }
 
+  /** Regenerate a thread's title from its whole conversation — the explicit
+   *  path behind the "Regenerate title" action and the gateway tool. Reads the
+   *  thread's prose (threadTitleContext picks what matters: user intent first,
+   *  assistant findings after, reasoning dropped), asks the thread's own
+   *  provider for a short title, and persists it through the same
+   *  thread.title.updated event the first-turn rename uses.
+   *
+   *  Two things it refuses: a thread whose current title the user typed
+   *  (`manual_title` — regeneration must never overwrite a rename), and a
+   *  thread with nothing to title from. A generated title that names the
+   *  thread it already had reports `changed: false` and writes nothing. When
+   *  the thread's worktree branch was generated from its title, the rename
+   *  follows it. */
+  async regenerateThreadTitle(threadId: string): Promise<RegenerateThreadTitleResult> {
+    const history = this.historyStore;
+    if (!history) return { ok: false, reason: "unknown" };
+    const meta = history.threadMeta(threadId);
+    if (!meta) return { ok: false, reason: "unknown" };
+    if (history.titleOrigin(threadId) === "manual") return { ok: false, reason: "manual_title" };
+    const context = formatThreadTitleContext(history.titleMessages(threadId));
+    if (!context) return { ok: false, reason: "empty" };
+    // An unknown or unreadable workspace skips naming rather than running the
+    // one-shot in the shared checkout: it must run where the thread runs.
+    let cwd: string | null = null;
+    try {
+      const workspace = history.threadWorkspace(threadId);
+      if (workspace) cwd = threadWorkingDir({ projectPath: meta.projectPath, ...workspace });
+    } catch {
+      cwd = null;
+    }
+    if (!cwd) return { ok: false, reason: "no-workdir" };
+
+    const generate = this.options.generateContextTitle ?? generateThreadTitleFromContext;
+    let title: string | null = null;
+    try {
+      title = await generate({
+        cwd,
+        context,
+        provider: meta.provider,
+        model: meta.model ?? undefined,
+      });
+    } catch (err) {
+      console.error("[thread-title] regeneration failed:", err);
+      title = null;
+    }
+    if (!title?.trim()) return { ok: false, reason: "generation_failed" };
+    title = title.trim();
+
+    if (title === meta.title) return { ok: true, title, changed: false };
+    // Commit only if the title is still the one the generator saw and is still
+    // auto-owned. A manual rename while the one-shot ran wins.
+    if (!history.setTitleIfAuto(threadId, meta.title ?? null, title)) {
+      return { ok: false, reason: "manual_title" };
+    }
+    this.dispatch({
+      type: "thread.title.updated",
+      threadId,
+      provider: meta.provider,
+      at: Date.now(),
+      source: "kone.store",
+      title,
+    });
+    // Follow the worktree branch rename off the hot path: a generated branch
+    // name came from the old title and should not outlive it.
+    const rename = this.options.renameWorkspaceBranch;
+    if (rename) {
+      try {
+        const workspace = history.threadWorkspace(threadId);
+        if (workspace?.worktreePath) {
+          void rename({ worktreePath: workspace.worktreePath, title }).catch((err) => {
+            console.warn("[thread-title] worktree branch rename failed:", err);
+          });
+        }
+      } catch {
+        // A workspace that cannot be read leaves the branch as it was.
+      }
+    }
+    return { ok: true, title, changed: true };
+  }
+
+  /** Link a pull request to a thread, replacing any previous link. The link is
+   *  durable and revives nothing: it is a marker the settle sweep reads, not a
+   *  reason to wake the thread. Refuses an input that names no PR. */
+  linkThreadPullRequest(
+    threadId: string,
+    input: ThreadPullRequestLinkInput,
+  ): SetThreadPullRequestResult {
+    const history = this.historyStore;
+    if (!history) return { ok: false, reason: "unknown" };
+    if (!history.threadMeta(threadId)) return { ok: false, reason: "unknown" };
+    const link = toThreadPullRequestLink(input);
+    if (!link) return { ok: false, reason: "invalid" };
+    if (!history.setThreadPullRequestLink(threadId, link)) return { ok: false, reason: "unknown" };
+    return { ok: true, link };
+  }
+
+  /** Remove a thread's linked PR. Returns whether anything changed. */
+  unlinkThreadPullRequest(threadId: string): boolean {
+    return this.historyStore?.clearThreadPullRequestLink(threadId) ?? false;
+  }
+
+  /** The thread's linked PR, or null when none is set. */
+  threadPullRequestLink(threadId: string): ThreadPullRequestLink | null {
+    return this.historyStore?.threadPullRequestLink(threadId) ?? null;
+  }
+
   /** The thread-retention sweep, in two passes over the same timer:
    *
    *  1. Mark done — a thread quiet for three days stops asking. Done is an
@@ -2785,6 +3018,171 @@ export class AgentService {
     if (archived > 0) {
       console.info(`[agent] retention: archived ${archived} idle thread(s)`);
     }
+  }
+
+  /** Settle threads whose pull request has merged — the automation behind
+   *  docs/t3code-parity.md §2.6. A candidate is a thread with an explicit PR
+   *  link or its own worktree branch; the injected checker resolves the branch
+   *  PR and reports its current state. A thread is left alone when it has work
+   *  in flight (a running turn, a queued follow-up, a running subagent — work
+   *  that will wake it), or when the user wrote after the merge. Settling is
+   *  the same done mark the retention sweep writes, plus closing idle shells
+   *  and running the project's settle script. Returns how many settled.
+   *
+   *  Public for tests; the timer calls it. */
+  async sweepPullRequestSettlements(): Promise<number> {
+    // One pass at a time. A tick that lands while a previous sweep is awaiting
+    // gh returns immediately, so the same threads cannot be selected twice and
+    // their settle actions cannot run twice.
+    if (this.pullRequestSweepInFlight) return 0;
+    const run = this.runPullRequestSweep().finally(() => {
+      this.pullRequestSweepInFlight = null;
+    });
+    this.pullRequestSweepInFlight = run;
+    return run;
+  }
+
+  private async runPullRequestSweep(): Promise<number> {
+    const history = this.historyStore;
+    const checker = this.options.pullRequestChecker;
+    if (!history || !checker) return 0;
+    this.pullRequestSweepAborted = false;
+    let settled = 0;
+    const sameLink = (
+      before: ThreadPullRequestLink | null,
+      after: ThreadPullRequestLink | null,
+    ): boolean => {
+      if (before === null || after === null) return before === null && after === null;
+      return samePullRequest(before, after);
+    };
+    for (const initial of history.settleThreadPullRequestCandidates(
+      PR_SETTLE_BATCH_SIZE,
+      Date.now() - PR_CHECK_MIN_INTERVAL_MS,
+    )) {
+      if (this.pullRequestSweepAborted) break;
+      // Work that will wake the thread outranks a merge — in the store and in
+      // the service, where a claimed dispatch or a starting session may not
+      // have reached the store yet. Record the attempt so a permanently busy
+      // thread does not head the bounded queue forever.
+      if (history.threadIsBusy(initial.threadId) || this.settlementBlocked(initial.threadId)) {
+        history.recordThreadPullRequestAttempt(initial.threadId, Date.now());
+        continue;
+      }
+      let checked: ThreadPullRequestLink | null = null;
+      let failed = false;
+      try {
+        checked = await checker({
+          threadId: initial.threadId,
+          projectPath: initial.projectPath,
+          branch: initial.branch,
+          worktreePath: initial.worktreePath,
+          link: initial.link,
+        });
+      } catch (err) {
+        failed = true;
+        console.warn(`[agent] PR check failed for ${initial.threadId}:`, err);
+      }
+      if (this.pullRequestSweepAborted) break;
+      const checkedAt = Date.now();
+      // Re-read the candidate after the await: its link, branch, worktree,
+      // project or thread state may all have moved while gh ran. Drop a result
+      // whose discovery inputs changed, so an old lookup cannot settle a thread
+      // on a PR it no longer points at or clean a worktree it has left.
+      const current = history.threadPullRequestCandidate(initial.threadId);
+      if (
+        !current ||
+        current.projectPath !== initial.projectPath ||
+        current.branch !== initial.branch ||
+        current.worktreePath !== initial.worktreePath ||
+        !sameLink(initial.link, current.link)
+      ) {
+        continue;
+      }
+      if (failed || !checked) {
+        // No result: advance the backoff but write no PR state.
+        history.recordThreadPullRequestAttempt(initial.threadId, checkedAt);
+        continue;
+      }
+      // Record what the check saw so the next pass can order candidates and a
+      // merge survives a restart without another gh call.
+      history.recordThreadPullRequestChecked(initial.threadId, {
+        state: checked.state,
+        mergedAt: checked.mergedAt,
+        checkedAt,
+      });
+      if (!pullRequestMerged(checked)) continue;
+      // Re-validate the admission facts immediately before settling: a turn may
+      // have started (in the store or the service), or the thread been
+      // archived/marked done, while gh ran.
+      if (history.threadIsBusy(initial.threadId) || this.settlementBlocked(initial.threadId)) {
+        continue;
+      }
+      if (!history.threadIsSettleEligible(initial.threadId)) continue;
+      if (
+        !prMergeSettlesThread({
+          mergedAt: checked.mergedAt,
+          lastUserAuthoredAt: history.latestUserAuthoredAt(initial.threadId),
+        })
+      ) {
+        continue;
+      }
+      if (this.pullRequestSweepAborted) break;
+      this.setThreadDone(initial.threadId, true);
+      settled++;
+      const closeIdle = this.options.closeIdleShells;
+      if (closeIdle) {
+        await closeIdle({
+          threadId: initial.threadId,
+          projectPath: current.projectPath,
+          worktreePath: current.worktreePath,
+        }).catch((err) => {
+          console.warn(`[agent] closing idle shells for ${initial.threadId} failed:`, err);
+        });
+        // Shutdown may have been requested while cleanup ran; do not start the
+        // settle script after it.
+        if (this.pullRequestSweepAborted) break;
+      }
+      const runScript = this.options.runSettleScript;
+      if (runScript) {
+        await runScript({
+          threadId: initial.threadId,
+          projectPath: current.projectPath,
+          cwd: current.worktreePath ?? current.projectPath,
+        }).catch((err) => {
+          console.warn(`[agent] settle script for ${initial.threadId} failed:`, err);
+        });
+      }
+    }
+    if (settled > 0) console.info(`[agent] settle-on-merge: settled ${settled} thread(s)`);
+    return settled;
+  }
+
+  /** Settle-on-merge runs on the same shape as retention: started at
+   *  construction, first pass off a one-shot delay, then a short interval.
+   *  Absent a checker (tests, embedders) the timer is not started. */
+  private ensurePullRequestSweep(): void {
+    if (
+      this.options.pullRequestSweepMs === 0 ||
+      !this.options.pullRequestChecker ||
+      this.pullRequestStartTimer
+    ) {
+      return;
+    }
+    this.pullRequestStartTimer = setTimeout(() => {
+      this.pullRequestStartTimer = null;
+      void this.sweepPullRequestSettlements().catch((err) => {
+        console.warn("[agent] settle-on-merge sweep failed:", err);
+      });
+      if (this.pullRequestTimer) return;
+      const timer = setInterval(() => {
+        void this.sweepPullRequestSettlements().catch((err) => {
+          console.warn("[agent] settle-on-merge sweep failed:", err);
+        });
+      }, this.options.pullRequestSweepMs ?? PR_SETTLE_SWEEP_MS);
+      timer.unref?.();
+      this.pullRequestTimer = timer;
+    }, this.options.pullRequestSweepInitialDelayMs ?? PR_SETTLE_INITIAL_DELAY_MS);
+    this.pullRequestStartTimer.unref?.();
   }
 
   /** Retention is about stored rows, not live sessions, so its timer starts at
@@ -3443,6 +3841,17 @@ export class AgentService {
       clearInterval(this.retentionTimer);
       this.retentionTimer = null;
     }
+    if (this.pullRequestStartTimer) {
+      clearTimeout(this.pullRequestStartTimer);
+      this.pullRequestStartTimer = null;
+    }
+    if (this.pullRequestTimer) {
+      clearInterval(this.pullRequestTimer);
+      this.pullRequestTimer = null;
+    }
+    // Invalidate any pass already awaiting gh, so it bails instead of settling
+    // threads during shutdown.
+    this.pullRequestSweepAborted = true;
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();
     this.parkedByThread.clear();

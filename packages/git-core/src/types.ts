@@ -259,6 +259,8 @@ export type CreateWorktreeOptions = {
   branch: string;
   /** Ref the new branch starts from. Defaults to HEAD. */
   base?: string;
+  /** Receive git's stderr while the checkout runs, for live progress. */
+  onStderr?: (chunk: string) => void;
 };
 
 export type GitCommitFile = {
@@ -351,6 +353,17 @@ export type GitHubPrCreateOptions = {
 };
 
 export type GitHubPrCreateResult = { number: number | null; url: string };
+
+/** The minimal state read a linked/branch PR check needs: enough to settle a
+ *  thread without pulling the whole PR view. `mergedAt` is the GitHub ISO
+ *  stamp; null when not merged. */
+export type GitHubPullRequestState = {
+  number: number;
+  url: string;
+  branch: string;
+  state: "open" | "closed" | "merged";
+  mergedAt: string | null;
+};
 
 /** The repo's README, for the About section's rendered markdown. */
 export type GitReadme = {

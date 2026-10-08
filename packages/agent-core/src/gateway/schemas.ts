@@ -2404,6 +2404,58 @@ export type ArchiveAppThreadInput = z.infer<typeof ArchiveAppThreadInputSchema>;
 export type DeleteAppThreadInput = z.infer<typeof DeleteAppThreadInputSchema>;
 export type RenameAppThreadInput = z.infer<typeof RenameAppThreadInputSchema>;
 
+export const LinkThreadPullRequestInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to link the pull request to, as app_list_threads reports it."),
+  repository: z
+    .string()
+    .optional()
+    .describe("The pull request's repository as owner/repo, when known."),
+  number: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("The pull request number, when known."),
+  url: z.string().min(1).describe("The pull request's URL."),
+  state: z
+    .enum(["open", "merged", "closed", "unknown"])
+    .optional()
+    .describe("The pull request's state at link time; omit when unknown."),
+});
+
+export const LINK_THREAD_PULL_REQUEST_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to link the pull request to, as app_list_threads reports it."),
+    repository: {
+      type: "string",
+      description: "The pull request's repository as owner/repo, when known.",
+    },
+    number: { type: "integer", description: "The pull request number, when known." },
+    url: { type: "string", description: "The pull request's URL." },
+    state: {
+      type: "string",
+      enum: ["open", "merged", "closed", "unknown"],
+      description: "The pull request's state at link time; omit when unknown.",
+    },
+  },
+  required: ["threadId", "url"],
+} satisfies GatewayRecord;
+
+export const UnlinkThreadPullRequestInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to unlink the pull request from, as app_list_threads reports it."),
+});
+
+export const UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to unlink the pull request from, as app_list_threads reports it."),
+  },
+} satisfies GatewayRecord;
+
+export type LinkThreadPullRequestInput = z.infer<typeof LinkThreadPullRequestInputSchema>;
+export type UnlinkThreadPullRequestInput = z.infer<typeof UnlinkThreadPullRequestInputSchema>;
+
 // ── providers & usage ────────────────────────────────────────────────────────
 
 export const USAGE_RANGES = ["1d", "7d", "30d", "all"] as const;
