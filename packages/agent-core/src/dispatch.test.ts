@@ -698,6 +698,68 @@ describe("thread dispatcher: restart background note", () => {
     expect(FakeAdapter.sent).toEqual([]);
   });
 });
+
+describe("thread dispatcher: durable continuations", () => {
+  beforeEach(() => {
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.turnCounter = 0;
+  });
+
+  test("an overdue continuation is recovered and dispatched at boot", async () => {
+    const first = await harness();
+    const recordedAt = Date.now() - 1_000;
+    first.store.scheduleContinuation({
+      threadId: THREAD,
+      kind: "quit-resume",
+      dueAt: recordedAt,
+      payloadJson: JSON.stringify({ prompt: "continue where you left off", recordedAt }),
+    });
+    first.store.close();
+
+    const second = await harness({ reopen: true });
+    const result = await second.dispatcher.resumeQuitInterruptedChatsAtBoot();
+    expect(result.resumed).toEqual([THREAD]);
+    expect(FakeAdapter.sent).toContain("continue where you left off");
+    // Consumed: a later boot must not run it again.
+    expect(second.store.listContinuationsForThread(THREAD)).toEqual([]);
+  });
+
+  test("a claim left by a boot that died before dispatching is recovered", async () => {
+    const first = await harness();
+    const store = first.store;
+    const recordedAt = Date.now() - 1_000;
+    store.scheduleContinuation({
+      threadId: THREAD,
+      kind: "quit-resume",
+      dueAt: recordedAt,
+      payloadJson: JSON.stringify({ prompt: "finish the job", recordedAt }),
+    });
+    // This boot claimed the row and then died before dispatching it.
+    expect(store.claimDueContinuations(Date.now())).toHaveLength(1);
+    store.close();
+
+    const second = await harness({ reopen: true });
+    const result = await second.dispatcher.resumeQuitInterruptedChatsAtBoot();
+    expect(result.resumed).toEqual([THREAD]);
+    expect(FakeAdapter.sent).toContain("finish the job");
+  });
+
+  test("a user turn before the due time cancels the continuation", async () => {
+    const { store, dispatcher } = await harness();
+    store.scheduleContinuation({
+      threadId: THREAD,
+      kind: "quit-resume",
+      dueAt: Date.now() + 60_000,
+      payloadJson: JSON.stringify({ prompt: "later", recordedAt: Date.now() }),
+    });
+
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "something the user said" });
+
+    expect(FakeAdapter.sent).toEqual(["something the user said"]);
+    expect(store.listContinuationsForThread(THREAD)).toEqual([]);
+  });
+});
+
 // The global assistant has no project, and its project path says so: a
 // sentinel, not a directory. It is the right thing to store and to scope tools
 // by — and the wrong thing to hand a child process, which is what took the

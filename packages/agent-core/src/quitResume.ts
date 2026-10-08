@@ -87,6 +87,7 @@ export type QuitResumeRecordRead =
 export type QuitResumeSkipReason =
   | "thread-missing"
   | "thread-archived"
+  | "thread-settled"
   | "turn-in-flight"
   | "turn-completed"
   | "dispatch-failed";

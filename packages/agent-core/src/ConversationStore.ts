@@ -25,6 +25,7 @@ import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
 import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
 import type { RestartCancelledBackgroundWork } from "./restartBackgroundNote.js";
+import { ContinuationRepo, type ContinuationRecord } from "./store/continuations.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -45,6 +46,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly queuedTurns: QueuedTurnRepo;
   private readonly agentInbox: AgentInboxRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
+  private readonly continuations: ContinuationRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
@@ -80,6 +82,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.queuedTurns = new QueuedTurnRepo(this.dbh);
     this.agentInbox = new AgentInboxRepo(this.dbh);
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
+    this.continuations = new ContinuationRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
@@ -480,11 +483,55 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }> {
     return this.workspaces.allThreadWorkspaces();
   }
+
   /** The background work a restart cancelled, captured at the boot seal,
    *  grouped by thread. Read-once. @see ConversationDb */
   takeRestartCancelledBackgroundWork(): Map<string, RestartCancelledBackgroundWork[]> {
     return this.dbh.takeRestartCancelledBackgroundWork();
   }
+
+  /** @see ContinuationRepo */
+  scheduleContinuation(
+    input: Parameters<ContinuationRepo["schedule"]>[0],
+  ): ContinuationRecord | null {
+    return this.continuations.schedule(input);
+  }
+
+  /** @see ContinuationRepo */
+  claimDueContinuations(now: number): ContinuationRecord[] {
+    return this.continuations.claimDue(now);
+  }
+
+  /** @see ContinuationRepo */
+  releaseOrphanedContinuationClaims(): void {
+    this.continuations.releaseOrphanedClaims();
+  }
+
+  /** @see ContinuationRepo */
+  clearContinuationClaim(continuationId: string): void {
+    this.continuations.clearClaim(continuationId);
+  }
+
+  /** @see ContinuationRepo */
+  deleteContinuation(continuationId: string): void {
+    this.continuations.deleteContinuation(continuationId);
+  }
+
+  /** Drop a thread's unclaimed continuations. @see ContinuationRepo */
+  cancelContinuationsForThread(threadId: string): number {
+    return this.continuations.cancelForThread(threadId);
+  }
+
+  /** @see ContinuationRepo */
+  nextContinuationDueAt(): number | null {
+    return this.continuations.nextDueAt();
+  }
+
+  /** @see ContinuationRepo */
+  listContinuationsForThread(threadId: string): ContinuationRecord[] {
+    return this.continuations.listForThread(threadId);
+  }
+
   /** @see WorkspaceRepo */
   setThreadWorkspace(
     threadId: string,
