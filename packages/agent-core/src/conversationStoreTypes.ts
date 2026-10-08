@@ -128,6 +128,13 @@ export type ThreadRow = {
   resume_session_at: string | null;
   done_at: number | null;
   last_visited_at: number | null;
+  /** Usage-limit state (v30): when a limit failure was recorded, and the
+   *  provider's reset time when it gave one. */
+  limited_at: number | null;
+  limit_reset_at: number | null;
+  /** Snooze state (v30): when it expires and when it was set. */
+  snoozed_until: number | null;
+  snoozed_at: number | null;
   /** Declared intent: "local" / "worktree". NULL on every row written before
    *  worktrees existed, which reads as local. */
   env_mode: string | null;
@@ -610,6 +617,10 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
      *  written before the column existed. Compared against `lastActivityAt`:
      *  the agent having spoken since is what makes a thread unread. */
     lastVisitedAt: row.last_visited_at ?? null,
+    limitedAt: row.limited_at ?? null,
+    limitResetAt: row.limit_reset_at ?? null,
+    snoozedUntil: row.snoozed_until ?? null,
+    snoozedAt: row.snoozed_at ?? null,
   };
   if (selection) meta.selection = selection;
   if (forkContext) meta.forkContext = forkContext;

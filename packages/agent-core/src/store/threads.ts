@@ -280,6 +280,51 @@ export class ThreadRepo {
     }
   }
 
+  /** Mark a thread limited by a provider usage limit (v30). `resetAt` is the
+   *  provider's own reset time, or null when it gave none — never guessed. */
+  setLimited(threadId: string, resetAt: number | null): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET limited_at = ?, limit_reset_at = ? WHERE thread_id = ?`).run(
+        Date.now(),
+        resetAt,
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setLimited failed:", err);
+    }
+  }
+
+  /** Clear a thread's limit mark (v30): real new work, or a manual resume. */
+  clearLimited(threadId: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE threads SET limited_at = NULL, limit_reset_at = NULL WHERE thread_id = ?`,
+      ).run(threadId);
+    } catch (err) {
+      console.error("[conversation-store] clearLimited failed:", err);
+    }
+  }
+
+  /** Set or clear a thread's snooze (v30). `until` null clears both stamps;
+   *  setting one records when it was set so a wake-early rule can compare. */
+  setSnooze(threadId: string, until: number | null): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET snoozed_until = ?, snoozed_at = ? WHERE thread_id = ?`).run(
+        until,
+        until === null ? null : Date.now(),
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setSnooze failed:", err);
+    }
+  }
+
   /** Record that the user has just had this thread in front of them.
    *
    *  Monotonic on purpose: a stamp only ever moves forward, so two surfaces

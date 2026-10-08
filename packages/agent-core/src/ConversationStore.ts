@@ -173,6 +173,21 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
+  setLimited(threadId: string, resetAt: number | null): void {
+    return this.threads.setLimited(threadId, resetAt);
+  }
+
+  /** @see ThreadRepo */
+  clearLimited(threadId: string): void {
+    return this.threads.clearLimited(threadId);
+  }
+
+  /** @see ThreadRepo */
+  setSnooze(threadId: string, until: number | null): void {
+    return this.threads.setSnooze(threadId, until);
+  }
+
+  /** @see ThreadRepo */
   setVisited(threadId: string, at: number, force = false): void {
     return this.threads.setVisited(threadId, at, force);
   }

@@ -822,6 +822,17 @@ export type StoredThreadMeta = {
    *
    *  Never read it alone — go through isThreadUnread. */
   lastVisitedAt?: number | null;
+  /** When a turn last failed on a provider usage limit (v30), or null. A real
+   *  state distinct from a plain failure: the thread is waiting out a provider
+   *  limit, not broken. `limitResetAt` is the provider's own reset time when it
+   *  gave one — null means unknown, never guessed. */
+  limitedAt?: number | null;
+  limitResetAt?: number | null;
+  /** When a snooze expires (v30), or null. A future value means the thread is
+   *  snoozed unless a wake-early rule clears it; `snoozedAt` is when it was
+   *  set, so a failure or completion after it can wake the thread early. */
+  snoozedUntil?: number | null;
+  snoozedAt?: number | null;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -1338,7 +1349,8 @@ export type ThreadStatus =
   | "waiting-for-user-input"
   | "idle"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  | "limited";
 
 /** What can park a thread: an approval the user must decide, or a question
  *  for the user. One vocabulary for the top-level and spawned-child status
