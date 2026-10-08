@@ -18,6 +18,12 @@ import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
+import { ThreadPullRequestRepo } from "./store/threadPullRequest.js";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestLinkInput,
+} from "./threadPullRequest.js";
+import type { LinkedPullRequestThread } from "./store/threadPullRequest.js";
 import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
@@ -49,6 +55,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly transcript: TranscriptRepo;
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
+  private readonly threadPullRequests: ThreadPullRequestRepo;
   private readonly events: EventIngestRepo;
   private readonly search: SearchRepo;
 
@@ -57,6 +64,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   constructor(userDataDir?: string) {
     this.dbh = new ConversationDb(userDataDir);
     this.threads = new ThreadRepo(this.dbh);
+    this.threadPullRequests = new ThreadPullRequestRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
     this.handIns = new HandInsRepo(this.dbh);
     this.events = new EventIngestRepo(this.dbh, {
@@ -161,6 +169,34 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadRepo */
   titleOrigin(threadId: string): "auto" | "manual" | null {
     return this.threads.titleOrigin(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  threadPullRequestLink(threadId: string): ThreadPullRequestLink | null {
+    return this.threadPullRequests.link(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  setThreadPullRequestLink(threadId: string, input: ThreadPullRequestLinkInput): boolean {
+    return this.threadPullRequests.setLink(threadId, input);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  clearThreadPullRequestLink(threadId: string): boolean {
+    return this.threadPullRequests.clearLink(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  recordThreadPullRequestChecked(
+    threadId: string,
+    input: { state: ThreadPullRequestLink["state"]; mergedAt: number | null; checkedAt: number },
+  ): void {
+    return this.threadPullRequests.recordChecked(threadId, input);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  linkedThreadPullRequests(limit: number): LinkedPullRequestThread[] {
+    return this.threadPullRequests.linkedThreads(limit);
   }
 
   /** @see ThreadRepo */

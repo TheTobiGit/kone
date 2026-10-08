@@ -28,6 +28,14 @@ import type { QuotaCapableProvider } from "@kone/agent-core/quota/index.js";
 import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
 import type { ThreadExportOutcome } from "@kone/agent-core/threadExport.js";
+import type {
+  RegenerateThreadTitleResult,
+  SetThreadPullRequestResult,
+} from "@kone/agent-core/AgentService.js";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestLinkInput,
+} from "@kone/agent-core/threadPullRequest.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type {
   ThreadExportDialogResult,
@@ -730,6 +738,21 @@ const api = {
     // touch recency ordering; the title.updated event follows on the stream.
     renameThread: (threadId: string, title: string): Promise<boolean> =>
       ipcRenderer.invoke("agent:rename-thread", threadId, title),
+    // Regenerate a thread's title from its whole conversation. Refuses a
+    // manually-named title (reason manual_title) rather than overwriting it.
+    regenerateThreadTitle: (threadId: string): Promise<RegenerateThreadTitleResult> =>
+      ipcRenderer.invoke("agent:regenerate-thread-title", threadId),
+    // The PR linked to a thread, and link/unlink. The link is durable and is
+    // what the settle-on-merge sweep reads.
+    linkThreadPullRequest: (
+      threadId: string,
+      link: ThreadPullRequestLinkInput,
+    ): Promise<SetThreadPullRequestResult> =>
+      ipcRenderer.invoke("agent:link-thread-pr", threadId, link),
+    unlinkThreadPullRequest: (threadId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:unlink-thread-pr", threadId),
+    threadPullRequestLink: (threadId: string): Promise<ThreadPullRequestLink | null> =>
+      ipcRenderer.invoke("agent:thread-pr", threadId),
     // Native save dialog for a thread export — the main process owns the
     // dialog, the renderer only suggests a file name. A dismissal resolves
     // `{ canceled: true }`, distinct from the export outcome below.
