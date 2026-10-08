@@ -2990,3 +2990,72 @@ describe("thread pull request link", () => {
     expect(rows[0]?.projectPath).toBe("/p");
   });
 });
+
+describe("project scripts and settle candidates", () => {
+  test("project scripts round-trip per path and kind, and clear", () => {
+    const store = freshStore();
+    expect(store.projectScript("/p", "setup")).toBeNull();
+    store.setProjectScript("/p", "setup", "bun install");
+    store.setProjectScript("/q", "settle", "docker compose down");
+    expect(store.projectScript("/p", "setup")).toBe("bun install");
+    expect(store.projectScript("/q", "settle")).toBe("docker compose down");
+    // A different kind or path is a different script.
+    expect(store.projectScript("/p", "settle")).toBeNull();
+    expect(store.projectScript("/q", "setup")).toBeNull();
+    store.setProjectScript("/p", "setup", null);
+    expect(store.projectScript("/p", "setup")).toBeNull();
+  });
+
+  test("settle candidates include linked and worktree threads, not local or archived", () => {
+    const store = freshStore();
+    for (const id of ["linked", "wt", "local", "archived"]) {
+      store.ensureThread({ threadId: id, projectPath: "/p", provider: "opencode" });
+    }
+    store.setThreadWorkspace("wt", {
+      envMode: "worktree",
+      worktreePath: "/p/.worktrees/wt",
+      requestedBranch: "feature",
+    });
+    store.setThreadWorkspace("local", { envMode: "local" });
+    store.setThreadPullRequestLink("linked", {
+      url: "https://x/pull/1",
+      number: 1,
+      state: "open",
+      checkedAt: 1,
+    });
+    store.setThreadPullRequestLink("archived", {
+      url: "https://x/pull/9",
+      number: 9,
+      state: "open",
+      checkedAt: 1,
+    });
+    store.setArchived("archived", true);
+
+    const ids = store
+      .settleThreadPullRequestCandidates(10)
+      .map((candidate) => candidate.threadId)
+      .sort();
+    expect(ids).toEqual(["linked", "wt"]);
+  });
+
+  test("latestUserAuthoredAt reads the newest prompt, not assistant activity", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    expect(store.latestUserAuthoredAt("t")).toBeNull();
+    store.recordUserBlock({ threadId: "t", text: "first", at: 100 });
+    store.applyEvent(turnStarted("t", "turn-1", 200));
+    expect(store.latestUserAuthoredAt("t")).toBe(100);
+    store.recordUserBlock({ threadId: "t", text: "second", at: 300 });
+    expect(store.latestUserAuthoredAt("t")).toBe(300);
+  });
+
+  test("threadIsBusy is true while a turn runs and false once it ends", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    expect(store.threadIsBusy("t")).toBe(false);
+    store.applyEvent(turnStarted("t", "turn-1", 10));
+    expect(store.threadIsBusy("t")).toBe(true);
+    store.applyEvent(turnCompleted("t", "turn-1", 20));
+    expect(store.threadIsBusy("t")).toBe(false);
+  });
+});

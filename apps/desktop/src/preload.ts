@@ -753,6 +753,15 @@ const api = {
       ipcRenderer.invoke("agent:unlink-thread-pr", threadId),
     threadPullRequestLink: (threadId: string): Promise<ThreadPullRequestLink | null> =>
       ipcRenderer.invoke("agent:thread-pr", threadId),
+    // Per-project setup / settle scripts (app_state, keyed by project path).
+    getProjectScript: (projectPath: string, kind: "setup" | "settle"): Promise<string | null> =>
+      ipcRenderer.invoke("agent:get-project-script", projectPath, kind),
+    setProjectScript: (
+      projectPath: string,
+      kind: "setup" | "settle",
+      command: string | null,
+    ): Promise<string | null> =>
+      ipcRenderer.invoke("agent:set-project-script", projectPath, kind, command),
     // Native save dialog for a thread export — the main process owns the
     // dialog, the renderer only suggests a file name. A dismissal resolves
     // `{ canceled: true }`, distinct from the export outcome below.

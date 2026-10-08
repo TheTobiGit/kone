@@ -499,6 +499,25 @@ export class TranscriptRepo {
     }
   }
 
+  /** The most recent user-authored prompt's `at`, or null when the thread has
+   *  none. The settle-on-merge sweep compares this with a PR's merge time:
+   *  a user who wrote after the merge still wants the thread, so it is not
+   *  settled. Assistant activity does not count — only the user's own words. */
+  latestUserAuthoredAt(threadId: string): number | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: MAX over one INTEGER column under one alias.
+      const row = db
+        .prepare(`SELECT MAX(at) AS at FROM blocks WHERE thread_id = ? AND role = 'user'`)
+        .get(threadId) as { at: number | null } | undefined;
+      return row?.at ?? null;
+    } catch (err) {
+      console.error("[conversation-store] latestUserAuthoredAt failed:", err);
+      return null;
+    }
+  }
+
   /** The child's elapsed-time readout: when its first turn started, when its
    *  last turn ended, how many turns are still running, and how the NEWEST
    *  assistant block settled. `endedAt` is null while anything is running — the
