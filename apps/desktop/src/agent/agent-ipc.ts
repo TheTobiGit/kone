@@ -297,6 +297,17 @@ export function registerAgentIpc(): void {
       // Mark done through the service, so thread.done.updated fans out to every
       // surface (the gateway tool's canonical path).
       setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      // Queue controls: list is a store read; the rest go through the service so
+      // mirrors and broadcasts stay in step (promote reuses "send now").
+      listQueuedTurns: (threadId: string) => store.listQueuedTurns(threadId),
+      editQueuedTurn: (threadId: string, queueId: string, input: string) =>
+        svc.editQueuedTurn(threadId, queueId, { input }),
+      reorderQueuedTurns: (threadId: string, queueIds: string[]) =>
+        svc.reorderQueuedTurns(threadId, queueIds),
+      cancelQueuedTurn: (threadId: string, queueId: string) =>
+        svc.cancelQueuedTurn(threadId, queueId),
+      promoteQueuedTurn: (threadId: string, queueId: string) =>
+        svc.sendQueuedTurnNow(threadId, queueId),
       stopThread: async (threadId) => {        const wasRunning = svc.hasLiveSession(threadId);
         await svc.stopSession(threadId);
         // `stopped` is the idempotent guarantee, not a torn-something-down

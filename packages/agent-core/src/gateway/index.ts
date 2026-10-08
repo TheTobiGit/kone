@@ -211,7 +211,16 @@ export interface GatewayInput {
    *  the store adapter in degraded form. */
   threadControls?: Pick<
     AppThreadsToolOptions,
-    "stopThread" | "archiveThread" | "deleteThread" | "renameThread" | "setThreadDone"
+    | "stopThread"
+    | "archiveThread"
+    | "deleteThread"
+    | "renameThread"
+    | "setThreadDone"
+    | "listQueuedTurns"
+    | "editQueuedTurn"
+    | "reorderQueuedTurns"
+    | "cancelQueuedTurn"
+    | "promoteQueuedTurn"
   >;
   /** Provider status, quota, usage, and maintenance backing the app_* provider
    *  tools. Passed straight through to `createAppProviderTools` — the gateway

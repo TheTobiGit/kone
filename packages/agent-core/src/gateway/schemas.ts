@@ -2408,6 +2408,87 @@ export const SEARCH_APP_THREADS_JSON_SCHEMA = {
 
 export type SearchAppThreadsInput = z.infer<typeof SearchAppThreadsInputSchema>;
 
+/** Queue-control inputs (Phase 6). */
+export const ListQueuedTurnsInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose queued follow-ups to list."),
+});
+
+export const ListQueuedTurnsJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose queued follow-ups to list."),
+  },
+} satisfies GatewayRecord;
+
+export const EditQueuedTurnInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-up to edit."),
+  queueId: z.string().min(1).describe("The queued row to edit, as app_list_queued_turns reports it."),
+  input: z.string().min(1).describe("The new prompt text."),
+});
+
+export const EditQueuedTurnJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-up to edit."),
+    queueId: { type: "string", description: "The queued row to edit, as app_list_queued_turns reports it." },
+    input: { type: "string", description: "The new prompt text." },
+  },
+  required: ["threadId", "queueId", "input"],
+} satisfies GatewayRecord;
+
+export const ReorderQueuedTurnsInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-ups to reorder."),
+  queueIds: z
+    .array(z.string().min(1))
+    .describe("The waiting rows in the order they should run, as app_list_queued_turns reports them."),
+});
+
+export const ReorderQueuedTurnsJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-ups to reorder."),
+    queueIds: {
+      type: "array",
+      items: { type: "string" },
+      description: "The waiting rows in the order they should run, as app_list_queued_turns reports them.",
+    },
+  },
+  required: ["threadId", "queueIds"],
+} satisfies GatewayRecord;
+
+export const CancelQueuedTurnInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-up to cancel."),
+  queueId: z.string().min(1).describe("The queued row to cancel, as app_list_queued_turns reports it."),
+});
+
+export const CancelQueuedTurnJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-up to cancel."),
+    queueId: { type: "string", description: "The queued row to cancel, as app_list_queued_turns reports it." },
+  },
+  required: ["threadId", "queueId"],
+} satisfies GatewayRecord;
+
+export const PromoteQueuedTurnInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-up to run now."),
+  queueId: z.string().min(1).describe("The queued row to run now, as app_list_queued_turns reports it."),
+});
+
+export const PromoteQueuedTurnJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-up to run now."),
+    queueId: { type: "string", description: "The queued row to run now, as app_list_queued_turns reports it." },
+  },
+  required: ["threadId", "queueId"],
+} satisfies GatewayRecord;
+
+export type EditQueuedTurnInput = z.infer<typeof EditQueuedTurnInputSchema>;
+export type ReorderQueuedTurnsInput = z.infer<typeof ReorderQueuedTurnsInputSchema>;
+export type CancelQueuedTurnInput = z.infer<typeof CancelQueuedTurnInputSchema>;
+export type PromoteQueuedTurnInput = z.infer<typeof PromoteQueuedTurnInputSchema>;
+
 // ── providers & usage ────────────────────────────────────────────────────────
 
 export const USAGE_RANGES = ["1d", "7d", "30d", "all"] as const;
