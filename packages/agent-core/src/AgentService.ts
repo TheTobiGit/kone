@@ -21,6 +21,8 @@ import {
   restoreCheckpoint,
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
+import { generateThreadTitleFromContext } from "./threadTitle.js";
+import { formatThreadTitleContext } from "./threadTitleContext.js";
 import { copyTurnStamp, isCompactionSupported } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -231,8 +233,29 @@ export type AgentServiceOptions = {
    *  injected by tests. Defaults to the app-wide store when absent. */
   historyStore?: Pick<
     ConversationStore,
-    "setArchived" | "setDone" | "threadMeta" | "staleThreadIds"
+    | "setArchived"
+    | "setDone"
+    | "threadMeta"
+    | "staleThreadIds"
+    | "setTitle"
+    | "titleOrigin"
+    | "titleMessages"
+    | "threadWorkspace"
   >;
+  /** Whole-conversation title generation, injected by tests so no CLI spawns.
+   *  Defaults to the real provider one-shot. */
+  generateContextTitle?: (input: {
+    cwd: string;
+    context: string;
+    provider: ProviderKind;
+    model?: string;
+  }) => Promise<string | null>;
+  /** Rename a thread's generated worktree branch after its title. Injected by
+   *  the desktop layer, where git lives; absent in tests and embedders. */
+  renameWorkspaceBranch?: (input: {
+    worktreePath: string;
+    title: string;
+  }) => Promise<string | null>;
   /** The conversation store's turn-checkpoint slice the pre-turn snapshot
    *  path needs, injected by tests. Defaults to the app-wide store when
    *  absent; pass null to disable checkpoints. Which queue slice was injected
@@ -282,6 +305,20 @@ export type RevertTurnCheckpointResult =
  *  preview/revert paths formats a thrown value or a leftover-files report the
  *  same way, instead of each repeating the coercion. */
 type FailedCheckpoint = { ok: false; reason: "failed"; detail?: string };
+
+/** Outcome of regenerating a thread's title from its whole conversation.
+ *  `manual_title` is the refusal that matters: the user named the thread, so
+ *  kone leaves their words alone. `no-workdir` means the thread's directory
+ *  cannot be resolved, `empty` that the thread has no user/assistant prose to
+ *  title from, and `generation_failed` that the provider one-shot returned
+ *  nothing. `changed` false means the model proposed the title it already
+ *  had. */
+export type RegenerateThreadTitleResult =
+  | { ok: true; title: string; changed: boolean }
+  | {
+      ok: false;
+      reason: "unknown" | "manual_title" | "no-workdir" | "empty" | "generation_failed";
+    };
 
 /** The line in front of the turn kone steer ended the last one to deliver
  *  (docs/agent-delivery-design.md §7). */
@@ -2626,6 +2663,84 @@ export class AgentService {
       done,
       doneAt: done ? at : DONE_CLEARED,
     });
+  }
+
+  /** Regenerate a thread's title from its whole conversation — the explicit
+   *  path behind the "Regenerate title" action and the gateway tool. Reads the
+   *  thread's prose (threadTitleContext picks what matters: user intent first,
+   *  assistant findings after, reasoning dropped), asks the thread's own
+   *  provider for a short title, and persists it through the same
+   *  thread.title.updated event the first-turn rename uses.
+   *
+   *  Two things it refuses: a thread whose current title the user typed
+   *  (`manual_title` — regeneration must never overwrite a rename), and a
+   *  thread with nothing to title from. A generated title that names the
+   *  thread it already had reports `changed: false` and writes nothing. When
+   *  the thread's worktree branch was generated from its title, the rename
+   *  follows it. */
+  async regenerateThreadTitle(threadId: string): Promise<RegenerateThreadTitleResult> {
+    const history = this.historyStore;
+    if (!history) return { ok: false, reason: "unknown" };
+    const meta = history.threadMeta(threadId);
+    if (!meta) return { ok: false, reason: "unknown" };
+    if (history.titleOrigin(threadId) === "manual") return { ok: false, reason: "manual_title" };
+    const context = formatThreadTitleContext(history.titleMessages(threadId));
+    if (!context) return { ok: false, reason: "empty" };
+    // An unknown or unreadable workspace skips naming rather than running the
+    // one-shot in the shared checkout: it must run where the thread runs.
+    let cwd: string | null = null;
+    try {
+      const workspace = history.threadWorkspace(threadId);
+      if (workspace) cwd = threadWorkingDir({ projectPath: meta.projectPath, ...workspace });
+    } catch {
+      cwd = null;
+    }
+    if (!cwd) return { ok: false, reason: "no-workdir" };
+
+    const generate = this.options.generateContextTitle ?? generateThreadTitleFromContext;
+    let title: string | null = null;
+    try {
+      title = await generate({
+        cwd,
+        context,
+        provider: meta.provider,
+        model: meta.model ?? undefined,
+      });
+    } catch (err) {
+      console.error("[thread-title] regeneration failed:", err);
+      title = null;
+    }
+    if (!title?.trim()) return { ok: false, reason: "generation_failed" };
+    title = title.trim();
+
+    const changed = title !== meta.title;
+    if (changed) {
+      history.setTitle(threadId, title);
+      this.dispatch({
+        type: "thread.title.updated",
+        threadId,
+        provider: meta.provider,
+        at: Date.now(),
+        source: "kone.store",
+        title,
+      });
+      // Follow the worktree branch rename off the hot path: a generated branch
+      // name came from the old title and should not outlive it.
+      const rename = this.options.renameWorkspaceBranch;
+      if (rename) {
+        try {
+          const workspace = history.threadWorkspace(threadId);
+          if (workspace?.worktreePath) {
+            void rename({ worktreePath: workspace.worktreePath, title }).catch((err) => {
+              console.warn("[thread-title] worktree branch rename failed:", err);
+            });
+          }
+        } catch {
+          // A workspace that cannot be read leaves the branch as it was.
+        }
+      }
+    }
+    return { ok: true, title, changed };
   }
 
   /** The thread-retention sweep, in two passes over the same timer:

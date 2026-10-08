@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1228,6 +1228,15 @@ function migration0028TurnSeals(db: DatabaseSync): void {
   `);
 }
 
+/** Who owns a thread's current title. `auto` marks a title kone wrote (the
+ *  first-turn fallback or a generated one); `manual` marks a title the user
+ *  typed. Regeneration reads this and never overwrites `manual`. Null is
+ *  legacy: rows written before the distinction existed, left as unknown rather
+ *  than guessed from the text. */
+function migration0029TitleOrigin(db: DatabaseSync): void {
+  addColumn(db, "threads", "title_origin", "TEXT CHECK (title_origin IS NULL OR title_origin IN ('auto', 'manual'))");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1257,6 +1266,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
+  { id: 29, name: "TitleOrigin", run: migration0029TitleOrigin },
 ];
 
 export interface MigrationOptions {

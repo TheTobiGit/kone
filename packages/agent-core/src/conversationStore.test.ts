@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 28 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 29 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -264,6 +264,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 26, name: "InboxUncertainAt" },
       { migration_id: 27, name: "QueuedTurnDurableRowid" },
       { migration_id: 28, name: "TurnSeals" },
+      { migration_id: 29, name: "TitleOrigin" },
     ]);
 
     const idx = raw
@@ -540,6 +541,8 @@ describe("pins, selection and rename", () => {
     expect(store.listThreads("/p").map((t) => t.threadId)).toEqual(["b", "a"]);
     expect(store.threadMeta("a")?.title).toBe("Renamed at 300");
     expect(store.threadMeta("a")?.lastActivityAt).toBe(100);
+    // The user's rename is recorded as manual, so regeneration leaves it alone.
+    expect(store.titleOrigin("a")).toBe("manual");
 
     // Real activity does move it.
     store.recordUserBlock({ threadId: "a", text: "third", at: 400 });
@@ -547,6 +550,22 @@ describe("pins, selection and rename", () => {
 
     // Unchanged title is a no-op (false = nothing broadcast).
     expect(store.renameThread("a", "Renamed at 300")).toBe(false);
+  });
+
+  test("setTitle marks a title auto, renameThread marks it manual", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    expect(store.titleOrigin("a")).toBeNull();
+
+    store.setTitle("a", "Generated title");
+    expect(store.titleOrigin("a")).toBe("auto");
+
+    store.renameThread("a", "My own title");
+    expect(store.titleOrigin("a")).toBe("manual");
+
+    // A later automatic write flips ownership back to kone.
+    store.setTitle("a", "Regenerated title");
+    expect(store.titleOrigin("a")).toBe("auto");
   });
 });
 
