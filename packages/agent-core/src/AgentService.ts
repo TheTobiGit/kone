@@ -91,6 +91,7 @@ import type {
   SessionStartInput,
   ThreadArchiveResult,
   ThreadCompactionCapability,
+  ThreadStopResult,
   TurnSendOptions,
   TurnStartResult,
   UserInputAnswers,
@@ -161,7 +162,10 @@ const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
 /** A `/compact` command turn (the fallback for providers without a native
  *  call) is an ordinary turn, but it still must settle eventually — this long. */
 const FALLBACK_COMPACT_TIMEOUT_MS = 10 * 60_000;
-
+/** How long a stop waits for a session start still in flight before answering
+ *  with `confirmedStopped: false`. The start is separately marked cancelled, so
+ *  it is torn down whenever it lands; this only bounds the caller's wait. */
+const STOP_START_WAIT_MS = 10_000;
 /** How long a queued follow-up that failed to start waits before each retry.
  *  One delay per retry, so a row gets the first try plus this many more; when
  *  they run out the row is held for the user rather than retried forever. */
@@ -465,6 +469,13 @@ export class AgentService {
   private readonly openStep = new Map<string, { itemId: string; kind: Exclude<RuntimeItemKind, "tool_call"> }>();
   /** Threads whose session is being started right now. */
   private readonly startingSessions = new Set<string>();
+  /** The in-flight start per thread, so a stop issued while a session is
+   *  connecting can wait for it and then tear it down instead of racing it. */
+  private readonly startingSessionPromises = new Map<string, Promise<Session>>();
+  /** Threads whose in-flight session start a stop has cancelled. The start
+   *  still completes inside the adapter; this makes the service tear it down
+   *  before it can run a turn. */
+  private readonly startCancelled = new Set<string>();
   /** Per-thread tail of queued-row deliveries — the drain and Send now share
    *  it, so one row at a time is handed to the provider (withQueueDelivery). */
   private readonly queueDeliveries = new Map<string, Promise<void>>();
@@ -920,10 +931,18 @@ export class AgentService {
 
   async startSession(input: SessionStartInput): Promise<Session> {
     this.startingSessions.add(input.threadId);
+    const starting = this.startSessionNow(input);
+    this.startingSessionPromises.set(input.threadId, starting);
     try {
-      return await this.startSessionNow(input);
+      return await starting;
     } finally {
       this.startingSessions.delete(input.threadId);
+      // A start that failed (or was never reached) leaves no cancellation to
+      // honour; a successful one has already consumed it above.
+      this.startCancelled.delete(input.threadId);
+      if (this.startingSessionPromises.get(input.threadId) === starting) {
+        this.startingSessionPromises.delete(input.threadId);
+      }
     }
   }
 
@@ -954,6 +973,13 @@ export class AgentService {
     this.routing.set(input.threadId, input.provider);
     this.ensureWedgeWatchdog();
     this.ensureIdleReaper();
+    // A stop that arrived while the session was connecting: the provider has
+    // taken the start, so tear the session down now rather than letting it run
+    // a turn. Queued work is not promoted into a session being stopped.
+    if (this.startCancelled.delete(input.threadId)) {
+      await this.stopSession(input.threadId);
+      return session;
+    }
     // Crash-recovery drain: queued rows survive a quit, so when the thread
     // reopens and a session comes up, any rows still waiting are promoted
     // into it (boot itself has no sessions, so there is nothing to drain
@@ -1691,7 +1717,42 @@ export class AgentService {
   async interruptTurn(threadId: string): Promise<void> {
     this.userQuestions.cancel(threadId);
     this.endAsked.add(threadId);
+    // A session still connecting has no adapter turn to interrupt yet. Record
+    // the request; startSessionNow tears the session down the moment the
+    // provider hands it back.
+    if (this.startingSessions.has(threadId)) {
+      this.startCancelled.add(threadId);
+      return;
+    }
     return this.adapterForThread(threadId).interruptTurn(threadId);
+  }
+
+  /** Stop a thread, reporting the request and its confirmation separately. The
+   *  session teardown awaits a start still in flight first, so a stop issued
+   *  while a session is connecting acts on the real session rather than racing
+   *  it. Never throws. */
+  async stopThread(threadId: string): Promise<ThreadStopResult> {
+    const starting = this.startingSessionPromises.get(threadId);
+    // A session still connecting counts as one that exists: the start is real,
+    // and a caller reading this to narrate the stop must not call it idle.
+    const wasRunning = this.hasLiveSession(threadId) || this.startingSessions.has(threadId);
+    const interruptRequested = wasRunning || this.isBusy(threadId);
+    // A session coming up must not run a turn after this stop: mark it, and
+    // startSessionNow tears it down on arrival.
+    if (this.startingSessions.has(threadId)) this.startCancelled.add(threadId);
+    if (starting) {
+      // Wait out the start so the teardown below reaches a session that
+      // exists, but never block the caller: a provider that never finishes
+      // connecting answers `confirmedStopped: false` and is still torn down
+      // when it does, because `startCancelled` is already set. A start that
+      // failed has nothing to stop.
+      await withTimeout(starting, STOP_START_WAIT_MS, "session start before stop").catch(
+        () => undefined,
+      );
+    }
+    await this.stopSession(threadId);
+    const confirmedStopped = !this.hasLiveSession(threadId) && !this.isBusy(threadId);
+    return { interruptRequested, confirmedStopped, wasRunning };
   }
 
   /** Did somebody ask to end what `threadId` was doing — an interrupt or a

@@ -299,12 +299,12 @@ export function registerAgentIpc(): void {
     },
     threadControls: {
       stopThread: async (threadId) => {
-        const wasRunning = svc.hasLiveSession(threadId);
-        await svc.stopSession(threadId);
         // `stopped` is the idempotent guarantee, not a torn-something-down
-        // report: stopSession no-ops on an idle thread, which still leaves it
-        // with nothing running. `wasRunning` says whether a session existed.
-        return { stopped: true, wasRunning };
+        // report: stopThread no-ops on an idle thread, which still leaves it
+        // with nothing running. The service splits the request
+        // (interruptRequested) from its confirmation (confirmedStopped).
+        const result = await svc.stopThread(threadId);
+        return { stopped: true, ...result };
       },
       archiveThread: async (threadId, archived) => {
         const res = await svc.setThreadArchived(threadId, archived);

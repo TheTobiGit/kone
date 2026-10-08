@@ -274,7 +274,13 @@ function tools(
     availability?: ProviderAvailability[];
     threadId?: string;
     emit?: EmitEvent;
-    stopThread?: (threadId: string) => Promise<{ stopped: boolean; wasRunning: boolean; reason?: string }>;
+    stopThread?: (threadId: string) => Promise<{
+      stopped: boolean;
+      wasRunning: boolean;
+      interruptRequested: boolean;
+      confirmedStopped: boolean;
+      reason?: string;
+    }>;
     archiveThread?: (
       threadId: string,
       archived: boolean,
@@ -939,7 +945,7 @@ describe("app_stop_thread", () => {
       live: ["t-newest"],
       stopThread: async (id) => {
         stoppedId = id;
-        return { stopped: true, wasRunning: true };
+        return { stopped: true, wasRunning: true, interruptRequested: true, confirmedStopped: true };
       },
     }).call(makeCtx(), "app_stop_thread", { threadId: "t-newest" });
 
@@ -950,6 +956,8 @@ describe("app_stop_thread", () => {
       threadId: "t-newest",
       stopped: true,
       wasRunning: true,
+      interruptRequested: true,
+      confirmedStopped: true,
     });
   });
 

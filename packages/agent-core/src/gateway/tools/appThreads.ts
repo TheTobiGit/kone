@@ -236,9 +236,17 @@ export interface AppThreadsToolOptions {
   /** Stop a live thread's turn and session. `stopped` is the idempotent
    *  guarantee — true whenever the call leaves the thread with nothing
    *  running, including when it was already idle — so read `wasRunning` to
-   *  tell whether a live session actually existed. Kept (rather than dropped)
-   *  so MCP clients can keep confirming quiescence off the one field. */
-  stopThread?: (threadId: string) => Promise<{ stopped: boolean; wasRunning: boolean; reason?: string }>;
+   *  tell whether a live session actually existed. `interruptRequested` says a
+   *  stop was worth issuing (a session, a turn, or a session still
+   *  connecting) and `confirmedStopped` says the teardown was observed to have
+   *  finished, so a client can distinguish "asked" from "done". */
+  stopThread?: (threadId: string) => Promise<{
+    stopped: boolean;
+    wasRunning: boolean;
+    interruptRequested: boolean;
+    confirmedStopped: boolean;
+    reason?: string;
+  }>;
   /** Archive or unarchive a thread and its subtree. Canonical in production
    *  (service-backed: cancels the subtree's queued turns and announces the
    *  change); the store fallback writes the column only. */
@@ -460,9 +468,22 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     structuredContent: payload,
   });
 
-  const stopWasRunning = async (threadId: string): Promise<boolean> => {
-    if (options.stopThread) return (await options.stopThread(threadId)).wasRunning;
-    return options.isThreadLive?.(threadId) ?? false;
+  const stopThreadOp = async (
+    threadId: string,
+  ): Promise<{ interruptRequested: boolean; confirmedStopped: boolean; wasRunning: boolean }> => {
+    if (options.stopThread) {
+      const res = await options.stopThread(threadId);
+      return {
+        interruptRequested: res.interruptRequested,
+        confirmedStopped: res.confirmedStopped,
+        wasRunning: res.wasRunning,
+      };
+    }
+    // Degraded (see the ownership note on AppThreadsToolOptions): with no
+    // service-backed stop there is no request to record and no teardown to
+    // confirm, so report only whether a session looked live.
+    const wasRunning = options.isThreadLive?.(threadId) ?? false;
+    return { interruptRequested: wasRunning, confirmedStopped: false, wasRunning };
   };
 
   const archiveOp = async (threadId: string, archived: boolean): Promise<string[]> => {
@@ -1041,18 +1062,20 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
   ): Promise<GatewayToolResult> => {
     const input = StopAppThreadInputSchema.parse(rawInput);
     requireThread(input.threadId);
-    const wasRunning = await stopWasRunning(input.threadId);
-    const summary = wasRunning
+    const stop = await stopThreadOp(input.threadId);
+    const summary = stop.wasRunning
       ? `Stopped active session and turn for thread "${input.threadId}".`
       : `Thread "${input.threadId}" was already idle; no active turn was running.`;
     return singleLine(summary, {
       threadId: input.threadId,
       // Constant by design, not by omission: stopping is idempotent, so an
       // idle thread is left with nothing running exactly like a stopped live
-      // one. `wasRunning` says whether a session actually existed; clients
-      // confirm quiescence off `stopped` alone.
+      // one. `wasRunning` says whether a session actually existed; the two
+      // below split the request from its confirmation.
       stopped: true,
-      wasRunning,
+      interruptRequested: stop.interruptRequested,
+      confirmedStopped: stop.confirmedStopped,
+      wasRunning: stop.wasRunning,
       summary,
     });
   };
