@@ -162,6 +162,19 @@ export type AgentPersona = {
   instructions?: string;
 };
 
+/** A provider-native fork to perform when a fork thread's session first starts:
+ *  the source conversation and the turn to fork at. Codex forks via
+ *  `thread/fork` (`beforeTurnId` → `lastTurnId`); Claude via the SDK
+ *  `forkSession` (`assistantUuid` → `upToMessageId`). */
+export type NativeForkTarget = {
+  /** The source thread's native conversation id (StoredThreadMeta.conversationId). */
+  conversationId: string;
+  /** Codex: continue after this provider turn id. */
+  beforeTurnId?: string;
+  /** Claude: the assistant message uuid to fork up to. */
+  assistantUuid?: string;
+};
+
 export type SessionStartInput = {
   /** Caller-chosen thread id — kone owns this; the CLI's native id is mapped
    *  onto it via ProviderRefs. */
@@ -211,6 +224,11 @@ export type SessionStartInput = {
    *  at the last assistant message instead. Absent for every other provider and
    *  for Claude conversations that never produced an assistant message. */
   resumeSessionAt?: string;
+  /** A native fork to perform when this session starts (see NativeForkTarget):
+   *  the provider forks the source conversation at the turn and this session
+   *  continues the fork. Present only for a native fork thread's first start;
+   *  absent resumes or starts fresh as usual. */
+  forkFrom?: NativeForkTarget;
   /** MCP gateway connection for this session, filled main-side by
    *  AgentService.startSession when the gateway is live. The adapter injects
    *  it into the provider session's mcpServers config so the agent can call
@@ -1071,6 +1089,11 @@ export type ForkContext = {
    *  what the timeline's "Handed from" marker names. Only written for
    *  `"handoff"` forks. */
   sourceModel?: string;
+  /** A native fork to perform when this thread's session first starts: the
+   *  provider conversation to fork and the turn to fork at. Present only on a
+   *  native fork thread, whose import is empty — the first start asks the
+   *  provider to fork instead of replaying history. */
+  nativeFork?: NativeForkTarget;
   /** Block ids the one-shot replay omitted for lack of budget, recorded when
    *  the bootstrap was built so the agent can read the rest back and the
    *  timeline can say what was left out. Absent when nothing was omitted. */
@@ -1207,6 +1230,11 @@ export type ForkThreadAtTurnInput = {
     mode?: InteractionMode;
   };
   title?: string;
+  /** Whether the target provider can fork natively (the caller resolves this
+   *  from the adapter's supportsFork capability). When true and the source has
+   *  a native conversation id, the fork is native; otherwise it is the
+   *  portable branch import. */
+  supportsFork?: boolean;
 };
 
 export type ForkThreadAtTurnResult = {
@@ -2181,6 +2209,10 @@ export type AdapterCapabilities = {
   supportsToolEvents: boolean;
   /** Can resume a prior conversation. */
   supportsResume: boolean;
+  /** Can fork a prior conversation natively at a chosen turn (Codex
+   *  `thread/fork`, Claude `forkSession`). Absent reads as false; the portable
+   *  branch import is the fallback. */
+  supportsFork?: boolean;
   supportsModelList: boolean;
   /** Spawns provider-native subagents inside a turn and reports their nested
    *  transcripts (`subagent.*` events + items tagged with a run). */

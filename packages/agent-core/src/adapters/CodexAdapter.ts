@@ -825,6 +825,8 @@ export class CodexAdapter implements ProviderAdapter {
     streamsText: true,
     supportsToolEvents: true,
     supportsResume: true,
+    // Codex 0.159.2 supports `thread/fork` at a turn (lastTurnId).
+    supportsFork: true,
     supportsModelList: true,
     // A spawned subagent runs as its own Codex conversation; its items nest
     // under the spawning call as a run (see openSubagentRun).
@@ -1038,8 +1040,20 @@ export class CodexAdapter implements ProviderAdapter {
       // (thread pruned/expired),
       // fall back to a fresh `thread/start` rather than failing the open.
       let response: CodexJsonObject | undefined;
-      let openMethod: "thread/start" | "thread/resume" = "thread/start";
-      if (input.resume) {
+      let openMethod: "thread/start" | "thread/resume" | "thread/fork" = "thread/start";
+      if (input.forkFrom) {
+        // A native fork: ask the app-server to fork the source thread at the
+        // chosen turn and continue the returned thread. No thread/resume — the
+        // fork is the new conversation, with the source's history through the
+        // turn already in it.
+        openMethod = "thread/fork";
+        const forkParams: CodexJsonObject = {
+          ...overrides,
+          threadId: input.forkFrom.conversationId,
+        };
+        if (input.forkFrom.beforeTurnId) forkParams.lastTurnId = input.forkFrom.beforeTurnId;
+        response = await rpc.call<CodexJsonObject>("thread/fork", forkParams);
+      } else if (input.resume) {
         try {
           openMethod = "thread/resume";
           response = await rpc.call<CodexJsonObject>("thread/resume", {

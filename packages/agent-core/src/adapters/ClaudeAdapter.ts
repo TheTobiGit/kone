@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import {
+  forkSession,
   query,
   type AccountInfo,
   type CanUseTool,
@@ -14,6 +15,10 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+
+/** Options for the SDK's `forkSession`, kept named so the type is a contract
+ *  rather than an inline anonymous object. */
+type ForkSessionArgs = { dir: string; upToMessageId?: string };
 
 import {
   buildClaudeEnv,
@@ -185,6 +190,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     streamsText: true,
     supportsToolEvents: true,
     supportsResume: true,
+    // The SDK's forkSession forks a session up to a message id.
+    supportsFork: true,
     supportsModelList: true,
     supportsSubagents: true,
     // No native compaction call — Claude compacts itself at the auto-compact
@@ -458,17 +465,29 @@ export class ClaudeAdapter implements ProviderAdapter {
     };
     if (input.model) options.model = input.model;
     if (effort) options.effort = effort;
+    // A native fork: fork the source Claude session at the chosen message and
+    // continue the returned session id. The fork is a fresh native session
+    // carrying the source's history through the message.
+    let resumeId = input.resume;
+    if (input.forkFrom) {
+      const forkOptions: ForkSessionArgs = { dir: input.cwd };
+      if (input.forkFrom.assistantUuid) forkOptions.upToMessageId = input.forkFrom.assistantUuid;
+      const forked = await forkSession(input.forkFrom.conversationId, forkOptions);
+      resumeId = forked.sessionId;
+    }
     // Resume a prior Claude Code conversation by its session id so the new
     // query continues with its full transcript/context (the SDK's supported
     // resume surface). The resumed run reports its own session id via
     // system/init, which refreshes the stored conversationId on the next
     // turn.completed.
-    if (input.resume) options.resume = input.resume;
+    if (resumeId) options.resume = resumeId;
     // Anchor the resume at the last assistant message: the SDK cannot
     // passes the same `resumeSessionAt: lastAssistantUuid` pair). The anchor
     // is the persisted StoredThreadMeta.resumeSessionAt, refreshed live from
     // assistant messages (see handleMessage).
-    if (input.resume && input.resumeSessionAt) options.resumeSessionAt = input.resumeSessionAt;
+    if (resumeId && input.resumeSessionAt && !input.forkFrom) {
+      options.resumeSessionAt = input.resumeSessionAt;
+    }
     if (permissionMode === "bypassPermissions") options.allowDangerouslySkipPermissions = true;
     // The kone MCP gateway (docs/mcp-gateway-design.md): the session's
     // loopback connection, minted at startSession. The agent gets the
@@ -485,7 +504,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       requestedModel: input.model,
       effort,
       mode,
-      lastAssistantUuid: input.resumeSessionAt,
+      lastAssistantUuid: input.forkFrom?.assistantUuid ?? input.resumeSessionAt,
       query: q,
       prompt,
       abort,
