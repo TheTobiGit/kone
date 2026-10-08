@@ -3,6 +3,9 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { initTestRepo } from "@kone/git-core/testRepo.js";
+import { git } from "@kone/git-core/core.js";
+
 import { classifyGhError } from "./ghError.js";
 
 // github.ts imports electron's shell at module top (used only on PR-link
@@ -10,9 +13,42 @@ import { classifyGhError } from "./ghError.js";
 mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 
 // SAFETY: the dynamically imported module is exactly ./github's own exports.
-const { commitAuthors, contributors, me, prDetail, prs, repo, status } = (await import(
-  "./github.js"
-)) as typeof import("./github.js");
+const { branchPullRequest, commitAuthors, contributors, me, prDetail, prs, repo, status } =
+  (await import("./github.js")) as typeof import("./github.js");
+
+describe("branchPullRequest outcome", () => {
+  test("a repo with no GitHub remote reports the lookup unavailable, not no-PR", async () => {
+    const dir = await initTestRepo("kone-gh-branch-");
+    try {
+      const outcome = await branchPullRequest(dir, "feature");
+      // gh is missing, unauthenticated, or has no remote here — all of which are
+      // "unknown", never "there is no PR".
+      expect(outcome.available).toBe(false);
+      expect(outcome.pullRequest).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed repository resolution is unavailable, not a known-empty PR list", async () => {
+    const dir = await initTestRepo("kone-gh-branch-");
+    try {
+      // A remote gh cannot resolve: `gh pr list` fails with NOT_FOUND, which
+      // also covers a removed/inaccessible repository — never "no PR".
+      await git(dir, [
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/kone-nonexistent-org-xyz/nonexistent-repo-xyz.git",
+      ]);
+      const outcome = await branchPullRequest(dir, "feature");
+      expect(outcome.available).toBe(false);
+      expect(outcome.pullRequest).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("classifyGhError", () => {
   test("maps gh auth failures to NOT_AUTHENTICATED", () => {

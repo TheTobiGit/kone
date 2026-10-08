@@ -134,6 +134,33 @@ export class WorkspaceRepo {
     }
   }
 
+  /** Whether any thread besides `exceptThreadId` still uses this worktree and
+   *  is not settled. A shared worktree is not one thread's to clean up when it
+   *  settles: another live thread may be running a shell there. Archived
+   *  threads don't count, and a thread whose done mark is newer than its last
+   *  activity is settled. An unreadable store answers true — fail closed, so
+   *  an unknown never closes someone else's shell. */
+  worktreeHasOtherLiveThreads(worktreePath: string, exceptThreadId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return true;
+    try {
+      // SAFETY: the projection is the constant 1 under the alias asked for.
+      const row = db
+        .prepare(
+          `SELECT 1 AS one FROM threads
+            WHERE worktree_path = ? AND thread_id <> ?
+              AND archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+            LIMIT 1`,
+        )
+        .get(worktreePath, exceptThreadId) as { one: number } | undefined;
+      return row !== null && row !== undefined;
+    } catch (err) {
+      console.error("[conversation-store] worktreeHasOtherLiveThreads failed:", err);
+      return true;
+    }
+  }
+
   /** Whether any remaining thread row still names this worktree directory.
    *  Read AFTER deleteThread: a path the deleted subtree shared with a thread
    *  outside it (a reopened thread adopting its predecessor's directory) must

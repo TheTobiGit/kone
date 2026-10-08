@@ -29,6 +29,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { truncateThreadTitle } from "../../threadTitle.js";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestLinkInput,
+} from "../../threadPullRequest.js";
 import { projectThreadStatus } from "../../spawnProjection.js";
 import {
   modelChainOf,
@@ -72,6 +76,10 @@ import {
   READ_APP_THREAD_JSON_SCHEMA,
   RenameAppThreadInputSchema,
   RENAME_APP_THREAD_JSON_SCHEMA,
+  LinkThreadPullRequestInputSchema,
+  LINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+  UnlinkThreadPullRequestInputSchema,
+  UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
@@ -84,6 +92,8 @@ import {
   type ReadAppThreadInput,
   type SendAppThreadMessageInput,
   type StartAppThreadInput,
+  type LinkThreadPullRequestInput,
+  type UnlinkThreadPullRequestInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
@@ -148,6 +158,12 @@ export interface AppThreadsStore {
    *  (recency untouched), but change-detecting — false when the row is missing
    *  or the title is unchanged, so callers only announce real changes. */
   renameThread?(threadId: string, title: string): boolean;
+  /** Persist (or clear) a linked pull request on a thread. The settle sweep
+   *  reads it to know when a merged PR means the thread is done. Absent, the
+   *  link tools refuse. */
+  setThreadPullRequestLink?(threadId: string, input: ThreadPullRequestLinkInput): boolean;
+  clearThreadPullRequestLink?(threadId: string): boolean;
+  threadPullRequestLink?(threadId: string): ThreadPullRequestLink | null;
   setArchived?(
     threadId: string,
     archived: boolean,
@@ -1239,6 +1255,50 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     });
   };
 
+  const unlinkPullRequestHandler = async (
+    _ctx: GatewayToolContext,
+    params: UnlinkThreadPullRequestInput,
+  ): Promise<GatewayToolResult> => {
+    if (!store.clearThreadPullRequestLink) {
+      throw failInternal(params.threadId, "unlink pull request", "unsupported");
+    }
+    const changed = store.clearThreadPullRequestLink(params.threadId);
+    return singleLine(
+      changed
+        ? `Unlinked the pull request from thread "${params.threadId}".`
+        : `Thread "${params.threadId}" had no linked pull request.`,
+      { threadId: params.threadId, changed },
+    );
+  };
+
+  const linkPullRequestHandler = async (
+    _ctx: GatewayToolContext,
+    params: LinkThreadPullRequestInput,
+  ): Promise<GatewayToolResult> => {
+    if (!store.setThreadPullRequestLink) {
+      throw failInternal(params.threadId, "link pull request", "unsupported");
+    }
+    const link: ThreadPullRequestLinkInput = {
+      repository: params.repository ?? null,
+      number: params.number ?? null,
+      url: params.url,
+      state: params.state ?? null,
+      checkedAt: Date.now(),
+    };
+    if (!store.setThreadPullRequestLink(params.threadId, link)) {
+      throw failInternal(params.threadId, "link pull request", "missing");
+    }
+    return singleLine(`Linked ${params.url} to thread "${params.threadId}".`, {
+      threadId: params.threadId,
+      pullRequest: {
+        repository: link.repository ?? "",
+        number: link.number ?? 0,
+        url: link.url,
+        state: link.state ?? "unknown",
+      },
+    });
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -1360,6 +1420,33 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Use `app_rename_thread` to give a conversation a clear, descriptive title that reflects its topic.",
       ],
       handler: renameHandler,
+    },
+    {
+      name: "app_link_thread_pr",
+      description:
+        "Link a pull request to a conversation, so the app knows which PR the thread delivered and can settle the thread when that PR merges. Replaces any existing link. Pass the PR URL and, when known, its repository (owner/repo) and number.",
+      inputSchema: LinkThreadPullRequestInputSchema,
+      jsonSchema: LINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_link_thread_pr`: link a pull request to a conversation so it can settle on merge.",
+      promptGuidelines: [
+        "Link a PR when the user names one for a thread, or when a thread's work corresponds to a PR they opened. Do not invent a PR number or URL.",
+      ],
+      handler: linkPullRequestHandler,
+    },
+    {
+      name: "app_unlink_thread_pr",
+      description:
+        "Remove the pull request linked to a conversation. The thread then no longer settles on that PR's merge.",
+      inputSchema: UnlinkThreadPullRequestInputSchema,
+      jsonSchema: UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_unlink_thread_pr`: remove the pull request linked to a conversation.",
+      promptGuidelines: ["Unlink only when the user asks, or the link is for the wrong PR."],
+      handler: unlinkPullRequestHandler,
     },
   ];
 }
