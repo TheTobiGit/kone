@@ -1248,6 +1248,24 @@ export type ForkThreadAtTurnResult = {
   status: "created" | "exists";
 };
 
+/** Deliver a fork's or side chat's outcome back into its source thread as an
+ *  attributed summary block. Data only — the caller emits the timeline event. */
+export type MergeBackInput = {
+  sourceThreadId: string;
+  forkThreadId: string;
+  /** The summary to deliver. When omitted, the fork's latest assistant reply
+   *  is used. */
+  summaryText?: string;
+  at?: number;
+};
+
+export type MergeBackResult = {
+  sourceThreadId: string;
+  forkThreadId: string;
+  /** The attributed (system-sender) block written into the source. */
+  block: Extract<StoredBlock, { role: "user" }>;
+};
+
 /** Where a stored block came from: a live conversation row (`"native"`) or a
  *  fork import (`"fork-import"`). Imported rows carry their original `at` and
  *  are not activity — they never refresh a thread's `updated_at`. */
