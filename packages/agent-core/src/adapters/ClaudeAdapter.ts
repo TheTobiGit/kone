@@ -64,7 +64,7 @@ import {
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
-import { errorText, isResumeRefusalError } from "./errors.js";
+import { errorText, isResumeRefusalError, limitResetFromError } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import { buildSkillPrompt } from "../skillInvocation.js";
@@ -1650,6 +1650,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       reason,
     };
     if (detail) aborted.message = detail;
+    // A limit result can carry the reset (rate_limit_event / resetsAt); read it
+    // before the payload is flattened to text.
+    const resetAt = limitResetFromError(message, Date.now());
+    if (resetAt !== null) aborted.limitResetAt = resetAt;
     this.emit(aborted);
   }
 

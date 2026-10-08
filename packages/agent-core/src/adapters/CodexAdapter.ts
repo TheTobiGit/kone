@@ -42,6 +42,7 @@ import {
   errorText,
   isNonFatalCodexError,
   isRecoverableCodexResumeError,
+  limitResetFromError,
 } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { normalizeUserInputQuestions, readUserInputText } from "./userInputQuestions.js";
@@ -1496,7 +1497,18 @@ export class CodexAdapter implements ProviderAdapter {
       if (turnId && session.activeTurnId === turnId) {
         session.activeTurnId = undefined;
         session.liveTurnIds.delete(turnId);
-        this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "failed", message: fullMessage });
+        // A limit failure can carry the provider's reset in codexErrorInfo or
+        // additionalDetails; read it before the message is flattened to text.
+        const aborted: Extract<RuntimeEvent, { type: "turn.aborted" }> = {
+          ...this.base(session),
+          type: "turn.aborted",
+          turnId,
+          reason: "failed",
+          message: fullMessage,
+        };
+        const resetAt = limitResetFromError(errorRecord ?? params, Date.now());
+        if (resetAt !== null) aborted.limitResetAt = resetAt;
+        this.emit(aborted);
       }
       this.emit({ ...this.base(session), type: "session.state.changed", state: "error", message: fullMessage });
     });

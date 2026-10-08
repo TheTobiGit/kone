@@ -2022,7 +2022,7 @@ export type RuntimeEvent =
       queueIds: string[];
     })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
-  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string })
+  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string; /** The provider's own reset time (epoch millis) when the failure is a usage limit that carried one. */ limitResetAt?: number })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
   // turn itself: it belongs in that run's `items`, not the assistant block's.
   | (BaseEvent & {
