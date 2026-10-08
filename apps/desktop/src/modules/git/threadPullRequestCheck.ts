@@ -24,7 +24,11 @@ export interface PullRequestStateRef {
 
 export interface ThreadPullRequestCheckDeps {
   fetchState: (ref: PullRequestStateRef) => Promise<GitHubPullRequestState | null>;
-  fetchBranchPr: (branch: string) => Promise<GitHubPullRequestState | null>;
+  /** Branch discovery returns whether the lookup was available, so a missing or
+   *  unauthenticated gh is unknown rather than "no PR". */
+  fetchBranchPr: (
+    branch: string,
+  ) => Promise<{ available: boolean; pullRequest: GitHubPullRequestState | null }>;
 }
 
 export interface ThreadPullRequestCheckInput {
@@ -79,10 +83,11 @@ export async function checkThreadPullRequest(
   }
   if (!input.branch) return { link: null, unavailable: false };
   try {
-    const state = await deps.fetchBranchPr(input.branch);
-    if (!state) return { link: null, unavailable: false };
+    const outcome = await deps.fetchBranchPr(input.branch);
+    if (!outcome.available) return { link: null, unavailable: true };
+    if (!outcome.pullRequest) return { link: null, unavailable: false };
     return {
-      link: linkFromState({ repository: "", number: 0, url: "" }, state, checkedAt),
+      link: linkFromState({ repository: "", number: 0, url: "" }, outcome.pullRequest, checkedAt),
       unavailable: false,
     };
   } catch {

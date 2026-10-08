@@ -127,6 +127,60 @@ export class ThreadPullRequestRepo {
     }
   }
 
+  /** Re-read one thread as a settle candidate using the same selection as
+   *  settleCandidates, ignoring the backoff. Used to validate that a check's
+   *  inputs (project, branch, worktree, link) are unchanged after gh ran and to
+   *  derive cleanup from the live workspace, not a stale one. */
+  threadPullRequestCandidate(threadId: string): ThreadPullRequestCandidate | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names the link columns plus the thread's
+      // project/branch/place; branch falls back to requested_branch.
+      const row = db
+        .prepare(
+          `SELECT thread_id, project_path,
+                  COALESCE(NULLIF(branch, ''), requested_branch) AS branch,
+                  worktree_path, ${LINK_COLUMNS}
+             FROM threads
+            WHERE thread_id = ?
+              AND archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+              AND (
+                (linked_pr_url IS NOT NULL AND linked_pr_url <> '')
+                OR (worktree_path IS NOT NULL AND worktree_path <> '')
+              )
+            LIMIT 1`,
+        )
+        .get(threadId) as
+        | {
+            thread_id: string;
+            project_path: string;
+            branch: string | null;
+            worktree_path: string | null;
+            linked_pr_repository: string | null;
+            linked_pr_number: number | null;
+            linked_pr_url: string | null;
+            linked_pr_state: string | null;
+            linked_pr_checked_at: number | null;
+            linked_pr_merged_at: number | null;
+          }
+        | undefined;
+      if (!row) return null;
+      const link = rowToLink(row);
+      return {
+        threadId: row.thread_id,
+        projectPath: row.project_path,
+        branch: row.branch,
+        worktreePath: row.worktree_path,
+        link: link.url || link.number > 0 ? link : null,
+      };
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest candidate failed:", err);
+      return null;
+    }
+  }
+
   /** Record what the latest check saw without touching the link identity. Used
    *  by the settle sweep so a merge is visible next time without another gh
    *  call. */
