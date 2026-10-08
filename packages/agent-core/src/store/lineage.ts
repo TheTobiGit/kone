@@ -819,6 +819,36 @@ export class LineageRepo {
     }
   }
 
+  /** Record the block/item ids a fork's one-shot replay could not fit, on the
+   *  still-pending fork context. Written when the bootstrap is built, before
+   *  the turn runs, so the note survives even if the turn fails. No-op when
+   *  nothing was omitted or the thread has no pending fork context. */
+  recordForkOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    if (omittedBlockIds.length === 0 && omittedItemIds.length === 0) return;
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      // SAFETY: same single-column projection as threadForkContext.
+      const row = db
+        .prepare(`SELECT fork_context_json FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { fork_context_json: string | null } | undefined;
+      const ctx = parseJsonObject<ForkContext>(row?.fork_context_json ?? null);
+      if (!ctx || ctx.bootstrapStatus !== "pending") return;
+      if (omittedBlockIds.length > 0) ctx.omittedBlockIds = [...omittedBlockIds];
+      if (omittedItemIds.length > 0) ctx.omittedItemIds = [...omittedItemIds];
+      db.prepare(`UPDATE threads SET fork_context_json = ? WHERE thread_id = ?`).run(
+        JSON.stringify(ctx),
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] recordForkOmittedHistory failed:", err);
+    }
+  }
+
   // ── thread spawning (agent-owned child threads) ────────────────────────────
   // A running agent opens a NEW thread on any installed provider via the MCP
   // gateway (docs/thread-spawning-design.md): the child is a first-class
