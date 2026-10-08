@@ -417,15 +417,19 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     } catch (error) {
       // Closes the stepper's last step when one is open. A thread that never
       // asked for a worktree has no stepper and nothing reads this.
-      this.reportWorkspaceStep(
-        input,
-        "start",
-        "failed",
-        error instanceof Error ? messageOf(error, "Could not start.") : "Could not start.",
-      );
+      const detail =
+        error instanceof Error ? messageOf(error, "Could not start.") : "Could not start.";
+      this.reportWorkspaceStep(input, "start", "failed", detail);
+      // The setup card's agent stage fails with the session, not before it.
+      this.worktreeSetup.finish(input.threadId, "failed", detail);
       throw error;
     }
     this.reportWorkspaceStep(input, "start", "done");
+    // The card is done only now: the provider session actually came up.
+    if (this.worktreeSetup.get(input.threadId)) {
+      this.worktreeSetup.stage(input.threadId, { stage: "agent", status: "running" });
+      this.worktreeSetup.finish(input.threadId, "done");
+    }
     // The provider conversation exists the moment startSession resolves.
     // Capture its id NOW — durably — rather than waiting for the session.started
     // fold (which also captures it): a crash in the window between the CLI
@@ -1179,6 +1183,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // is nothing to fetch, because the stepper lists it and waits for it. Only
     // a new branch has a starting point to freshen — a named branch that
     // already exists is moved in as it stands.
+    this.worktreeSetup.stage(input.threadId, { stage: "fetch", status: "running" });
     step("fetch", "running");
     let freshNote: string | undefined;
     if (this.freshenWorkspaceBase && !request.branch) {
@@ -1263,12 +1268,28 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       this.worktreeSetup.stage(input.threadId, { stage: "setup-script", status: "skipped" });
     }
 
+    // A cancel during the setup script is honoured here: the script is the
+    // longest await in the build, and linking/starting after a cancel would
+    // hand the user a worktree they backed out of.
+    if (this.cancelledWorkspaces.delete(input.threadId)) {
+      await this.discardWorkspace(input.cwd, made.path, {
+        branch: made.branch,
+        reclaimGeneratedBranch:
+          made.generatedBranch === true && made.attachedExisting !== true,
+      });
+      this.store.setThreadWorkspace(input.threadId, { envMode: "local", requestedBranch: null });
+      step("link", "failed", "Cancelled.");
+      this.worktreeSetup.finish(input.threadId, "cancelled", "Cancelled.");
+      throw GitError.classified("WORKSPACE_CANCELLED", "Preparing the worktree was cancelled.");
+    }
+
     step("link", "running");
     this.store.setThreadWorkspace(input.threadId, { worktreePath: made.path, requestedBranch: null });
     step("link", "done");
     step("start", "running");
-    this.worktreeSetup.stage(input.threadId, { stage: "agent", status: "running" });
-    this.worktreeSetup.finish(input.threadId, "done");
+    // The agent stage is completed in startThread, once the session has
+    // actually started (or failed) — not here, where the provider has not been
+    // asked yet.
     return made.path;
   }
 
