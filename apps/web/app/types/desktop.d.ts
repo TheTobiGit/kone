@@ -754,6 +754,9 @@ export type ProviderConfig = {
   binaryPath?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
+   *  this provider (default 16000; clamped 1024–64000). */
+  handoffTokenCap?: number;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
@@ -2935,6 +2938,11 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** The provider's handoff history cap in tokens. */
+  getHandoffBudget: (provider: ProviderKind) => Promise<number>;
+  /** Set one provider's handoff history cap; merges and resolves to the
+   *  updated full map. */
+  setHandoffBudget: (provider: ProviderKind, cap: number) => Promise<ProviderSettingsMap>;
   /** How each provider's CLI is installed, and whether it's behind. Passing
    *  `checkLatest: false` keeps it entirely local (no registry call). */
   maintenance: (options?: {
