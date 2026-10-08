@@ -685,7 +685,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           `kone holds no message "${params.blockId}" in thread "${params.threadId}".`,
         );
       }
-      const message = readMessageRow(block, maxTextChars, textOffset, true);
+      const message = readMessageRow(block, maxTextChars, textOffset, params.representation ?? "rich");
       return {
         content: [
           {
@@ -734,7 +734,9 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       if (!page) {
         throw new GatewayToolError("not_found", `kone holds no thread "${params.threadId}".`);
       }
-      const messages = page.blocks.map((block) => readMessageRow(block, maxTextChars, textOffset, true));
+      const messages = page.blocks.map((block) =>
+        readMessageRow(block, maxTextChars, textOffset, params.representation ?? "rich"),
+      );
       const title = page.meta.title ?? params.threadId;
       const heading =
         messages.length === 0
@@ -776,7 +778,9 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       ? store.loadThreadPage(params.threadId, { limit, countBlocks: true })
       : null;
     const blocks = page ? page.blocks : thread.blocks.slice(-limit);
-    const messages = blocks.map((block) => readMessageRow(block, maxTextChars, textOffset));
+    const messages = blocks.map((block) =>
+      readMessageRow(block, maxTextChars, textOffset, params.representation ?? "prose"),
+    );
     const oldest = blocks[0];
     const hasMore = page ? page.hasMore : thread.blocks.length > messages.length;
     const nextCursor = page

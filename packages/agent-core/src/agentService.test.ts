@@ -2062,4 +2062,14 @@ describe("handoff window resolution", () => {
     await service.listModels("codex");
     expect(service.handoffWindowTokensFor("t-window")).toBe(200_000);
   });
+
+  test("a dropped requested override falls back to the stored model, not the reported window", async () => {
+    // The adapter keeps running the stored model when an invalid override is
+    // dropped, so the budget must use that model's window — not the thread's
+    // reported 128k.
+    FakeAdapter.models.codex = [{ id: "small", label: "8k", contextWindowTokens: 8_000 }];
+    const service = serviceFor(meta({ model: "small", contextWindow: 128_000 }));
+    await service.listModels("codex");
+    expect(service.handoffWindowTokensFor("t-window", "foreign-model")).toBe(8_000);
+  });
 });

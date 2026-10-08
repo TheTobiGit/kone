@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import {
   CHARS_PER_TOKEN,
   DEFAULT_HANDOFF_TOKEN_CAP,
+  coverageReserveChars,
   handoffBudget,
+  handoffHeadroomTokens,
   handoffWindowTokens,
   historicalBlockText,
   renderHistorySelection,
@@ -256,35 +258,48 @@ function replayForTurn(
   budget: HandoffBudgetOptions,
 ): { preamble: string; omittedBlockIds: string[]; omittedItemIds: string[] } | null {
   const boundary = boundaryBlock(input, framing.instruction);
-  // Charge every mandatory character of the rendered context — the boundary
-  // plus the kind's intro, title, branch line and delimiters — before any
-  // history. The selector reserves the coverage line from what remains.
-  const fixedChars = mandatoryFramingChars(framing.intro, thread.title, thread.branch, boundary.length);
-  const transportAvailable = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - fixedChars - 64;
-  const budgetTokens = handoffBudget({
+  // Mandatory framing (F) is everything except the user's new prompt (P): the
+  // kind's intro/title/branch lines, the `<sidechat_context>` and boundary
+  // delimiters, and the widest coverage line the selector could render. Both
+  // are charged once against the transport ceiling and the window; history is
+  // what remains under the cap.
+  const readBackTool = budget.readBackTool === undefined ? "app_read_thread" : budget.readBackTool;
+  const coverageReserve = coverageReserveChars(thread.threadId, thread.blocks.length, readBackTool);
+  const framingChars = mandatoryFramingChars(
+    framing.intro,
+    thread.title,
+    thread.branch,
+    boundary.length - input.length,
+    coverageReserve,
+  );
+  const { fit, historyTokens } = handoffBudget({
     tokenCap: budget.tokenCap ?? DEFAULT_HANDOFF_TOKEN_CAP,
     windowTokens: budget.windowTokens,
     nativeTokens: budget.nativeTokens,
-    fixedChars,
+    promptChars: input.length,
+    framingChars,
     attachments: budget.attachments,
-    transportCharCap: transportAvailable,
+    transportCharCap: SIDECHAT_SEND_TURN_MAX_INPUT_CHARS,
   });
-  // No room even for the framing: the kind's up-front refusal.
-  if (budgetTokens <= 0) throw new Error(framing.tooLong);
+  // The only refusal: the mandatory content (framing + prompt, and the
+  // attachment allowance against the window) cannot fit even with no history.
+  if (!fit) throw new Error(framing.tooLong);
   const replay = buildForkReplayContext(thread, {
-    budgetTokens,
+    budgetTokens: historyTokens,
     intro: framing.intro,
     include: framing.include,
     readBackTool: budget.readBackTool,
   });
   if (!replay) return null;
   const preamble = assembleSidechatPreamble(replay.context, input, framing.instruction);
+  // Defensive: assert both constraints on the REAL rendered size. The
+  // selection is already bounded, so this should never fire.
   const window = handoffWindowTokens({ reportedWindowTokens: budget.windowTokens });
   const native = budget.nativeTokens != null && budget.nativeTokens > 0 ? budget.nativeTokens : 0;
-  if (
-    preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS ||
-    Math.ceil(preamble.length / CHARS_PER_TOKEN) > window - native
-  ) {
+  const windowBudget = window - native - handoffHeadroomTokens(budget.windowTokens);
+  const transportTokens = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS / CHARS_PER_TOKEN);
+  const renderedTokens = Math.ceil(preamble.length / CHARS_PER_TOKEN);
+  if (renderedTokens > transportTokens || renderedTokens > windowBudget) {
     throw new Error(framing.tooLong);
   }
   return {
@@ -295,21 +310,23 @@ function replayForTurn(
 }
 
 /** The mandatory characters of a replay's rendered context, before any selected
- *  message: the kind's intro, its title and branch lines, the
- *  `<sidechat_context>` delimiters, and the boundary block (the instruction and
- *  the user's message). The coverage line is reserved separately by the
- *  selector, from the budget that remains after this. */
+ *  message and excluding the user's prompt: the kind's intro, its title and
+ *  branch lines, the `<sidechat_context>` delimiters, the boundary instruction
+ *  and tags, and the reserved coverage line. The prompt is charged separately. */
 function mandatoryFramingChars(
   intro: string,
   title: string | null | undefined,
   branch: string | null | undefined,
-  boundaryLength: number,
+  boundaryFramingLength: number,
+  coverageReserve: number,
 ): number {
   const lines = [intro];
   if (title) lines.push(`Original conversation title: ${title}`);
   if (branch) lines.push(`Git branch: ${branch}`);
   const wrapper = "<sidechat_context>\n\n</sidechat_context>\n\n";
-  return lines.join("\n\n").length + wrapper.length + boundaryLength + 8;
+  return (
+    lines.join("\n\n").length + wrapper.length + boundaryFramingLength + coverageReserve + 16
+  );
 }
 
 /** The one-shot replay handed to a session born from a hand-in: the thread's

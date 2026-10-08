@@ -389,6 +389,10 @@ export const ReadResponseInputSchema = z.object({
   /** Transcript only: start this many characters into the message text (for
    *  an oversized message). */
   textOffset: z.number().int().min(0).optional(),
+  /** Transcript only: which text to slice when continuing with textOffset —
+   *  "prose" (the default read) or "rich" (blockId/paged reads). Pass back
+   *  what the first slice reported. */
+  representation: z.enum(["prose", "rich"]).optional(),
 });
 
 export const ContinueThreadInputSchema = z.object({
@@ -596,6 +600,12 @@ export const READ_RESPONSE_JSON_SCHEMA = {
     textOffset: {
       type: "integer",
       description: "transcript only: start this many characters into the message text (for an oversized message).",
+    },
+    representation: {
+      type: "string",
+      enum: ["prose", "rich"],
+      description:
+        "transcript only: which text to slice when continuing with textOffset — \"prose\" (the default read) or \"rich\" (blockId/paged reads). Pass back what the first slice reported.",
     },
   },
   required: ["threadId"],
@@ -2141,6 +2151,12 @@ export const ReadAppThreadInputSchema = z.object({
     .min(0)
     .optional()
     .describe("Start this many characters into the message text (for an oversized message)."),
+  representation: z
+    .enum(["prose", "rich"])
+    .optional()
+    .describe(
+      "Which text to slice when continuing with textOffset: \"prose\" (the default read) or \"rich\" (blockId/paged reads). Pass back what the first slice reported.",
+    ),
 });
 
 export const READ_APP_THREAD_JSON_SCHEMA = {
@@ -2164,6 +2180,12 @@ export const READ_APP_THREAD_JSON_SCHEMA = {
     textOffset: {
       type: "integer",
       description: "Start this many characters into the message text (for an oversized message).",
+    },
+    representation: {
+      type: "string",
+      enum: ["prose", "rich"],
+      description:
+        "Which text to slice when continuing with textOffset: \"prose\" (the default read) or \"rich\" (blockId/paged reads). Pass back what the first slice reported.",
     },
   },
   required: ["threadId"],

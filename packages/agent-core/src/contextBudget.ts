@@ -91,40 +91,73 @@ export function handoffWindowTokens(input: {
 }
 
 /**
- * The token budget available to selected history for one replay.
+ * The history budget for one replay, and whether the mandatory content fits
+ * at all. Tokens are chars/4 throughout.
  *
- * `fixedChars` is every mandatory character of the rendered context — the
- * boundary wrapper and the user's message, plus the kind's intro, title,
- * branch line and `<sidechat_context>` delimiters. It is charged against the
- * total budget (the provider cap, the transport ceiling, and the window after
- * native usage and headroom), so framing that cannot fit leaves zero for
- * history and the caller refuses. The coverage line is reserved separately by
- * the selector, from what remains.
+ * `promptChars` is the user's new message; `framingChars` is every other
+ * mandatory character (the kind's intro/title/branch lines, the
+ * `<sidechat_context>` and boundary delimiters, and the reserved coverage
+ * line). `transportCharCap` is the whole send-turn ceiling, in characters.
+ *
+ * Zero-history fit is the ONLY refusal condition: F + P must fit the transport
+ * ceiling, and F + P + A must fit the window after native usage and headroom.
+ * The history budget then deducts each of cap, transport and window once:
+ * H = min(cap, T − F − P, W − F − P − A). H ≤ 0 is not a refusal — the caller
+ * proceeds with zero history and a coverage line saying everything was
+ * omitted. `headroom` is min(max(16k, window/4), window/2), so a small window
+ * still leaves room rather than being zero by construction.
  */
+export type HandoffBudgetResult = {
+  /** Whether the mandatory content (framing + prompt, and attachments against
+   *  the window) fits at all. False is the only refusal condition. */
+  fit: boolean;
+  /** Tokens available to selected history; 0 or less is not a refusal. */
+  historyTokens: number;
+};
+
 export function handoffBudget(input: {
   readonly tokenCap: number;
   readonly windowTokens?: number | null | undefined;
   readonly nativeTokens?: number | null | undefined;
-  readonly fixedChars: number;
+  readonly promptChars: number;
+  readonly framingChars: number;
   readonly attachments?: readonly ChatAttachment[] | undefined;
   readonly transportCharCap: number;
-}): number {
+}): HandoffBudgetResult {
   const window = handoffWindowTokens({ reportedWindowTokens: input.windowTokens });
   const native = input.nativeTokens != null && input.nativeTokens > 0 ? input.nativeTokens : 0;
-  const headroom = Math.max(
-    HANDOFF_HEADROOM_MIN_TOKENS,
-    Math.ceil(window / HANDOFF_HEADROOM_FRACTION),
+  const headroom = Math.min(
+    Math.max(HANDOFF_HEADROOM_MIN_TOKENS, Math.ceil(window / HANDOFF_HEADROOM_FRACTION)),
+    Math.floor(window / 2),
   );
   const transportTokens = Math.floor(Math.max(0, input.transportCharCap) / CHARS_PER_TOKEN);
-  const total = Math.min(
-    clampHandoffTokenCap(input.tokenCap),
-    transportTokens,
-    window - native - headroom,
+  const promptTokens = Math.ceil(Math.max(0, input.promptChars) / CHARS_PER_TOKEN);
+  const framingTokens = Math.ceil(Math.max(0, input.framingChars) / CHARS_PER_TOKEN);
+  const attachments = attachmentTokenAllowance(input.attachments ?? []);
+  const windowBudget = window - native - headroom;
+  const fit =
+    framingTokens + promptTokens <= transportTokens &&
+    framingTokens + promptTokens + attachments <= windowBudget;
+  const historyTokens = Math.max(
+    0,
+    Math.min(
+      clampHandoffTokenCap(input.tokenCap),
+      transportTokens - framingTokens - promptTokens,
+      windowBudget - framingTokens - promptTokens - attachments,
+    ),
   );
-  const fixedTokens =
-    Math.ceil(Math.max(0, input.fixedChars) / CHARS_PER_TOKEN) +
-    attachmentTokenAllowance(input.attachments ?? []);
-  return Math.max(0, total - fixedTokens);
+  return { fit, historyTokens };
+}
+
+/** The headroom kept free for the provider's own system prompt and the turns
+ *  that follow, for a window — the same rule handoffBudget applies, exposed so
+ *  a caller can validate a rendered preamble against the window. */
+export function handoffHeadroomTokens(windowTokens: number | null | undefined): number {
+  const window = handoffWindowTokens({ reportedWindowTokens: windowTokens });
+  return Math.min(
+    Math.max(HANDOFF_HEADROOM_MIN_TOKENS, Math.ceil(window / HANDOFF_HEADROOM_FRACTION)),
+    Math.floor(window / 2),
+  );
 }
 
 /** What one already-rendered message costs against the budget. */
@@ -269,6 +302,17 @@ function coverageText(
   return `Selected ${selected} intact message${selected === 1 ? "" : "s"}; omitted ${omitted}. ${HANDOFF_HISTORY_NOTE}${readBack}`;
 }
 
+/** The widest the coverage line can render for a thread — all items omitted,
+ *  with the largest counts and the read-back sentence. Reserved as mandatory
+ *  framing so the budget can never be overrun by the counters. */
+export function coverageReserveChars(
+  readThreadId: string,
+  maxItems: number,
+  readBackTool: string | null = "app_read_thread",
+): number {
+  return coverageText(readThreadId, 0, maxItems, readBackTool).length;
+}
+
 function findLastIndex(
   blocks: readonly HistoricalBlock[],
   predicate: (block: HistoricalBlock) => boolean,
@@ -315,9 +359,9 @@ export function selectHistoricalBlocks(input: {
   }
 
   const selected = new Set<number>();
-  // Reserve the coverage wrapper at its widest (every message omitted) so the
-  // running counts can never grow it past the budget.
-  let remaining = input.budgetTokens - historyBlockCost(coverageText(input.readThreadId, 0, candidates.length, readBackTool));
+  // The coverage line is already reserved by the caller (it is part of the
+  // mandatory framing), so the whole budget here is for messages.
+  let remaining = input.budgetTokens;
   const tryAdd = (index: number): void => {
     if (index < 0 || index >= candidates.length || selected.has(index)) return;
     const cost = historyBlockCost(candidates[index]!.text);
