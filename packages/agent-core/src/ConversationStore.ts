@@ -159,6 +159,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
+  titleOrigin(threadId: string): "auto" | "manual" | null {
+    return this.threads.titleOrigin(threadId);
+  }
+
+  /** @see ThreadRepo */
   setPinned(threadId: string, pinned: boolean): void {
     return this.threads.setPinned(threadId, pinned);
   }
@@ -542,6 +547,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see TranscriptRepo */
   loadThread(threadId: string): StoredThread | null {
     return this.transcript.loadThread(threadId);
+  }
+
+  /** @see TranscriptRepo */
+  titleMessages(threadId: string): import("./threadTitleContext.js").ThreadTitleMessage[] {
+    return this.transcript.titleMessages(threadId);
   }
 
   /** @see TranscriptRepo */

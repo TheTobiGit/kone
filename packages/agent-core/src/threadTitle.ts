@@ -199,25 +199,74 @@ export async function generateThreadTitle(input: {
    *  models work depends on the account (see generateWithOpenCode). */
   model?: string;
 }): Promise<string | null> {
-  const prompt = buildThreadTitlePrompt(input.message);
+  return requestGeneratedTitle({ ...input, prompt: buildThreadTitlePrompt(input.message) });
+}
+
+/** Regenerate a title from a whole-conversation context (see
+ *  threadTitleContext.ts). Same provider CLI call as the first-turn rename, a
+ *  different prompt: the context is already labelled with USER:/ASSISTANT:
+ *  messages, so the model is asked to summarize the conversation rather than a
+ *  single request. */
+export async function generateThreadTitleFromContext(input: {
+  cwd: string;
+  context: string;
+  provider: ProviderKind;
+  model?: string;
+}): Promise<string | null> {
+  return requestGeneratedTitle({
+    cwd: input.cwd,
+    provider: input.provider,
+    model: input.model,
+    prompt: buildContextThreadTitlePrompt(input.context),
+  });
+}
+
+function buildContextThreadTitlePrompt(context: string): string {
+  return [
+    "You generate concise chat thread titles from a whole conversation.",
+    "Return a JSON object with key: title.",
+    "Respond with only the JSON object, no prose and no code fences.",
+    "Rules:",
+    `- Summarize what the conversation is about in 3-${MAX_THREAD_TITLE_WORDS} words.`,
+    `- Never exceed ${MAX_THREAD_TITLE_WORDS} words.`,
+    "- Lead with the user's intent; use the assistant's findings only to sharpen it.",
+    "- Be specific: include distinguishing identifiers (PR/issue numbers, branch names, file or feature names, error codes).",
+    "- Two different conversations should never produce the same title if the text tells them apart.",
+    "- Use a short noun or verb phrase, not a full sentence.",
+    "- Avoid quotes, markdown, emoji, and trailing punctuation.",
+    "",
+    "Conversation:",
+    context.slice(0, 8_000),
+  ].join("\n");
+}
+
+/** Route a ready-made prompt to the thread's provider and clean what comes
+ *  back. Shared by the first-turn rename and whole-conversation regeneration so
+ *  both get the same model choice, timeouts and parsing. */
+async function requestGeneratedTitle(input: {
+  cwd: string;
+  prompt: string;
+  provider: ProviderKind;
+  model?: string;
+}): Promise<string | null> {
   try {
     const raw =
       input.provider === "claudeAgent"
-        ? await generateWithClaude({ cwd: input.cwd, prompt })
+        ? await generateWithClaude({ cwd: input.cwd, prompt: input.prompt })
         : input.provider === "opencode"
-          ? await generateWithOpenCode({ cwd: input.cwd, prompt, model: input.model })
+          ? await generateWithOpenCode({ cwd: input.cwd, prompt: input.prompt, model: input.model })
           : input.provider === "cursor"
-            ? await generateWithCursor({ cwd: input.cwd, prompt })
+            ? await generateWithCursor({ cwd: input.cwd, prompt: input.prompt })
             : input.provider === "droid"
-              ? await generateWithDroid({ cwd: input.cwd, prompt })
+              ? await generateWithDroid({ cwd: input.cwd, prompt: input.prompt })
               : input.provider === "cline"
                 ? // No one-shot surface worth spawning: `cline` prompt mode runs a
                   // full agent session on the user's account, so a title is not
                   // worth a turn. The thread keeps its message-derived title.
                   null
                 : input.provider === "antigravity"
-                  ? await generateWithAntigravity({ cwd: input.cwd, prompt })
-                  : await generateWithCodex({ cwd: input.cwd, prompt });
+                  ? await generateWithAntigravity({ cwd: input.cwd, prompt: input.prompt })
+                  : await generateWithCodex({ cwd: input.cwd, prompt: input.prompt });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;

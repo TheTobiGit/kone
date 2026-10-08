@@ -201,12 +201,16 @@ export class ThreadRepo {
   /** Persist a working title. Used for the first-turn word fallback and the
    *  subsequent agent-generated rename. Deliberately does NOT touch
    *  `updated_at` / `last_activity_at`: a rename is bookkeeping, not
-   *  conversation activity, and must not reshuffle the recents list. */
+   *  conversation activity, and must not reshuffle the recents list. Marks the
+   *  title `auto` — kone wrote it, so a later regeneration may replace it. */
   setTitle(threadId: string, title: string): void {
     const db = this.dbh.handle();
     if (!db) return;
     try {
-      db.prepare(`UPDATE threads SET title = ? WHERE thread_id = ?`).run(title, threadId);
+      db.prepare(`UPDATE threads SET title = ?, title_origin = 'auto' WHERE thread_id = ?`).run(
+        title,
+        threadId,
+      );
     } catch (err) {
       console.error("[conversation-store] setTitle failed:", err);
     }
@@ -214,8 +218,9 @@ export class ThreadRepo {
 
   /** User-initiated rename (agent:rename-thread). Same title-only semantics as
    *  setTitle — recency ordering is untouched, and an unchanged title is a
-   *  no-op. Returns whether the title actually changed, so the IPC layer only
-   *  broadcasts when something user-visible happened. */
+   *  no-op — but marks the title `manual`, so a later regeneration leaves the
+   *  user's words alone. Returns whether the title actually changed, so the
+   *  IPC layer only broadcasts when something user-visible happened. */
   renameThread(threadId: string, title: string): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
@@ -226,11 +231,33 @@ export class ThreadRepo {
         .get(threadId) as { title: string | null } | undefined;
       if (!current) return false;
       if (current.title === title) return false;
-      db.prepare(`UPDATE threads SET title = ? WHERE thread_id = ?`).run(title, threadId);
+      db.prepare(`UPDATE threads SET title = ?, title_origin = 'manual' WHERE thread_id = ?`).run(
+        title,
+        threadId,
+      );
       return true;
     } catch (err) {
       console.error("[conversation-store] renameThread failed:", err);
       return false;
+    }
+  }
+
+  /** Who owns the current title, or null when the row predates the distinction
+   *  (legacy) — the caller decides how to treat unknown. */
+  titleOrigin(threadId: string): "auto" | "manual" | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names only the nullable TEXT title_origin column.
+      const row = db
+        .prepare(`SELECT title_origin FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { title_origin: string | null } | undefined;
+      return row?.title_origin === "auto" || row?.title_origin === "manual"
+        ? row.title_origin
+        : null;
+    } catch (err) {
+      console.error("[conversation-store] titleOrigin failed:", err);
+      return null;
     }
   }
 

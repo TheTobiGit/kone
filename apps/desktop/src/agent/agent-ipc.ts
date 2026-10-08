@@ -141,7 +141,12 @@ export function getJobRunner(): JobRunner | null {
 
 /** The single AgentService instance (lazily created). */
 export function getAgentService(): AgentService {
-  if (!service) service = new AgentService();
+  // Title regeneration may rename a generated worktree branch; git lives out
+  // here, so the service is handed the capability rather than importing it.
+  if (!service)
+    service = new AgentService({
+      renameWorkspaceBranch: ({ worktreePath, title }) => renameGeneratedBranch(worktreePath, title),
+    });
   return service;
 }
 
@@ -510,7 +515,7 @@ export function registerAgentIpc(): void {
       proposedTitle: event.title,
     });
     if (!accepted) return null;
-    store.renameThread(event.threadId, accepted);
+    store.setTitle(event.threadId, accepted);
     return { event: { ...event, title: accepted }, journal: false };
   }
 
@@ -1172,6 +1177,13 @@ export function registerAgentIpc(): void {
     }
     return changed;
   });
+  // Regenerate a thread's title from the whole conversation, on explicit
+  // request. The service refuses when the user typed the current title
+  // (manual_title) or when there is nothing to title from; a successful
+  // regeneration broadcasts on its own via thread.title.updated.
+  ipcMain.handle("agent:regenerate-thread-title", (_event, threadId: string) =>
+    svc.regenerateThreadTitle(String(threadId)),
+  );
 }
 
 /** Record in-flight turns for resume after quit, then interrupt them. Called

@@ -4,6 +4,7 @@ import type { StoredThread } from "../types.js";
 import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, THREAD_USAGE_COLUMNS, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSeal, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import { decodeChunkArray, decodeStoredText, itemChunkArraySql } from "./itemTextChunks.js";
+import type { ThreadTitleMessage } from "../threadTitleContext.js";
 
 export class TranscriptRepo {
   constructor(private readonly dbh: ConversationDb) {}
@@ -442,6 +443,60 @@ export class TranscriptRepo {
     }
     const text = run.join("").trim();
     return text || null;
+  }
+
+  /** Every user prompt and every assistant text item, in arrival order, for a
+   *  whole-conversation title regeneration. Deliberately lightweight — it does
+   *  not assemble blocks or subagents the way loadThread does, because a title
+   *  needs only the prose: user blocks as `user`, assistant_text items as
+   *  `assistant`, and nothing else (reasoning and plan items are dropped by the
+   *  context builder, so they are not even read here). Rows are merged on `at`
+   *  so a turn's items and the prompt that started it interleave correctly. */
+  titleMessages(threadId: string): ThreadTitleMessage[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the projection names only the nullable TEXT columns plus the
+      // chunk array alias, exactly the shape read below.
+      const userRows = db
+        .prepare(
+          `SELECT text, at FROM blocks
+            WHERE thread_id = ? AND role = 'user'
+            ORDER BY seq`,
+        )
+        .all(threadId) as Array<{ text: string | null; at: number }>;
+      // SAFETY: same shape, with items' streaming chunks aliased in.
+      const itemRows = db
+        .prepare(
+          `SELECT text, text_json, at, ${itemChunkArraySql("items")} AS chunk_text FROM items
+            WHERE thread_id = ? AND kind = 'assistant_text'
+            ORDER BY seq`,
+        )
+        .all(threadId) as Array<{
+        text: string | null;
+        text_json: string | null;
+        at: number;
+        chunk_text: string | null;
+      }>;
+      const merged: Array<{ at: number; message: ThreadTitleMessage }> = [
+        ...userRows.map((row) => ({
+          at: row.at,
+          message: { role: "user" as const, text: row.text ?? "" },
+        })),
+        ...itemRows.map((row) => ({
+          at: row.at,
+          message: {
+            role: "assistant" as const,
+            text: decodeStoredText(row.text, row.text_json) + decodeChunkArray(row.chunk_text),
+          },
+        })),
+      ];
+      merged.sort((a, b) => a.at - b.at);
+      return merged.map((entry) => entry.message);
+    } catch (err) {
+      console.error("[conversation-store] titleMessages failed:", err);
+      return [];
+    }
   }
 
   /** The child's elapsed-time readout: when its first turn started, when its
