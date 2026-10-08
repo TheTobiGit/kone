@@ -207,4 +207,29 @@ describe("handInThread", () => {
     expect(store.pendingHandIn("t-live")).toBeNull();
     expect(sidechatBootstrapForTurn("t-live", "and after that?")).toBeNull();
   });
+
+  test("a replay that omits history records the omitted ids on the pending hand-in", async () => {
+    const store = await seedThread("t-omit");
+    // A large assistant turn that cannot fit a tiny budget.
+    store.recordUserBlock({ threadId: "t-omit", text: "keep this", at: 200 });
+    store.applyEvent(turnStarted("t-omit", "turn-big", 210));
+    store.applyEvent(textItem("t-omit", "turn-big", "i-big", "huge ".repeat(5_000)));
+    store.applyEvent(turnCompleted("t-omit", "turn-big", 250));
+    store.recordUserBlock({ threadId: "t-omit", text: "latest", at: 260 });
+
+    const { handInThread } = await import("./handIn.js");
+    const { sidechatBootstrapForTurn } = await import("./sidechat.js");
+    await handInThread(recordingSessions(), {
+      threadId: "t-omit",
+      target: { provider: "claudeAgent", model: "claude-sonnet-5" },
+    });
+
+    const preamble = sidechatBootstrapForTurn("t-omit", "go", {
+      windowTokens: 200_000,
+      tokenCap: 1_024,
+    });
+    expect(preamble).not.toBeNull();
+    const pending = store.pendingHandIn("t-omit");
+    expect(pending?.omittedBlockIds?.length).toBeGreaterThan(0);
+  });
 });

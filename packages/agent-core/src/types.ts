@@ -628,6 +628,12 @@ export type HandInRecord = {
   toModel?: string;
   /** Epoch millis when the thread changed hands. */
   at: number;
+  /** Block ids the one-shot replay omitted for lack of budget, recorded when
+   *  the bootstrap was built so the agent can read the rest back and the
+   *  timeline can say what was left out. Absent when nothing was omitted. */
+  omittedBlockIds?: string[];
+  /** Item ids inside the omitted blocks, for the same read-back. */
+  omittedItemIds?: string[];
 };
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
@@ -1063,6 +1069,12 @@ export type ForkContext = {
    *  what the timeline's "Handed from" marker names. Only written for
    *  `"handoff"` forks. */
   sourceModel?: string;
+  /** Block ids the one-shot replay omitted for lack of budget, recorded when
+   *  the bootstrap was built so the agent can read the rest back and the
+   *  timeline can say what was left out. Absent when nothing was omitted. */
+  omittedBlockIds?: string[];
+  /** Item ids inside the omitted blocks, for the same read-back. */
+  omittedItemIds?: string[];
 };
 
 /** The user-initiated fork kinds. `"side_chat"` borrows the transcript as
@@ -2233,6 +2245,11 @@ export type ProviderConfig = {
   antigravityGcpLocation?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays into
+   *  a session on this provider. The budget is still sized down from the target
+   *  model's window, native usage, the new prompt and headroom; this only caps
+   *  it. Absent uses the built-in default (see contextHandoff.ts). */
+  handoffTokenCap?: number;
 };
 
 /** Persisted install settings for every provider, keyed by provider. */

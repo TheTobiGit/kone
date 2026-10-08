@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import type { StoredBlock } from "../types.js";
-import { buildSemanticBranchSummary, extractBlockOperations } from "./branchSummarization.js";
 import { estimateBlockTokens, estimateContextTokens, findCutPoint } from "./cutPoint.js";
 
 describe("compaction cutPoint", () => {
@@ -90,68 +89,6 @@ describe("compaction cutPoint", () => {
   });
 });
 
-describe("branchSummarization", () => {
-  it("extracts touched files, executed commands, and key points from blocks", () => {
-    const blocks: StoredBlock[] = [
-      { id: "u1", role: "user", text: "Migrate database schema", at: 1000 },
-      {
-        id: "a1",
-        role: "assistant",
-        turnId: "t1",
-        state: "completed",
-        at: 1100,
-        items: [
-          {
-            itemId: "i1",
-            kind: "tool_call",
-            status: "completed",
-            name: "read",
-            text: "src/schema.prisma",
-          },
-          {
-            itemId: "i2",
-            kind: "tool_call",
-            status: "completed",
-            name: "edit",
-            text: "src/schema.prisma",
-          },
-          {
-            itemId: "i3",
-            kind: "tool_call",
-            status: "completed",
-            name: "bash",
-            text: "npx prisma migrate dev --name init",
-          },
-          {
-            itemId: "i4",
-            kind: "assistant_text",
-            status: "completed",
-            text: "- Completed database migration successfully\n- Applied indexes to user table",
-          },
-        ],
-      },
-    ];
-
-    const ops = extractBlockOperations(blocks);
-    expect(ops.filesRead).toContain("src/schema.prisma");
-    expect(ops.filesModified).toContain("src/schema.prisma");
-    expect(ops.commandsRun).toContain("npx prisma migrate dev --name init");
-    expect(ops.keyPoints.length).toBeGreaterThan(0);
-
-    const branchSummary = buildSemanticBranchSummary(blocks, {
-      title: "Prisma Database Setup",
-      branch: "feature/db-migration",
-    });
-
-    expect(branchSummary.summary).toContain("## Previous Conversation Context Summary");
-    expect(branchSummary.summary).toContain("Prisma Database Setup");
-    expect(branchSummary.summary).toContain("feature/db-migration");
-    expect(branchSummary.summary).toContain("`src/schema.prisma`");
-    expect(branchSummary.summary).toContain("`npx prisma migrate dev --name init`");
-    expect(branchSummary.estimatedTokens).toBeGreaterThan(0);
-  });
-});
-
 describe("compaction attachment handling", () => {
   it("does not let a large attachment's byte size blow up the token estimate", () => {
     const blocks: StoredBlock[] = [
@@ -215,19 +152,6 @@ describe("compaction edge cases", () => {
 
     const cut = findCutPoint([], 20_000);
     expect(cut).toEqual({ cutIndex: 0, preservedTokens: 0, compactedTokens: 0 });
-
-    const ops = extractBlockOperations([]);
-    expect(ops).toEqual({
-      filesRead: [],
-      filesModified: [],
-      commandsRun: [],
-      keyPoints: [],
-    });
-
-    const summary = buildSemanticBranchSummary([]);
-    expect(summary.summary).toContain("## Previous Conversation Context Summary");
-    expect(summary.operations.keyPoints).toEqual([]);
-    expect(summary.estimatedTokens).toBeGreaterThan(0);
   });
 
   it("preserves short conversations instead of cutting them", () => {

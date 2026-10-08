@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import type { HandInRecord, ProviderKind } from "../types.js";
@@ -11,7 +13,23 @@ export type HandInRow = {
   to_provider: string;
   to_model: string | null;
   at: number;
+  omitted_block_ids_json: string | null;
+  omitted_item_ids_json: string | null;
 };
+
+const OmittedIdArrayWire = z.array(z.string().min(1));
+
+/** Decode a JSON array of ids, tolerating a missing or malformed value by
+ *  answering "nothing recorded" rather than throwing on a hand-edited row. */
+function parseIdArray(raw: string | null | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = OmittedIdArrayWire.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.length > 0 ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** A stored hand-in row as the record the timeline reads. Blank models are
  *  dropped rather than carried as empty strings — nothing recorded is not the
@@ -31,6 +49,10 @@ export function handInRecordFromRow(row: HandInRow): HandInRecord {
   };
   if (row.from_model) record.fromModel = row.from_model;
   if (row.to_model) record.toModel = row.to_model;
+  const omittedBlockIds = parseIdArray(row.omitted_block_ids_json);
+  const omittedItemIds = parseIdArray(row.omitted_item_ids_json);
+  if (omittedBlockIds) record.omittedBlockIds = omittedBlockIds;
+  if (omittedItemIds) record.omittedItemIds = omittedItemIds;
   return record;
 }
 
@@ -67,8 +89,9 @@ export class HandInsRepo {
         withTransaction(db, () => {
           db.prepare(
             `INSERT INTO thread_hand_ins
-               (thread_id, from_provider, from_model, to_provider, to_model, at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+               (thread_id, from_provider, from_model, to_provider, to_model, at,
+                omitted_block_ids_json, omitted_item_ids_json)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
           ).run(
             input.threadId,
             input.fromProvider,
@@ -92,6 +115,8 @@ export class HandInsRepo {
         to_provider: input.toProvider,
         to_model: input.toModel ?? null,
         at: input.at,
+        omitted_block_ids_json: null,
+        omitted_item_ids_json: null,
       });
     } catch (err) {
       console.error("[conversation-store] writeHandIn failed:", err);
@@ -108,10 +133,11 @@ export class HandInsRepo {
     if (!db) return null;
     try {
       // SAFETY: the projection names exactly the columns migration 13
-      // creates on thread_hand_ins.
+      // creates on thread_hand_ins, plus migration 29's omitted-id columns.
       const row = db
         .prepare(
-          `SELECT thread_id, from_provider, from_model, to_provider, to_model, at
+          `SELECT thread_id, from_provider, from_model, to_provider, to_model, at,
+                  omitted_block_ids_json, omitted_item_ids_json
              FROM thread_hand_ins
             WHERE thread_id = ? AND bootstrap_status = 'pending'
             ORDER BY at DESC, hand_in_id DESC LIMIT 1`,
@@ -121,6 +147,37 @@ export class HandInsRepo {
     } catch (err) {
       console.error("[conversation-store] pendingHandIn failed:", err);
       return null;
+    }
+  }
+
+  /** Record the block/item ids a hand-in's one-shot replay could not fit, on
+   *  the still-pending row. Written when the bootstrap is built, before the
+   *  turn runs, so the note survives even if the turn fails. No-op when
+   *  nothing was omitted or no hand-in is pending. */
+  recordHandInOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    if (omittedBlockIds.length === 0 && omittedItemIds.length === 0) return;
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      this.dbh.durably(db, () =>
+        db
+          .prepare(
+            `UPDATE thread_hand_ins
+                SET omitted_block_ids_json = ?, omitted_item_ids_json = ?
+              WHERE thread_id = ? AND bootstrap_status = 'pending'`,
+          )
+          .run(
+            omittedBlockIds.length > 0 ? JSON.stringify(omittedBlockIds) : null,
+            omittedItemIds.length > 0 ? JSON.stringify(omittedItemIds) : null,
+            threadId,
+          ),
+      );
+    } catch (err) {
+      console.error("[conversation-store] recordHandInOmittedHistory failed:", err);
     }
   }
 
@@ -148,10 +205,11 @@ export class HandInsRepo {
     if (!db) return [];
     try {
       // SAFETY: the projection names exactly the columns migration 13
-      // creates on thread_hand_ins.
+      // creates on thread_hand_ins, plus migration 29's omitted-id columns.
       const rows = db
         .prepare(
-          `SELECT thread_id, from_provider, from_model, to_provider, to_model, at
+          `SELECT thread_id, from_provider, from_model, to_provider, to_model, at,
+                  omitted_block_ids_json, omitted_item_ids_json
              FROM thread_hand_ins WHERE thread_id = ? ORDER BY at ASC, hand_in_id ASC`,
         )
         .all(threadId) as HandInRow[];

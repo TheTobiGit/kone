@@ -52,11 +52,13 @@ import {
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import {
   assertProviderEnabled,
+  handoffTokenCapFor,
   isProviderEnabled,
   readProviderSettings,
+  setProviderHandoffTokenCap as persistProviderHandoffTokenCap,
   writeProviderSettings,
 } from "./providerSettings.js";
-import { sidechatBootstrapForTurn } from "./sidechat.js";
+import { sidechatBootstrapForTurn, type HandoffBudgetOptions } from "./sidechat.js";
 import { forkThreadForEdit } from "./editFork.js";
 import { subagentWakePrompt } from "./subagentWake.js";
 // Resolved at call time, not imported as a value binding: the dispatcher is
@@ -69,6 +71,7 @@ import { withViewBlock } from "./gateway/viewPreamble.js";
 import { UserQuestionRequests, type UserQuestionRequest } from "./userQuestionRequests.js";
 import type {
   ApprovalDecision,
+  ChatAttachment,
   InteractionMode,
   CompactThreadResult,
   EmitEvent,
@@ -753,6 +756,52 @@ export class AgentService {
     return next;
   }
 
+  /** Persist one provider's handoff history cap (in tokens). Returns the full
+   *  updated map; the next fork/handoff/hand-in replay on that provider sizes
+   *  its history from it. */
+  setProviderHandoffTokenCap(provider: ProviderKind, cap: number): ProviderSettingsMap {
+    return persistProviderHandoffTokenCap(provider, cap);
+  }
+
+  /** The budget a fork/handoff/hand-in replay is sized with on the target: the
+   *  provider's configured cap, the target model's window from the catalog,
+   *  and zero native occupancy — a synthetic replay starts a fresh session, so
+   *  there is nothing already occupying the target's context. */
+  private handoffBudgetOptions(
+    provider: ProviderKind | undefined,
+    model: string | undefined,
+    threadId: string,
+    attachments: readonly ChatAttachment[] | undefined,
+  ): HandoffBudgetOptions {
+    const options: HandoffBudgetOptions = { nativeTokens: 0 };
+    if (attachments?.length) options.attachments = attachments;
+    // The coverage note may only name a tool the receiving session actually
+    // has: without the kone gateway injected, the app tools do not exist.
+    options.readBackTool = this.gateway ? "app_read_thread" : null;
+    if (!provider) return options;
+    options.tokenCap = handoffTokenCapFor(provider);
+    const window = this.handoffWindowFor(provider, model, threadId);
+    if (window) options.windowTokens = window;
+    return options;
+  }
+
+  /** The effective context window for a replay on `provider`: the model's
+   *  catalog capacity, preferring the auto-compact window the thread selected
+   *  when the model offers a choice. Undefined when the catalog is not warm —
+   *  the budget then falls back to its conservative default. */
+  private handoffWindowFor(
+    provider: ProviderKind,
+    model: string | undefined,
+    threadId: string,
+  ): number | undefined {
+    const descriptor = model ? this.catalogFor(provider)?.find((entry) => entry.id === model) : undefined;
+    const selected = this.historyStore?.threadMeta(threadId)?.selection?.contextWindow;
+    const selectedTokens = selected
+      ? descriptor?.contextWindows?.find((entry) => entry.id === selected)?.tokens
+      : undefined;
+    return selectedTokens ?? descriptor?.contextWindowTokens;
+  }
+
   // ── install maintenance ─────────────────────────────────────────────────────
 
   /** The version discovery last read for `provider`. Taken from the disk
@@ -945,9 +994,14 @@ export class AgentService {
     // A fork's FIRST turn carries the one-shot context bootstrap
     // (sidechat.ts): the imported transcript, the boundary instruction, and
     // the user's message wrapped in `<latest_user_message>`. Null for every
-    // other turn/thread. Overlong turns (imported context + message > send
-    // cap) reject here, up front.
-    const sidechatInput = sidechatBootstrapForTurn(input.threadId, input.input);
+    // other turn/thread. The history budget is sized from the target model's
+    // window and the provider's cap; a new prompt that cannot fit even with
+    // zero history rejects here, up front, rather than dropping context.
+    const sidechatInput = sidechatBootstrapForTurn(
+      input.threadId,
+      input.input,
+      this.handoffBudgetOptions(provider, input.model, input.threadId, input.attachments),
+    );
     // dispatchMode is the service's own routing hint — strip it before
     // anything reaches an adapter (adapters don't know the queue exists).
     const { dispatchMode, ...base } = input;
