@@ -17,6 +17,7 @@
 // itself is the outer shelf, so there is no frame around the panes to repeat
 // an edge that is already there.
 
+import { provideThreadEscapeSurface } from "~/composables/useThreadEscape";
 import { computed, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
 import { useViewFacet } from "~/composables/useViewContext";
 import type { ViewThreadRef } from "@kone/protocol/view-context";
@@ -65,6 +66,7 @@ const props = defineProps<{
 // The frontmost layer answers keys and holds focus; anything else stays quiet
 // underneath while keeping its paint, the same terms the plane renders from.
 const isActive = computed(() => props.state === "active");
+provideThreadEscapeSurface(() => isActive.value && props.surfaceTop === "inbox");
 
 const isCovered = computed(() => props.state === "covered");
 

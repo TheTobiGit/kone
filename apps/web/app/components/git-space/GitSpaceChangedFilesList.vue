@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useEventListener } from "@vueuse/core";
+import { useThreadEscape } from "~/composables/useThreadEscape";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowDown01Icon, ArrowLeft01Icon, ArrowExpand01Icon } from "@hugeicons/core-free-icons";
@@ -182,12 +182,7 @@ watch(
 
 // Esc steps back out of the diff before anything else takes it — the dock's own
 // share of the board's back stack.
-useEventListener(window, "keydown", (e) => {
-  if (!peekPath.value || e.key !== "Escape") return;
-  e.preventDefault();
-  e.stopPropagation();
-  closePeek();
-});
+useThreadEscape()("diff", () => Boolean(peekPath.value) && expanded.value, closePeek);
 
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
 const fadeEase = [0.22, 1, 0.36, 1] as const;

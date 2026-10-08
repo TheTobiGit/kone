@@ -19,6 +19,7 @@
 // from the last row back to the first would lose you your place in a way a hard
 // end never does.
 
+import { provideThreadEscapeSurface } from "~/composables/useThreadEscape";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { readStudioRowPanes, useViewFacet } from "~/composables/useViewContext";
 import {
@@ -54,6 +55,7 @@ const props = defineProps<{
 // underneath, and a covered plane keeps its paint (so the cover fades over
 // work) while taking no input.
 const isActive = computed(() => props.state === "active");
+provideThreadEscapeSurface(() => isActive.value && props.surfaceTop === "studio");
 const isCovered = computed(() => props.state === "covered");
 
 const emit = defineEmits<{

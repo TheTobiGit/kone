@@ -49,6 +49,7 @@ import {
   type ComposerDraft,
   type QueuedTurnEntry,
 } from "~/composables/useAgent";
+import { useThreadEscapeHost } from "~/composables/useThreadEscape";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import {
@@ -190,6 +191,8 @@ const { clear: dockClear } = useDockClearance(composerDockEl, {
   float: STRIP_DOCK_FLOAT,
   air: STRIP_DOCK_AIR,
 });
+const threadEscape = useThreadEscapeHost(() => props.visible && !props.blocked && !isOverview.value);
+threadEscape.register("picker", () => Boolean(focusedPendingApproval.value || focusedPendingUserInput.value), null);
 // The column's smoke-fade starts where the dock does, so the last turns fade
 // out behind the card rather than under it.
 const dockFade = computed(() => dockClear.value - STRIP_DOCK_FLOAT);
