@@ -18,7 +18,7 @@ let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 
 class FakeHistoryStore {
   meta = new Map<string, { provider: string; model: string | null; projectPath: string; title: string | null }>();
-  origins = new Map<string, "auto" | "manual" | null>();
+  origins = new Map<string, "auto" | "manual">();
   messages = new Map<string, ThreadTitleMessage[]>();
   workspacePath: string | null = null;
   written: Array<{ threadId: string; title: string }> = [];
@@ -29,7 +29,7 @@ class FakeHistoryStore {
     return { threadId, provider: m.provider, model: m.model, projectPath: m.projectPath, title: m.title };
   }
   titleOrigin(threadId: string) {
-    return this.origins.get(threadId) ?? null;
+    return this.origins.get(threadId) ?? "auto";
   }
   titleMessages(threadId: string) {
     return this.messages.get(threadId) ?? [];

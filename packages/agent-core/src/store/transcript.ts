@@ -502,14 +502,21 @@ export class TranscriptRepo {
   /** The most recent user-authored prompt's `at`, or null when the thread has
    *  none. The settle-on-merge sweep compares this with a PR's merge time:
    *  a user who wrote after the merge still wants the thread, so it is not
-   *  settled. Assistant activity does not count — only the user's own words. */
+   *  settled. Messages from an agent or kone (a sender is recorded on the
+   *  block) are not the user and do not count. */
   latestUserAuthoredAt(threadId: string): number | null {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: MAX over one INTEGER column under one alias.
+      // SAFETY: MAX over one INTEGER column under one alias. The user's own
+      // blocks carry no sender (encodeMessageSender returns null for kind
+      // "user"); an agent's or kone's does.
       const row = db
-        .prepare(`SELECT MAX(at) AS at FROM blocks WHERE thread_id = ? AND role = 'user'`)
+        .prepare(
+          `SELECT MAX(at) AS at FROM blocks
+            WHERE thread_id = ? AND role = 'user'
+              AND (sender_json IS NULL OR sender_json = '')`,
+        )
         .get(threadId) as { at: number | null } | undefined;
       return row?.at ?? null;
     } catch (err) {

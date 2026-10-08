@@ -18,6 +18,38 @@ export type LinkedThreadPullRequest = {
   mergedAt: number | null;
 };
 
+/** The staged worktree-setup view (mirrors agent-core worktreeSetup). */
+export type WorktreeSetupStageId = "fetch" | "checkout" | "submodules" | "setup-script" | "agent";
+export type WorktreeSetupStageStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "skipped"
+  | "warning"
+  | "failed";
+export type WorktreeSetupStage = {
+  id: WorktreeSetupStageId;
+  status: WorktreeSetupStageStatus;
+  startedAt: number | null;
+  endedAt: number | null;
+  percent: number | null;
+  detail: string | null;
+  tail: string[];
+};
+export type WorktreeSetupSnapshot = {
+  threadId: string;
+  phase: "running" | "done" | "failed" | "cancelled";
+  startedAt: number;
+  endedAt: number | null;
+  branch: string | null;
+  baseRef: string | null;
+  worktreePath: string | null;
+  setupScript: { command: string } | null;
+  stages: WorktreeSetupStage[];
+  error: string | null;
+  sequence: number;
+};
+
 export type DirEntry = {
   name: string;
   path: string;
@@ -3020,6 +3052,8 @@ export type KoneAgentApi = {
     kind: "setup" | "settle",
     command: string | null,
   ) => Promise<string | null>;
+  /** The live worktree-setup snapshot for a thread (null when none). */
+  worktreeSetup: (threadId: string) => Promise<WorktreeSetupSnapshot | null>;
   /** Native save dialog for a thread export — the main process owns the
    *  dialog, the renderer only suggests a file name. A dismissal resolves
    *  `{ canceled: true }`, distinct from the file outcome below. */

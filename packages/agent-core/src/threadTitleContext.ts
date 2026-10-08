@@ -13,9 +13,9 @@
 //
 // Budgets are characters, not tokens: the title one-shot is a cheap small-model
 // call, and a generous character budget is already far more than a title needs.
-// Whole messages are preferred, but one oversized message is limited head+tail
-// (a long request keeps its opening and its final constraints) rather than
-// dropped, since the first user message is usually where the request lives.
+// A message longer than its budget is trimmed head+tail (a long request keeps
+// its opening and its final constraints) rather than dropped, since the first
+// user message is usually where the request lives.
 
 /** One message as the title context sees it. Only role and text matter; every
  *  other item kind (tool calls, plans, commands) is already flattened to text

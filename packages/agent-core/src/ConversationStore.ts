@@ -171,7 +171,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
-  titleOrigin(threadId: string): "auto" | "manual" | null {
+  titleOrigin(threadId: string): "auto" | "manual" {
     return this.threads.titleOrigin(threadId);
   }
 
@@ -204,8 +204,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadPullRequestRepo */
-  settleThreadPullRequestCandidates(limit: number): ThreadPullRequestCandidate[] {
-    return this.threadPullRequests.settleCandidates(limit);
+  settleThreadPullRequestCandidates(
+    limit: number,
+    notCheckedAfter?: number,
+  ): ThreadPullRequestCandidate[] {
+    return this.threadPullRequests.settleCandidates(limit, notCheckedAfter);
   }
 
   /** @see ThreadLifecycleRepo */
@@ -572,6 +575,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see WorkspaceRepo */
   detachWorktree(worktreePath: string, branch: string): void {
     this.workspaces.detachWorktree(worktreePath, branch);
+  }
+
+  /** @see WorkspaceRepo */
+  worktreeHasOtherLiveThreads(worktreePath: string, exceptThreadId: string): boolean {
+    return this.workspaces.worktreeHasOtherLiveThreads(worktreePath, exceptThreadId);
   }
 
   /** @see WorkspaceRepo */

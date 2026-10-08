@@ -188,15 +188,18 @@ export class ThreadPullRequestRepo {
     }
   }
 
-  /** Threads the settle-on-merge sweep should check, oldest check first so a
-   *  single pass keeps every candidate moving. A thread qualifies when it has
-   *  an explicit link, or — the branch fallback — its own worktree on a branch
-   *  (a local thread's `branch` is the shared repo branch, which would settle
-   *  every thread on one PR, so it is deliberately excluded). Archived threads
-   *  are left out. */
-  settleCandidates(limit: number): ThreadPullRequestCandidate[] {
+  /** Threads the settle-on-merge sweep should check, least-recently-checked
+   *  first so a single pass keeps every candidate moving. A thread qualifies
+   *  when it is neither archived nor already settled (its done mark is newer
+   *  than its last activity), and it has an explicit link or — the branch
+   *  fallback — its own worktree (a local thread's `branch` is the shared repo
+   *  branch, which would settle every thread on one PR, so it is excluded).
+   *  `notCheckedAfter` backs off: candidates checked at or after that epoch are
+   *  skipped, so a two-minute tick does not fan out a gh call per thread. */
+  settleCandidates(limit: number, notCheckedAfter?: number): ThreadPullRequestCandidate[] {
     const db = this.dbh.handle();
     if (!db) return [];
+    const backoff = notCheckedAfter ?? 0;
     try {
       // SAFETY: the projection names the link columns plus the thread's
       // project/branch/place; branch falls back to requested_branch for a
@@ -208,6 +211,8 @@ export class ThreadPullRequestRepo {
                   worktree_path, ${LINK_COLUMNS}
              FROM threads
             WHERE archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+              AND (linked_pr_checked_at IS NULL OR linked_pr_checked_at <= ?)
               AND (
                 (linked_pr_url IS NOT NULL AND linked_pr_url <> '')
                 OR (worktree_path IS NOT NULL AND worktree_path <> '')
@@ -215,7 +220,7 @@ export class ThreadPullRequestRepo {
             ORDER BY COALESCE(linked_pr_checked_at, 0) ASC
             LIMIT ?`,
         )
-        .all(limit) as Array<{
+        .all(backoff, limit) as Array<{
         thread_id: string;
         project_path: string;
         branch: string | null;

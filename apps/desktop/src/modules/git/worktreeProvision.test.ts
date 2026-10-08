@@ -250,3 +250,21 @@ describe("rollbackDirectory", () => {
     await rm(outside, { recursive: true, force: true });
   });
 });
+
+describe("provisionWorktree setup progress", () => {
+  test("reports checkout stages and a skipped submodule step", async () => {
+    const { repo } = await makeRepo();
+    const events: Array<{ stage: string; status?: string; percent?: number | null }> = [];
+    const made = await provisionWorktree({
+      projectPath: repo,
+      onProgress: (progress) => events.push(progress),
+    });
+    expect(made.path).toBeTruthy();
+    const checkout = events.filter((event) => event.stage === "checkout");
+    expect(checkout[0]?.status).toBe("running");
+    expect(checkout.at(-1)?.status).toBe("done");
+    // The fixture repo has no .gitmodules, so the step is skipped rather than
+    // left pending.
+    expect(events.find((event) => event.stage === "submodules")?.status).toBe("skipped");
+  });
+});

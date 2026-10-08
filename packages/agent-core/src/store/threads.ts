@@ -242,22 +242,19 @@ export class ThreadRepo {
     }
   }
 
-  /** Who owns the current title, or null when the row predates the distinction
-   *  (legacy) — the caller decides how to treat unknown. */
-  titleOrigin(threadId: string): "auto" | "manual" | null {
+  /** Who owns the current title: `manual` when the user typed it, else `auto`. */
+  titleOrigin(threadId: string): "auto" | "manual" {
     const db = this.dbh.handle();
-    if (!db) return null;
+    if (!db) return "auto";
     try {
-      // SAFETY: the projection names only the nullable TEXT title_origin column.
+      // SAFETY: the projection names only the NOT NULL TEXT title_origin column.
       const row = db
         .prepare(`SELECT title_origin FROM threads WHERE thread_id = ?`)
-        .get(threadId) as { title_origin: string | null } | undefined;
-      return row?.title_origin === "auto" || row?.title_origin === "manual"
-        ? row.title_origin
-        : null;
+        .get(threadId) as { title_origin: string } | undefined;
+      return row?.title_origin === "manual" ? "manual" : "auto";
     } catch (err) {
       console.error("[conversation-store] titleOrigin failed:", err);
-      return null;
+      return "auto";
     }
   }
 

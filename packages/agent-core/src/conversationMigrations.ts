@@ -1230,11 +1230,16 @@ function migration0028TurnSeals(db: DatabaseSync): void {
 
 /** Who owns a thread's current title. `auto` marks a title kone wrote (the
  *  first-turn fallback or a generated one); `manual` marks a title the user
- *  typed. Regeneration reads this and never overwrites `manual`. Null is
- *  legacy: rows written before the distinction existed, left as unknown rather
- *  than guessed from the text. */
+ *  typed. Regeneration reads this and never overwrites `manual`. Kone is
+ *  unreleased, so there is no legacy case: every row is `auto` until a rename
+ *  makes it `manual`. */
 function migration0029TitleOrigin(db: DatabaseSync): void {
-  addColumn(db, "threads", "title_origin", "TEXT CHECK (title_origin IS NULL OR title_origin IN ('auto', 'manual'))");
+  addColumn(
+    db,
+    "threads",
+    "title_origin",
+    "TEXT NOT NULL DEFAULT 'auto' CHECK (title_origin IN ('auto', 'manual'))",
+  );
 }
 
 /** A pull request the user linked to a thread. Nullable columns with no

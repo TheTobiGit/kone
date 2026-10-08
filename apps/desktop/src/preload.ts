@@ -36,6 +36,7 @@ import type {
   ThreadPullRequestLink,
   ThreadPullRequestLinkInput,
 } from "@kone/agent-core/threadPullRequest.js";
+import type { WorktreeSetupSnapshot } from "@kone/agent-core/worktreeSetup.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type {
   ThreadExportDialogResult,
@@ -762,6 +763,10 @@ const api = {
       command: string | null,
     ): Promise<string | null> =>
       ipcRenderer.invoke("agent:set-project-script", projectPath, kind, command),
+    // The live worktree-setup snapshot for a thread (null when none is
+    // tracked). The thread.worktree.setup events carry later changes.
+    worktreeSetup: (threadId: string): Promise<WorktreeSetupSnapshot | null> =>
+      ipcRenderer.invoke("agent:worktree-setup", threadId),
     // Native save dialog for a thread export — the main process owns the
     // dialog, the renderer only suggests a file name. A dismissal resolves
     // `{ canceled: true }`, distinct from the export outcome below.
