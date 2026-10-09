@@ -1,5 +1,6 @@
 import { senderRelationshipLabel } from "@kone/protocol/message-sender";
 import type { IrcDeliveryClaim, IrcMailbox, IrcMessageRecord } from "./gateway/tools/irc.js";
+import { withDrift } from "./messageAbout.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import { formatSince, type RecipientState, type ThreadRuntime } from "./recipientState.js";
 import { renderCourierMessage, renderKoneNotice, renderSenderHeader, renderUserHeader } from "./senderHeader.js";
@@ -453,7 +454,7 @@ function renderAgentSections(messages: IrcMessageRecord[], overflow: string): st
       const kind = m.kind && m.kind !== "note" ? ` ${m.kind}` : "";
       const urgent = m.urgent ? ", urgent" : "";
       const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
-      return `[${m.id}]${kind}${urgent}${replyTo}:\n${m.message}`;
+      return `[${m.id}]${kind}${urgent}${replyTo}:\n${withDrift(m)}`;
     });
     return [`From \`${who}\`${relation}:`, ...lines].join("\n\n");
   });
@@ -629,7 +630,7 @@ function renderAgentMessages(messages: IrcMessageRecord[], overflow: string): st
     const relation = m.sender?.kind === "agent" ? ` (${senderRelationshipLabel(m.sender.relationship)})` : "";
     const kind = m.kind && m.kind !== "note" ? `, ${m.kind}` : "";
     const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
-    return `[${m.id}] From \`${who}\`${relation}${kind}${replyTo}:\n${m.message}`;
+    return `[${m.id}] From \`${who}\`${relation}${kind}${replyTo}:\n${withDrift(m)}`;
   });
   const header =
     messages.length === 1

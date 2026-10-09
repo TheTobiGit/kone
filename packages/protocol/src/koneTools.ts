@@ -28,6 +28,7 @@ export const KONE_WORKER_TOOL_NAMES = [
   "agent_message",
   "agent_list",
   "agent_inbox",
+  "agent_sent",
   "process_control",
   "code_lsp",
   "code_find_calls",

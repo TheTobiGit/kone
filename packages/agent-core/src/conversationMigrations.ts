@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1245,6 +1245,20 @@ function migration0029ContractClosed(db: DatabaseSync): void {
   );
 }
 
+/**
+ * What a sender can learn of a message after it is sent. `ack_required` keeps
+ * it on the sender's watch list until the recipient opens it; `about_json`
+ * names the branch and commit it refers to, so opening it can say how far the
+ * branch has moved since. The sender index serves both: a sender's watch list
+ * and its receipts read by sender, never by recipient.
+ */
+function migration0030InboxReceipts(db: DatabaseSync): void {
+  if (!hasTable(db, "agent_inbox")) return;
+  addColumn(db, "agent_inbox", "ack_required", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "agent_inbox", "about_json", "TEXT CHECK (about_json IS NULL OR json_valid(about_json))");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_inbox_sender ON agent_inbox (sender_thread_id, created_at)`);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1275,6 +1289,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
   { id: 29, name: "ContractClosed", run: migration0029ContractClosed },
+  { id: 30, name: "InboxReceipts", run: migration0030InboxReceipts },
 ];
 
 export interface MigrationOptions {

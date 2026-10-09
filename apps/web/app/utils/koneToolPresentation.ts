@@ -146,6 +146,11 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Read messages",
     "Couldn't read messages",
   ]),
+  agent_sent: kone(InboxIcon, "Sent", "agent", [
+    "Checking messages it sent",
+    "Checked messages it sent",
+    "Couldn't check messages it sent",
+  ]),
 
   // processes & code
   process_control: kone(ComputerTerminal01Icon, "Process", "run", [
