@@ -1412,7 +1412,11 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           targetThreadId: hit.threadId,
           caller,
           target: meta
-            ? { projectPath: meta.projectPath, sourceThreadId: meta.sourceThreadId }
+            ? {
+                projectPath: meta.projectPath,
+                sourceThreadId: meta.sourceThreadId,
+                parentThreadId: meta.parentThreadId,
+              }
             : null,
         });
       })

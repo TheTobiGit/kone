@@ -121,4 +121,37 @@ describe("app_search_threads with the real conversation store", () => {
       cleanup();
     }
   });
+
+  test("lets a parent search its cross-project spawned child", async () => {
+    const { store, cleanup } = newStore();
+    try {
+      store.ensureThread({ threadId: "parent", projectPath: "/parent", provider: "codex" });
+      expect(
+        store.writeSpawnedThread({
+          threadId: "child",
+          projectPath: "/child",
+          provider: "codex",
+          createdAt: 2,
+          title: "Child work",
+          lineage: { parentThreadId: "parent", relationshipToParent: "subagent" },
+        }),
+      ).toBe(true);
+      store.recordUserBlock({
+        threadId: "child",
+        blockId: "child-block",
+        text: "spawnchildsearch",
+      });
+
+      const result = await searchTools(makeToolStore(store)).call(
+        context("parent"),
+        "app_search_threads",
+        { query: "spawnchildsearch" },
+      );
+      expect(result.isError).toBeUndefined();
+      expect(result.content.map((part) => part.type === "text" ? part.text : "").join("\n"))
+        .toContain("child");
+    } finally {
+      cleanup();
+    }
+  });
 });
