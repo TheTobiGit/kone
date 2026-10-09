@@ -882,6 +882,8 @@ export type ConversationSearchOptions = {
 export type ConversationSearchHit = {
   threadId: string;
   entryKind: ConversationSearchEntryKind;
+  /** False for imported assistant/system/agent messages represented as user-role blocks. */
+  isUserAuthored?: boolean;
   blockId: string | null;
   turnId: string | null;
   itemId: string | null;

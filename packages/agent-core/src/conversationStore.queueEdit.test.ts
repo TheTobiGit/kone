@@ -107,6 +107,28 @@ describe("editing a queued turn in place", () => {
     expect(timeline).not.toContain("user: first");
   });
 
+  test("edits replace the searchable text and retain it after promotion", () => {
+    const store = freshStore();
+    enqueue(store, "q1", "ub-1", "oldqueueword", 100);
+    expect(store.searchConversations("oldqueueword").length).toBeGreaterThan(0);
+    store.editQueuedTurn("t", "q1", { input: "newqueueword" });
+    expect(store.searchConversations("newqueueword").some((hit) => hit.blockId === "ub-1")).toBe(true);
+    expect(store.searchConversations("oldqueueword").some((hit) => hit.blockId === "ub-1")).toBe(false);
+
+    expect(store.claimNextQueuedTurn("t")?.queueId).toBe("q1");
+    store.applyEvent({
+      type: "turn.started",
+      threadId: "t",
+      provider: "codex",
+      at: 300,
+      source: "kone.store",
+      turnId: "turn-1",
+    });
+    store.markQueuedTurnPromoted("q1");
+    expect(store.searchConversations("newqueueword").some((hit) => hit.blockId === "ub-1")).toBe(true);
+    expect(store.searchConversations("oldqueueword").some((hit) => hit.blockId === "ub-1")).toBe(false);
+  });
+
   test("refuses a claimed (promoting) row", () => {
     const store = freshStore();
     enqueue(store, "q1", "ub-1", "hello", 100);

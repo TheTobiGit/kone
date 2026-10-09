@@ -4,6 +4,7 @@ import type {
   ConversationSearchHit,
   ConversationSearchOptions,
 } from "../conversationStoreTypes.js";
+import { parseMessageSender } from "@kone/protocol/message-sender";
 import { decodeStoredText } from "./itemTextChunks.js";
 
 /** Full-text search over stored conversation text, plus the writers that keep
@@ -328,20 +329,27 @@ export class SearchRepo {
         at: number;
         snippet: string;
         rank: number;
+        sender_json: string | null;
       };
       // Column 6 of the FTS table is the indexed text — the only column the
       // excerpt is ever drawn from. bm25 orders best-first (most negative).
       const sql = scoped
-        ? `SELECT thread_id, entry_kind, block_id, turn_id, item_id, at,
+        ? `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
+                  conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
+                  blocks.sender_json AS sender_json,
                   snippet(conversation_fts, 6, '<mark>', '</mark>', '…', 24) AS snippet,
                   bm25(conversation_fts) AS rank
              FROM conversation_fts
-            WHERE conversation_fts MATCH ? AND thread_id = ?
+             LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
+            WHERE conversation_fts MATCH ? AND conversation_fts.thread_id = ?
             ORDER BY rank LIMIT ?`
-        : `SELECT thread_id, entry_kind, block_id, turn_id, item_id, at,
+        : `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
+                  conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
+                  blocks.sender_json AS sender_json,
                   snippet(conversation_fts, 6, '<mark>', '</mark>', '…', 24) AS snippet,
                   bm25(conversation_fts) AS rank
              FROM conversation_fts
+             LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ?
             ORDER BY rank LIMIT ?`;
       // SAFETY: the projection names exactly the FTS columns plus the two
@@ -359,6 +367,7 @@ export class SearchRepo {
         hits.push({
           threadId: row.thread_id,
           entryKind,
+          isUserAuthored: entryKind === "block" && !parseMessageSender(row.sender_json),
           blockId: row.block_id,
           turnId: row.turn_id,
           itemId: row.item_id,

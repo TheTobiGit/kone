@@ -1834,6 +1834,16 @@ describe("app_search_threads", () => {
     // site-1 is another project with no lineage/reference to the caller.
     expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);
   });
+
+  it("lets the global assistant search across project read scopes", async () => {
+    const store = makeStore({
+      searchConversations: () => [searchHit("t-site", "block", 1)],
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_search_threads", { query: "auth" });
+    // SAFETY: this tool's own payload always carries `results`.
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    expect(results.map((r) => r.threadId)).toEqual(["t-site"]);
+  });
 });
 
 describe("queue gateway tools", () => {
