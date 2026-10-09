@@ -92,6 +92,9 @@ export interface JobTurn {
   recipient: string;
   handedOver: boolean;
   turnId: string | null;
+  /** The job is being dispatched; its provider turn may arrive before the
+   *  send returns and the hand-over settles. */
+  sending?: true;
   /** kone restarted while handing it over; nothing says whether it arrived. */
   uncertain?: true;
 }
@@ -1093,6 +1096,9 @@ export class IrcMailbox {
     // Taken by a turn whose settle the store has yet to write.
     const pending = row.state === "handing" && row.deliveryId ? this.unsettled.get(row.deliveryId) : undefined;
     if (pending) return { recipient: row.recipientThreadId, handedOver: true, turnId: pending.turnId };
+    if (row.state === "handing" && row.sentAt !== null) {
+      return { recipient: row.recipientThreadId, handedOver: false, turnId: null, sending: true };
+    }
     return { recipient: row.recipientThreadId, handedOver: row.state === "seen", turnId: row.turnId };
   }
 

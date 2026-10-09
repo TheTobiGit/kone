@@ -1541,18 +1541,19 @@ describe("access shared through a grant", () => {
 
   function harness() {
     const reports: SettledTurnReport[] = [];
+    const retractions: Array<[string, string]> = [];
     const h = makeEngine({
       reports: () => ({
         deliver: (report) => {
           reports.push(report);
           return `msg-${reports.length}`;
         },
-        retract: () => {},
+        retract: (threadId, messageId) => { retractions.push([threadId, messageId]); },
       }),
     });
     setupParent(h.store, h.providers);
     h.store.metas.set(LEAD.threadId, { threadId: LEAD.threadId, projectPath: CALLER.cwd, provider: "opencode", createdAt: 1, updatedAt: 1 });
-    return { h, reports };
+    return { h, reports, retractions };
   }
 
   const grant = (access: AgentGrant["access"], target: string): AgentGrant => ({
@@ -1667,6 +1668,51 @@ describe("access shared through a grant", () => {
       [turnA, LEAD.threadId],
       [turnB, PEER2.threadId],
     ]);
+  });
+
+  test("a peer's fast turn reports to it before hand-over settles, and a later wait retracts that report", async () => {
+    const { h, reports, retractions } = harness();
+    const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(child, 1));
+    h.store.grants.push(grant("followup", child));
+    await h.engine.continueThread(LEAD, { threadId: child, message: "Review now." });
+    const claim = h.jobs.claimJob(child)!;
+    h.jobs.sendingDelivery(claim.deliveryId);
+    h.dispatcher.emitBeforeSent = (threadId, turnId) => {
+      h.bus.emit(turnStarted(threadId, turnId, 4));
+      h.bus.emit(turnCompleted(threadId, turnId, 5));
+    };
+    const sent = await h.dispatcher.sendThreadTurn({ threadId: child, input: claim.messages[0]!.message });
+    // The settle-report microtask ran before the send's promise returned.
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([[sent.turnId, LEAD.threadId]]);
+    h.jobs.settleDelivery(claim.deliveryId, sent.turnId);
+    await h.engine.waitFor({ threadIds: [child], turnIds: [sent.turnId], scopeThreadId: LEAD.threadId, timeoutMs: 20 });
+    expect(retractions).toEqual([[LEAD.threadId, "msg-1"]]);
+  });
+
+  test("abandoning a peer's wait releases its held report to that peer", async () => {
+    const { h, reports } = harness();
+    const { threadId: first } = await h.engine.spawn(CALLER, REQUEST);
+    const { threadId: second } = await h.engine.spawn(CALLER, { ...REQUEST, requestId: "req-second" });
+    for (const child of [first, second]) {
+      h.bus.emit(sessionStarted(child, 1));
+      h.store.grants.push(grant("followup", child));
+      await h.engine.continueThread(LEAD, { threadId: child, message: "Review." });
+      h.jobs.settleDelivery(h.jobs.claimJob(child)!.deliveryId, `review-${child}`);
+      h.bus.emit(turnStarted(child, `review-${child}`, 4));
+    }
+    const controller = new AbortController();
+    const waiting = h.engine.waitFor({
+      threadIds: [first, second], turnIds: [`review-${first}`, `review-${second}`],
+      scopeThreadId: LEAD.threadId, signal: controller.signal, timeoutMs: 500,
+    }).catch(() => null);
+    h.bus.emit(turnCompleted(first, `review-${first}`, 5));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports).toHaveLength(0);
+    controller.abort();
+    await waiting;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([[`review-${first}`, LEAD.threadId]]);
   });
 });
 
