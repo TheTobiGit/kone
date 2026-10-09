@@ -147,6 +147,26 @@ describe("messaging with a grant", () => {
     expect(mailbox.ringingCount("rowan")).toBe(0);
   });
 
+  test("a grant lingering on a closed contract reaches nothing: no urgent, no message", async () => {
+    // Dara holds followup on Iris; Iris delivers, closing its contract. The
+    // grant row lingers the way a write that landed apart from the close
+    // would — the reach checks still ignore it.
+    store.setAgentGrant({ granteeThreadId: "dara", targetThreadId: "iris", access: "followup", grantedByThreadId: "chalk", createdAt: 1 });
+    store.metas.get("iris")!.contractClosed = { at: 2, reason: "delivered" };
+    const scoped = createRegistry([
+      ...createGrantTools({ store }),
+      ...createIrcTools({ store, mailbox, spawnedStatus: (id) => (id === "iris" ? "completed" : null) }),
+    ]);
+    const scopedCall = (from: string, tool: string, args: GatewayRecord) => scoped.call(ctxFor(from), tool, args);
+    const urgent = await scopedCall("dara", "agent_message", { to: "iris", message: "One more thing.", urgent: true });
+    expect(urgent.isError).toBe(true);
+    expect(textOf(urgent)).toContain("cannot send it urgent");
+    const note = await scopedCall("dara", "agent_message", { to: "iris", message: "One more thing." });
+    expect(note.isError).toBe(true);
+    expect(textOf(note)).toContain("contract is over");
+    expect(mailbox.ringingCount("iris")).toBe(0);
+  });
+
   test("agent_list says what the reader was granted", async () => {
     store.setAgentGrant({ granteeThreadId: "iris", targetThreadId: "rowan", access: "followup", grantedByThreadId: "chalk", createdAt: 1 });
     const list = textOf(await call("iris", "agent_list", {}));

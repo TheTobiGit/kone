@@ -1577,6 +1577,26 @@ describe("access shared through a grant", () => {
     expect(h.engine.canReach(CALLER.threadId, child, "followup")).toBe(true);
   });
 
+  test("a grant lingering on a closed contract reaches nothing", async () => {
+    const { h } = harness();
+    const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+    const { threadId: child } = await h.engine.spawn(CALLER, { ...REQUEST, contract });
+    h.store.grants.push(grant("followup", child));
+    expect(h.engine.canReach(LEAD.threadId, child, "followup")).toBe(true);
+    // The close ends the grant; this store keeps the row anyway, the way a
+    // write that landed apart from the close would — the reach helpers
+    // still ignore it.
+    h.store.setContractClosed(child, { at: 5, reason: "delivered" });
+    expect(h.store.grants).toHaveLength(1);
+    expect(h.engine.canReach(LEAD.threadId, child, "read")).toBe(false);
+    expect(h.engine.canReach(LEAD.threadId, child, "followup")).toBe(false);
+    await expect(h.engine.continueThread(LEAD, { threadId: child, message: "More?" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    // Up the chain needs no grant, open or closed.
+    expect(h.engine.canReach(CALLER.threadId, child, "followup")).toBe(true);
+  });
+
   test("a follow-up from a granted peer asks as that peer, and its turn's result goes back to it", async () => {
     const { h, reports } = harness();
     const { threadId: child, firstTurnId } = await h.engine.spawn(CALLER, REQUEST);

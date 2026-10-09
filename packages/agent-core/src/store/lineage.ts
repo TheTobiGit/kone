@@ -904,18 +904,41 @@ export class LineageRepo {
 
   /** Close a contractor's contract, or (with null) reopen it. Only a thread
    *  that carries contract terms has a contract to close; false for any
-   *  other, or when the store could not write it. */
+   *  other, or when the store could not write it. Closing ends every grant
+   *  on the contractor in the same write — a closed contract's reach ends
+   *  with it — and reopening brings none of them back: they must be given
+   *  again. */
   setContractClosed(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
     try {
-      const result = db
-        .prepare(
-          `UPDATE threads SET contract_closed_at = ?, contract_closed_reason = ?
-           WHERE thread_id = ? AND contract_json IS NOT NULL`,
-        )
-        .run(closed?.at ?? null, closed?.reason ?? null, threadId);
-      return Number(result.changes) > 0;
+      if (!closed) {
+        const result = db
+          .prepare(
+            `UPDATE threads SET contract_closed_at = NULL, contract_closed_reason = NULL
+             WHERE thread_id = ? AND contract_json IS NOT NULL`,
+          )
+          .run(threadId);
+        return Number(result.changes) > 0;
+      }
+      let closedOne = false;
+      this.dbh.durably(db, () => {
+        const result = db
+          .prepare(
+            `UPDATE threads SET contract_closed_at = ?, contract_closed_reason = ?
+             WHERE thread_id = ? AND contract_json IS NOT NULL`,
+          )
+          .run(closed.at, closed.reason, threadId);
+        closedOne = Number(result.changes) > 0;
+        // The agent_grants table is AgentGrantRepo's; it is written here so
+        // the close and the end of the reach it granted can never land
+        // apart. Only a thread that carries contract terms has its grants
+        // taken — a close that matched nothing closes nothing.
+        if (closedOne) {
+          db.prepare(`DELETE FROM agent_grants WHERE target_thread_id = ?`).run(threadId);
+        }
+      });
+      return closedOne;
     } catch (err) {
       console.error("[conversation-store] setContractClosed failed:", err);
       return false;
