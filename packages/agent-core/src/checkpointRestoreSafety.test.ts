@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { checkpointRestoreIsolation } from "./checkpointRestoreSafety.js";
+import {
+  checkpointRestoreIsolation,
+  claimRestoreDir,
+  isRestoreActive,
+} from "./checkpointRestoreSafety.js";
 
 // Real temp directories (and one real symlink) rather than a mocked fs: the
 // whole point of the guard is what the filesystem actually resolves to, so the
@@ -125,3 +129,31 @@ describe("checkpointRestoreIsolation", () => {
     ).toBe(false);
   });
 });
+
+describe("claimRestoreDir and isRestoreActive", () => {
+  test("tracks active restore directory and detects overlap in both directions", () => {
+    const worktree = dir("p-claim", "wt");
+    const inside = dir("p-claim", "wt", "inside");
+    const parent = dir("p-claim");
+    const sibling = dir("p-claim-sibling");
+
+    expect(isRestoreActive(worktree)).toBe(false);
+    expect(isRestoreActive(inside)).toBe(false);
+    expect(isRestoreActive(parent)).toBe(false);
+
+    const release = claimRestoreDir(worktree);
+    try {
+      expect(isRestoreActive(worktree)).toBe(true);
+      expect(isRestoreActive(inside)).toBe(true);
+      expect(isRestoreActive(parent)).toBe(true);
+      expect(isRestoreActive(sibling)).toBe(false);
+    } finally {
+      release();
+    }
+
+    expect(isRestoreActive(worktree)).toBe(false);
+    expect(isRestoreActive(inside)).toBe(false);
+    expect(isRestoreActive(parent)).toBe(false);
+  });
+});
+

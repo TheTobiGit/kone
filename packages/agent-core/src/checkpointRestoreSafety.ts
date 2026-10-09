@@ -97,3 +97,36 @@ export function checkpointRestoreIsolation(input: {
   }
   return { isolated: true };
 }
+
+const activeRestoreDirs = new Set<string>();
+
+/**
+ * Claim active restore ownership of `dir` while a destructive file restore
+ * is in flight, so new sessions cannot start in an overlapping directory
+ * during the restore. Returns a release function to be called in try/finally.
+ */
+export function claimRestoreDir(dir: string): () => void {
+  const resolved = realOrNull(dir) ?? path.resolve(dir);
+  activeRestoreDirs.add(resolved);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeRestoreDirs.delete(resolved);
+  };
+}
+
+/**
+ * Whether an active destructive file restore is currently claiming `dir` or an
+ * overlapping directory.
+ */
+export function isRestoreActive(dir: string): boolean {
+  const resolved = realOrNull(dir) ?? path.resolve(dir);
+  for (const active of activeRestoreDirs) {
+    if (contains(active, resolved) || contains(resolved, active)) {
+      return true;
+    }
+  }
+  return false;
+}
+

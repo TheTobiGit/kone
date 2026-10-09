@@ -21,7 +21,12 @@ import {
   restoreCheckpoint,
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
-import { checkpointRestoreIsolation, type RestorePathClaim } from "./checkpointRestoreSafety.js";
+import {
+  checkpointRestoreIsolation,
+  claimRestoreDir,
+  isRestoreActive,
+  type RestorePathClaim,
+} from "./checkpointRestoreSafety.js";
 import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -955,6 +960,9 @@ export class AgentService {
   }
 
   private async startSessionNow(input: SessionStartInput): Promise<Session> {
+    if (isRestoreActive(input.cwd)) {
+      throw new Error(`Cannot start session in "${input.cwd}": an active checkpoint restore is running in this directory.`);
+    }
     this.bumpSessionGeneration(input.threadId);
     assertProviderEnabled(readProviderSettings(), input.provider);
     this.sessionInputs.set(input.threadId, input);
@@ -1494,6 +1502,18 @@ export class AgentService {
     turnId: string,
     dir: string,
   ): { ok: false; reason: "shared-checkout"; detail: string; rewind: ConversationRewindTarget } | null {
+    if (isRestoreActive(dir)) {
+      return {
+        ok: false,
+        reason: "shared-checkout",
+        detail: `an active checkpoint restore is already in progress in ${dir}`,
+        rewind: {
+          sourceThreadId: threadId,
+          turnId,
+          userBlockId: store.turnUserBlockId(threadId, turnId),
+        },
+      };
+    }
     const workspace = store.threadWorkspace(threadId);
     const others: RestorePathClaim[] = [];
     const seen = new Set<string>();
@@ -1714,30 +1734,40 @@ export class AgentService {
           wouldDelete: preview.wouldDelete,
         };
       }
+      // Recheck isolation immediately before the destructive restore: an
+      // overlapping session or worktree may have appeared while previewing.
+      const handoffShared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (handoffShared) return handoffShared;
+
+      const releaseRestore = claimRestoreDir(dir);
       try {
-        await restoreCheckpoint(dir, row.checkpointId, { hard: true });
-      } catch (err) {
-        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return failedCheckpoint(err);
-      }
-      // A restore that dies partway leaves a half-written tree — deletes done,
-      // rewrites missing. Re-previewing must come back empty; anything left is
-      // reported as a failure with the still-dirty files named, never silence.
-      try {
-        const after = await previewCheckpointRestore(dir, row.checkpointId);
-        if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
-          const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
-          console.warn(
-            `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
-            leftovers,
-          );
-          return failedCheckpoint(
-            `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
-          );
+        try {
+          await restoreCheckpoint(dir, row.checkpointId, { hard: true });
+        } catch (err) {
+          console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+          return failedCheckpoint(err);
         }
-      } catch (err) {
-        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return failedCheckpoint(err);
+        // A restore that dies partway leaves a half-written tree — deletes done,
+        // rewrites missing. Re-previewing must come back empty; anything left is
+        // reported as a failure with the still-dirty files named, never silence.
+        try {
+          const after = await previewCheckpointRestore(dir, row.checkpointId);
+          if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
+            const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
+            console.warn(
+              `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
+              leftovers,
+            );
+            return failedCheckpoint(
+              `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
+            );
+          }
+        } catch (err) {
+          console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+          return failedCheckpoint(err);
+        }
+      } finally {
+        releaseRestore();
       }
       return { ok: true };
     } catch (err) {

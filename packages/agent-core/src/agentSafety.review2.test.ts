@@ -6,12 +6,42 @@ import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
 import type { ProviderAdapter, RuntimeEvent } from "./types.js";
+import type { CheckpointStore } from "./conversationStoreTypes.js";
 
 // Second round of Phase 2 review regressions: continuation admission at the
 // handoff, cancellation during adoption (stop and interrupt), one delivery of
 // the restart note, and the empty-list note.
 
 mock.module("./sqlite.js", () => ({ DatabaseSync: Database }));
+
+const previewEntered = gate();
+const previewRelease = gate();
+let restored = false;
+let previewCalls = 0;
+mock.module("@kone/git-core/checkpoint.js", () => ({
+  checkpointExists: async () => true,
+  createCheckpoint: async () => ({ id: "cp", createdAt: 1 }),
+  dropCheckpoint: async () => {},
+  previewCheckpointRestore: async () => {
+    previewCalls++;
+    if (previewCalls === 1) {
+      previewEntered.open();
+      await previewRelease.promise;
+    }
+    return { wouldWrite: [], wouldDelete: [] };
+  },
+  restoreCheckpoint: async () => {
+    restored = true;
+  },
+}));
+
+function gate() {
+  let open: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
 
 const dir = mkdtempSync(path.join(tmpdir(), "kone-p2-review2-"));
 setUserDataDir(dir);
@@ -24,14 +54,6 @@ type Store = InstanceType<typeof ConversationStore>;
 type Service = InstanceType<typeof AgentService>;
 const store: Store = new ConversationStore();
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function gate() {
-  let open: () => void = () => {};
-  const promise = new Promise<void>((resolve) => {
-    open = resolve;
-  });
-  return { promise, open };
-}
 
 class Adapter {
   provider = "codex" as const;
