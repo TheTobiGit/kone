@@ -1,0 +1,1365 @@
+# 2026-10-09T05:09:57Z /Users/gideonsarfo/Developer/kone-wt/p4-forks zsh -c cd packages/agent-core && bun test
+bun test v1.4.2 (744846f84)
+
+src/conversationStore.test.ts:
+[conversation-store] could not open database; continuing without persistence: 1368 |   const maxRecorded =
+1369 |     recordedRows.length > 0 ? (recordedRows[recordedRows.length - 1]?.migration_id ?? 0) : 0;
+1370 |   const highestVersion = Math.max(userVersion, maxRecorded);
+1371 | 
+1372 |   if (highestVersion > SCHEMA_VERSION) {
+1373 |     throw new UnsupportedSchemaError(
+                 ^
+error: [conversation-store] database schema v99 is newer than this build supports (v33); refusing to migrate. Upgrade the app, or remove the database to start fresh.
+      at migrate (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationMigrations.ts:1373:11)
+      at handle (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:109:7)
+      at listThreads (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/threads.ts:545:25)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.test.ts:406:18)
+
+[conversation-store] refusing to delete parent-1: a spawned descendant is mid-turn
+[conversation-store] refusing to archive parent-1: a spawned descendant is mid-turn
+[conversation-store] could not seal orphaned turns: 239 |         `UPDATE blocks SET state = 'interrupted', ended_at = ?
+240 |          WHERE role = 'assistant' AND state = 'running'`,
+241 |       ).run(now);
+242 |       // 'failed' rather than 'interrupted': RuntimeItemStatus has no interrupted
+243 |       // rung, and a half-run tool call did not succeed.
+244 |       db.prepare(
+               ^
+SQLiteError: no such table: items
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at sealOrphanedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:244:10)
+      at handle (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:121:12)
+      at listQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:532:25)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.test.ts:2051:18)
+
+[conversation-store] could not seal undispatched spawns: 269 |     try {
+270 |       const now = Date.now();
+271 |       // SAFETY: the projection names exactly these four gateway_ops columns,
+272 |       // all written by reserveGatewayOp/setGatewayOpResult.
+273 |       const rows = db
+274 |         .prepare(
+               ^
+SQLiteError: no such table: gateway_ops
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at sealUndispatchedSpawns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:274:10)
+      at handle (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:125:12)
+      at listQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:532:25)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.test.ts:2051:18)
+
+[conversation-store] could not backfill antigravity tokens: 389 |   /** Backfill token totals and context window for stored Antigravity threads. */
+390 |   private backfillAntigravityTokens(db: DatabaseSync): void {
+391 |     try {
+392 |       // SAFETY: SQLite query returns row objects matching the queried thread columns.
+393 |       const rows = db
+394 |         .prepare(
+               ^
+SQLiteError: no such column: conversation_id
+      errno: 1,
+ byteOffset: 18,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at backfillAntigravityTokens (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:394:10)
+      at handle (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:145:12)
+      at listQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:532:25)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.test.ts:2051:18)
+
+
+src/inboxDelivery.test.ts:
+[agent] urgent delivery to b failed: warn: No running turn can take this steer yet.
+      at steerThreadTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.test.ts:78:45)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.ts:216:31)
+      at steerUrgent (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.ts:229:58)
+      at urgentInto (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.ts:186:28)
+      at ring (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.ts:155:46)
+      at tick (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.test.ts:37:29)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.test.ts:385:13)
+
+[agent] could not bring b back up for its inbox: warn: provider is down
+      at ensureThreadSession (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.test.ts:85:45)
+      at restart (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.ts:167:8)
+      at ring (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.ts:149:7)
+      at tick (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.test.ts:37:29)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/inboxDelivery.test.ts:434:13)
+
+
+src/conversationStore.agentInbox.test.ts:
+[conversation-store] insertInboxMessage failed: 474 |                                       kind, urgent, rings, reply_to, body, state, dedupe_key,
+475 |                                       project_path, created_at)
+476 |              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
+477 |              ON CONFLICT (dedupe_key) DO NOTHING`,
+478 |           )
+479 |           .run(
+                 ^
+SQLiteError: FOREIGN KEY constraint failed
+      errno: 787,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_FOREIGNKEY"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:479:12)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at insertInboxMessage (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:470:16)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.agentInbox.test.ts:171:18)
+
+
+src/dispatch.test.ts:
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-2 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] codex session for t-dispatch ended on its own; the next send restarts it
+[agent] turn checkpoint capture failed for t-dispatch/turn-2 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[dispatch] could not remove a cancelled worktree: 267 |         generatedBranch: provisionGeneratedOverride ?? (request.branch === undefined),
+268 |         attachedExisting: provisionAttachedOverride ?? false,
+269 |       };
+270 |     },
+271 |     releaseWorkspace: async (input) => {
+272 |       if (releaseFails) throw new Error("remove refused");
+                                        ^
+error: remove refused
+      at releaseWorkspace (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.test.ts:272:35)
+      at discardWorkspace (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:1390:18)
+      at buildThreadWorktree (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:1236:18)
+      at async resolveThreadPlace (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:1140:32)
+      at async startThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:410:30)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-2 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+      at async drainQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3387:35)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+
+src/opencodeAdapter.test.ts:
+[opencode] question reply que_1 failed: OpenCode POST /question/que_1/reply failed with 503 — the provider never received the answer and the turn may still be waiting
+[agent] opencode session for replaced-thread ended on its own; the next send restarts it
+
+src/conversationStore.roster.test.ts:
+[conversation-store] updateAgent failed: 257 |       const result = db
+258 |         .prepare(
+259 |           `UPDATE agents SET ${assignments}, updated_at = ?
+260 |             WHERE agent_id = ? AND deleted_at IS NULL`,
+261 |         )
+262 |         .run(...values, Date.now(), agentId);
+               ^
+SQLiteError: CHECK constraint failed: preset_id IS NOT NULL OR (name IS NOT NULL AND length(trim(name)) > 0)
+      errno: 275,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_CHECK"
+
+      at #run (bun:sqlite:187:20)
+      at updateAgent (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/roster.ts:262:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.roster.test.ts:228:18)
+
+[conversation-store] listModelPreferences failed: 24 |         .prepare(`SELECT value FROM app_state WHERE key = ?`)
+25 |         .get(ModelPreferenceRepo.KEY) as { value: string } | undefined;
+26 |       if (!row?.value) return defaultModelPreferences();
+27 |       // SAFETY: disk content is untrusted — parse to the column-value shape
+28 |       // and let the normalizer decide what survives.
+29 |       const parsed = JSON.parse(row.value) as ColumnValue;
+                               ^
+SyntaxError: JSON Parse error: Expected '}'
+      at listModelPreferences (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/modelPreferences.ts:29:27)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.roster.test.ts:1250:18)
+
+
+src/claudeAdapter.test.ts:
+[claude] resume "abc" failed (No conversation found with session ID: abc) — starting a fresh conversation
+[kone] Claude discovery probe failed: 814 | 
+815 | describe("Claude discovery", () => {
+816 |   test("a handshake that throws is an error row, marked transient, not a sign-in verdict", async () => {
+817 |     const { adapter } = setup();
+818 |     state.initializationResult = mock(async () => {
+819 |       throw new Error("spawn ENOENT\nstack line that should not reach the row");
+                      ^
+error: spawn ENOENT
+stack line that should not reach the row
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:819:17)
+      at initializationResult (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:106:45)
+      at runInitProbe (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/adapters/ClaudeAdapter.ts:357:28)
+
+[kone] Claude discovery probe failed: 838 |       stderr: "",
+839 |       code: null,
+840 |       error: new Error("spawn claude ENOENT"),
+841 |     };
+842 |     state.initializationResult = mock(async () => {
+843 |       throw new Error("spawn ENOENT");
+                      ^
+error: spawn ENOENT
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:843:17)
+      at initializationResult (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:106:45)
+      at runInitProbe (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/adapters/ClaudeAdapter.ts:357:28)
+
+[kone] Claude discovery probe failed: 862 |       stdout: "",
+863 |       stderr: "",
+864 |       code: null,
+865 |     };
+866 |     state.initializationResult = mock(async () => {
+867 |       throw new Error("connection refused");
+                      ^
+error: connection refused
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:867:17)
+      at initializationResult (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:106:45)
+      at runInitProbe (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/adapters/ClaudeAdapter.ts:357:28)
+
+
+src/agentService.queue.test.ts:
+[agent] promotion of queued turn q-2 failed (try 1): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:217:26)
+
+[agent] promotion of queued turn q-2 failed (try 2): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:217:26)
+
+[agent] promotion of queued turn q-2 failed (try 3): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:217:26)
+
+[agent] promotion of queued turn q-5 failed (try 1): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:248:26)
+
+[agent] promotion of queued turn q-5 failed (try 2): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:248:26)
+
+[agent] promotion of queued turn q-5 failed (try 3): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:248:26)
+
+[agent] promotion of queued turn q-7 failed (try 1): warn: not yet
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:267:28)
+
+[agent] promotion of queued turn q-9 failed (try 1): warn: not yet
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:267:28)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3735:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:333:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3735:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:365:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3734:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:386:19)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3734:29)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3747:14)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3734:29)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3747:14)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2726:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2728:16)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3734:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:406:19)
+
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3697:33)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:424:19)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3774:30)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3701:91)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:424:19)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3735:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:424:19)
+
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3697:33)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:451:21)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3774:30)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3701:91)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:451:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3735:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:451:21)
+
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3697:33)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:472:21)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3774:30)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3701:91)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:472:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3735:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:472:21)
+
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3697:33)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:492:21)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3774:30)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3701:91)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:492:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3735:29)
+      at cancelThreadQueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3715:10)
+      at cancelQueuedForStop (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3677:10)
+      at cancelQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3664:10)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:492:21)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2726:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2728:16)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2726:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2728:16)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2726:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2728:16)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3516:12)
+
+[agent] promotion of queued turn q-38 failed (try 2): warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:555:26)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at deliverQueuedTurnNow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2754:12)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:570:65)
+
+[agent] promotion of queued turn d35a1075-b78a-4eaa-a895-880d49ec4bb3 failed (try 1): warn: busy, try again
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1092:26)
+
+[agent] a turn for t-96's inbox did not start: warn: provider is down
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1421:26)
+
+[agent] not sending a turn on t-100: what it carries could not be marked sent: 1340 |         const entry: Carried = { turn: turn?.input ?? null, own, settled: null, released: false };
+1341 |         log.push(entry);
+1342 |         return {
+1343 |           input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
+1344 |           sending: () => {
+1345 |             if (options.markerFails) throw new Error("database is locked");
+                                                      ^
+error: database is locked
+      at sending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1471:18)
+      at noteSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1590:7)
+      at sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1506:12)
+      at dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+      at runInboxTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3411:18)
+      at drainQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3376:20)
+
+[agent] a turn for t-100's inbox did not start: warn: database is locked
+      at sending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1471:18)
+      at noteSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1590:7)
+      at sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1506:12)
+      at dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+      at runInboxTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3411:18)
+      at drainQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3376:20)
+
+[agent] not sending a turn on t-101: what it carries could not be marked sent: 1340 |         const entry: Carried = { turn: turn?.input ?? null, own, settled: null, released: false };
+1341 |         log.push(entry);
+1342 |         return {
+1343 |           input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
+1344 |           sending: () => {
+1345 |             if (options.markerFails) throw new Error("database is locked");
+                                                      ^
+error: database is locked
+      at sending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1471:18)
+      at noteSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1590:7)
+      at sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1506:12)
+      at dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+      at drainQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3387:35)
+
+[agent] promotion of queued turn q-102 failed (try 1): warn: database is locked
+      at sending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1471:18)
+      at noteSending (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1590:7)
+      at sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1506:12)
+      at dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+      at drainQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3387:35)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at retryOrHold (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3568:10)
+      at drainQueuedTurns (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3396:14)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3516:12)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3516:12)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3478:20)
+      at releaseThen (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3501:27)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3516:12)
+
+
+src/jsonRpc.test.ts:
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "null",
+  length: 4,
+}
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "\"hello\"",
+  length: 7,
+}
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "42",
+  length: 2,
+}
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "true",
+  length: 4,
+}
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "{}",
+  length: 2,
+}
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "[]",
+  length: 2,
+}
+[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope): {
+  preview: "{\"name\":\"synara\"}",
+  length: 17,
+}
+[jsonrpc] ignoring non-protocol stdout line (invalid JSON): {
+  preview: "{\"method\":\"item/started\"",
+  length: 24,
+}
+
+src/quitResume.test.ts:
+[quit-resume] resume turn for thread a failed: warn: session gone
+      at dispatchResumeTurn (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/quitResume.test.ts:308:57)
+      at resumeQuitInterruptedChats (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/quitResume.ts:423:19)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/quitResume.test.ts:301:26)
+
+[quit-resume] quit did not complete; dropped the quit-resume record
+
+src/clineAdapter.test.ts:
+[kone] full-access t1: REFUSED — Filesystem Formatting (mkfs-format) — Formatting a filesystem destroys existing partition tables and all data. Command: mkfs.ext4 /dev/sda1
+[kone] full-access t1: REFUSED — Recursive Root/Home Deletion (rm-rf-root-or-home) — Destructive recursive deletion targeting the root directory or user home folder. Command: rm -rf ~
+
+src/threadSpawn.test.ts:
+[spawn] ignored a late turn.completed for turn t-1 on 200adfa5-ef57-4b7f-8256-ad25414a7dcd: its session's end settled it failed
+[spawn] ignored a late turn.aborted for turn t-1 on 05e047a5-015f-4032-83e3-2e01e6f6c484: its session's end settled it failed
+[spawn] ignored a late turn.completed for turn turn-1 on old-1: its session's end settled it failed
+[spawn] ignored a late turn.completed for turn t-1 on e9f7690c-e6d7-4816-a910-b97425ae68a7: its session's end settled it failed
+[spawn] ignored a late turn.completed for turn t-1 on 9eca88bb-e4e4-4b03-9c1f-f4252d2e3e9a: its session's end settled it interrupted
+[spawn] ignored a late turn.completed for turn turn-2 on 77172d01-5955-4f98-8c50-d86e12b06fad: its session's end settled it failed
+
+src/sweepPullRequestSettlements.test.ts:
+[agent] settle-on-merge: settled 1 thread(s)
+[agent] settle-on-merge: settled 1 thread(s)
+[agent] settle-on-merge: settled 1 thread(s)
+[agent] settle-on-merge: settled 1 thread(s)
+[agent] settle-on-merge: settled 1 thread(s)
+
+src/agentInbox.recovery.test.ts:
+[conversation-store] insertInboxMessage failed: 474 |                                       kind, urgent, rings, reply_to, body, state, dedupe_key,
+475 |                                       project_path, created_at)
+476 |              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
+477 |              ON CONFLICT (dedupe_key) DO NOTHING`,
+478 |           )
+479 |           .run(
+                 ^
+SQLiteError: FOREIGN KEY constraint failed
+      errno: 787,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_FOREIGNKEY"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:479:12)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at insertInboxMessage (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:470:16)
+      at enqueue (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/tools/irc.ts:706:31)
+      at postFromKone (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/tools/irc.ts:696:15)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentInbox.recovery.test.ts:87:7)
+
+[conversation-store] could not release orphaned inbox claims: 363 |      ON CONFLICT (dedupe_key) DO NOTHING`,
+364 |   );
+365 |   const exists = db.prepare(`SELECT 1 FROM threads WHERE thread_id = ?`);
+366 |   const tell = (to: string, body: string, key: string, projectPath: string): void => {
+367 |     if (!exists.get(to)) return;
+368 |     insert.run(`msg_${randomUUID()}`, to, body, key, projectPath, now);
+                 ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at tell (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:368:12)
+      at reconcileOrphanedInboxClaims (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:372:5)
+      at releaseOrphanedInboxClaims (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:303:23)
+      at recoverInbox (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:441:21)
+      at handle (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:142:12)
+      at inboxMessage (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:767:25)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentInbox.recovery.test.ts:226:25)
+
+
+src/agentService.test.ts:
+[agent] wedge watchdog: codex session t-wedge silent 0s with live turn turn-w — resetting
+[agent] wedge watchdog: codex session t-busy silent 0s with live turn turn-b — resetting
+[agent] wedge watchdog: codex session t-thinking silent 0s with live turn turn-t — resetting
+[agent] wedge watchdog: codex session t-silent silent 0s with live turn turn-s — resetting
+[agent] wedge watchdog: codex session t-wedge-item-open silent 0s with live turn turn-item — resetting
+[agent] wedge watchdog: codex session t-wedge-item-timeout silent 0s with live turn turn-item — resetting
+[agent] wedge watchdog: codex session t-wedge-item-closed silent 0s with live turn turn-item — resetting
+[agent] codex session for t-end-asked-exit ended on its own; the next send restarts it
+[agent] idle session reaper: stopping inactive codex session t-end-asked-reject (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-idle-1 (idle 0s)
+[agent] wedge watchdog: codex session t-idle-turn-active silent 0s with live turn turn-running — resetting
+[agent] idle session reaper: stopping inactive codex session t-idle-heartbeat (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-idle-resume (idle 0s)
+[agent] wedge watchdog: codex session t-idle-queued silent 0s with live turn turn-running-q — resetting
+[agent] idle session reaper: stopping inactive codex session t-idle-resume (idle 0s)
+[agent] wedge watchdog: codex session t-q-enqueue silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-enqueue-attachments silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-enqueue-stamps silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-cancel-user silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-steer-live silent 0s with live turn live-9 — resetting
+[agent] wedge watchdog: codex session t-q-steer-batch silent 0s with live turn live-10 — resetting
+[agent] wedge watchdog: codex session t-q-steer-fallback silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-order silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-send-now-steer silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-send-now-refused silent 0s with live turn live-1 — resetting
+[agent] wedge watchdog: codex session t-q-send-now-fallback silent 0s with live turn live-1 — resetting
+[agent] idle session reaper: stopping inactive codex session t-q-promote (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-view (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-not-view (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-q-steer-idle (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-q-send-now-idle (idle 0s)
+[agent] idle session reaper: stopping inactive codex session t-q-send-now-gone (idle 0s)
+[agent] retention: marked 3 idle thread(s) done
+[agent] retention: archived 2 idle thread(s)
+[agent] retention: marked 2 idle thread(s) done
+[agent] retention: archived 1 idle thread(s)
+[agent] dropping model "mystery" — not in codex's catalog; using provider default
+[agent] dropping model "foreign-model" — not in codex's catalog; using provider default
+
+src/conversationStore.spawn.test.ts:
+[conversation-store] writeSpawnedThread failed: 894 |         db.prepare(
+895 |           `INSERT INTO threads (
+896 |              thread_id, project_path, provider, model, created_at,
+897 |              last_activity_at, title, relationship_to_parent, parent_thread_id, contract_json)
+898 |            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+899 |         ).run(
+                ^
+SQLiteError: UNIQUE constraint failed: threads.thread_id
+      errno: 1555,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_PRIMARYKEY"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/lineage.ts:899:11)
+      at durably (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at writeSpawnedThread (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/lineage.ts:893:16)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.spawn.test.ts:158:18)
+
+
+src/agentCheckpoints.test.ts:
+[agent] turn checkpoint capture failed for t-fail/checkpoint-turn-1 — continuing without one: warn: store exploded
+      at getTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:99:33)
+      at captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1642:17)
+      at sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+[agent] listTurnCheckpoints failed for t-fail: warn: store exploded
+      at listTurnCheckpoints (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:104:33)
+      at listTurnCheckpoints (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1674:36)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:205:22)
+
+[agent] turn checkpoint capture failed for t-plain/checkpoint-turn-1 — continuing without one: GitError: "/tmp/kone-test-run-dJp0UG/kone-checkpoint-plain-cl0ap0" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1645:32)
+      at async sendToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1513:18)
+      at async dispatchToAdapter (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1469:25)
+
+
+src/adapters/errors.test.ts:
+[kone] unrecognized provider error payload: {"code":500,"retryable":false}
+[kone] unrecognized provider error payload: {"retryable":false}
+[kone] unrecognized provider error payload: {
+  self: [Circular],
+}
+
+src/quota/droid.test.ts:
+Factory .env read failed: ENOTDIR: not a directory, lstat '/dev/null/definitely-missing'
+
+src/gateway/registry.test.ts:
+[gateway] tool "boom" failed: 340 |         inputSchema: z.object({}),
+341 |         jsonSchema: { type: "object" },
+342 |         permission: "allow",
+343 |         requiresActiveTurn: false,
+344 |         handler: async () => {
+345 |           throw new Error("disk full");
+                          ^
+error: disk full
+      at handler (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.test.ts:345:21)
+      at dispatch (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.ts:263:25)
+      at call (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.ts:178:26)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.test.ts:349:35)
+
+[gateway] tool "app_boom" failed: 362 |       jsonSchema: { type: "object" },
+363 |       permission: "allow" as const,
+364 |       requiresActiveTurn: false,
+365 |       target,
+366 |       handler: async () => {
+367 |         if (fail) throw new Error("disk full");
+                                  ^
+error: disk full
+      at handler (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.test.ts:367:29)
+      at dispatch (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.ts:263:25)
+      at call (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.ts:178:26)
+      at <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/registry.test.ts:379:35)
+
+
+src/gateway/gateway.test.ts:
+[gateway] refusing cross-origin request from http://evil.example
+
+src/usage/pricing/store.test.ts:
+[pricing] modelsDev refresh failed, keeping cached data: warn: HTTP 500
+      at fetchSource (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/usage/pricing/store.ts:204:33)
+      at async refreshDueSources (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/usage/pricing/store.ts:183:15)
+
+
+ 2758 pass
+ 0 fail
+ 8456 expect() calls
+Ran 2758 tests across 159 files. [57.95s]
+# exit=0

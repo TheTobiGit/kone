@@ -1,0 +1,51 @@
+# 2026-10-09T05:40:06Z /Users/gideonsarfo/Developer/kone-wt/p4-forks bun 1.4.2 zsh -fc cd apps/desktop && bun test
+bun test v1.4.2 (744846f84)
+
+src/modules/jev/route.test.ts:
+[jev] routing failed, falling back to the default partner: JevRequestError: routing request failed (500)
+ status: 500,
+
+      at once (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:174:11)
+      at async systemOne (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:145:20)
+      at async route (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.ts:138:26)
+      at async <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.test.ts:114:26)
+
+[jev] routing failed, falling back to the default partner: JevRequestError: routing request failed (429)
+ status: 429,
+
+      at once (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:174:11)
+      at async systemOne (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:145:20)
+      at async route (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.ts:138:26)
+      at async <anonymous> (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.test.ts:170:26)
+
+
+src/modules/git/worktreeCleanup.test.ts:
+[git] could not list worktrees for deleted thread 'parent': db is gone
+[git] could not remove worktree '/wt/first': git said no
+[git] could not check references to '/wt/unknown': db is gone
+
+src/modules/git/worktreeSweep.test.ts:
+[git] removed 1 idle worktree(s)
+
+src/modules/git/worktreeInclude.test.ts:
+[git] could not list private files for the new worktree: 135 |       (error instanceof Error ? error.message : "git command failed");
+136 |     const rawCode =
+137 |       error instanceof Error && "code" in error ? error.code : undefined;
+138 |     // SAFETY: Number.isInteger verified rawCode is an integer exit code.
+139 |     const code = Number.isInteger(rawCode) ? (rawCode as number) : null;
+140 |     throw new GitError(message, code, stdout);
+                ^
+GitError: fatal: not a git repository (or any of the parent directories): .git
+   code: 128,
+ stdout: "",
+   kind: null,
+
+      at git (/Users/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/core.ts:140:11)
+      at async listIgnored (/Users/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/git/worktreeInclude.ts:55:21)
+
+
+ 430 pass
+ 0 fail
+ 908 expect() calls
+Ran 430 tests across 40 files. [50.43s]
+# exit=0

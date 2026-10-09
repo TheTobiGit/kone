@@ -1,0 +1,50 @@
+# 2026-10-09T05:18:38Z /Users/gideonsarfo/Developer/kone-wt/p2-safety bun run check-types
+$ turbo run check-types
+• turbo 2.10.4
+
+   • Packages in scope: @kone/agent-core, @kone/config, @kone/git-core, @kone/protocol, desktop, web
+   • Running check-types in 6 packages
+   • Remote caching disabled, using shared worktree cache
+
+@kone/protocol:check-types: cache hit, replaying logs 5a0f493f632df7f1
+@kone/protocol:check-types: [0m[2m[35m$[0m [2m[1mtsc --noEmit[0m
+web:check-types: cache hit, replaying logs 31af928b41302841
+@kone/git-core:check-types: cache hit, replaying logs 10e769464ae8455f
+web:check-types: [0m[2m[35m$[0m [2m[1mnuxi typecheck[0m
+web:check-types: [Vue] Resolve plugin path failed: vue-router/volar/sfc-route-blocks Error: Cannot find module 'vue-router/volar/sfc-route-blocks'
+web:check-types: Require stack:
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/index.js
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/index.js
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/bin/vue-tsc.js
+web:check-types:     at Module._resolveFilename (node:internal/modules/cjs/loader:1475:15)
+web:check-types:     at wrapResolveFilename (node:internal/modules/cjs/loader:1048:27)
+web:check-types:     at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1093:12)
+web:check-types:     at resolve (node:internal/modules/helpers:209:31)
+web:check-types:     at CompilerOptionsResolver.addConfig (/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js:122:59)
+web:check-types:     at Object.createParsedCommandLine (/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js:65:26)
+web:check-types:     at /Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/index.js:46:20
+web:check-types:     at Object.apply (/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@volar+typescript@2.4.28/node_modules/@volar/typescript/lib/node/proxyCreateProgram.js:51:33)
+web:check-types:     at getBuilderCreationParameters (/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/typescript@6.0.3/node_modules/typescript/lib/tsc.js:127277:18)
+web:check-types:     at createEmitAndSemanticDiagnosticsBuilderProgram (/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/typescript@6.0.3/node_modules/typescript/lib/tsc.js:127932:5) {
+web:check-types:   code: 'MODULE_NOT_FOUND',
+web:check-types:   requireStack: [
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js',
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/index.js',
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/index.js',
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p2-safety/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/bin/vue-tsc.js'
+web:check-types:   ]
+web:check-types: }
+web:check-types: │
+@kone/git-core:check-types: [0m[2m[35m$[0m [2m[1mtsc --noEmit[0m
+web:check-types: ◆  Type check passed in 18582ms.
+@kone/agent-core:check-types: cache hit, replaying logs ba61f1e19f383852
+@kone/agent-core:check-types: [0m[2m[35m$[0m [2m[1mtsc --noEmit[0m
+desktop:check-types: cache hit, replaying logs 39bb2967d992a139
+desktop:check-types: [0m[2m[35m$[0m [2m[1mtsc --noEmit[0m
+
+ Tasks:    5 successful, 5 total
+Cached:    5 cached, 5 total
+  Time:    129ms >>> FULL TURBO
+
+# exit=0

@@ -1,0 +1,8 @@
+# 2026-10-09T05:04:15Z /Users/gideonsarfo/Developer/kone-wt/integration zsh -c cd packages/protocol && bun test
+bun test v1.4.2 (744846f84)
+
+ 124 pass
+ 0 fail
+ 414 expect() calls
+Ran 124 tests across 13 files. [55.00ms]
+# exit=0

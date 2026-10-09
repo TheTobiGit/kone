@@ -1,0 +1,16 @@
+# 2026-10-09T05:05:17Z /Users/gideonsarfo/Developer/kone-wt/integration zsh -c cd apps/web && bun test
+bun test v1.4.2 (744846f84)
+
+app/composables/useHandoffMarks.test.ts:
+[Vue warn]: onBeforeUnmount is called when there is no active component instance to be associated with. Lifecycle injection APIs can only be used during execution of setup(). If you are using async setup(), make sure to register lifecycle hooks before the first await statement.
+[Vue warn]: onBeforeUnmount is called when there is no active component instance to be associated with. Lifecycle injection APIs can only be used during execution of setup(). If you are using async setup(), make sure to register lifecycle hooks before the first await statement.
+[Vue warn]: onBeforeUnmount is called when there is no active component instance to be associated with. Lifecycle injection APIs can only be used during execution of setup(). If you are using async setup(), make sure to register lifecycle hooks before the first await statement.
+
+app/composables/useAppSteering.test.ts:
+[kone] Ignoring theme mutation for unknown theme "dracula".
+
+ 1498 pass
+ 0 fail
+ 5091 expect() calls
+Ran 1498 tests across 114 files. [3.77s]
+# exit=0

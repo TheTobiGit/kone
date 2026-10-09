@@ -1,0 +1,158 @@
+# 2026-10-09T05:13:04Z /Users/gideonsarfo/Developer/kone-wt/p6-queue zsh -c cd packages/protocol && bun test
+bun test v1.2.16 (631e6748)
+
+src/planTasks.test.ts:
+(pass) reconcilePlanTasks > duplicate labels map 1:1 by occurrence [0.60ms]
+(pass) reconcilePlanTasks > status flip preserves ids [0.03ms]
+(pass) reconcilePlanTasks > mid-list insert keeps existing ids [0.04ms]
+(pass) reconcilePlanTasks > reword at same index keeps id [0.01ms]
+(pass) reconcilePlanTasks > removed task is dropped [0.01ms]
+(pass) reconcilePlanTasks > re-added task mints a fresh id [0.01ms]
+(pass) reconcilePlanTasks > preserves activeForm across reconciliation [0.02ms]
+(pass) parsePlanTasks / formatPlanTasks > markdown checkboxes round-trip with dashes [0.14ms]
+(pass) parsePlanTasks / formatPlanTasks > markdown checkboxes with asterisks and pluses [0.02ms]
+(pass) parsePlanTasks / formatPlanTasks > unicode markers [0.05ms]
+(pass) parsePlanTasks / formatPlanTasks > [X] counts as completed
+(pass) parsePlanTasks / formatPlanTasks > skips malformed lines [0.01ms]
+(pass) parsePlanTasks / formatPlanTasks > empty input yields empty list
+(pass) parsePlanTasks / formatPlanTasks > uses custom id generator [0.02ms]
+(pass) labelForTask > returns activeForm when in-progress and activeForm is present
+(pass) labelForTask > returns content when pending even if activeForm is present
+(pass) labelForTask > returns content when in-progress but activeForm is undefined
+(pass) planTaskCounts > calculates totals, completed, and inProgress correctly [0.03ms]
+(pass) planTaskCounts > handles empty task list
+(pass) parseTodoWriteInput > parses valid TodoWrite payload [0.71ms]
+(pass) parseTodoWriteInput > returns undefined on malformed json or missing todos [0.24ms]
+(pass) parseCodexPlanSnapshot > parses valid Codex payload [0.19ms]
+(pass) parseCodexPlanSnapshot > returns undefined on null or empty payload [0.04ms]
+
+src/pageRender.test.ts:
+(pass) the shown-page record > round-trips through the result text [0.50ms]
+(pass) the shown-page record > tells the model not to restate the page
+(pass) the shown-page record > reads nothing out of an error, a sentence or another tool's record [0.09ms]
+(pass) the shown-page record > refuses an id that is not an attachment's [0.06ms]
+(pass) the shown-page record > clamps the height it reads [0.03ms]
+(pass) injectPageBootstrap > goes straight after the head tag, ahead of the page's own scripts [0.06ms]
+(pass) injectPageBootstrap > goes first in a fragment with no head
+(pass) injectPageBootstrap > skips leading comments and a doctype without a head
+(pass) injectPageBootstrap > leaves the page's own markup intact [0.02ms]
+(pass) the frame's messages > an Escape the page left unhandled reaches the app [0.39ms]
+(pass) the frame's messages > a size report carries the height [0.22ms]
+(pass) the frame's messages > a link request opens only http(s) [0.20ms]
+(pass) the frame's messages > a theme carries the chart series and drops what a stylesheet cannot hold
+(pass) the frame's messages > the first theme rides the address [0.04ms]
+
+src/threadExport.test.ts:
+(pass) parseThreadExportFormat > accepts the two real formats [0.04ms]
+(pass) parseThreadExportFormat > rejects anything else [0.07ms]
+(pass) threadExportBlockedCode > a settled thread with a completed turn is exportable [0.03ms]
+(pass) threadExportBlockedCode > a missing thread is not exportable
+(pass) threadExportBlockedCode > a running turn blocks the export even when older turns completed [0.02ms]
+(pass) threadExportBlockedCode > a thread with no completed turns is not exportable
+(pass) threadExportBlockedCode > every code has a human message [0.03ms]
+(pass) decodeThreadExportJson > a well-formed export decodes to an equivalent structure [1.69ms]
+(pass) decodeThreadExportJson > a nested subagent transcript survives the decode [0.44ms]
+(pass) decodeThreadExportJson > rejects unparseable text, wrong versions, and wrong documents [0.15ms]
+
+src/agentCallSign.test.ts:
+(pass) callSignFor > rolls the name the renderer has always shown for a thread id [0.04ms]
+(pass) callSignFor > is FNV-1a over the id, indexed into the list [0.02ms]
+(pass) rootConversationId > a side chat resolves to the thread it was forked from [0.04ms]
+(pass) rootConversationId > a cycle stops where it closes [0.02ms]
+
+src/themeSummary.test.ts:
+(pass) theme change records > round-trips both ends of a change it wrote [0.25ms]
+(pass) theme change records > round-trips a change that displaced nothing [0.02ms]
+(pass) theme change records > round-trips a created theme [0.03ms]
+(pass) theme change records > round-trips a preview with custom colours [0.21ms]
+(pass) theme change records > reads nothing out of malformed records [0.17ms]
+(pass) texts that record no change > reads nothing out of a bare mode change [0.03ms]
+(pass) texts that record no change > reads nothing out of a legacy sentence [0.02ms]
+(pass) texts that record no change > reads nothing out of an in-progress input dump [0.05ms]
+(pass) texts that record no change > reads nothing out of malformed records [0.08ms]
+
+src/viewContext.test.ts:
+(pass) parseViewSnapshot > keeps a well-formed snapshot as it was sent [1.80ms]
+(pass) parseViewSnapshot > refuses anything that is not a snapshot of this version [0.16ms]
+(pass) parseViewSnapshot > drops a layer naming a surface this build does not know, keeping the rest [0.31ms]
+(pass) parseViewSnapshot > clips long strings and long selections [0.27ms]
+(pass) parseViewSnapshot > treats a blank selection as none [0.07ms]
+(pass) focus readers > names the focused thread column of a visible studio row [0.11ms]
+(pass) focus readers > prefers the inbox's thread when the inbox is in front
+(pass) focus readers > names a focused terminal, and no thread when the terminal has focus [0.03ms]
+(pass) renderViewSnapshot > describes the front surface, its columns, and what is hidden behind it [0.71ms]
+(pass) renderViewSnapshot > includes the selection with its age [0.03ms]
+(pass) renderViewSnapshot > says so when nothing is on screen
+(pass) renderViewSnapshot > briefly: the focused column in full, the rest a count, nothing hidden [0.05ms]
+(pass) renderViewSnapshot > briefly, with no column focused: just the count [0.05ms]
+(pass) renderViewSnapshot > briefly, still carries the selection
+(pass) viewSignature > ignores the clock [0.03ms]
+(pass) viewSignature > briefly, ignores what the brief wording leaves out [0.07ms]
+
+src/steerSplit.test.ts:
+(pass) steeredBlockIds > a batch names every block, in order [0.03ms]
+(pass) steeredBlockIds > a single steer names its one block [0.01ms]
+(pass) steeredBlockIds > a steer with no block names none [0.01ms]
+
+src/subagentPresets.test.ts:
+(pass) BUILTIN_SUBAGENT_PRESETS > contains unique presetIds [0.02ms]
+(pass) BUILTIN_SUBAGENT_PRESETS > contains the five native roles [0.03ms]
+(pass) BUILTIN_SUBAGENT_PRESETS > each preset has non-empty name and instructions [0.05ms]
+(pass) BUILTIN_SUBAGENT_PRESETS > the id list mirrors the definitions in order [0.01ms]
+(pass) LEGACY_PRESET_ALIASES > every successor is a native this build ships [0.01ms]
+(pass) LEGACY_PRESET_ALIASES > legacy ids and names resolve, punctuation-blind [0.09ms]
+(pass) LEGACY_PRESET_ALIASES > current names and retired-without-successor names resolve to nothing [0.03ms]
+(pass) normalizeChain > a missing primary drops the tail however it was spelt [0.02ms]
+(pass) normalizeChain > a pinned primary with no tail reads an empty tail [0.02ms]
+(pass) normalizeChain > a pinned primary keeps its tail by value, not by reference [0.01ms]
+
+src/messageSender.test.ts:
+(pass) message sender > the user is stored as NULL and read back as absent [0.21ms]
+(pass) message sender > an agent sender round-trips [0.33ms]
+(pass) message sender > a system sender round-trips [0.05ms]
+(pass) message sender > a courier sender round-trips with whose work it carries [0.25ms]
+(pass) message sender > the courier's id is the one reserved roster id
+(pass) message sender > anything unreadable falls back to the user rather than a wrong claim [0.09ms]
+(pass) sender label > names every speaker as what they are [0.04ms]
+
+src/contract.test.ts:
+(pass) contract terms > round-trip through their column [0.07ms]
+(pass) contract terms > anything that is not a whole contract reads as none
+(pass) contract terms > the brief lays the job's terms under the task, and leaves the identity out
+
+src/ipcError.test.ts:
+(pass) markKind > prefixes the message with the [kone:KIND] marker [0.02ms]
+(pass) markKind > preserves the message verbatim after the marker
+(pass) parseKind > recovers the kind and the human remainder [0.06ms]
+(pass) parseKind > round-trips markKind [0.01ms]
+(pass) parseKind > returns null kind for an unmarked message [0.01ms]
+(pass) parseKind > does not treat a mid-sentence marker as a kind
+(pass) parseKind > handles an empty message [0.01ms]
+(pass) parseKind > returns null kind for an unrecognized marker
+(pass) parseKind > validates kinds with isIpcErrorKind [0.02ms]
+(pass) IPC_ERROR_KINDS > is a non-empty list of UPPER_SNAKE kinds [0.02ms]
+(pass) isWorkspaceCancel > recognizes the classified cancellation [0.04ms]
+(pass) isWorkspaceCancel > recognizes it through the Electron wrapper and error name [0.01ms]
+(pass) isWorkspaceCancel > rejects other kinds and unmarked failures [0.01ms]
+
+src/spawnRecord.test.ts:
+(pass) spawn results > round-trips every thread a result recorded, in order [0.34ms]
+(pass) spawn results > still reads the bare single record an earlier build wrote [0.03ms]
+(pass) spawn results > records nothing for a refusal sentence, an empty envelope or no text [0.20ms]
+(pass) spawnWhy > keeps the clause after because, without the model's own because or full stop [0.05ms]
+(pass) spawnWhy > is null when no reason is left
+(pass) isSpawnToolName > names only the tools that open threads [0.02ms]
+(pass) isSpawnToolName > still reads the names results were stored under before the rename
+
+src/koneTools.test.ts:
+(pass) kone tool names > every former name resolves to a tool served today [0.05ms]
+(pass) kone tool names > a former name is never also a current one [0.02ms]
+(pass) kone tool names > the worker and peer names reach their agent tools [0.01ms]
+(pass) kone tool names > the agent-only generation reaches the worker and follow-up tools
+(pass) kone tool names > a current name passes through unchanged
+
+ 124 pass
+ 0 fail
+ 414 expect() calls
+Ran 124 tests across 13 files. [50.00ms]
+# exit=0

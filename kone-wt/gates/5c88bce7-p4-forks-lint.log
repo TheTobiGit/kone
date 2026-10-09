@@ -1,0 +1,4 @@
+# 2026-10-09T05:33:25Z /Users/gideonsarfo/Developer/kone-wt/p4-forks bun run lint
+$ oxlint --report-unused-disable-directives
+packages/agent-core/src/rewindConversationOnly.test.ts:91:5: warning: Unused eslint-disable directive (no problems were reported).
+# exit=0

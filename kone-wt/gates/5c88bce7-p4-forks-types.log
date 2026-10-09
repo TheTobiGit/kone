@@ -1,0 +1,48 @@
+# 2026-10-09T05:32:01Z /Users/gideonsarfo/Developer/kone-wt/p4-forks bun run check-types
+$ turbo run check-types
+• turbo 2.10.4
+
+   • Packages in scope: @kone/agent-core, @kone/config, @kone/git-core, @kone/protocol, desktop, web
+   • Running check-types in 6 packages
+   • Remote caching disabled, using shared worktree cache
+
+@kone/protocol:check-types: cache miss, executing 7a97a2d016b9a174
+@kone/protocol:check-types: $ tsc --noEmit
+web:check-types: cache miss, executing eae392b8661760c2
+@kone/git-core:check-types: cache miss, executing 2b92cc498ca7eb14
+web:check-types: $ nuxi typecheck
+@kone/git-core:check-types: $ tsc --noEmit
+@kone/agent-core:check-types: cache miss, executing fab716734f1bf537
+@kone/agent-core:check-types: $ tsc --noEmit
+web:check-types: [Vue] Resolve plugin path failed: vue-router/volar/sfc-route-blocks Error: Cannot find module 'vue-router/volar/sfc-route-blocks'
+web:check-types: Require stack:
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/index.js
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/index.js
+web:check-types: - /Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/bin/vue-tsc.js
+web:check-types:     at Module._resolveFilename (node:internal/modules/cjs/loader:1475:15)
+web:check-types:     at wrapResolveFilename (node:internal/modules/cjs/loader:1048:27)
+web:check-types:     at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1093:12)
+web:check-types:     at resolve (node:internal/modules/helpers:209:31)
+web:check-types:     at CompilerOptionsResolver.addConfig (/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js:122:59)
+web:check-types:     at Object.createParsedCommandLine (/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js:65:26)
+web:check-types:     at /Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/index.js:46:20
+web:check-types:     at Object.apply (/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@volar+typescript@2.4.28/node_modules/@volar/typescript/lib/node/proxyCreateProgram.js:51:33)
+web:check-types:     at getBuilderCreationParameters (/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/typescript@6.0.3/node_modules/typescript/lib/tsc.js:127277:18)
+web:check-types:     at createEmitAndSemanticDiagnosticsBuilderProgram (/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/typescript@6.0.3/node_modules/typescript/lib/tsc.js:127932:5) {
+web:check-types:   code: 'MODULE_NOT_FOUND',
+web:check-types:   requireStack: [
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/lib/compilerOptions.js',
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/@vue+language-core@3.3.7/node_modules/@vue/language-core/index.js',
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/index.js',
+web:check-types:     '/Users/gideonsarfo/Developer/kone-wt/p4-forks/node_modules/.bun/vue-tsc@3.3.7+7524df1edfed9f02/node_modules/vue-tsc/bin/vue-tsc.js'
+web:check-types:   ]
+web:check-types: }
+desktop:check-types: cache miss, executing 365c96ab10e1d11d
+desktop:check-types: $ tsc --noEmit
+
+ Tasks:    5 successful, 5 total
+Cached:    0 cached, 5 total
+  Time:    15.116s 
+
+# exit=0

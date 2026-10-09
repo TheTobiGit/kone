@@ -1,0 +1,769 @@
+# 2026-10-09T05:20:06Z /Users/gideonsarfo/Developer/kone-wt/integration bun run build
+$ turbo run build
+• turbo 2.10.4
+
+   • Packages in scope: @kone/agent-core, @kone/config, @kone/git-core, @kone/protocol, desktop, web
+   • Running build in 6 packages
+   • Remote caching disabled, using shared worktree cache
+
+web:build: cache miss, executing 41cae10ce78e296f
+desktop:build: cache miss, executing cb56fb0829d7659d
+web:build: $ nuxt build
+desktop:build: $ bun run scripts/build.ts
+desktop:build: Building Nuxt renderer for desktop...
+desktop:build: $ nuxt generate
+desktop:build: ┌  Building Nuxt for production...
+web:build: ┌  Building Nuxt for production...
+desktop:build: │
+desktop:build: ●  Nuxt 4.4.8 (with Nitro 2.13.4, Vite 7.3.6 and Vue 3.5.39)
+web:build: │
+web:build: ●  Nuxt 4.4.8 (with Nitro 2.13.4, Vite 7.3.6 and Vue 3.5.39)
+desktop:build: │
+desktop:build: ●  Nitro preset: static
+web:build: │
+web:build: ●  Nitro preset: node-server
+web:build: ℹ Building client...
+desktop:build: ℹ Building client...
+web:build: ℹ vite v7.3.6 building client environment for production...
+desktop:build: ℹ vite v7.3.6 building client environment for production...
+desktop:build: 
+web:build: 
+web:build:  WARN  [plugin nuxt:module-preload-polyfill] Sourcemap is likely to be incorrect: a plugin (nuxt:module-preload-polyfill) was used to transform files, but didn't generate a sourcemap for the transformation. Consult the plugin documentation for help
+web:build: 
+desktop:build:  WARN  [plugin nuxt:module-preload-polyfill] Sourcemap is likely to be incorrect: a plugin (nuxt:module-preload-polyfill) was used to transform files, but didn't generate a sourcemap for the transformation. Consult the plugin documentation for help
+desktop:build: 
+web:build: ℹ transforming...
+desktop:build: ℹ transforming...
+desktop:build: 
+desktop:build:  WARN  [plugin @tailwindcss/vite:generate:build] Sourcemap is likely to be incorrect: a plugin (@tailwindcss/vite:generate:build) was used to transform files, but didn't generate a sourcemap for the transformation. Consult the plugin documentation for help
+desktop:build: 
+web:build: 
+web:build:  WARN  [plugin @tailwindcss/vite:generate:build] Sourcemap is likely to be incorrect: a plugin (@tailwindcss/vite:generate:build) was used to transform files, but didn't generate a sourcemap for the transformation. Consult the plugin documentation for help
+web:build: 
+web:build: 
+web:build:  WARN  ../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js (3362:0): A comment
+web:build: 
+web:build: "/* #__PURE__ */"
+web:build: 
+web:build: in "../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+web:build: 
+web:build: 
+web:build:  WARN  ../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js (5780:22): A comment
+web:build: 
+web:build: "/* #__PURE__ */"
+web:build: 
+web:build: in "../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+web:build: 
+desktop:build: 
+desktop:build:  WARN  ../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js (3362:0): A comment
+desktop:build: 
+desktop:build: "/* #__PURE__ */"
+desktop:build: 
+desktop:build: in "../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+desktop:build: 
+desktop:build: 
+desktop:build:  WARN  ../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js (5780:22): A comment
+desktop:build: 
+desktop:build: "/* #__PURE__ */"
+desktop:build: 
+desktop:build: in "../../node_modules/.bun/@vueuse+core@14.3.0+03a16d29f512c64f/node_modules/@vueuse/core/dist/index.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+desktop:build: 
+desktop:build: ℹ ✓ 9467 modules transformed.
+web:build: ℹ ✓ 9468 modules transformed.
+desktop:build: ℹ rendering chunks...
+web:build: ℹ rendering chunks...
+desktop:build: 
+desktop:build:  WARN  [plugin vite:reporter] 
+desktop:build: (!) /Users/gideonsarfo/Developer/kone-wt/integration/node_modules/.bun/shiki@4.3.1/node_modules/shiki/dist/index.mjs is dynamically imported by /Users/gideonsarfo/Developer/kone-wt/integration/apps/web/app/composables/useHighlighter.ts but also statically imported by /Users/gideonsarfo/Developer/kone-wt/integration/apps/web/app/composables/useHighlighter.ts, dynamic import will not move module into another chunk.
+desktop:build: 
+desktop:build: 
+web:build: 
+web:build:  WARN  [plugin vite:reporter] 
+web:build: (!) /Users/gideonsarfo/Developer/kone-wt/integration/node_modules/.bun/shiki@4.3.1/node_modules/shiki/dist/index.mjs is dynamically imported by /Users/gideonsarfo/Developer/kone-wt/integration/apps/web/app/composables/useHighlighter.ts but also statically imported by /Users/gideonsarfo/Developer/kone-wt/integration/apps/web/app/composables/useHighlighter.ts, dynamic import will not move module into another chunk.
+web:build: 
+web:build: 
+web:build: ℹ computing gzip size...
+desktop:build: ℹ computing gzip size...
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/manifest.json                   156.66 kB │ gzip:    10.20 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/error-500.BtTxw1Dp.css      1.91 kB │ gzip:     0.72 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/error-404.DtT3ucZ8.css      2.43 kB │ gzip:     0.86 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/entry.CBTKuGtQ.css         38.53 kB │ gzip:     9.19 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/index.BQQqZCvl.css        668.28 kB │ gzip:    99.65 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEcNqEtT.js                 0.33 kB │ gzip:     0.24 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bp6g37R7.js                 0.55 kB │ gzip:     0.32 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cq5zzVJU.js                 0.70 kB │ gzip:     0.42 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B_m7g4N7.js                 0.74 kB │ gzip:     0.34 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cp8Y5tLI.js                 0.88 kB │ gzip:     0.48 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CSXwinHm.js                 0.97 kB │ gzip:     0.43 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C8lEn-DE.js                 1.00 kB │ gzip:     0.45 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/fuZLfV_i.js                 1.14 kB │ gzip:     0.37 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CxGSJlkm.js                 1.23 kB │ gzip:     0.52 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/yv6CvBhz.js                 1.38 kB │ gzip:     0.51 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Da5cRb03.js                 1.42 kB │ gzip:     0.53 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BRZ36xJF.js                 1.47 kB │ gzip:     0.82 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEwlwnbL.js                 1.53 kB │ gzip:     0.50 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B7c-h3xW.js                 1.65 kB │ gzip:     0.68 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DWrx1Km3.js                 1.74 kB │ gzip:     0.88 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BcOcwvcX.js                 1.74 kB │ gzip:     0.60 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BmXAJ9_W.js                 1.83 kB │ gzip:     0.76 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BV7otONQ.js                 2.16 kB │ gzip:     1.06 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C2t-YnRu.js                 2.24 kB │ gzip:     0.62 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BfSCyJF4.js                 2.32 kB │ gzip:     0.68 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C-SQnVFl.js                 2.35 kB │ gzip:     0.70 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B0tHio-l.js                 2.50 kB │ gzip:     0.77 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D97Zzqfu.js                 2.57 kB │ gzip:     0.69 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BspZqrRM.js                 2.58 kB │ gzip:     0.82 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DFXneXwc.js                 2.65 kB │ gzip:     1.17 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cp-IABpG.js                 2.82 kB │ gzip:     0.78 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C4EeE6gA.js                 2.82 kB │ gzip:     1.01 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/2UxHyX5q.js                 2.85 kB │ gzip:     0.89 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CO1LY3CK.js                 2.93 kB │ gzip:     0.80 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/uYugtg8r.js                 3.01 kB │ gzip:     0.81 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DcaNXYhu.js                 3.01 kB │ gzip:     0.79 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Des-eS-w.js                 3.11 kB │ gzip:     0.79 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BtOb2qkB.js                 3.13 kB │ gzip:     1.48 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BTJTHyun.js                 3.24 kB │ gzip:     0.91 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C9tS-k6U.js                 3.25 kB │ gzip:     0.83 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CKIfxQSi.js                 3.26 kB │ gzip:     1.17 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/QIJgUcNo.js                 3.29 kB │ gzip:     0.85 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D0YGMca9.js                 3.36 kB │ gzip:     1.21 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C3B-1QV4.js                 3.37 kB │ gzip:     1.10 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CsfeWuGM.js                 3.37 kB │ gzip:     1.18 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BtCnVYZw.js                 3.44 kB │ gzip:     1.53 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CRps25Mq.js                 3.48 kB │ gzip:     1.57 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CYsAdtH9.js                 3.60 kB │ gzip:     1.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C4IJs8-o.js                 3.61 kB │ gzip:     0.90 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/_ykCGR6B.js                 3.62 kB │ gzip:     1.61 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DFQXde-d.js                 3.62 kB │ gzip:     1.05 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DV7GczEv.js                 3.63 kB │ gzip:     1.03 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DZxFcAj9.js                 3.63 kB │ gzip:     1.42 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DRg8JJMk.js                 3.67 kB │ gzip:     1.12 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BsS91CYL.js                 3.70 kB │ gzip:     0.97 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DVFEvuxE.js                 3.91 kB │ gzip:     1.29 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D8l8udqQ.js                 3.91 kB │ gzip:     0.98 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/n2N0HUVH.js                 4.00 kB │ gzip:     1.50 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D93ZcfNL.js                 4.15 kB │ gzip:     1.68 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/dwOrl1Do.js                 4.43 kB │ gzip:     1.51 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CufHLc7y.js                 4.49 kB │ gzip:     1.09 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BcllPdc-.js                 4.49 kB │ gzip:     1.16 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BJDFO7_C.js                 4.52 kB │ gzip:     1.06 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C0HS_06l.js                 4.67 kB │ gzip:     1.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DVxCFoDh.js                 4.70 kB │ gzip:     1.97 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BYunw83y.js                 4.77 kB │ gzip:     1.56 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CHM0blh-.js                 4.80 kB │ gzip:     0.83 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DjAJT7YJ.js                 5.05 kB │ gzip:     2.03 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dx-B1_4e.js                 5.14 kB │ gzip:     1.38 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CenWIFCC.js                 5.27 kB │ gzip:     1.33 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BVQ-GDCI.js                 5.33 kB │ gzip:     1.38 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/VOosw3JB.js                 5.34 kB │ gzip:     1.55 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CEL-wOlO.js                 5.37 kB │ gzip:     2.20 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BGJmEYvX.js                 5.38 kB │ gzip:     1.21 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bmn6On1c.js                 5.38 kB │ gzip:     1.15 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DMzUqQB5.js                 5.46 kB │ gzip:     1.37 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DkFqJrB1.js                 5.53 kB │ gzip:     1.93 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/5VeTt0Ye.js                 5.67 kB │ gzip:     1.39 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BZvkOJ9d.js                 5.78 kB │ gzip:     1.92 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/_H4v1dQx.js                 5.90 kB │ gzip:     1.68 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CEu0bR-o.js                 5.90 kB │ gzip:     1.52 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BqTXFGrv.js                 5.92 kB │ gzip:     2.08 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BQ8w6xss.js                 5.93 kB │ gzip:     1.90 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/COkxafJQ.js                 5.96 kB │ gzip:     1.71 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D17OF-Vu.js                 6.09 kB │ gzip:     2.33 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/bN70gL4F.js                 6.26 kB │ gzip:     1.60 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CafNBF8u.js                 6.29 kB │ gzip:     1.72 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DkwncUOv.js                 6.33 kB │ gzip:     1.73 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dd19v3D-.js                 6.33 kB │ gzip:     1.39 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BRHolxvo.js                 6.36 kB │ gzip:     1.80 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/P80f7IUj.js                 6.41 kB │ gzip:     1.42 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CXtECtnM.js                 6.42 kB │ gzip:     1.92 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/vGWfd6FD.js                 6.43 kB │ gzip:     1.28 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/L9t79GZl.js                 6.48 kB │ gzip:     1.74 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dspwwk_N.js                 6.54 kB │ gzip:     1.78 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C7zT0LnQ.js                 6.55 kB │ gzip:     1.42 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BERRCDM3.js                 6.59 kB │ gzip:     1.62 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CkByrt1z.js                 6.76 kB │ gzip:     1.49 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DXbdFlpD.js                 6.85 kB │ gzip:     1.81 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BM1_JUlF.js                 6.91 kB │ gzip:     1.98 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cs0ovY-E.js                 6.96 kB │ gzip:     1.64 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CTRr51gU.js                 6.97 kB │ gzip:     1.90 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C98Dy4si.js                 7.17 kB │ gzip:     2.06 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D3lLCCz7.js                 7.26 kB │ gzip:     2.18 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/IeuSbFQv.js                 7.47 kB │ gzip:     2.59 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/4A_iFExJ.js                 7.87 kB │ gzip:     2.53 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D4h5O-jR.js                 7.88 kB │ gzip:     1.92 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CDVJQ6XC.js                 7.99 kB │ gzip:     1.42 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D2j5LXpq.js                 8.25 kB │ gzip:     1.80 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DHCkPAjA.js                 8.39 kB │ gzip:     1.67 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DqQDbK_p.js                 8.46 kB │ gzip:     1.67 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/ChMvpjG-.js                 8.51 kB │ gzip:     3.02 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/bE4Kk8sk.js                 8.62 kB │ gzip:     2.01 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BUw7H-hv.js                 8.78 kB │ gzip:     1.97 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BdnUsdx6.js                 8.79 kB │ gzip:     2.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CUuTKBJd.js                 8.79 kB │ gzip:     1.97 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CHLpvVh8.js                 8.96 kB │ gzip:     1.76 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C4gqWexZ.js                 9.02 kB │ gzip:     2.37 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DhaYTIfE.js                 9.06 kB │ gzip:     3.78 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C3mMm8J8.js                 9.10 kB │ gzip:     2.10 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BthQWCQV.js                 9.12 kB │ gzip:     1.98 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cj5Yp3dK.js                 9.29 kB │ gzip:     2.49 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/3e1v2bzS.js                 9.30 kB │ gzip:     1.99 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CWYGEFfz.js                 9.41 kB │ gzip:     3.83 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DqwNpetd.js                 9.43 kB │ gzip:     2.11 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C5BYcBs_.js                 9.67 kB │ gzip:     3.08 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Br6cN0cg.js                 9.68 kB │ gzip:     1.85 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D1j8_8rp.js                 9.86 kB │ gzip:     3.37 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B7mTdjB0.js                 9.94 kB │ gzip:     2.29 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BWvSN4gD.js                10.05 kB │ gzip:     1.93 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/u5AG7uiY.js                10.37 kB │ gzip:     1.38 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/k_qm7-4y.js                10.37 kB │ gzip:     1.44 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/vE_lwT2v.js                10.44 kB │ gzip:     2.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BtqSS_iP.js                10.47 kB │ gzip:     2.25 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DXvB9xmW.js                10.47 kB │ gzip:     2.97 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Buea-lGh.js                10.51 kB │ gzip:     2.26 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/ChgxH8nk.js                10.54 kB │ gzip:     2.33 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CeZK1NFH.js                10.96 kB │ gzip:     2.10 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BBxLfTx_.js                11.09 kB │ gzip:     2.69 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DAi9KRSo.js                11.18 kB │ gzip:     2.52 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CbFg5uaA.js                11.36 kB │ gzip:     3.85 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BETggiCN.js                11.39 kB │ gzip:     2.51 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DHJKELXO.js                11.41 kB │ gzip:     2.56 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BMWR74SV.js                11.44 kB │ gzip:     2.11 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DUszq2jm.js                11.50 kB │ gzip:     2.60 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DyxjwDmM.js                11.95 kB │ gzip:     4.94 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/MzD3tlZU.js                12.01 kB │ gzip:     2.19 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D5-asLiD.js                12.05 kB │ gzip:     1.64 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CcsQSqEB.js                12.13 kB │ gzip:     2.35 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Pmp26Uib.js                12.46 kB │ gzip:     3.71 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DRje8inN.js                12.73 kB │ gzip:     1.99 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BkioyH1T.js                12.89 kB │ gzip:     3.21 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BvzEVeQv.js                13.04 kB │ gzip:     1.74 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BcVCzyr7.js                13.21 kB │ gzip:     2.74 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CVO1_9PV.js                13.62 kB │ gzip:     3.06 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D-2ljcwZ.js                13.66 kB │ gzip:     2.30 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bkuqu6BP.js                13.68 kB │ gzip:     3.08 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D0r3Knsf.js                13.76 kB │ gzip:     3.08 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dc-5oQ3p.js                13.82 kB │ gzip:     2.56 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CbfX1IO0.js                14.04 kB │ gzip:     2.88 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D7oLnXFd.js                14.16 kB │ gzip:     3.06 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D53aC0YG.js                14.28 kB │ gzip:     2.46 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BfjtVDDH.js                14.28 kB │ gzip:     3.04 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DH5Ifo-i.js                14.43 kB │ gzip:     3.14 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cuk6v7N8.js                14.44 kB │ gzip:     3.14 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/E3gJ1_iC.js                14.60 kB │ gzip:     3.10 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DdkO51Og.js                14.78 kB │ gzip:     3.28 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B1yitclQ.js                15.07 kB │ gzip:     2.70 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/wEQ09or8.js                15.17 kB │ gzip:     3.95 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CoDkCxhg.js                15.21 kB │ gzip:     2.66 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CwoSXNpI.js                15.51 kB │ gzip:     2.49 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CnsnAmq5.js                15.53 kB │ gzip:     3.17 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/KW6xsasC.js                15.63 kB │ gzip:     3.41 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BdImnpbu.js                15.85 kB │ gzip:     5.90 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/rGO070M0.js                16.07 kB │ gzip:     3.11 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D7o27uSR.js                16.09 kB │ gzip:     3.05 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D82EKSYY.js                16.20 kB │ gzip:     2.05 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BqNa2AkI.js                16.30 kB │ gzip:     2.78 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BBf5iR-q.js                16.51 kB │ gzip:     2.94 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/e9S_qqu4.js                16.52 kB │ gzip:     2.03 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DWedfzmr.js                17.12 kB │ gzip:     2.93 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CfQXZHmo.js                17.13 kB │ gzip:     2.94 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CkXjmgJE.js                17.13 kB │ gzip:     2.95 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/IF9eRakj.js                17.51 kB │ gzip:     3.05 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C9oPPf7i.js                17.97 kB │ gzip:     2.50 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DcWK9jms.js                18.06 kB │ gzip:     3.15 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DhaVEd23.js                18.21 kB │ gzip:     3.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D5KoaKCx.js                18.62 kB │ gzip:     3.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BfHTSMKl.js                18.63 kB │ gzip:     3.12 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CyktbL80.js                18.63 kB │ gzip:     3.15 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B0m2ddpp.js                18.63 kB │ gzip:     3.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Csfq5Kiy.js                18.64 kB │ gzip:     3.14 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C5YyOfLZ.js                18.99 kB │ gzip:     3.75 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/gcz8RCvz.js                19.18 kB │ gzip:     3.59 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BeJSdlF9.js                19.58 kB │ gzip:     6.66 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DZ9PSxVF.js                20.04 kB │ gzip:     2.92 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CDBrVQLm.js                20.04 kB │ gzip:     2.92 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DYE7WIF3.js                20.08 kB │ gzip:     3.97 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/32ctXXKs.js                20.09 kB │ gzip:     3.96 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dpen1YoG.js                20.15 kB │ gzip:     4.07 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BA47KaF1.js                20.15 kB │ gzip:     3.95 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CJc9bBzg.js                20.37 kB │ gzip:     6.76 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cz2AlsmD.js                20.41 kB │ gzip:     5.24 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bw305WKR.js                20.77 kB │ gzip:     3.85 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BzJJZx-M.js                21.07 kB │ gzip:     4.03 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BXkSAIEj.js                21.08 kB │ gzip:     4.07 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dsmy0J62.js                21.23 kB │ gzip:     3.80 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/5i3qLPDT.js                21.47 kB │ gzip:     2.88 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/qdsjHGoJ.js                21.74 kB │ gzip:     3.89 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D4_iv3hh.js                21.75 kB │ gzip:     3.91 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DHQR4-dF.js                21.75 kB │ gzip:     3.91 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D3apom_0.js                22.42 kB │ gzip:     3.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BH7IYjvW.js                22.57 kB │ gzip:     4.27 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cg-RD9OK.js                22.58 kB │ gzip:     6.09 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CFHQjOhq.js                22.63 kB │ gzip:     4.20 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CVdnzihN.js                22.63 kB │ gzip:     4.20 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CH1njM8p.js                22.64 kB │ gzip:     4.21 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/hJgmCMqR.js                22.64 kB │ gzip:     4.21 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/GsRaNv29.js                22.64 kB │ gzip:     4.20 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DRw_LuNl.js                22.64 kB │ gzip:     4.21 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BIv1doCn.js                22.94 kB │ gzip:     4.65 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CRqJ_cUM.js                23.43 kB │ gzip:     7.44 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bv_4Rxtq.js                23.67 kB │ gzip:     3.67 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BUtzH8cE.js                23.97 kB │ gzip:     7.56 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/rgL8RFrC.js                24.01 kB │ gzip:     4.15 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BVkGXMyj.js                24.05 kB │ gzip:     5.40 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CeAyd5Ju.js                24.26 kB │ gzip:     3.89 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BshV_Xbc.js                24.28 kB │ gzip:     4.00 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DfNjGIrv.js                24.43 kB │ gzip:     2.95 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CklMAg4u.js                24.69 kB │ gzip:     3.24 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CAFt9gP4.js                25.05 kB │ gzip:     2.62 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BTifaqeh.js                25.30 kB │ gzip:     4.13 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C3Wv6jpd.js                25.30 kB │ gzip:     3.68 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CBaQQc7g.js                25.45 kB │ gzip:     3.58 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CMTm3GFP.js                25.90 kB │ gzip:     4.28 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CnnmHF94.js                26.20 kB │ gzip:     4.83 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Ddv68eIx.js                26.72 kB │ gzip:     4.41 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DsOJ9woJ.js                26.88 kB │ gzip:     3.80 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CZod_fSi.js                26.90 kB │ gzip:     7.47 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/MRO5bC_T.js                26.98 kB │ gzip:     3.94 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DT3CNIhV.js                27.20 kB │ gzip:     4.20 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CylS5w8V.js                27.22 kB │ gzip:     4.27 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CxbxFI8M.js                27.41 kB │ gzip:     6.35 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CV3vykTa.js                27.48 kB │ gzip:     3.54 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C151Ov-r.js                28.88 kB │ gzip:     3.93 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C39BiMTA.js                28.91 kB │ gzip:     5.18 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DMkUaiYH.js                29.35 kB │ gzip:     4.40 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/mWjccvbQ.js                29.51 kB │ gzip:     3.66 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Co6uUVPk.js                29.57 kB │ gzip:     5.96 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DToHIG1N.js                31.03 kB │ gzip:     4.26 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEDo0Tqx.js                31.07 kB │ gzip:     8.02 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CS3Unz2-.js                33.49 kB │ gzip:     5.53 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DVMEJ2y_.js                33.79 kB │ gzip:     5.54 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CquLrc37.js                33.86 kB │ gzip:     8.30 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CzTSHFRz.js                35.16 kB │ gzip:     5.93 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dph4kLrZ.js                35.37 kB │ gzip:     4.46 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DnULxvSX.js                35.42 kB │ gzip:     5.80 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/hegEt444.js                35.67 kB │ gzip:     6.26 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CuPHTKiy.js                37.47 kB │ gzip:     4.40 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/lBpI9LM0.js                39.10 kB │ gzip:    10.84 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D_Q5rh1f.js                40.72 kB │ gzip:     8.24 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Yzrsuije.js                41.48 kB │ gzip:     6.10 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Df6bDoY_.js                41.49 kB │ gzip:     6.42 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Df2X-ZUM.js                43.12 kB │ gzip:     4.63 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/85-TOEBH.js                43.80 kB │ gzip:     8.44 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/ChS_g7wu.js                46.62 kB │ gzip:     5.77 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C27-OAKa.js                46.82 kB │ gzip:     5.19 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D87Tk5Gz.js                47.26 kB │ gzip:     8.04 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C9dUb6Cb.js                47.26 kB │ gzip:     8.04 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DFWUc33u.js                47.26 kB │ gzip:     8.05 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DQyhUUbL.js                47.26 kB │ gzip:     8.05 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dqspr-GT.js                47.77 kB │ gzip:     6.88 kB
+web:build: 
+web:build:  WARN 
+web:build: (!) Some chunks are larger than 500 kB after minification. Consider:
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/bCR0ucgS.js                48.08 kB │ gzip:     6.09 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CLj8gQPS.js                49.04 kB │ gzip:    11.86 kB
+web:build: - Using dynamic import() to code-split the application
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DGztddWO.js                49.93 kB │ gzip:     9.47 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BgDCqdQA.js                53.75 kB │ gzip:     8.46 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C8M2exoo.js                53.75 kB │ gzip:     8.46 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BhOHFoWU.js                55.89 kB │ gzip:     4.72 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/HgPamjhh.js                56.99 kB │ gzip:    12.32 kB
+web:build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DSSpBswy.js                57.23 kB │ gzip:    11.74 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BFfxhgS-.js                58.69 kB │ gzip:     8.19 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cvjx9yec.js                59.34 kB │ gzip:     5.63 kB
+web:build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+web:build: 
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C0hk2d4L.js                62.45 kB │ gzip:     5.04 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/rZm6bMo-.js                69.80 kB │ gzip:     9.28 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B6aJPvgy.js                69.95 kB │ gzip:     9.16 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BIGW1oBm.js                72.11 kB │ gzip:    10.48 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BMKCr1FU.js                72.90 kB │ gzip:     6.78 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CDx5xZoG.js                74.65 kB │ gzip:    10.74 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/W70NOuRA.js                81.09 kB │ gzip:    26.22 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D82vCrfD.js                86.69 kB │ gzip:    14.71 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BxgE0vQu.js                88.97 kB │ gzip:    11.28 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DSvCPggb.js                90.19 kB │ gzip:    10.79 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BqYA7rlc.js                92.39 kB │ gzip:    15.08 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B1dDrJ26.js                97.63 kB │ gzip:    14.79 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/eBjfg1Rj.js               104.23 kB │ gzip:    45.41 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/LYj2JSs-.js               104.93 kB │ gzip:    28.02 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DXmwc3jG.js               105.41 kB │ gzip:    23.35 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bzq9aFVy.js               113.05 kB │ gzip:    28.66 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Ve4PFQV2.js               131.53 kB │ gzip:     9.33 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cmh6b_Ma.js               136.11 kB │ gzip:    23.58 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CLxacb5B.js               171.97 kB │ gzip:    30.74 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/wDzz0qaB.js               174.83 kB │ gzip:    16.60 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/COt5Ahok.js               175.54 kB │ gzip:    16.59 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/g9-lgVsj.js               177.79 kB │ gzip:    16.72 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BPQ3VLAy.js               181.08 kB │ gzip:    16.11 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DMk3OuwW.js               183.78 kB │ gzip:    16.67 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B5q1GTce.js               190.01 kB │ gzip:    18.01 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/lXgVvXCa.js               262.39 kB │ gzip:    77.07 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DxyYTa6o.js               470.45 kB │ gzip:   163.00 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CG6Dc4jp.js               622.34 kB │ gzip:   231.16 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BDEKrZIi.js               626.06 kB │ gzip:    44.88 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CXvaQtF9.js               779.88 kB │ gzip:   196.54 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dq30_Js7.js               928.55 kB │ gzip:   321.69 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/eoL4d7Ug.js             2,356.71 kB │ gzip:   703.89 kB
+web:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEY60QAb.js             3,770.41 kB │ gzip: 1,077.59 kB
+web:build: ℹ ✓ built in 27.86s
+web:build: ✔ Client built in 27873ms
+web:build: ℹ Building server...
+web:build: ℹ vite v7.3.6 building ssr environment for production...
+web:build: ℹ transforming...
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/manifest.json                   156.66 kB │ gzip:    10.20 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/error-500.BtTxw1Dp.css      1.91 kB │ gzip:     0.72 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/error-404.DtT3ucZ8.css      2.43 kB │ gzip:     0.86 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/entry.CBTKuGtQ.css         38.53 kB │ gzip:     9.19 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/index.BQQqZCvl.css        668.28 kB │ gzip:    99.65 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BFQxjAkv.js                 0.33 kB │ gzip:     0.24 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bp6g37R7.js                 0.55 kB │ gzip:     0.32 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cq5zzVJU.js                 0.70 kB │ gzip:     0.42 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B_m7g4N7.js                 0.74 kB │ gzip:     0.34 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cp8Y5tLI.js                 0.88 kB │ gzip:     0.48 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CSXwinHm.js                 0.97 kB │ gzip:     0.43 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C8lEn-DE.js                 1.00 kB │ gzip:     0.45 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/fuZLfV_i.js                 1.14 kB │ gzip:     0.37 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CxGSJlkm.js                 1.23 kB │ gzip:     0.52 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/yv6CvBhz.js                 1.38 kB │ gzip:     0.51 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Da5cRb03.js                 1.42 kB │ gzip:     0.53 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BRZ36xJF.js                 1.47 kB │ gzip:     0.82 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEwlwnbL.js                 1.53 kB │ gzip:     0.50 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B7c-h3xW.js                 1.65 kB │ gzip:     0.68 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DWrx1Km3.js                 1.74 kB │ gzip:     0.88 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BcOcwvcX.js                 1.74 kB │ gzip:     0.60 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BmXAJ9_W.js                 1.83 kB │ gzip:     0.76 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BV7otONQ.js                 2.16 kB │ gzip:     1.06 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C2t-YnRu.js                 2.24 kB │ gzip:     0.62 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BfSCyJF4.js                 2.32 kB │ gzip:     0.68 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C-SQnVFl.js                 2.35 kB │ gzip:     0.70 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B0tHio-l.js                 2.50 kB │ gzip:     0.77 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D97Zzqfu.js                 2.57 kB │ gzip:     0.69 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BspZqrRM.js                 2.58 kB │ gzip:     0.82 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DFXneXwc.js                 2.65 kB │ gzip:     1.17 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cp-IABpG.js                 2.82 kB │ gzip:     0.78 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C4EeE6gA.js                 2.82 kB │ gzip:     1.01 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/2UxHyX5q.js                 2.85 kB │ gzip:     0.89 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CO1LY3CK.js                 2.93 kB │ gzip:     0.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/uYugtg8r.js                 3.01 kB │ gzip:     0.81 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DcaNXYhu.js                 3.01 kB │ gzip:     0.79 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Des-eS-w.js                 3.11 kB │ gzip:     0.79 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BtOb2qkB.js                 3.13 kB │ gzip:     1.48 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BTJTHyun.js                 3.24 kB │ gzip:     0.91 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C9tS-k6U.js                 3.25 kB │ gzip:     0.83 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CKIfxQSi.js                 3.26 kB │ gzip:     1.17 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/QIJgUcNo.js                 3.29 kB │ gzip:     0.85 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D0YGMca9.js                 3.36 kB │ gzip:     1.21 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C3B-1QV4.js                 3.37 kB │ gzip:     1.10 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CsfeWuGM.js                 3.37 kB │ gzip:     1.18 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BtCnVYZw.js                 3.44 kB │ gzip:     1.53 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/L1m1aVko.js                 3.48 kB │ gzip:     1.57 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CYsAdtH9.js                 3.60 kB │ gzip:     1.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C4IJs8-o.js                 3.61 kB │ gzip:     0.90 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/_ykCGR6B.js                 3.62 kB │ gzip:     1.61 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DFQXde-d.js                 3.62 kB │ gzip:     1.05 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DV7GczEv.js                 3.63 kB │ gzip:     1.03 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DZxFcAj9.js                 3.63 kB │ gzip:     1.42 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DRg8JJMk.js                 3.67 kB │ gzip:     1.12 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BsS91CYL.js                 3.70 kB │ gzip:     0.97 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DVFEvuxE.js                 3.91 kB │ gzip:     1.29 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D8l8udqQ.js                 3.91 kB │ gzip:     0.98 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/n2N0HUVH.js                 4.00 kB │ gzip:     1.50 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D93ZcfNL.js                 4.15 kB │ gzip:     1.68 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/dwOrl1Do.js                 4.43 kB │ gzip:     1.51 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CufHLc7y.js                 4.49 kB │ gzip:     1.09 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BcllPdc-.js                 4.49 kB │ gzip:     1.16 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BJDFO7_C.js                 4.52 kB │ gzip:     1.06 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C0HS_06l.js                 4.67 kB │ gzip:     1.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DVxCFoDh.js                 4.70 kB │ gzip:     1.97 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BYunw83y.js                 4.77 kB │ gzip:     1.56 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CHM0blh-.js                 4.80 kB │ gzip:     0.83 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DjAJT7YJ.js                 5.05 kB │ gzip:     2.03 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dx-B1_4e.js                 5.14 kB │ gzip:     1.38 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CenWIFCC.js                 5.27 kB │ gzip:     1.33 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BVQ-GDCI.js                 5.33 kB │ gzip:     1.38 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/VOosw3JB.js                 5.34 kB │ gzip:     1.55 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CEL-wOlO.js                 5.37 kB │ gzip:     2.20 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BGJmEYvX.js                 5.38 kB │ gzip:     1.21 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bmn6On1c.js                 5.38 kB │ gzip:     1.15 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DMzUqQB5.js                 5.46 kB │ gzip:     1.37 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DkFqJrB1.js                 5.53 kB │ gzip:     1.93 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/5VeTt0Ye.js                 5.67 kB │ gzip:     1.39 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BZvkOJ9d.js                 5.78 kB │ gzip:     1.92 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/_H4v1dQx.js                 5.90 kB │ gzip:     1.68 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CEu0bR-o.js                 5.90 kB │ gzip:     1.52 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BqTXFGrv.js                 5.92 kB │ gzip:     2.08 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BQ8w6xss.js                 5.93 kB │ gzip:     1.90 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/COkxafJQ.js                 5.96 kB │ gzip:     1.71 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D17OF-Vu.js                 6.09 kB │ gzip:     2.33 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/bN70gL4F.js                 6.26 kB │ gzip:     1.60 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CafNBF8u.js                 6.29 kB │ gzip:     1.72 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DkwncUOv.js                 6.33 kB │ gzip:     1.73 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dd19v3D-.js                 6.33 kB │ gzip:     1.39 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BRHolxvo.js                 6.36 kB │ gzip:     1.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/P80f7IUj.js                 6.41 kB │ gzip:     1.42 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CXtECtnM.js                 6.42 kB │ gzip:     1.92 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/vGWfd6FD.js                 6.43 kB │ gzip:     1.28 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/L9t79GZl.js                 6.48 kB │ gzip:     1.74 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dspwwk_N.js                 6.54 kB │ gzip:     1.78 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C7zT0LnQ.js                 6.55 kB │ gzip:     1.42 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BERRCDM3.js                 6.59 kB │ gzip:     1.62 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CkByrt1z.js                 6.76 kB │ gzip:     1.49 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DXbdFlpD.js                 6.85 kB │ gzip:     1.81 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BM1_JUlF.js                 6.91 kB │ gzip:     1.98 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cs0ovY-E.js                 6.96 kB │ gzip:     1.64 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CTRr51gU.js                 6.97 kB │ gzip:     1.90 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C98Dy4si.js                 7.17 kB │ gzip:     2.06 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D3lLCCz7.js                 7.26 kB │ gzip:     2.18 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/IeuSbFQv.js                 7.47 kB │ gzip:     2.59 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/4A_iFExJ.js                 7.87 kB │ gzip:     2.53 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D4h5O-jR.js                 7.88 kB │ gzip:     1.92 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CDVJQ6XC.js                 7.99 kB │ gzip:     1.42 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D2j5LXpq.js                 8.25 kB │ gzip:     1.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DHCkPAjA.js                 8.39 kB │ gzip:     1.67 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DqQDbK_p.js                 8.46 kB │ gzip:     1.67 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/ChMvpjG-.js                 8.51 kB │ gzip:     3.02 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/bE4Kk8sk.js                 8.62 kB │ gzip:     2.01 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BUw7H-hv.js                 8.78 kB │ gzip:     1.97 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BdnUsdx6.js                 8.79 kB │ gzip:     2.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CUuTKBJd.js                 8.79 kB │ gzip:     1.97 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CHLpvVh8.js                 8.96 kB │ gzip:     1.76 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C4gqWexZ.js                 9.02 kB │ gzip:     2.37 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DhaYTIfE.js                 9.06 kB │ gzip:     3.78 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C3mMm8J8.js                 9.10 kB │ gzip:     2.10 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BthQWCQV.js                 9.12 kB │ gzip:     1.98 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cj5Yp3dK.js                 9.29 kB │ gzip:     2.49 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/3e1v2bzS.js                 9.30 kB │ gzip:     1.99 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/9aX_1NFV.js                 9.41 kB │ gzip:     3.83 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DqwNpetd.js                 9.43 kB │ gzip:     2.11 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C5BYcBs_.js                 9.67 kB │ gzip:     3.08 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Br6cN0cg.js                 9.68 kB │ gzip:     1.85 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D1j8_8rp.js                 9.86 kB │ gzip:     3.37 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B7mTdjB0.js                 9.94 kB │ gzip:     2.29 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BWvSN4gD.js                10.05 kB │ gzip:     1.93 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/u5AG7uiY.js                10.37 kB │ gzip:     1.38 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/k_qm7-4y.js                10.37 kB │ gzip:     1.44 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/vE_lwT2v.js                10.44 kB │ gzip:     2.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BtqSS_iP.js                10.47 kB │ gzip:     2.25 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DXvB9xmW.js                10.47 kB │ gzip:     2.97 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Buea-lGh.js                10.51 kB │ gzip:     2.26 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/ChgxH8nk.js                10.54 kB │ gzip:     2.33 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CeZK1NFH.js                10.96 kB │ gzip:     2.10 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BBxLfTx_.js                11.09 kB │ gzip:     2.69 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DAi9KRSo.js                11.18 kB │ gzip:     2.52 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CbFg5uaA.js                11.36 kB │ gzip:     3.85 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BETggiCN.js                11.39 kB │ gzip:     2.51 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DHJKELXO.js                11.41 kB │ gzip:     2.56 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BMWR74SV.js                11.44 kB │ gzip:     2.11 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DUszq2jm.js                11.50 kB │ gzip:     2.60 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DyxjwDmM.js                11.95 kB │ gzip:     4.94 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/MzD3tlZU.js                12.01 kB │ gzip:     2.19 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D5-asLiD.js                12.05 kB │ gzip:     1.64 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CcsQSqEB.js                12.13 kB │ gzip:     2.35 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Pmp26Uib.js                12.46 kB │ gzip:     3.71 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DRje8inN.js                12.73 kB │ gzip:     1.99 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BkioyH1T.js                12.89 kB │ gzip:     3.21 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BvzEVeQv.js                13.04 kB │ gzip:     1.74 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BcVCzyr7.js                13.21 kB │ gzip:     2.74 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CVO1_9PV.js                13.62 kB │ gzip:     3.06 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D-2ljcwZ.js                13.66 kB │ gzip:     2.30 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bkuqu6BP.js                13.68 kB │ gzip:     3.08 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D0r3Knsf.js                13.76 kB │ gzip:     3.08 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dc-5oQ3p.js                13.82 kB │ gzip:     2.56 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CbfX1IO0.js                14.04 kB │ gzip:     2.88 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D7oLnXFd.js                14.16 kB │ gzip:     3.06 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D53aC0YG.js                14.28 kB │ gzip:     2.46 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BfjtVDDH.js                14.28 kB │ gzip:     3.04 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DH5Ifo-i.js                14.43 kB │ gzip:     3.14 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cuk6v7N8.js                14.44 kB │ gzip:     3.14 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/E3gJ1_iC.js                14.60 kB │ gzip:     3.10 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DdkO51Og.js                14.78 kB │ gzip:     3.28 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B1yitclQ.js                15.07 kB │ gzip:     2.70 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/wEQ09or8.js                15.17 kB │ gzip:     3.95 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CoDkCxhg.js                15.21 kB │ gzip:     2.66 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CwoSXNpI.js                15.51 kB │ gzip:     2.49 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CnsnAmq5.js                15.53 kB │ gzip:     3.17 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/KW6xsasC.js                15.63 kB │ gzip:     3.41 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BdImnpbu.js                15.85 kB │ gzip:     5.90 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/rGO070M0.js                16.07 kB │ gzip:     3.11 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D7o27uSR.js                16.09 kB │ gzip:     3.05 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D82EKSYY.js                16.20 kB │ gzip:     2.05 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BqNa2AkI.js                16.30 kB │ gzip:     2.78 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BBf5iR-q.js                16.51 kB │ gzip:     2.94 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/e9S_qqu4.js                16.52 kB │ gzip:     2.03 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DWedfzmr.js                17.12 kB │ gzip:     2.93 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CfQXZHmo.js                17.13 kB │ gzip:     2.94 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CkXjmgJE.js                17.13 kB │ gzip:     2.95 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/IF9eRakj.js                17.51 kB │ gzip:     3.05 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C9oPPf7i.js                17.97 kB │ gzip:     2.50 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DcWK9jms.js                18.06 kB │ gzip:     3.15 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DhaVEd23.js                18.21 kB │ gzip:     3.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D5KoaKCx.js                18.62 kB │ gzip:     3.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BfHTSMKl.js                18.63 kB │ gzip:     3.12 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CyktbL80.js                18.63 kB │ gzip:     3.15 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B0m2ddpp.js                18.63 kB │ gzip:     3.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Csfq5Kiy.js                18.64 kB │ gzip:     3.14 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C5YyOfLZ.js                18.99 kB │ gzip:     3.75 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/gcz8RCvz.js                19.18 kB │ gzip:     3.59 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BeJSdlF9.js                19.58 kB │ gzip:     6.66 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DZ9PSxVF.js                20.04 kB │ gzip:     2.92 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CDBrVQLm.js                20.04 kB │ gzip:     2.92 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DYE7WIF3.js                20.08 kB │ gzip:     3.97 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/32ctXXKs.js                20.09 kB │ gzip:     3.96 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dpen1YoG.js                20.15 kB │ gzip:     4.07 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BA47KaF1.js                20.15 kB │ gzip:     3.95 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CJc9bBzg.js                20.37 kB │ gzip:     6.76 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cz2AlsmD.js                20.41 kB │ gzip:     5.24 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bw305WKR.js                20.77 kB │ gzip:     3.85 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BzJJZx-M.js                21.07 kB │ gzip:     4.03 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BXkSAIEj.js                21.08 kB │ gzip:     4.07 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dsmy0J62.js                21.23 kB │ gzip:     3.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/5i3qLPDT.js                21.47 kB │ gzip:     2.88 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/qdsjHGoJ.js                21.74 kB │ gzip:     3.89 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D4_iv3hh.js                21.75 kB │ gzip:     3.91 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DHQR4-dF.js                21.75 kB │ gzip:     3.91 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D3apom_0.js                22.42 kB │ gzip:     3.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BH7IYjvW.js                22.57 kB │ gzip:     4.27 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cg-RD9OK.js                22.58 kB │ gzip:     6.09 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CFHQjOhq.js                22.63 kB │ gzip:     4.20 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CVdnzihN.js                22.63 kB │ gzip:     4.20 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CH1njM8p.js                22.64 kB │ gzip:     4.21 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/hJgmCMqR.js                22.64 kB │ gzip:     4.21 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/GsRaNv29.js                22.64 kB │ gzip:     4.20 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DRw_LuNl.js                22.64 kB │ gzip:     4.21 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BIv1doCn.js                22.94 kB │ gzip:     4.65 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CRqJ_cUM.js                23.43 kB │ gzip:     7.44 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bv_4Rxtq.js                23.67 kB │ gzip:     3.67 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BUtzH8cE.js                23.97 kB │ gzip:     7.56 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/rgL8RFrC.js                24.01 kB │ gzip:     4.15 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BVkGXMyj.js                24.05 kB │ gzip:     5.40 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CeAyd5Ju.js                24.26 kB │ gzip:     3.89 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BshV_Xbc.js                24.28 kB │ gzip:     4.00 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DfNjGIrv.js                24.43 kB │ gzip:     2.95 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CklMAg4u.js                24.69 kB │ gzip:     3.24 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CAFt9gP4.js                25.05 kB │ gzip:     2.62 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BTifaqeh.js                25.30 kB │ gzip:     4.13 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C3Wv6jpd.js                25.30 kB │ gzip:     3.68 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CBaQQc7g.js                25.45 kB │ gzip:     3.58 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CMTm3GFP.js                25.90 kB │ gzip:     4.28 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CnnmHF94.js                26.20 kB │ gzip:     4.83 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Ddv68eIx.js                26.72 kB │ gzip:     4.41 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DsOJ9woJ.js                26.88 kB │ gzip:     3.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CZod_fSi.js                26.90 kB │ gzip:     7.47 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/MRO5bC_T.js                26.98 kB │ gzip:     3.94 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DT3CNIhV.js                27.20 kB │ gzip:     4.20 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CylS5w8V.js                27.22 kB │ gzip:     4.27 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CxbxFI8M.js                27.41 kB │ gzip:     6.35 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CV3vykTa.js                27.48 kB │ gzip:     3.54 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C151Ov-r.js                28.88 kB │ gzip:     3.93 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C39BiMTA.js                28.91 kB │ gzip:     5.18 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DMkUaiYH.js                29.35 kB │ gzip:     4.40 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/mWjccvbQ.js                29.51 kB │ gzip:     3.66 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Co6uUVPk.js                29.57 kB │ gzip:     5.96 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DToHIG1N.js                31.03 kB │ gzip:     4.26 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEDo0Tqx.js                31.07 kB │ gzip:     8.02 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CS3Unz2-.js                33.49 kB │ gzip:     5.53 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DVMEJ2y_.js                33.79 kB │ gzip:     5.54 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CquLrc37.js                33.86 kB │ gzip:     8.30 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CzTSHFRz.js                35.16 kB │ gzip:     5.93 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dph4kLrZ.js                35.37 kB │ gzip:     4.46 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DnULxvSX.js                35.42 kB │ gzip:     5.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/hegEt444.js                35.67 kB │ gzip:     6.26 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CuPHTKiy.js                37.47 kB │ gzip:     4.40 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/lBpI9LM0.js                39.10 kB │ gzip:    10.84 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D_Q5rh1f.js                40.72 kB │ gzip:     8.24 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Yzrsuije.js                41.48 kB │ gzip:     6.10 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Df6bDoY_.js                41.49 kB │ gzip:     6.42 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Df2X-ZUM.js                43.12 kB │ gzip:     4.63 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/85-TOEBH.js                43.80 kB │ gzip:     8.44 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/ChS_g7wu.js                46.62 kB │ gzip:     5.77 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C27-OAKa.js                46.82 kB │ gzip:     5.19 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D87Tk5Gz.js                47.26 kB │ gzip:     8.04 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C9dUb6Cb.js                47.26 kB │ gzip:     8.04 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DFWUc33u.js                47.26 kB │ gzip:     8.05 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DQyhUUbL.js                47.26 kB │ gzip:     8.05 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Dqspr-GT.js                47.77 kB │ gzip:     6.88 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/bCR0ucgS.js                48.08 kB │ gzip:     6.09 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CLj8gQPS.js                49.04 kB │ gzip:    11.86 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DGztddWO.js                49.93 kB │ gzip:     9.47 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BgDCqdQA.js                53.75 kB │ gzip:     8.46 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C8M2exoo.js                53.75 kB │ gzip:     8.46 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BhOHFoWU.js                55.89 kB │ gzip:     4.72 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/HgPamjhh.js                56.99 kB │ gzip:    12.32 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DSSpBswy.js                57.23 kB │ gzip:    11.74 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BFfxhgS-.js                58.69 kB │ gzip:     8.19 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cvjx9yec.js                59.34 kB │ gzip:     5.63 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/C0hk2d4L.js                62.45 kB │ gzip:     5.04 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/rZm6bMo-.js                69.80 kB │ gzip:     9.28 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B6aJPvgy.js                69.95 kB │ gzip:     9.16 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BIGW1oBm.js                72.11 kB │ gzip:    10.48 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BMKCr1FU.js                72.90 kB │ gzip:     6.78 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CDx5xZoG.js                74.65 kB │ gzip:    10.74 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/W70NOuRA.js                81.09 kB │ gzip:    26.22 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/D82vCrfD.js                86.69 kB │ gzip:    14.71 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BxgE0vQu.js                88.97 kB │ gzip:    11.28 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DSvCPggb.js                90.19 kB │ gzip:    10.79 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BqYA7rlc.js                92.39 kB │ gzip:    15.08 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B1dDrJ26.js                97.63 kB │ gzip:    14.79 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/eBjfg1Rj.js               104.23 kB │ gzip:    45.41 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/LYj2JSs-.js               104.93 kB │ gzip:    28.02 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DXmwc3jG.js               105.41 kB │ gzip:    23.35 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bzq9aFVy.js               113.05 kB │ gzip:    28.66 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Ve4PFQV2.js               131.53 kB │ gzip:     9.33 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Cmh6b_Ma.js               136.11 kB │ gzip:    23.58 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CLxacb5B.js               171.97 kB │ gzip:    30.74 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/wDzz0qaB.js               174.83 kB │ gzip:    16.60 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/COt5Ahok.js               175.54 kB │ gzip:    16.59 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/g9-lgVsj.js               177.79 kB │ gzip:    16.72 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BPQ3VLAy.js               181.08 kB │ gzip:    16.11 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DMk3OuwW.js               183.78 kB │ gzip:    16.67 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/B5q1GTce.js               190.01 kB │ gzip:    18.01 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/lXgVvXCa.js               262.39 kB │ gzip:    77.07 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/f0CaQPoP.js               469.87 kB │ gzip:   162.80 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CG6Dc4jp.js               622.34 kB │ gzip:   231.16 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BDEKrZIi.js               626.06 kB │ gzip:    44.88 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/CXvaQtF9.js               779.88 kB │ gzip:   196.54 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/DQH-P9Gx.js               928.55 kB │ gzip:   321.69 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/Bt1TcoPe.js             2,356.71 kB │ gzip:   703.89 kB
+desktop:build: ℹ ../node_modules/.cache/nuxt/.nuxt/dist/client/_nuxt/BEY60QAb.js             3,770.41 kB │ gzip: 1,077.59 kB
+desktop:build: 
+desktop:build:  WARN 
+desktop:build: (!) Some chunks are larger than 500 kB after minification. Consider:
+desktop:build: - Using dynamic import() to code-split the application
+desktop:build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+desktop:build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+desktop:build: 
+desktop:build: ℹ ✓ built in 27.91s
+desktop:build: ✔ Client built in 27920ms
+desktop:build: ℹ Building server...
+desktop:build: ℹ vite v7.3.6 building ssr environment for production...
+desktop:build: ℹ transforming...
+desktop:build: ℹ ✓ 1 modules transformed.
+desktop:build: ℹ rendering chunks...
+desktop:build: ℹ ✓ built in 9ms
+desktop:build: ✔ Server built in 27ms
+desktop:build: [nitro] ℹ Initializing prerenderer
+desktop:build: [nitro] ℹ Prerendering 4 initial routes with crawler
+desktop:build: [nitro]   ├─ / (18ms)
+desktop:build: [nitro]   ├─ /index.html (17ms)
+desktop:build: [nitro]   ├─ /404.html (17ms)
+desktop:build: [nitro]   ├─ /200.html (17ms)
+desktop:build: [nitro] ℹ Prerendered 4 routes in 0.572 seconds
+desktop:build: [@nuxt/fonts] ℹ Downloading fonts...
+desktop:build: [@nuxt/fonts]   ├─ https://fonts.gstatic.com/s/geist/v5/gyBjhwUxId8gMEwZAluvzlxA9ojEVKDQ3qnV41A_sbCKgoD1JQ.woff2
+web:build: ℹ ✓ 1338 modules transformed.
+web:build: ℹ rendering chunks...
+web:build: ℹ ✓ built in 11.03s
+web:build: │
+web:build: ■  Nuxt build error: Error: ENOENT: no such file or directory, open '/Users/gideonsarfo/Developer/kone-wt/integration/apps/web/node_modules/.cache/nuxt/.nuxt/dist/client/manifest.json'
+web:build: error: script "build" exited with code 1
+web#build:  ERROR  command (/Users/gideonsarfo/Developer/kone-wt/integration/apps/web) /Users/gideonsarfo/.bun/bin/bun run build exited (1)
+
+ Tasks:    0 successful, 2 total
+Cached:    0 cached, 2 total
+  Time:    41.704s 
+Failed:    web#build
+
+ ERROR  run failed: command  exited (1)
+error: script "build" exited with code 1
+# exit=1

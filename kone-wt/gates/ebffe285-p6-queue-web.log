@@ -1,0 +1,1740 @@
+# 2026-10-09T05:09:05Z /Users/gideonsarfo/Developer/kone-wt/p6-queue zsh -c cd apps/web && bun test
+bun test v1.2.16 (631e6748)
+
+app/composables/useWorktreeBranch.test.ts:
+(pass) useWorktreeBranch > a draft keeps its selected origin base without reading or watching git [3.02ms]
+(pass) useWorktreeBranch > after the first send the worktree's branch replaces the project's branch [0.35ms]
+(pass) useWorktreeBranch > a restored worktree follows branch renames [0.25ms]
+(pass) useWorktreeBranch > switching threads drops stale reads and watcher pushes, even when returning [0.16ms]
+(pass) useWorktreeBranch > a watcher rename outranks an older initial status read [0.05ms]
+(pass) useWorktreeBranch > unreadable or detached worktrees never display the project's branch [1.06ms]
+(pass) useWorktreeBranch > disposing the composer releases its watcher and ignores late answers [0.04ms]
+
+app/composables/useThreadExport.test.ts:
+(pass) useThreadExport > a picked path writes and confirms the saved file [0.44ms]
+(pass) useThreadExport > a cancelled dialog ends the flow before any file is touched [0.10ms]
+(pass) useThreadExport > an empty thread is a quiet note, not an error [0.05ms]
+(pass) useThreadExport > a failed write surfaces the backend's words [0.05ms]
+(pass) useThreadExport > a rejected bridge call peels to the underlying message [0.41ms]
+(pass) useThreadExport > no bridge and no thread fail legibly without touching IPC [0.06ms]
+(pass) useThreadExport > reset returns the flow to idle [0.34ms]
+
+app/composables/agentNewThread.test.ts:
+(pass) claiming a thread > newThread reuses the registry's blank rather than stacking another [2.26ms]
+(pass) claiming a thread > newDetachedThread takes a session of its own, blank or not [0.64ms]
+(pass) claiming a thread > two detached claims never collide [0.22ms]
+
+app/composables/agentPrefetch.test.ts:
+(pass) adoptStoredBlocks effort stamps > a known tier survives the adopt [0.48ms]
+(pass) adoptStoredBlocks effort stamps > an unknown tier degrades to unstamped rather than rendering wrong
+(pass) adoptStoredBlocks effort stamps > a block without a stamp stays without one [0.35ms]
+(pass) adoptStoredBlocks effort stamps > adopted blocks still mount historical
+
+app/composables/useComposerQueueReturn.test.ts:
+(pass) a Stop's hand-back in the composer > a hand-back waiting at mount lands ahead of the restored draft, once [0.85ms]
+(pass) a Stop's hand-back in the composer > a hand-back arriving while mounted is restored as it lands [0.29ms]
+(pass) restoring handed-back files > keeps every file even past the per-message cap, and the picker then refuses more [4.85ms]
+
+app/composables/useTurnCheckpoints.test.ts:
+(pass) useTurnCheckpoints — seeding > seeds oldest-first and finds a turn's checkpoint [0.31ms]
+(pass) useTurnCheckpoints — seeding > a failed seed leaves the list as it is
+(pass) useTurnCheckpoints — preview and revert > delegates to the bridge with the session's thread id [0.13ms]
+(pass) useTurnCheckpoints — preview and revert > answers null when the bridge has no checkpoint surface
+(pass) checkpointFailureMessage > phrases every reason without leaking internals
+
+app/composables/useDockClearance.test.ts:
+(pass) corner clearance observes late content, grows, and detaches in rail stance [2.71ms]
+
+app/composables/streamGate.test.ts:
+(pass) createStreamGate > first request runs immediately (history / settled renders stay instant) [0.82ms]
+(pass) createStreamGate > rapid updates coalesce: burst of 10 lands as one trailing run with the latest source [206.82ms]
+(pass) createStreamGate > final content flushes promptly after the stream settles [87.38ms]
+(pass) createStreamGate > cancel() drops the pending run — no work after unmount [60.54ms]
+(pass) createStreamGate > replacing the source re-arms the gate and the new source wins [100.79ms]
+(pass) createStreamGate > interval function is honoured per-request (size-aware throttling) [312.54ms]
+(pass) highlightThrottleMs > short code updates quickly [0.12ms]
+(pass) highlightThrottleMs > very large code updates far less frequently [0.02ms]
+(pass) highlightThrottleMs > grows monotonically between the extremes
+
+app/composables/useHandoffMarks.test.ts:
+[Vue warn]: onBeforeUnmount is called when there is no active component instance to be associated with. Lifecycle injection APIs can only be used during execution of setup(). If you are using async setup(), make sure to register lifecycle hooks before the first await statement.
+(pass) useHandoffMarks > a handoff thread marks its source, oldest-first with its links [1.59ms]
+[Vue warn]: onBeforeUnmount is called when there is no active component instance to be associated with. Lifecycle injection APIs can only be used during execution of setup(). If you are using async setup(), make sure to register lifecycle hooks before the first await statement.
+(pass) useHandoffMarks > a handoff-created event for this thread reloads its links [1.29ms]
+[Vue warn]: onBeforeUnmount is called when there is no active component instance to be associated with. Lifecycle injection APIs can only be used during execution of setup(). If you are using async setup(), make sure to register lifecycle hooks before the first await statement.
+(pass) useHandoffMarks > disabled surfaces fetch nothing and mark nothing [0.03ms]
+
+app/composables/useAgent.test.ts:
+(pass) useAgent durable turn queue > turn.queued parks a row anchored to the store block by userBlockId [1.79ms]
+(pass) useAgent durable turn queue > queued rows read 1, 2 in arrival order [0.27ms]
+(pass) useAgent durable turn queue > reorderQueuedTurns updates order in queuedTurns [0.31ms]
+(pass) useAgent durable turn queue > a late turn.queued with a stale position appends after a reorder [0.26ms]
+(pass) useAgent durable turn queue > an unanchored row (no matching block) still parks, from its own input [0.07ms]
+(pass) useAgent durable turn queue > turn.queued-cancelled (user) removes one row; (stop) clears the line [0.32ms]
+(pass) useAgent durable turn queue > turn.promoted consumes the row by queueId and reveals its block [0.28ms]
+(pass) useAgent durable turn queue > a queued follow-up stays out of the timeline until it promotes [0.16ms]
+(pass) useAgent durable turn queue > cancelling a queued follow-up drops its optimistic block with it [0.08ms]
+(pass) useAgent durable turn queue > turn.steered is a no-op for the queue (the live turn took the nudge) [0.08ms]
+(pass) useAgent durable turn queue > a send while busy parks a row anchored to the pushed user block (browser dev) [0.71ms]
+(pass) useAgent durable turn queue > live turn.queued skills ride the row and land on the promoted block [0.03ms]
+(pass) useAgent durable turn queue > a queued turn without skills promotes without the field
+(pass) useAgent durable turn queue > live turn.queued attachments survive promotion [0.88ms]
+(pass) useAgent durable turn queue > busy send with attachments parks them on the live row (browser dev) [0.12ms]
+(pass) useAgent durable turn queue > spamming queued messages preserves strict turn-by-turn timeline order [0.44ms]
+(pass) useAgent durable turn queue > idle-push race: turn.started lands before an already-queued follow-up [0.22ms]
+(pass) useAgent durable turn queue > turn.queued follows the backend's run order, not arrival [0.11ms]
+(pass) useAgent durable turn queue > turn.queued-updated moves a row's status without moving the row [0.26ms]
+(pass) useAgent durable turn queue > a Stop hands the queued messages back for the composer, in queue order [0.12ms]
+(pass) useAgent durable turn queue > a user removal hands nothing back [0.15ms]
+(pass) useAgent durable turn queue > a busy steer puts its block in the transcript at once (browser dev) [0.44ms]
+(pass) useAgent durable turn queue > turn.steered marks the block the provider took into the live turn [0.33ms]
+(pass) useAgent durable turn queue > a queued row sent now into the live turn promotes as a steered block [0.15ms]
+(pass) useAgent durable turn queue > events for other threads are ignored [0.07ms]
+(pass) useAgent: a session that ends on its own > the next send starts it again instead of going to the dead one [0.14ms]
+(pass) useAgent: a session that ends on its own > an exit from another provider leaves the live session up [0.05ms]
+(pass) useAgent: a session that ends on its own > an exit naming a conversation the session left leaves the live session up [0.07ms]
+(pass) useAgent: a session that ends on its own > a disposed thread is not re-armed by its own stop [0.17ms]
+(pass) useAgent token usage reducer > compacted boundary resets contextUsed to afterTokens, preserving window and total [0.22ms]
+(pass) useAgent token usage reducer > compacted boundary without counts leaves contextUsed unknown with window preserved [0.18ms]
+(pass) useAgent token usage reducer > total keeps the seeded lifetime across a smaller per-turn update [0.16ms]
+(pass) useAgent token usage reducer > per-turn reporters accumulate onto the seeded lifetime [0.05ms]
+(pass) useAgent token usage reducer > compacted boundary appends a timeline marker [0.09ms]
+(pass) orphaned user-input recovery (reload race) > a replayed ask stashed before its thread is claimed drains on take [0.04ms]
+(pass) orphaned user-input recovery (reload race) > a resolve arriving before the claim drops the stashed ask [0.05ms]
+(pass) orphaned user-input recovery (reload race) > an aborted turn clears the stashed ask [0.01ms]
+(pass) orphaned approval recovery (reload race) > a replayed gate stashed before its thread is claimed drains on take [0.05ms]
+(pass) orphaned approval recovery (reload race) > a resolve arriving before the claim drops the stashed gate
+(pass) orphaned approval recovery (reload race) > an aborted turn clears the stashed gate [0.03ms]
+(pass) orphaned approval recovery (reload race) > claiming a stored thread folds stashed gates into pendingApprovals [0.41ms]
+(pass) orphaned approval recovery (reload race) > folding the same gate twice replaces instead of stacking
+(pass) useAgent compactThread > without a bridge it reports unavailable instead of throwing [0.15ms]
+(pass) useAgent single blank thread invariant > newThread twice in a row leaves exactly one blank session [0.07ms]
+(pass) useAgent single blank thread invariant > newThread when active is non-blank creates exactly one blank and subsequent calls reuse it [0.14ms]
+(pass) useAgent single blank thread invariant > newThreadAt called while a blank exists at another position relocates it without spawning [0.06ms]
+(pass) useAgent single blank thread invariant > a state seeded with two blank sessions collapses to one after newThread [0.33ms]
+(pass) useAgent single blank thread invariant > a state seeded with two blank sessions collapses to one after newThreadAt [0.18ms]
+(pass) useAgent single blank thread invariant > two blank sessions pinned to studio panes both survive the blank collapse [0.15ms]
+(pass) useAgent single blank thread invariant > a pane-bound blank survives collapse while a genuinely orphaned blank is still pruned [0.21ms]
+(pass) useAgent single blank thread invariant > unpinning a blank makes it prunable again by a later collapse [0.09ms]
+(pass) useAgent single blank thread invariant > non-blank sessions survive untouched across newThread and newThreadAt [0.17ms]
+(pass) useAgent single blank thread invariant > newThread inherits settings from previously-active non-blank session [0.11ms]
+(pass) useAgent single blank thread invariant > session initializes mode from DEFAULT_MODE_KEY when configured [0.10ms]
+(pass) TurnDraft object param > turnLabel prefers text, then skill, then file, then empty [0.02ms]
+(pass) TurnDraft object param > normalizeTurnDraft folds legacy positionals and prefers the object [0.06ms]
+(pass) TurnDraft object param > idle send accepts the draft object like the legacy positionals [0.81ms]
+(pass) TurnDraft object param > busy send with the draft object parks input, files and skills (browser dev) [0.15ms]
+(pass) TurnDraft object param > busy steer with the draft object parks on the steer lane [0.15ms]
+(pass) TurnDraft object param > serializeQueuedAttachments round-trips through parseQueuedAttachments
+
+app/composables/useConversationSkills.test.ts:
+(pass) useConversationSkills > asks for the provider and place, and is ready once answered [0.63ms]
+(pass) useConversationSkills > passes a null cwd through for a surface with no project [0.04ms]
+(pass) useConversationSkills > a provider switch drops readiness, and a stale answer never lands [0.10ms]
+(pass) useConversationSkills > no provider, or no bridge, invokes nothing and is ready at once [0.04ms]
+(pass) useConversationSkills > a throwing bridge reads as no skills rather than an error [0.01ms]
+
+app/composables/useThemeSummaryReading.test.ts:
+(pass) useThemeSummaryReading > recovers both ends of a change from the stored record, without parsing the sentence [0.85ms]
+(pass) useThemeSummaryReading > recovers a change that displaced nothing [0.13ms]
+(pass) useThemeSummaryReading > reads nothing out of a legacy sentence, which names ids only as prose
+(pass) useThemeSummaryReading > reads nothing out of a bare mode change or a missing record
+(pass) useThemeSummaryReading > reads nothing for a tool that changes no appearance
+(pass) isRecordedAppearanceCall > keeps a settled call that left a record [0.04ms]
+(pass) isRecordedAppearanceCall > answers to the name a provider reports, raw [0.01ms]
+(pass) isRecordedAppearanceCall > drops calls with nothing to draw
+(pass) isAppearanceToolName > answers with the appearance tools, however a provider spells them
+
+app/composables/useStudioIntake.test.ts:
+(pass) no row mounted > a thread brings its project's row into being [0.33ms]
+(pass) no row mounted > a second thread joins the right edge of the row it already has
+(pass) no row mounted > panes already on the row keep their place and their focus [0.33ms]
+(pass) no row mounted > one conversation, one pane — adopting twice adds nothing
+(pass) no row mounted > concurrent adopts of one thread persist one pane [0.15ms]
+(pass) no row mounted > the thread lands on its own project's row, not another's [0.03ms]
+(pass) no row mounted > dismissing a thread removes its pane from the stored row [0.15ms]
+(pass) no row mounted > dismissing the focused pane clears focusedId to null
+(pass) no row mounted > dismissing a thread not on the row is a clean no-op
+(pass) no row mounted > dismissing with empty projectPath or threadId is a no-op
+(pass) inbox policy > only the live inbox list joins the row
+(pass) inbox policy > a finished thread stays off the row
+(pass) inbox policy > a live unfinished thread joins the row once, even when adopted twice
+(pass) inbox policy > a mounted row takes the thread through the same entry
+(pass) inbox policy > missing ids touch nothing
+(pass) row mounted > the row is handed the thread and the document is left to it
+(pass) row mounted > a row that mounts while the plane is being read still gets the thread [0.37ms]
+(pass) row mounted > dismissing a thread delegates to the mounted row [0.04ms]
+(pass) row mounted > a row that mounts while reading the plane receives the dismissal
+(pass) dismissing without a project > a persisted pane is dropped from whichever row holds it
+(pass) dismissing without a project > every mounted row is asked, so the one hosting it closes its pane [0.14ms]
+(pass) dismissing without a project > a thread on no row at all is a clean no-op
+
+app/composables/useIntentMenu.test.ts:
+(pass) buildIntentMenu > launcher with no history still offers go-tos plus entry points [0.36ms]
+(pass) buildIntentMenu > launcher hides the studio go-to until the plane holds rows [0.53ms]
+(pass) buildIntentMenu > project overview names git/studio/inbox/launcher, never itself [0.03ms]
+(pass) buildIntentMenu > project git offers the way back, not a second git row [0.02ms]
+(pass) buildIntentMenu > project space offers the way back and Files, never itself
+(pass) buildIntentMenu > every project view offers the other spaces in nav order, git only for a repository [0.15ms]
+(pass) buildIntentMenu > the studio names its row's page, unless that page is the one underneath
+(pass) buildIntentMenu > the plane offers no other project's page [0.38ms]
+(pass) buildIntentMenu > the focused column's actions ride the plane's menu [0.06ms]
+(pass) buildIntentMenu > a column that can't compact or fork keeps only its archive
+(pass) buildIntentMenu > no focused thread column means no thread card [0.05ms]
+(pass) buildIntentMenu > studio and inbox lead with back-to-page plus the sibling portal
+(pass) buildIntentMenu > dirty git earns a review row on project views only [0.09ms]
+(pass) buildIntentMenu > recents skip the open project and cap at three
+(pass) buildIntentMenu > untargeted launcher keeps the full picture, one cutout each [0.09ms]
+(pass) buildIntentMenu > a targeted tile leads with Open and carries its own actions
+(pass) buildIntentMenu > an unpinned targeted tile offers Pin to top
+(pass) buildIntentMenu > every goto card closes with Settings — unless it is already open [0.21ms]
+(pass) buildIntentMenu > unknown or absent git hides the Git go-to on project views [0.04ms]
+(pass) buildIntentMenu > a session beats a tile when both are under the pointer [0.07ms]
+(pass) buildIntentMenu > a pinned session offers Unpin, and long titles cut to one line [0.04ms]
+(pass) buildIntentMenu > targeting is a launcher affair — project views ignore it [0.01ms]
+(pass) buildIntentMenu > sessions carry their thread payload and fall back to untitled [0.04ms]
+(pass) buildIntentMenu > every item carries a typed action matching its id
+(pass) buildIntentMenu > targeted session lead and row actions carry open/pin actions
+(pass) buildIntentMenu > goto, entry and review rows carry typed actions
+(pass) resolveIntentTitle > a session title beats a tile beats the view
+(pass) resolveIntentTitle > the view names itself when nothing is under the pointer
+(pass) resolveIntentTitle > blank session titles fall through, long ones shorten
+
+app/composables/useThreadEscape.test.ts:
+(pass) hidden or covered thread hosts leave Escape to the owning surface [2.23ms]
+
+app/composables/useSearchLanding.test.ts:
+(pass) useSearchLanding — scrollTarget precedence > a fresh thread owes the initial scroll, an empty or settled one owes nothing [0.44ms]
+(pass) useSearchLanding — scrollTarget precedence > a claimed jump outranks the initial scroll until it resolves
+(pass) useSearchLanding — claim-once > the parked target is consumed: a second claim finds nothing
+(pass) useSearchLanding — claim-once > a missing thread or a missing target claims nothing
+(pass) useSearchLanding — reveal > a found row scrolls into view and flashes once [25.92ms]
+(pass) useSearchLanding — reveal > a missing row pages older history up to the cap, then gives up
+(pass) useSearchLanding — reveal > a page already in flight parks without spending an attempt
+(pass) useSearchLanding — reveal > no older page ends the landing immediately
+(pass) useSearchLanding — reveal > reclaiming resets the paging count for the new target
+(pass) useSearchLanding — reveal > reset drops the landing and its flash
+(pass) useSearchLanding — reveal > the default flash lasts long enough to read
+
+app/composables/useThreadHandoff.test.ts:
+(pass) createHandoff > dispatches minted ids plus the chosen target [1.28ms]
+(pass) createHandoff > rapid repeats for the same source + target join one flight
+(pass) createHandoff > without a bridge it still resolves so the join semantics hold
+
+app/composables/useAppSteering.test.ts:
+(pass) useAppSteering > applies a theme the library holds
+[kone] Ignoring theme mutation for unknown theme "dracula".
+(pass) useAppSteering > ignores a theme the library does not hold
+(pass) useAppSteering > applies a bare mode change without touching the theme [0.02ms]
+(pass) useAppSteering > registers a custom theme and makes it the active one [0.38ms]
+(pass) useAppSteering > cancels a preview without disturbing the saved theme
+(pass) useAppSteering agent roster > creates an agent with its bot, picture and teams [11.44ms]
+(pass) useAppSteering agent roster > refuses a create without a bot [10.92ms]
+(pass) useAppSteering agent roster > updates a bot and moves the agent between teams [22.45ms]
+
+app/composables/useSpaceInstructions.test.ts:
+(pass) useSpaceInstructions > detects AGENTS.md and CLAUDE.md when present [1.75ms]
+(pass) useSpaceInstructions > flags missing files when not present and allows creation [0.42ms]
+
+app/composables/useAgentInbox.test.ts:
+(pass) useAgentInbox > reads what waits and what was seen for the thread [1.98ms]
+(pass) useAgentInbox > re-reads once per burst of changes to its own thread, never for another [151.50ms]
+(pass) useAgentInbox > follows the thread, and a slow read for the old one does not land [2.77ms]
+(pass) useAgentInbox > a failed read says so and keeps what it had [1.38ms]
+(pass) useAgentInbox > stops listening when its scope ends [0.06ms]
+
+app/composables/useSpaceUsage.test.ts:
+(pass) useSpaceUsage > a read is one pass over every window, shortest first, re-reading cached ones [0.36ms]
+(pass) useSpaceUsage > a project change on screen starts over: shimmer, then a fresh read [0.10ms]
+(pass) useSpaceUsage > a project change while the tab is hidden waits for the next arrival [0.08ms]
+(pass) useSpaceUsage > a read the project change overtook cannot settle the board [0.06ms]
+
+app/composables/useSkills.test.ts:
+(pass) useSkills CLI state management > reads and loads skill states via desktop bridge [0.87ms]
+(pass) useSkills CLI state management > writes CLI state, re-reads fresh, and leaves the kone gate untouched [0.21ms]
+(pass) useSkills CLI state management > reads the kone gate from the inventory annotation, never by matching [0.03ms]
+(pass) useSkills CLI state management > folds the CLI state into the effective flag [0.07ms]
+(pass) useSkills CLI state management > enabling restores the CLI switch before opening the kone gate, in order [0.46ms]
+(pass) useSkills CLI state management > disabling writes only the kone gate and leaves CLI config alone [0.09ms]
+(pass) useSkills CLI state management > a failed CLI restore aborts the kone write and refreshes the CLI read [0.16ms]
+(pass) useSkills CLI state management > a failed kone write refreshes and leaves the annotation alone [0.12ms]
+(pass) useSkills CLI state management > per-key busy lets parallel toggles proceed but refuses a double toggle [0.21ms]
+(pass) useSkills CLI state management > toggles a plugin gate through IPC and adopts the returned settings [0.15ms]
+(pass) useSkills CLI state management > without a bridge loadStates stays inert and setState reports the absence [0.04ms]
+(pass) useSkills CLI state management > the default bridge stays inert when there is no client window [0.04ms]
+
+app/composables/usePortals.test.ts:
+(pass) usePortals — summon from the page > summoning a closed portal opens it at once with a cue [0.87ms]
+(pass) usePortals — summon from the page > summoning the frontmost portal is a no-op (no second cue, no frame) [0.05ms]
+(pass) usePortals — summon from the page > re-summoning the frontmost portal over a covered one keeps the stack [0.05ms]
+(pass) usePortals — summon from the page > dismissing with nothing open is a no-op [0.07ms]
+(pass) usePortals — going up keeps where you came from > the inbox opens over the plane, which stays open underneath [0.13ms]
+(pass) usePortals — going up keeps where you came from > leaving the inbox goes back to the studio, not home [0.11ms]
+(pass) usePortals — going up keeps where you came from > dismissing the inbox reveals the studio [0.02ms]
+(pass) usePortals — going up keeps where you came from > dismissing the covered plane leaves the inbox up [0.04ms]
+(pass) usePortals — going up keeps where you came from > leaving the inbox from home goes home (nothing underneath) [0.02ms]
+(pass) usePortals — going down to a fresh portal > the plane appears instantly and the inbox leaves on the next frame [0.11ms]
+(pass) usePortals — going down to a fresh portal > dismissing mid-handoff reveals the plane, never the page [0.07ms]
+(pass) usePortals — going down to a fresh portal > going down to an already-open portal closes the cover at once [0.03ms]
+(pass) usePortals — going down to a fresh portal > leaving a fresh studio goes back to the inbox, not home [0.04ms]
+(pass) usePortals — going down to a fresh portal > leaving a fresh studio goes back to the bench [0.02ms]
+(pass) usePortals — going down to a fresh portal > leaving a fresh inbox goes back to the bench [0.02ms]
+(pass) usePortals — going down to a fresh portal > a downward chain rewinds in order before reaching home [0.06ms]
+(pass) usePortals — going down to a fresh portal > travelling back within the stack drops the covers from the trail [0.03ms]
+(pass) usePortals — going down to a fresh portal > re-summoning mid-handoff keeps the way back [0.02ms]
+(pass) usePortals — pre-emption > a new summon abandons the pending downward close [0.03ms]
+(pass) usePortals — pre-emption > the studio key mid-handoff means go to the studio [0.04ms]
+(pass) usePortals — pre-emption > the inbox key mid-handoff lands back on the plane [0.10ms]
+(pass) usePortals — pre-emption > re-summoning the frontmost mid-handoff settles instead of leaving [0.07ms]
+(pass) usePortals — pre-emption > dispose cancels a pending switch, like an unmount [0.04ms]
+(pass) usePortals — frontmost naming and CSS sync > activePortal names the frontmost open portal; isCovered names the one under it [0.03ms]
+(pass) usePortals — frontmost naming and CSS sync > fadeStyle carries the fade length as the CSS var [0.02ms]
+(pass) usePortals — the bench as a third portal > the bench opens over the inbox, which stays open underneath
+(pass) usePortals — the bench as a third portal > leaving the bench goes back to the inbox [0.03ms]
+(pass) usePortals — the bench as a third portal > studio, inbox, bench stack three deep and unwind in order [0.03ms]
+(pass) usePortals — the bench as a third portal > going down from the bench to a fresh plane closes on the next frame [0.03ms]
+(pass) usePortals — the bench as a third portal > going down to an already-open inbox closes the bench at once [0.04ms]
+(pass) usePortals — the bench as a third portal > a switch that skips a rung keeps everything below the arrival [0.04ms]
+(pass) usePortals — the bench as a third portal > the bench key puts the bench away only when it is frontmost [0.02ms]
+(pass) usePortals — the bench as a third portal > going down, the arriving portal is the covered one until the frame runs [0.07ms]
+
+app/composables/useModelPreferences.test.ts:
+(pass) createModelPreferenceStore > does not write until the store has been read [2.06ms]
+(pass) createModelPreferenceStore > reads again after a failed read, and writes nothing meanwhile [0.24ms]
+(pass) createModelPreferenceStore > fails an edit, and leaves the list alone, when the store cannot be read [0.13ms]
+(pass) createModelPreferenceStore > derives each edit from the latest list, so a slow earlier answer cannot undo a later edit [3.55ms]
+(pass) createModelPreferenceStore > rolls back only the edit the store refused [0.11ms]
+(pass) createModelPreferenceStore > skips an edit that has nothing to change without writing
+(pass) createModelPreferenceStore > keeps the local list on its own when there is no bridge [0.08ms]
+
+app/composables/agentMock.test.ts:
+(pass) agentMock and demo conversation approvals > demo() requests user approvals for file-change and command [302.40ms]
+(pass) agentMock and demo conversation approvals > responding to demo approvals with allow-once lets the turn proceed [303.38ms]
+(pass) agentMock and demo conversation approvals > reject-and-stop decision halts the demo turn immediately [252.04ms]
+
+app/composables/useMarkdown.test.ts:
+(pass) useMarkdown table-delimiter repair > parse() turns a broken delimiter row into a real table [16.33ms]
+(pass) useMarkdown table-delimiter repair > render() repairs the same input into a <table> [0.29ms]
+(pass) useMarkdown table-delimiter repair > already-valid tables pass through unchanged [0.08ms]
+(pass) useMarkdown raw HTML tables > a raw <table> reply expands into table nodes with no literal tags [0.90ms]
+
+app/composables/useViewContext.test.ts:
+(pass) stackViewLayers > stacks surfaces frontmost first and covers what a full-screen one hides [0.56ms]
+(pass) stackViewLayers > leaves out a surface whose getter says it is away [0.05ms]
+(pass) stackViewLayers > keeps a remounted surface's facet when the old one is disposed after it [0.06ms]
+
+app/composables/useStudioPlane.test.ts:
+(pass) row set > an empty plane has no rows and no focus [0.68ms]
+(pass) row set > a row appears with its first pane and carries its name and weight [0.22ms]
+(pass) row set > a row dies with its last pane [0.08ms]
+(pass) row set > flushing an already-removed row writes nothing [0.06ms]
+(pass) row set > flushing a live row still writes it through [0.06ms]
+(pass) travel > stepping moves one row at a time and stops at both ends [0.18ms]
+(pass) travel > focusing a project with no row is refused, not invented [0.04ms]
+(pass) travel > stepping an empty plane is a no-op [0.04ms]
+(pass) focus handoff when a row dies > focus lands on the row that took its place [0.38ms]
+(pass) focus handoff when a row dies > losing the last row clamps to the new end instead of pointing past it [0.19ms]
+(pass) focus handoff when a row dies > the last row dying leaves the plane with no focus at all [0.11ms]
+(pass) row names > a trailing separator does not produce an empty name [0.01ms]
+
+app/composables/useContextMeter.test.ts:
+(pass) useContextMeter — percentage and level thresholds > an empty window reads calm at 0% [0.93ms]
+(pass) useContextMeter — percentage and level thresholds > 69% is calm, 70% tips warm [0.03ms]
+(pass) useContextMeter — percentage and level thresholds > 89% is warm, 90% tips full [0.01ms]
+(pass) useContextMeter — percentage and level thresholds > fill past the window clamps at 100% full and drops the Remaining row [0.08ms]
+(pass) useContextMeter — percentage and level thresholds > a negative fill clamps to zero rather than rendering negative rows [0.02ms]
+(pass) useContextMeter — unknown-window handling > no window hides the ring and falls back to a bare token label [0.03ms]
+(pass) useContextMeter — unknown-window handling > no usage at all hides the ring without claiming an empty window [0.02ms]
+(pass) useContextMeter — unknown-window handling > a zero window is no window
+(pass) useContextMeter — unknown-window handling > a window with no reported fill hides the ring but still names the window [0.01ms]
+(pass) useContextMeter — rows, note, and tooltip > a full snapshot spells every popover row [0.03ms]
+(pass) useContextMeter — rows, note, and tooltip > the note names the auto-compact threshold only when one is known [0.04ms]
+(pass) useContextMeter — rows, note, and tooltip > the tooltip appends the threshold note for auto-compacting providers [0.04ms]
+(pass) useContextMeter — compact gating > absent compact props read as a pure read-out: ready, never busy [0.04ms]
+(pass) useContextMeter — compact gating > a compacting thread is busy and not ready [0.01ms]
+(pass) useContextMeter — compact gating > an unavailable thread is neither ready nor busy [0.01ms]
+(pass) useContextMeter — compact gating > pressCompact runs the handler when ready [0.03ms]
+(pass) useContextMeter — compact gating > an absent compact state with a handler still reads as available
+(pass) useContextMeter — compact gating > pressCompact stays quiet while compacting or without a handler [0.02ms]
+
+app/composables/useWorkspaceChoice.test.ts:
+(pass) useWorkspaceChoice > starts in the checkout: its branch shows and nothing is requested [0.67ms]
+(pass) useWorkspaceChoice > a worktree from another branch names that branch and requests it [0.03ms]
+(pass) useWorkspaceChoice > a worktree from the current branch shows the checkout's branch [0.01ms]
+(pass) useWorkspaceChoice > only a local pick re-reads the checkout; reset does not [0.04ms]
+(pass) useKeyedWorkspaceChoice > each draft keeps its own choice [0.09ms]
+(pass) useKeyedWorkspaceChoice > a draft that has started reads as the checkout [0.02ms]
+(pass) useKeyedWorkspaceChoice > with nothing focused a pick is dropped [0.01ms]
+
+app/composables/useComposerSlash.test.ts:
+(pass) SLASH_COMMANDS > every row has a gate, a description, and an icon [0.68ms]
+(pass) SLASH_COMMANDS > the menu rows derive from the table, alphabetical by name [0.16ms]
+(pass) slashAllowed > allows every known command when all gates are open [0.05ms]
+(pass) slashAllowed > each gate closes exactly its own rows [0.17ms]
+(pass) slashAllowed > unknown names are never allowed — the provider owns them [0.04ms]
+(pass) useComposerSlash skill rows > skills follow the commands, and only skill rows carry a skill [0.36ms]
+(pass) useComposerSlash skill rows > a skill named like a hidden command is still left out [0.05ms]
+(pass) useComposerSlash skill rows > no skills leaves the command list as it was [0.03ms]
+
+app/composables/useComposerSkills.test.ts:
+(pass) useComposerSkills > composeTurn resolves picked chips against the live list [1.80ms]
+(pass) useComposerSkills > composeTurn takes chips at their word before the list answers [0.15ms]
+(pass) useComposerSkills > composeTurn refuses when a chip can no longer run, and the draft stays [0.14ms]
+(pass) useComposerSkills > the missing notice names every gone skill [0.23ms]
+(pass) useComposerSkills > a job offers no skills, so every chip is missing [0.10ms]
+(pass) useComposerSkills > skillAvailable is true until the list answers, then follows it [0.13ms]
+(pass) useComposerSkills > restoreEditorFromText falls back to the live list and re-marks [0.32ms]
+(pass) useComposerSkills > a refused send restores the exact draft this composer sent [0.35ms]
+(pass) useComposerSkills > a refusal for another surface's turn rebuilds from what it carried
+(pass) useComposerSkills > a refusal never overwrites what the user started writing since [0.19ms]
+(pass) useComposerSkills > draftFromTurn writes chips ahead of the prose
+(pass) useComposerSkills > unavailableSkillsNotice reads singular and plural [0.09ms]
+
+app/composables/useStudio.test.ts:
+(pass) useStudio — eviction goes dormant, not deleted (B) > a thread evicted after it has a threadId survives dormant [2.00ms]
+(pass) useStudio — eviction goes dormant, not deleted (B) > a blank thread evicted before it ever sent is removed [0.18ms]
+(pass) useStudio — eviction goes dormant, not deleted (B) > a blank thread carrying a client id is not persisted as a real one [0.20ms]
+(pass) useStudio — restore drops phantom thread panes > a stored thread id with no live conversation behind it is dropped [0.74ms]
+(pass) useStudio — restore drops phantom thread panes > without a known-id set (no bridge) every stored thread is kept [0.16ms]
+(pass) useStudio — restore drops phantom thread panes > a layout with two panes for one thread keeps only the leftmost [0.14ms]
+(pass) useStudio — restore drops phantom thread panes > a phantom duplicate never shadows the real pane [0.15ms]
+(pass) useStudio — a threadless studio stays threadless > restoring a terminal-only layout disposes the boot thread and claims the studio [0.26ms]
+(pass) useStudio — a threadless studio stays threadless > closing the last thread beside a terminal does not re-add an empty thread [0.56ms]
+(pass) useStudio — a threadless studio stays threadless > closing every window leaves a bare desktop [0.24ms]
+(pass) useStudio — a threadless studio stays threadless > a saved empty desktop restores empty rather than booting a thread [0.13ms]
+(pass) useStudio — a threadless studio stays threadless > a layout whose panes are all phantoms is not applied [0.10ms]
+(pass) useStudio — blank thread slot restore (W7 / L6) > one blank thread slot survives restore at its index; a second is dropped [0.24ms]
+(pass) useStudio — blank thread slot restore (W7 / L6) > a layout of only blank thread slots is a legitimate restore [0.16ms]
+(pass) useStudio — studio laws > L3: open(thread) twice with a blank thread present reuses the blank column [0.17ms]
+(pass) useStudio — studio laws > L3: open(thread) reuses a restored DORMANT blank slot, not a second column [0.16ms]
+(pass) useStudio — studio laws > L3: open(thread, { threadId }) always creates a second column [0.16ms]
+(pass) useStudio — studio laws > L3: open(thread, { threadId }) of an already-hosted thread focuses its pane (one pane per thread) [0.11ms]
+(pass) useStudio — studio laws > L3: open(thread, { threadId }) re-opens a CLOSED thread as a fresh column [0.14ms]
+(pass) useStudio — studio laws > L4: open(terminal) lands immediately right of the focused column [0.34ms]
+(pass) useStudio — studio laws > L4: adopted sessions land right of focus, not at the strip end [0.30ms]
+(pass) useStudio — studio laws > L5: closing a terminal tears down its session and leaves other panes [0.17ms]
+(pass) useStudio — studio laws > W6: serialize writes terminalId null for terminal panes [0.11ms]
+(pass) useStudio — studio laws > L6: restore round-trip preserves order, widths, and focus [0.23ms]
+(pass) useStudio — studio laws > restore attaches every stored thread, not only the focused one [0.15ms]
+(pass) useStudio — studio laws > wakeThreadPanes attaches dormant threads after a deferred restore [0.23ms]
+(pass) useStudio — attach never conjures a second column > focusing a dormant terminal attaches it in place, no extra pane [0.24ms]
+(pass) useStudio — attach never conjures a second column > closing a terminal and focusing the survivor spawns nothing new [0.21ms]
+(pass) useStudio — pane bindings pin/unpin the agent registry (paneBoundKeys) > attaching a fresh blank thread pane pins its session key [0.14ms]
+(pass) useStudio — pane bindings pin/unpin the agent registry (paneBoundKeys) > opening a stored thread pins its session key [0.10ms]
+(pass) useStudio — pane bindings pin/unpin the agent registry (paneBoundKeys) > closing a pane unpins its session key — no leak [0.11ms]
+(pass) useStudio — pane bindings pin/unpin the agent registry (paneBoundKeys) > a session closed outside the row unpins once reconcile sees it gone [0.13ms]
+(pass) useStudio — pane bindings pin/unpin the agent registry (paneBoundKeys) > rebinding a dormant pane to a different session unpins the old key and pins the new one [0.13ms]
+(pass) useStudio — one pane per thread, however it arrives > an outside openThread for a dormant thread re-attaches its pane, no second column [0.24ms]
+(pass) useStudio — one pane per thread, however it arrives > a background re-attach does not steal focus from the focused pane [0.21ms]
+(pass) useStudio — one pane per thread, however it arrives > restore re-attaches a live unclaimed session to its stored pane [0.14ms]
+(pass) useStudio — one pane per thread, however it arrives > a duplicate session for an already-live thread never mints a second pane [0.08ms]
+(pass) useStudio — one pane per thread, however it arrives > two panes resolving to one thread converge to a single live column [0.18ms]
+(pass) useStudio — one pane per thread, however it arrives > closing a thread pane detaches its session and never resurrects the column [0.16ms]
+(pass) useStudio — one pane per thread, however it arrives > an evicted detached session releases its tombstone — the same key can be adopted again [0.16ms]
+(pass) useStudio — one pane per thread, however it arrives > reopening a closed thread reuses its resident session in one column [0.13ms]
+(pass) useStudio — one pane per thread, however it arrives > concurrent open(thread, { threadId }) calls fold into one pane [0.08ms]
+(pass) useStudio — one pane per thread, however it arrives > concurrent blank open(thread) calls still mint one column [0.08ms]
+(pass) useStudio — one pane per thread, however it arrives > sequence of open(thread) and dispatch(draft-thread) flows never ends with multiple blank thread panes or sessions [0.58ms]
+(pass) useStudio — side chat clustering and strip order > opening a new pane while focused on a main chat with side chats places the new pane after the side chats [0.41ms]
+(pass) useStudio — side chat clustering and strip order > opening a new pane while focused on a side chat places the new pane after all side chats of the cluster [0.30ms]
+(pass) useStudio — side chat clustering and strip order > opening a second side chat off the main thread places it after existing side chats [0.14ms]
+(pass) useStudio — side chat clustering and strip order > moving a main thread moves its side chats with it as an atomic cluster [0.38ms]
+(pass) useStudio — side chat clustering and strip order > reordering sibling side chats moves within the cluster [0.19ms]
+(pass) useStudio — pane width persistence > blank thread preserves custom width across restore and deferred attach [0.15ms]
+(pass) useStudio — pane width persistence > terminal and scratchpad panes preserve custom width across restore and spawn [0.20ms]
+(pass) useStudio — pane width persistence > setWidth updates saveSignature and serialize output [0.13ms]
+(pass) useStudio — pane width persistence > setZen updates saveSignature and persists maximized state across restore [0.22ms]
+
+app/utils/safeHtmlTable.test.ts:
+(pass) safeHtmlTable > a raw single-line table becomes a table node with its cells [0.08ms]
+(pass) safeHtmlTable > a multiline table split across softbreaks still becomes one table [0.13ms]
+(pass) safeHtmlTable > an inline table amid prose splits into prose/table/prose [0.08ms]
+(pass) safeHtmlTable > a lone script stays inert text and never becomes a node [0.04ms]
+(pass) safeHtmlTable > a script nested in a cell degrades to its words [0.03ms]
+(pass) safeHtmlTable > only colspan/rowspan survive; handlers, styles and classes are dropped [0.07ms]
+(pass) safeHtmlTable > a span of 1 is omitted and absurd spans are dropped [0.02ms]
+(pass) safeHtmlTable > a partial table still streaming in stays untouched text [0.02ms]
+(pass) safeHtmlTable > an empty table parses to null instead of an empty node
+(pass) safeHtmlTable > an explicit thead/tbody structure is preserved [0.02ms]
+(pass) safeHtmlTable > end to end: real html:false tokens for the reported reply expand to a table [1.07ms]
+
+app/utils/sessionCost.test.ts:
+(pass) sessionCost > returns explicit costUsd when present
+(pass) sessionCost > returns 0 when tokens are absent or non-positive
+(pass) sessionCost > estimates spend for Antigravity flash models [0.30ms]
+(pass) sessionCost > estimates spend for Antigravity pro models
+(pass) sessionCost > estimates spend for Claude and Codex providers
+
+app/utils/surfaceTop.test.ts:
+(pass) resolveTop > nothing open is the stage [0.23ms]
+(pass) resolveTop > each surface wins alone
+(pass) resolveTop > the settings drawer outranks every portal underneath it
+(pass) resolveTop > the fixed overlays still outrank the drawer
+(pass) resolveTop > portals keep the painting order among themselves
+(pass) resolveTop > the launcher modal answers before the menu, and the menu before the card
+
+app/utils/threadDates.test.ts:
+(pass) dayKey > generates YYYY-MM-DD string from timestamp [0.77ms]
+(pass) dayKey > distinguishes different calendar days across midnight [0.02ms]
+(pass) formatDayDivider > formats timestamps on the same day as Today [0.04ms]
+(pass) formatDayDivider > formats timestamps from yesterday as Yesterday [0.01ms]
+(pass) formatDayDivider > formats older dates in the same year with month and day [6.54ms]
+(pass) formatDayDivider > formats dates in a previous year with month, day, and year [0.08ms]
+
+app/utils/planTasks.test.ts:
+(pass) reconcilePlanTasks > duplicate labels map 1:1 by occurrence [0.41ms]
+(pass) reconcilePlanTasks > status flip preserves ids
+(pass) reconcilePlanTasks > mid-list insert keeps existing ids
+(pass) reconcilePlanTasks > reword at same index keeps id [0.12ms]
+(pass) reconcilePlanTasks > removed task is dropped
+(pass) reconcilePlanTasks > re-added task mints a fresh id
+(pass) parsePlanTasks / formatPlanTasks > markdown checkboxes round-trip
+(pass) parsePlanTasks / formatPlanTasks > unicode markers [0.19ms]
+(pass) parsePlanTasks / formatPlanTasks > [X] counts as completed
+(pass) parsePlanTasks / formatPlanTasks > skips malformed lines
+(pass) parsePlanTasks / formatPlanTasks > empty input yields empty list
+(pass) deriveActivePlan > prefers item.tasks over parsed text [0.09ms]
+(pass) deriveActivePlan > falls back to parsing text [0.07ms]
+(pass) deriveActivePlan > skips prose items with no tasks [0.03ms]
+(pass) deriveActivePlan > takes the latest plan across blocks [0.01ms]
+(pass) deriveActivePlan > derives stable fallback ids across re-derivation [0.02ms]
+(pass) deriveActivePlan > holds after the turn settles
+(pass) activePlanTask > names the in-progress task and its position [0.16ms]
+(pass) activePlanTask > prefers the task's activeForm while it runs [0.02ms]
+(pass) activePlanTask > falls back to the first outstanding task when none is flipped yet [0.03ms]
+(pass) activePlanTask > is null once every task is done
+(pass) activePlanTask > is null with no plan at all
+
+app/utils/providerAvailability.test.ts:
+(pass) resolveProviderSendAvailability > a ready provider can take a turn [0.40ms]
+(pass) resolveProviderSendAvailability > an unprobed provider is unknown, not broken — a cold launch stays sendable
+(pass) resolveProviderSendAvailability > blocks a signed-out provider and shows the probe's own words
+(pass) resolveProviderSendAvailability > falls back to a readiness sentence when the probe left no message
+(pass) resolveProviderSendAvailability > reads the row for the asked-for provider, not the first one
+
+app/utils/handOffs.test.ts:
+(pass) the Subagents dock > holds workers — including snapshots from before kinds — and never an agent [0.96ms]
+(pass) thread summaries > a worker is marked so the lists leave it out [0.09ms]
+(pass) thread summaries > a delegate says who delegated to it [0.02ms]
+(pass) thread summaries > a contractor says who contracted it, and as what [0.02ms]
+(pass) thread summaries > a thread nobody handed over carries neither
+(pass) a stop decision in the reply > reads as its own line, like a hand-off, not a step [0.15ms]
+
+app/utils/agents.test.ts:
+(pass) the roster > holds the agents the user made, and never the courier [0.12ms]
+(pass) the roster > nobody is picked for you — a fresh app sends work to a default solo partner [0.02ms]
+(pass) the roster > an id that isn't in the roster resolves to nobody rather than a stub [0.02ms]
+(pass) the roster > hydrating gives the built-in a row and changes nothing on screen [0.23ms]
+(pass) the roster > a made agent lands after the ones already there [0.27ms]
+(pass) the roster > a field cleared to empty stays empty [0.10ms]
+(pass) the courier > shows as itself, read from the build alone [0.05ms]
+(pass) the courier > is in no list you pick from [0.12ms]
+(pass) the courier > cannot be edited, deleted, forked or put on a team [0.14ms]
+(pass) who worked a thread > a thread handed to an agent reports that agent [0.14ms]
+(pass) who worked a thread > who a thread was handed to is settled once and never revised [0.04ms]
+(pass) who worked a thread > a thread that started as a guest stays a guest [0.03ms]
+(pass) who worked a thread > an unstarted thread has nobody, and picking an agent doesn't give it one [0.04ms]
+(pass) who worked a thread > changing who you work with leaves settled threads alone [0.03ms]
+(pass) who worked a thread > an agent nobody ships is refused rather than recorded [0.04ms]
+(pass) who worked a thread > a guest thread is recorded, not left blank [0.02ms]
+(pass) who worked a thread > a thread with no id is nobody's, and settling one is a no-op [0.04ms]
+(pass) threadSettled > an unclaimed thread has not settled [0.03ms]
+(pass) threadSettled > a thread settled on an agent has settled [0.03ms]
+(pass) threadSettled > a thread settled on a guest has settled too — it is a decision [0.02ms]
+(pass) threadSettled > agrees with settleThreadAgent about which writes are refused [0.10ms]
+(pass) what the provider session is told > an agent's thread carries its name and instructions [0.05ms]
+(pass) what the provider session is told > an agent with no instructions carries just its name [0.09ms]
+(pass) what the provider session is told > a guest's thread carries nothing — the session runs as it always did [0.02ms]
+(pass) what the provider session is told > a rename reaches a thread that already settled on that agent [0.09ms]
+(pass) what the provider session is told > picking somebody else points the next thread at them, not this one [0.02ms]
+(pass) a thread reborn under a new id > the same work continuing keeps the same agent [0.06ms]
+(pass) a thread reborn under a new id > a guest comes back a guest [0.05ms]
+(pass) a thread reborn under a new id > nothing to carry from a thread that never started [0.04ms]
+(pass) a thread reborn under a new id > a thread that already settled keeps what it settled on [0.03ms]
+(pass) a thread reborn under a new id > a missing id at either end is a no-op [0.04ms]
+(pass) a side chat forked from a thread > inherits the named agent from the source thread [0.05ms]
+(pass) a side chat forked from a thread > carrying the thread agent explicitly also resolves the named agent [0.03ms]
+(pass) a side chat forked from a thread > inherits a guest binding when the source was a guest [0.02ms]
+(pass) renaming an agent > the new name is what the roster reports [0.05ms]
+(pass) renaming an agent > surrounding space is not part of a name [0.04ms]
+(pass) renaming an agent > a name has a length a row can hold [0.05ms]
+(pass) renaming an agent > renaming somebody who isn't in the roster changes nothing [0.04ms]
+(pass) renaming an agent > a user-made agent cannot be left nameless [0.05ms]
+(pass) an agent you made yourself > arrives at the end of the roster with what you gave it [0.08ms]
+(pass) an agent you made yourself > a name is the one thing it can't do without [0.05ms]
+(pass) an agent you made yourself > a bot is the other thing it can't do without [0.04ms]
+(pass) an agent you made yourself > it can be handed a thread like anybody else [0.06ms]
+(pass) an agent who leaves the roster > is gone from everywhere you could pick them [0.12ms]
+(pass) an agent who leaves the roster > still names the threads they worked [0.07ms]
+(pass) an agent who leaves the roster > the selection doesn't point at them afterwards [0.05ms]
+(pass) an agent who leaves the roster > stays gone rather than coming back on hydrate [0.03ms]
+(pass) an agent who leaves the roster > leaving twice, or leaving when you were never here, is a no [0.05ms]
+(pass) an agent who leaves the roster > a departed agent cannot be edited back into the roster [0.05ms]
+(pass) forking an agent > the copy reads like the original and sits straight below it [0.26ms]
+(pass) forking an agent > an edit to the original doesn't reach the copy [0.07ms]
+(pass) forking an agent > with no name given, the copy carries the original's [0.05ms]
+(pass) forking an agent > there is nothing to fork in somebody who isn't here [0.05ms]
+(pass) an agent's capabilities > an agent made without capabilities resolves to empties, not gaps [0.02ms]
+(pass) an agent's capabilities > a new agent keeps the capabilities it was made with [0.06ms]
+(pass) an agent's capabilities > a new agent silent about its capabilities runs anywhere [0.04ms]
+(pass) an agent's capabilities > a pinned model is a stored answer; null unsets it [0.07ms]
+(pass) an agent's capabilities > clearing the model drops the fallback chain [0.05ms]
+(pass) an agent's capabilities > a capability left out of an edit is left alone [0.07ms]
+(pass) an agent's capabilities > a fork carries the capabilities the source reads as [0.07ms]
+(pass) how an agent looks > a new agent has no picture unless it was given one [0.03ms]
+(pass) how an agent looks > a made agent is painted its own face [0.33ms]
+(pass) how an agent looks > the painted face survives a rename [0.05ms]
+(pass) how an agent looks > an explicitly painted face wins over the id's [0.06ms]
+(pass) how an agent looks > a new agent keeps the appearance it was made with
+(pass) how an agent looks > an edit sets it, and null takes the picture away
+(pass) how an agent looks > a bot naming something this build no longer ships still resolves
+(pass) how an agent looks > every source a picture can come from round-trips
+(pass) how an agent looks > a picture naming an unknown source reads as generated [0.36ms]
+(pass) how an agent looks > a picture with no bytes is dropped
+(pass) how an agent looks > a fork carries the appearance the source reads as
+(pass) the store's answer arriving > the bindings it names are what the roster holds [0.17ms]
+(pass) the store's answer arriving > a binding for a thread that no longer exists is dropped
+(pass) the store's answer arriving > a store that couldn't open is not mistaken for an empty roster
+(pass) a binding the main process settled > is who the thread runs as the moment it is heard [0.08ms]
+(pass) a binding the main process settled > survives a snapshot that was asked for before it was written
+(pass) a binding the main process settled > is dropped by a snapshot asked for after it, like any other row
+(pass) project teams > a fresh project's team is empty — nobody is on it until added
+(pass) project teams > an agent added is on the team, and members hold their add order
+(pass) project teams > adding the same agent twice keeps one membership [0.30ms]
+(pass) project teams > membership is per project — an agent can be on many, off others [0.12ms]
+(pass) project teams > an agent who leaves the roster drops out of a team and can't be re-added [0.12ms]
+(pass) project teams > a nonexistent agent can't be staffed onto a team [0.02ms]
+(pass) what crosses the bridge > a reactive draft is refused by the serializer as it stands [0.83ms]
+(pass) what crosses the bridge > and goes through unchanged once it has been made sendable [0.02ms]
+
+app/utils/subagentRuns.test.ts:
+(pass) deriveDelegates — nested run projection > a live run projects working, live, with the running-tool hint [0.18ms]
+(pass) deriveDelegates — nested run projection > status → state, and a run is never parked
+(pass) deriveDelegates — nested run projection > a live run whose tail is reasoning reads Thinking, not Working
+(pass) deriveDelegates — nested run projection > a settled run carries no hint, even with a lastToolName
+(pass) deriveDelegates — spawned thread projection > status → state exactly
+(pass) deriveDelegates — spawned thread projection > identity, model/effort, provider and target come off the value
+(pass) deriveDelegates — spawned thread projection > status words and hint details, verbatim [0.28ms]
+(pass) deriveDelegates — spawned thread projection > an uncertain job whose hand-over was cut off may not have arrived
+(pass) deriveDelegates — spawned thread projection > an uncertain turn the store has no record of reads as outcome unknown
+(pass) deriveDelegates — spawned thread projection > a failed thread reads its detail when there is one
+(pass) deriveDelegates — spawned thread projection > a whitespace-only detail leaves the status word alone [0.10ms]
+(pass) deriveDelegates — spawned thread projection > a long failure detail is capped at 80 chars with hintFull [0.01ms]
+(pass) deriveDelegates — spawned thread projection > truncation trims trailing whitespace before the ellipsis [0.02ms]
+(pass) deriveDelegates — spawned thread projection > a multi-line detail collapses to one line [0.01ms]
+(pass) deriveDelegates — spawned thread projection > no hintFull when nothing was truncated [0.03ms]
+(pass) deriveDelegates — timeline and counts > interleaves a run and a thread chronologically [0.03ms]
+(pass) deriveDelegates — timeline and counts > a parked thread stays live, counted, and streaming [0.01ms]
+(pass) deriveDelegates — timeline and counts > running counts live runs plus parked threads [0.02ms]
+(pass) deriveDelegates — timeline and counts > streaming goes quiet once nothing is live [0.02ms]
+(pass) deriveDelegates — timeline and counts > empty input yields an empty, quiet state
+(pass) deriveActiveSubagents > still derives the runs it always did [0.03ms]
+(pass) subagentModel > names a real model id [0.03ms]
+(pass) subagentModel > a placeholder model reads as absent, not as a prettified alias [0.01ms]
+(pass) formatElapsed > compacts seconds, minutes, hours [0.02ms]
+
+app/utils/detailFormat.test.ts:
+(pass) toDirectives > empty input reads as no directives [0.70ms]
+(pass) toDirectives > a **lead** opener is lifted off its paragraph [0.14ms]
+(pass) toDirectives > a paragraph with no opener reads as plain prose [0.02ms]
+(pass) toDirectives > blank-line runs split paragraphs [0.02ms]
+(pass) formatModelChain > no pinned model reads as null; the caller names the fallback [0.03ms]
+(pass) formatModelChain > a lone model reads bare, preferring its label [0.02ms]
+(pass) formatModelChain > fallbacks join the head with arrows [0.02ms]
+(pass) brandsForOrigin > shared skills wear every harness mark [0.01ms]
+(pass) brandsForOrigin > known origins resolve to one mark [0.02ms]
+(pass) brandsForOrigin > unknown origins fall through to the dot [0.01ms]
+(pass) originLabel > known origins read as names [0.01ms]
+(pass) originLabel > unknown origins read back as themselves
+
+app/utils/thinkingLogo.test.ts:
+(pass) thinkingLogo math & core > computes smootherstep with 0 velocity and acceleration at ends
+(pass) thinkingLogo math & core > computes expoInOut smoothly
+(pass) thinkingLogo math & core > computes morphEase correctly
+(pass) thinkingLogo math & core > generates Fibonacci sphere directions
+(pass) thinkingLogo math & core > creates orthographic projection without NaN
+(pass) thinkingLogo math & core > computes radiusScale with sub-linear curve for small sizes
+(pass) thinkingLogo math & core > finalizes frame with depth sorting and rMin floor
+(pass) thinkingLogo tinting > parses hex colours and rgb strings [0.32ms]
+(pass) thinkingLogo tinting > adapts tint against dark and light substrates
+(pass) thinkingLogo presets & states > maps all tool states to valid modes
+(pass) thinkingLogo presets & states > resolves logo with seat map caching [1.28ms]
+(pass) thinkingLogo presets & states > cycles beatAt correctly through dwell and morph [0.05ms]
+(pass) thinkingLogo presets & states > computes recommended dot count based on size [0.05ms]
+(pass) thinkingLogo baking & serialization > rasterizes bare SVG path in headless mode [0.45ms]
+(pass) thinkingLogo baking & serialization > bakes SVG path into LogoPointSet [19.78ms]
+(pass) thinkingLogo baking & serialization > serializes and deserializes LogoPointSet roundtrip [6.84ms]
+(pass) pre-baked tool logos & mappings > has prebaked point sets for all tool families
+(pass) pre-baked tool logos & mappings > maps HugeIcon singletons to prebaked logos [0.08ms]
+(pass) pre-baked tool logos & mappings > returns appropriate logo for tool family or meta state
+(pass) turnOrb integration > resolves state for tool family
+(pass) turnOrb integration > executes drawTurnOrb without throwing [2.18ms]
+
+app/utils/usageProviders.test.ts:
+(pass) PROVIDER_COLORS > covers every provider in both schemes [0.54ms]
+(pass) PROVIDER_COLORS > scheme-stable brands hold still, monochromes adapt [0.03ms]
+(pass) asProviderKind > narrows every known provider to itself [0.03ms]
+(pass) asProviderKind > turns an unknown or missing key into null [0.02ms]
+(pass) providerIdentity > takes its colour from the row it is handed [0.05ms]
+(pass) knownProviderRows > pairs each owned row with its provider's identity, in row order
+(pass) knownProviderRows > leaves out a row no kone provider owns, or one with no provider [0.01ms]
+(pass) knownProviderRows > keeps the row's own label apart from the provider's [0.02ms]
+
+app/utils/usageFormat.test.ts:
+(pass) formatTokens > sub-thousand values are plain integers [0.87ms]
+(pass) formatTokens > picks the right magnitude band
+(pass) formatTokens > a value that rounds to the next magnitude rolls over instead of printing 1000
+
+app/utils/userInputAnswers.test.ts:
+(pass) userInputAnswer > single-select sends the picked label [0.80ms]
+(pass) userInputAnswer > single-select with write-your-own sends the typed value instead
+(pass) userInputAnswer > multi-select sends every pick, plus a typed value once [0.08ms]
+(pass) userInputAnswer > a question without options sends its free text
+(pass) buildUserInputAnswers > keys every answer by question id once all are answered
+(pass) buildUserInputAnswers > holds back while any question is unanswered
+
+app/utils/conversationSearch.test.ts:
+(pass) isSearchableQuery > blank input is not searchable [0.33ms]
+(pass) isSearchableQuery > anything with a non-space character is searchable
+(pass) sanitizeSearchSnippet > keeps the excerpt marks and escapes everything else
+(pass) sanitizeSearchSnippet > neutralises markup inside the matched span itself
+(pass) sanitizeSearchSnippet > escapes ampersands without double-escaping the restored marks
+(pass) plainSnippetText > strips the excerpt marks
+(pass) groupSearchHits > collects hits under their thread in rank order
+(pass) groupSearchHits > empty in, empty out
+(pass) scrollBlockIdForHit > prompt hits jump to their own block
+(pass) scrollBlockIdForHit > item hits jump to the block carrying their turn
+(pass) scrollBlockIdForHit > a turn with no block yet has no scroll target
+(pass) hitKindLabel > labels blocks as prompts and items as messages
+(pass) createSearchController > debounces rapid keystrokes into one search [31.16ms]
+(pass) createSearchController > blank input answers empty without touching the store [21.31ms]
+(pass) createSearchController > a stale answer never overwrites a newer one [31.71ms]
+(pass) createSearchController > cancel drops a pending query [20.28ms]
+(pass) createSearchController > errors surface through onError [10.39ms]
+
+app/utils/threadExport.test.ts:
+(pass) threadExportFilename > slugs the title and wears the format extension [0.04ms]
+(pass) threadExportFilename > an empty title falls back to the thread id [0.02ms]
+(pass) threadExportFilename > long titles truncate without a trailing dash, and never carry a path [0.02ms]
+(pass) threadExportExtension > markdown suggests md, json suggests json
+(pass) export format choice > offers markdown first, with finished labels [0.03ms]
+(pass) exportFailureMessage > success carries nothing to explain
+(pass) exportFailureMessage > blocked threads read in the shared predicate's own words
+(pass) exportFailureMessage > write failures stand as the backend wrote them [0.04ms]
+(pass) formatExportBytes > bytes stay bare, kilobytes take one decimal [0.03ms]
+(pass) formatExportBytes > the unknowable reads as zero, never blank
+(pass) exportFileBasename > keeps the last segment on either separator [0.05ms]
+
+app/utils/inboxLayout.test.ts:
+(pass) clampListWidth > honours a width that fits [0.82ms]
+(pass) clampListWidth > holds the list's own floor and ceiling [0.01ms]
+(pass) clampListWidth > gives way to the reading pane's floor in a narrow window [0.04ms]
+(pass) clampListWidth > stops at the list's floor rather than disappearing [0.02ms]
+(pass) clampListWidth > falls back to the default when the stored value is not a number
+(pass) clampListWidth > always returns whole pixels
+(pass) availablePaneWidth > subtracts the gap between the panes from what is observed [0.01ms]
+(pass) availablePaneWidth > stays wide before the first measurement, so a stored width is honoured [0.02ms]
+(pass) resolveListWidth > honours a stored width when there is room
+(pass) resolveListWidth > yields to the reading pane's floor in a narrow window
+(pass) resolveListWidth > stops at the list's floor rather than disappearing
+(pass) dragListWidth > moves with the cursor, with no pointer in it [0.02ms]
+(pass) dragListWidth > holds the list's own floor and ceiling
+(pass) dragListWidth > yields to the reading pane's floor in a narrow window
+(pass) gutterKeyWidth > nudges by one step, or four with Shift [0.02ms]
+(pass) gutterKeyWidth > Home and End respect the reading pane's floor
+(pass) gutterKeyWidth > leaves unhandled keys alone
+
+app/utils/delegateColumns.test.ts:
+(pass) claimDelegateColumn > opens a delegate handed off during this run, once [0.66ms]
+(pass) claimDelegateColumn > opens a contractor the same way
+(pass) claimDelegateColumn > never reopens a delegate re-seeded from an earlier run
+(pass) claimDelegateColumn > leaves workers in the dock
+
+app/utils/handInMarkers.test.ts:
+(pass) deriveHandInMarks > names both ends by model when the models are known [0.90ms]
+(pass) deriveHandInMarks > falls back to the provider when a side never ran a named model
+(pass) deriveHandInMarks > falls back to the provider label when the model id names no model
+(pass) deriveHandInMarks > treats placeholder aliases case-insensitively and around whitespace
+(pass) deriveHandInMarks > keeps the real model name whenever there is one
+(pass) deriveHandInMarks > orders marks oldest-first whatever order they arrive in
+(pass) deriveHandInMarks > gives each mark a key distinct enough to render a list
+(pass) deriveHandInMarks > reads as one sentence naming where the thread went
+(pass) collapseHandInMarks > leaves a single hand-in alone
+(pass) collapseHandInMarks > reads two swaps before one turn as the change that turn saw
+(pass) collapseHandInMarks > says nothing when the thread ended up back where it started
+
+app/utils/threadWorkspace.test.ts:
+(pass) workspaceMark > a thread in the project's checkout has no mark [0.38ms]
+(pass) workspaceMark > a worktree thread shows its basename and keeps the path for the tooltip
+(pass) workspaceMark > a trailing separator does not empty the label
+(pass) workspaceMark > reads a windows path too
+(pass) workspaceMark > pending is its own mark
+(pass) workspaceMark > a built worktree outranks a stale pending intent
+(pass) isWorkspacePending > intent without a place
+(pass) isWorkspacePending > a place, or no intent, is not pending [0.18ms]
+(pass) hasOwnWorkspace > only a materialized directory counts [0.02ms]
+(pass) workspaceRequest > the project's own checkout asks for nothing [0.02ms]
+(pass) workspaceRequest > a new worktree from the current branch carries no base
+(pass) workspaceRequest > a new worktree from another branch carries it as the base, never as its own branch [0.03ms]
+
+app/utils/bot.test.ts:
+(pass) bot marks > a mark carries no document references [2.30ms]
+(pass) bot marks > every combination draws a body [0.26ms]
+(pass) bot marks > a shape's mark differs from the one beside it
+(pass) bot marks > an expression's mark differs from the one beside it
+(pass) a ground to read against > the two neutral bodies get opposite grounds
+(pass) a ground to read against > a ground never matches the body standing on it
+(pass) a ground to read against > the ground follows the colour, not the shape or the mood
+(pass) reading one back > nothing at all is no bot, not the default one
+(pass) reading one back > a bot naming what this build no longer ships falls back per field
+(pass) reading one back > a bot stored under the legacy `shape` key still reads back
+(pass) reading one back > a summary names all three choices [0.48ms]
+(pass) a live bot > the same clock always draws the same frame [0.11ms]
+(pass) a live bot > a later clock turns the head [0.02ms]
+(pass) a live bot > a blink shuts the lids [0.03ms]
+(pass) a live bot > a look replaces where the head points, not the eyes it is wearing [0.03ms]
+
+app/utils/turnPlan.test.ts:
+(pass) planTurn while it works > the studio's read shows every part, streaming text at the tail [1.07ms]
+(pass) planTurn while it works > the batch at the tail is the live one
+(pass) planTurn while it works > a turn with nothing yet carries a bare orb
+(pass) planTurn while it works > hidden tool calls leave the updates and a status line [0.01ms]
+(pass) planTurn while it works > hidden updates leave the work, read as one batch
+(pass) planTurn while it works > the inbox's read is just the status line [0.08ms]
+(pass) planTurn while it works > read whole, a message still being written waits — and the orb stays up [0.03ms]
+(pass) planTurn while it works > the live choice sets how batches hold [0.03ms]
+(pass) planTurn while it works > thinking and the tool calls after it read as one batch [0.03ms]
+(pass) planTurn while it works > spawn lines show whatever else is hidden [0.60ms]
+(pass) planTurn when it's done > work and updates hidden, the turn folds to its reply [0.02ms]
+(pass) planTurn when it's done > a turn that only spoke and spawned has no work to fold
+(pass) planTurn when it's done > a spawn said after the reply stays in the open, after it [0.18ms]
+(pass) planTurn when it's done > a turn whose answer is a page folds its work away, the page standing as the reply [0.29ms]
+(pass) planTurn when it's done > a turn that ended on a tool call folds open, having no reply
+(pass) planTurn when it's done > shown, the turn reads as it ran — the done choice setting how batches hold [0.02ms]
+(pass) planTurn when it's done > work shown, updates hidden: the work and the reply [0.04ms]
+(pass) planTurn when it's done > work hidden, updates shown: what it said, and the reply
+(pass) planTurn when it's done > every combination ends on the final reply [0.47ms]
+(pass) planTurn by hand > a turn showing everything folds to its reply by hand
+(pass) planTurn by hand > a folded turn opens by hand onto everything
+(pass) planTurn by hand > a turn holding something back reads closed, and opens onto the whole turn
+(pass) planTurn by hand > while it works, the toggle shows only when something is held back
+(pass) planTurn by hand > opened while it works, hidden steps and updates show live
+(pass) planTurn by hand > a turn with no work has nothing to toggle
+
+app/utils/formatContextTokens.test.ts:
+(pass) formatContextTokens > small counts stay bare [0.03ms]
+(pass) formatContextTokens > thousands take one decimal under 10k, then round [0.02ms]
+(pass) formatContextTokens > millions take one decimal [0.01ms]
+(pass) formatContextTokens > unknown is zero, never blank
+(pass) formatWindowPercent > one decimal under 10%, bare when exact [0.03ms]
+(pass) formatWindowPercent > integer-rounded at and above 10%
+
+app/utils/responseDisplay.test.ts:
+(pass) readDisplays > nothing stored reads the defaults [0.69ms]
+(pass) readDisplays > a read stored nested, the old way, carries over [0.04ms]
+(pass) readDisplays > a value that names no option reads its default [0.03ms]
+(pass) readDisplays > done tools can't take a live-only option
+
+app/utils/branchPicker.test.ts:
+(pass) branchPickerOptions > includes GitHub branches without duplicating their local copies [0.68ms]
+(pass) branchPickerOptions > keeps the remote explicit when two remotes have the same branch
+(pass) branchPickerOptions > recognizes a local copy with a different name through its upstream
+(pass) branchPickerOptions > supports a project without remotes or branches
+(pass) checkoutErrorMessage > turns git's overwrite refusal into the commit-or-stash hint [0.10ms]
+(pass) checkoutErrorMessage > shows git's own line for any other failure [0.12ms]
+(pass) checkoutErrorMessage > falls back when git said nothing
+
+app/utils/spaceBoard.test.ts:
+(pass) the board's layout > every column sits in exactly one section [0.69ms]
+(pass) the board's layout > columns run in the sections' order, a section's columns together
+(pass) the board's layout > every section has a column to land on
+(pass) the board's layout > Instructions is AGENTS.md beside CLAUDE.md
+
+app/utils/composerMentions.test.ts:
+(pass) detectFileMentionTrigger > finds an active project-file token
+(pass) detectFileMentionTrigger > does not treat an email address as a file token
+(pass) detectFileMentionTrigger > supports an empty trigger after whitespace
+(pass) detectSlashCommandTrigger > finds a leading slash token [0.18ms]
+(pass) detectSlashCommandTrigger > supports a bare slash after whitespace
+(pass) detectSlashCommandTrigger > does not treat paths as commands
+(pass) detectSlashCommandTrigger > does not treat urls or comment slashes as commands
+(pass) detectSlashCommandTrigger > ends the token at a space
+(pass) detectSlashCommandTrigger > finds a leading compact token [0.04ms]
+(pass) detectSlashCommandTrigger > the trigger ends at the space, so a focus needs the draft parse
+(pass) detectToken > finds an @ token with its marker [0.01ms]
+(pass) detectToken > finds a / token with its marker
+(pass) detectToken > only listens for the requested markers
+(pass) detectToken > rejects // comments and paths by the shared slash rule
+(pass) detectToken > rejects tokens that do not start after whitespace
+(pass) slashCommandTitle > derives the label from the name
+(pass) parseLeadingSlashCommand > reads a bare compact command with empty focus [0.16ms]
+(pass) parseLeadingSlashCommand > reads trailing prose as the compact focus [0.01ms]
+(pass) parseLeadingSlashCommand > reads the model command
+(pass) parseLeadingSlashCommand > reads the agent command
+(pass) parseLeadingSlashCommand > reads the branch command
+(pass) parseLeadingSlashCommand > reads the new command
+(pass) parseLeadingSlashCommand > reads trailing prose as the new focus [0.01ms]
+(pass) parseLeadingSlashCommand > passes unknown names through for the provider
+(pass) parseLeadingSlashCommand > ignores a slash that does not lead the draft
+(pass) filterSlashCommandItems > offers everything on an empty query
+(pass) filterSlashCommandItems > prefix-matches case-insensitively
+(pass) formatFileMention > keeps simple paths compact [0.04ms]
+(pass) formatFileMention > quotes paths containing spaces
+(pass) splitComposerMentionSegments > formats completed path tokens while leaving surrounding text intact [0.09ms]
+(pass) splitComposerMentionSegments > keeps an incomplete trailing token as text
+(pass) splitComposerMentionSegments > decodes quoted paths
+(pass) splitComposerMentionSegments > still collects a quoted mention whose path is at the length cap [0.05ms]
+(pass) splitComposerMentionSegments > leaves a quoted mention past the cap as plain text
+(pass) splitComposerMentionSegments > stays fast on unterminated quoted mentions [0.88ms]
+(pass) unified mention list > builds projects-first, files-second in one array
+(pass) unified mention list > dedupes projects by path, first wins [0.26ms]
+(pass) unified mention list > resolves restored chip kinds from the project set [0.04ms]
+(pass) replaces a trigger and returns the next cursor
+
+app/utils/threadEscape.test.ts:
+(pass) thread Escape routing > walks diff, rail, composer regardless of registration order [0.75ms]
+(pass) thread Escape routing > leaves external pickers their press and keeps lower layers open [0.06ms]
+(pass) thread Escape routing > internal picker takes precedence and already consumed keys do nothing [0.03ms]
+(pass) thread Escape routing > unmounted layers cannot consume a later press
+
+app/utils/messageSpeaker.test.ts:
+(pass) who is talking on a message the user did not write > an agent speaks as itself, and its name opens its thread [0.04ms]
+(pass) who is talking on a message the user did not write > the courier speaks as kone, about the agent whose work it carries
+(pass) who is talking on a message the user did not write > a worker the courier reports on has no roster entry, and keeps its snapshot name
+(pass) who is talking on a message the user did not write > a courier message about nobody in particular opens nothing
+(pass) who is talking on a message the user did not write > agents and the courier take the agent's side; the user and kone's notices don't
+
+app/utils/surfaceKeys.test.ts:
+(pass) ownsKey > the surface in front owns the key [0.63ms]
+(pass) ownsKey > a surface that is not in front owns nothing
+(pass) ownsKey > any of several owners counts as owning it
+(pass) ownsKey > a surface outside the owner list still owns nothing
+(pass) ownsKey > an event something nested has already handled is owned by nobody
+
+app/utils/streamingMarkdown.test.ts:
+(pass) stabilizeStreamingMarkdown > leaves finished text alone [0.79ms]
+(pass) stabilizeStreamingMarkdown > holds back a trailing line that is only a block marker [0.12ms]
+(pass) stabilizeStreamingMarkdown > keeps a marker line once it has content
+(pass) stabilizeStreamingMarkdown > does not mistake a rule for a bare marker
+(pass) stabilizeStreamingMarkdown > closes an open bold mark provisionally
+(pass) stabilizeStreamingMarkdown > holds back a bold opener with nothing after it
+(pass) stabilizeStreamingMarkdown > closes open inline code, and ignores asterisks inside it
+(pass) stabilizeStreamingMarkdown > only looks at the block being written
+(pass) stabilizeStreamingMarkdown > never touches the inside of an open code fence
+(pass) stabilizeStreamingMarkdown > works again after a fence closes
+
+app/utils/padMarkdown.test.ts:
+(pass) repairMarkdownTableDelimiters > pads a delimiter row that has fewer cells than the header [0.10ms]
+(pass) repairMarkdownTableDelimiters > drops delimiter cells beyond the header cell count [0.05ms]
+(pass) repairMarkdownTableDelimiters > keeps the kept cells' alignment markers when padding
+(pass) repairMarkdownTableDelimiters > returns the input string unchanged when every table is well-formed
+(pass) repairMarkdownTableDelimiters > ignores pipe-and-dash lines inside fenced code blocks
+(pass) repairMarkdownTableDelimiters > repairs a table that follows a closed fence [0.08ms]
+(pass) repairMarkdownTableDelimiters > ignores indented code blocks
+(pass) repairMarkdownTableDelimiters > ignores blockquoted headers
+(pass) repairMarkdownTableDelimiters > does not treat a dashed body row of an ongoing table as a delimiter
+(pass) repairMarkdownTableDelimiters > does not pair two delimiter-shaped rows as header and delimiter
+(pass) repairMarkdownTableDelimiters > does not count escaped pipes as cell boundaries [0.06ms]
+(pass) repairMarkdownTableDelimiters > leaves text without any table candidates untouched
+(pass) repairMarkdownTableDelimiters > repair makes markdown-it render a table the model's output would lose [0.50ms]
+
+app/utils/markdownImageSource.test.ts:
+(pass) classifyImageSource > web, data, blob and app schemes load as written [0.71ms]
+(pass) classifyImageSource > an absolute POSIX path is local, decoded
+(pass) classifyImageSource > a Windows drive path is local
+(pass) classifyImageSource > a file URL is decoded to its path [0.43ms]
+(pass) classifyImageSource > a file URL on another host, or naming no file, is blocked
+(pass) classifyImageSource > a relative path joins the working directory [0.11ms]
+(pass) classifyImageSource > a relative path with no working directory is blocked
+(pass) classifyImageSource > home-relative, unknown schemes, fragments, queries and empties are blocked [0.04ms]
+
+app/utils/workspaceSteps.test.ts:
+(pass) workspace steps > start from four pending steps in a fixed order [0.32ms]
+(pass) workspace steps > a report changes one step and moves none [0.04ms]
+(pass) workspace steps > a failure stays put, and what comes after it stays pending [0.05ms]
+(pass) workspace steps > a later report without a sentence clears the earlier one
+(pass) workspace steps > a settled build's summary is the first note in step order [0.05ms]
+(pass) workspace steps > settled only when every step is done [0.04ms]
+(pass) workspace steps > does not mutate what it is given
+(pass) isWorkspaceCancellable > cancellable while the worktree is not yet linked [0.04ms]
+(pass) isWorkspaceCancellable > not cancellable once the start step runs — nothing left to undo
+(pass) isWorkspaceCancellable > not cancellable once settled or failed
+
+app/utils/jevRoutes.test.ts:
+(pass) applyJevRoute > remembers the decision behind a thread's marker
+(pass) applyJevRoute > a thread that was never routed has no row and shows no marker
+(pass) applyJevRoute > a settle with no route takes down whatever the thread was showing [0.39ms]
+(pass) applyJevRoute > a settle with a route of its own replaces the one before it [0.02ms]
+(pass) applyJevRoute > an outcome this build does not know reads as unrouted [0.01ms]
+(pass) applyJevRoute > a route on a guest binding names nobody, so it shows nothing
+(pass) applyJevRoute > a confidence off the 0–1 scale is clamped back onto it [0.02ms]
+(pass) applyJevRoute > a confidence that is no number at all reads as unrouted
+(pass) carryJevRoute > a reborn thread keeps the decision that staffed it
+(pass) carryJevRoute > an unrouted thread carries nothing, rather than carrying an absence
+(pass) applyJevRouteSnapshot > takes the store's word, and drops threads it no longer names [0.11ms]
+(pass) applyJevRouteSnapshot > a binding with no route reads as a thread settled by hand [0.04ms]
+(pass) applyJevRouteSnapshot > a route whose bind is still in the air survives the snapshot [0.01ms]
+(pass) applyJevRouteSnapshot > the store wins over the cache for a thread it does name
+
+app/utils/sessionList.test.ts:
+(pass) summarizeSession — flatten a stored thread into a list row > maps the optional fields, blank title falls back, no lastActivityAt falls back to updatedAt
+(pass) summarizeSession — flatten a stored thread into a list row > uses lastActivityAt over updatedAt as the recency key
+(pass) summarizeSession — flatten a stored thread into a list row > flags sideChat from forkContext presence
+(pass) summarizeSession — flatten a stored thread into a list row > an edit fork wears no side-chat badge
+(pass) summarizeSession — flatten a stored thread into a list row > a handoff wears no side-chat badge
+(pass) summarizeSession — flatten a stored thread into a list row > carries projectPath/projectName only when a project tag is passed
+(pass) summarizeSession — flatten a stored thread into a list row > carries snippet when present on meta
+(pass) summarizeSession — flatten a stored thread into a list row > carries the pending worktree request alongside the place
+(pass) isThreadDone — the mark expires by comparison, not by a write > a recent thread nobody has marked is not done
+(pass) isThreadDone — the mark expires by comparison, not by a write > a thread quiet for longer than the stale window is done by itself
+(pass) isThreadDone — the mark expires by comparison, not by a write > an explicit un-mark outranks age
+(pass) isThreadDone — the mark expires by comparison, not by a write > a turn after an un-mark leaves the thread not done, and it can age again
+(pass) isThreadDone — the mark expires by comparison, not by a write > a thread marked after its last activity is done
+(pass) isThreadDone — the mark expires by comparison, not by a write > a thread the agent has spoken in since is asking again
+(pass) isThreadDone — the mark expires by comparison, not by a write > falls back to updatedAt when a pre-v18 row has no activity key
+(pass) isThreadDone — the mark expires by comparison, not by a write > summarizeSession carries the verdict, not the stamp
+(pass) isThreadUnread — the agent has spoken since you last looked > activity after the visit is unread
+(pass) isThreadUnread — the agent has spoken since you last looked > a visit at or after the activity is read
+(pass) isThreadUnread — the agent has spoken since you last looked > falls back to updatedAt when the thread carries no activity stamp
+(pass) isThreadUnread — the agent has spoken since you last looked > never visited reads as unread — rows older than the stamp are backfilled
+(pass) isThreadUnread — the agent has spoken since you last looked > epoch zero is a real visit, not an absent one — it just precedes everything
+(pass) isThreadUnread — the agent has spoken since you last looked > summarizeSession carries the derived mark and the stamp behind it [0.03ms]
+(pass) byRecency — newest first > sorts a newer updatedAt before an older one [0.02ms]
+(pass) SESSION_PIN_KEY > is the shared localStorage key both lists use
+(pass) liftLegacyPins — one-time localStorage→DB migration > returns true for an empty list without touching the api [0.01ms]
+(pass) liftLegacyPins — one-time localStorage→DB migration > writes every id when all succeed and returns true
+(pass) liftLegacyPins — one-time localStorage→DB migration > returns false when any write rejects — the caller keeps the localStorage key
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > stamps the open unread thread [0.22ms]
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > a hidden surface with a leftover selection stamps nothing and clears
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > nothing selected, or a selection the list does not carry, stamps nothing and clears
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > a thread already read is left alone and clears the latch [0.05ms]
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > polling the same unread generation twice stamps once and keeps the latch
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > a turn landing under the open thread re-stamps
+(pass) nextVisitStamp — one pure pass from latch plus list settle to stamp > a poll with nothing to stamp re-arms the latch [0.07ms]
+
+app/utils/steerWait.test.ts:
+(pass) steerWaitOffered > offers Interrupt now 30 s into the user's wait, not before
+(pass) steerWaitOffered > never for an agent's wait, nor with none [0.09ms]
+(pass) steerWaitLabel > names the agent and the tool call [0.05ms]
+(pass) steerWaitLabel > without a name or a tool
+
+app/utils/spaceModels.test.ts:
+(pass) rankModels > ranks by responses, breaking ties on output tokens [1.02ms]
+(pass) rankModels > leaves out models with no responses, no tokens, or no known agent [0.03ms]
+(pass) rankModels > an older report without output tokens still ranks [0.03ms]
+(pass) rankModels > shares add up to the whole [0.08ms]
+(pass) rankModels > folds everything past the top few into one other entry [0.07ms]
+(pass) rankModels > names no other entry when nothing folds
+(pass) rankModels > every model from one agent gets its own tint [0.03ms]
+(pass) rankModels > a different agent starts again from its own colour [0.08ms]
+(pass) rankModels > strips a free-tier suffix from the name and flags it [0.09ms]
+(pass) ringSlices > a lone slice is the whole half-ring [0.09ms]
+(pass) ringSlices > slices close the arc at exactly 0°, with a gap between each [0.04ms]
+(pass) ringSlices > a tiny model keeps a sliver, and the rest give way for it [0.02ms]
+(pass) ringSlices > a model with no share gets no slice, and nothing gives no ring
+(pass) ringSlices > no arc asks for the large-arc flag [0.03ms]
+
+app/utils/stripScroll.test.ts:
+(pass) the modelled plane matches ThreadStrip's DOM > a column sits behind its own leading seam
+(pass) the modelled plane matches ThreadStrip's DOM > an N-column plane carries N+1 seams
+(pass) the modelled plane matches ThreadStrip's DOM > the last column's right edge is one seam short of the plane
+(pass) the modelled plane matches ThreadStrip's DOM > `never` trades the centring pad for a peek, so it cannot scroll as far [0.56ms]
+(pass) what each mode promises > `always` moves even when the column is already fully in view [0.07ms]
+(pass) what each mode promises > `never` and `on-overflow` hold when the column already fits [0.05ms]
+(pass) what each mode promises > `never` makes the smallest move that reveals the column, plus a peek
+(pass) what each mode promises > `on-overflow` centres, but only once it has to move at all [0.02ms]
+(pass) what each mode promises > every mode stays inside the scrollable range [0.04ms]
+(pass) what each mode promises > a column wider than the viewport pins its left edge, never its centre
+(pass) what each mode promises > visibility is judged with a sub-pixel tolerance
+(pass) a released swipe always lands on a boundary > `never` settles on the column's left edge, the others on the centre line [0.14ms]
+(pass) a released swipe always lands on a boundary > the last column clamps to the end rather than overshooting
+(pass) how much window the modes need to differ at all > two columns fit: the centring modes are distinguishable [0.08ms]
+(pass) how much window the modes need to differ at all > one column fits: the centring modes become the same setting
+(pass) how much window the modes need to differ at all > `never` stays distinct even then — it is the one that doesn't centre [0.05ms]
+(pass) how much window the modes need to differ at all > a whole pitch, seam included, is what buys another column [0.02ms]
+(pass) the page's focus walk is a closed loop > every mode ends the lap where it began it at 2560px
+(pass) the page's focus walk is a closed loop > suppressing unanimated moves doesn't unbalance the lap at 2560px
+(pass) the page's focus walk is a closed loop > every mode ends the lap where it began it at 1920px
+(pass) the page's focus walk is a closed loop > suppressing unanimated moves doesn't unbalance the lap at 1920px
+(pass) the page's focus walk is a closed loop > every mode ends the lap where it began it at 1680px
+(pass) the page's focus walk is a closed loop > suppressing unanimated moves doesn't unbalance the lap at 1680px
+(pass) the page's focus walk is a closed loop > every mode ends the lap where it began it at 1440px
+(pass) the page's focus walk is a closed loop > suppressing unanimated moves doesn't unbalance the lap at 1440px
+(pass) the page's focus walk is a closed loop > every mode ends the lap where it began it at 1280px
+(pass) the page's focus walk is a closed loop > suppressing unanimated moves doesn't unbalance the lap at 1280px
+(pass) a move too small to animate > the threshold is small enough to be invisible and large enough to matter
+(pass) a move too small to animate > the rule itself still reports the target — declining is the caller's job
+(pass) the preview's mixed-width plane > the widths are distinct rungs off the ladder
+(pass) the preview's mixed-width plane > mixed and uniform arithmetic agree where they describe the same plane
+(pass) the preview's mixed-width plane > a mixed plane still carries one more seam than columns
+(pass) the preview's mixed-width plane > the opening pair sits in the window; the third peeks
+(pass) the preview's mixed-width plane > When needed and Always disagree on a laptop-sized window [0.71ms]
+(pass) the preview's mixed-width plane > at rest, Always recentres column 2 while When needed holds [0.01ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 320px [0.08ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 360px [0.07ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 400px [0.07ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 440px [0.03ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 480px [0.07ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 520px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 560px [0.05ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 600px
+(pass) the preview's mixed-width plane > every mode's laps settle at 640px
+(pass) the preview's mixed-width plane > every mode's laps settle at 680px [0.06ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 720px [0.07ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 760px [0.06ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 800px
+(pass) the preview's mixed-width plane > every mode's laps settle at 840px [0.07ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 880px
+(pass) the preview's mixed-width plane > every mode's laps settle at 920px [0.08ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 960px [0.06ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1000px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1040px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1080px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1120px [0.16ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1160px [0.08ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1200px [0.02ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1240px [0.06ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1280px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1320px [0.08ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1360px [0.08ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1400px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1440px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1480px [0.05ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1520px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1560px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1600px [0.04ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1640px [0.02ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1680px [0.05ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1720px [0.08ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1760px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1800px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1840px [0.03ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 1880px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1920px
+(pass) the preview's mixed-width plane > every mode's laps settle at 1960px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2000px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2040px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2080px [0.48ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 2120px [0.03ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 2160px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2200px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2240px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2280px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2320px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2360px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2400px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2440px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2480px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2520px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2560px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2600px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2640px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2680px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2720px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2760px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2800px [0.57ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 2840px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2880px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2920px
+(pass) the preview's mixed-width plane > every mode's laps settle at 2960px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3000px [0.35ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 3040px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3080px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3120px [0.03ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 3160px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3200px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3240px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3280px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3320px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3360px [0.03ms]
+(pass) the preview's mixed-width plane > every mode's laps settle at 3400px
+(pass) the preview's mixed-width plane > every mode's laps settle at 3440px [0.13ms]
+
+app/utils/modelPicker.test.ts:
+(pass) resolveSessionModelSelection — model resolution hierarchy > 1. Reopening an existing thread prioritizes threadPersisted selection
+(pass) resolveSessionModelSelection — model resolution hierarchy > 2. Spawning with an agent preset prioritizes agentPinned model [0.22ms]
+(pass) resolveSessionModelSelection — model resolution hierarchy > 3. General session creation uses lastUsed model over user default [0.02ms]
+(pass) resolveSessionModelSelection — model resolution hierarchy > 4. First launch / clean session uses userDefault setting when no lastUsed [0.02ms]
+(pass) resolveSessionModelSelection — model resolution hierarchy > 5. Falls back down the chain when higher preference provider is unavailable [0.01ms]
+(pass) resolveSessionModelSelection — model resolution hierarchy > 6. Falls back to first available catalog default when everything else is unavailable [0.02ms]
+(pass) boot helpers & local storage persistence > bootProvider, bootModel, bootReasoning read default when last used is empty [0.07ms]
+(pass) boot helpers & local storage persistence > last-used model takes priority over initial default in subsequent reads
+(pass) boot helpers & local storage persistence > setDefaultModel writes default keys AND primes last-used keys
+(pass) boot helpers & local storage persistence > bootMode falls back to DEFAULT_MODE_KEY when project mode is not set
+(pass) boot helpers & local storage persistence > bootMode prioritizes per-project modeKey over DEFAULT_MODE_KEY
+(pass) boot helpers & local storage persistence > bootMode returns null for unrecognized mode values
+(pass) boot helpers & local storage persistence > bootProvider returns null on fresh install with nothing stored
+(pass) boot helpers & local storage persistence > bootProvider returns what was stored; readiness is validated by the resolver
+(pass) boot helpers & local storage persistence > resolve returns none when no provider is active
+(pass) boot helpers & local storage persistence > fresh-install fallback picks randomly among ready providers
+
+app/utils/inboxReadingPane.test.ts:
+(pass) resolveInboxReadingPane > an unvisited portal with nothing picked is idle, not the composer [0.48ms]
+(pass) resolveInboxReadingPane > the empty state is the composer once visited
+(pass) resolveInboxReadingPane > compose hands over to the reader once the thread starts
+(pass) resolveInboxReadingPane > starting to compose keeps the selection underneath
+(pass) resolveInboxReadingPane > picking a thread drops the composer's session key
+(pass) resolveInboxReadingPane > opening a resolved thread shows it the ordinary way
+(pass) resolveInboxReadingPane > switching views preserves the selection
+(pass) resolveInboxReadingPane > a visited portal never resolves idle
+
+app/utils/toolName.test.ts:
+(pass) canonicalizeItem > restamps a qualified tool_call with its canonical name
+(pass) canonicalizeItem > returns an already-canonical item by identity
+(pass) canonicalizeItem > leaves non-tool items alone
+(pass) canonicalizeItem > reaches into a nested subagent run
+(pass) canonicalToolName > unwraps each way a provider stamps the server
+(pass) canonicalToolName > unwraps the on-demand server the same as the main one
+(pass) canonicalToolName > brings a name from before the rename up to date, however it was stamped
+(pass) canonicalToolName > brings a worker or peer name up to its agent tool
+(pass) canonicalToolName > leaves a foreign tool that merely starts with kone alone
+
+app/utils/spaceSkills.test.ts:
+(pass) groupSkills > one group per provider, labelled the way the rest of the app labels it [1.59ms]
+(pass) groupSkills > groups follow the shared order, and an origin it doesn't name comes last [0.13ms]
+(pass) groupSkills > an origin nobody named reads back as itself
+(pass) groupSkills > the project's own skills lead a group, then everything by name [0.09ms]
+(pass) groupSkills > a system or plugin skill is not the project's [0.05ms]
+(pass) groupSkills > a display name stands in for the folder's name; the description falls back to the short one [0.02ms]
+(pass) groupSkills > a skill with nothing to say for itself has no description
+(pass) groupSkills > off is whatever the caller says, per skill
+(pass) groupSkills > two copies of a name in different providers both stand, neither shadowed
+(pass) groupSkills > a copy that loses inside its own provider is shadowed
+(pass) groupSkills > two copies of a name in one provider keep separate keys
+(pass) groupSkills > nothing scanned, nothing grouped
+
+app/utils/compactionMarkers.test.ts:
+(pass) groupCompactionMarkers > a marker belongs above the first exchange at or after it [0.34ms]
+(pass) groupCompactionMarkers > markers newer than every exchange trail the thread
+(pass) groupCompactionMarkers > unsorted markers settle oldest-first
+(pass) groupCompactionMarkers > an exchange with no known time only hosts by recency
+(pass) groupCompactionMarkers > empty inputs group to nothing
+(pass) compactionMarkerLabel > counts on both sides read as a range with the time [0.64ms]
+(pass) compactionMarkerLabel > unknown counts read as a bare fact with the time
+(pass) compactionMarkerLabel > a half-known pair reads as a bare fact, never a half range
+
+app/utils/agentRouting.test.ts:
+(pass) isRouterId > is true only for the sentinel
+(pass) routerCandidates > describes each agent by its own standing orders
+(pass) routerCandidates > invents nothing for an agent nobody described
+(pass) routerCandidates > never offers the router to itself [0.45ms]
+(pass) routingReceipt > names the agent and how firmly it was chosen
+(pass) routingReceipt > says something on every outcome, so silence never reads as working [0.06ms]
+(pass) routingReceipt > distinguishes a missing key from nothing having matched
+(pass) isPrefetchableDraft > ignores fragments too short to classify [0.03ms]
+(pass) isPrefetchableDraft > ignores slash rows, which never route at send time either
+(pass) isPrefetchableDraft > warms a paused draft worth classifying [0.02ms]
+(pass) normalizeRouteText > trims so a trailing space does not orphan a warmed decision [0.01ms]
+(pass) JEV_ROUTER_ID > is a reserved word, so a uuid-minted agent can never collide with it
+(pass) routeForBinding > narrows a router reply to what settles on the binding
+(pass) routeForBinding > a no-match reply settles nothing on the binding
+(pass) routeForBinding > a unsure reply settles nothing on the binding
+(pass) routeForBinding > a unavailable reply settles nothing on the binding
+(pass) routeForBinding > a failed reply settles nothing on the binding
+(pass) routeForBinding > a decision that named nobody is not a decision
+
+app/utils/spaceSections.test.ts:
+(pass) sectionAt > at the start of the row the camera is on Telemetry, however much else is in view [0.64ms]
+(pass) sectionAt > a column landed flush against the pane is the current one
+(pass) sectionAt > the next column takes over as its leading edge comes within reach of the pane
+(pass) sectionAt > half way through a column it is still the current one
+(pass) sectionAt > both columns of a section are the section
+(pass) sectionAt > room scrolled past the last column is still the last section
+(pass) sectionAt > an overscroll before the start is the first section
+(pass) sectionAt > a track that has not been measured has no section
+(pass) sectionAt > a narrow window, where one column fills the track, walks the row in order
+(pass) edgeFades > at the start nothing fades on the left; the right edge is cutting into Models
+(pass) edgeFades > a column landed flush against the pane has nothing over it
+(pass) edgeFades > the left fade never runs into the column that is arriving
+(pass) edgeFades > the fade grows as the edge moves into a column, up to its reach
+(pass) edgeFades > an edge in the gap between two columns' content has no fade
+(pass) edgeFades > an edge exactly on a column boundary cuts nothing on the right
+(pass) edgeFades > the right fade shrinks as the last of a column comes into view
+(pass) edgeFades > scrolled to the end, with the last column's room beyond it, nothing fades on the right
+(pass) edgeFades > an overscroll before the start fades nothing on the left
+(pass) edgeFades > a track that has not been measured fades nothing
+
+app/utils/changedFiles.test.ts:
+(pass) deriveChangedFiles > classifies write / edit / delete tools by family [0.85ms]
+(pass) deriveChangedFiles > ignores non-mutating tools (read / list / grep / bash)
+(pass) deriveChangedFiles > one row per path — created survives a later edit [0.19ms]
+(pass) deriveChangedFiles > removal is terminal for a path [0.04ms]
+(pass) deriveChangedFiles > splits name and dir [0.01ms]
+(pass) deriveChangedFiles > streaming flags the live write and the whole state
+(pass) deriveChangedFiles > strips the tool-name prefix the mock adds to the target [0.05ms]
+(pass) deriveChangedFiles > counts +/− from the diff detail, per file and aggregate [0.06ms]
+(pass) deriveChangedFiles > diff headers refine a generic edit tool into create / remove
+(pass) deriveChangedFiles > accumulates across turns, user blocks skipped [0.04ms]
+
+app/utils/turnSettingMarkers.test.ts:
+(pass) deriveTurnSettingMarks > the first stamped request sets the baseline silently [0.77ms]
+(pass) deriveTurnSettingMarks > a changed tier marks the new exchange with both ends
+(pass) deriveTurnSettingMarks > a changed model marks the new exchange with both ends
+(pass) deriveTurnSettingMarks > a turn that changes both is one mark, not two
+(pass) deriveTurnSettingMarks > the axes keep their own baselines
+(pass) deriveTurnSettingMarks > an unchanged pair marks nothing
+(pass) deriveTurnSettingMarks > unstamped history neither marks nor moves the baseline
+(pass) deriveTurnSettingMarks > a request with no model keeps the model baseline where it was
+(pass) deriveTurnSettingMarks > a gap of unstamped blocks keeps the earlier baseline
+(pass) deriveTurnSettingMarks > empty inputs mark nothing
+(pass) deriveTurnSettingMarks > a placeholder model stamp reads as unstamped, not as a switch
+(pass) deriveTurnSettingMarks > switching back to the provider default marks nothing [0.30ms]
+(pass) deriveTurnSettingMarks > a placeholder between two real models does not move the baseline
+(pass) deriveTurnSettingMarks > effort on a placeholder-stamped request still marks on its own axis [0.04ms]
+(pass) turnSettingChangeLabel > an effort switch reads in the picker's own vocabulary [0.06ms]
+(pass) turnSettingChangeLabel > a model switch reads as display names, not raw ids [0.07ms]
+(pass) turnSettingChangeLabel > a switch of both puts each leg's model and tier together [0.01ms]
+(pass) turnSettingChangeLabel > a stale stamp prettifies instead of borrowing the live catalog's first name [0.05ms]
+(pass) turnSettingChangeLabel > the spoken name and the rendered leg come from one resolver [0.05ms]
+
+app/utils/composerSkills.test.ts:
+(pass) buildSkillSlashItems > lists skills by name with their short description, sorted [0.04ms]
+(pass) buildSkillSlashItems > never lets a skill take a command's name, whatever its case
+(pass) buildSkillSlashItems > lists one row per name and skips blank names [0.02ms]
+(pass) buildSkillSlashItems > an empty list adds nothing — a provider with no skills shows commands only
+(pass) filterSlashCommandItems with skills > prefix matches lead, commands before skills
+(pass) filterSlashCommandItems with skills > a skill also answers to a word inside its name or description
+(pass) filterSlashCommandItems with skills > commands stay prefix-only
+(pass) skillKey > folds case and surrounding space
+(pass) resolvePickedSkills > resolves picks by name and takes the current list's path
+(pass) resolvePickedSkills > a pick the list no longer has is missing — removed, or a provider switch
+(pass) resolvePickedSkills > every pick is missing against an empty list
+(pass) resolvePickedSkills > the same skill picked twice resolves once
+(pass) composeSkillTurn > a chip-only draft sends no text
+(pass) composeSkillTurn > leading and trailing chips drop out of the text
+(pass) composeSkillTurn > a chip mid-sentence stays as its bare name, never a /token
+(pass) composeSkillTurn > a run of leading chips all drop [0.19ms]
+(pass) composeSkillTurn > dedupes skills on the case-insensitive name, first pick wins
+(pass) composeSkillTurn > a typed /name is prose — only chips invoke
+(pass) composeSkillTurn > keeps line breaks inside the prose [0.04ms]
+(pass) splitComposerDraftSegments > re-chips a saved /name that names an invokable skill [0.03ms]
+(pass) splitComposerDraftSegments > matches without case and allows namespaced names
+(pass) splitComposerDraftSegments > leaves paths, unknown names and partial words as prose
+(pass) splitComposerDraftSegments > keeps @mentions as mentions alongside skill chips [0.14ms]
+(pass) splitComposerDraftSegments > with no skills it is the plain mention split
+
+app/utils/compactAvailability.test.ts:
+(pass) compactAvailability > a supported idle thread with history is available [0.70ms]
+(pass) compactAvailability > an unsupported provider is unavailable, whatever else holds
+(pass) compactAvailability > a thread with no user turn is unavailable
+(pass) compactAvailability > an in-flight compaction reads as compacting, even while working [0.07ms]
+(pass) compactAvailability > a working thread without an in-flight compaction waits
+(pass) compactPropsForSession > no session hides the card
+(pass) compactPropsForSession > an unsupported provider hides the card
+(pass) compactPropsForSession > an available thread wires the call through
+(pass) compactPropsForSession > busy and error states ride along
+(pass) compactPropsForSession > a live session unwraps to the same props [0.22ms]
+(pass) compactPropsForSession > a working live session waits
+
+app/utils/latestWins.test.ts:
+(pass) createLatestWinsRun > coalesces concurrent calls into one follow-up run [2.47ms]
+(pass) createLatestWinsRun > a call after the follow-up's reads began queues another run [3.47ms]
+(pass) createLatestWinsRun > a failing run clears the slot; the next call starts fresh
+(pass) createSectionSerializer > same key joins the in-flight read instead of re-running [1.40ms]
+(pass) createSectionSerializer > a different key supersedes and serializes so results land in order [2.43ms]
+(pass) createSectionSerializer > a third request skips the superseded queued read (latest-wins) [2.80ms]
+(pass) createSectionSerializer > different sections run concurrently [1.21ms]
+
+app/utils/followUp.test.ts:
+(pass) resolveFollowUpDispatch > an idle thread always starts a turn [0.71ms]
+(pass) resolveFollowUpDispatch > while busy the preference holds, and the chord flips it for one send [0.03ms]
+(pass) queuedRowStatus > the first waiting row runs when the turn ends; the rest wait
+(pass) queuedRowStatus > a claimed row is sending [0.05ms]
+(pass) queuedRowStatus > a held row says it didn't send and why, and rows behind it wait on it [0.02ms]
+(pass) queuedRowStatus > a row waiting out a retry, or whose Send now was refused, says so
+
+app/utils/viewPanes.test.ts:
+(pass) threadViewStatus > ranks a parked thread above a working one [0.84ms]
+(pass) threadViewStatus > reads a failed and a never-started thread
+(pass) describePane > describes a live thread column with what it is waiting on
+(pass) describePane > describes a dormant column by the thread it will reattach to [0.20ms]
+(pass) describePane > describes a blank thread column as one with nothing in it [0.02ms]
+(pass) describePane > describes a terminal with what is running in it [0.01ms]
+
+app/utils/agentStore.test.ts:
+(pass) sendable > sendable strips reactivity for structuredClone [0.13ms]
+
+app/utils/ipcError.test.ts:
+(pass) peelIpcError > strips the Electron wrapper, error name, and git's fatal prefix
+(pass) peelIpcError > strips a plain Error: name
+(pass) peelIpcError > strips a bare fatal: prefix case-insensitively
+(pass) peelIpcError > keeps a multi-line message intact
+(pass) peelIpcError > falls back when nothing usable remains
+(pass) peelIpcError > handles non-Error inputs
+(pass) peelIpcErrorLine > surfaces a single-line git failure instead of the fallback
+(pass) peelIpcErrorLine > collapses multi-line git stderr to the last non-empty line
+(pass) peelIpcErrorLine > falls back when the collapse leaves nothing
+(pass) peelIpcError with a kind marker > strips a leading [kone:KIND] marker so it never shows raw
+(pass) peelIpcError with a kind marker > peelIpcErrorLine strips the marker too
+(pass) peelIpcError with a kind marker > peelIpcError strips a TIMEOUT marker with no fallback
+(pass) classifyIpcError > recovers the kind and the human remainder from a marked error
+(pass) classifyIpcError > leaves an unmarked error with kind null and its peeled text
+(pass) classifyIpcError > falls back when nothing remains
+(pass) classifyIpcError > classifies a bare TIMEOUT marker
+(pass) classifyIpcError > keeps the TIMEOUT kind through the Electron wrapper prefix
+(pass) kindHint > gives actionable copy for known kinds [0.03ms]
+(pass) kindHint > returns null for null, INTERNAL, and unknown kinds
+(pass) kindHint > gives a retry hint for TIMEOUT
+(pass) isWorkspaceCancel > recognizes the classified cancellation through the IPC wrapper
+(pass) isWorkspaceCancel > peels the marker so a cancel never renders raw
+(pass) isWorkspaceCancel > rejects ordinary failures
+
+app/utils/modelCatalog.test.ts:
+(pass) brandOf — OpenCode is a house of providers > resolves hosted models to the vendor that made them, not the gateway
+(pass) brandOf — OpenCode is a house of providers > a non-OpenCode gateway is equally transparent
+(pass) brandOf — OpenCode is a house of providers > falls back to the gateway only when the model id names no vendor
+(pass) brandOf — OpenCode is a house of providers > a vendor that gained a mark resolves to it, not the generic dot
+(pass) brandOf — OpenCode is a house of providers > bare single-vendor ids (Codex, Claude) are unchanged [0.30ms]
+(pass) brandOf — OpenCode is a house of providers > every model in one gateway can carry a different mark
+(pass) a harness marks the models whose vendor it can't name > Cline's unknown vendors wear the Cline mark; known vendors keep their own [0.06ms]
+(pass) a harness marks the models whose vendor it can't name > a gateway-named vendor keeps its name under the harness mark
+(pass) a harness marks the models whose vendor it can't name > a single-vendor provider, or no provider, keeps the dot [0.08ms]
+(pass) a harness marks the models whose vendor it can't name > a Cline thread shows its model's vendor, else the Cline mark
+(pass) parseModelTsvRows — defensive provider model-table parsing > collapses slug<TAB>label rows (Antigravity `agy models` style) [0.06ms]
+(pass) parseModelTsvRows — defensive provider model-table parsing > tolerates CRLF endings and stray ANSI colour codes
+(pass) parseModelTsvRows — defensive provider model-table parsing > tolerates a blank label column and extra whitespace around cells
+(pass) parseModelTsvRows — defensive provider model-table parsing > parses headerless single-column output (id is its own label)
+(pass) parseModelTsvRows — defensive provider model-table parsing > skips a leading header row but not a model actually named like one
+(pass) parseModelTsvRows — defensive provider model-table parsing > skips malformed rows and blank lines instead of throwing
+(pass) buildModelCatalog — families keep the order the provider sent > emits one family per core id, in first-appearance order
+(pass) buildModelCatalog — families keep the order the provider sent > a family holds the slot where it first appeared, not where it last did
+(pass) buildModelCatalog — malformed descriptors never become garbage entries > skips descriptors with a blank or non-string id [0.22ms]
+(pass) buildModelCatalog — malformed descriptors never become garbage entries > falls back to the prettified id when the label is blank
+(pass) describeModelId and familyForId — robust model description and lookup > describes model with brand and prettified name when catalog is absent
+(pass) describeModelId and familyForId — robust model description and lookup > falls back gracefully when id is missing
+(pass) describeModelId and familyForId — robust model description and lookup > resolves family and effort matching id from catalog [0.08ms]
+(pass) describeModelId with a catalog — a miss never borrows the first family > a known id resolves to its catalog label and brand
+(pass) describeModelId with a catalog — a miss never borrows the first family > an unknown id prettifies instead of borrowing catalog[0]'s name and brand
+(pass) describeModelId with a catalog — a miss never borrows the first family > familyForIdStrict misses where familyForId still falls back
+(pass) isPlaceholderModelId — aliases that name no real model > flags the provider-default aliases
+(pass) isPlaceholderModelId — aliases that name no real model > flags a missing id the same way
+(pass) isPlaceholderModelId — aliases that name no real model > keeps real model ids [0.09ms]
+
+app/utils/inboxDefaultProject.test.ts:
+(pass) resolveInboxDefaultProject > runs where work has been when a newest thread exists [0.76ms]
+(pass) resolveInboxDefaultProject > uses the single only project when no threads have run anywhere [0.02ms]
+(pass) resolveInboxDefaultProject > uses the single only project immediately even while loading
+(pass) resolveInboxDefaultProject > waits for session queries to settle when multiple projects exist [0.01ms]
+(pass) resolveInboxDefaultProject > prefers the active open project when no threads exist
+(pass) resolveInboxDefaultProject > falls back to the most recent project when no threads and no active project
+(pass) resolveInboxDefaultProject > returns null when no projects exist in the app
+(pass) resolveInboxDefaultProject > returns active project if recents is temporarily empty
+
+app/utils/stripColumnLabels.test.ts:
+(pass) brandOf > a thread shows its provider's mark [1.24ms]
+(pass) brandOf > a thread with no session yet falls back to generic [0.01ms]
+(pass) brandOf > a non-thread column never has a brand [0.01ms]
+(pass) brandOf > an unmapped provider falls back to generic [0.01ms]
+(pass) isHandoff / handoffSourceBrand > a handoff names its source brand [0.06ms]
+(pass) isHandoff / handoffSourceBrand > an ordinary thread is no handoff [0.02ms]
+(pass) isHandoff / handoffSourceBrand > a handoff with no recorded source still reads, markless [0.02ms]
+(pass) columnLabel > a thread shows its title [0.02ms]
+(pass) columnLabel > an untouched thread is a New thread
+(pass) columnLabel > a side chat names its parentage [0.04ms]
+(pass) columnLabel > a non-thread column shows its kind label [0.03ms]
+(pass) hasPaneKind / hasScratchpadPane > kind presence is board-wide [0.04ms]
+(pass) hasPaneKind / hasScratchpadPane > the scratchpad singletons the insert menu [0.04ms]
+(pass) buildCompactBySession / readCompactProps > one entry per attached thread, keyed by session [0.12ms]
+(pass) buildCompactBySession / readCompactProps > two columns on one session share the entry [0.02ms]
+(pass) buildCompactBySession / readCompactProps > an unsupported provider still memoizes an (empty) entry [0.02ms]
+(pass) buildCompactBySession / readCompactProps > a supported provider with a user turn is compactable [0.02ms]
+(pass) buildCompactBySession / readCompactProps > a missing key reads as no props [0.03ms]
+(pass) threadHands > a thread that never changed hands wants the plain single mark [0.06ms]
+(pass) threadHands > a staged swap with nothing sent yet still reads as the old hands [0.10ms]
+(pass) threadHands > once a turn lands under the swap both hands read [0.02ms]
+(pass) threadHands > only the swaps that were answered count [0.03ms]
+(pass) threadHands > handing back to hands it already sits in does not repeat a mark [0.03ms]
+
+app/utils/spaceActivity.test.ts:
+(pass) dateKey / shiftDay > keys are zero-padded local dates [0.90ms]
+(pass) dateKey / shiftDay > shiftDay crosses month and year ends in both directions [0.07ms]
+(pass) buildGrid > is whole Sunday-first weeks [0.04ms]
+(pass) buildGrid > runs one calendar day at a time, with no gap or repeat [0.61ms]
+(pass) buildGrid > marks the edge weeks' spill as outside, and days after today as future [0.14ms]
+(pass) buildGrid > names a column for each month shown, each holding that month's 1st [0.11ms]
+(pass) buildGrid > always draws the month's last day, even when it opens a week [1.44ms]
+(pass) quartileLevels > no activity is level 0, whatever the yardstick [0.25ms]
+(pass) quartileLevels > steps up by quartile of the active days, quiet days set aside [0.03ms]
+(pass) quartileLevels > one enormous day does not flatten the rest into the palest step [0.01ms]
+(pass) activityStats > counts a run of consecutive days, and the longest of several [0.16ms]
+(pass) activityStats > today still counts before anything has run, without breaking the streak [0.03ms]
+(pass) activityStats > a whole quiet day breaks the current streak
+(pass) activityStats > a day missing from the list breaks a run just like a zero day [0.03ms]
+(pass) activityStats > a report that stops short of today does not carry an old streak forward [0.02ms]
+(pass) activityStats > finds the busiest day and the average active day [0.06ms]
+(pass) activityStats > an empty window is all zeroes [0.02ms]
+(pass) versusAverage > says nothing without a year to compare against [0.05ms]
+(pass) versusAverage > reads above, below and near the average [0.03ms]
+(pass) dayAgents > lists known agents by tokens, with their share of the day [0.11ms]
+(pass) dayAgents > a day with no record has no agents [0.02ms]
+
+app/utils/formatFile.test.ts:
+(pass) formatFileSize > bytes stay bytes [0.90ms]
+(pass) formatFileSize > kilobytes keep one decimal under 10 [0.04ms]
+(pass) formatFileSize > megabytes keep one decimal under 10
+
+app/utils/usageRanges.test.ts:
+(pass) usage ranges > run shortest window first — the order a pass over them should read in [0.01ms]
+(pass) usage ranges > give every window a name for each place it is shown [0.03ms]
+(pass) usage ranges > the longer windows are all but today [0.01ms]
+
+app/utils/inboxEntry.test.ts:
+(pass) inbox entry labels > every kind has a name [0.91ms]
+(pass) inbox entry labels > a waiting message says whether it rings or rides the next turn [0.08ms]
+(pass) inbox entry labels > a seen message says how [0.02ms]
+(pass) inbox entry labels > a read message kone lost track of still says it may not have arrived [0.02ms]
+(pass) inbox entry labels > the stamp counts from when it was seen, else when it arrived [0.02ms]
+
+app/utils/toolPresentation.test.ts:
+(pass) toolPresentation > toolTargetRaw > strips tool name prefix when present [0.87ms]
+(pass) toolPresentation > toolTargetRaw > returns empty string when text is identical to tool name [0.02ms]
+(pass) toolPresentation > toolTargetRaw > preserves genuine target arguments [0.01ms]
+(pass) toolPresentation > toolTargetRaw > peels a stamp left over from the name's qualified spelling [0.03ms]
+(pass) toolPresentation > toolTargetRaw > suppresses an args blob from the row, keeping it in the full detail [0.02ms]
+(pass) toolPresentation > toolTargetRaw > peels a kone server stamp from the detail
+(pass) toolPresentation > toolTargetRaw > treats a humanized duplicate of the name as no target
+(pass) toolPresentation > canonicalToolName > unwraps kone server qualification to the bare tool [0.02ms]
+(pass) toolPresentation > canonicalToolName > leaves plain and foreign-MCP names alone
+(pass) toolPresentation > toolPhrase > formats command execution with command and with fallback [0.32ms]
+(pass) toolPresentation > toolPhrase > formats file operations with paths and fallbacks [0.05ms]
+(pass) toolPresentation > toolPhrase > formats Antigravity agent tools [0.03ms]
+(pass) toolPresentation > toolPhrase > phrases agent_spawn_batch once, never kone kone [0.06ms]
+(pass) toolPresentation > toolPhrase > says what a kone tool did in each state, not the tool's name [0.07ms]
+(pass) toolPresentation > toolPhrase > phrases a call stored under a name from before the rename [0.02ms]
+(pass) toolPresentation > toolMeta > recognizes standard and Antigravity tools [0.09ms]
+(pass) toolPresentation > toolMeta > labels a canonical kone tool once, and keeps foreign MCP labels [0.04ms]
+
+app/utils/warmedRoute.test.ts:
+(pass) createWarmedRoute > does not ask until the debounce elapses [21.09ms]
+(pass) createWarmedRoute > steady typing asks once, for the last thing typed [30.35ms]
+(pass) createWarmedRoute > take answers the same request and consumes it [20.44ms]
+(pass) createWarmedRoute > take refuses a different request [20.17ms]
+(pass) createWarmedRoute > take refuses an answer worked out under a different context [20.70ms]
+(pass) createWarmedRoute > a superseded draft never lands on the answer typed back to [44.52ms]
+(pass) createWarmedRoute > a request already answered is not asked again [42.32ms]
+(pass) createWarmedRoute > stillWanted refusal spends no call [20.36ms]
+(pass) createWarmedRoute > clear drops both the pending ask and the held answer [41.97ms]
+(pass) createWarmedRoute > take cancels a pending ask, so a send never leaves one behind [20.83ms]
+
+app/utils/rowFocus.test.ts:
+(pass) closing the last pane in the row you are standing in > keeps the camera on your project, which is now the transient row [0.80ms]
+(pass) closing the last pane in the row you are standing in > still holds when the axis falls back to the row above instead [0.02ms]
+(pass) closing the last pane in the row you are standing in > releases on its own once the row has work again [0.01ms]
+(pass) closing the last pane in the row you are standing in > does not follow a project that is no longer open [0.01ms]
+(pass) what the pin must not shadow > a deliberate move to another row wins [0.02ms]
+(pass) what the pin must not shadow > a newly-born row takes focus while you stand in a persisted row [0.02ms]
+(pass) what the pin must not shadow > an explicit transient focus outranks a stale standing row [0.02ms]
+(pass) fallbacks > an empty plane has no focus [0.02ms]
+(pass) fallbacks > an axis pointing at a row that is gone falls to the last row [0.01ms]
+(pass) fallbacks > no axis focus at all falls to the last row, where a new one is born [0.02ms]
+(pass) recording where we stand > records a persisted row [0.03ms]
+(pass) recording where we stand > refuses a transient row, so the pin survives the transition [0.01ms]
+(pass) recording where we stand > refuses a row that is not on the plane, and refuses nothing at all [0.01ms]
+(pass) which project the studio lands in > no projects in the app at all — there is no studio to enter [0.02ms]
+(pass) which project the studio lands in > one project, no work on it — the studio opens on that one [0.01ms]
+(pass) which project the studio lands in > several projects, no work on any — the studio opens on the most recent
+(pass) which project the studio lands in > a project page is open — that one wins over recency
+(pass) which project the studio lands in > an open project that is not in recents yet is still where we land
+(pass) renderPlaneRows > passes the persisted rows through untouched when nothing is pinned [0.05ms]
+(pass) renderPlaneRows > puts an emptied row back in the slot it held, under its own name [0.06ms]
+(pass) renderPlaneRows > a project travelled to that never had a row lands at the foot [0.03ms]
+(pass) renderPlaneRows > an index past the end clamps to the foot rather than dropping the row [0.04ms]
+(pass) renderPlaneRows > the pin stops applying the moment the project persists a row again [0.02ms]
+(pass) renderPlaneRows > the landing project gets a row when it has none, and none when it has one [0.02ms]
+(pass) renderPlaneRows > standing on the landing project conjures one row, not two
+(pass) planeDestinations > lists the rows in camera order, with the work waiting in each [0.18ms]
+(pass) planeDestinations > a project with no row yet joins the foot, where travel would land it [0.03ms]
+(pass) planeDestinations > a transient row is listed, and counts no columns [0.04ms]
+(pass) planeDestinations > a row the axis kept a count for but stopped rendering is not listed [0.02ms]
+(pass) planeDestinations > nothing anywhere is an empty list rather than a throw
+
+app/utils/turnActivity.test.ts:
+(pass) turnActivity > agent_spawn_batch > labels the bare tool once [1.11ms]
+(pass) turnActivity > agent_spawn_batch > labels server-qualified names once, never kone kone [0.10ms]
+(pass) turnActivity > agent_spawn_batch > keeps foreign MCP tools on the generic label [0.02ms]
+
+app/utils/presetStore.test.ts:
+(pass) preset sub-agents store > a fresh store holds nothing
+(pass) preset sub-agents store > a created preset keeps its name, instructions and model [0.46ms]
+(pass) preset sub-agents store > a created preset keeps the one model it names [0.06ms]
+(pass) preset sub-agents store > a created preset keeps the fallback chain it names [0.04ms]
+(pass) preset sub-agents store > no model is null, not undefined [0.10ms]
+(pass) preset sub-agents store > a nameless preset is refused [0.04ms]
+(pass) preset sub-agents store > presets keep the order they were created in [0.06ms]
+(pass) preset sub-agents store > an edit changes only the fields it names [0.13ms]
+(pass) preset sub-agents store > an edit can't blank the name [0.04ms]
+(pass) preset sub-agents store > the model can be cleared to none [0.03ms]
+(pass) preset sub-agents store > clearing instructions with null stores null [0.03ms]
+(pass) preset sub-agents store > editing a preset that's gone is a no-op that answers null
+(pass) preset sub-agents store > a preset can be deleted, and deleting it again reports nothing removed [0.09ms]
+(pass) preset sub-agents store > minted ids are unique [0.02ms]
+
+app/utils/branchDrift.test.ts:
+(pass) resolveBranchDrift > reports the two branches when they differ [0.74ms]
+(pass) resolveBranchDrift > stays quiet when the checkout has not moved [0.01ms]
+(pass) resolveBranchDrift > stays quiet on a thread that has never run [0.01ms]
+(pass) resolveBranchDrift > stays quiet when git cannot name the current branch
+(pass) resolveBranchDrift > treats surrounding whitespace as no difference at all
+(pass) resolveBranchDrift > does not report an empty branch name as a branch
+(pass) a thread with a working tree of its own > never reports drift, however far the project has moved
+(pass) a thread with a working tree of its own > a worktree still being built is exempt too
+(pass) a thread with a working tree of its own > a local thread with no worktree still runs the ordinary check
+(pass) a thread with a working tree of its own > an empty path is not a worktree, and the ordinary check still runs
+
+app/utils/agentIdentity.test.ts:
+(pass) agentIdentity > anonymous or null seed returns ANONYMOUS
+(pass) agentIdentity > a thread bound to a named agent returns the agent's name and svg [0.21ms]
+(pass) agentIdentity > a side chat of a named agent thread inherits the named agent identity [0.16ms]
+(pass) agentIdentity > a guest thread generates a deterministic guest name and svg [1.34ms]
+(pass) agentIdentity > a side chat of a guest thread carries the exact same guest name and face as the main chat [0.16ms]
+
+app/utils/conversationSegments.test.ts:
+(pass) renderGroups > a spawn stands where it landed, splitting the tool run around it [0.23ms]
+(pass) renderGroups > an unsplit run keeps the key it always had
+(pass) renderGroups > a spawn still running, or refused, stays a step [0.07ms]
+(pass) renderGroups > a preset spawn stands the same way [0.04ms]
+(pass) renderGroups > a delegation stands the same way, naming the teammate [0.04ms]
+(pass) renderGroups > a batch stands as one line per thread it opened, in item order [0.05ms]
+(pass) renderGroups > a batch where nothing opened stays a step [0.02ms]
+(pass) renderGroups > a replayed spawn of the same worker is said once [0.03ms]
+(pass) renderGroups > a shown page stands in the reply where it landed, splitting the tool run [0.04ms]
+(pass) renderGroups > a page kone put in the turn and the provider's own report of the call stand once [0.04ms]
+(pass) renderGroups > a page call still running, or refused, stays a step [0.02ms]
+
+app/utils/handoffMarkers.test.ts:
+(pass) groupMarks > a marker sits above the first exchange starting at or after it [0.15ms]
+(pass) groupMarks > markers newer than every exchange trail the thread [0.02ms]
+(pass) groupMarks > a marker at the same instant precedes that exchange
+(pass) groupMarks > no exchanges means everything trails [0.01ms]
+(pass) handoffMarkVerb > a handoff reads as the conversation changing hands [0.02ms]
+(pass) handoffMarkVerb > a branch reads as the conversation splitting, not moving [0.02ms]
+
+app/theme/fonts.test.ts:
+(pass) font picker > always offers default and system first [0.89ms]
+(pass) font picker > always offers the shipped serif for headings [0.03ms]
+(pass) font picker > labels empty as Default and names the rest [0.02ms]
+(pass) font picker > stacks each kind over its own shipped stack [0.02ms]
+(pass) font picker > probes honestly without a DOM [0.06ms]
+(pass) font picker > reports unsupported where there is no font API [0.13ms]
+
+app/theme/import-vscode.test.ts:
+(pass) VS Code theme import > recognises workbench themes and rejects plain objects
+(pass) VS Code theme import > carries the editor surfaces and accent across [0.91ms]
+(pass) VS Code theme import > takes the terminal's ANSI palette when the file named it [0.12ms]
+(pass) VS Code theme import > reads appearance from the type, and from the canvas when absent [0.25ms]
+(pass) VS Code theme import > keeps an unreadable foreground out of the palette [0.09ms]
+(pass) VS Code theme import > fills every role the file omits with a derived value [0.09ms]
+(pass) VS Code theme import > flattens alpha overlays onto the surface they sit on [0.13ms]
+(pass) VS Code theme import > reads wide-gamut color() notation [0.20ms]
+(pass) VS Code theme import > rejects a file with no editor background [0.05ms]
+(pass) VS Code theme import > falls back to the name when the displayName humanizes to nothing [0.02ms]
+(pass) VS Code theme import > humanizes package slugs into words [0.01ms]
+(pass) pairing and ids > pairs light and dark files from one family into an adaptive theme [0.19ms]
+(pass) pairing and ids > does not guess when a family is ambiguous [0.18ms]
+(pass) pairing and ids > keeps a pair whose name is taken as two single themes [0.32ms]
+(pass) pairing and ids > tells same-named variants apart by their file names [0.07ms]
+(pass) pairing and ids > numbers variants when even the file names collide [0.07ms]
+(pass) pairing and ids > re-imports get fresh ids instead of merging into built-ins [0.05ms]
+(pass) pairing and ids > every built theme stays a complete definition [0.06ms]
+(pass) parseVsCodeColor > parses every hex form VS Code accepts
+(pass) parseVsCodeColor > rejects junk
+(pass) parseVsCodeColor > handles srgb color() with percentages
+
+app/theme/openvsx.test.ts:
+(pass) Open VSX theme import > imports every theme in an extension with deterministic ids [10.60ms]
+(pass) Open VSX theme import > re-importing the same extension yields the same ids [2.26ms]
+(pass) Open VSX theme import > keeps a theme whose family name strips to nothing as singles [1.49ms]
+(pass) Open VSX theme import > fails the import when the checksum does not match [0.58ms]
+(pass) Open VSX theme import > rejects a package whose manifest does not match the registry's [5.32ms]
+(pass) Open VSX theme import > rejects a package that mislabels its license [15.81ms]
+(pass) Open VSX theme import > refuses a theme path that escapes the package [17.12ms]
+(pass) Open VSX theme import > resolves include chains and merges the base colours [2.22ms]
+(pass) Open VSX theme import > refuses an archive with an unsafe compression ratio [92.11ms]
+(pass) Open VSX search > keeps supported licenses and drops the rest [1.22ms]
+(pass) Open VSX search > drops an extension whose manifest license disagrees with its detail [0.36ms]
+(pass) Open VSX search > the popular catalog answers an empty query and is cached across opens [0.24ms]
+
+app/theme/typography.test.ts:
+(pass) typography foundation > clamps sizes to their ladders
+(pass) typography foundation > normalizes families safely [0.22ms]
+(pass) typography foundation > resolves partial input with defaults [0.11ms]
+(pass) typography foundation > paints families over the shipped stacks and sizes absolutely [0.10ms]
+(pass) typography foundation > turns smoothing off through the variable the body reads [0.08ms]
+(pass) typography foundation > paints the wordmark serif over its own stack, unset faces to the stylesheet [0.07ms]
+
+app/theme/custom-theme.test.ts:
+(pass) Custom Theme Engine > createDefaultThemeSpec > creates a well-formed adaptive starter spec [0.08ms]
+(pass) Custom Theme Engine > createDefaultThemeSpec > creates a well-formed fixed starter spec
+(pass) Custom Theme Engine > buildTheme with custom spec > builds a full 47-role palette from only ground and accent [0.25ms]
+(pass) Custom Theme Engine > buildTheme with custom spec > respects explicit overrides over derived defaults [0.10ms]
+(pass) Custom Theme Engine > extractThemeSpec > extracts editable spec from built-in kone theme [0.10ms]
+(pass) Custom Theme Engine > extractThemeSpec > extracts editable spec from Grove theme [0.08ms]
+(pass) Custom Theme Engine > Custom theme lifecycle in Library > saves, updates, and deletes custom themes [0.59ms]
+
+app/composables/session/sessionSteerWait.test.ts:
+(pass) the steer wait > a wait whose turn is running is offered [0.81ms]
+(pass) the steer wait > a reply that comes back after its turn ended raises nothing [0.05ms]
+(pass) the steer wait > it goes with the turn [0.05ms]
+(pass) the steer wait > it goes when its turn ends and the next starts at once [0.06ms]
+(pass) the steer wait > Interrupt now names the wait on screen, and the pill goes once the turn is ending [0.14ms]
+(pass) the steer wait > a refused Interrupt now keeps the pill [0.05ms]
+(pass) the steer wait > a failed one keeps the pill and says why [0.08ms]
+
+app/composables/session/sessionReducer.test.ts:
+(pass) a promoted queued turn lands before its own reply > the prompt reads before the reply it produced [0.21ms]
+(pass) a promoted queued turn lands before its own reply > the promoted turn leaves the queue, so the prompt is no longer hidden [0.08ms]
+(pass) a promoted queued turn lands before its own reply > without the row's turn id the prompt still goes to the tail [0.08ms]
+(pass) a promoted queued turn lands before its own reply > a row sent now as a steer splits the live reply it joined [0.24ms]
+(pass) a message steered into a running turn splits the reply where it landed > what the agent writes after taking it in reads below it [0.14ms]
+(pass) a message steered into a running turn splits the reply where it landed > an item already under way keeps streaming into the piece above [0.07ms]
+(pass) a message steered into a running turn splits the reply where it landed > the piece above settles at the steer; the turn's outcome lands on the last piece [0.10ms]
+(pass) a message steered into a running turn splits the reply where it landed > a turn that said nothing more after it folds back into one reply [0.10ms]
+(pass) a message steered into a running turn splits the reply where it landed > a steer on screen keeps its place when its row is promoted after it [0.18ms]
+(pass) a message steered into a running turn splits the reply where it landed > a restored row steered in splits where it was taken, not where promotion finds the reply [0.13ms]
+(pass) a message steered into a running turn splits the reply where it landed > taken in before the turn said anything, the message reads above the reply [0.09ms]
+(pass) messages delivered from other agents read where they arrived > a message steered into the running turn splits the reply, with what followed below it [0.13ms]
+(pass) messages delivered from other agents read where they arrived > a batch steered in as one turn reads together, in order, above what followed [0.22ms]
+(pass) messages delivered from other agents read where they arrived > a message that waited in the queue keeps its words and who said it when its turn runs [0.12ms]
+(pass) an agent's message waiting in the queue > is not the user's to get back on a Stop [0.16ms]
+(pass) an agent's message waiting in the queue > a Stop with only an agent's message queued hands nothing back [0.05ms]
+(pass) an agent's message waiting in the queue > is told apart by its row's sender when its block is not loaded [0.07ms]
+(pass) an agent's message waiting in the queue > keeps its sender when it runs [0.08ms]
+(pass) a message kone journals for someone else > reads above the block it belongs in front of [0.07ms]
+(pass) a message kone journals for someone else > goes at the tail without one, or when that block is not loaded [0.04ms]
+(pass) a message kone journals for someone else > lands once [0.07ms]
+(pass) a provider session's end > tells the session, so its next send starts a new one [0.03ms]
+(pass) a provider session's end > another thread's end is not this one's [0.05ms]
+(pass) a provider session's end > the conversation to resume is this thread's own, never a child's [0.05ms]
+(pass) a provider session's end > the resume cursor is this thread's own, never a child's [0.03ms]
+(pass) a journaled message taken back > comes off the transcript it was placed on [0.04ms]
+(pass) an in-place queued edit in the strip > restates the words and clears attachments/skills on an explicit empty array [0.05ms]
+(pass) an in-place queued edit in the strip > keeps attachments/skills when the update omits them [0.04ms]
+
+app/composables/session/sessionQueue.test.ts:
+(pass) Send now on a queued row > starts a reopened thread's session before asking the backend to deliver [0.23ms]
+(pass) Send now on a queued row > leaves the row alone when the session doesn't come up [0.03ms]
+(pass) the strip shows the user's own queued rows > a reopened thread's queue shows only the rows the user wrote, renumbered [1.32ms]
+(pass) the strip shows the user's own queued rows > only a user sender is the user's [0.02ms]
+
+app/composables/session/sessionGates.test.ts:
+(pass) answers resolve through IPC; no send callback exists in the question flow
+(pass) failed answers restore the dialog, and a retry resolves it [0.28ms]
+(pass) stale answers and dismissal never start another turn
+(pass) the prompt hides while its answer travels
+(pass) a failed answer never brings back a question a newer one replaced [0.04ms]
+(pass) a failed answer never resurrects a question resolved or aborted meanwhile [0.06ms]
+(pass) an earlier answer settling late leaves a newer answer in flight hidden [0.14ms]
+
+app/composables/session/sessionHandle.test.ts:
+(pass) the conversation a session resumes > is the one its own session reported [0.18ms]
+(pass) the conversation a session resumes > is never another provider's [0.04ms]
+(pass) the conversation a session resumes > ignores what a session the thread moved off still says
+(pass) the conversation a session resumes > never carries the last session's cursor onto the next [0.06ms]
+(pass) a hand-in > leaves the session it adopted started [0.05ms]
+(pass) a hand-in > that fails after stopping the old session leaves the next send to start one [0.03ms]
+(pass) a hand-in > that fails before stopping anything keeps the live session [0.04ms]
+
+ 1500 pass
+ 0 fail
+ 5083 expect() calls
+Ran 1500 tests across 114 files. [4.23s]
+# exit=0

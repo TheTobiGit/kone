@@ -1,0 +1,5 @@
+# 2026-10-09T05:18:39Z /Users/gideonsarfo/Developer/kone-wt/p2-safety bun run lint
+$ oxlint --report-unused-disable-directives
+Found 0 warnings and 0 errors.
+Finished in 1.4s on 1219 files with 113 rules using 10 threads.
+# exit=0
