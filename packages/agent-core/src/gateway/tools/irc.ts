@@ -77,11 +77,13 @@ export interface IrcMessageRecord {
   aboutDrift?: string;
 }
 
-/** A hand-over the provider took: whose it was, when it was claimed, and the
- *  turn that took it (null when it settled with none). */
+/** A hand-over the provider took: whose it was, when it was claimed, the
+ *  inbox ids of the messages it carried, and the turn that took it (null
+ *  when it settled with none). */
 export interface DeliverySettled {
   recipient: string | null;
   claimedAt: number | null;
+  inboxIds: string[];
   turnId: string | null;
 }
 
@@ -367,7 +369,7 @@ export class IrcMailbox {
   private readonly settleListeners = new Set<(settled: DeliverySettled) => void>();
   private readonly releaseListeners = new Set<(recipient: string) => void>();
   /** Who each open hand-over is for, and when it was claimed, by delivery id. */
-  private readonly claimedFor = new Map<string, { threadId: string; at: number }>();
+  private readonly claimedFor = new Map<string, { threadId: string; at: number; inboxIds: string[] }>();
   /** Hand-overs a provider took whose settle the store has yet to write, with
    *  the turn that took them. */
   private readonly unsettled = new Map<string, { turnId: string | null }>();
@@ -988,7 +990,12 @@ export class IrcMailbox {
   private claim(threadId: string, limit: number, which: InboxRing): IrcDeliveryClaim | null {
     const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, which);
     if (!claim) return null;
-    this.claimedFor.set(claim.deliveryId, { threadId, at: Date.now() });
+    this.claimedFor.set(claim.deliveryId, {
+      threadId,
+      at: Date.now(),
+      // The ids a settle re-keys the hand-over's bindings by.
+      inboxIds: claim.rows.map((row) => row.inboxId),
+    });
     return { deliveryId: claim.deliveryId, messages: claim.rows.map((row) => this.opened(row)) };
   }
 
@@ -1126,7 +1133,12 @@ export class IrcMailbox {
     }
     for (const listener of this.settleListeners) {
       try {
-        listener({ recipient: claimed?.threadId ?? null, claimedAt: claimed?.at ?? null, turnId });
+        listener({
+          recipient: claimed?.threadId ?? null,
+          claimedAt: claimed?.at ?? null,
+          inboxIds: claimed?.inboxIds ?? [],
+          turnId,
+        });
       } catch (err) {
         console.warn("[agent] an inbox settle listener failed:", err);
       }

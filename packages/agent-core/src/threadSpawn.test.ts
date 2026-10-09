@@ -1619,6 +1619,55 @@ describe("access shared through a grant", () => {
       ["turn-review", LEAD.threadId],
     ]);
   });
+
+  test("however many follow-ups race, each turn's result goes to whoever asked for it", async () => {
+    const { h, reports } = harness();
+    const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(child, 1));
+    const PEER2: SpawnCaller = { ...CALLER, threadId: "peer-2", turnId: "peer-2-turn-1" };
+    h.store.metas.set(PEER2.threadId, {
+      threadId: PEER2.threadId,
+      projectPath: CALLER.cwd,
+      provider: "opencode",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    h.store.grants.push(grant("followup", child));
+    h.store.grants.push({ ...grant("followup", child), granteeThreadId: PEER2.threadId });
+
+    // Take one job to the provider as it is posted: the turn it hands the
+    // follow-up to is the provider's, not the job's id.
+    const takeJob = async (): Promise<string> => {
+      const claim = h.jobs.claimJob(child)!;
+      h.jobs.sendingDelivery(claim.deliveryId);
+      const job = claim.messages[0]!;
+      const input: SendTurnInput = { threadId: child, input: job.message };
+      if (job.sender?.kind === "agent") input.sender = job.sender;
+      const sent = await h.dispatcher.sendThreadTurn(input);
+      h.jobs.settleDelivery(claim.deliveryId, sent.turnId);
+      return sent.turnId;
+    };
+    await h.engine.continueThread(LEAD, { threadId: child, message: "Review p3." });
+    const turnA = await takeJob();
+    // A second ask lands while the first turn is still under way: its job
+    // waits in the inbox, and the first turn settles with both out.
+    await h.engine.continueThread(PEER2, { threadId: child, message: "Review p4." });
+
+    h.bus.emit(turnStarted(child, turnA, 4));
+    h.bus.emit(turnCompleted(child, turnA, 5));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // The first result went to the first asker, not the latest one.
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([[turnA, LEAD.threadId]]);
+
+    const turnB = await takeJob();
+    h.bus.emit(turnStarted(child, turnB, 6));
+    h.bus.emit(turnCompleted(child, turnB, 7));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([
+      [turnA, LEAD.threadId],
+      [turnB, PEER2.threadId],
+    ]);
+  });
 });
 
 describe("continueThread", () => {

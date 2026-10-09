@@ -510,9 +510,11 @@ export type SpawnAttempt = {
 export type TrackedChild = {
   threadId: string;
   parentThreadId: string;
-  /** A peer with a follow-up grant asked for the turn under way: its result
-   *  goes to that peer, not the parent. Cleared once reported or collected. */
-  reportTo?: string;
+  /** Follow-up turns a granted peer asked for, by turn (job) id: each turn's
+   *  result goes to the peer that asked for it, not the parent. An entry
+   *  leaves once its turn is reported or collected. Bound when the
+   *  follow-up is posted, before the turn can run. */
+  reportees?: Map<string, string>;
   /** Worker, delegation or contract — what the UI files the child under. */
   handOff?: HandOffKind;
   /** The name a delegate or contractor runs under. */
@@ -645,9 +647,12 @@ class SpawnEngineImpl implements SpawnEngine {
     // which may already have settled.
     // A turn that took a hand-over is under way from that moment, though its
     // turn.started may still be on its way.
-    this.unsubscribeJobs = jobs.onDeliverySettled(({ recipient, claimedAt, turnId }) => {
+    this.unsubscribeJobs = jobs.onDeliverySettled(({ recipient, claimedAt, inboxIds, turnId }) => {
       const child = recipient ? this.tracked.get(recipient) : undefined;
-      if (child && turnId) this.markAwaitingTurn(child, turnId, claimedAt ?? Date.now());
+      if (child && turnId) {
+        this.rekeyReportees(child, inboxIds, turnId);
+        this.markAwaitingTurn(child, turnId, claimedAt ?? Date.now());
+      }
       this.waitCoordinator.checkWaiters();
     });
 
@@ -884,17 +889,11 @@ class SpawnEngineImpl implements SpawnEngine {
   }
 
   async continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult> {
-    // Asked again: what the child does next is news once more.
-    const upChain = this.isInSubtree(caller.threadId, request.threadId);
-    if (upChain) this.reportsOf(request.threadId).muted = false;
-    const result = await this.continuation.continueThread(caller, request);
-    // A granted peer asked: the turn's result is its news, not the parent's.
-    const child = this.tracked.get(request.threadId);
-    if (child) {
-      if (upChain) delete child.reportTo;
-      else child.reportTo = caller.threadId;
-    }
-    return result;
+    // Asked again: what the child does next is news once more. The turn's
+    // reporting is bound where the follow-up is posted (postJob), not after:
+    // by the time this call returns, the turn may already have settled.
+    if (this.isInSubtree(caller.threadId, request.threadId)) this.reportsOf(request.threadId).muted = false;
+    return this.continuation.continueThread(caller, request);
   }
 
   cancelChild(caller: SpawnCaller, threadId: string): Promise<CancelChildResult> {
@@ -1096,10 +1095,25 @@ class SpawnEngineImpl implements SpawnEngine {
     return grantCovers(this.store.agentGrant?.(callerThreadId, threadId)?.access, need);
   }
 
-  /** Who hears how the child's turn went: a granted peer that asked for it,
-   *  otherwise its parent. */
-  private reportTarget(child: TrackedChild): string {
-    return child.reportTo ?? child.parentThreadId;
+  /** Who hears how the child's turn went: the granted peer that asked for
+   *  that turn, otherwise its parent. */
+  private reportTarget(child: TrackedChild, turnId: string): string {
+    return child.reportees?.get(turnId) ?? child.parentThreadId;
+  }
+
+  /** A granted peer's follow-up is bound to its job's inbox id when it is
+   *  posted (postJob); here, as the provider takes the job, the binding moves
+   *  to the turn that carries it — the id the settling turn reports under.
+   *  A turn carrying follow-ups of more than one peer reports to the peer
+   *  whose job was taken first. */
+  private rekeyReportees(child: TrackedChild, inboxIds: readonly string[], turnId: string): void {
+    if (!child.reportees) return;
+    for (const inboxId of inboxIds) {
+      const reportee = child.reportees.get(inboxId);
+      if (reportee === undefined) continue;
+      child.reportees.delete(inboxId);
+      if (!child.reportees.has(turnId)) child.reportees.set(turnId, reportee);
+    }
   }
 
   isInSubtree(rootThreadId: string, threadId: string): boolean {
@@ -1370,7 +1384,7 @@ class SpawnEngineImpl implements SpawnEngine {
       state.reported.set(turnId, null);
       return;
     }
-    const target = this.reportTarget(child);
+    const target = this.reportTarget(child, turnId);
     if (this.waitCoordinator.isCollecting(target, child.threadId, turnId)) {
       state.held.add(turnId);
       return;
@@ -1378,7 +1392,7 @@ class SpawnEngineImpl implements SpawnEngine {
     state.held.delete(turnId);
     const turn = this.waitCoordinator.snapshotForWait(child.threadId, turnId);
     if (!turn.terminal) return;
-    delete child.reportTo;
+    child.reportees?.delete(turnId);
     const report: SettledTurnReport = {
       childThreadId: child.threadId,
       parentThreadId: target,

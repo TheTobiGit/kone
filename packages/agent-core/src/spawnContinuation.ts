@@ -229,7 +229,17 @@ export class ThreadContinuationManager {
     if (request.requestId !== undefined) {
       job.dedupeKey = `job:${caller.threadId}:${caller.turnId}:${request.requestId}`;
     }
-    return jobs.postJob(job).messageId;
+    const turnId = jobs.postJob(job).messageId;
+    // A granted peer asked: this turn's result is that peer's news, not the
+    // parent's. Bound to the job's id here, in the same synchronous block the
+    // job is posted in — before it can be taken or settled — so however many
+    // follow-ups race, each turn reports to whoever asked for it. An
+    // up-chain ask reports to the parent, as it always did.
+    if (!this.deps.isInSubtree(caller.threadId, request.threadId)) {
+      const tracked = this.deps.tracked.get(request.threadId);
+      if (tracked) (tracked.reportees ??= new Map()).set(turnId, caller.threadId);
+    }
+    return turnId;
   }
 
   private personaFor(threadId: string, lineage: ThreadLineage): AgentPersona | undefined {
