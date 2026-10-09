@@ -176,6 +176,22 @@ describe("messaging with a grant", () => {
 });
 
 describe("the crew", () => {
+  test("a closed contractor does not block broadcasts to the remaining crew", async () => {
+    store.metas.get("rowan")!.contractClosed = { at: 2, reason: "delivered" };
+    const scoped = createRegistry([
+      ...createIrcTools({ store, mailbox, spawnedStatus: (id) => id === "rowan" ? "completed" : null }),
+    ]);
+    for (const [sender, recipients] of [
+      ["chalk", ["iris", "dara"]],
+      ["iris", ["chalk", "dara"]],
+    ] as const) {
+      const result = await scoped.call(ctxFor(sender), "agent_message", { to: "crew", message: "Use the gate lock." });
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({ recipients: [...recipients], outcome: "broadcast" });
+    }
+    expect(mailbox.getUnreadCount("rowan")).toBe(0);
+  });
+
   test("the orchestrator's crew is its agents; a member's is its delegator and the others, never workers", async () => {
     const fromChalk = await call("chalk", "agent_message", { to: "crew", message: "Gate lock is mandatory." });
     expect(fromChalk.structuredContent).toMatchObject({ recipients: ["iris", "rowan", "dara"], outcome: "broadcast" });
