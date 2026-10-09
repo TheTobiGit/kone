@@ -70,6 +70,7 @@ import {
 } from "./providerSettings.js";
 import { sidechatBootstrapForTurn, type HandoffBudgetOptions } from "./sidechat.js";
 import { forkThreadForEdit } from "./editFork.js";
+import { forkThreadAtTurn } from "./threadFork.js";
 import { subagentWakePrompt } from "./subagentWake.js";
 // Resolved at call time, not imported as a value binding: the dispatcher is
 // built after the service (it takes one), so at module load there is nothing to
@@ -87,6 +88,7 @@ import type {
   EmitEvent,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
+  ForkThreadAtTurnResult,
   ModelDescriptor,
   ProviderAdapter,
   ProviderConfig,
@@ -97,6 +99,7 @@ import type {
   ProviderUpdateResult,
   QueuedTurnRow,
   QueuedTurnStore,
+  RewindConversationOnlyInput,
   RuntimeEvent,
   Session,
   SendTurnInput,
@@ -3812,6 +3815,31 @@ export class AgentService {
       );
     }
     return forkThreadForEdit(input);
+  }
+
+  /** Rewind the conversation only: continue a finished turn in a new thread
+   *  without touching files. This is what a file-restore refusal offers as
+   *  its alternative — the input is exactly the rewind target it hands over,
+   *  plus the caller-minted creation ids. Unlike the edit fork, no session
+   *  starts and nothing is sent: the fork waits for the user's first message.
+   *
+   *  Refuses while the source thread has a turn in flight, for the same
+   *  reason as the edit fork: rewinding would slice a moving transcript. */
+  rewindConversationOnly(input: RewindConversationOnlyInput): ForkThreadAtTurnResult {
+    if (this.isThreadBusy(input.sourceThreadId)) {
+      throw new Error(
+        "A turn is still running on this thread — wait for it to finish (or stop it) before rewinding the conversation.",
+      );
+    }
+    const provider = this.historyStore?.threadMeta(input.sourceThreadId)?.provider;
+    return forkThreadAtTurn({
+      requestId: input.requestId,
+      threadId: input.threadId,
+      sourceThreadId: input.sourceThreadId,
+      turnId: input.turnId,
+      userBlockId: input.userBlockId,
+      supportsFork: provider ? this.supportsFork(provider) : false,
+    });
   }
 
   /** Stop one nested subagent run without ending the parent turn. */
