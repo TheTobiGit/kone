@@ -55,6 +55,7 @@ import type {
   CreateSideChatResult,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
+  ForkThreadAtTurnResult,
   HandInInput,
   HandInRecord,
   HandInResult,
@@ -70,6 +71,7 @@ import type {
   ProviderStatus,
   ProviderUpdateResult,
   RevertTurnCheckpointResult,
+  RewindConversationOnlyInput,
   RuntimeEvent,
   SendTurnInput,
   Session,
@@ -536,6 +538,14 @@ const api = {
     // creation resolves "exists" without dispatching twice.
     forkThreadAtBlock: (input: ForkThreadAtBlockInput): Promise<ForkThreadAtBlockResult> =>
       ipcRenderer.invoke("agent:fork-thread-at-block", input),
+    // Conversation-only rewind: continue a finished turn in a new thread
+    // without touching files and without starting a session — the new thread
+    // waits for the user's first message. The renderer mints the ids; a
+    // replayed creation resolves "exists".
+    rewindConversationOnly: (
+      input: RewindConversationOnlyInput,
+    ): Promise<ForkThreadAtTurnResult> =>
+      ipcRenderer.invoke("agent:rewind-conversation-only", input),
     interrupt: (threadId: string): Promise<void> =>
       ipcRenderer.invoke("agent:interrupt", threadId),
     // The user's Stop: an interrupt that also settles the work the thread

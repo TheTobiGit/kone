@@ -97,6 +97,7 @@ import type {
   ForkThreadAtBlockInput,
   ProviderConfig,
   ProviderKind,
+  RewindConversationOnlyInput,
   RuntimeEvent,
   SendTurnInput,
   SessionStartInput,
@@ -811,6 +812,16 @@ export function registerAgentIpc(): void {
   // renderer can open the fork onto a live turn.
   ipcMain.handle("agent:fork-thread-at-block", (_event, input: ForkThreadAtBlockInput) =>
     dispatcher.forkThreadTurn(input),
+  );
+
+  // Conversation-only rewind (a file-restore refusal's alternative): fork at
+  // a finished turn without touching files. The renderer mints the new thread
+  // id + request id with the same exactly-once semantics as every other fork;
+  // a replay resolves "exists". Unlike the edit fork, no session starts and
+  // nothing is sent — the new thread waits for the user's first message, so
+  // this goes straight to the service rather than the dispatcher.
+  ipcMain.handle("agent:rewind-conversation-only", (_event, input: RewindConversationOnlyInput) =>
+    svc.rewindConversationOnly(input),
   );
 
   // Whatever arrives here was typed by the user, so it is always the user's:
