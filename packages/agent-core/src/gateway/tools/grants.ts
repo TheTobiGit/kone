@@ -25,7 +25,11 @@ export interface GrantToolStore {
 
 /** The thread an agent is known by in this project: its id, or the name it
  *  runs under. Workers are no one to grant to. */
-export function resolveAgentThread(store: GrantToolStore, projectPath: string, nameOrId: string): string {
+export function resolveAgentThread(
+  store: Pick<GrantToolStore, "threadMeta" | "threadLineage" | "listThreads" | "getThreadAgent" | "getAgent">,
+  projectPath: string,
+  nameOrId: string,
+): string {
   const named = nameOrId.trim();
   const direct = store.threadMeta(named);
   const isWorker = (id: string) => store.threadLineage(id)?.relationshipToParent === "subagent";

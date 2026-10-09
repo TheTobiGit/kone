@@ -1,4 +1,4 @@
-import type { InboxKind, InboxRow, InboxSeenVia, InboxSender, InboxState } from "./store/agentInbox.js";
+import type { InboxKind, InboxRow, InboxSeenVia, InboxSender, InboxState, MessageAbout } from "./store/agentInbox.js";
 
 // The inbox as the app shows it: one agent's messages, without the hand-over
 // bookkeeping (delivery ids, dedupe keys, blocks) that only delivery reads.
@@ -37,6 +37,10 @@ export interface InboxEntry {
   seenAt: number | null;
   seenVia: InboxSeenVia | null;
   turnId: string | null;
+  /** Its sender watches it until it is opened. */
+  ackRequired: boolean;
+  /** The branch and commit it refers to. */
+  about: MessageAbout | null;
 }
 
 /** The store reads the views need. */
@@ -74,6 +78,8 @@ export function inboxEntryOf(row: InboxRow, lookup: (inboxId: string) => InboxRo
     seenVia: row.seenVia,
     turnId: row.turnId,
     uncertainAt: row.uncertainAt,
+    ackRequired: row.ackRequired,
+    about: row.about,
   };
   if (row.uncertainAt !== null) entry.uncertain = true;
   return entry;
