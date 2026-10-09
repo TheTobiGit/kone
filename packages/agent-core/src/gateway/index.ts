@@ -14,6 +14,7 @@
 // steer a new tools/ module rather than a new transport.
 
 import { createGrantTools } from "./tools/grants.js";
+import { createBoardTools } from "./tools/board.js";
 import type { ConversationStore } from "../ConversationStore.js";
 import type { EmitEvent, GatewayConnection, ProviderKind, RuntimeEvent } from "../types.js";
 import { GatewayCredentials } from "./credentials.js";
@@ -311,6 +312,11 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store, grants: input.store }),
     ...createGrantTools({ store: input.store }),
+    ...createBoardTools({
+      store: input.store,
+      notices: { sendNotice: (notice) => void getIrcMailbox().sendNotice(notice) },
+      emit: input.emit,
+    }),
     ...createIrcTools(ircToolInput(input)),
     ...createLaunchTools({ supervisor: launchSupervisor }),
     ...createLspTools({ manager: lspManager }),

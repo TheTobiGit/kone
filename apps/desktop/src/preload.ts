@@ -29,6 +29,7 @@ import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
 import type { ThreadExportOutcome } from "@kone/agent-core/threadExport.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
+import type { BoardView } from "@kone/agent-core/boardView.js";
 import type {
   ThreadExportDialogResult,
   ThreadExportFormat,
@@ -558,6 +559,9 @@ const api = {
     inboxList: (threadId: string): Promise<InboxEntry[]> => ipcRenderer.invoke("agent:inbox:list", threadId),
     inboxHistory: (threadId: string, limit?: number): Promise<InboxEntry[]> =>
       ipcRenderer.invoke("agent:inbox:history", threadId, limit),
+    // A project's crew boards (brief, members, live rules, status rows).
+    // board.updated on the event stream says when to re-read.
+    boardsList: (projectPath: string): Promise<BoardView[]> => ipcRenderer.invoke("agent:boards:list", projectPath),
     queuedTurns: (threadId: string): Promise<QueuedTurnRow[]> =>
       ipcRenderer.invoke("agent:queued-turns", threadId),
     cancelQueuedTurn: (threadId: string, queueId: string): Promise<boolean> =>

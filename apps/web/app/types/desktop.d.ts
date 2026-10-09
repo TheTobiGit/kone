@@ -1110,6 +1110,59 @@ export type InboxEntry = {
   seenAt: number | null;
   seenVia: InboxSeenVia | null;
   turnId: string | null;
+  /** Its sender watches it until it is opened. */
+  ackRequired: boolean;
+  /** The branch and commit it refers to. */
+  about: { branch: string; commit: string } | null;
+};
+
+// ── crew boards (mirror packages/agent-core/src/crewBoard.ts, boardView.ts) ──
+export type BoardAccess = "read" | "rows" | "admin";
+export type BoardRowState = "building" | "gated" | "in-review" | "changes-needed" | "approved" | "merged" | "blocked";
+
+export type BoardView = {
+  board: {
+    boardId: string;
+    ownerThreadId: string;
+    projectPath: string;
+    title: string;
+    brief: string;
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+  };
+  ownerName: string;
+  members: Array<{
+    boardId: string;
+    threadId: string;
+    name: string;
+    access: BoardAccess;
+    grantedByThreadId: string;
+    rulesSeenRevision: number;
+  }>;
+  rules: Array<{
+    boardId: string;
+    ruleId: string;
+    text: string;
+    version: number;
+    changedAtRevision: number;
+    retired: boolean;
+    updatedAt: number;
+  }>;
+  rows: Array<{
+    boardId: string;
+    rowId: string;
+    item: string;
+    ownerThreadId: string;
+    ownerName: string;
+    branch: string | null;
+    commit: string | null;
+    state: BoardRowState;
+    nextStep: string | null;
+    revision: number;
+    updatedAt: number;
+    updatedByThreadId: string;
+  }>;
 };
 
 // ── side chat creation (mirror packages/agent-core/src/types.ts) ──────────────
@@ -1627,6 +1680,13 @@ export type RuntimeEvent =
       revision: number;
       savedAt: number;
       writer: ScratchpadWriter | null;
+    })
+  // A crew board changed; `part` says what. Re-read with boardsList.
+  | (AgentBaseEvent & {
+      type: "board.updated";
+      boardId: string;
+      projectPath: string;
+      part: "board" | "members" | "rule" | "row";
     })
   // An agent tool call mutated the workspace theme or visual appearance.
   // The renderer applies the new themeId, mode, or preview overrides in real-time.
@@ -3052,6 +3112,9 @@ export type KoneAgentApi = {
   /** What a thread has seen from its inbox, newest first. `limit` defaults
    *  to 20. */
   inboxHistory: (threadId: string, limit?: number) => Promise<InboxEntry[]>;
+  /** A project's crew boards, newest first: brief, members, live rules and
+   *  status rows. board.updated on the event stream says when to re-read. */
+  boardsList: (projectPath: string) => Promise<BoardView[]>;
   /** The thread's durably enqueued follow-ups, in execution order (steers
    *  first, then FIFO) — the queue UI reads this to render its chips. */
   queuedTurns: (threadId: string) => Promise<QueuedTurnRow[]>;

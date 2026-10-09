@@ -1798,6 +1798,15 @@ export type RuntimeEvent =
       savedAt: number;
       writer: ScratchpadWriter | null;
     })
+  // A crew board changed (board_create, board_grant, board_write):
+  // `part` says what — the board itself or its brief, who is on it, a rule,
+  // or a status row. A view of the board reads it again; never journaled.
+  | (BaseEvent & {
+      type: "board.updated";
+      boardId: string;
+      projectPath: string;
+      part: "board" | "members" | "rule" | "row";
+    })
   // An agent tool call mutated the workspace theme or visual appearance.
   // The renderer applies the new themeId, mode, or preview overrides in real-time.
   | (BaseEvent & {

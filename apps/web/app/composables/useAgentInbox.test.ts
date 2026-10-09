@@ -20,6 +20,8 @@ function entry(over: Partial<InboxEntry> = {}): InboxEntry {
     seenVia: null,
     turnId: null,
     uncertainAt: null,
+    ackRequired: false,
+    about: null,
     ...over,
   };
 }

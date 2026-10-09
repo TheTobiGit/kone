@@ -89,3 +89,31 @@ describe("migration 31: AgentGrants", () => {
     db.close();
   });
 });
+
+describe("migration 32: CrewBoards", () => {
+  test("a board goes with its owner, and everything on it with the board; states and access are checked", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-migration-boards-"));
+    const file = path.join(dir, "kone.sqlite");
+    const db = new Database(file);
+    db.exec("PRAGMA foreign_keys = ON");
+    migrate(db, file);
+    db.exec(`
+      INSERT INTO threads (thread_id, project_path, provider, created_at, last_activity_at) VALUES ('o', '/p', 'codex', 1, 1);
+      INSERT INTO threads (thread_id, project_path, provider, created_at, last_activity_at) VALUES ('m', '/p', 'codex', 1, 1);
+      INSERT INTO crew_boards (board_id, owner_thread_id, project_path, title, created_at, updated_at) VALUES ('b', 'o', '/p', 'T', 1, 1);
+      INSERT INTO crew_board_members (board_id, thread_id, access, granted_by_thread_id) VALUES ('b', 'm', 'rows', 'o');
+      INSERT INTO crew_board_rules VALUES ('b', 'r1', 'Use the lock.', 1, 2, 0, 1);
+      INSERT INTO crew_board_rows VALUES ('b', 'w1', 'p3', 'm', NULL, NULL, 'building', NULL, 1, 1, 'm');
+    `);
+    expect(() => db.exec(`INSERT INTO crew_board_rows VALUES ('b', 'w2', 'p4', 'm', NULL, NULL, 'done', NULL, 1, 1, 'm')`)).toThrow(/CHECK/);
+    expect(() => db.exec(`INSERT INTO crew_board_members (board_id, thread_id, access, granted_by_thread_id) VALUES ('b', 'o', 'owner', 'o')`)).toThrow(
+      /CHECK/,
+    );
+    db.exec(`DELETE FROM threads WHERE thread_id = 'o'`);
+    for (const table of ["crew_boards", "crew_board_members", "crew_board_rules", "crew_board_rows"]) {
+      // SAFETY: an aggregate COUNT answers one row with one integer column.
+      expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0);
+    }
+    db.close();
+  });
+});

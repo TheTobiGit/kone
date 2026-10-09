@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1279,6 +1279,63 @@ function migration0031AgentGrants(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * Crew boards: one orchestrator's shared workspace — a brief, versioned
+ * standing rules, and owned status rows — with the members it granted access.
+ * A board goes with its owner's thread, and everything on it with the board.
+ */
+function migration0032CrewBoards(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS crew_boards (
+      board_id        TEXT PRIMARY KEY,
+      owner_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      project_path    TEXT NOT NULL,
+      title           TEXT NOT NULL,
+      brief           TEXT NOT NULL DEFAULT '',
+      revision        INTEGER NOT NULL DEFAULT 1,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crew_boards_project ON crew_boards (project_path, created_at);
+
+    CREATE TABLE IF NOT EXISTS crew_board_members (
+      board_id             TEXT NOT NULL REFERENCES crew_boards(board_id) ON DELETE CASCADE,
+      thread_id            TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      access               TEXT NOT NULL CHECK (access IN ('read', 'rows', 'admin')),
+      granted_by_thread_id TEXT NOT NULL,
+      rules_seen_revision  INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (board_id, thread_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_crew_board_members_thread ON crew_board_members (thread_id);
+
+    CREATE TABLE IF NOT EXISTS crew_board_rules (
+      board_id            TEXT NOT NULL REFERENCES crew_boards(board_id) ON DELETE CASCADE,
+      rule_id             TEXT NOT NULL,
+      text                TEXT NOT NULL,
+      version             INTEGER NOT NULL,
+      changed_at_revision INTEGER NOT NULL,
+      retired             INTEGER NOT NULL DEFAULT 0,
+      updated_at          INTEGER NOT NULL,
+      PRIMARY KEY (board_id, rule_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS crew_board_rows (
+      board_id             TEXT NOT NULL REFERENCES crew_boards(board_id) ON DELETE CASCADE,
+      row_id               TEXT NOT NULL,
+      item                 TEXT NOT NULL,
+      owner_thread_id      TEXT NOT NULL,
+      branch               TEXT,
+      commit_sha           TEXT,
+      state                TEXT NOT NULL CHECK (state IN ('building', 'gated', 'in-review', 'changes-needed', 'approved', 'merged', 'blocked')),
+      next_step            TEXT,
+      revision             INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL,
+      updated_by_thread_id TEXT NOT NULL,
+      PRIMARY KEY (board_id, row_id)
+    );
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1311,6 +1368,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 29, name: "ContractClosed", run: migration0029ContractClosed },
   { id: 30, name: "InboxReceipts", run: migration0030InboxReceipts },
   { id: 31, name: "AgentGrants", run: migration0031AgentGrants },
+  { id: 32, name: "CrewBoards", run: migration0032CrewBoards },
 ];
 
 export interface MigrationOptions {

@@ -14,6 +14,8 @@ import { QueuedTurnRepo } from "./store/queuedTurns.js";
 import { AgentInboxRepo, type AgentInboxStore, type InboxChangeListener, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia, type SentInboxQuery } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { AgentGrantRepo } from "./store/agentGrants.js";
+import { CrewBoardRepo } from "./store/crewBoards.js";
+import type { BoardMember, BoardRow, BoardRule, BoardWrite, CrewBoard, CrewBoardStore } from "./crewBoard.js";
 import type { AgentGrant } from "./agentAccess.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
@@ -32,7 +34,7 @@ import type { ContractClosedReason } from "@kone/protocol/contract";
 
 export { GLOBAL_ASSISTANT_PROJECT_PATH };
 
-export class ConversationStore implements CheckpointStore, AgentInboxStore {
+export class ConversationStore implements CrewBoardStore, CheckpointStore, AgentInboxStore {
   private readonly dbh: ConversationDb;
   private readonly studio: StudioRepo;
   private readonly gatewayOps: GatewayOpRepo;
@@ -48,6 +50,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly agentInbox: AgentInboxRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly agentGrants: AgentGrantRepo;
+  private readonly crewBoards: CrewBoardRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
@@ -84,6 +87,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.agentInbox = new AgentInboxRepo(this.dbh);
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.agentGrants = new AgentGrantRepo(this.dbh);
+    this.crewBoards = new CrewBoardRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
@@ -419,6 +423,79 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see AgentGrantRepo */
   agentGrantsHeldBy(granteeThreadId: string): AgentGrant[] {
     return this.agentGrants.agentGrantsHeldBy(granteeThreadId);
+  }
+
+  /** @see CrewBoardRepo */
+  createCrewBoard(board: Omit<CrewBoard, "revision" | "updatedAt">): CrewBoard | null {
+    return this.crewBoards.createCrewBoard(board);
+  }
+
+  /** @see CrewBoardRepo */
+  crewBoard(boardId: string): CrewBoard | null {
+    return this.crewBoards.crewBoard(boardId);
+  }
+
+  /** @see CrewBoardRepo */
+  crewBoardsFor(threadId: string, projectPath: string): CrewBoard[] {
+    return this.crewBoards.crewBoardsFor(threadId, projectPath);
+  }
+
+  /** @see CrewBoardRepo */
+  crewBoardsInProject(projectPath: string): CrewBoard[] {
+    return this.crewBoards.crewBoardsInProject(projectPath);
+  }
+
+  /** @see CrewBoardRepo */
+  setBoardMember(member: Omit<BoardMember, "rulesSeenRevision">): boolean {
+    return this.crewBoards.setBoardMember(member);
+  }
+
+  /** @see CrewBoardRepo */
+  removeBoardMember(boardId: string, threadId: string): boolean {
+    return this.crewBoards.removeBoardMember(boardId, threadId);
+  }
+
+  /** @see CrewBoardRepo */
+  boardMember(boardId: string, threadId: string): BoardMember | null {
+    return this.crewBoards.boardMember(boardId, threadId);
+  }
+
+  /** @see CrewBoardRepo */
+  boardMembers(boardId: string): BoardMember[] {
+    return this.crewBoards.boardMembers(boardId);
+  }
+
+  /** @see CrewBoardRepo */
+  markBoardRulesSeen(boardId: string, threadId: string, revision: number): void {
+    this.crewBoards.markBoardRulesSeen(boardId, threadId, revision);
+  }
+
+  /** @see CrewBoardRepo */
+  writeBoardBrief(boardId: string, brief: string, expectedRevision: number): BoardWrite<CrewBoard> {
+    return this.crewBoards.writeBoardBrief(boardId, brief, expectedRevision);
+  }
+
+  /** @see CrewBoardRepo */
+  writeBoardRule(
+    input: { boardId: string; ruleId: string; text: string; retired?: boolean },
+    expectedRevision: number,
+  ): BoardWrite<BoardRule> {
+    return this.crewBoards.writeBoardRule(input, expectedRevision);
+  }
+
+  /** @see CrewBoardRepo */
+  boardRules(boardId: string): BoardRule[] {
+    return this.crewBoards.boardRules(boardId);
+  }
+
+  /** @see CrewBoardRepo */
+  writeBoardRow(row: Omit<BoardRow, "revision" | "updatedAt">, expectedRevision: number | null): BoardWrite<BoardRow> {
+    return this.crewBoards.writeBoardRow(row, expectedRevision);
+  }
+
+  /** @see CrewBoardRepo */
+  boardRows(boardId: string): BoardRow[] {
+    return this.crewBoards.boardRows(boardId);
   }
 
   /** @see TurnCheckpointRepo */
