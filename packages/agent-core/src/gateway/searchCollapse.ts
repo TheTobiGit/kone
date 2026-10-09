@@ -5,18 +5,17 @@ import type { ConversationSearchHit } from "../conversationStoreTypes.js";
 // one answer per thread, and it wants the user's own words to outrank the
 // agent's. This collapses ranked hits to one best per thread:
 //
-//   - a user message (an indexed block) always beats an assistant hit (an
-//     indexed item) for the same thread;
+//   - a user-authored message beats assistant hits (including imported
+//     assistant blocks) for the same thread;
 //   - within the same kind, the lower bm25 rank wins (FTS rank is "smaller is
 //     better");
 //   - the surviving hits are ordered the same way, so the threads whose title
 //     the user's words should inform come first.
 
-/** Whether a hit is the user's own words. The FTS index stores one row per user
- *  block and one per turn item, so a block hit is user-authored and an item is
- *  the agent's. */
+/** Whether a hit is the user's own words. Imported assistant messages may use
+ *  user-role blocks, so the indexed sender metadata breaks that tie. */
 function isUserHit(hit: ConversationSearchHit): boolean {
-  return hit.entryKind === "block";
+  return hit.entryKind === "block" && hit.isUserAuthored !== false;
 }
 
 function better(a: ConversationSearchHit, b: ConversationSearchHit): boolean {

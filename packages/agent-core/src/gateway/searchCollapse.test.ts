@@ -35,6 +35,14 @@ describe("collapseSearchHits", () => {
     expect(collapsed[0]?.entryKind).toBe("block");
   });
 
+  test("an imported assistant block is not ranked as a user-authored hit", () => {
+    const imported = { ...hit("imported", "block", 1), isUserAuthored: false };
+    const user = { ...hit("user", "block", 9), isUserAuthored: true };
+    const collapsed = collapseSearchHits([imported, user]);
+    expect(collapsed.map((h) => h.threadId)).toEqual(["user", "imported"]);
+    expect(collapsed[1]?.isUserAuthored).toBe(false);
+  });
+
   test("within a kind, the lower rank wins", () => {
     const collapsed = collapseSearchHits([hit("a", "block", 9), hit("a", "block", 3)]);
     expect(collapsed[0]?.rank).toBe(3);

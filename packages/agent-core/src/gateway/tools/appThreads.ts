@@ -1408,8 +1408,10 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           parentThreadId: callerMeta.parentThreadId,
         }
       : null;
+    const assistantCaller = callerMeta?.projectPath === GLOBAL_ASSISTANT_PROJECT_PATH;
     const results = collapseSearchHits(raw)
       .filter((hit) => {
+        if (assistantCaller) return true;
         const meta = store.threadMeta?.(hit.threadId) ?? null;
         return canReadThread({
           callerThreadId: ctx.threadId,

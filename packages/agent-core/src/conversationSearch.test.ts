@@ -156,6 +156,16 @@ function settledTurn(
 }
 
 describe("conversation full-text search", () => {
+  test("reports imported assistant blocks as not user-authored", () => {
+    const store = freshStore();
+    ensureSeededThread(store, "authors");
+    store.recordUserBlock({ blockId: "imported", threadId: "authors", text: "sharedneedle", sender: { kind: "system" } });
+    store.recordUserBlock({ blockId: "real-user", threadId: "authors", text: "sharedneedle" });
+    const hits = store.searchConversations("sharedneedle");
+    expect(hits.find((hit) => hit.blockId === "imported")?.isUserAuthored).toBe(false);
+    expect(hits.find((hit) => hit.blockId === "real-user")?.isUserAuthored).toBe(true);
+  });
+
   test("user prompts and assistant items are searchable with snippets and jump ids", () => {
     const store = freshStore();
     ensureSeededThread(store, "t-search-basic");

@@ -2,6 +2,7 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEditPatch, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
 import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
+import { indexBlockRow } from "./search.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
  *  runs next. Rows with an explicit position (set by reorder) drain first in
@@ -196,6 +197,13 @@ export class QueuedTurnRepo {
           db.prepare(
             `UPDATE blocks SET ${blockSets.join(", ")} WHERE thread_id = ? AND block_id = ?`,
           ).run(...blockValues);
+          indexBlockRow(db, {
+            threadId,
+            blockId: row.user_block_id,
+            turnId: null,
+            at: row.created_at,
+            text: patch.input,
+          });
           // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow.
           const after = db
             .prepare(`SELECT * FROM queued_turns WHERE queue_id = ? AND thread_id = ?`)
