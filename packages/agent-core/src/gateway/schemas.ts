@@ -698,6 +698,13 @@ export const IrcSendInputSchema = z
     /** With a report from a contractor to its contracting agent: this is the
      *  deliverable, and the contract closes with it. Ending a turn never does. */
     final: z.boolean().optional(),
+    /** Keep it on the sender's watch list until the recipient opens it. */
+    ackRequired: z.boolean().optional(),
+    /** The branch and commit it refers to: opening it says how far the branch
+     *  has moved since. */
+    about: z
+      .object({ branch: z.string().trim().min(1).max(200), commit: z.string().trim().min(4).max(64) })
+      .optional(),
   })
   .refine((value) => value.kind !== "answer" || value.replyTo !== undefined, {
     message: "An answer names the question it answers: set replyTo to the question's message id.",
@@ -756,6 +763,21 @@ export const IRC_SEND_JSON_SCHEMA = {
       type: "boolean",
       description:
         "For a contractor, with kind report to your `delegator`: this is the deliverable, and your contract closes with it. Ending a turn does not end a contract; this does.",
+    },
+    ackRequired: {
+      type: "boolean",
+      description:
+        "Watch it until the recipient opens it: agent_list counts it as unacknowledged from you, and agent_sent shows when it was opened and acted on. For instructions that must not be missed.",
+    },
+    about: {
+      type: "object",
+      description:
+        "The branch and commit this message refers to. When the recipient opens it, kone says how far that branch has moved since, so a stale instruction is not acted on blindly.",
+      properties: {
+        branch: { type: "string" },
+        commit: { type: "string", description: "A commit hash, full or abbreviated." },
+      },
+      required: ["branch", "commit"],
     },
   },
   required: ["to", "message"],

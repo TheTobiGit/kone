@@ -364,3 +364,27 @@ describe("what the app hears about an inbox", () => {
     ]);
   });
 });
+
+describe("what a sender can learn of what it sent", () => {
+  test("a watched message counts as unacknowledged until it is opened, and keeps what it is about", () => {
+    const { store } = freshStore();
+    const watched = message({ ackRequired: true, about: { branch: "teamwork", commit: "abc1234" } });
+    const plain = message();
+    store.insertInboxMessage(watched);
+    store.insertInboxMessage(plain);
+
+    expect(store.unacknowledgedCounts("s")).toEqual(new Map([["t", 1]]));
+    expect(store.sentInbox("s", { limit: 10 }).map((r) => r.inboxId)).toEqual([plain.inboxId, watched.inboxId]);
+    expect(store.sentInbox("s", { limit: 10, unacknowledged: true }).map((r) => r.inboxId)).toEqual([watched.inboxId]);
+    expect(store.sentInbox("s", { limit: 10, inboxIds: [plain.inboxId] }).map((r) => r.inboxId)).toEqual([plain.inboxId]);
+    expect(store.inboxMessage(watched.inboxId)).toMatchObject({
+      ackRequired: true,
+      about: { branch: "teamwork", commit: "abc1234" },
+    });
+
+    // Read with agent_inbox in a turn: opened, and that turn is on record.
+    store.markInboxSeen([watched.inboxId], "inbox", "turn-7");
+    expect(store.unacknowledgedCounts("s").size).toBe(0);
+    expect(store.inboxMessage(watched.inboxId)).toMatchObject({ state: "seen", seenVia: "inbox", turnId: "turn-7" });
+  });
+});

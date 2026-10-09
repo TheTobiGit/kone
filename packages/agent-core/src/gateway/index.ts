@@ -236,6 +236,11 @@ function ircToolInput(input: GatewayInput): IrcToolInput {
     store: input.store,
     spawnedStatus: (threadId) => getSpawnEngine()?.snapshot(threadId)?.status ?? null,
     waitingOn: (threadId) => getSpawnEngine()?.waitingOn(threadId) ?? null,
+    turnState: (threadId, turnId) => {
+      const span = input.store.turnSpan(threadId, turnId);
+      if (!span) return null;
+      return span.runningTurns > 0 ? "running" : span.lastState;
+    },
   };
   if (input.isThreadLive) tools.isThreadLive = input.isThreadLive;
   if (input.threadRuntime) tools.threadRuntime = input.threadRuntime;
