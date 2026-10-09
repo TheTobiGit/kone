@@ -2,7 +2,7 @@ import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEditPatch, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
 import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
-import { indexBlockRow } from "./search.js";
+import { indexBlockRow, removeBlockIndexRow } from "./search.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
  *  runs next. Rows with an explicit position (set by reorder) drain first in
@@ -487,6 +487,7 @@ export class QueuedTurnRepo {
    *  only ever matches the prompt the enqueue itself journaled — never a
    *  block a started turn later adopted. */
   private deleteQueuedPromptBlock(db: DatabaseSync, threadId: string, userBlockId: string): void {
+    removeBlockIndexRow(db, threadId, userBlockId);
     db.prepare(
       `DELETE FROM blocks
         WHERE thread_id = ? AND block_id = ? AND role = 'user' AND turn_id IS NULL`,
@@ -515,22 +516,24 @@ export class QueuedTurnRepo {
     try {
       let cancelled = false;
       this.dbh.durably(db, () => {
-        // SAFETY: the projection names only the row's thread + journaled block.
-        const row = db
-          .prepare(
-            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
-          )
-          .get(...rowArgs) as { thread_id: string; user_block_id: string } | undefined;
-        if (!row) return;
-        const result = db
-          .prepare(
-            `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
-          )
-          .run(...updateArgs);
-        if (Number(result.changes) === 0) return;
-        this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
-        cancelled = true;
+        this.dbh.atomically(db, () => {
+          // SAFETY: the projection names only the row's thread + journaled block.
+          const row = db
+            .prepare(
+              `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
+            )
+            .get(...rowArgs) as { thread_id: string; user_block_id: string } | undefined;
+          if (!row) return;
+          const result = db
+            .prepare(
+              `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+              WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
+            )
+            .run(...updateArgs);
+          if (Number(result.changes) === 0) return;
+          this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
+          cancelled = true;
+        });
       });
       return cancelled;
     } catch (err) {
@@ -574,9 +577,10 @@ export class QueuedTurnRepo {
     try {
       let queueIds: string[] = [];
       this.dbh.durably(db, () => {
-        // SAFETY: the projection names only the row's queue id, thread, prior
-        // state, and journaled block.
-        const active = db
+        this.dbh.atomically(db, () => {
+          // SAFETY: the projection names only the row's queue id, thread, prior
+          // state, and journaled block.
+          const active = db
           .prepare(
             `SELECT queue_id, thread_id, user_block_id, state FROM queued_turns
               WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}
@@ -588,19 +592,20 @@ export class QueuedTurnRepo {
           user_block_id: string;
           state: string;
         }>;
-        if (active.length === 0) return;
-        db.prepare(
+          if (active.length === 0) return;
+          db.prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
-        ).run(Date.now(), ...args);
-        for (const row of active) {
+          ).run(Date.now(), ...args);
+          for (const row of active) {
           // Only 'queued'/'failed' rows provably never started; a 'promoting'
           // row was claimed by a drain and may own a live turn, so its prompt
           // stays.
-          if (row.state === "promoting") continue;
-          this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
-        }
-        queueIds = active.map((r) => r.queue_id);
+            if (row.state === "promoting") continue;
+            this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
+          }
+          queueIds = active.map((r) => r.queue_id);
+        });
       });
       return queueIds;
     } catch (err) {

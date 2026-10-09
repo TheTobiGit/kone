@@ -106,6 +106,14 @@ export function indexBlockRow(db: DatabaseSync, input: FtsBlockInput): void {
   }
 }
 
+/** Remove a block's search row as part of the transaction that removes it. */
+export function removeBlockIndexRow(db: DatabaseSync, threadId: string, blockId: string): void {
+  if (!ftsReady(db)) return;
+  db.prepare(
+    `DELETE FROM conversation_fts WHERE entry_kind = 'block' AND thread_id = ? AND block_id = ?`,
+  ).run(threadId, blockId);
+}
+
 /** Index (or re-index) one turn item. Combines body + tool name + payload
  *  into the row's text; an item with nothing searchable still clears its
  *  stale row. */
@@ -343,6 +351,7 @@ export class SearchRepo {
              FROM conversation_fts
              LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ? AND conversation_fts.thread_id = ?
+              AND (conversation_fts.block_id IS NULL OR blocks.block_id IS NOT NULL)
             ORDER BY rank LIMIT ? OFFSET ?`
         : `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
                   conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
@@ -352,6 +361,7 @@ export class SearchRepo {
              FROM conversation_fts
              LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ?
+              AND (conversation_fts.block_id IS NULL OR blocks.block_id IS NOT NULL)
             ORDER BY rank LIMIT ? OFFSET ?`;
       // SAFETY: the projection names exactly the FTS columns plus the two
       // aliased FTS5 auxiliary outputs read below.
