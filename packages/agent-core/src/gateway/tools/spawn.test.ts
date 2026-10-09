@@ -3,7 +3,9 @@ import { initSpawnEngine as realInitSpawnEngine } from "../../threadSpawn.js";
 import { parseSpawnRecords } from "@kone/protocol/spawn-record";
 import { z } from "zod";
 
-import type { AgentPersona, ContractTerms, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
+import type { AgentPersona, ContractTerms, SpawnedThread, SpawnThreadResult, StoredThread, StoredThreadMeta } from "../../types.js";
+import type { AgentGrant } from "../../agentAccess.js";
+import type { GrantToolStore } from "./grants.js";
 import type {
   AgentRecord,
   NativeSubagentConfig,
@@ -111,6 +113,7 @@ type FakeEngine = {
     request: { threadId: string; requestId: string; answers: Record<string, string | string[] | null> },
   ): Promise<{ threadId: string; requestId: string; owned: boolean }>;
   isInSubtree(rootThreadId: string, threadId: string): boolean;
+  canReach?(callerThreadId: string, threadId: string, need: string): boolean;
   waitFor(input: FakeWaitInput): Promise<{
     threads: SpawnedThread[];
     allTerminal: boolean;
@@ -153,7 +156,7 @@ beforeAll(async () => {
 });
 
 function makeEngine(overrides: Partial<FakeEngine> = {}): FakeEngine {
-  return {
+  const engine: FakeEngine = {
     spawn: async () => {
       throw new Error("spawn not stubbed");
     },
@@ -176,6 +179,9 @@ function makeEngine(overrides: Partial<FakeEngine> = {}): FakeEngine {
     waitFor: async () => ({ threads: [], allTerminal: true, timedOut: false, turnIds: [] }),
     ...overrides,
   };
+  // With no grants in play, reach is the chain's.
+  engine.canReach ??= (callerThreadId, threadId) => engine.isInSubtree(callerThreadId, threadId);
+  return engine;
 }
 
 function makeStore(
@@ -2140,6 +2146,42 @@ describe("agent_delegate", () => {
       contractorRole: "Frontend auth specialist",
       why: "the frontend is a job of its own",
     });
+  });
+
+  test("agent_contract applies the grants it names once the contract is open, and never undoes it for one", async () => {
+    currentEngine = delegatingEngine([]);
+    const written: AgentGrant[] = [];
+    const lead: StoredThreadMeta = { threadId: "lead-1", projectPath: ctx.cwd, provider: "codex", createdAt: 1, updatedAt: 1 };
+    const grants: GrantToolStore = {
+      threadMeta: (id) => (id === "lead-1" ? lead : null),
+      // The new contractor works for the caller, so the caller is up its chain.
+      threadLineage: (id) =>
+        id === "child-c-3" ? { parentThreadId: ctx.threadId, relationshipToParent: "delegation", rootThreadId: ctx.threadId } : null,
+      listThreads: () => [lead],
+      setAgentGrant: (grant) => written.push(grant) > 0,
+      revokeAgentGrant: () => false,
+      agentGrantsOn: () => [],
+    };
+    const registry = createRegistry(createSpawnTools({ store: makeStore(), grants }));
+    const res = await registry.call(ctx, "agent_contract", {
+      name: "Rowan",
+      role: "Reviewer",
+      instructions: "Review against the design.",
+      task: "Review p3.",
+      scope: "p3 only.",
+      deliverable: "A verdict.",
+      doneCriteria: "Go or no-go.",
+      requestId: "c-3",
+      grants: [
+        { agent: "lead-1", access: "followup" },
+        { agent: "nobody", access: "read" },
+      ],
+    });
+    expect(res.isError).toBeUndefined();
+    expect(written).toMatchObject([{ granteeThreadId: "lead-1", targetThreadId: "child-c-3", access: "followup" }]);
+    const text = res.content.map((c) => ("text" in c ? c.text : "")).join("\n");
+    expect(text).toContain("Granted on it:");
+    expect(text).toContain('Not granted: nobody: No agent "nobody"');
   });
 
   test("agent_contract refuses terms with a part missing", async () => {

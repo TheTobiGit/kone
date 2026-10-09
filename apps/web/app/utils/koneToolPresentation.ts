@@ -131,6 +131,11 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Couldn't answer an agent's question",
   ]),
 
+  agent_grant: kone(UserGroupIcon, "Grant", "agent", [
+    "Sharing access to an agent",
+    "Shared access to an agent",
+    "Couldn't share access to the agent",
+  ]),
   agent_message: kone(BubbleChatIcon, "Message", "agent", [
     "Messaging an agent",
     "Messaged an agent",

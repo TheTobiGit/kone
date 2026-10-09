@@ -80,7 +80,7 @@ export class SpawnWaitCoordinator {
       if (!this.deps.isInSubtree(input.scopeThreadId, id)) {
         throw new SpawnError(
           "not_found",
-          `Thread "${id}" is not in this conversation's subtree — a parent may only wait on its own spawned children.`,
+          `Thread "${id}" is not in this conversation's subtree — a parent may only wait on its own spawned children, or on an agent it was granted follow-up on.`,
           { threadId: id },
         );
       }

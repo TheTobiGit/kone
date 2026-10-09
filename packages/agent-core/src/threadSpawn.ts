@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { ModelCandidate } from "./agentModel.js";
 import type { AgentSender } from "@kone/protocol/message-sender";
 import type { ContractClosedReason } from "@kone/protocol/contract";
+import { grantCovers, type AgentGrant, type GrantAccess } from "./agentAccess.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type { ThreadAgentBinding } from "./rosterRecord.js";
 import { checkSpawn, type SpawnRefusalDetails } from "./spawnGuards.js";
@@ -73,6 +74,8 @@ export interface SpawnEngineStore {
     contract?: ContractTerms;
   }): boolean;
   threadLineage(threadId: string): ThreadLineage | null;
+  /** What one agent was granted on another, beyond the chain. */
+  agentGrant?(granteeThreadId: string, targetThreadId: string): AgentGrant | null;
   /** Reopen (null) or close a contractor's contract. A follow-up on a closed
    *  one reopens it: there is more to the job. */
   setContractClosed?(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean;
@@ -418,6 +421,9 @@ export interface SpawnEngine {
   snapshot(threadId: string): SpawnedThread | null;
   /** True when `threadId` is `rootThreadId` itself or any spawned descendant. */
   isInSubtree(rootThreadId: string, threadId: string): boolean;
+  /** Whether `callerThreadId` may act on `threadId` at `need`: it is up the
+   *  thread's chain, or holds a grant that covers it. */
+  canReach(callerThreadId: string, threadId: string, need: GrantAccess): boolean;
   /** The agent that handed `threadId` its work stopped or withdrew it: what
    *  its current turn comes to is no news to that agent, so it is not
    *  reported. A follow-up from up the chain lifts it. */
@@ -504,6 +510,9 @@ export type SpawnAttempt = {
 export type TrackedChild = {
   threadId: string;
   parentThreadId: string;
+  /** A peer with a follow-up grant asked for the turn under way: its result
+   *  goes to that peer, not the parent. Cleared once reported or collected. */
+  reportTo?: string;
   /** Worker, delegation or contract — what the UI files the child under. */
   handOff?: HandOffKind;
   /** The name a delegate or contractor runs under. */
@@ -626,7 +635,7 @@ class SpawnEngineImpl implements SpawnEngine {
       store: this.store,
       snapshot: (threadId) => this.snapshot(threadId),
       storedSnapshot: (threadId, turnId) => this.storedSnapshot(threadId, turnId),
-      isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
+      isInSubtree: (rootThreadId, threadId) => this.canReach(rootThreadId, threadId, "followup"),
       onCollected: (scopeThreadId, threadId, turnId) => this.onCollected(scopeThreadId, threadId, turnId),
       onAbandoned: (scopeThreadId, threadIds) => this.onAbandoned(scopeThreadId, threadIds),
       jobTurn: (inboxId) => jobs.jobTurn(inboxId),
@@ -651,6 +660,7 @@ class SpawnEngineImpl implements SpawnEngine {
       recompute: (child) => this.recompute(child),
       adopt: (threadId, parentTurnId, hasLiveSession) => this.adopt(threadId, parentTurnId, hasLiveSession),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
+      canFollowUp: (callerThreadId, threadId) => this.canReach(callerThreadId, threadId, "followup"),
       jobs,
     };
     this.continuation = new ThreadContinuationManager(continuationDeps);
@@ -873,10 +883,18 @@ class SpawnEngineImpl implements SpawnEngine {
     });
   }
 
-  continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult> {
+  async continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult> {
     // Asked again: what the child does next is news once more.
-    if (this.isInSubtree(caller.threadId, request.threadId)) this.reportsOf(request.threadId).muted = false;
-    return this.continuation.continueThread(caller, request);
+    const upChain = this.isInSubtree(caller.threadId, request.threadId);
+    if (upChain) this.reportsOf(request.threadId).muted = false;
+    const result = await this.continuation.continueThread(caller, request);
+    // A granted peer asked: the turn's result is its news, not the parent's.
+    const child = this.tracked.get(request.threadId);
+    if (child) {
+      if (upChain) delete child.reportTo;
+      else child.reportTo = caller.threadId;
+    }
+    return result;
   }
 
   cancelChild(caller: SpawnCaller, threadId: string): Promise<CancelChildResult> {
@@ -1068,6 +1086,17 @@ class SpawnEngineImpl implements SpawnEngine {
         `kone has no record of how turn ${turnId} on this thread went, so it cannot say. ` +
         "Read the thread with agent_read to see what it did.",
     };
+  }
+
+  canReach(callerThreadId: string, threadId: string, need: GrantAccess): boolean {
+    if (this.isInSubtree(callerThreadId, threadId)) return true;
+    return grantCovers(this.store.agentGrant?.(callerThreadId, threadId)?.access, need);
+  }
+
+  /** Who hears how the child's turn went: a granted peer that asked for it,
+   *  otherwise its parent. */
+  private reportTarget(child: TrackedChild): string {
+    return child.reportTo ?? child.parentThreadId;
   }
 
   isInSubtree(rootThreadId: string, threadId: string): boolean {
@@ -1338,16 +1367,18 @@ class SpawnEngineImpl implements SpawnEngine {
       state.reported.set(turnId, null);
       return;
     }
-    if (this.waitCoordinator.isCollecting(child.parentThreadId, child.threadId, turnId)) {
+    const target = this.reportTarget(child);
+    if (this.waitCoordinator.isCollecting(target, child.threadId, turnId)) {
       state.held.add(turnId);
       return;
     }
     state.held.delete(turnId);
     const turn = this.waitCoordinator.snapshotForWait(child.threadId, turnId);
     if (!turn.terminal) return;
+    delete child.reportTo;
     const report: SettledTurnReport = {
       childThreadId: child.threadId,
-      parentThreadId: child.parentThreadId,
+      parentThreadId: target,
       turnId,
       handOff: child.handOff ?? "worker",
       status: turn.status,
@@ -1382,18 +1413,18 @@ class SpawnEngineImpl implements SpawnEngine {
    *  agent, not the one the child works for. */
   private onCollected(scopeThreadId: string, threadId: string, turnId: string): void {
     const child = this.tracked.get(threadId);
-    if (!child || child.parentThreadId !== scopeThreadId) return;
+    if (!child || this.reportTarget(child) !== scopeThreadId) return;
     const state = this.reportsOf(threadId);
     state.collected.add(turnId);
     state.held.delete(turnId);
     const messageId = state.reported.get(turnId);
-    if (messageId) this.reportSink?.retract(child.parentThreadId, messageId);
+    if (messageId) this.reportSink?.retract(scopeThreadId, messageId);
   }
 
   private onAbandoned(scopeThreadId: string, threadIds: readonly string[]): void {
     for (const threadId of threadIds) {
       const child = this.tracked.get(threadId);
-      if (!child || child.parentThreadId !== scopeThreadId) continue;
+      if (!child || this.reportTarget(child) !== scopeThreadId) continue;
       for (const turnId of this.reportsOf(threadId).held) {
         queueMicrotask(() => this.report(child, turnId));
       }

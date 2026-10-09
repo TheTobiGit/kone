@@ -13,6 +13,7 @@
 // entry on the same server, which is what makes the next surface an agent can
 // steer a new tools/ module rather than a new transport.
 
+import { createGrantTools } from "./tools/grants.js";
 import type { ConversationStore } from "../ConversationStore.js";
 import type { EmitEvent, GatewayConnection, ProviderKind, RuntimeEvent } from "../types.js";
 import { GatewayCredentials } from "./credentials.js";
@@ -308,7 +309,8 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const lspManager = new LspManager();
   const workerTools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
-    ...createSpawnTools({ store: input.store }),
+    ...createSpawnTools({ store: input.store, grants: input.store }),
+    ...createGrantTools({ store: input.store }),
     ...createIrcTools(ircToolInput(input)),
     ...createLaunchTools({ supervisor: launchSupervisor }),
     ...createLspTools({ manager: lspManager }),

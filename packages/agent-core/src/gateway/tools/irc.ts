@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type AgentSender, type CourierSender } from "@kone/protocol/message-sender";
 import type { ContractClosedReason } from "@kone/protocol/contract";
+import { describeGrantAccess, grantCovers, type AgentGrant, type GrantAccess } from "../../agentAccess.js";
 import type { ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
@@ -133,6 +134,8 @@ type PeerRow = {
   live: boolean;
   /** Messages the reader sent it with ackRequired that it has not opened. */
   unacknowledged: number;
+  /** What the reader was granted on it, beyond the chain. */
+  access?: GrantAccess;
 };
 
 /** How many agents one roster lists. A project's long tail is closed threads
@@ -167,6 +170,8 @@ export interface IrcToolStore {
   /** Who a thread runs as, for the sender's name. */
   getThreadAgent?(threadId: string): { agentId: string | null } | null;
   getAgent?(agentId: string): { name: string | null } | null;
+  /** What one agent was granted on another, beyond the chain. */
+  agentGrant?(granteeThreadId: string, targetThreadId: string): AgentGrant | null;
   /** Close (or, with null, reopen) a contractor's contract. */
   setContractClosed?(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean;
 }
@@ -184,6 +189,12 @@ export function isUpChain(store: IrcToolStore | undefined, ancestorId: string, t
     current = parent;
   }
   return false;
+}
+
+/** Whether `senderId` reaches `threadId` as its chain does for messages: up
+ *  its chain, or holding a grant of message or more on it. */
+export function messagesAsChain(store: IrcToolStore | undefined, senderId: string, threadId: string): boolean {
+  return isUpChain(store, senderId, threadId) || grantCovers(store?.agentGrant?.(senderId, threadId)?.access, "message");
 }
 
 /** Whether a thread is a contractor whose contract is still open. */
@@ -425,6 +436,24 @@ export class IrcMailbox {
             ? "You have not delegated to or contracted any agent."
             : "You have not started any workers.",
         );
+      }
+      return ids;
+    }
+
+    // 0b. The crew: the agents one orchestrator handed work to. An agent
+    //     with agents of its own is its crew's orchestrator; any other agent
+    //     reaches its delegator's crew, its delegator included.
+    if (lowered === "crew") {
+      const agentsOf = (threadId: string) =>
+        (store?.spawnedChildren?.(threadId) ?? [])
+          .filter((child) => child.lineage?.relationshipToParent === "delegation")
+          .map((child) => child.threadId);
+      const own = agentsOf(sender.threadId);
+      const delegator = store?.threadLineage?.(sender.threadId)?.parentThreadId ?? null;
+      const ids =
+        own.length > 0 ? own : delegator ? [delegator, ...agentsOf(delegator).filter((id) => id !== sender.threadId)] : [];
+      if (ids.length === 0) {
+        throw new GatewayToolError("not_found", "You have no crew: nobody handed you work alongside other agents, and you handed work to no agent.");
       }
       return ids;
     }
@@ -1262,7 +1291,7 @@ const IRC_SEND_DESCRIPTION = [
   "",
   "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say. The answer reaches you on its own, so keep working on what does not depend on it; set wait only when you cannot go on without it. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question you were asked, with replyTo set to its message id; anything else sent as an answer goes as a note.",
   "",
-  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `all` broadcasts a note to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
+  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `crew` sends a note to every agent one orchestrator handed work to — yours, if you handed work to agents; otherwise your delegator and the agents it handed work to alongside you. `all` broadcasts a note to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
   "",
   "When someone you handed work to asks you something, answer from what you know of the user's intent; ask the user only what you cannot answer, then pass the answer down. Never send an acknowledgement, a progress report, anything a tool could answer, or the next line of chit-chat. Between peers the bus refuses a pair that has traded 16 messages with nobody else involved; a question and its answer along a hand-off never count.",
 ].join("\n");
@@ -1351,7 +1380,8 @@ function renderPeerLine(p: PeerRow, now: number): string {
   const unseen =
     p.unseen > 0 ? ` ${p.unseen} unseen in its inbox, oldest ${formatSince(p.oldestUnseenAt, now) ?? "just now"}.` : "";
   const unacknowledged = p.unacknowledged > 0 ? ` ${p.unacknowledged} unacknowledged from you.` : "";
-  return `${name}\`${p.id}\` (${senderRelationshipLabel(p.relationship)}${provider}) — ${state}.${unseen}${unacknowledged}`;
+  const access = p.access ? ` Granted to you: ${describeGrantAccess(p.access)}.` : "";
+  return `${name}\`${p.id}\` (${senderRelationshipLabel(p.relationship)}${provider}) — ${state}.${unseen}${unacknowledged}${access}`;
 }
 
 /** What became of one message, as its sender reads it: waiting, opened, or
@@ -1455,10 +1485,13 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     }
 
     const target = parsed.to.trim().toLowerCase();
-    const broadcast = target === "all" || target === "*";
+    // The crew is a broadcast too, scoped to one orchestrator's agents: a note
+    // to everyone, which wakes nobody.
+    const crew = target === "crew";
+    const broadcast = target === "all" || target === "*" || crew;
     // A broadcast interrupts every agent on the project at once: the main
     // agent's call, never one of the agents working for it.
-    if (broadcast && parentThreadId) {
+    if (broadcast && !crew && parentThreadId) {
       throw new GatewayToolError(
         "permission_denied",
         "Only the main agent may message `all`. Message your `delegator`, or name the agents you mean.",
@@ -1511,7 +1544,9 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     // agent. Between peers it would be one agent deciding another's work is
     // less important than its own.
     if (urgent && parentThreadId) {
-      const peer = recipients.find((id) => relationshipOf(input.store, ctx.threadId, id) === "peer");
+      const peer = recipients.find(
+        (id) => relationshipOf(input.store, ctx.threadId, id) === "peer" && !messagesAsChain(input.store, ctx.threadId, id),
+      );
       if (peer) {
         throw new GatewayToolError(
           "permission_denied",
@@ -1597,7 +1632,8 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     // nothing else to wake it, and a note left there was a lost instruction.
     const rings = !broadcast && (kind !== "note" || urgent);
     const ringsFor = (id: string): boolean =>
-      rings || (!broadcast && kind === "note" && contractOpen(input.store?.threadMeta?.(id)) && isUpChain(input.store, ctx.threadId, id));
+      rings ||
+      (!broadcast && kind === "note" && contractOpen(input.store?.threadMeta?.(id)) && messagesAsChain(input.store, ctx.threadId, id));
     const outgoing: IrcSendInput = { ...parsed, kind };
     delete outgoing.final;
     if (replyTo === undefined) delete outgoing.replyTo;
@@ -1800,6 +1836,8 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
         live: runtime?.live ?? false,
         unacknowledged: unacknowledged.get(id) ?? 0,
       };
+      const grant = store?.agentGrant?.(ctx.threadId, id);
+      if (grant) row.access = grant.access;
       const agentName = mailbox.getThread(id)?.agentName ?? (store ? threadAgentName(store, id) : undefined);
       if (agentName) row.agentName = agentName;
       if (meta) row.provider = meta.provider;
