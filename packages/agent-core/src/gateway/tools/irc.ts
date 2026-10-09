@@ -452,7 +452,7 @@ export class IrcMailbox {
     if (lowered === "crew") {
       const agentsOf = (threadId: string) =>
         (store?.spawnedChildren?.(threadId) ?? [])
-          .filter((child) => child.lineage?.relationshipToParent === "delegation")
+          .filter((child) => child.lineage?.relationshipToParent === "delegation" && !child.contractClosed)
           .map((child) => child.threadId);
       const own = agentsOf(sender.threadId);
       const delegator = store?.threadLineage?.(sender.threadId)?.parentThreadId ?? null;
