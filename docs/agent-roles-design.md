@@ -422,6 +422,7 @@ and handoff are recorded in `docs/agent-teamwork-features.md`.
 - `agent_list` exposes grants. Contract/grant UI remains to be designed.
 
 Migrations 29 (contract closure) and 31 (grants) are **renumber at merge**:
-`t3-parity` already occupies 29–33. Do not install this branch's schema over
+Parity work occupies/reserves 29–33 across its branches; see
+`T3CODE-PARITY-RESUME.md` for the verified per-branch manifests. Do not install this branch's schema over
 an existing t3-parity database before reconciliation. See the teamwork doc
 for all four colliding migrations and the exact gate results.

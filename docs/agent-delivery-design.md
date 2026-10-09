@@ -666,5 +666,5 @@ for the code pins, migration collision and Mac handoff.
 
 Migration 30 adds inbox acknowledgement/about metadata; migrations 29, 31 and
 32 add closure, grants and boards. All are **renumber at merge**, because
-`t3-parity` already uses 29–33. Inbox IPC/preload/renderer types carry
+parity work occupies/reserves 29–33 across its branches. Inbox IPC/preload/renderer types carry
 `ackRequired` and `about`; their UI presentation still needs wiring.

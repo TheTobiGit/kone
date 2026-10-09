@@ -10,6 +10,10 @@ logs. After creating the worktree below, unpack it at that worktree's root:
 tar -xzf /path/to/kone-teamwork-mac-handoff-2026-10-09.tar.gz -C ../kone-teamwork
 ```
 
+Start parity continuation with `T3CODE-PARITY-RESUME.md`; it is also included
+in the archive as `docs/t3code-parity-resume.md`. The archive includes the
+historical P6 defect harness under `handoff/parity-review/`.
+
 The archive's `handoff/teamwork-validation/` contains the logs and report.
 The ignored proposal is also reproduced as the implementation handoff below,
 so this branch carries the information needed even without that archive.
@@ -58,7 +62,8 @@ independent review; do that before integration.
 
 ### Migration collision: renumber at merge
 
-`t3-parity` already occupies migrations 29–33. These IDs are local to the
+Parity work occupies/reserves migrations 29–33 across its branches; see
+`T3CODE-PARITY-RESUME.md` for the exact manifests. These IDs are local to the
 teamwork branch and must be reconciled before merging or sharing its database:
 
 | Current ID | Change | Integration instruction |
