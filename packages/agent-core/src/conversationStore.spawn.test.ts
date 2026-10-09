@@ -158,6 +158,31 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.writeSpawnedThread({ ...input })).toBe(false);
   });
 
+  test("a contract stays open until it is closed, and a reopen clears it; a teammate has none", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "parent-1", projectPath: "/tmp/proj", provider: "opencode" });
+    const base = {
+      projectPath: "/tmp/proj",
+      provider: "opencode" as const,
+      createdAt: 10,
+      title: "Login screens",
+      lineage: spawnedLineage("parent-1", "parent-1"),
+    };
+    const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+    store.writeSpawnedThread({ ...base, threadId: "contractor-1", lineage: { ...base.lineage, relationshipToParent: "delegation" }, contract });
+    store.writeSpawnedThread({ ...base, threadId: "teammate-1", lineage: { ...base.lineage, relationshipToParent: "delegation" } });
+
+    expect(store.threadMeta("contractor-1")?.contractClosed).toBeUndefined();
+    expect(store.setContractClosed("contractor-1", { at: 20, reason: "delivered" })).toBe(true);
+    expect(store.threadMeta("contractor-1")?.contractClosed).toEqual({ at: 20, reason: "delivered" });
+    expect(store.spawnedChildren("parent-1").find((m) => m.threadId === "contractor-1")?.contractClosed?.reason).toBe(
+      "delivered",
+    );
+    expect(store.setContractClosed("contractor-1", null)).toBe(true);
+    expect(store.threadMeta("contractor-1")?.contractClosed).toBeUndefined();
+    expect(store.setContractClosed("teammate-1", { at: 20, reason: "withdrawn" })).toBe(false);
+  });
+
   test("boot recovery seals an undispatched spawned child as failed (F8)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-seal-"));
     useUserDataDir(dir);

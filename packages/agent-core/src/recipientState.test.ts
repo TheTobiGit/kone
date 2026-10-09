@@ -121,6 +121,18 @@ describe("recipientState", () => {
     ).toMatchObject({ state: "closed", steers: false });
   });
 
+  test("a contractor between turns of an open contract is closed, never ended, and says so", () => {
+    const between = state({ runtime: null, spawned: "completed", contractOpen: true, unseen: 0, oldestUnseenAt: null });
+    expect(between).toMatchObject({ state: "closed", ended: null, activity: "between turns of an open contract" });
+    expect(describeRecipientState(between, NOW)).toBe(
+      "between turns of an open contract; a message that rings brings its session back up",
+    );
+    // Its contract closed: the work is over like any hand-off's.
+    expect(state({ runtime: null, spawned: "completed", contractOpen: false, unseen: 0, oldestUnseenAt: null }).state).toBe(
+      "ended",
+    );
+  });
+
   test("a finished hand-off whose session is still up is idle, so it can be followed up", () => {
     expect(state({ runtime: runtime(), spawned: "completed", unseen: 0, oldestUnseenAt: null }).state).toBe("idle");
   });

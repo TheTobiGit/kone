@@ -60,6 +60,13 @@ class TreeStore implements IrcToolStore {
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
     return [...this.metas.values()].filter((m) => m.lineage?.parentThreadId === parentThreadId);
   }
+  setContractClosed(threadId: string, closed: { at: number; reason: "delivered" | "withdrawn" } | null): boolean {
+    const meta = this.metas.get(threadId);
+    if (!meta?.contract) return false;
+    if (closed) meta.contractClosed = closed;
+    else delete meta.contractClosed;
+    return true;
+  }
 }
 
 function ctxFor(threadId: string): GatewayToolContext {
@@ -253,6 +260,49 @@ describe("refusals", () => {
     expect(refusal(await send("main", { to: "backend", message: "fyi" }))).toContain("inbox is full");
     const question = await send("main", { to: "backend", kind: "question", message: "Done?" });
     expect(question.isError).toBeUndefined();
+  });
+});
+
+describe("contracts that last the job", () => {
+  test("a contractor between turns takes messages: its turn ending is not its work ending", async () => {
+    runtimes.set("frontend", null);
+    spawned.set("frontend", "completed");
+    const question = await send("main", { to: "frontend", kind: "question", message: "Which route?" });
+    expect(question.isError).toBeUndefined();
+    expect(question.structuredContent).toMatchObject({ outcome: "restarting" });
+  });
+
+  test("a report marked final delivers the contract, and then it is over", async () => {
+    const sent = await send("frontend", { to: "delegator", kind: "report", message: "Screens done.", final: true });
+    expect(sent.isError).toBeUndefined();
+    expect(sent.structuredContent).toMatchObject({ contractClosed: true });
+    expect(JSON.stringify(sent.structuredContent)).toContain("closed as delivered");
+    expect(store.threadMeta("frontend")?.contractClosed?.reason).toBe("delivered");
+
+    runtimes.set("frontend", null);
+    spawned.set("frontend", "completed");
+    expect(refusal(await send("main", { to: "frontend", message: "One more thing." }))).toContain(
+      "contract is over (delivered)",
+    );
+  });
+
+  test("final is refused from anyone but a contractor, twice, or to anyone but its contracting agent", async () => {
+    expect(refusal(await send("backend", { to: "delegator", kind: "report", message: "Done.", final: true }))).toContain(
+      "not working under a contract",
+    );
+    expect(refusal(await send("frontend", { to: "backend", kind: "report", message: "Done.", final: true }))).toContain(
+      "send it to `delegator`",
+    );
+    await send("frontend", { to: "delegator", kind: "report", message: "Done.", final: true });
+    expect(refusal(await send("frontend", { to: "delegator", kind: "report", message: "Again.", final: true }))).toContain(
+      "already closed",
+    );
+  });
+
+  test("final needs kind report", async () => {
+    expect(refusal(await send("frontend", { to: "delegator", message: "Done.", final: true }))).toContain(
+      "Only a report delivers a contract",
+    );
   });
 });
 

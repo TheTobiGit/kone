@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type AgentSender, type CourierSender } from "@kone/protocol/message-sender";
+import type { ContractClosedReason } from "@kone/protocol/contract";
 import type { ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
@@ -156,6 +157,13 @@ export interface IrcToolStore {
   /** Who a thread runs as, for the sender's name. */
   getThreadAgent?(threadId: string): { agentId: string | null } | null;
   getAgent?(agentId: string): { name: string | null } | null;
+  /** Close (or, with null, reopen) a contractor's contract. */
+  setContractClosed?(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean;
+}
+
+/** Whether a thread is a contractor whose contract is still open. */
+export function contractOpen(meta: StoredThreadMeta | null | undefined): boolean {
+  return meta?.contract !== undefined && meta.contractClosed === undefined;
 }
 
 /**
@@ -1345,15 +1353,43 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       }
     }
 
+    // The deliverable is reported, not implied by a turn ending: only a
+    // contractor delivers, only while its contract is open, and only to the
+    // agent that contracted it.
+    const senderMeta = input.store?.threadMeta?.(ctx.threadId) ?? null;
+    if (parsed.final === true) {
+      if (!senderMeta?.contract || relationshipToParent !== "delegation" || !parentThreadId) {
+        throw new GatewayToolError(
+          "permission_denied",
+          "Only a contractor delivers with final: you are not working under a contract. Send the report without final.",
+        );
+      }
+      if (senderMeta.contractClosed) {
+        throw new GatewayToolError(
+          "permission_denied",
+          `Your contract is already closed (${senderMeta.contractClosed.reason}). Send the report without final.`,
+        );
+      }
+      if (recipients.length !== 1 || recipients[0] !== parentThreadId) {
+        throw new GatewayToolError(
+          "permission_denied",
+          "A deliverable goes to the agent that contracted you: send it to `delegator`.",
+        );
+      }
+    }
+
     let replyTo = parsed.replyTo;
     let downgraded: string | null = null;
     for (const id of recipients) {
       const { state } = stateOf(id);
       // Over: nothing it is sent will be read by anyone working.
       if (state.state === "ended") {
+        const closed = input.store?.threadMeta?.(id)?.contractClosed;
         throw new GatewayToolError(
           "permission_denied",
-          `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
+          closed
+            ? `${nameOf(id)}'s contract is over (${closed.reason}). Reopen it with agent_followup if it has more to do, or message someone else.`
+            : `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
         );
       }
       // Two agents each parked on the other's answer wait for ever.
@@ -1392,6 +1428,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     // broadcast is a note whatever it says.
     const rings = !broadcast && (kind !== "note" || urgent);
     const outgoing: IrcSendInput = { ...parsed, kind };
+    delete outgoing.final;
     if (replyTo === undefined) delete outgoing.replyTo;
     else outgoing.replyTo = replyTo;
     // Read before it is sent: an answer to an agent parked on it is returned
@@ -1421,6 +1458,16 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     const downgradeNote = downgraded
       ? ` Sent as a note: ${downgraded} is not a question ${result.recipients.length === 1 ? nameOf(result.recipients[0]!) : "they"} asked you.`
       : "";
+    // Delivered: the contract closes with the report that carries it.
+    const delivered =
+      parsed.final === true &&
+      (input.store?.setContractClosed?.(ctx.threadId, { at: result.message.createdAt, reason: "delivered" }) ?? false);
+    const deliveredNote =
+      parsed.final !== true
+        ? ""
+        : delivered
+          ? ` Your contract is closed as delivered; ${nameOf(parentThreadId!)} can reopen it with agent_followup.`
+          : " kone could not record your contract as delivered; it stays open.";
     const structured: GatewayRecord = {
       messageId: result.messageId,
       from: ctx.threadId,
@@ -1432,9 +1479,10 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       replyTo: replyTo ?? null,
       createdAt: result.message.createdAt,
       outcome,
-      text: receiptText + downgradeNote,
+      text: receiptText + downgradeNote + deliveredNote,
       receipts,
     };
+    if (parsed.final === true) structured.contractClosed = delivered;
 
     if (parsed.wait === true) {
       const stopWaiting = mailbox.trackWait(ctx.threadId, result.recipients);
@@ -1468,7 +1516,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       content: [
         {
           type: "text",
-          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}]. ${receiptText}${downgradeNote}`,
+          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}]. ${receiptText}${downgradeNote}${deliveredNote}`,
         },
       ],
       structuredContent: structured,
@@ -1523,6 +1571,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       spawned: input.spawnedStatus?.(id) ?? null,
       waitingOn,
       providerSteers: steersWhenClosed,
+      contractOpen: contractOpen(meta),
       unseen: mailbox.getUnreadCount(id),
       oldestUnseenAt: mailbox.oldestUnseenAt(id),
     });

@@ -102,6 +102,8 @@ export class ThreadContinuationManager {
         { threadId: request.threadId },
       );
     }
+    // More work on a closed contract reopens it: the job is not done after all.
+    if (meta.contractClosed) this.deps.store.setContractClosed?.(request.threadId, null);
     return this.wakeAndSend(caller, request, message, meta, lineage);
   }
 

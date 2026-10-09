@@ -17,7 +17,7 @@
 // what gets sent and how.
 
 import type { CourierSender } from "@kone/protocol/message-sender";
-import { relationshipOf, type IrcMailbox, type IrcToolStore } from "./gateway/tools/irc.js";
+import { contractOpen, relationshipOf, type IrcMailbox, type IrcToolStore } from "./gateway/tools/irc.js";
 import { threadAgentName } from "./senderHeader.js";
 import type { HandOffKind, SpawnedThreadStatus } from "./types.js";
 
@@ -83,7 +83,12 @@ function quote(text: string): string {
  *  knows the child by. A report that rings ends on the work still out, so the
  *  parent knows whether to wait for more before acting; a held one leaves it
  *  off, since it would be stale by the time it is read. */
-export function renderSettleReport(report: SettledTurnReport, childName: string, rings = true): string {
+export function renderSettleReport(
+  report: SettledTurnReport,
+  childName: string,
+  rings = true,
+  contractOpen = false,
+): string {
   const where = `thread ${report.childThreadId}, turn ${report.turnId}`;
   const reply = report.summary?.trim();
   const lines: string[] = [];
@@ -93,6 +98,14 @@ export function renderSettleReport(report: SettledTurnReport, childName: string,
   } else if (report.status === "interrupted") {
     lines.push(`${childName}'s turn was interrupted before it finished (${where})${report.cutOff ? `: ${report.cutOff}` : "."}`);
     if (reply) lines.push("", "Its last reply:", "", quote(reply));
+  } else if (contractOpen) {
+    // A contractor's turn ending is not the job ending: it delivers with a
+    // report marked final, and until then it is idle between turns.
+    lines.push(
+      `${childName}'s turn ended (${where}). Its contract is still open: the deliverable comes as its report marked final, and messages to it still land. Its reply:`,
+      "",
+      reply ? quote(reply) : "(It ended without a reply.)",
+    );
   } else {
     lines.push(`${childName} finished the work you handed it (${where}). Its final reply:`, "", reply ? quote(reply) : "(It ended without a reply.)");
   }
@@ -146,7 +159,7 @@ export function createMailboxReportSink(deps: MailboxReportSinkDeps): SettleRepo
       const sender = courierReportSender(deps.store, report);
       const asked = report.status === "interrupted" && !report.cutOff;
       const rings = !(asked && deps.isBusy && !deps.isBusy(report.parentThreadId));
-      const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId, rings);
+      const text = renderSettleReport(report, sender.about?.name ?? report.childThreadId, rings, contractOpen(meta));
       try {
         const sent = deps.mailbox.sendCourierMessage({
           to: report.parentThreadId,

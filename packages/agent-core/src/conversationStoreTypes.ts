@@ -17,7 +17,7 @@ import type {
 import { copyTurnStamp } from "./types.js";
 import { ProviderKindSchema, SkillReferenceListSchema } from "./types.js";
 import { parseMessageSender, type MessageSender } from "@kone/protocol/message-sender";
-import { parseContractTerms } from "@kone/protocol/contract";
+import { parseContractTerms, type ContractClosedReason } from "@kone/protocol/contract";
 import { steerContinuationId } from "@kone/protocol/steer-split";
 import { threadEnvMode } from "./threadWorkspace.js";
 import { priceTurnUsage } from "./usage/storeUsage.js";
@@ -121,6 +121,10 @@ export type ThreadRow = {
   /** A contractor's terms, as JSON (migration 16); NULL for every other
    *  thread. Absent on rows read through a projection that doesn't name it. */
   contract_json?: string | null;
+  /** When and why a contractor's contract closed (migration 29); NULL while
+   *  it is open, and on every other thread. */
+  contract_closed_at?: number | null;
+  contract_closed_reason?: ContractClosedReason | null;
   fork_context_json: string | null;
   request_id: string | null;
   pinned_at: number | null;
@@ -605,6 +609,9 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
   if (forkContext) meta.forkContext = forkContext;
   const contract = parseContractTerms(row.contract_json);
   if (contract) meta.contract = contract;
+  if (contract && row.contract_closed_at != null && row.contract_closed_reason) {
+    meta.contractClosed = { at: row.contract_closed_at, reason: row.contract_closed_reason };
+  }
   if (row.parent_thread_id || row.relationship_to_parent) {
     meta.lineage = {
       parentThreadId: row.parent_thread_id,

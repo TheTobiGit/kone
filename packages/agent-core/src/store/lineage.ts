@@ -7,7 +7,7 @@ import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, THREAD_USAGE_COLUMNS, type ThreadRow } from "../conversationStoreTypes.js";
 import { indexBlockRow, indexItemRow, indexThreadRows } from "./search.js";
 import { encodeMessageSender } from "@kone/protocol/message-sender";
-import { encodeContractTerms, type ContractTerms } from "@kone/protocol/contract";
+import { encodeContractTerms, type ContractClosedReason, type ContractTerms } from "@kone/protocol/contract";
 import { PENDING_QUEUE_STATES, WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
   buildEditForkTitle,
@@ -899,6 +899,26 @@ export class LineageRepo {
       });
     } catch (err) {
       console.error("[conversation-store] retargetSpawnedThread failed:", err);
+    }
+  }
+
+  /** Close a contractor's contract, or (with null) reopen it. Only a thread
+   *  that carries contract terms has a contract to close; false for any
+   *  other, or when the store could not write it. */
+  setContractClosed(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      const result = db
+        .prepare(
+          `UPDATE threads SET contract_closed_at = ?, contract_closed_reason = ?
+           WHERE thread_id = ? AND contract_json IS NOT NULL`,
+        )
+        .run(closed?.at ?? null, closed?.reason ?? null, threadId);
+      return Number(result.changes) > 0;
+    } catch (err) {
+      console.error("[conversation-store] setContractClosed failed:", err);
+      return false;
     }
   }
 

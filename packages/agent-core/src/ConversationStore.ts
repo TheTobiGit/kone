@@ -26,6 +26,7 @@ import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type 
 import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
+import type { ContractClosedReason } from "@kone/protocol/contract";
 
 export { GLOBAL_ASSISTANT_PROJECT_PATH };
 
@@ -670,6 +671,10 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see LineageRepo */
+  setContractClosed(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean {
+    return this.lineage.setContractClosed(threadId, closed);
+  }
+
   threadLineage(threadId: string): ThreadLineage | null {
     return this.lineage.threadLineage(threadId);
   }

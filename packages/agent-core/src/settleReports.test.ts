@@ -51,3 +51,26 @@ describe("the report of an interrupted turn, to an idle parent", () => {
     expect(renderSettleReport(interrupted("t-4"), "Milo")).toContain("interrupted before it finished (thread child-1, turn t-4).");
   });
 });
+
+describe("a contractor's turn ending", () => {
+  const completed: SettledTurnReport = {
+    childThreadId: CHILD,
+    parentThreadId: PARENT,
+    turnId: "t-9",
+    handOff: "contract",
+    status: "completed",
+    summary: "Screens are in.",
+  };
+
+  test("is not the job ending while the contract is open", () => {
+    const text = renderSettleReport(completed, "Milo", true, true);
+    expect(text).toContain("Milo's turn ended (thread child-1, turn t-9). Its contract is still open");
+    expect(text).not.toContain("finished the work");
+  });
+
+  test("the sink reads the contract off the store: an open one is said so", () => {
+    const mailbox = new IrcMailbox();
+    createMailboxReportSink({ mailbox, store }).deliver(completed);
+    expect(mailbox.getInbox(PARENT).messages[0]?.message).toContain("Its contract is still open");
+  });
+});

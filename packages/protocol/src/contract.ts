@@ -32,6 +32,11 @@ export const ContractTermsSchema = z.object({
 
 export type ContractTerms = z.infer<typeof ContractTermsSchema>;
 
+/** Why a contract is over: the contractor reported its deliverable, or the
+ *  contracting agent withdrew the job. A contract that ends neither way is
+ *  still open, however many turns it has run. */
+export type ContractClosedReason = "delivered" | "withdrawn";
+
 /** The terms a stored thread carries, or undefined when it is not a
  *  contractor's (or what is stored cannot be read as terms). */
 export function parseContractTerms(json: string | null | undefined): ContractTerms | undefined {
@@ -60,5 +65,7 @@ export function renderContractBrief(task: string, terms: ContractTerms): string 
     `- Scope: ${terms.scope}`,
     `- Deliverable: ${terms.deliverable}`,
     `- Done when: ${terms.doneCriteria}`,
+    "",
+    "The contract lasts until you deliver: send the deliverable to your `delegator` with agent_message, kind report and final: true. Ending a turn does not end the contract, and messages reach you between turns.",
   ].join("\n");
 }

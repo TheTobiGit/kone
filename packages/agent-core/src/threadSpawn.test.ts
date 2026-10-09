@@ -124,6 +124,14 @@ class FakeStore implements SpawnEngineStore {
     return true;
   }
 
+  setContractClosed(threadId: string, closed: { at: number; reason: "delivered" | "withdrawn" } | null): boolean {
+    const meta = this.metas.get(threadId);
+    if (!meta?.contract) return false;
+    if (closed) meta.contractClosed = closed;
+    else delete meta.contractClosed;
+    return true;
+  }
+
   retargetSpawnedThread(threadId: string, provider: ProviderKind, model?: string): void {
     const meta = this.metas.get(threadId);
     if (!meta) return;
@@ -1570,6 +1578,18 @@ describe("continueThread", () => {
     expect(job.sender).toEqual({ kind: "agent", threadId: CALLER.threadId, relationship: "parent", messageKind: "followup", name: "Basalt" });
     // The child's events correlate back to the caller's turn (F10).
     expect(h.dispatcher.parentTurnsNoted).toEqual([{ threadId: child, parentTurnId: CALLER.turnId }]);
+  });
+
+  test("a follow-up on a delivered contract reopens it: there is more to the job", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+    const spawned = await h.engine.spawn(CALLER, { ...REQUEST, contract });
+    h.bus.emit(sessionStarted(spawned.threadId, 1));
+    h.store.setContractClosed(spawned.threadId, { at: 5, reason: "delivered" });
+
+    await h.engine.continueThread(CALLER, { threadId: spawned.threadId, message: "Add the reset screen too." });
+    expect(h.store.metas.get(spawned.threadId)?.contractClosed).toBeUndefined();
   });
 
   test("a follow-up from past the parent is labelled as from up the chain", async () => {
