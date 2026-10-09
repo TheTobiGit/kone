@@ -389,6 +389,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  the carrier token of that delivery so only that send can release or consume it. */
   private readonly restartNoteReserved = new Map<string, string>();
 
+  /** Queued turns carrying a restart note reservation: queueId → { threadId, carrierToken }. */
+  private readonly queuedCarrierNotes = new Map<string, { threadId: string; carrierToken: string }>();
+
   // One timer for the next continuation due in the future; the boot sweep
   // covers everything already due. Nothing polls: each arm schedules exactly
   // the next due time, and a sweep re-arms it after.
@@ -415,6 +418,22 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.releaseWorkspace = deps.releaseWorkspace;
     this.freshenWorkspaceBase = deps.freshenWorkspaceBase;
     this.renameWorkspaceBranch = deps.renameWorkspaceBranch;
+
+    this.service.onEvent?.((event) => {
+      if (event.type === "turn.queued-cancelled") {
+        const carrier = this.queuedCarrierNotes.get(event.queueId);
+        if (carrier) {
+          this.queuedCarrierNotes.delete(event.queueId);
+          this.releaseRestartNotePreamble(carrier.threadId, carrier.carrierToken);
+        }
+      } else if (event.type === "turn.promoted") {
+        const carrier = this.queuedCarrierNotes.get(event.queueId);
+        if (carrier) {
+          this.queuedCarrierNotes.delete(event.queueId);
+          this.consumeRestartNotePreamble(carrier.threadId, carrier.carrierToken);
+        }
+      }
+    });
   }
 
   spawnParentTurnId(threadId: string): string | undefined {
@@ -965,7 +984,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return (async (): Promise<TurnStartResult> => {
       try {
         const result = await started;
-        if (!result.queued) onAccepted(result.turnId);
+        if (!result.queued) {
+          onAccepted(result.turnId);
+        } else if (restartNote !== null) {
+          this.queuedCarrierNotes.set(result.turnId, {
+            threadId: named.threadId,
+            carrierToken,
+          });
+        }
         return result;
       } catch (err) {
         // A refused send leaves the note for the retry.
