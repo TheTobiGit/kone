@@ -695,12 +695,18 @@ export const IrcSendInputSchema = z
     wait: z.boolean().optional(),
     /** How long `wait` holds, below AGENT_MESSAGE_WAIT_MAX_MS. */
     timeoutMs: z.number().int().positive().max(AGENT_MESSAGE_WAIT_MAX_MS).optional(),
+    /** With a report from a contractor to its contracting agent: this is the
+     *  deliverable, and the contract closes with it. Ending a turn never does. */
+    final: z.boolean().optional(),
   })
   .refine((value) => value.kind !== "answer" || value.replyTo !== undefined, {
     message: "An answer names the question it answers: set replyTo to the question's message id.",
   })
   .refine((value) => value.wait !== true || value.kind === "question", {
     message: "Only a question waits for an answer.",
+  })
+  .refine((value) => value.final !== true || value.kind === "report", {
+    message: "Only a report delivers a contract: set kind report with final.",
   });
 
 export const IrcSendMessageInputSchema = IrcSendInputSchema;
@@ -745,6 +751,11 @@ export const IRC_SEND_JSON_SCHEMA = {
     timeoutMs: {
       type: "integer",
       description: `How long wait holds, at most ${AGENT_MESSAGE_WAIT_MAX_MS}.`,
+    },
+    final: {
+      type: "boolean",
+      description:
+        "For a contractor, with kind report to your `delegator`: this is the deliverable, and your contract closes with it. Ending a turn does not end a contract; this does.",
     },
   },
   required: ["to", "message"],

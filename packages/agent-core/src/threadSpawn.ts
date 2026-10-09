@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ModelCandidate } from "./agentModel.js";
 import type { AgentSender } from "@kone/protocol/message-sender";
+import type { ContractClosedReason } from "@kone/protocol/contract";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type { ThreadAgentBinding } from "./rosterRecord.js";
 import { checkSpawn, type SpawnRefusalDetails } from "./spawnGuards.js";
@@ -72,6 +73,9 @@ export interface SpawnEngineStore {
     contract?: ContractTerms;
   }): boolean;
   threadLineage(threadId: string): ThreadLineage | null;
+  /** Reopen (null) or close a contractor's contract. A follow-up on a closed
+   *  one reopens it: there is more to the job. */
+  setContractClosed?(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean;
   /** Bind a delegated child to the agent it runs as, before its first turn
    *  dispatches, so the thread's transcript names who answered. Returns what
    *  the thread is bound to now, or null when the write didn't land — the

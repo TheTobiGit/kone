@@ -818,6 +818,10 @@ export type StoredThreadMeta = {
    *  `"delegation"` edge whose identity came from the contract rather than the
    *  roster. Absent on every other thread. */
   contract?: ContractTerms;
+  /** Set once a contract is over: the contractor reported its deliverable, or
+   *  the contracting agent withdrew it. Absent while the contract is open —
+   *  between turns a contractor is idle, not done. */
+  contractClosed?: { at: number; reason: ContractClosedReason };
   /** Short text excerpt or preview of the latest turn/prompt. */
   snippet?: string;
 };
@@ -855,7 +859,7 @@ export type {
 } from "@kone/protocol/message-sender";
 import type { MessageSender } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
-import type { ContractTerms } from "@kone/protocol/contract";
+import type { ContractClosedReason, ContractTerms } from "@kone/protocol/contract";
 import type { ThreadAgentBinding } from "./rosterRecord.js";
 import type { ConversationStore } from "./ConversationStore.js";
 

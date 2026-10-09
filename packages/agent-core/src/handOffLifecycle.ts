@@ -16,6 +16,7 @@
 
 import { getSpawnEngine, SpawnError } from "./threadSpawn.js";
 import { threadAgentName } from "./senderHeader.js";
+import type { ContractClosedReason } from "@kone/protocol/contract";
 import type { ThreadDispatcher } from "./dispatch.js";
 import type {
   MessageSender,
@@ -33,6 +34,8 @@ export interface HandOffLifecycleStore {
   spawnedChildren(parentThreadId: string): StoredThreadMeta[];
   getThreadAgent?(threadId: string): { agentId: string | null } | null;
   getAgent?(agentId: string): { name: string | null } | null;
+  /** Close a contractor's contract; withdrawing the job is one way it ends. */
+  setContractClosed?(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean;
 }
 
 /** Structural — the real AgentService satisfies it. */
@@ -255,6 +258,11 @@ export class HandOffLifecycle {
     if (lineage?.relationshipToParent !== "delegation") {
       await this.deps.service.stopSession(threadId);
       return "stopped";
+    }
+    // A withdrawn job is over: the contract closes now, whatever its wrap-up
+    // turn says.
+    if (this.deps.store.threadMeta(threadId)?.contract) {
+      this.deps.store.setContractClosed?.(threadId, { at: Date.now(), reason: "withdrawn" });
     }
     const callerName = this.nameOf(callerThreadId);
     this.tell(

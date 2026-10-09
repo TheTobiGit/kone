@@ -28,6 +28,7 @@ describe("contract terms", () => {
     expect(brief).toContain(`- Scope: ${terms.scope}`);
     expect(brief).toContain(`- Deliverable: ${terms.deliverable}`);
     expect(brief).toContain(`- Done when: ${terms.doneCriteria}`);
+    expect(brief).toContain("kind report and final: true");
     expect(brief).not.toContain(terms.instructions);
   });
 });

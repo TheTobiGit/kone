@@ -76,6 +76,9 @@ export interface RecipientStateInput {
   waitingOn?: { threadIds: string[]; since: number } | null;
   /** Whether its provider steers, for a thread with no live session. */
   providerSteers?: boolean | null;
+  /** A contractor whose contract is still open: its turn ending is not its
+   *  work ending, so between turns it reads as closed, never as ended. */
+  contractOpen?: boolean;
   unseen: number;
   oldestUnseenAt: number | null;
 }
@@ -141,6 +144,9 @@ export function recipientState(input: RecipientStateInput): RecipientState {
     };
   }
   if (rt?.live) return { ...base, state: "idle", since: rt.lastActivityAt, activity: null };
+  if (input.contractOpen) {
+    return { ...base, state: "closed", since: null, activity: "between turns of an open contract" };
+  }
   if (input.spawned && ENDED.has(input.spawned)) {
     // SAFETY: ENDED holds exactly the four statuses `ended` names.
     const ended = input.spawned as RecipientState["ended"];
@@ -187,7 +193,9 @@ export function describeRecipientState(state: RecipientState, now: number): stri
     case "compacting":
       return "compacting its context; it takes messages shortly";
     case "closed":
-      return "session closed; a message that rings brings it back up, a note waits until it runs again";
+      return state.activity
+        ? `${state.activity}; a message that rings brings its session back up`
+        : "session closed; a message that rings brings it back up, a note waits until it runs again";
     case "ended":
       return `${state.activity ?? "its work is over"}; messages to it are refused — follow up on it instead`;
   }
