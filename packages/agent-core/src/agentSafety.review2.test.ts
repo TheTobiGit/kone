@@ -219,4 +219,24 @@ describe("P2 review round 2", () => {
     await svc.stopAll();
     expect(queued[0]?.input).not.toContain("kone restarted");
   });
+
+  test("cancelled queued carrier must release restart note", async () => {
+    const id = "cancel-carrier";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+    const dispatcher = dispatcherFor(svc);
+    adapter.sendGate = gate();
+    const first = svc.sendTurn({ threadId: id, input: "already sending" });
+    dispatcher.stageRestartBackgroundNote(id, [{ kind: "subagent", id: "child", label: "lost research" }]);
+    const carrier = await dispatcher.sendThreadTurn({ threadId: id, input: "queued carrier" });
+    expect(carrier.queued).toBe(true);
+    await svc.cancelQueuedTurn(id, carrier.turnId);
+    adapter.sendGate.open();
+    await first;
+    await dispatcher.sendThreadTurn({ threadId: id, input: "retry after cancellation" });
+    expect(adapter.sent.at(-1)).toContain("lost research");
+    await svc.stopAll();
+  });
 });
