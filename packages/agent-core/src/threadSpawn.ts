@@ -609,6 +609,7 @@ class SpawnEngineImpl implements SpawnEngine {
   private readonly store: SpawnEngineStore;
   private readonly providers: SpawnEngineProviders;
   private readonly dispatcher: ThreadDispatcher;
+  private readonly jobs: SpawnJobs;
   private readonly emit: (event: RuntimeEvent) => void;
 
   private readonly tracked = new Map<string, TrackedChild>();
@@ -627,6 +628,7 @@ class SpawnEngineImpl implements SpawnEngine {
     this.store = deps.store;
     this.providers = deps.providers;
     this.dispatcher = deps.dispatcher;
+    this.jobs = deps.jobs;
     this.emit = deps.emit;
     this.reportSink = deps.reports;
     this.unsubscribeEvents = deps.onEvents((event) => this.onEvent(event));
@@ -1163,6 +1165,11 @@ class SpawnEngineImpl implements SpawnEngine {
         // announcement for the session itself.
         if (child.sessionEnd && awaiting?.turnId !== event.turnId) return;
         if (child.turns.some((turn) => turn.turnId === event.turnId)) return;
+        // A provider may finish the whole turn before sendThreadTurn returns
+        // and the inbox settles. Bind jobs already being sent to this start,
+        // so even that turn's deferred report knows who asked for it.
+        this.rekeyReportees(child, [...(child.reportees?.keys() ?? [])]
+          .filter((id) => this.jobs.jobTurn(id)?.sending), event.turnId);
         this.reviveSession(child);
         child.turns.push({ turnId: event.turnId, state: "running", at: event.at });
         child.gate = null;
@@ -1392,7 +1399,8 @@ class SpawnEngineImpl implements SpawnEngine {
     state.held.delete(turnId);
     const turn = this.waitCoordinator.snapshotForWait(child.threadId, turnId);
     if (!turn.terminal) return;
-    child.reportees?.delete(turnId);
+    // Keep the turn's requester: a later wait must retract its report from
+    // that same inbox, even after another caller has posted a follow-up.
     const report: SettledTurnReport = {
       childThreadId: child.threadId,
       parentThreadId: target,
@@ -1430,7 +1438,7 @@ class SpawnEngineImpl implements SpawnEngine {
    *  agent, not the one the child works for. */
   private onCollected(scopeThreadId: string, threadId: string, turnId: string): void {
     const child = this.tracked.get(threadId);
-    if (!child || this.reportTarget(child) !== scopeThreadId) return;
+    if (!child || this.reportTarget(child, turnId) !== scopeThreadId) return;
     const state = this.reportsOf(threadId);
     state.collected.add(turnId);
     state.held.delete(turnId);
@@ -1441,8 +1449,9 @@ class SpawnEngineImpl implements SpawnEngine {
   private onAbandoned(scopeThreadId: string, threadIds: readonly string[]): void {
     for (const threadId of threadIds) {
       const child = this.tracked.get(threadId);
-      if (!child || this.reportTarget(child) !== scopeThreadId) continue;
+      if (!child) continue;
       for (const turnId of this.reportsOf(threadId).held) {
+        if (this.reportTarget(child, turnId) !== scopeThreadId) continue;
         queueMicrotask(() => this.report(child, turnId));
       }
     }
