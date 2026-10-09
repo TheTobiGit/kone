@@ -1248,6 +1248,29 @@ export type ForkThreadAtTurnResult = {
   status: "created" | "exists";
 };
 
+/** A conversation-only rewind: the source keeps its files and its turns, and
+ *  the conversation continues from a finished turn's end in a new thread. This
+ *  is exactly the rewind target a file-restore refusal hands over
+ *  (`{ sourceThreadId, turnId, userBlockId }`), plus the caller-minted
+ *  creation ids every fork path takes. No session starts and nothing is sent:
+ *  the fork waits for the user's first message like any lazy fork. */
+export type RewindConversationOnlyInput = {
+  /** Caller-chosen idempotency key, as create-handoff/create-side-chat use. */
+  requestId: string;
+  /** Renderer-minted id for the new thread. */
+  threadId: string;
+  /** The thread to rewind. */
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, or null when the turn has none (a steer, or a
+   *  prompt that was never journaled). Null cuts at the turn's last assistant
+   *  block instead. */
+  userBlockId: string | null;
+};
+
+export type RewindConversationOnlyResult = ForkThreadAtTurnResult;
+
 /** Deliver a fork's or side chat's outcome back into its source thread as an
  *  attributed summary block. Data only — the caller emits the timeline event. */
 export type MergeBackInput = {
