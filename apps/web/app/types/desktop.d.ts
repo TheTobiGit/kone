@@ -1342,6 +1342,37 @@ export type ForkThreadAtBlockResult = {
   status: "created" | "exists";
 };
 
+// ── conversation-only rewind (mirror packages/agent-core/src/types.ts) ─────
+// Continue a finished turn in a new thread without touching files: the
+// alternative a file-restore refusal offers. The input is exactly the rewind
+// target (source thread, turn, prompt block or null) plus the renderer-minted
+// creation ids. No session starts and nothing is sent — the new thread waits
+// for the user's first message.
+
+export type RewindConversationOnlyInput = {
+  /** Caller-chosen idempotency key. Same requestId replayed with the same
+   *  threadId resolves "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new thread. */
+  threadId: string;
+  /** The thread to rewind. */
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, or null when the turn has none. */
+  userBlockId: string | null;
+};
+
+export type RewindConversationOnlyResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** `"created"` = the rewind was written; `"exists"` = a thread with this id
+   *  was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
 
 // ── tool approvals (mirror packages/agent-core/src/types.ts) ──────────────────
@@ -3111,6 +3142,12 @@ export type KoneAgentApi = {
    *  resolves "exists". The fork's first turn is dispatched before this
    *  resolves, so the caller can open the fork onto a live turn. */
   forkThreadAtBlock: (input: ForkThreadAtBlockInput) => Promise<ForkThreadAtBlockResult>;
+  /** Conversation-only rewind: continue a finished turn in a new thread
+   *  without touching files. No session starts and nothing is sent — the new
+   *  thread waits for the user's first message. */
+  rewindConversationOnly: (
+    input: RewindConversationOnlyInput,
+  ) => Promise<RewindConversationOnlyResult>;
   interrupt: (threadId: string) => Promise<void>;
   /** The user's Stop: interrupt, then settle the work the thread handed off. */
   stop?: (threadId: string) => Promise<void>;
