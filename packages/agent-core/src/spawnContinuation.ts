@@ -104,8 +104,6 @@ export class ThreadContinuationManager {
         { threadId: request.threadId },
       );
     }
-    // More work on a closed contract reopens it: the job is not done after all.
-    if (meta.contractClosed) this.deps.store.setContractClosed?.(request.threadId, null);
     return this.wakeAndSend(caller, request, message, meta, lineage);
   }
 
@@ -186,7 +184,13 @@ export class ThreadContinuationManager {
               ? "delegator"
               : "parent";
       const sender = agentSenderFor(this.deps.store, caller.threadId, relationship, "followup");
-      const result = finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true);
+      const jobId = this.postJob(this.deps.jobs, caller, request, message, meta, sender);
+      // The job is in the child's inbox — durably accepted. More work on a
+      // closed contract reopens it here, not before the ask is out: a
+      // failure on the way (a provider that cannot come back up, a job that
+      // could not be posted) leaves the contract closed, as it was.
+      if (meta.contractClosed) this.deps.store.setContractClosed?.(request.threadId, null);
+      const result = finish(jobId, true);
       if (tracked) {
         this.deps.liveChildren.add(request.threadId);
       }

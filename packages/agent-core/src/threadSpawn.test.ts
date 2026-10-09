@@ -1732,6 +1732,31 @@ describe("continueThread", () => {
     expect(h.store.metas.get(spawned.threadId)?.contractClosed).toBeUndefined();
   });
 
+  for (const failure of ["provider", "inbox"] as const) {
+    test(`a ${failure} failure leaves a delivered contract closed`, async () => {
+      const h = makeEngine();
+      setupParent(h.store, h.providers);
+      const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+      const spawned = await h.engine.spawn(CALLER, { ...REQUEST, contract });
+      h.bus.emit(sessionStarted(spawned.threadId, 1));
+      const turnId = spawned.firstTurnId ?? "turn-1";
+      h.bus.emit(turnStarted(spawned.threadId, turnId, 2));
+      h.bus.emit(turnCompleted(spawned.threadId, turnId, 3));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      h.bus.emit({ type: "session.exited", threadId: spawned.threadId, provider: "opencode", at: 4, source: "kone.store" });
+      const closed = { at: 5, reason: "delivered" as const };
+      h.store.setContractClosed(spawned.threadId, closed);
+      if (failure === "provider") h.dispatcher.failStart = true;
+      else h.jobs.postJob = () => { throw new Error("inbox write failed"); };
+
+      await expect(h.engine.continueThread(CALLER, {
+        threadId: spawned.threadId, message: "Add the reset screen too.",
+      })).rejects.toThrow();
+      expect(h.store.metas.get(spawned.threadId)?.contractClosed).toEqual(closed);
+      expect(h.jobs.claimJob(spawned.threadId)).toBeNull();
+    });
+  }
+
   test("a follow-up from past the parent is labelled as from up the chain", async () => {
     const h = makeEngine();
     setupParent(h.store, h.providers);
