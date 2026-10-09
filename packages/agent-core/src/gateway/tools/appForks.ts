@@ -60,11 +60,19 @@ export function createAppForkTools(options: AppForkToolOptions): ToolEntry[] {
         error instanceof Error ? errorMessage(error, "Fork failed.") : "Fork failed.",
       );
     }
+    // The assistant target strips structuredContent, so the text carries the
+    // new thread id plus what the next turn needs: where the fork opens and
+    // that no provider session starts until its first message.
+    const on = result.model ? `${result.provider}/${result.model}` : result.provider;
+    const forkText =
+      result.status === "exists"
+        ? `Thread ${result.threadId} already exists for this creation, so nothing new was forked (source ${result.sourceThreadId} at turn ${params.turnId}). Thread id: ${result.threadId}.`
+        : `Forked thread ${result.sourceThreadId} at turn ${params.turnId} into ${result.threadId} on ${on}. Thread id: ${result.threadId}. It continues from the end of that turn with no provider session yet - read it back with app_read_thread.`;
     return {
       content: [
         {
           type: "text",
-          text: `Forked thread ${result.sourceThreadId} at turn ${params.turnId} into ${result.threadId} (${result.status}).`,
+          text: forkText,
         },
       ],
       structuredContent: {
@@ -112,7 +120,7 @@ export function createAppForkTools(options: AppForkToolOptions): ToolEntry[] {
       content: [
         {
           type: "text",
-          text: `Merged fork ${params.forkThreadId} into ${params.sourceThreadId}.`,
+          text: `Merged fork ${params.forkThreadId} into ${params.sourceThreadId}. Block id: ${result.block.id}. The summary is on the source timeline as a system notice - read it back with app_read_thread.`,
         },
       ],
       structuredContent: {
