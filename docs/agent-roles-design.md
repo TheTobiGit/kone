@@ -1,7 +1,8 @@
 # Agent roles, relationships and messaging
 
-Status: implemented on `feat/agent-roles` (see §13 for where the build
-departs from this design).
+Status: roles implemented on `feat/agent-roles`; teamwork extensions implemented
+on `teamwork` through `e6296cd` (2026-10-09), not yet merged. See §13 for the
+original departures and §15 for current contract/grant behavior.
 
 kone agents should feel like co-workers: they have an identity, take on large
 pieces of work, and hand parts of it to others. This document fixes the roles,
@@ -389,3 +390,38 @@ on hand-offs.
   support for native subagents; the others have almost none.
 - Pick values for the delegation-depth and workers-per-agent limits.
 - Design the expanded view of a worker opened from the Subagents dock.
+
+
+## 15. Teamwork extensions shipped on `teamwork` (2026-10-09)
+
+Code pin: `e6296cd79a43b59ab14cc716036d727d6360091c`. The implementation
+and handoff are recorded in `docs/agent-teamwork-features.md`.
+
+- A contract stays open between turns. Its provider session may stop, but a
+  ringing message can resume it. Turn completion does not close the contract.
+- The contractor explicitly delivers with `agent_message kind: report,
+  final: true` to its contracting agent; withdrawal also closes the contract.
+  Delivered means closed, with no separate acceptance step.
+- Closing the contract and deleting every grant targeting it is one durable
+  transaction. Reach helpers ignore lingering grants on closed contracts.
+  An agent up the chain can reopen it with a new follow-up; reopening occurs
+  only after the job is durably accepted, and restores no old grants. Peer
+  access requires explicit new grants.
+- An ancestor can share `read`, `message`, or `followup` access through
+  `agent_grant`, or the `grants` field of `agent_contract`/`agent_delegate`.
+  `message` includes read; `followup` includes read and message, and permits
+  following up and waiting. A grant does not confer withdrawal authority.
+  Delegation depth limits stay as they were.
+- Peer follow-up results are bound to the requesting peer per job/turn before
+  dispatch. Concurrent requests and a provider turn that finishes before its
+  send returns cannot replace that recipient. Collection and abandoned waits
+  use the same turn-specific recipient; later collection retracts its report.
+- `to: "crew"` broadcasts a quiet note to the orchestrator's agents, or from
+  a member to its delegator and fellow members. Workers and closed contractors
+  are omitted from the crew's agent list.
+- `agent_list` exposes grants. Contract/grant UI remains to be designed.
+
+Migrations 29 (contract closure) and 31 (grants) are **renumber at merge**:
+`t3-parity` already occupies 29–33. Do not install this branch's schema over
+an existing t3-parity database before reconciliation. See the teamwork doc
+for all four colliding migrations and the exact gate results.

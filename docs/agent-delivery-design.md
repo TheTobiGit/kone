@@ -2,7 +2,9 @@
 
 Status: being built. §1–§9 are the design; §10 maps it onto the code; §11
 records the decisions that were open; §12 is the build plan, phase by phase;
-§13 is what already shipped while this was being worked out.
+§13 is what already shipped while this was being worked out. §14 records the
+teamwork extensions shipped on `teamwork` through `e6296cd` (2026-10-09),
+not yet merged. Earlier “today” descriptions are the design baseline.
 
 Builds on `docs/agent-roles-design.md`, which fixes who may message whom.
 This document is about how a message gets there.
@@ -630,3 +632,39 @@ carries one block id, so only the batch's last message moves. The row keeps
 one `userBlockId` (`enqueueTurn`), the turn rebuilt from it names none, and
 "Send now" passes on only that one. The inbox (§10) names every block it hands
 over, which closes it.
+
+
+## 14. Teamwork delivery extensions (2026-10-09)
+
+Shipped on `teamwork` through `e6296cd`; not yet merged into
+`linux/desktop-shell` or `t3-parity`. See `docs/agent-teamwork-features.md`
+for the code pins, migration collision and Mac handoff.
+
+- Open-contract lifetime is independent of the provider session. Authorized
+  direct notes from up the chain or a peer with message access ring an open
+  contractor. Questions, reports and answers retain wake-capable delivery;
+  quiet crew broadcasts wake nobody.
+- `agent_message` reports its delivery outcome. `ackRequired: true` watches
+  a message until opening, and `agent_list` shows the sender's outstanding
+  acknowledgement count. Opening is not acceptance of the instruction.
+- `agent_sent` reads receipts: waiting, being handed over, opened (including
+  the carrying turn or explicit inbox read), and acted on once the carrying
+  turn ends. “Acted on” is delivery/turn evidence, not proof of compliance.
+- `about: {branch, commit}` is stored with the message. On opening, the
+  recipient sees how far that branch moved, or that it was rewritten/deleted,
+  when git can establish it. This is a warning, not a branch movement guard.
+- Follow-ups remain durable inbox jobs. A closed contract reopens only after
+  the job is durably posted; provider-start and inbox-write failures preserve
+  its prior closure. Grant teardown is atomic with contract closure.
+- A granted peer's follow-up report goes back to that peer, bound per job/turn
+  before dispatch, including a fast provider completion before handover settles.
+  Concurrent follow-ups, result collection, report retraction and abandoned
+  waits preserve that turn's recipient.
+- Board standing-rule changes arrive as held notices before members' next
+  turns. Status-row changes emit `board.updated` but ring nobody. Full board
+  subscriptions and automatic per-turn digests are not implemented.
+
+Migration 30 adds inbox acknowledgement/about metadata; migrations 29, 31 and
+32 add closure, grants and boards. All are **renumber at merge**, because
+`t3-parity` already uses 29–33. Inbox IPC/preload/renderer types carry
+`ackRequired` and `about`; their UI presentation still needs wiring.
