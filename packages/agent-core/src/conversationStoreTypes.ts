@@ -867,11 +867,12 @@ function toStoredBlock(b: BlockRow, itemsByTurn: Map<string, RuntimeItem[]>): St
 export type ConversationSearchEntryKind = "block" | "item";
 
 /** Options for `searchConversations`. Omit `threadId` to search every thread;
- *  set it to scope the query to one. `limit` bounds the hits (default 20,
- *  capped at 100). */
+ *  set it to scope the query to one. `limit` bounds each page (default 20,
+ *  capped at 100); `offset` advances through the ranked results. */
 export type ConversationSearchOptions = {
   threadId?: string;
   limit?: number;
+  offset?: number;
 };
 
 /** One ranked search hit. `blockId` is the block itself for prompt hits and

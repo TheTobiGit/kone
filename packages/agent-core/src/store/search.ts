@@ -319,6 +319,7 @@ export class SearchRepo {
       const ftsQuery = toFtsQuery(query);
       if (!ftsQuery || !ftsReady(db)) return [];
       const limit = clampLimit(options?.limit);
+      const offset = clampOffset(options?.offset);
       const scoped = options?.threadId;
       type FtsHitRow = {
         thread_id: string;
@@ -342,7 +343,7 @@ export class SearchRepo {
              FROM conversation_fts
              LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ? AND conversation_fts.thread_id = ?
-            ORDER BY rank LIMIT ?`
+            ORDER BY rank LIMIT ? OFFSET ?`
         : `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
                   conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
                   blocks.sender_json AS sender_json,
@@ -351,13 +352,13 @@ export class SearchRepo {
              FROM conversation_fts
              LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ?
-            ORDER BY rank LIMIT ?`;
+            ORDER BY rank LIMIT ? OFFSET ?`;
       // SAFETY: the projection names exactly the FTS columns plus the two
       // aliased FTS5 auxiliary outputs read below.
       const rows = (
         scoped
-          ? db.prepare(sql).all(ftsQuery, scoped, limit)
-          : db.prepare(sql).all(ftsQuery, limit)
+          ? db.prepare(sql).all(ftsQuery, scoped, limit, offset)
+          : db.prepare(sql).all(ftsQuery, limit, offset)
       ) as FtsHitRow[];
       const hits: ConversationSearchHit[] = [];
       for (const row of rows) {
@@ -392,4 +393,9 @@ function clampLimit(limit: number | undefined): number {
     return SEARCH_DEFAULT_LIMIT;
   }
   return Math.max(1, Math.min(SEARCH_MAX_LIMIT, Math.floor(limit)));
+}
+
+function clampOffset(offset: number | undefined): number {
+  if (offset === undefined || offset === null || !Number.isFinite(offset)) return 0;
+  return Math.max(0, Math.floor(offset));
 }

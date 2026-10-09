@@ -59,7 +59,7 @@ import type {
   ThreadStatus,
   TurnStartResult,
 } from "../../types.js";
-import type { ConversationSearchHit, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
+import type { ConversationSearchHit, ConversationSearchOptions, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
 import { encodeThreadPageCursor, GLOBAL_ASSISTANT_PROJECT_PATH, type StoredThreadPage } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
@@ -115,7 +115,7 @@ import {
   type UnlinkThreadPullRequestInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
-import { collapseSearchHits } from "../searchCollapse.js";
+import { collapseSearchHits, fetchSearchCandidates } from "../searchCollapse.js";
 import { canReadThread } from "../readScope.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
 import {
@@ -189,7 +189,7 @@ export interface AppThreadsStore {
    *  tool collapses them to one best per thread. */
   searchConversations?(
     query: string,
-    options?: { limit?: number },
+    options?: ConversationSearchOptions,
   ): ConversationSearchHit[];
   /** Persist (or clear) a linked pull request on a thread. The settle sweep
    *  reads it to know when a merged PR means the thread is done. Absent, the
@@ -1393,13 +1393,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // cap), THEN scope-filter, collapse and rank. Limiting raw FTS hits first
     // would let a page full of unreadable or assistant hits hide an eligible
     // user match further down the ranking.
-    const SEARCH_CANDIDATE_CAP = 1_000;
-    let fetchLimit = Math.max(limit * 8, 50);
-    let raw = store.searchConversations(input.query, { limit: fetchLimit });
-    while (raw.length === fetchLimit && fetchLimit < SEARCH_CANDIDATE_CAP) {
-      fetchLimit = Math.min(fetchLimit * 4, SEARCH_CANDIDATE_CAP);
-      raw = store.searchConversations(input.query, { limit: fetchLimit });
-    }
+    const raw = fetchSearchCandidates(store.searchConversations.bind(store), input.query);
     const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
     const caller = callerMeta
       ? {

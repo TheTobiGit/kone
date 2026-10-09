@@ -1,4 +1,23 @@
-import type { ConversationSearchHit } from "../conversationStoreTypes.js";
+import type { ConversationSearchHit, ConversationSearchOptions } from "../conversationStoreTypes.js";
+
+const SEARCH_CANDIDATE_PAGE_SIZE = 100;
+
+/** Read candidate pages from the bounded store API without confusing its
+ *  per-call limit with the total ranked hit count. */
+export function fetchSearchCandidates(
+  search: (query: string, options?: ConversationSearchOptions) => ConversationSearchHit[],
+  query: string,
+  candidateCap = 1_000,
+): ConversationSearchHit[] {
+  const hits: ConversationSearchHit[] = [];
+  while (hits.length < candidateCap) {
+    const limit = Math.min(SEARCH_CANDIDATE_PAGE_SIZE, candidateCap - hits.length);
+    const page = search(query, { limit, offset: hits.length });
+    hits.push(...page);
+    if (page.length < limit) break;
+  }
+  return hits;
+}
 
 // Thread-level search results. The FTS index returns one row per matching block
 // or item, so a single thread can appear many times; a conversation list wants
