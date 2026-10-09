@@ -13,6 +13,8 @@ import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
 import { AgentInboxRepo, type AgentInboxStore, type InboxChangeListener, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia, type SentInboxQuery } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
+import { AgentGrantRepo } from "./store/agentGrants.js";
+import type { AgentGrant } from "./agentAccess.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
@@ -45,6 +47,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly queuedTurns: QueuedTurnRepo;
   private readonly agentInbox: AgentInboxRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
+  private readonly agentGrants: AgentGrantRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
@@ -80,6 +83,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.queuedTurns = new QueuedTurnRepo(this.dbh);
     this.agentInbox = new AgentInboxRepo(this.dbh);
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
+    this.agentGrants = new AgentGrantRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
@@ -390,6 +394,31 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see AgentInboxRepo */
   resetInboxHandingAtBoot(): void {
     this.agentInbox.resetHandingAtBoot();
+  }
+
+  /** @see AgentGrantRepo */
+  setAgentGrant(grant: AgentGrant): boolean {
+    return this.agentGrants.setAgentGrant(grant);
+  }
+
+  /** @see AgentGrantRepo */
+  revokeAgentGrant(granteeThreadId: string, targetThreadId: string): boolean {
+    return this.agentGrants.revokeAgentGrant(granteeThreadId, targetThreadId);
+  }
+
+  /** @see AgentGrantRepo */
+  agentGrant(granteeThreadId: string, targetThreadId: string): AgentGrant | null {
+    return this.agentGrants.agentGrant(granteeThreadId, targetThreadId);
+  }
+
+  /** @see AgentGrantRepo */
+  agentGrantsOn(targetThreadId: string): AgentGrant[] {
+    return this.agentGrants.agentGrantsOn(targetThreadId);
+  }
+
+  /** @see AgentGrantRepo */
+  agentGrantsHeldBy(granteeThreadId: string): AgentGrant[] {
+    return this.agentGrants.agentGrantsHeldBy(granteeThreadId);
   }
 
   /** @see TurnCheckpointRepo */

@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1259,6 +1259,26 @@ function migration0030InboxReceipts(db: DatabaseSync): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_inbox_sender ON agent_inbox (sender_thread_id, created_at)`);
 }
 
+/**
+ * Grants: an agent up a hand-off's chain lets a named peer read, message or
+ * follow up the agent it handed work to. One row per holder and agent; both
+ * ends cascade with their threads.
+ */
+function migration0031AgentGrants(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_grants (
+      grantee_thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      target_thread_id     TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      access               TEXT NOT NULL CHECK (access IN ('read', 'message', 'followup')),
+      granted_by_thread_id TEXT NOT NULL,
+      created_at           INTEGER NOT NULL,
+      PRIMARY KEY (grantee_thread_id, target_thread_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_grants_target ON agent_grants (target_thread_id);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1290,6 +1310,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
   { id: 29, name: "ContractClosed", run: migration0029ContractClosed },
   { id: 30, name: "InboxReceipts", run: migration0030InboxReceipts },
+  { id: 31, name: "AgentGrants", run: migration0031AgentGrants },
 ];
 
 export interface MigrationOptions {

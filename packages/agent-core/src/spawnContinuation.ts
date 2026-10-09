@@ -30,6 +30,8 @@ export interface SpawnContinuationDeps {
    *  spawned child. */
   adopt?: (threadId: string, parentTurnId: string, hasLiveSession: boolean) => TrackedChild | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
+  /** Up the thread's chain, or granted follow-up on it. */
+  canFollowUp: (callerThreadId: string, threadId: string) => boolean;
   /** Where a follow-up goes: a job in the child's inbox. */
   jobs: SpawnJobs;
 }
@@ -54,10 +56,10 @@ export class ThreadContinuationManager {
         "That is your own thread — write your reply instead of continuing it.",
       );
     }
-    if (!this.deps.isInSubtree(caller.threadId, request.threadId)) {
+    if (!this.deps.canFollowUp(caller.threadId, request.threadId)) {
       throw new SpawnError(
         "not_found",
-        `Thread "${request.threadId}" is not in this conversation's subtree — you can only continue a thread you (or a descendant of yours) spawned.`,
+        `Thread "${request.threadId}" is not in this conversation's subtree — you can only continue a thread you (or a descendant of yours) spawned, or one you were granted follow-up on.`,
         { threadId: request.threadId },
       );
     }
@@ -172,9 +174,11 @@ export class ThreadContinuationManager {
     try {
       // Whoever above the child asks, the ask arrives as that agent's words —
       // never the user's — under the relationship the hand-off was made with,
-      // or as from up the chain when an ancestor past the parent asks.
-      const relationship =
-        lineage.parentThreadId !== caller.threadId
+      // or as from up the chain when an ancestor past the parent asks. A peer
+      // holding a follow-up grant asks as the peer it is.
+      const relationship = !this.deps.isInSubtree(caller.threadId, request.threadId)
+        ? "peer"
+        : lineage.parentThreadId !== caller.threadId
           ? "upstream"
           : meta.contract
             ? "contracting"

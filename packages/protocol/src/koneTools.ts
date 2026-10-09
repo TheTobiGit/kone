@@ -25,6 +25,7 @@ export const KONE_WORKER_TOOL_NAMES = [
   "agent_keep_or_stop",
   "agent_decline",
   "agent_answer",
+  "agent_grant",
   "agent_message",
   "agent_list",
   "agent_inbox",

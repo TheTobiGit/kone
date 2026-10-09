@@ -4,6 +4,7 @@
 // packages/contracts/src/gateway.ts — the registry imports schemas, never the
 // reverse, so the move is mechanical.
 
+import { GRANT_ACCESS } from "../agentAccess.js";
 import { z } from "zod";
 
 import {
@@ -295,6 +296,31 @@ export const WorkerStartInputSchema = z
 export const SpawnWorkerInputSchema = WorkerStartInputSchema;
 export const SpawnWorkerPresetInputSchema = WorkerStartInputSchema;
 
+/** A grant named when work is handed off: a peer, and how far it may reach
+ *  the new agent (agentAccess.ts). */
+export const GrantSpecSchema = z.object({
+  /** The peer the grant is for: its name or thread id, as agent_list shows it. */
+  agent: z.string().trim().min(1).max(200),
+  access: z.enum(GRANT_ACCESS),
+});
+export type GrantSpec = z.infer<typeof GrantSpecSchema>;
+
+export const GrantListSchema = z.array(GrantSpecSchema).max(12);
+
+export const GRANT_LIST_JSON_SCHEMA = {
+  type: "array",
+  description:
+    "Peers who may reach the new agent beyond you, e.g. a lead who coordinates it: read (agent_read), message (its notes ring, urgent allowed), or followup (agent_followup and agent_wait too). Name each by name or thread id, as agent_list shows it. Change them later with agent_grant.",
+  items: {
+    type: "object",
+    properties: {
+      agent: { type: "string" },
+      access: { type: "string", enum: [...GRANT_ACCESS] },
+    },
+    required: ["agent", "access"],
+  },
+} satisfies GatewayRecord;
+
 /** An agent contracted for one job: the identity the calling agent writes for
  *  it, the job's terms, and the task itself. */
 export const ContractAgentInputSchema = ContractTermsSchema.extend({
@@ -312,6 +338,8 @@ export const ContractAgentInputSchema = ContractTermsSchema.extend({
   kind: WorkKindSchema,
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
+  /** Peers who may reach the contractor beyond the caller. */
+  grants: GrantListSchema.optional(),
 });
 
 export const DelegateToTeammateInputSchema = z.object({
@@ -338,6 +366,8 @@ export const DelegateToTeammateInputSchema = z.object({
     .optional(),
   /** For a teammate with no model of its own: the user's model for this kind. */
   kind: WorkKindSchema,
+  /** Peers who may reach the delegate beyond the caller. */
+  grants: GrantListSchema.optional(),
 });
 export const WorkerBatchItemSchema = z
   .object({
@@ -506,6 +536,7 @@ export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
       required: ["provider", "model"],
     },
     kind: WORK_KIND_JSON_SCHEMA,
+    grants: GRANT_LIST_JSON_SCHEMA,
   },
   required: ["agent", "task", "requestId"],
 } satisfies GatewayRecord;
@@ -547,6 +578,7 @@ export const CONTRACT_AGENT_JSON_SCHEMA = {
     },
     kind: WORK_KIND_JSON_SCHEMA,
     mode: { type: "string", enum: [...INTERACTION_MODES] },
+    grants: GRANT_LIST_JSON_SCHEMA,
   },
   required: ["name", "role", "instructions", "task", "scope", "deliverable", "doneCriteria", "requestId"],
 } satisfies GatewayRecord;
@@ -730,7 +762,7 @@ export const IRC_SEND_JSON_SCHEMA = {
     to: {
       type: "string",
       description:
-        "Who it is for: `delegator` (whoever handed you your work), `delegates` or `children` (the agents or workers you handed work to), `parent` (for a worker: the agent that started you), `main` (your tree's root), an agent's name or thread id from agent_list, or `all` (main agent only).",
+        "Who it is for: `delegator` (whoever handed you your work), `delegates` or `children` (the agents or workers you handed work to), `parent` (for a worker: the agent that started you), `main` (your tree's root), an agent's name or thread id from agent_list, `crew` (a note to every agent your orchestrator handed work to, or yours if you are the orchestrator), or `all` (main agent only).",
     },
     message: {
       type: "string",

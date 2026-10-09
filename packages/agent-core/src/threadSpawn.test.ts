@@ -24,6 +24,7 @@ import {
   type SpawnRequest,
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
+import type { AgentGrant } from "./agentAccess.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
 import { MemoryAgentInbox } from "./store/agentInbox.js";
 import { startInboxDelivery, type InboxDelivery } from "./inboxDelivery.js";
@@ -122,6 +123,11 @@ class FakeStore implements SpawnEngineStore {
     list.push(input.threadId);
     this.childrenByParent.set(parent, list);
     return true;
+  }
+
+  grants: AgentGrant[] = [];
+  agentGrant(granteeThreadId: string, targetThreadId: string): AgentGrant | null {
+    return this.grants.find((g) => g.granteeThreadId === granteeThreadId && g.targetThreadId === targetThreadId) ?? null;
   }
 
   setContractClosed(threadId: string, closed: { at: number; reason: "delivered" | "withdrawn" } | null): boolean {
@@ -1527,6 +1533,71 @@ describe("spawn engine", () => {
 
     expect(result.effort).toBeUndefined();
     expect(dispatcher.started[0].effort).toBeUndefined();
+  });
+});
+
+describe("access shared through a grant", () => {
+  const LEAD: SpawnCaller = { ...CALLER, threadId: "lead-1", turnId: "lead-turn-1" };
+
+  function harness() {
+    const reports: SettledTurnReport[] = [];
+    const h = makeEngine({
+      reports: () => ({
+        deliver: (report) => {
+          reports.push(report);
+          return `msg-${reports.length}`;
+        },
+        retract: () => {},
+      }),
+    });
+    setupParent(h.store, h.providers);
+    h.store.metas.set(LEAD.threadId, { threadId: LEAD.threadId, projectPath: CALLER.cwd, provider: "opencode", createdAt: 1, updatedAt: 1 });
+    return { h, reports };
+  }
+
+  const grant = (access: AgentGrant["access"], target: string): AgentGrant => ({
+    granteeThreadId: LEAD.threadId,
+    targetThreadId: target,
+    access,
+    grantedByThreadId: CALLER.threadId,
+    createdAt: 1,
+  });
+
+  test("a peer reaches an agent only as far as its grant says", async () => {
+    const { h } = harness();
+    const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+    expect(h.engine.canReach(LEAD.threadId, child, "read")).toBe(false);
+    h.store.grants.push(grant("read", child));
+    expect(h.engine.canReach(LEAD.threadId, child, "read")).toBe(true);
+    expect(h.engine.canReach(LEAD.threadId, child, "followup")).toBe(false);
+    await expect(h.engine.continueThread(LEAD, { threadId: child, message: "Status?" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    // Up the chain needs no grant.
+    expect(h.engine.canReach(CALLER.threadId, child, "followup")).toBe(true);
+  });
+
+  test("a follow-up from a granted peer asks as that peer, and its turn's result goes back to it", async () => {
+    const { h, reports } = harness();
+    const { threadId: child, firstTurnId } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(child, 1));
+    h.bus.emit(turnStarted(child, firstTurnId ?? "turn-1", 2));
+    h.bus.emit(turnCompleted(child, firstTurnId ?? "turn-1", 3));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => r.parentThreadId)).toEqual([CALLER.threadId]);
+
+    h.store.grants.push(grant("followup", child));
+    await h.engine.continueThread(LEAD, { threadId: child, message: "Review p3 next." });
+    const claim = h.jobs.claimJob(child)!;
+    expect(claim.messages[0]?.sender).toMatchObject({ threadId: LEAD.threadId, relationship: "peer" });
+    h.jobs.settleDelivery(claim.deliveryId, "turn-review");
+    h.bus.emit(turnStarted(child, "turn-review", 4));
+    h.bus.emit(turnCompleted(child, "turn-review", 5));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([
+      [firstTurnId ?? "turn-1", CALLER.threadId],
+      ["turn-review", LEAD.threadId],
+    ]);
   });
 });
 
