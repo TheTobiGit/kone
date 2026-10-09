@@ -1995,8 +1995,9 @@ describe("phase 6a review fixes", () => {
     const store = makeStore({
       searchConversations: (_query, options) => {
         const limit = options?.limit ?? 10;
-        const filler = Array.from({ length: limit - (limit >= 200 ? 1 : 0) }, (_, i) => siteHit(i));
-        return limit >= 200 ? [...filler, eligible] : filler;
+        const offset = options?.offset ?? 0;
+        if (offset === 100) return [eligible];
+        return offset === 0 ? Array.from({ length: limit }, (_, i) => siteHit(i)) : [];
       },
     });
     const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {

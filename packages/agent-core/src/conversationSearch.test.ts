@@ -8,6 +8,7 @@ import { setUserDataDir } from "./userDataDir.js";
 import { Database } from "bun:sqlite";
 
 import type { RuntimeEvent } from "./types.js";
+import { fetchSearchCandidates } from "./gateway/searchCollapse.js";
 
 // Same stub discipline as conversationStore.test.ts: ConversationStore imports
 // node:sqlite (an Electron-runtime built-in bun can't load), so stand it in
@@ -156,6 +157,30 @@ function settledTurn(
 }
 
 describe("conversation full-text search", () => {
+  test("pages past the store's 100-hit cap to retain a readable candidate", () => {
+    const store = freshStore();
+    for (let index = 0; index < 101; index += 1) {
+      const threadId = `outside-${index}`;
+      store.ensureThread({ threadId, projectPath: "/other", provider: "opencode" });
+      store.recordUserBlock({ threadId, blockId: `outside-block-${index}`, text: "needlepage" });
+    }
+    ensureSeededThread(store, "eligible-thread");
+    store.recordUserBlock({
+      threadId: "eligible-thread",
+      blockId: "eligible-block",
+      text: `eligible needlepage ${"filler ".repeat(1_000)}`,
+    });
+
+    const firstPage = store.searchConversations("needlepage", { limit: 100 });
+    expect(firstPage).toHaveLength(100);
+    expect(firstPage.some((hit) => hit.threadId === "eligible-thread")).toBe(false);
+
+    const candidates = fetchSearchCandidates(store.searchConversations.bind(store), "needlepage");
+    const eligible = candidates.filter((hit) => hit.threadId === "eligible-thread");
+    expect(eligible).toHaveLength(1);
+    expect(eligible[0]?.blockId).toBe("eligible-block");
+  });
+
   test("reports imported assistant blocks as not user-authored", () => {
     const store = freshStore();
     ensureSeededThread(store, "authors");
