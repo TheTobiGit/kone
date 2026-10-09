@@ -1658,6 +1658,45 @@ describe("continueThread", () => {
     expect(h.dispatcher.sent[h.dispatcher.sent.length - 1]?.input.threadId).toBe(child);
   });
 
+  test("a stop during a child's startup for a follow-up reports cancelled, takes no provider-failure path, and leaves the queue and brief intact", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const child = await settledChild(h);
+    const startsBefore = h.dispatcher.started.length;
+    const sentBefore = h.dispatcher.sent.length;
+    const briefBefore = h.store.threadMeta(child)?.prompt;
+    const settledLimits = (await h.engine.targets(CALLER)).limits;
+
+    h.dispatcher.throwStartCancelled = true;
+
+    const error = await h.engine
+      .continueThread(CALLER, {
+        threadId: child,
+        message: "Now add tests.",
+      })
+      .catch((e) => e);
+
+    expect(error).toBeInstanceOf(SpawnError);
+    expect(spawnErrorOf(error).code).toBe("cancelled");
+    expect(spawnErrorOf(error).message).toContain("stopped while it was starting");
+    expect(spawnErrorOf(error).code).not.toBe("provider_unavailable");
+
+    // Takes no provider-failure or failover path: session is not torn down again.
+    expect(h.providers.stopped.filter((id) => id === child)).toHaveLength(1);
+    expect(h.store.threadMeta(child)?.provider).toBe("opencode");
+
+    // Leaves the queue and brief intact: no job was posted, no turn was sent,
+    // and the original brief is untouched.
+    expect(h.jobs.jobCount(child)).toBe(0);
+    expect(h.dispatcher.sent).toHaveLength(sentBefore);
+    expect(h.dispatcher.started).toHaveLength(startsBefore + 1);
+    expect(h.store.threadMeta(child)?.prompt).toBe(briefBefore);
+
+    // The stopped child does not consume a live child slot.
+    const limitsAfter = (await h.engine.targets(CALLER)).limits;
+    expect(limitsAfter.remainingChildren).toBe(settledLimits.remainingChildren);
+  });
+
   test("a restarted delegation wakes as its agent again", async () => {
     const h = makeEngine();
     setupParent(h.store, h.providers);
