@@ -198,4 +198,25 @@ describe("P2 review round 2", () => {
     expect(adapter.sent[0]).toContain("Background shells and monitors cannot be listed");
     await svc.stopAll();
   });
+
+  test("refused non-carrier must not release another send's reservation", async () => {
+    const id = "non-owner-release";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+    const dispatcher = dispatcherFor(svc);
+    dispatcher.stageRestartBackgroundNote(id, [{ kind: "subagent", id: "child", label: "research" }]);
+    adapter.sendGate = gate();
+    const first = dispatcher.sendThreadTurn({ threadId: id, input: "first" });
+    await expect(
+      dispatcher.steerThreadTurn({ threadId: id, input: "refused steer" }, { liveOnly: true }),
+    ).rejects.toThrow();
+    await dispatcher.sendThreadTurn({ threadId: id, input: "third" });
+    const queued = store.listQueuedTurns(id);
+    adapter.sendGate.open();
+    await first;
+    await svc.stopAll();
+    expect(queued[0]?.input).not.toContain("kone restarted");
+  });
 });

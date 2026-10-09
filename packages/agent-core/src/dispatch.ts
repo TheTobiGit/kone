@@ -385,9 +385,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // and when something wakes it.
   private readonly threadsNeedingRestartNote = new Map<string, RestartCancelledBackgroundWork[]>();
 
-  /** Threads whose restart note is reserved by an in-flight delivery, so a
-   *  second concurrent send composes no copy of it. */
-  private readonly restartNoteReserved = new Set<string>();
+  /** Threads whose restart note is reserved by an in-flight delivery, mapped to
+   *  the carrier token of that delivery so only that send can release or consume it. */
+  private readonly restartNoteReserved = new Map<string, string>();
 
   // One timer for the next continuation due in the future; the boot sweep
   // covers everything already due. Nothing polls: each arm schedules exactly
@@ -936,8 +936,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // journaled, so both end at the last thing the agent actually saw/ran. The
     // restart note is only *peeked* here: it is consumed when the provider
     // accepts the turn, so a refused send leaves it for the retry.
+    const carrierToken = randomUUID();
     const replay = this.takeReplay(named.threadId);
-    const restartNote = this.peekRestartNotePreamble(named.threadId);
+    const restartNote = this.peekRestartNotePreamble(named.threadId, carrierToken);
     const preamble = [replay, restartNote]
       .filter((part): part is string => Boolean(part))
       .join("\n\n") || null;
@@ -949,7 +950,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       if (accepted) return;
       accepted = true;
       // The provider took the turn, so the note it carried is delivered.
-      this.consumeRestartNotePreamble(named.threadId);
+      this.consumeRestartNotePreamble(named.threadId, carrierToken);
       options?.onAccepted?.(turnId);
     };
     let started: Promise<TurnStartResult>;
@@ -958,7 +959,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     } catch (err) {
       // The composed turn never reached the service: release the note so the
       // next send carries it.
-      this.releaseRestartNotePreamble(named.threadId);
+      this.releaseRestartNotePreamble(named.threadId, carrierToken);
       throw err;
     }
     return (async (): Promise<TurnStartResult> => {
@@ -968,7 +969,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         return result;
       } catch (err) {
         // A refused send leaves the note for the retry.
-        this.releaseRestartNotePreamble(named.threadId);
+        this.releaseRestartNotePreamble(named.threadId, carrierToken);
         throw err;
       }
     })();
@@ -1623,23 +1624,25 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   /** The restart-background note for a thread, or null, without consuming it.
    *  Reserved for one in-flight delivery at a time: a second concurrent send
    *  composes no note, so only one provider turn carries it. */
-  private peekRestartNotePreamble(threadId: string): string | null {
+  private peekRestartNotePreamble(threadId: string, carrierToken: string): string | null {
     if (this.restartNoteReserved.has(threadId)) return null;
     const work = this.threadsNeedingRestartNote.get(threadId);
     if (!work) return null;
-    this.restartNoteReserved.add(threadId);
+    this.restartNoteReserved.set(threadId, carrierToken);
     return restartCancelledBackgroundWorkNote(work);
   }
 
   /** Consume a thread's restart note, once a turn carrying it was accepted. */
-  private consumeRestartNotePreamble(threadId: string): void {
+  private consumeRestartNotePreamble(threadId: string, carrierToken: string): void {
+    if (this.restartNoteReserved.get(threadId) !== carrierToken) return;
     this.threadsNeedingRestartNote.delete(threadId);
     this.restartNoteReserved.delete(threadId);
   }
 
   /** Release a reservation after a refused or cancelled send, so a retry can
    *  carry the note. */
-  private releaseRestartNotePreamble(threadId: string): void {
+  private releaseRestartNotePreamble(threadId: string, carrierToken: string): void {
+    if (this.restartNoteReserved.get(threadId) !== carrierToken) return;
     this.restartNoteReserved.delete(threadId);
   }
 }
