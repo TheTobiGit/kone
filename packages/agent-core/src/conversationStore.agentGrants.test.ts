@@ -49,6 +49,58 @@ const grant = (access: "read" | "message" | "followup", createdAt = 1) => ({
   createdAt,
 });
 
+describe("closing a contract ends the grants on it", () => {
+  // Chalk hands Iris a contract; Rowan holds a grant on Iris beyond the chain.
+  function contractStore() {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-agent-grants-test-"));
+    setUserDataDir(dir);
+    const store = new ConversationStoreCtor(dir);
+    for (const threadId of ["chalk", "rowan"]) store.ensureThread({ threadId, projectPath: "/repo", provider: "codex" });
+    store.writeSpawnedThread({
+      threadId: "iris",
+      projectPath: "/repo",
+      provider: "codex",
+      createdAt: 2,
+      title: "Iris",
+      lineage: { parentThreadId: "chalk", relationshipToParent: "delegation", rootThreadId: "chalk" },
+      contract: { name: "C", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" },
+    });
+    return store;
+  }
+  const onIris = (access: "read" | "message" | "followup") => ({
+    granteeThreadId: "rowan",
+    targetThreadId: "iris",
+    access,
+    grantedByThreadId: "chalk",
+    createdAt: 3,
+  });
+
+  test("the close and the end of the reach it granted land as one: every grant on the contractor is gone", () => {
+    const store = contractStore();
+    expect(store.setAgentGrant(onIris("followup"))).toBe(true);
+    expect(store.setContractClosed("iris", { at: 5, reason: "delivered" })).toBe(true);
+    expect(store.agentGrantsOn("iris")).toEqual([]);
+    expect(store.agentGrant("rowan", "iris")).toBeNull();
+  });
+
+  test("a reopen brings none of the old grants back — they must be given again", () => {
+    const store = contractStore();
+    expect(store.setAgentGrant(onIris("followup"))).toBe(true);
+    expect(store.setContractClosed("iris", { at: 5, reason: "withdrawn" })).toBe(true);
+    expect(store.setContractClosed("iris", null)).toBe(true);
+    expect(store.agentGrant("rowan", "iris")).toBeNull();
+  });
+
+  test("a close that matched nothing (no contract terms) takes no grants", () => {
+    const store = contractStore();
+    expect(
+      store.setAgentGrant({ granteeThreadId: "iris", targetThreadId: "rowan", access: "read", grantedByThreadId: "chalk", createdAt: 3 }),
+    ).toBe(true);
+    expect(store.setContractClosed("rowan", { at: 5, reason: "delivered" })).toBe(false);
+    expect(store.agentGrantsOn("rowan")).toHaveLength(1);
+  });
+});
+
 describe("agent grants", () => {
   test("one grant per holder and agent: a new one replaces the old, and a revoke takes it back", () => {
     const store = freshStore();

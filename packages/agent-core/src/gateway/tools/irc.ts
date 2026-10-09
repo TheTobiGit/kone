@@ -194,7 +194,11 @@ export function isUpChain(store: IrcToolStore | undefined, ancestorId: string, t
 /** Whether `senderId` reaches `threadId` as its chain does for messages: up
  *  its chain, or holding a grant of message or more on it. */
 export function messagesAsChain(store: IrcToolStore | undefined, senderId: string, threadId: string): boolean {
-  return isUpChain(store, senderId, threadId) || grantCovers(store?.agentGrant?.(senderId, threadId)?.access, "message");
+  if (isUpChain(store, senderId, threadId)) return true;
+  // A closed contract's grants ended with it; any that linger — written
+  // apart from the close — reach nothing.
+  if (store?.threadMeta?.(threadId)?.contractClosed) return false;
+  return grantCovers(store?.agentGrant?.(senderId, threadId)?.access, "message");
 }
 
 /** Whether a thread is a contractor whose contract is still open. */

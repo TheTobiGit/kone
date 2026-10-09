@@ -1090,6 +1090,9 @@ class SpawnEngineImpl implements SpawnEngine {
 
   canReach(callerThreadId: string, threadId: string, need: GrantAccess): boolean {
     if (this.isInSubtree(callerThreadId, threadId)) return true;
+    // A closed contract's grants ended with it; any that linger — written
+    // apart from the close — reach nothing.
+    if (this.store.threadMeta(threadId)?.contractClosed) return false;
     return grantCovers(this.store.agentGrant?.(callerThreadId, threadId)?.access, need);
   }
 
