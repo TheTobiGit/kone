@@ -120,6 +120,8 @@ class FakeCheckpointStore implements CheckpointStore {
 type AgentServiceType = import("./AgentService.js").AgentService;
 let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 
+const rolledBackTurns = new Set<string>();
+
 function buildService(checkpointStore: CheckpointStore): AgentServiceType {
   const queueStub = {
     enqueueQueuedTurn: () => true,
@@ -132,6 +134,14 @@ function buildService(checkpointStore: CheckpointStore): AgentServiceType {
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     store: queueStub as unknown as QueuedTurnStore,
     checkpointStore,
+    historyStore: {
+      setArchived: () => true,
+      setDone: () => true,
+      threadMeta: () => null,
+      staleThreadIds: () => [],
+      threadForkContext: () => null,
+      markTurnsRolledBack: (threadId, turnId) => { rolledBackTurns.add(`${threadId}:${turnId}`); return [turnId]; },
+    },
     // SAFETY: the checkpoint fake adapter covers startSession/sendTurn, the
     // only adapter surface these tests reach.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
@@ -240,6 +250,7 @@ describe("AgentService turn checkpoints", () => {
         wouldWrite: ["note.txt"],
         wouldDelete: ["added-by-agent.txt"],
       });
+      expect(rolledBackTurns.has(`t-revert:${result.turnId}`)).toBe(false);
       // The refusal changed nothing.
       expect(readFileSync(path.join(repo, "note.txt"), "utf8")).toBe("v2-after-agent\n");
       expect(existsSync(path.join(repo, "added-by-agent.txt"))).toBe(true);
@@ -253,6 +264,7 @@ describe("AgentService turn checkpoints", () => {
       // back what it overwrote.
       const reverted = await service.revertToTurnCheckpoint("t-revert", result.turnId, true);
       expect(reverted).toEqual({ ok: true });
+      expect(rolledBackTurns.has(`t-revert:${result.turnId}`)).toBe(true);
       expect(readFileSync(path.join(repo, "note.txt"), "utf8")).toBe("v1\n");
       expect(existsSync(path.join(repo, "added-by-agent.txt"))).toBe(false);
       // Repeatable: a second restore previews empty and still succeeds.

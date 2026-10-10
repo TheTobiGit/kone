@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { getConversationStore } from "./ConversationStore.js";
+import { historicalBlockText } from "./contextBudget.js";
 import { createHandoffThread } from "./handoff.js";
 import type {
   ForkContext,
@@ -73,7 +75,9 @@ export function forkThreadAtTurn(input: ForkThreadAtTurnInput): ForkThreadAtTurn
   // A native fork when the provider supports it and the source has a native
   // conversation: the first session asks the provider to fork instead of
   // replaying imported history. Otherwise the portable branch import.
-  const nativeFork = nativeForkTarget(store, source, input);
+  const requestedProvider = input.target?.provider ?? source.provider;
+  const nativeFork =
+    requestedProvider === source.provider ? nativeForkTarget(store, source, input) : null;
   if (nativeFork) return writeNativeForkThread(store, source, input, throughBlockId, nativeFork);
   // The placeholder target: the source's own provider/model, so the fork opens
   // where the work was. It is not a commitment — the first send may choose a
@@ -147,7 +151,7 @@ function writeNativeForkThread(
     sourceThreadId: input.sourceThreadId,
     forkPointBlockId: throughBlockId,
     importedAt: createdAt,
-    bootstrapStatus: "completed",
+    bootstrapStatus: "pending",
     forkKind: "branch",
     sourceProvider: source.provider,
     nativeFork,
@@ -167,7 +171,20 @@ function writeNativeForkThread(
     forkContext,
     lineage,
     requestId: input.requestId,
-    importedBlocks: [],
+    importedBlocks: source.blocks
+      .slice(0, source.blocks.findIndex((block) => block.id === throughBlockId) + 1)
+      .filter((block) => block.role === "user" || block.role === "assistant")
+      .map((block) => {
+        const text = block.role === "user" ? block.text : historicalBlockText(block);
+        const imported: import("./types.js").ForkImportedBlock = {
+          id: randomUUID(),
+          role: block.role,
+          text,
+          at: block.at,
+        };
+        if (block.role === "user" && block.attachments?.length) imported.attachments = block.attachments;
+        return imported;
+      }),
     branch: source.branch ?? null,
     envMode: source.envMode ?? null,
     worktreePath: source.worktreePath ?? null,

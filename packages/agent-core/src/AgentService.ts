@@ -278,6 +278,8 @@ export type AgentServiceOptions = {
     | "threadPullRequestCandidate"
     | "latestUserAuthoredAt"
     | "threadIsBusy"
+    | "threadForkContext"
+    | "markTurnsRolledBack"
   >;
   /** Settle-on-merge tuning. `pullRequestSweepMs: 0` disables the sweep. */
   pullRequestSweepMs?: number;
@@ -1152,7 +1154,11 @@ export class AgentService {
     // other turn/thread. The history budget is sized from the target model's
     // window and the provider's cap; a new prompt that cannot fit even with
     // zero history rejects here, up front, rather than dropping context.
-    const sidechatInput = sidechatBootstrapForTurn(
+    const forkContext = this.historyStore?.threadForkContext(input.threadId);
+    const nativeForkMatchesProvider = Boolean(
+      forkContext?.nativeFork && forkContext.sourceProvider === provider,
+    );
+    const sidechatInput = nativeForkMatchesProvider ? null : sidechatBootstrapForTurn(
       input.threadId,
       input.input,
       this.handoffBudgetOptions(provider, input.model, input.threadId, input.attachments),
@@ -1820,6 +1826,7 @@ export class AgentService {
         console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
         return failedCheckpoint(err);
       }
+      this.historyStore?.markTurnsRolledBack(threadId, turnId);
       return { ok: true };
     } catch (err) {
       console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);

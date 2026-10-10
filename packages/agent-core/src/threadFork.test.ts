@@ -239,7 +239,7 @@ describe("forkThreadAtTurn", () => {
 });
 
 describe("native forks", () => {
-  test("writes a no-import native fork row when the provider supports it", async () => {
+  test("keeps portable history beside a native target for provider changes", async () => {
     const store = await seedTwoTurns();
     store.captureConversationId("t-src", "codex-thread-1");
     const result = forkThreadAtTurn({
@@ -251,10 +251,18 @@ describe("native forks", () => {
       supportsFork: true,
     });
     expect(result.status).toBe("created");
-    expect(store.loadThread("f-native")!.blocks).toEqual([]);
+    expect(store.loadThread("f-native")!.blocks.length).toBeGreaterThan(0);
     const ctx = store.threadForkContext("f-native")!;
-    expect(ctx.bootstrapStatus).toBe("completed");
+    expect(ctx.bootstrapStatus).toBe("pending");
     expect(ctx.nativeFork).toEqual({ conversationId: "codex-thread-1", beforeTurnId: "turn-1" });
+  });
+
+  test("a fork explicitly targeting another provider uses portable history", async () => {
+    const store = await seedTwoTurns();
+    store.captureConversationId("t-src", "codex-thread-1");
+    forkThreadAtTurn({ requestId: "r-cross", threadId: "f-cross", sourceThreadId: "t-src", turnId: "turn-1", userBlockId: null, supportsFork: true, target: { provider: "claudeAgent" } });
+    expect(store.threadForkContext("f-cross")?.nativeFork).toBeUndefined();
+    expect(store.loadThread("f-cross")!.blocks.length).toBeGreaterThan(0);
   });
 
   test("a Claude fork with no recorded uuid falls back to the portable import", async () => {
