@@ -6,7 +6,13 @@ import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
 import type { CheckpointStore } from "./conversationStoreTypes.js";
-import type { ProviderAdapter, QueuedTurnStore, SendTurnInput, TurnStartResult } from "./types.js";
+import type {
+  ProviderAdapter,
+  QueuedTurnStore,
+  RuntimeEvent,
+  SendTurnInput,
+  TurnStartResult,
+} from "./types.js";
 
 // The window between the isolation check and the hard reset. Isolation is
 // checked before the async checkpointExists/preview; a session or turn that
@@ -350,6 +356,46 @@ describe("turns held by a restore", () => {
     }
   });
 
+  test("a send whose queue write fails is refused, not sent", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const storeDir = mkdtempSync(path.join(tmpdir(), "kone-restore-race-store-"));
+    const store = new ConversationStoreCtor(storeDir);
+    store.ensureThread({ threadId: "owner", provider: "codex", projectPath: root });
+    const sql = new Database(path.join(storeDir, "kone.sqlite"));
+    sql.exec(
+      "CREATE TRIGGER refuse_enqueue BEFORE INSERT ON queued_turns BEGIN SELECT RAISE(ABORT, 'queue write unavailable'); END",
+    );
+    const adapter = new Adapter();
+    const svc = new AgentServiceCtor({
+      // SAFETY: the real store satisfies the queue slice.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: store as unknown as QueuedTurnStore,
+      checkpointStore: checkpoints,
+      retentionSweepMs: 0,
+      // SAFETY: the fake covers startSession/sendTurn, the only adapter
+      // surface this test reaches.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: () => [adapter as unknown as ProviderAdapter],
+    });
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      await expect(svc.sendTurn({ threadId: "owner", input: "must wait" })).rejects.toThrow(
+        "queue write unavailable",
+      );
+      expect(adapter.sent).toEqual([]);
+      restoreRelease.open();
+      await reverting;
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+      sql.close();
+      store.close();
+    }
+  });
+
   test("an inbox turn waits out the reset", async () => {
     holdPreview = false;
     holdRestore = true;
@@ -385,4 +431,54 @@ describe("turns held by a restore", () => {
     }
   });
 
+});
+
+// A steer handed to the provider can outlive the turn it aimed at and start a
+// fresh one, so the restore must not claim the checkout while it is in flight.
+test("a restore waits out a steer in flight as busy", async () => {
+  holdPreview = false;
+  const steerEntered = gate();
+  const steerRelease = gate();
+  const adapter = new Adapter();
+  let emit: (event: RuntimeEvent) => void = () => {};
+  const steering = Object.assign(adapter, {
+    steerTurn: async (input: SendTurnInput): Promise<TurnStartResult> => {
+      steerEntered.open();
+      await steerRelease.promise;
+      adapter.sent.push(input.input);
+      return { threadId: input.threadId, turnId: "fresh-from-steer" };
+    },
+  });
+  const svc = new AgentServiceCtor({
+    // SAFETY: only the drain on session start reaches the queue slice here.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    store: { enqueueQueuedTurn: () => true, claimNextQueuedTurn: () => null } as unknown as QueuedTurnStore,
+    checkpointStore: checkpoints,
+    retentionSweepMs: 0,
+    adapters: (listener) => {
+      emit = listener;
+      // SAFETY: the fake covers startSession/sendTurn/steerTurn, the only
+      // adapter surface this test reaches.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      return [steering as unknown as ProviderAdapter];
+    },
+  });
+  const event = (type: "turn.started" | "turn.completed", turnId: string) =>
+    emit({ type, threadId: "owner", provider: "codex", turnId, at: Date.now(), source: "codex.app-server" });
+  try {
+    await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+    event("turn.started", "live");
+    const steered = svc.steerTurn({ threadId: "owner", input: "late steer" });
+    await steerEntered.promise;
+    // The turn the steer aimed at ends while the provider still holds it.
+    event("turn.completed", "live");
+    expect(await svc.revertToTurnCheckpoint("owner", "old", true)).toEqual({ ok: false, reason: "busy" });
+    expect(restored).toBe(0);
+    steerRelease.open();
+    await steered;
+    expect(await svc.revertToTurnCheckpoint("owner", "old", true)).toEqual({ ok: true });
+  } finally {
+    steerRelease.open();
+    await svc.stopAll();
+  }
 });
