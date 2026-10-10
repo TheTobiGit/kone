@@ -21,7 +21,12 @@ import {
   restoreCheckpoint,
 } from "@kone/git-core/checkpoint.js";
 import { threadWorkingDir } from "./threadWorkspace.js";
-import { checkpointRestoreIsolation, type RestorePathClaim } from "./checkpointRestoreSafety.js";
+import {
+  checkpointRestoreIsolation,
+  claimRestoreDir,
+  isRestoreActive,
+  type RestorePathClaim,
+} from "./checkpointRestoreSafety.js";
 import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -955,6 +960,11 @@ export class AgentService {
   }
 
   private async startSessionNow(input: SessionStartInput): Promise<Session> {
+    // A checkpoint restore is rewriting this directory; a session started now
+    // would work on a tree that is being reset under it.
+    if (isRestoreActive(input.cwd)) {
+      throw new Error(`a checkpoint restore is running in ${input.cwd}; start the session once it finishes`);
+    }
     this.bumpSessionGeneration(input.threadId);
     assertProviderEnabled(readProviderSettings(), input.provider);
     this.sessionInputs.set(input.threadId, input);
@@ -1047,6 +1057,13 @@ export class AgentService {
     // sees it and queues instead.
     if (this.isBusy(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
+    }
+    // The thread's own checkout is mid-restore (a revert holds it): a turn now
+    // would edit files the reset is rewriting. Refuse rather than queue, since
+    // a restore ends without a settlement that would promote the row.
+    const cwd = this.sessionInputs.get(input.threadId)?.cwd;
+    if (cwd && isRestoreActive(cwd)) {
+      throw new Error(`a checkpoint restore is running in ${cwd}; send once it finishes`);
     }
     return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options);
   }
@@ -1517,11 +1534,13 @@ export class AgentService {
     for (const [otherId, input] of this.sessionInputs) {
       addClaim(otherId, input.cwd);
     }
-    const isolation = checkpointRestoreIsolation({
-      cwd: dir,
-      worktreePath: workspace?.worktreePath ?? null,
-      otherPaths: others,
-    });
+    const isolation = isRestoreActive(dir)
+      ? { isolated: false as const, detail: `another checkpoint restore is running in ${dir}` }
+      : checkpointRestoreIsolation({
+          cwd: dir,
+          worktreePath: workspace?.worktreePath ?? null,
+          otherPaths: others,
+        });
     if (isolation.isolated) return null;
     return {
       ok: false,
@@ -1714,30 +1733,43 @@ export class AgentService {
           wouldDelete: preview.wouldDelete,
         };
       }
+      // The checks above ran before two awaits. A turn on this thread, or a
+      // session in an overlapping directory, may have started meanwhile, so
+      // both are checked again at the handoff and the directory is claimed
+      // in the same tick: no session or turn starts under it until the
+      // restore is done.
+      if (this.isBusy(threadId)) return { ok: false, reason: "busy" };
+      const handoffShared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (handoffShared) return handoffShared;
+      const releaseRestore = claimRestoreDir(dir);
       try {
-        await restoreCheckpoint(dir, row.checkpointId, { hard: true });
-      } catch (err) {
-        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return failedCheckpoint(err);
-      }
-      // A restore that dies partway leaves a half-written tree — deletes done,
-      // rewrites missing. Re-previewing must come back empty; anything left is
-      // reported as a failure with the still-dirty files named, never silence.
-      try {
-        const after = await previewCheckpointRestore(dir, row.checkpointId);
-        if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
-          const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
-          console.warn(
-            `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
-            leftovers,
-          );
-          return failedCheckpoint(
-            `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
-          );
+        try {
+          await restoreCheckpoint(dir, row.checkpointId, { hard: true });
+        } catch (err) {
+          console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+          return failedCheckpoint(err);
         }
-      } catch (err) {
-        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return failedCheckpoint(err);
+        // A restore that dies partway leaves a half-written tree — deletes done,
+        // rewrites missing. Re-previewing must come back empty; anything left is
+        // reported as a failure with the still-dirty files named, never silence.
+        try {
+          const after = await previewCheckpointRestore(dir, row.checkpointId);
+          if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
+            const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
+            console.warn(
+              `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
+              leftovers,
+            );
+            return failedCheckpoint(
+              `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
+            );
+          }
+        } catch (err) {
+          console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+          return failedCheckpoint(err);
+        }
+      } finally {
+        releaseRestore();
       }
       return { ok: true };
     } catch (err) {
