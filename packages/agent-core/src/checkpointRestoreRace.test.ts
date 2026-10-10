@@ -307,6 +307,49 @@ describe("turns held by a restore", () => {
     }
   });
 
+  test("a liveOnly steer refuses instead of queueing", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const adapter = new Adapter();
+    const { store, svc } = buildWithStore(adapter);
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      await expect(
+        svc.steerTurn({ threadId: "owner", input: "urgent" }, { liveOnly: true }),
+      ).rejects.toThrow("can take this steer");
+      expect(store.listQueuedTurns("owner")).toEqual([]);
+      restoreRelease.open();
+      await reverting;
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+      store.close();
+    }
+  });
+
+  test("a command compaction is refused while the reset runs", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const adapter = Object.assign(new Adapter(), {
+      capabilities: { compaction: { kind: "command", command: "/compact" } },
+    });
+    const svc = build(adapter);
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      await expect(svc.compactThread("owner")).rejects.toThrow("checkpoint restore is running");
+      expect(adapter.sent).toEqual([]);
+      restoreRelease.open();
+      await reverting;
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+    }
+  });
+
   test("an inbox turn waits out the reset", async () => {
     holdPreview = false;
     holdRestore = true;
