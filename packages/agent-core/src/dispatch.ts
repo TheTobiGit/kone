@@ -392,6 +392,15 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   /** Queued turns carrying a restart note reservation: queueId → { threadId, carrierToken }. */
   private readonly queuedCarrierNotes = new Map<string, { threadId: string; carrierToken: string }>();
 
+  /** How queue rows ended before their carrier was registered: queueId →
+   *  { threadId, outcome }. The service names the queue id only when it
+   *  acknowledges the send, and a cancel or promotion can land first. Kept
+   *  only while the thread holds a note reservation, and dropped with it. */
+  private readonly earlyQueueOutcomes = new Map<
+    string,
+    { threadId: string; outcome: "cancelled" | "promoted" }
+  >();
+
   // One timer for the next continuation due in the future; the boot sweep
   // covers everything already due. Nothing polls: each arm schedules exactly
   // the next due time, and a sweep re-arms it after.
@@ -420,18 +429,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.renameWorkspaceBranch = deps.renameWorkspaceBranch;
 
     this.service.onEvent?.((event) => {
-      if (event.type === "turn.queued-cancelled") {
-        const carrier = this.queuedCarrierNotes.get(event.queueId);
-        if (carrier) {
-          this.queuedCarrierNotes.delete(event.queueId);
-          this.releaseRestartNotePreamble(carrier.threadId, carrier.carrierToken);
-        }
-      } else if (event.type === "turn.promoted") {
-        const carrier = this.queuedCarrierNotes.get(event.queueId);
-        if (carrier) {
-          this.queuedCarrierNotes.delete(event.queueId);
-          this.consumeRestartNotePreamble(carrier.threadId, carrier.carrierToken);
-        }
+      if (event.type !== "turn.queued-cancelled" && event.type !== "turn.promoted") return;
+      const outcome = event.type === "turn.promoted" ? "promoted" : "cancelled";
+      const carrier = this.queuedCarrierNotes.get(event.queueId);
+      if (carrier) {
+        this.queuedCarrierNotes.delete(event.queueId);
+        this.settleQueuedCarrier(carrier.threadId, carrier.carrierToken, outcome);
+      } else if (this.restartNoteReserved.has(event.threadId)) {
+        this.earlyQueueOutcomes.set(event.queueId, { threadId: event.threadId, outcome });
       }
     });
   }
@@ -987,10 +992,18 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         if (!result.queued) {
           onAccepted(result.turnId);
         } else if (restartNote !== null) {
-          this.queuedCarrierNotes.set(result.turnId, {
-            threadId: named.threadId,
-            carrierToken,
-          });
+          // The row may already be gone: cancelled or promoted while the
+          // service was still acknowledging it.
+          const early = this.earlyQueueOutcomes.get(result.turnId);
+          if (early) {
+            this.earlyQueueOutcomes.delete(result.turnId);
+            this.settleQueuedCarrier(named.threadId, carrierToken, early.outcome);
+          } else {
+            this.queuedCarrierNotes.set(result.turnId, {
+              threadId: named.threadId,
+              carrierToken,
+            });
+          }
         }
         return result;
       } catch (err) {
@@ -1658,11 +1671,23 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return restartCancelledBackgroundWorkNote(work);
   }
 
+  /** A queued carrier's row ended: promoted delivers the note, cancelled
+   *  frees it for the next send. */
+  private settleQueuedCarrier(
+    threadId: string,
+    carrierToken: string,
+    outcome: "cancelled" | "promoted",
+  ): void {
+    if (outcome === "promoted") this.consumeRestartNotePreamble(threadId, carrierToken);
+    else this.releaseRestartNotePreamble(threadId, carrierToken);
+  }
+
   /** Consume a thread's restart note, once a turn carrying it was accepted. */
   private consumeRestartNotePreamble(threadId: string, carrierToken: string): void {
     if (this.restartNoteReserved.get(threadId) !== carrierToken) return;
     this.threadsNeedingRestartNote.delete(threadId);
     this.restartNoteReserved.delete(threadId);
+    this.dropEarlyQueueOutcomes(threadId);
   }
 
   /** Release a reservation after a refused or cancelled send, so a retry can
@@ -1670,5 +1695,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private releaseRestartNotePreamble(threadId: string, carrierToken: string): void {
     if (this.restartNoteReserved.get(threadId) !== carrierToken) return;
     this.restartNoteReserved.delete(threadId);
+    this.dropEarlyQueueOutcomes(threadId);
+  }
+
+  /** Outcomes are only kept while a reservation could still need them. */
+  private dropEarlyQueueOutcomes(threadId: string): void {
+    for (const [queueId, early] of this.earlyQueueOutcomes) {
+      if (early.threadId === threadId) this.earlyQueueOutcomes.delete(queueId);
+    }
   }
 }

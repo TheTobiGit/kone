@@ -240,3 +240,46 @@ describe("P2 review round 2", () => {
     await svc.stopAll();
   });
 });
+
+// A queued carrier's row can be cancelled before the dispatcher learns its
+// queue id (the service acknowledges the send after enqueueing it). Whenever
+// the cancel lands, the note goes back for the next send.
+describe("a cancelled queued carrier frees the restart note", () => {
+  for (const cancel of [
+    "row-before-ack",
+    "bulk-before-ack",
+    "stop-before-ack",
+    "bulk-after-ack",
+    "stop-after-ack",
+  ]) {
+    test(cancel, async () => {
+      const id = `carrier-${cancel}`;
+      store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+      const adapter = new Adapter();
+      const svc = build(adapter);
+      await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+      const dispatcher = dispatcherFor(svc);
+      adapter.sendGate = gate();
+      const first = svc.sendTurn({ threadId: id, input: "already sending" });
+      dispatcher.stageRestartBackgroundNote(id, [{ kind: "subagent", id: "child", label: "lost research" }]);
+      const carrier = dispatcher.sendThreadTurn({ threadId: id, input: "queued carrier" });
+      if (cancel.endsWith("after-ack")) await carrier;
+      if (cancel.startsWith("row")) {
+        const row = store.listQueuedTurns(id)[0];
+        expect(row).toBeDefined();
+        await svc.cancelQueuedTurn(id, row!.queueId);
+      } else if (cancel.startsWith("bulk")) {
+        await svc.cancelQueuedTurns(id);
+      } else {
+        await svc.stopThread(id);
+      }
+      await carrier;
+      adapter.sendGate.open();
+      await first;
+      if (cancel.startsWith("stop")) await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+      await dispatcher.sendThreadTurn({ threadId: id, input: "retry after cancellation" });
+      expect(adapter.sent.at(-1)).toContain("lost research");
+      await svc.stopAll();
+    });
+  }
+});
