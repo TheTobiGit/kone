@@ -487,22 +487,51 @@ export class ThreadRepo {
   }
 
   /** The user block that started a turn, or null when the turn has none (a
-   *  steer, or a turn whose prompt was never journaled). The checkpoint-restore
+   *  continuation or other turn no prompt led into). The checkpoint-restore
    *  safety refusal names it so the caller can reach the existing
-   *  branch-at-block rewind from a turn id. */
+   *  branch-at-block rewind from a turn id.
+   *
+   *  An ordinary prompt is journaled with no turn id (a queued one is moved
+   *  to the tail when it promotes), so the turn's prompt is the user block
+   *  right before the turn's assistant block. Only inbox deliveries link
+   *  their blocks to the turn they started; a steer is linked too, but lands
+   *  inside the turn, never before it. A block of another turn, or a steer
+   *  into one, between the two means this turn had no prompt of its own. */
   turnUserBlockId(threadId: string, turnId: string): string | null {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: the projection names only the nullable block_id of the user
-      // block for this turn.
-      const row = this.dbh.prepare(
+      // SAFETY: the projection names only the nullable seq of the turn's
+      // first assistant block.
+      const start = this.dbh.prepare(
+        db,
+        `SELECT MIN(seq) AS seq FROM blocks
+          WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'`,
+      ).get(threadId, turnId) as { seq: number | null } | undefined;
+      if (start?.seq == null) return null;
+      // SAFETY: the projection names only the block_id of the first inbox
+      // block the delivery linked to this turn.
+      const linked = this.dbh.prepare(
         db,
         `SELECT block_id FROM blocks
           WHERE thread_id = ? AND turn_id = ? AND role = 'user'
+            AND COALESCE(steered, 0) = 0 AND seq < ?
           ORDER BY seq ASC LIMIT 1`,
-      ).get(threadId, turnId) as { block_id: string } | undefined;
-      return row?.block_id ?? null;
+      ).get(threadId, turnId, start.seq) as { block_id: string } | undefined;
+      if (linked) return linked.block_id;
+      // SAFETY: the projection names block_id, role, turn_id and steered of
+      // the nearest earlier block that is a user block or another turn's.
+      const before = this.dbh.prepare(
+        db,
+        `SELECT block_id, role, turn_id, steered FROM blocks
+          WHERE thread_id = ? AND seq < ?
+            AND (role = 'user' OR (turn_id IS NOT NULL AND turn_id <> ?))
+          ORDER BY seq DESC LIMIT 1`,
+      ).get(threadId, start.seq, turnId) as
+        | { block_id: string; role: string; turn_id: string | null; steered: number | null }
+        | undefined;
+      if (!before || before.role !== "user" || before.turn_id !== null || before.steered) return null;
+      return before.block_id;
     } catch {
       return null;
     }
