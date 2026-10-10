@@ -379,7 +379,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   async startThread(requested: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
-    const input = this.withThreadIdentity(requested);
+    let input = this.withThreadIdentity(requested);
+    const forkContext = this.store.threadForkContext(input.threadId);
+    if (forkContext?.nativeFork && !this.store.threadMeta(input.threadId)?.conversationId) {
+      if (input.provider === forkContext.sourceProvider) input = { ...input, forkFrom: forkContext.nativeFork };
+      else input = { ...input, forkFrom: undefined };
+    }
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
     // Register the thread BEFORE the session starts: the gateway mints the
     // session's MCP token in startSession and the provider connects to it
