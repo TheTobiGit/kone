@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
-import { setUserDataDir } from "./userDataDir.js";
+import { getUserDataDir, setUserDataDir } from "./userDataDir.js";
 
 // ConversationStore imports node:sqlite, which bun can't load: stand it in with
 // bun:sqlite and import the store only once the stub is in place.
@@ -196,5 +196,60 @@ describe("queue cancel binds the row to its thread", () => {
     enqueue(store, "q1", "ub-1", "hi", 100);
     expect(store.cancelQueuedTurn("q1", "u")).toBe(false);
     expect(store.cancelQueuedTurn("q1", "t")).toBe(true);
+  });
+});
+
+// A cancelled prompt's block is deleted; its search row must go with it, on
+// every cancel path, or search offers the cancelled words with a jump to a
+// block that no longer exists.
+describe("cancelling a queued turn unlists its text", () => {
+  test("an edited row cancelled on its own leaves neither text searchable", () => {
+    const store = freshStore();
+    enqueue(store, "q1", "ub-1", "oldcancelword", 100);
+    expect(store.editQueuedTurn("t", "q1", { input: "editedcancelword" })).not.toBeNull();
+    expect(store.cancelQueuedTurn("q1", "t")).toBe(true);
+    expect(store.searchConversations("oldcancelword")).toEqual([]);
+    expect(store.searchConversations("editedcancelword")).toEqual([]);
+  });
+
+  test("a stop cancels the waiting rows' text and keeps a claimed row's", () => {
+    const store = freshStore();
+    enqueue(store, "q1", "ub-1", "claimedstopword", 100);
+    enqueue(store, "q2", "ub-2", "waitingstopword", 101);
+    expect(store.claimNextQueuedTurn("t")?.queueId).toBe("q1");
+    expect(store.cancelQueuedTurnsForThread("t")).toEqual(["q1", "q2"]);
+    expect(store.searchConversations("waitingstopword")).toEqual([]);
+    // A claimed row may already own a running turn, so its prompt stays.
+    expect(store.searchConversations("claimedstopword").map((hit) => hit.blockId)).toEqual(["ub-1"]);
+  });
+
+  test("a cancel that fails partway keeps the row, the prompt and its text", () => {
+    const store = freshStore();
+    const db = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+    try {
+      enqueue(store, "q1", "ub-1", "rollbackword", 100);
+      db.exec(
+        "CREATE TRIGGER refuse_delete BEFORE DELETE ON blocks BEGIN SELECT RAISE(ABORT, 'injected'); END",
+      );
+      expect(store.cancelQueuedTurn("q1", "t")).toBe(false);
+      expect(store.listQueuedTurns("t").map((row) => row.queueId)).toEqual(["q1"]);
+      expect(store.searchConversations("rollbackword").map((hit) => hit.blockId)).toEqual(["ub-1"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("search skips a row whose block is gone", () => {
+    const store = freshStore();
+    const db = new Database(path.join(getUserDataDir(), "kone.sqlite"));
+    try {
+      store.recordUserBlock({ blockId: "ub-gone", threadId: "t", text: "orphanword", at: 100 });
+      // A block removed by a path that left its index row behind.
+      db.exec("DELETE FROM blocks WHERE block_id = 'ub-gone'");
+      expect(store.searchConversations("orphanword")).toEqual([]);
+      expect(store.searchConversations("orphanword", { threadId: "t" })).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 });

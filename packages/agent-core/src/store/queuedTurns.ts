@@ -485,12 +485,19 @@ export class QueuedTurnRepo {
    *  the renderer's turn.queued-cancelled only ever drops its own optimistic
    *  blocks — never this id. User blocks journal without a turn_id, so this
    *  only ever matches the prompt the enqueue itself journaled — never a
-   *  block a started turn later adopted. */
+   *  block a started turn later adopted. Its search row goes with it (blank
+   *  text unlists it), or a search would still find the cancelled words and
+   *  offer a jump to a block that no longer exists. */
   private deleteQueuedPromptBlock(db: DatabaseSync, threadId: string, userBlockId: string): void {
-    db.prepare(
-      `DELETE FROM blocks
-        WHERE thread_id = ? AND block_id = ? AND role = 'user' AND turn_id IS NULL`,
-    ).run(threadId, userBlockId);
+    const result = db
+      .prepare(
+        `DELETE FROM blocks
+          WHERE thread_id = ? AND block_id = ? AND role = 'user' AND turn_id IS NULL`,
+      )
+      .run(threadId, userBlockId);
+    if (Number(result.changes) > 0) {
+      indexBlockRow(db, { threadId, blockId: userBlockId, turnId: null, at: 0, text: "" });
+    }
   }
 
   /** Cancel ONE queued turn (the UI's per-item cancel). Only a row still
@@ -514,7 +521,8 @@ export class QueuedTurnRepo {
     const updateArgs = threadId ? [Date.now(), queueId, threadId] : [Date.now(), queueId];
     try {
       let cancelled = false;
-      this.dbh.durably(db, () => {
+      // One transaction: the flip, the prompt and its search row go together.
+      this.dbh.durably(db, () => this.dbh.atomically(db, () => {
         // SAFETY: the projection names only the row's thread + journaled block.
         const row = db
           .prepare(
@@ -531,7 +539,7 @@ export class QueuedTurnRepo {
         if (Number(result.changes) === 0) return;
         this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
         cancelled = true;
-      });
+      }));
       return cancelled;
     } catch (err) {
       console.error("[conversation-store] cancelQueuedTurn failed:", err);
@@ -573,7 +581,7 @@ export class QueuedTurnRepo {
     }
     try {
       let queueIds: string[] = [];
-      this.dbh.durably(db, () => {
+      this.dbh.durably(db, () => this.dbh.atomically(db, () => {
         // SAFETY: the projection names only the row's queue id, thread, prior
         // state, and journaled block.
         const active = db
@@ -601,7 +609,7 @@ export class QueuedTurnRepo {
           this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
         }
         queueIds = active.map((r) => r.queue_id);
-      });
+      }));
       return queueIds;
     } catch (err) {
       console.error("[conversation-store] cancelQueuedTurnsForThread failed:", err);
