@@ -1912,6 +1912,10 @@ export class AgentService {
       if (this.isBusy(threadId)) {
         throw new Error("Context compaction is unavailable while a provider turn is running.");
       }
+      // A command compaction is a turn, and no turn starts under a restore.
+      if (this.restoreHolds(threadId)) {
+        throw new Error("Context compaction is unavailable while a checkpoint restore is running.");
+      }
       const adapter = this.adapter(provider);
       const capability = adapter.capabilities.compaction;
       if (!isCompactionSupported(capability)) {
@@ -2622,6 +2626,12 @@ export class AgentService {
         options?.onAccepted?.(result.turnId);
         return result;
       }
+    }
+    // A restore holding the checkout leaves no live turn either, and a plain
+    // steer queues behind it like a send; a liveOnly one refuses, so its
+    // caller keeps what it carries for a turn that can take it.
+    if (options?.liveOnly && this.restoreHolds(threadId)) {
+      throw new Error(`No running turn on ${threadId} can take this steer yet.`);
     }
     if (this.isBusy(threadId)) {
       if (options?.liveOnly) throw new Error(`No running turn on ${threadId} can take this steer yet.`);
