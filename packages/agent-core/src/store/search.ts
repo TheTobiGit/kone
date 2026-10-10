@@ -332,6 +332,8 @@ export class SearchRepo {
         rank: number;
         sender_json: string | null;
       };
+      // A row whose block is gone is an orphan (a block removed without its
+      // index row): skipped, never offered as a jump to nothing.
       // Column 6 of the FTS table is the indexed text — the only column the
       // excerpt is ever drawn from. bm25 orders best-first (most negative).
       const sql = scoped
@@ -343,6 +345,7 @@ export class SearchRepo {
              FROM conversation_fts
              LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ? AND conversation_fts.thread_id = ?
+              AND (conversation_fts.block_id IS NULL OR blocks.block_id IS NOT NULL)
             ORDER BY rank LIMIT ? OFFSET ?`
         : `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
                   conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
@@ -352,6 +355,7 @@ export class SearchRepo {
              FROM conversation_fts
              LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ?
+              AND (conversation_fts.block_id IS NULL OR blocks.block_id IS NOT NULL)
             ORDER BY rank LIMIT ? OFFSET ?`;
       // SAFETY: the projection names exactly the FTS columns plus the two
       // aliased FTS5 auxiliary outputs read below.
