@@ -504,7 +504,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       requestedModel: input.model,
       effort,
       mode,
-      lastAssistantUuid: input.forkFrom?.assistantUuid ?? input.resumeSessionAt,
+      lastAssistantUuid: input.forkFrom ? undefined : input.resumeSessionAt,
       query: q,
       prompt,
       abort,
