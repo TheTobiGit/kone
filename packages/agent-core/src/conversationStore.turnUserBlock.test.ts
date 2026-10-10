@@ -89,3 +89,34 @@ test("an unknown turn has no prompt", () => {
 
   expect(store.turnUserBlockId("t", "never-started")).toBeNull();
 });
+
+test("a prompt still waiting in the queue is passed over", () => {
+  const store = openStore();
+  store.recordUserBlock({ blockId: "actual-prompt", threadId: "t", text: "first" });
+  // Follow-ups journaled and queued while the first turn was being accepted.
+  for (const id of ["queued-second", "queued-third"]) {
+    store.recordUserBlock({ blockId: id, threadId: "t", text: id });
+    store.enqueueQueuedTurn({ queueId: id, threadId: "t", userBlockId: id, dispatchMode: "queue", input: id });
+  }
+  startTurn(store, "first-turn");
+  expect(store.turnUserBlockId("t", "first-turn")).toBe("actual-prompt");
+  // The next delivery fails and is held; the third cannot pass it and stays
+  // before the first turn's assistant block.
+  const row = store.claimNextQueuedTurn("t");
+  expect(row?.queueId).toBe("queued-second");
+  expect(store.releaseQueuedTurn("queued-second", "failed")).toBe(true);
+  expect(store.claimNextQueuedTurn("t")).toBeNull();
+  expect(store.turnUserBlockId("t", "first-turn")).toBe("actual-prompt");
+});
+
+test("a claimed row's prompt names the turn it starts", () => {
+  const store = openStore();
+  store.recordUserBlock({ blockId: "running", threadId: "t", text: "running" });
+  startTurn(store, "turn-1");
+  store.recordUserBlock({ blockId: "queued", threadId: "t", text: "queued" });
+  store.enqueueQueuedTurn({ queueId: "q", threadId: "t", userBlockId: "queued", dispatchMode: "queue", input: "queued" });
+  expect(store.claimNextQueuedTurn("t")?.queueId).toBe("q");
+  startTurn(store, "turn-2");
+  // Still 'promoting' until the provider's acceptance is recorded.
+  expect(store.turnUserBlockId("t", "turn-2")).toBe("queued");
+});
