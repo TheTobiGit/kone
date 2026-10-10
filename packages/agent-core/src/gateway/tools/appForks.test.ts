@@ -141,6 +141,30 @@ describe("app_fork_thread (assistant text)", () => {
     expect(body).toContain("Thread id: f-1");
   });
 
+  test("an omitted thread id replays the request binding", async () => {
+    await seedSource();
+    let minted = 0;
+    const registry = assistantRegistry({ newThreadId: () => `generated-${++minted}` });
+    const params = { sourceThreadId: "t-src", turnId: "turn-1", requestId: "retry-without-id" };
+    const first = await registry.call(ctx, "app_fork_thread", params);
+    const replay = await registry.call(ctx, "app_fork_thread", params);
+    expect(first.isError).toBeUndefined();
+    expect(replay.isError).toBeUndefined();
+    expect(text(replay)).toContain("already exists");
+    expect(text(replay)).toContain("generated-1");
+    expect(minted).toBe(1);
+  });
+
+  test("checks service busy state before creating a fork", async () => {
+    await seedSource();
+    const registry = assistantRegistry({ isThreadBusy: () => true });
+    const result = await registry.call(ctx, "app_fork_thread", { sourceThreadId: "t-src", turnId: "turn-1", threadId: "busy-fork", requestId: "busy" });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("still running");
+    const { getConversationStore } = await import("../../ConversationStore.js");
+    expect(getConversationStore().threadMeta("busy-fork")).toBeNull();
+  });
+
   test("refuses a rolled-back turn as isError text naming the reason", async () => {
     const store = await seedSource();
     store.markTurnsRolledBack("t-src", "turn-1");
