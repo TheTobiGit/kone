@@ -257,6 +257,43 @@ describe("native forks", () => {
     expect(ctx.nativeFork).toEqual({ conversationId: "codex-thread-1", beforeTurnId: "turn-1" });
   });
 
+  test("native fork snapshot keeps non-user sender and turn stamp on imported user blocks", async () => {
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+    store.ensureThread({ threadId: "t-src", projectPath: "/p", provider: "codex", model: "gpt-x" });
+    store.recordUserBlock({
+      threadId: "t-src",
+      text: "Merge-back from fork previous: summary",
+      sender: { kind: "system" },
+      model: "gpt-x",
+      effort: "high",
+      at: 100,
+    });
+    store.applyEvent(turnStarted("t-src", "turn-1", 110));
+    store.applyEvent(textItem("t-src", "turn-1", "i-1", "first answer"));
+    store.applyEvent(turnCompleted("t-src", "turn-1", 150));
+    store.captureConversationId("t-src", "codex-thread-1");
+
+    const result = forkThreadAtTurn({
+      requestId: "r-native-stamp",
+      threadId: "f-native-stamp",
+      sourceThreadId: "t-src",
+      turnId: "turn-1",
+      userBlockId: null,
+      supportsFork: true,
+    });
+    expect(result.status).toBe("created");
+
+    const fork = store.loadThread("f-native-stamp")!;
+    const userBlock = fork.blocks.find((b) => b.role === "user");
+    if (!userBlock || userBlock.role !== "user") {
+      throw new Error("expected an imported user block");
+    }
+    expect(userBlock.sender).toEqual({ kind: "system" });
+    expect(userBlock.model).toBe("gpt-x");
+    expect(userBlock.effort).toBe("high");
+  });
+
   test("a fork explicitly targeting another provider uses portable history", async () => {
     const store = await seedTwoTurns();
     store.captureConversationId("t-src", "codex-thread-1");

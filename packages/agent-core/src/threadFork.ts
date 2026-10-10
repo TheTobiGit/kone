@@ -11,7 +11,7 @@ import type {
   StoredThread,
   ThreadLineage,
 } from "./types.js";
-import { nonBlank } from "./types.js";
+import { copyTurnStamp, nonBlank } from "./types.js";
 
 // Fork a thread from any finished run at a chosen turn.
 //
@@ -174,7 +174,11 @@ function writeNativeForkThread(
         text,
         at: block.at,
       };
-      if (block.role === "user" && block.attachments?.length) imported.attachments = block.attachments;
+      if (block.role === "user") {
+        if (block.attachments?.length) imported.attachments = block.attachments;
+        if (block.sender) imported.sender = block.sender;
+        copyTurnStamp(block, imported);
+      }
       return imported;
     })
     .filter((block): block is import("./types.js").ForkImportedBlock => block !== null);
