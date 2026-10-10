@@ -97,3 +97,35 @@ export function checkpointRestoreIsolation(input: {
   }
   return { isolated: true };
 }
+
+// Directories a destructive restore is rewriting right now, by real path, with
+// a count: the isolation check runs before the restore's async work, so the
+// service holds a claim across the reset itself and refuses new sessions and
+// turns that would run under it. Counted, so one release cannot clear a
+// directory another restore still holds.
+const activeRestoreDirs = new Map<string, number>();
+
+/** Claim `dir` for the duration of a destructive restore. Returns the release,
+ *  which is idempotent; call it in a `finally`. */
+export function claimRestoreDir(dir: string): () => void {
+  const resolved = realOrNull(dir) ?? path.resolve(dir);
+  activeRestoreDirs.set(resolved, (activeRestoreDirs.get(resolved) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = (activeRestoreDirs.get(resolved) ?? 1) - 1;
+    if (count > 0) activeRestoreDirs.set(resolved, count);
+    else activeRestoreDirs.delete(resolved);
+  };
+}
+
+/** Whether a restore in flight claims `dir`, a directory inside it, or one
+ *  that contains it. */
+export function isRestoreActive(dir: string): boolean {
+  const resolved = realOrNull(dir) ?? path.resolve(dir);
+  for (const active of activeRestoreDirs.keys()) {
+    if (contains(active, resolved) || contains(resolved, active)) return true;
+  }
+  return false;
+}
