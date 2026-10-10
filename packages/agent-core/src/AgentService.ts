@@ -447,6 +447,10 @@ export class AgentService {
    *  without this a burst of sends walks straight past the busy-intercept and
    *  starts concurrent turns on one session. See `isBusy`. */
   private readonly dispatchingTurns = new Set<string>();
+  /** Steers in flight into a live turn, per thread. A steer can outlive the
+   *  turn it aimed at and fall back to a fresh one, so a restore treats a
+   *  thread mid-steer as busy (see `steering`). */
+  private readonly steersInFlight = new Map<string, number>();
   /** Threads with a manual context compaction in flight. One at a time per
    *  thread (the check-then-add in compactThread is synchronous, so two
    *  callers can't both claim it), and no turn may start while one runs — a
@@ -1071,6 +1075,19 @@ export class AgentService {
    *  announced the turn yet. */
   private isBusy(threadId: string): boolean {
     return this.activeTurns.has(threadId) || this.dispatchingTurns.has(threadId);
+  }
+
+  /** Run one steer into a live turn, counted in `steersInFlight` for its
+   *  whole round-trip. */
+  private async steering<T>(threadId: string, steer: () => Promise<T>): Promise<T> {
+    this.steersInFlight.set(threadId, (this.steersInFlight.get(threadId) ?? 0) + 1);
+    try {
+      return await steer();
+    } finally {
+      const left = (this.steersInFlight.get(threadId) ?? 1) - 1;
+      if (left > 0) this.steersInFlight.set(threadId, left);
+      else this.steersInFlight.delete(threadId);
+    }
   }
 
   /** Is a checkpoint restore rewriting the directory this thread's session
@@ -1701,7 +1718,7 @@ export class AgentService {
     force: boolean,
   ): Promise<RevertTurnCheckpointResult> {
     try {
-      if (this.isBusy(threadId)) return { ok: false, reason: "busy" };
+      if (this.isBusy(threadId) || this.steersInFlight.has(threadId)) return { ok: false, reason: "busy" };
       const store = this.checkpointStore;
       if (!store) return { ok: false, reason: "missing" };
       const row = store.getTurnCheckpoint(threadId, turnId);
@@ -1749,7 +1766,7 @@ export class AgentService {
       // both are checked again at the handoff and the directory is claimed
       // in the same tick: no session or turn starts under it until the
       // restore is done.
-      if (this.isBusy(threadId)) return { ok: false, reason: "busy" };
+      if (this.isBusy(threadId) || this.steersInFlight.has(threadId)) return { ok: false, reason: "busy" };
       const handoffShared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
       if (handoffShared) return handoffShared;
       const releaseRestore = claimRestoreDir(dir);
@@ -2621,8 +2638,9 @@ export class AgentService {
       // really went into the live turn (it falls back to a plain send when its
       // own turn has just ended).
       if (adapter.steerTurn) {
+        const steerTurn = adapter.steerTurn.bind(adapter);
         this.noteSending(threadId, options?.onSending);
-        const result = await adapter.steerTurn(input);
+        const result = await this.steering(threadId, () => steerTurn(input));
         options?.onAccepted?.(result.turnId);
         return result;
       }
@@ -2737,7 +2755,8 @@ export class AgentService {
       // nor when that cancellation is still waiting to be written.
       if (!store.isQueuedTurnClaimed(queueId) || this.cancelOwed(threadId, queueId)) return false;
       if (liveTurnId && adapter.steerTurn) {
-        const result = await adapter.steerTurn({ ...input, userBlockId: row.userBlockId });
+        const steerTurn = adapter.steerTurn.bind(adapter);
+        const result = await this.steering(threadId, () => steerTurn({ ...input, userBlockId: row.userBlockId }));
         // A steer can fall back to a fresh turn when the one it aimed at ended
         // meanwhile; if the row was stopped by then, that turn is stopped too.
         if (!this.settlePromoted(threadId, queueId, result.turnId)) {
@@ -3024,6 +3043,8 @@ export class AgentService {
       }
     } catch (err) {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
+      // Not under a restore: the turn would start on a tree being reset.
+      if (this.restoreHolds(input.threadId)) throw err;
       return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
