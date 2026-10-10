@@ -162,6 +162,22 @@ function writeNativeForkThread(
     relationshipToParent: null,
     rootThreadId: input.threadId,
   };
+  const importedBlocks = source.blocks
+    .slice(0, source.blocks.findIndex((block) => block.id === throughBlockId) + 1)
+    .filter((block) => block.role === "user" || block.role === "assistant")
+    .map((block) => {
+      const text = block.role === "user" ? block.text : historicalBlockText(block);
+      if (!text) return null;
+      const imported: import("./types.js").ForkImportedBlock = {
+        id: randomUUID(),
+        role: block.role,
+        text,
+        at: block.at,
+      };
+      if (block.role === "user" && block.attachments?.length) imported.attachments = block.attachments;
+      return imported;
+    })
+    .filter((block): block is import("./types.js").ForkImportedBlock => block !== null);
   const write: Parameters<typeof store.writeForkThread>[0] = {
     threadId: input.threadId,
     projectPath: source.projectPath,
@@ -171,20 +187,7 @@ function writeNativeForkThread(
     forkContext,
     lineage,
     requestId: input.requestId,
-    importedBlocks: source.blocks
-      .slice(0, source.blocks.findIndex((block) => block.id === throughBlockId) + 1)
-      .filter((block) => block.role === "user" || block.role === "assistant")
-      .map((block) => {
-        const text = block.role === "user" ? block.text : historicalBlockText(block);
-        const imported: import("./types.js").ForkImportedBlock = {
-          id: randomUUID(),
-          role: block.role,
-          text,
-          at: block.at,
-        };
-        if (block.role === "user" && block.attachments?.length) imported.attachments = block.attachments;
-        return imported;
-      }),
+    importedBlocks,
     branch: source.branch ?? null,
     envMode: source.envMode ?? null,
     worktreePath: source.worktreePath ?? null,
