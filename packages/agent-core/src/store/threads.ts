@@ -496,7 +496,11 @@ export class ThreadRepo {
    *  right before the turn's assistant block. Only inbox deliveries link
    *  their blocks to the turn they started; a steer is linked too, but lands
    *  inside the turn, never before it. A block of another turn, or a steer
-   *  into one, between the two means this turn had no prompt of its own. */
+   *  into one, between the two means this turn had no prompt of its own.
+   *  A prompt whose queue row still waits (or is held) has started nothing
+   *  yet: journaled while an earlier turn was being accepted, it can sit
+   *  before that turn's assistant block, so it is passed over. A claimed row's
+   *  prompt has already moved to the tail, right before its own turn. */
   turnUserBlockId(threadId: string, turnId: string): string | null {
     const db = this.dbh.handle();
     if (!db) return null;
@@ -525,7 +529,12 @@ export class ThreadRepo {
         db,
         `SELECT block_id, role, turn_id, steered FROM blocks
           WHERE thread_id = ? AND seq < ?
-            AND (role = 'user' OR (turn_id IS NOT NULL AND turn_id <> ?))
+            AND ((role = 'user'
+                  AND NOT EXISTS (SELECT 1 FROM queued_turns q
+                                   WHERE q.thread_id = blocks.thread_id
+                                     AND q.user_block_id = blocks.block_id
+                                     AND q.state IN ('queued', 'failed')))
+                 OR (turn_id IS NOT NULL AND turn_id <> ?))
           ORDER BY seq DESC LIMIT 1`,
       ).get(threadId, start.seq, turnId) as
         | { block_id: string; role: string; turn_id: string | null; steered: number | null }
