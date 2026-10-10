@@ -83,9 +83,12 @@ const CONNECTION = {
   ],
 };
 
-function start(overrides: Partial<SessionStartInput>, emit: EmitEvent = (() => {}) as EmitEvent): Promise<ReturnType<ClaudeAdapter["startSession"]>> {
-  // SAFETY: a zero-arg arrow accepts every EmitEvent call signature, and the
-  // stubbed query() below never emits session events anyway.
+// SAFETY: a zero-arg arrow accepts every EmitEvent call signature, and the
+// stubbed query() below never emits session events unless the test does.
+function start(
+  overrides: Partial<SessionStartInput>,
+  emit: EmitEvent = (() => {}) as EmitEvent,
+): Promise<ReturnType<ClaudeAdapter["startSession"]>> {
   const adapter = new ClaudeAdapter(emit);
   return adapter.startSession({
     threadId: "thread-1",
