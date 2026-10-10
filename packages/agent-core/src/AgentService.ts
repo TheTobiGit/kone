@@ -23,6 +23,7 @@ import {
 import { threadWorkingDir } from "./threadWorkspace.js";
 import {
   checkpointRestoreIsolation,
+  checkoutOverlaps,
   claimRestoreDir,
   isRestoreActive,
   type RestorePathClaim,
@@ -1039,7 +1040,10 @@ export class AgentService {
     // error. Queue behind it exactly like a busy send: the row promotes when
     // the compaction settles (see compactThread) and runs against the
     // compacted context.
-    if (this.isCompacting(input.threadId)) {
+    // A checkpoint restore rewriting this thread's checkout holds it the same
+    // way: the row promotes when the restore lets go (runRevert kicks the
+    // slot), against the restored tree.
+    if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
@@ -1058,13 +1062,6 @@ export class AgentService {
     if (this.isBusy(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
-    // The thread's own checkout is mid-restore (a revert holds it): a turn now
-    // would edit files the reset is rewriting. Refuse rather than queue, since
-    // a restore ends without a settlement that would promote the row.
-    const cwd = this.sessionInputs.get(input.threadId)?.cwd;
-    if (cwd && isRestoreActive(cwd)) {
-      throw new Error(`a checkpoint restore is running in ${cwd}; send once it finishes`);
-    }
     return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options);
   }
 
@@ -1074,6 +1071,13 @@ export class AgentService {
    *  announced the turn yet. */
   private isBusy(threadId: string): boolean {
     return this.activeTurns.has(threadId) || this.dispatchingTurns.has(threadId);
+  }
+
+  /** Is a checkpoint restore rewriting the directory this thread's session
+   *  runs in? No turn may start there until it lets go. */
+  private restoreHolds(threadId: string): boolean {
+    const cwd = this.sessionInputs.get(threadId)?.cwd;
+    return cwd !== undefined && isRestoreActive(cwd);
   }
 
   /** Whether this thread has a live provider session — the only threads a wake
@@ -1364,6 +1368,13 @@ export class AgentService {
     }
     const currentProvider = this.routing.get(threadId);
     const adapter = this.adapterForThread(threadId);
+    // Every turn path ends here, so this is where a restore's claim is
+    // honoured: checked in the same tick the thread turns busy, which is what
+    // runRevert checks before it claims. The drain and Send now hold off
+    // earlier; this catches any path that does not.
+    if (this.restoreHolds(threadId)) {
+      throw new Error(`a checkpoint restore is running in ${this.sessionInputs.get(threadId)?.cwd}; the turn was not sent`);
+    }
     this.dispatchingTurns.add(threadId);
     try {
       this.noteSending(threadId, hooks.onSending);
@@ -1770,6 +1781,13 @@ export class AgentService {
         }
       } finally {
         releaseRestore();
+        // Whatever arrived during the reset waited for it (queued sends, the
+        // inbox): wake the turn slot of every session in that checkout.
+        for (const [otherId, input] of this.sessionInputs) {
+          if (input.cwd && !isRestoreActive(input.cwd) && checkoutOverlaps(input.cwd, dir)) {
+            this.kickTurnSlot(otherId);
+          }
+        }
       }
       return { ok: true };
     } catch (err) {
@@ -2687,6 +2705,9 @@ export class AgentService {
     if (this.isCompacting(threadId)) {
       throw new Error("Wait for context compaction to finish before sending another message.");
     }
+    if (this.restoreHolds(threadId)) {
+      throw new Error("Wait for the checkpoint restore to finish before sending another message.");
+    }
     if (!this.routing.has(threadId)) throw new Error(`No agent session for thread ${threadId}`);
     // Stopped already, though the store has yet to write it.
     if (this.cancelOwed(threadId, queueId)) return false;
@@ -3099,6 +3120,8 @@ export class AgentService {
       // so does the queue drain — a row must never promote into a session
       // mid-compaction and read a half-compacted context.
       if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
+      // A restore holding the checkout: the drain runs again when it lets go.
+      if (this.restoreHolds(threadId)) return;
       // A row waiting out its backoff is retried by its own timer, not by
       // whatever turn event happens to come first.
       if (this.queueRetries.has(threadId) || this.hasPendingRelease(threadId) || this.pendingCancels.has(threadId)) {

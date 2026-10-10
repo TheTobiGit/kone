@@ -62,6 +62,7 @@ const root = mkdtempSync(path.join(tmpdir(), "kone-restore-race-wt-"));
 class Adapter {
   provider = "codex" as const;
   sendGate: ReturnType<typeof gate> | null = null;
+  sent: string[] = [];
   async startSession(): Promise<Record<string, never>> {
     return {};
   }
@@ -69,6 +70,7 @@ class Adapter {
   async stopAll(): Promise<void> {}
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     if (this.sendGate) await this.sendGate.promise;
+    this.sent.push(input.input);
     return { threadId: input.threadId, turnId: `turn-${input.input}` };
   }
 }
@@ -93,6 +95,7 @@ const checkpoints: CheckpointStore = {
 };
 
 let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
+let ConversationStoreCtor: typeof import("./ConversationStore.js").ConversationStore;
 
 function build(adapter: Adapter) {
   const queueStub = {
@@ -114,7 +117,29 @@ function build(adapter: Adapter) {
 
 beforeAll(async () => {
   AgentServiceCtor = (await import("./AgentService.js")).AgentService;
+  ConversationStoreCtor = (await import("./ConversationStore.js")).ConversationStore;
 });
+
+/** A service over the real store, so queued rows claim, promote and wake the
+ *  way they do in the app. */
+function buildWithStore(adapter: Adapter) {
+  const store = new ConversationStoreCtor(mkdtempSync(path.join(tmpdir(), "kone-restore-race-store-")));
+  store.ensureThread({ threadId: "owner", provider: "codex", projectPath: root });
+  const svc = new AgentServiceCtor({
+    // SAFETY: the real store satisfies the queue slice.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    store: store as unknown as QueuedTurnStore,
+    checkpointStore: checkpoints,
+    retentionSweepMs: 0,
+    // SAFETY: the fake covers startSession/sendTurn, the only adapter surface
+    // these tests reach.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    adapters: () => [adapter as unknown as ProviderAdapter],
+  });
+  return { store, svc };
+}
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 beforeEach(() => {
   previewEntered = gate();
@@ -171,7 +196,7 @@ describe("checkpoint restore race", () => {
     }
   });
 
-  test("no session or turn starts in the directory while the reset runs", async () => {
+  test("no session starts in the directory while the reset runs", async () => {
     holdPreview = false;
     holdRestore = true;
     const svc = build(new Adapter());
@@ -182,17 +207,139 @@ describe("checkpoint restore race", () => {
       await expect(
         svc.startSession({ threadId: "newcomer", provider: "codex", cwd: path.join(root, "nested") }),
       ).rejects.toThrow("checkpoint restore is running");
-      await expect(svc.sendTurn({ threadId: "owner", input: "during" })).rejects.toThrow(
-        "checkpoint restore is running",
-      );
       restoreRelease.open();
       expect(await reverting).toEqual({ ok: true });
       expect(restored).toBe(1);
-      // The claim is released with the restore: the owner can work again.
-      const after = await svc.sendTurn({ threadId: "owner", input: "after" });
-      expect(after.turnId).toBe("turn-after");
+      await svc.startSession({ threadId: "newcomer", provider: "codex", cwd: path.join(root, "nested") });
     } finally {
       await svc.stopAll();
     }
   });
+});
+
+// Every way a turn can start on the owner waits out the reset, then goes.
+describe("turns held by a restore", () => {
+  test("a send during the reset queues and goes out once the restore lets go", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const adapter = new Adapter();
+    const { store, svc } = buildWithStore(adapter);
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      store.recordUserBlock({ threadId: "owner", blockId: "during", text: "during" });
+      const queued = await svc.sendTurn({ threadId: "owner", input: "during", userBlockId: "during" });
+      expect(queued.queued).toBe(true);
+      await pause(20);
+      expect(adapter.sent).toEqual([]);
+      restoreRelease.open();
+      expect(await reverting).toEqual({ ok: true });
+      await pause(20);
+      expect(adapter.sent).toEqual(["during"]);
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+      store.close();
+    }
+  });
+
+  test("the queue drain holds off during the reset and runs after it", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const adapter = new Adapter();
+    const { store, svc } = buildWithStore(adapter);
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      store.recordUserBlock({ threadId: "owner", blockId: "queued-ask", text: "queued ask" });
+      store.enqueueQueuedTurn({
+        threadId: "owner",
+        queueId: "q",
+        userBlockId: "queued-ask",
+        dispatchMode: "queue",
+        input: "queued ask",
+      });
+      svc.kickTurnSlot("owner");
+      await pause(20);
+      expect(adapter.sent).toEqual([]);
+      restoreRelease.open();
+      await reverting;
+      await pause(20);
+      expect(adapter.sent).toEqual(["queued ask"]);
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+      store.close();
+    }
+  });
+
+  test("Send now during the reset is refused before it claims the row", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const adapter = new Adapter();
+    const { store, svc } = buildWithStore(adapter);
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      store.recordUserBlock({ threadId: "owner", blockId: "queued-ask", text: "queued ask" });
+      store.enqueueQueuedTurn({
+        threadId: "owner",
+        queueId: "q",
+        userBlockId: "queued-ask",
+        dispatchMode: "queue",
+        input: "queued ask",
+      });
+      await expect(svc.sendQueuedTurnNow("owner", "q")).rejects.toThrow("checkpoint restore");
+      expect(store.listQueuedTurns("owner").map((row) => row.queueId)).toEqual(["q"]);
+      expect(adapter.sent).toEqual([]);
+      restoreRelease.open();
+      await reverting;
+      await pause(20);
+      // The restore's wake runs the row it held back.
+      expect(adapter.sent).toEqual(["queued ask"]);
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+      store.close();
+    }
+  });
+
+  test("an inbox turn waits out the reset", async () => {
+    holdPreview = false;
+    holdRestore = true;
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    try {
+      await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+      const reverting = svc.revertToTurnCheckpoint("owner", "old", true);
+      await restoreEntered.promise;
+      let carried = false;
+      svc.setTurnInbox({
+        carry: () => {
+          if (carried) return null;
+          carried = true;
+          return {
+            input: { threadId: "owner", input: "incoming question" },
+            sending() {},
+            settle() {},
+            release() {},
+          };
+        },
+      });
+      svc.kickTurnSlot("owner");
+      await pause(20);
+      expect(adapter.sent).toEqual([]);
+      restoreRelease.open();
+      await reverting;
+      await pause(20);
+      expect(adapter.sent).toEqual(["incoming question"]);
+    } finally {
+      restoreRelease.open();
+      await svc.stopAll();
+    }
+  });
+
 });
