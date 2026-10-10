@@ -120,6 +120,14 @@ export function claimRestoreDir(dir: string): () => void {
   };
 }
 
+/** Whether two directories are the same checkout or nest either way, by
+ *  real path. */
+export function checkoutOverlaps(a: string, b: string): boolean {
+  const left = realOrNull(a) ?? path.resolve(a);
+  const right = realOrNull(b) ?? path.resolve(b);
+  return contains(left, right) || contains(right, left);
+}
+
 /** Whether a restore in flight claims `dir`, a directory inside it, or one
  *  that contains it. */
 export function isRestoreActive(dir: string): boolean {
