@@ -318,6 +318,7 @@ export function registerAgentIpc(): void {
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
+    isThreadBusy: (threadId) => svc.isThreadBusy(threadId),
     threadRuntime: (threadId) => svc.threadRuntime(threadId),
     providerSteers: (provider) => svc.providerSteers(provider),
     supportsFork: (provider) => svc.supportsFork(provider),

@@ -29,6 +29,7 @@ export interface AppForkToolOptions {
   /** Whether a provider can fork natively (its adapter's supportsFork).
    *  Absent reads as false — the portable branch import. */
   supportsFork?: (provider: ProviderKind) => boolean;
+  isThreadBusy?: (threadId: string) => boolean;
 }
 
 function errorMessage(error: Error, fallback: string): string {
@@ -40,10 +41,14 @@ export function createAppForkTools(options: AppForkToolOptions): ToolEntry[] {
     _ctx: GatewayToolContext,
     params: ForkAppThreadInput,
   ): Promise<GatewayToolResult> => {
-    const sourceProvider = getConversationStore().threadMeta(params.sourceThreadId)?.provider;
+    const store = getConversationStore();
+    if (options.isThreadBusy?.(params.sourceThreadId)) {
+      throw new GatewayToolError("invalid_input", "A turn is still running on this thread — wait for it to finish before forking from it.");
+    }
+    const sourceProvider = store.threadMeta(params.sourceThreadId)?.provider;
     const input: ForkThreadAtTurnInput = {
       requestId: params.requestId,
-      threadId: params.threadId ?? (options.newThreadId ?? randomUUID)(),
+      threadId: params.threadId ?? store.threadIdForRequestId(params.requestId) ?? (options.newThreadId ?? randomUUID)(),
       sourceThreadId: params.sourceThreadId,
       turnId: params.turnId,
       userBlockId: params.userBlockId ?? null,
