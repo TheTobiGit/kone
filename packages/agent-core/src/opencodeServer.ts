@@ -5,6 +5,15 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { OPENCODE_BINARY } from "./opencodeHome.js";
+import { OpenCodeServerLedger } from "./opencodeServerLedger.js";
+import { userDataPath } from "./userDataDir.js";
+
+let serverLedger: OpenCodeServerLedger | undefined;
+let orphanServersReaped: Promise<void> | undefined;
+function getServerLedger(): OpenCodeServerLedger {
+  serverLedger ??= new OpenCodeServerLedger(userDataPath("opencode-servers.json"));
+  return serverLedger;
+}
 
 /** Which HTTP protocol a running server speaks, read off its own listening
  *  line (see parseOpenCodeServerListening). */
@@ -78,6 +87,8 @@ async function startOpenCodeServerOnce(input: {
    *  boot can be tracked (and torn down) before it becomes ready. */
   onChild?: (child: ChildProcess) => void;
 }): Promise<OpenCodeServer> {
+  orphanServersReaped ??= Promise.resolve().then(() => getServerLedger().reap());
+  await orphanServersReaped;
   // Port 0 asks the OS for an ephemeral port at bind time and the server
   // prints the bound URL on its listening line (parsed below). Reserving a
   // port up front instead — bind, read, close, re-bind — leaves a window
@@ -90,6 +101,7 @@ async function startOpenCodeServerOnce(input: {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
+  if (child.pid !== undefined && process.platform !== "win32") getServerLedger().record(child.pid);
   input.onChild?.(child);
   let stdout = "";
   let stderr = "";
@@ -102,6 +114,7 @@ async function startOpenCodeServerOnce(input: {
       try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGTERM"); } catch { /* already gone */ }
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGKILL"); } catch { /* already gone */ }
+      getServerLedger().remove(child.pid);
     }
   };
 
@@ -148,8 +161,11 @@ async function startOpenCodeServerOnce(input: {
  *  failure path (including before a retry), where a full second of waiting
  *  is pure added latency on every transient failure. */
 async function disposeUnready(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
   const pid = child.pid;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (pid !== undefined && process.platform !== "win32") getServerLedger().remove(pid);
+    return;
+  }
   if (pid !== undefined) {
     // Signal the group first (serve runs detached so this reaches the
     // children it forked during startup), falling back to the bare pid.
@@ -168,6 +184,7 @@ async function disposeUnready(child: ChildProcess): Promise<void> {
   while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  if (pid !== undefined && process.platform !== "win32") getServerLedger().remove(pid);
 }
 
 type SpareEntry = { server: OpenCodeServer; idleTimer: ReturnType<typeof setTimeout> };
