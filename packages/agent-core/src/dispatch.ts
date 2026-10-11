@@ -99,7 +99,7 @@ type ThreadPlace = { dir: string; worktreePath: string | null };
  *  directory it has. */
 export type MoveThreadToWorktreeResult =
   | { ok: true; worktreePath: string }
-  | { ok: false; reason: "unknown" | "busy" | "failed"; detail?: string };
+  | { ok: false; reason: "unknown" | "busy" | "restoring" | "stop-unconfirmed" | "failed"; detail?: string };
 
 /** The sentence worth showing from a failure, or `fallback` when it carries
  *  none worth reading. */
@@ -690,7 +690,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
     // A session cannot change directory mid-turn, and a half-built worktree
     // under a running turn would be worse than a refusal.
-    if (this.service.isThreadBusy(threadId)) return { ok: false, reason: "busy" };
+    const reservation = this.service.holdThreadForWorktreeMove(threadId);
+    if (reservation.reason) return { ok: false, reason: reservation.reason };
 
     const input: SessionStartInput = {
       threadId,
@@ -698,12 +699,34 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       cwd: meta.projectPath,
     };
     if (meta.model) input.model = meta.model;
+    const previousWorkspace = recorded;
     try {
       const built = await this.buildThreadWorktree(input, { branch: options?.branch });
+      const restorePreviousBinding = () => this.store.setThreadWorkspace(threadId, {
+        envMode: previousWorkspace?.envMode ?? "local",
+        worktreePath: previousWorkspace?.worktreePath ?? null,
+        requestedBranch: previousWorkspace?.requestedBranch ?? null,
+      });
+      // The reservation queues new sends; recheck both turn and restore state
+      // after provisioning because a restore may have started meanwhile.
+      if (this.service.isThreadBusy(threadId)) {
+        restorePreviousBinding();
+        return { ok: false, reason: "busy" };
+      }
+      if (this.service.isThreadRestoreHeld(threadId)) {
+        restorePreviousBinding();
+        return { ok: false, reason: "restoring" };
+      }
       // The old session was started in the project checkout. Stop it and start
       // a fresh one in the worktree, resuming the provider conversation so the
       // move keeps its context.
-      if (this.service.hasLiveSession(threadId)) await this.service.stopSession(threadId);
+      if (this.service.hasLiveSession(threadId)) {
+        const stopped = await this.service.stopThread(threadId);
+        if (!stopped.confirmedStopped) {
+          restorePreviousBinding();
+          return { ok: false, reason: "stop-unconfirmed", detail: stopped.detail };
+        }
+      }
       await this.ensureThreadSession(threadId, { resume: true });
       return { ok: true, worktreePath: built };
     } catch (error) {
@@ -713,6 +736,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         reason: "failed",
         detail: messageOf(normalised, "Could not move the thread into a worktree."),
       };
+    } finally {
+      reservation.release();
     }
   }
 

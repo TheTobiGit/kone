@@ -1648,7 +1648,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       params.threadId,
       params.branch ? { branch: params.branch } : undefined,
     );
-    if (!result.ok) throw failInternal(params.threadId, "move to worktree", result.reason);
+    if (!result.ok) {
+      const detail = result.detail ? ` ${result.detail}` : "";
+      return {
+        content: [{ type: "text", text: `Could not move thread "${params.threadId}" to a worktree (${result.reason}).${detail}` }],
+        isError: true,
+      };
+    }
     return singleLine(
       `Moved thread "${params.threadId}" into its own worktree at ${result.worktreePath}.`,
       { threadId: params.threadId, worktreePath: result.worktreePath },

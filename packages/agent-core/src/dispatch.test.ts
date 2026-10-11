@@ -20,6 +20,7 @@ import type {
 } from "./types.js";
 import { assistantWorkingDir } from "./assistantWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH, type CheckpointStore } from "./conversationStoreTypes.js";
+import { claimRestoreDir } from "./checkpointRestoreSafety.js";
 
 // The thread dispatcher against a REAL ConversationStore and a real
 // AgentService, with only the provider adapter faked. The store is what makes
@@ -64,6 +65,7 @@ class FakeAdapter {
   static refuseNext: Error | null = null;
   /** Makes the next session start fail, for startup-failure coverage. */
   static startError: Error | null = null;
+  static stopError: Error | null = null;
   constructor(readonly emit: EmitEvent) {}
   async discover(): Promise<never[]> {
     return [];
@@ -92,7 +94,9 @@ class FakeAdapter {
     return { threadId: input.threadId, turnId: `turn-${++FakeAdapter.turnCounter}` };
   }
   async interruptTurn(): Promise<void> {}
-  async stopSession(): Promise<void> {}
+  async stopSession(): Promise<void> {
+    if (FakeAdapter.stopError) throw FakeAdapter.stopError;
+  }
   async stopAll(): Promise<void> {}
   async respondToRequest(): Promise<void> {}
   async respondToUserInput(): Promise<UserInputRespondResult> {
@@ -217,6 +221,7 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
   setUserDataDir(lastDataDir);
   setupScriptGate = null;
   setupScriptStarted = null;
+  FakeAdapter.stopError = null;
   worktreeSetups.length = 0;
   const store = new ConversationStoreCtor();
   const mailbox = new IrcMailboxCtor(store);
@@ -1768,6 +1773,64 @@ describe("thread dispatcher: invoked skills", () => {
 });
 
 describe("moving a thread into a worktree", () => {
+  test("does not rebind when the old session stop is unconfirmed", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.stopError = new Error("stop timed out");
+    try {
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toMatchObject({
+        ok: false,
+        reason: "stop-unconfirmed",
+      });
+      expect(store.threadWorkspace(THREAD)?.worktreePath).toBeNull();
+      expect(provisioned).toHaveLength(1);
+    } finally {
+      FakeAdapter.stopError = null;
+    }
+  });
+
+  test("refuses while checkpoint restore holds the thread checkout", async () => {
+    const { dispatcher } = await harness();
+    provisioned.length = 0;
+    const release = claimRestoreDir(CWD);
+    try {
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toEqual({
+        ok: false,
+        reason: "restoring",
+      });
+      expect(provisioned).toHaveLength(0);
+    } finally {
+      release();
+    }
+  });
+
+  test("queues a send that arrives while the worktree is being built", async () => {
+    const { store, dispatcher, service } = await harness();
+    provisioned.length = 0;
+    holdProvisioning();
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.startedCwds.length = 0;
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      for (let attempt = 0; attempt < 20 && provisioned.length === 0; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(provisioned).toHaveLength(1);
+
+      expect(await service.sendTurn({ threadId: THREAD, input: "during move" })).toMatchObject({ queued: true });
+      expect(FakeAdapter.sent).toEqual([]);
+
+      releaseProvisioning();
+      expect(await moving).toMatchObject({ ok: true });
+      expect(FakeAdapter.sent).toEqual([]);
+      expect(FakeAdapter.startedCwds).toEqual([
+        "/tmp/kone-worktrees/kone-deadbeef",
+      ]);
+      expect(store.threadWorkspace(THREAD)?.worktreePath).toBe("/tmp/kone-worktrees/kone-deadbeef");
+    } finally {
+      releaseProvisioning();
+    }
+  });
+
   test("builds a worktree, rebinds the session and resumes the conversation", async () => {
     const { store, dispatcher } = await harness();
     store.captureConversationId(THREAD, "conv-move");

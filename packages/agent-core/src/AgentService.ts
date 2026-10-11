@@ -552,6 +552,7 @@ export class AgentService {
    *  without this a burst of sends walks straight past the busy-intercept and
    *  starts concurrent turns on one session. See `isBusy`. */
   private readonly dispatchingTurns = new Set<string>();
+  private readonly worktreeMoveHolds = new Set<string>();
   /** Steers in flight into a live turn, per thread. A steer can outlive the
    *  turn it aimed at and fall back to a fresh one, so a restore treats a
    *  thread mid-steer as busy (see `steering`). */
@@ -1255,7 +1256,7 @@ export class AgentService {
     // A checkpoint restore rewriting this thread's checkout holds it the same
     // way: the row promotes when the restore lets go (runRevert kicks the
     // slot), against the restored tree.
-    if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId)) {
+    if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId) || this.worktreeMoveHolds.has(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
@@ -1305,6 +1306,27 @@ export class AgentService {
   private restoreHolds(threadId: string): boolean {
     const cwd = this.sessionInputs.get(threadId)?.cwd;
     return cwd !== undefined && isRestoreActive(cwd);
+  }
+
+  /** Atomically reserves an idle thread for a workspace handoff. Sends arriving
+   *  during the reservation enter the normal durable queue until it is released. */
+  holdThreadForWorktreeMove(threadId: string) {
+    if (this.restoreHolds(threadId)) return { reason: "restoring", release: () => {} };
+    if (this.isBusy(threadId) || this.worktreeMoveHolds.has(threadId)) return { reason: "busy", release: () => {} };
+    this.worktreeMoveHolds.add(threadId);
+    let released = false;
+    return { release: () => {
+      if (released) return;
+      released = true;
+      this.worktreeMoveHolds.delete(threadId);
+      // An earlier drain may have observed the hold and be unwinding now.
+      // Retry after its delivery slot has had a chance to clear.
+      setTimeout(() => this.promoteQueuedTurns(threadId), 0).unref?.();
+    } };
+  }
+
+  isThreadRestoreHeld(threadId: string): boolean {
+    return this.restoreHolds(threadId);
   }
 
   /** Whether this thread has a live provider session — the only threads a wake
@@ -3684,7 +3706,7 @@ export class AgentService {
       // A compaction in flight owns the session until its boundary lands, and
       // so does the queue drain — a row must never promote into a session
       // mid-compaction and read a half-compacted context.
-      if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
+      if (this.isBusy(threadId) || this.isCompacting(threadId) || this.worktreeMoveHolds.has(threadId) || !this.routing.has(threadId)) return;
       // A restore holding the checkout: the drain runs again when it lets go.
       if (this.restoreHolds(threadId)) return;
       // A row waiting out its backoff is retried by its own timer, not by
