@@ -492,6 +492,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       main: newScope(),
       subagentRuns: new Map(),
       settledSubagents: new Map(),
+      subagentToolUseOwners: new Map(),
+      nestedTaskOwners: new Map(),
       pendingSubagentSteers: new Map(),
       pendingSubagentStops: new Set(),
       pendingWake: [],
@@ -661,15 +663,20 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     const requestId = randomUUID();
+    const subagentToolUseId = options.agentID
+      ? this.runByTaskId(session, options.agentID)?.snapshot.toolUseId
+      : undefined;
     const answers = await new Promise<UserInputAnswers>((resolve) => {
       session.pendingUserInputs.set(requestId, { questions, resolve });
-      this.emit({
+      const requested: Extract<RuntimeEvent, { type: "user-input.requested" }> = {
         ...this.base(session),
         type: "user-input.requested",
         requestId,
         turnId: session.activeTurnId,
         questions,
-      });
+      };
+      if (subagentToolUseId) requested.subagentToolUseId = subagentToolUseId;
+      this.emit(requested);
       // Unblock if the turn aborts mid-question so the query can settle.
       const signal = options?.signal;
       if (signal) {
@@ -1352,6 +1359,9 @@ export class ClaudeAdapter implements ProviderAdapter {
 
       if (blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use") {
         const toolUseId = readString(block, "id");
+        if (toolUseId && scope.subagentToolUseId) {
+          session.subagentToolUseOwners.set(toolUseId, scope.subagentToolUseId);
+        }
         // Dedupe on the tool-use id: the same message can be replayed.
         if (toolUseId && scope.toolItems.has(toolUseId)) return;
         const toolName = readString(block, "name");
@@ -1718,6 +1728,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       // Bash and workflow tasks through this channel, which kone doesn't nest.
       const toolUseId = readString(message, "tool_use_id");
       if (!toolUseId) return;
+      const ancestorToolUseId = session.subagentToolUseOwners.get(toolUseId);
+      if (ancestorToolUseId) {
+        const owner = session.subagentRuns.get(ancestorToolUseId);
+        if (owner) {
+          session.nestedTaskOwners.set(taskId, ancestorToolUseId);
+        }
+        return;
+      }
       const run = this.ensureSubagentRun(session, toolUseId);
       run.snapshot.taskId = taskId;
       run.snapshot.status = "running";
@@ -1740,6 +1758,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
       return;
     }
+
+    if (session.nestedTaskOwners.has(taskId)) return;
 
     const run = this.runByTaskId(session, taskId, readString(message, "tool_use_id"));
     if (!run) return;
@@ -1814,7 +1834,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (toolUseId) {
       const direct = session.subagentRuns.get(toolUseId);
       if (direct) return direct;
+      const ownerToolUseId = session.subagentToolUseOwners.get(toolUseId);
+      const owner = ownerToolUseId ? session.subagentRuns.get(ownerToolUseId) : undefined;
+      if (owner) return owner;
     }
+    const ownerToolUseId = session.nestedTaskOwners.get(taskId);
+    const nestedOwner = ownerToolUseId ? session.subagentRuns.get(ownerToolUseId) : undefined;
+    if (nestedOwner) return nestedOwner;
     for (const run of session.subagentRuns.values()) {
       if (run.snapshot.taskId === taskId) return run;
     }

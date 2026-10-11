@@ -13,7 +13,7 @@ import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
 import { Database } from "bun:sqlite";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, Options as ClaudeQueryOptions, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeJsonObject } from "./adapters/claudeAdapterHelpers.js";
 
 // The adapter transitively imports ConversationStore (via AttachmentStore),
@@ -89,6 +89,7 @@ type AdapterHarnessState = {
    *  asked for and the flag-layer patches it merged. */
   setModelCalls: (string | undefined)[];
   flagSettings: FlagPatch[];
+  permissionHandler: CanUseTool | null;
 };
 
 /** The flag-layer keys this adapter merges (SDK `applyFlagSettings`). */
@@ -98,10 +99,11 @@ type FlagPatch = {
   effortLevel?: string | null;
 };
 
-const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null, setModelCalls: [], flagSettings: [] };
+const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null, setModelCalls: [], flagSettings: [], permissionHandler: null };
 
-const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage> }) => {
+const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage>; options?: ClaudeQueryOptions }) => {
   state.promptIterable = input.prompt ?? null;
+  state.permissionHandler = input.options?.canUseTool ?? null;
   return {
     initializationResult: async () => state.initializationResult?.() ?? {},
     interrupt: () => state.interrupt?.(),
@@ -153,6 +155,7 @@ function setup() {
   state.promptIterable = null;
   state.setModelCalls = [];
   state.flagSettings = [];
+  state.permissionHandler = null;
   versionProbeResult = { outcome: "ok", stdout: "1.2.3 (Claude Code)", stderr: "", code: 0 };
   return { adapter, events };
 }
@@ -398,6 +401,34 @@ describe("Claude context fill", () => {
 });
 
 describe("Claude background subagents", () => {
+  test("a grandchild approval is tagged with its nearest known ancestor run", async () => {
+    const { adapter, events } = setup();
+    await liveTurnWithSubagent(adapter);
+    state.feed!.push({
+      type: "assistant",
+      parent_tool_use_id: "tool-1",
+      message: { content: [{ type: "tool_use", id: "nested-tool", name: "Task", input: { description: "nested" } }] },
+    });
+    await flush();
+    state.feed!.push({
+      type: "system",
+      subtype: "task_started",
+      task_id: "nested-task",
+      tool_use_id: "nested-tool",
+    });
+    await flush();
+
+    const approval = state.permissionHandler?.("Bash", { command: "ls" }, {
+      agentID: "nested-task",
+      signal: new AbortController().signal,
+      suggestions: [],
+    });
+    const requested = ofType(events, "approval.requested").at(-1);
+    expect(requested?.subagentToolUseId).toBe("tool-1");
+    expect(requested?.turnId).toBe(events.find((event) => event.type === "turn.started")?.turnId);
+    void approval;
+  });
+
   /** Background a live run the way the SDK does: a task_updated patch. */
   async function background(): Promise<void> {
     state.feed!.push({
