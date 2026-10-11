@@ -118,6 +118,7 @@ import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../regist
 import { collapseSearchHits, fetchSearchCandidates } from "../searchCollapse.js";
 import { canReadThread } from "../readScope.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
+import { isSnoozed } from "../../limitState.js";
 import {
   readMessageRow,
   renderMessageLine,
@@ -468,6 +469,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     span: TurnSpan | null;
     gate: ThreadGateKind | null;
     live: boolean;
+    limited: boolean;
   }
 
   const readingFor = (
@@ -479,7 +481,28 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     project: projects.get(meta.projectPath) ?? null,
     agentName: agentNameFor(store, meta.threadId),
     status: statusFor(facts),
+    snoozed: snoozedFor(meta, facts),
   });
+
+  /** Whether the thread is snoozed right now, from the snooze and the
+   *  wake-early rules. The inbox reads this boolean rather than reimplementing
+   *  the rule. */
+  const snoozedFor = (meta: StoredThreadMeta, facts: ReadingFacts): boolean => {
+    const lastState = facts.span?.lastState ?? null;
+    const lastAt = facts.span ? (facts.span.endedAt ?? facts.span.startedAt) : null;
+    return isSnoozed(
+      {
+        snoozedUntil: meta.snoozedUntil ?? null,
+        snoozedAt: meta.snoozedAt ?? null,
+        parked: facts.gate !== null,
+        latest:
+          lastState === null
+            ? null
+            : { state: lastState, at: lastAt ?? 0, limit: (meta.limitedAt ?? null) !== null },
+      },
+      Date.now(),
+    );
+  };
 
   /** One thread's rolled-up status, derived at read time — never stored, so a
    *  crash cannot leave a dead thread labelled "working". A parked gate
@@ -499,6 +522,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       running: (facts.span?.runningTurns ?? 0) > 0,
       lastState: facts.span?.lastState ?? null,
       hasLiveSession: facts.live,
+      limited: facts.limited,
     });
 
   // -- lifecycle plumbing (one place, not five handlers) ----------------------
@@ -695,6 +719,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         span: spanMap ? (spanMap.get(meta.threadId) ?? null) : (store.threadTurnSpan?.(meta.threadId) ?? null),
         gate: gateSnapshot.get(meta.threadId) ?? null,
         live: isLive(meta.threadId),
+        limited: (meta.limitedAt ?? null) !== null,
       }),
     );
     const last = listed[listed.length - 1]?.meta;
@@ -832,6 +857,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
               span: store.threadTurnSpan?.(thread.threadId) ?? null,
               gate: options.pendingGateFor?.(thread.threadId) ?? null,
               live: isLive(thread.threadId),
+              limited: (thread.limitedAt ?? null) !== null,
             }),
           }),
           messages: [message],
@@ -923,10 +949,17 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       span: store.threadTurnSpan?.(thread.threadId) ?? null,
       gate: options.pendingGateFor?.(thread.threadId) ?? null,
       live: isLive(thread.threadId),
+      limited: (thread.limitedAt ?? null) !== null,
     });
     const about = [
       `Thread ${thread.threadId}`,
       status,
+      (thread.limitedAt ?? null) !== null && (thread.limitResetAt ?? 0) > Date.now()
+        ? `limit resets ${new Date(thread.limitResetAt ?? 0).toISOString()}`
+        : null,
+      (thread.snoozedUntil ?? 0) > Date.now()
+        ? `snoozed until ${new Date(thread.snoozedUntil ?? 0).toISOString()}`
+        : null,
       [agent, thread.provider, thread.model].filter(Boolean).join(" / "),
       `project ${thread.projectPath}`,
       thread.blocks.length > messages.length ? `${thread.blocks.length} messages in all` : null,

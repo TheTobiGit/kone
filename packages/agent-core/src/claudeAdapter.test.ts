@@ -190,6 +190,66 @@ async function liveTurnWithSubagent(
 }
 
 describe("Claude result handler", () => {
+  test("carries a rejected rate-limit event reset into the failed turn", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    const { turnId } = await adapter.sendTurn({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      input: "hello",
+    });
+    const resetsAt = Math.floor(Date.now() / 1000) + 90;
+    state.feed!.push({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt },
+    });
+    state.feed!.push({
+      type: "result",
+      subtype: "error_during_execution",
+      num_turns: 1,
+      is_error: true,
+      errors: ["usage limit reached"],
+    });
+    await flush();
+    expect(ofType(events, "turn.aborted").find((event) => event.turnId === turnId)).toMatchObject({
+      reason: "failed",
+      limitResetAt: resetsAt * 1000,
+    });
+  });
+
+  test("does not carry an allowed warning reset into a later network failure", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    const first = await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "first" });
+    const resetsAt = Math.floor(Date.now() / 1000) + 90;
+    state.feed!.push({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", resetsAt },
+    });
+    state.feed!.push({
+      type: "result",
+      subtype: "success",
+      num_turns: 1,
+      is_error: false,
+      usage: { input_tokens: 1 },
+    });
+    await flush();
+    expect(ofType(events, "turn.completed").some((event) => event.turnId === first.turnId)).toBe(true);
+
+    const second = await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "second" });
+    state.feed!.push({
+      type: "result",
+      subtype: "error_during_execution",
+      num_turns: 1,
+      is_error: true,
+      errors: ["network connection failed"],
+    });
+    await flush();
+    const aborted = ofType(events, "turn.aborted").find((event) => event.turnId === second.turnId);
+    expect(aborted?.message).toContain("network connection failed");
+    expect(aborted?.limitResetAt).toBeUndefined();
+  });
+
   test("result with no active turn (resume handshake) keeps usage, drops the lifecycle event, tripwires", async () => {
     const { adapter, events } = setup();
     await start(adapter);

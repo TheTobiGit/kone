@@ -269,6 +269,21 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
+  setLimited(threadId: string, resetAt: number | null): void {
+    return this.threads.setLimited(threadId, resetAt);
+  }
+
+  /** @see ThreadRepo */
+  clearLimited(threadId: string): void {
+    return this.threads.clearLimited(threadId);
+  }
+
+  /** @see ThreadRepo */
+  setSnooze(threadId: string, until: number | null): void {
+    return this.threads.setSnooze(threadId, until);
+  }
+
+  /** @see ThreadRepo */
   setVisited(threadId: string, at: number, force = false): void {
     return this.threads.setVisited(threadId, at, force);
   }
@@ -599,8 +614,8 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ContinuationRepo */
-  claimDueContinuations(now: number): ContinuationRecord[] {
-    return this.continuations.claimDue(now);
+  claimDueContinuations(now: number, excludedContinuationIds: string[] = []): ContinuationRecord[] {
+    return this.continuations.claimDue(now, excludedContinuationIds);
   }
 
   /** @see ContinuationRepo */
@@ -634,8 +649,8 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ContinuationRepo */
-  nextContinuationDueAt(): number | null {
-    return this.continuations.nextDueAt();
+  nextContinuationDueAt(excludedContinuationIds: string[] = []): number | null {
+    return this.continuations.nextDueAt(excludedContinuationIds);
   }
 
   /** @see ContinuationRepo */

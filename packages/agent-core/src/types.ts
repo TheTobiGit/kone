@@ -390,6 +390,8 @@ export type TurnStartResult = {
   /** The thread was busy, so the turn waits in the queue: no provider has it
    *  yet, and `turnId` will never name a turn. */
   queued?: true;
+  /** A noQueue send was held by restore, compaction, or a live turn. */
+  held?: true;
   /** A steer its provider cannot take mid-turn, waiting for the tool call
    *  the turn is in to finish before kone ends the turn and it goes next
    *  (kone steer): the call, and when the wait began. */
@@ -449,6 +451,8 @@ export type TurnSendOptions = {
   /** A steer that must land in a turn the provider is running, or not at all:
    *  refused rather than queued when no announced turn can take it. */
   liveOnly?: boolean;
+  /** Return held instead of persisting this turn when the service would queue it. */
+  noQueue?: boolean;
 };
 
 /** The naming source for a turn: prose first, then the invoked skill, then
@@ -830,6 +834,17 @@ export type StoredThreadMeta = {
    *
    *  Never read it alone — go through isThreadUnread. */
   lastVisitedAt?: number | null;
+  /** When a turn last failed on a provider usage limit (v30), or null. A real
+   *  state distinct from a plain failure: the thread is waiting out a provider
+   *  limit, not broken. `limitResetAt` is the provider's own reset time when it
+   *  gave one — null means unknown, never guessed. */
+  limitedAt?: number | null;
+  limitResetAt?: number | null;
+  /** When a snooze expires (v30), or null. A future value means the thread is
+   *  snoozed unless a wake-early rule clears it; `snoozedAt` is when it was
+   *  set, so a failure or completion after it can wake the thread early. */
+  snoozedUntil?: number | null;
+  snoozedAt?: number | null;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -1353,7 +1368,8 @@ export type ThreadStatus =
   | "waiting-for-user-input"
   | "idle"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  | "limited";
 
 /** What can park a thread: an approval the user must decide, or a question
  *  for the user. One vocabulary for the top-level and spawned-child status
@@ -1772,6 +1788,19 @@ export type RuntimeEvent =
   // lists; `doneAt` is the stamp the store wrote (the cleared sentinel when
   // un-marked), so consumers agree with the row on when the mark landed.
   | (BaseEvent & { type: "thread.done.updated"; done: boolean; doneAt: number })
+  // A thread's usage-limit state changed: a turn failed on a provider limit
+  // (limited true) with the provider's reset when it gave one, or the mark was
+  // cleared by real new work or a manual resume (limited false). `limitResetAt`
+  // is null when the provider gave no reset — never guessed.
+  | (BaseEvent & {
+      type: "thread.limit.updated";
+      limited: boolean;
+      limitedAt: number | null;
+      limitResetAt: number | null;
+    })
+  // A thread's snooze changed: `snoozedUntil` is the deadline (null clears).
+  // Lists move the row out of / back into the inbox without a reload.
+  | (BaseEvent & { type: "thread.snooze.updated"; snoozedUntil: number | null })
   // The provider rerouted the request to a different model mid-session (Codex
   // `model/rerouted`, Claude safeguard refusals falling back to another model).
   // Consumers update the session's model label; `reason` is the provider's own
@@ -2039,7 +2068,7 @@ export type RuntimeEvent =
       queueIds: string[];
     })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
-  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string })
+  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string; /** The provider's own reset time (epoch millis) when the failure is a usage limit that carried one. */ limitResetAt?: number })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
   // turn itself: it belongs in that run's `items`, not the assistant block's.
   | (BaseEvent & {

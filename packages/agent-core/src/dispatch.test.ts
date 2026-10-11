@@ -19,6 +19,7 @@ import type {
   UserInputRespondResult,
 } from "./types.js";
 import { assistantWorkingDir } from "./assistantWorkspace.js";
+import { claimRestoreDir } from "./checkpointRestoreSafety.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH, type CheckpointStore } from "./conversationStoreTypes.js";
 
 // The thread dispatcher against a REAL ConversationStore and a real
@@ -732,6 +733,49 @@ describe("thread dispatcher: restart background note", () => {
     second.dispatcher.recoverRestartBackgroundNotesAtBoot();
     // No turn was sent: nothing reached the provider, so nothing was woken.
     expect(FakeAdapter.sent).toEqual([]);
+  });
+
+  test("a restore-held resume keeps replay and restart notes for the accepted retry", async () => {
+    const first = await harness();
+    await first.dispatcher.sendThreadTurn({ threadId: THREAD, input: "Prior instruction: audit critical deployment." });
+    const now = Date.now();
+    first.store.applyEvent({
+      type: "item.started",
+      threadId: THREAD,
+      provider: "codex",
+      at: now,
+      source: "codex.app-server",
+      turnId: "turn-live",
+      item: {
+        itemId: "plan-critical",
+        kind: "plan_text",
+        status: "in-progress",
+        text: "Deployment audit",
+        tasks: [{ id: "audit-task", content: "critical deployment audit", status: "in-progress" }],
+      },
+    });
+    first.store.close();
+
+    const second = await harness({ reopen: true });
+    second.dispatcher.recoverRestartBackgroundNotesAtBoot();
+    second.service.setThreadLimited(THREAD, Date.now() + 60_000);
+    const sentBeforeResume = [...FakeAdapter.sent];
+    const releaseRestore = claimRestoreDir(CWD);
+    try {
+      await expect(second.dispatcher.resumeLimitedThread(THREAD)).rejects.toThrow("held by a restore");
+      expect(FakeAdapter.sent).toEqual(sentBeforeResume);
+      expect(second.store.listQueuedTurns(THREAD)).toEqual([]);
+    } finally {
+      releaseRestore();
+    }
+
+    await second.dispatcher.resumeLimitedThread(THREAD);
+    const accepted = FakeAdapter.sent.at(-1) ?? "";
+    expect(accepted).toContain("<recovered-transcript>");
+    expect(accepted).toContain("Prior instruction: audit critical deployment.");
+    expect(accepted).toContain("kone restarted");
+    expect(accepted).toContain("critical deployment audit");
+    expect(second.store.threadMeta(THREAD)?.limitedAt ?? null).toBeNull();
   });
 });
 
