@@ -3350,6 +3350,7 @@ export class AgentService {
     const provider = meta?.provider ?? this.routing.get(threadId);
     if (!provider) return;
     history.setLimited(threadId, resetAt);
+    this.scheduleLimitResume(threadId, resetAt);
     const at = Date.now();
     this.dispatch({
       type: "thread.limit.updated",
@@ -3361,7 +3362,6 @@ export class AgentService {
       limitedAt: at,
       limitResetAt: resetAt,
     });
-    this.scheduleLimitResume(threadId, resetAt);
   }
 
   /** Clear the limit mark: real new work, or a manual resume. No-op when the
