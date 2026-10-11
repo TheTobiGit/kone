@@ -482,3 +482,63 @@ test("a restore waits out a steer in flight as busy", async () => {
     await svc.stopAll();
   }
 });
+
+// The direct send after a failed queue write is the same kind of handoff: the
+// turn it followed can end while the provider prepares it, and the provider
+// then starts it fresh.
+test("a restore waits out a queue-failure send in flight as busy", async () => {
+  holdPreview = false;
+  const storeDir = mkdtempSync(path.join(tmpdir(), "kone-restore-race-store-"));
+  const store = new ConversationStoreCtor(storeDir);
+  store.ensureThread({ threadId: "owner", provider: "codex", projectPath: root });
+  const sql = new Database(path.join(storeDir, "kone.sqlite"));
+  sql.exec(
+    "CREATE TRIGGER refuse_enqueue BEFORE INSERT ON queued_turns BEGIN SELECT RAISE(ABORT, 'queue write unavailable'); END",
+  );
+  const sendEntered = gate();
+  const sendRelease = gate();
+  const adapter = new Adapter();
+  adapter.sendTurn = async (input: SendTurnInput): Promise<TurnStartResult> => {
+    sendEntered.open();
+    await sendRelease.promise;
+    adapter.sent.push(input.input);
+    return { threadId: input.threadId, turnId: "fresh-from-fallback" };
+  };
+  let emit: (event: RuntimeEvent) => void = () => {};
+  const svc = new AgentServiceCtor({
+    // SAFETY: the real store satisfies the queue slice.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    store: store as unknown as QueuedTurnStore,
+    checkpointStore: checkpoints,
+    retentionSweepMs: 0,
+    adapters: (listener) => {
+      emit = listener;
+      // SAFETY: the fake covers startSession/sendTurn, the only adapter
+      // surface this test reaches.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      return [adapter as unknown as ProviderAdapter];
+    },
+  });
+  const event = (type: "turn.started" | "turn.completed", turnId: string) =>
+    emit({ type, threadId: "owner", provider: "codex", turnId, at: Date.now(), source: "codex.app-server" });
+  try {
+    await svc.startSession({ threadId: "owner", provider: "codex", cwd: root });
+    event("turn.started", "live");
+    // Busy, so the follow-up goes to the queue; the write fails and it is
+    // handed straight to the provider.
+    const sending = svc.sendTurn({ threadId: "owner", input: "late fallback" });
+    await sendEntered.promise;
+    event("turn.completed", "live");
+    expect(await svc.revertToTurnCheckpoint("owner", "old", true)).toEqual({ ok: false, reason: "busy" });
+    expect(restored).toBe(0);
+    sendRelease.open();
+    await sending;
+    expect(adapter.sent).toEqual(["late fallback"]);
+    expect(await svc.revertToTurnCheckpoint("owner", "old", true)).toEqual({ ok: true });
+  } finally {
+    sendRelease.open();
+    await svc.stopAll();
+    sql.close();
+    store.close();
+  }
+});
