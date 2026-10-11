@@ -43,6 +43,37 @@ export type ForkThreadAtBlockResult =
     }
   | { ok: false; reason: ForkThreadAtBlockError };
 
+export type SpawnedChildrenPage = {
+  items: StoredThreadMeta[];
+  total: number;
+  nextCursor: string | null;
+};
+
+export type SpawnedChildrenPageOptions = { limit?: number; cursor?: string | null };
+
+const MAX_SPAWNED_CHILDREN_PAGE_SIZE = 100;
+const DEFAULT_SPAWNED_CHILDREN_PAGE_SIZE = 50;
+
+function encodeChildrenCursor(createdAt: number, threadId: string): string {
+  return Buffer.from(`${createdAt}\n${threadId}`, "utf8").toString("base64url");
+}
+
+function decodeChildrenCursor(cursor: string | null | undefined): { createdAt: number; threadId: string } | null {
+  if (!cursor) return null;
+  try {
+    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    const separator = decoded.indexOf("\n");
+    if (separator <= 0 || separator === decoded.length - 1) return null;
+    const createdAtText = decoded.slice(0, separator);
+    if (!/^-?\d+(?:\.\d+)?$/.test(createdAtText)) return null;
+    const createdAt = Number(createdAtText);
+    if (!Number.isFinite(createdAt)) return null;
+    return { createdAt, threadId: decoded.slice(separator + 1) };
+  } catch {
+    return null;
+  }
+}
+
 /** One settled prefix block read ahead of an edit fork: the columns the copy
  *  re-inserts. A `running` mark arrives already folded to `interrupted` —
  *  with no live turn behind the fork that flag would wedge the new thread's
@@ -1003,6 +1034,40 @@ export class LineageRepo {
     } catch (err) {
       console.error("[conversation-store] spawnedChildren failed:", err);
       return [];
+    }
+  }
+
+  spawnedChildrenPage(parentThreadId: string, options: SpawnedChildrenPageOptions = {}): SpawnedChildrenPage {
+    const db = this.dbh.handle();
+    if (!db) return { items: [], total: 0, nextCursor: null };
+    const limit = Math.max(1, Math.min(MAX_SPAWNED_CHILDREN_PAGE_SIZE,
+      Number.isFinite(options.limit) ? Math.floor(options.limit ?? DEFAULT_SPAWNED_CHILDREN_PAGE_SIZE) : DEFAULT_SPAWNED_CHILDREN_PAGE_SIZE));
+    const after = decodeChildrenCursor(options.cursor);
+    if (options.cursor && !after) return { items: [], total: 0, nextCursor: null };
+    try {
+      const totalRow = db.prepare(
+        "SELECT COUNT(*) AS total FROM threads WHERE parent_thread_id = ?",
+      ).get(parentThreadId) as { total: number };
+      const pageQuery = after
+        ? `SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t
+            WHERE t.parent_thread_id = ? AND (t.created_at > ? OR (t.created_at = ? AND t.thread_id > ?))
+            ORDER BY t.created_at ASC, t.thread_id ASC LIMIT ?`
+        : `SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t
+            WHERE t.parent_thread_id = ? ORDER BY t.created_at ASC, t.thread_id ASC LIMIT ?`;
+      const rows = (after
+        ? db.prepare(pageQuery).all(parentThreadId, after.createdAt, after.createdAt, after.threadId, limit + 1)
+        : db.prepare(pageQuery).all(parentThreadId, limit + 1)) as ThreadRow[];
+      const hasMore = rows.length > limit;
+      const visible = rows.slice(0, limit);
+      const last = visible[visible.length - 1];
+      return {
+        items: visible.map(rowToMeta),
+        total: totalRow.total,
+        nextCursor: hasMore && last ? encodeChildrenCursor(last.created_at, last.thread_id) : null,
+      };
+    } catch (err) {
+      console.error("[conversation-store] spawnedChildrenPage failed:", err);
+      return { items: [], total: 0, nextCursor: null };
     }
   }
 
