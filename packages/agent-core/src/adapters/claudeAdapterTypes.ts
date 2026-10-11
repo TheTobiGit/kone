@@ -157,6 +157,10 @@ export type ClaudeSession = {
   subagentRuns: Map<string, ClaudeSubagentRun>;
   /** Final status per run that already settled. */
   settledSubagents: Map<string, SubagentStatus>;
+  /** Tool and task ids created inside a provider child resolve to its nearest
+   *  kone-visible ancestor run. */
+  subagentToolUseOwners: Map<string, string>;
+  nestedTaskOwners: Map<string, string>;
   /** Mid-task messages queued per run. */
   pendingSubagentSteers: Map<string, string[]>;
   /** Stop requests that arrived before `task_started` mapped a run's tool-use
@@ -234,7 +238,7 @@ export function recognizedSubagentToolUseId(
   const parent = readParentToolUseId(message);
   if (!parent) return undefined;
   if (session.subagentRuns.has(parent) || session.settledSubagents.has(parent)) return parent;
-  return undefined;
+  return session.subagentToolUseOwners.get(parent);
 }
 
 function readParentToolUseId(message: SDKMessage | null | undefined): string | undefined {

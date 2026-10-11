@@ -302,6 +302,7 @@ function wiredCodexSession(conversationId: string) {
     pendingUserInputs: new Map(),
     pendingApprovals: new Map(),
     subagentRuns: new Map(),
+    childAncestorRuns: new Map(),
     childLiveTurns: new Map<string, string>(),
   };
   // SAFETY: `session` carries every CodexSession field the notification and
@@ -516,6 +517,25 @@ describe("CodexAdapter nests spawned subagents under the parent turn", () => {
     const { events, request } = startParentAndSpawn();
     void request("item/commandExecution/requestApproval", { threadId: CHILD, turnId: CHILD_TURN, itemId: "c-cmd", command: "ls" });
     const asked = events.find((e) => e.type === "approval.requested");
+    expect(asked?.turnId).toBe(PARENT_TURN);
+    expect(asked?.subagentToolUseId).toBe(SPAWN);
+  });
+
+  test("a grandchild approval is scoped to its nearest known ancestor run", () => {
+    const { events, request, notify } = startParentAndSpawn();
+    const grandchild = "grandchild-thread";
+    notify("item/completed", {
+      threadId: CHILD,
+      turnId: CHILD_TURN,
+      item: { type: "subAgentActivity", id: "nested-spawn", kind: "started", agentThreadId: grandchild },
+    });
+    void request("item/commandExecution/requestApproval", {
+      threadId: grandchild,
+      turnId: "grandchild-turn",
+      itemId: "grandchild-command",
+      command: "ls",
+    });
+    const asked = events.find((event) => event.type === "approval.requested");
     expect(asked?.turnId).toBe(PARENT_TURN);
     expect(asked?.subagentToolUseId).toBe(SPAWN);
   });
