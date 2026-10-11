@@ -1097,6 +1097,7 @@ export type JobRow = {
    *
    *  Populated by the list reads, which join the attempt and its thread. */
   branch?: string;
+  scheduleId?: string;
 };
 
 /** One attempt at a job, and the thread that carried it. `threadId` is absent
@@ -1128,7 +1129,53 @@ export type JobCreateInput = {
   status: Extract<JobStatus, "draft" | "queued">;
   target: JobTarget;
   attachments?: ChatAttachment[];
+  scheduleId?: string;
   at?: number;
+};
+
+export type ScheduleJobTemplate = Omit<JobCreateInput, "jobId" | "projectPath" | "status" | "at" | "scheduleId">;
+export const ScheduleJobTemplateSchema = z.object({
+  title: z.string().trim().min(1),
+  body: z.string(),
+  target: z.object({
+    provider: ProviderKindSchema,
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    mode: z.enum(["ask", "accept-edits", "full-access"]).optional(),
+    workspace: z.object({
+      mode: z.enum(["local", "worktree"]),
+      branch: z.string().optional(),
+      base: z.string().optional(),
+    }).optional(),
+    fallbacks: z.array(z.object({ provider: ProviderKindSchema, model: z.string().optional() })).min(1).optional(),
+  }),
+  attachments: z.array(z.object({
+    type: z.enum(["image", "file"]),
+    id: z.string().min(1),
+    name: z.string().min(1),
+    mimeType: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+  })).optional(),
+});
+export type ScheduleRow = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+  paused: boolean;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastJobId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ScheduleCreateInput = { scheduleId: string; projectPath: string; title: string; cron: string; jobTemplate: ScheduleJobTemplate; at?: number };
+export type SchedulePatch = { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
+export type ScheduleFireResult = {
+  fired: Array<{ schedule: ScheduleRow; job: JobRow }>;
+  skipped: Array<{ scheduleId: string; reason: "outside-grace" | "job-active" }>;
+  failures: Array<{ scheduleId: string; occurrenceAt: number; error: string }>;
 };
 
 /** Fields an edit may change. Absent means "leave alone"; `null` clears.
@@ -1175,6 +1222,7 @@ export type JobDbRow = {
   updated_at: number;
   started_at: number | null;
   ended_at: number | null;
+  schedule_id?: string | null;
   /** Joined in by the list reads only — see `JobRow.branch`. Absent on the
    *  projections that read the jobs table alone. */
   ran_on_branch?: string | null;
@@ -1272,6 +1320,7 @@ export function rowToJob(row: JobDbRow): JobRow {
   if (row.sort_key !== null && row.sort_key !== JOB_SORT_UNSET) job.sortKey = row.sort_key;
   if (row.started_at !== null) job.startedAt = row.started_at;
   if (row.ended_at !== null) job.endedAt = row.ended_at;
+  if (row.schedule_id) job.scheduleId = row.schedule_id;
   return job;
 }
 

@@ -5,6 +5,7 @@ import { AttachmentRowRepo } from "./store/attachmentRows.js";
 import { WorkspaceRepo } from "./store/workspaces.js";
 import { ScratchpadRepo } from "./store/scratchpads.js";
 import { JobRepo, type ClaimedJob, type JobRunOutcome } from "./store/jobs.js";
+import { ScheduleRepo } from "./store/schedules.js";
 import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
 import { ModelPreferenceRepo } from "./store/modelPreferences.js";
@@ -31,7 +32,7 @@ import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnEditPatch, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnEditPatch, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow, type ScheduleCreateInput, type SchedulePatch, type ScheduleRow, type ScheduleFireResult } from "./conversationStoreTypes.js";
 import type { RestartCancelledBackgroundWork } from "./restartBackgroundNote.js";
 import { ContinuationRepo, type ContinuationRecord } from "./store/continuations.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
@@ -47,6 +48,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly workspaces: WorkspaceRepo;
   private readonly scratchpads: ScratchpadRepo;
   private readonly jobs: JobRepo;
+  private readonly schedules: ScheduleRepo;
   private readonly stats: StatsRepo;
   private readonly subagentPresets: SubagentPresetRepo;
   private readonly modelPreferences: ModelPreferenceRepo;
@@ -100,6 +102,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
     this.scratchpads = new ScratchpadRepo(this.dbh);
     this.jobs = new JobRepo(this.dbh);
+    this.schedules = new ScheduleRepo(this.dbh);
     this.gatewayOps = new GatewayOpRepo(this.dbh);
     this.studio = new StudioRepo(this.dbh);
     this.stats = new StatsRepo(this.dbh);
@@ -991,6 +994,16 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   deleteJob(jobId: string): boolean {
     return this.jobs.deleteJob(jobId);
   }
+
+  createSchedule(input: ScheduleCreateInput): ScheduleRow | null { return this.schedules.createSchedule(input); }
+  getSchedule(id: string): ScheduleRow | null { return this.schedules.getSchedule(id); }
+  listSchedules(projectPath?: string): ScheduleRow[] { return this.schedules.listSchedules(projectPath); }
+  updateSchedule(id: string, patch: SchedulePatch, at?: number): ScheduleRow | null { return this.schedules.updateSchedule(id, patch, at); }
+  pauseSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.pauseSchedule(id, at); }
+  resumeSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.resumeSchedule(id, at); }
+  deleteSchedule(id: string): boolean { return this.schedules.deleteSchedule(id); }
+  runNow(id: string, at?: number): { job: JobRow | null; reason?: string } { return this.schedules.runNow(id, at); }
+  fireDueSchedules(now: number, graceMs?: number, deferredScheduleIds?: readonly string[]): ScheduleFireResult { return this.schedules.fireDue(now, graceMs, deferredScheduleIds); }
 
   /** @see JobRepo */
   claimNextJob(input: {
