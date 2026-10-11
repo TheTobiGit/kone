@@ -4,7 +4,7 @@ type ParsedCron = { minute: Field; hour: Field; day: Field; month: Field; weekda
 function parseField(source: string, min: number, max: number, label: string, dow = false): Field {
   if (!source) throw new Error(`Cron ${label} field is empty`);
   const values = new Set<number>();
-  const wildcard = source === "*";
+  const wildcard = source === "*" || /^\*\/\d+$/.test(source);
   for (const part of source.split(",")) {
     if (!part) throw new Error(`Invalid empty item in cron ${label} field`);
     const [rangeText, stepText, extra] = part.split("/");
