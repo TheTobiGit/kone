@@ -2,8 +2,10 @@ import { ipcMain } from "electron";
 
 import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import type { JobCreateInput, JobRow } from "@kone/agent-core/conversationStoreTypes.js";
+import { z } from "zod";
+import { ProviderKindSchema } from "@kone/agent-core/types.js";
 
-import { getJobRunner } from "../../agent/agent-ipc.js";
+import { getJobRunner, getScheduleRunner } from "../../agent/agent-ipc.js";
 
 import type {
   BenchCreateInput,
@@ -13,7 +15,49 @@ import type {
   BenchQueueInput,
   BenchReorderInput,
   BenchUpdateInput,
+  ScheduleCreateInput,
+  ScheduleIdInput,
+  ScheduleListInput,
+  ScheduleRow,
+  ScheduleRunNowResult,
+  ScheduleUpdateInput,
 } from "./types.js";
+
+const scheduleIdInputSchema = z.object({ scheduleId: z.string().min(1) });
+const scheduleListInputSchema = z.object({ projectPath: z.string().min(1).optional() });
+const scheduleJobTemplateSchema = z.object({
+  title: z.string().min(1),
+  body: z.string(),
+  target: z.object({ provider: ProviderKindSchema }).passthrough(),
+  attachments: z.array(z.object({
+    type: z.enum(["image", "file"]),
+    id: z.string(),
+    name: z.string(),
+    mimeType: z.string(),
+    sizeBytes: z.number(),
+  })).optional(),
+}).passthrough();
+const scheduleCreateInputSchema = z.object({
+  scheduleId: z.string().min(1),
+  projectPath: z.string().min(1),
+  title: z.string().min(1),
+  cron: z.string().min(1),
+  jobTemplate: scheduleJobTemplateSchema,
+});
+const scheduleUpdateInputSchema = z.object({
+  scheduleId: z.string().min(1),
+  patch: z.object({
+    title: z.string().min(1).optional(),
+    cron: z.string().min(1).optional(),
+    jobTemplate: scheduleJobTemplateSchema.optional(),
+  }).refine((patch) => Object.keys(patch).length > 0, "At least one schedule field is required"),
+});
+
+function parseInput<T>(schema: z.ZodType<T>, input: T): T {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) throw new Error(`Invalid schedules input: ${parsed.error.message}`);
+  return parsed.data;
+}
 
 let registered = false;
 
@@ -82,4 +126,57 @@ export function registerBenchIpc(): void {
   ipcMain.handle("bench:delete", (_event, input: BenchJobIdInput): boolean =>
     store.deleteJob(input.jobId),
   );
+
+  ipcMain.handle("schedules:list", (_event, rawInput: ScheduleListInput): ScheduleRow[] => {
+    const input = parseInput(scheduleListInputSchema, rawInput);
+    return store.listSchedules(input.projectPath);
+  });
+
+  ipcMain.handle("schedules:get", (_event, rawInput: ScheduleIdInput): ScheduleRow | null => {
+    const input = parseInput(scheduleIdInputSchema, rawInput);
+    return store.getSchedule(input.scheduleId);
+  });
+
+  ipcMain.handle("schedules:create", (_event, rawInput: ScheduleCreateInput): ScheduleRow | null => {
+    const input = parseInput(scheduleCreateInputSchema, rawInput);
+    const schedule = store.createSchedule(input);
+    getScheduleRunner()?.rearm();
+    return schedule;
+  });
+
+  ipcMain.handle("schedules:update", (_event, rawInput: ScheduleUpdateInput): ScheduleRow | null => {
+    const input = parseInput(scheduleUpdateInputSchema, rawInput);
+    const schedule = store.updateSchedule(input.scheduleId, input.patch);
+    getScheduleRunner()?.rearm();
+    return schedule;
+  });
+
+  ipcMain.handle("schedules:pause", (_event, rawInput: ScheduleIdInput): ScheduleRow | null => {
+    const input = parseInput(scheduleIdInputSchema, rawInput);
+    const schedule = store.pauseSchedule(input.scheduleId);
+    getScheduleRunner()?.rearm();
+    return schedule;
+  });
+
+  ipcMain.handle("schedules:resume", (_event, rawInput: ScheduleIdInput): ScheduleRow | null => {
+    const input = parseInput(scheduleIdInputSchema, rawInput);
+    const schedule = store.resumeSchedule(input.scheduleId);
+    getScheduleRunner()?.rearm();
+    return schedule;
+  });
+
+  ipcMain.handle("schedules:run-now", (_event, rawInput: ScheduleIdInput): ScheduleRunNowResult => {
+    const input = parseInput(scheduleIdInputSchema, rawInput);
+    const result = store.runNow(input.scheduleId);
+    if (result.job?.status === "queued") void getJobRunner()?.drainProject(result.job.projectPath);
+    getScheduleRunner()?.rearm();
+    return result;
+  });
+
+  ipcMain.handle("schedules:delete", (_event, rawInput: ScheduleIdInput): boolean => {
+    const input = parseInput(scheduleIdInputSchema, rawInput);
+    const deleted = store.deleteSchedule(input.scheduleId);
+    getScheduleRunner()?.rearm();
+    return deleted;
+  });
 }
