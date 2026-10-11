@@ -9,6 +9,7 @@ export type ProcessInspectionResult =
   | { state: "unknown" };
 export type ProcessInspection = (pid: number) => Promise<ProcessInspectionResult>;
 export type ProcessKiller = (pgid: number, signal: NodeJS.Signals) => void;
+type ProcessGroupInspection = "alive" | "gone" | "unknown";
 const REAP_POLL_MS = 100;
 const REAP_WAIT_MS = 2_000;
 const PROCESS_INSPECTION_TIMEOUT_MS = 2_000;
@@ -19,6 +20,16 @@ function processIsGone(pid: number): boolean {
     return false;
   } catch (cause) {
     return cause instanceof Error && "code" in cause && cause.code === "ESRCH";
+  }
+}
+
+function inspectProcessGroup(pgid: number): ProcessGroupInspection {
+  try {
+    process.kill(-pgid, 0);
+    return "alive";
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return "gone";
+    return "unknown";
   }
 }
 
@@ -83,20 +94,24 @@ export class OpenCodeServerLedger {
         const initial = await this.inspect(entry.pid);
         if (initial.state === "unknown") continue;
         if (initial.state === "gone" || initial.startTime !== entry.startTime) {
-          removed.add(entry.pid);
+          if (inspectProcessGroup(entry.pgid) === "gone") removed.add(entry.pid);
           continue;
         }
         if (processOwnedPids.has(entry.pid)) continue;
         try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
-        const afterTerm = await this.waitForExit(entry);
+        const afterTerm = await this.waitForGroupExit(entry.pgid);
         if (afterTerm === "gone") {
           removed.add(entry.pid);
           continue;
         }
         if (afterTerm === "unknown") continue;
         if (processOwnedPids.has(entry.pid)) continue;
+        const leaderBeforeKill = await this.inspect(entry.pid);
+        if (leaderBeforeKill.state === "unknown") continue;
+        if (leaderBeforeKill.state === "alive" && leaderBeforeKill.startTime !== entry.startTime) continue;
+        if (inspectProcessGroup(entry.pgid) !== "alive") continue;
         try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
-        if (await this.waitForExit(entry) === "gone") removed.add(entry.pid);
+        if (await this.waitForGroupExit(entry.pgid) === "gone") removed.add(entry.pid);
       }
       const entries = this.read();
       for (const pid of removed) {
@@ -108,13 +123,12 @@ export class OpenCodeServerLedger {
     });
   }
 
-  private async waitForExit(entry: OpenCodeServerLedgerEntry): Promise<"gone" | "same" | "unknown"> {
+  private async waitForGroupExit(pgid: number): Promise<"gone" | "alive" | "unknown"> {
     const deadline = Date.now() + REAP_WAIT_MS;
     while (true) {
-      const current = await this.inspect(entry.pid);
-      if (current.state === "gone" || (current.state === "alive" && current.startTime !== entry.startTime)) return "gone";
-      if (current.state === "unknown") return "unknown";
-      if (Date.now() >= deadline) return "same";
+      const group = inspectProcessGroup(pgid);
+      if (group === "gone" || group === "unknown") return group;
+      if (Date.now() >= deadline) return "alive";
       await new Promise((resolve) => setTimeout(resolve, REAP_POLL_MS));
     }
   }
