@@ -26,6 +26,7 @@ class FakeSettleHistory {
   candidateById = new Map<string, ThreadPullRequestCandidate>();
   done = new Set<string>();
   metas = new Map<string, { provider: string }>();
+  continuationsCancelled: string[] = [];
 
   settleThreadPullRequestCandidates(limit: number, _notCheckedAfter?: number) {
     return this.candidates.slice(0, limit);
@@ -60,6 +61,9 @@ class FakeSettleHistory {
   setDone(threadId: string, done: boolean) {
     if (done) this.done.add(threadId);
     else this.done.delete(threadId);
+  }
+  cancelContinuationsForThread(threadId: string) {
+    this.continuationsCancelled.push(threadId);
   }
   // Unused by the sweep but part of the injected slice's shape.
   setArchived() {
@@ -173,6 +177,7 @@ beforeEach(() => {
   history.userAt.clear();
   history.recorded = [];
   history.attempts = [];
+  history.continuationsCancelled = [];
   history.links.clear();
   history.candidateById.clear();
   history.done.clear();
@@ -219,6 +224,8 @@ describe("AgentService.sweepPullRequestSettlements", () => {
     const settled = await service.sweepPullRequestSettlements();
     expect(settled).toBe(1);
     expect(history.done.has("t1")).toBe(true);
+    // Settling is done-marking, so any continuation owed to the thread goes stale.
+    expect(history.continuationsCancelled).toEqual(["t1"]);
     expect(closed).toEqual(["t1"]);
     expect(scripts).toEqual(["/repo/.worktrees/feature"]);
     expect(history.recorded).toEqual([{ threadId: "t1", state: "merged", mergedAt: 1_000 }]);
