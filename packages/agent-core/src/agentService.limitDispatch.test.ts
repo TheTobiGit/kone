@@ -191,6 +191,36 @@ describe("P3 usage-limit dispatch", () => {
     await svc.stopAll();
   });
 
+  test("restore deferral bounds continuation sweeps until its retry time", async () => {
+    const id = "limit-reset-restore-backoff";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    svc.setThreadLimited(id, Date.now() + 15);
+    const release = claimRestoreDir("/tmp");
+    let claims = 0;
+    const claim = store.claimDueContinuations.bind(store);
+    store.claimDueContinuations = (now, excluded = []) => {
+      claims += 1;
+      return claim(now, excluded);
+    };
+    try {
+      await dispatcher.dispatchDueContinuations();
+      await pause(120);
+      expect(claims).toBeLessThanOrEqual(2);
+      expect(adapter.sent).toEqual([]);
+      expect(store.listContinuationsForThread(id)[0]?.attempts).toBe(0);
+    } finally {
+      release();
+      store.claimDueContinuations = claim;
+    }
+    await pause(450);
+    expect(adapter.sent.some((text) => text.includes("usage limit has reset"))).toBe(true);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
   test("a failed manual resume session start keeps the limit and continuation", async () => {
     const id = "manual-resume-start-failure";
     store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });

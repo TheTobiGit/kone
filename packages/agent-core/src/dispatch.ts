@@ -81,6 +81,7 @@ const QUIT_RESUME_CONTINUATION_KIND = "quit-resume";
  *  attempts it gets before being dropped rather than retried forever. */
 const CONTINUATION_RETRY_BACKOFF_MS = 60_000;
 const MAX_CONTINUATION_ATTEMPTS = 5;
+const CONTINUATION_RESTORE_DEFER_MS = 250;
 
 /** Whether a thread is snoozed right now, and until when. */
 export type ThreadSnoozeState = { snoozed: boolean; snoozedUntil: number | null };
@@ -453,6 +454,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // covers everything already due. Nothing polls: each arm schedules exactly
   // the next due time, and a sweep re-arms it after.
   private continuationTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly continuationDeferredUntil = new Map<string, number>();
 
   // Spawned children: threadId → the parent turn that spawned it, registered
   // at dispatch (startThread/sendThreadTurn parentTurnId). The IPC broadcast
@@ -856,9 +858,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }> {
     const resumed: string[] = [];
     const skipped: QuitResumeSkipped[] = [];
+    const now = Date.now();
+    for (const [threadId, until] of this.continuationDeferredUntil) {
+      if (until <= now) this.continuationDeferredUntil.delete(threadId);
+    }
     let due: ContinuationRecord[];
     try {
-      due = this.store.claimDueContinuations(Date.now());
+      due = this.store.claimDueContinuations(now, [...this.continuationDeferredUntil.keys()]);
     } catch (err) {
       console.warn("[agent] continuation sweep failed:", err);
       return { resumed, skipped };
@@ -866,7 +872,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     for (const row of due) {
       if (row.kind === LIMIT_RESUME_CONTINUATION_KIND && this.service.isRestoreHoldingThread(row.threadId)) {
         this.store.clearContinuationClaim(row.continuationId);
-        this.armContinuationTimer(250);
+        this.deferContinuation(row.threadId);
         continue;
       }
       const decision = this.continuationDecision(row);
@@ -897,7 +903,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         );
         if (delivery.queued) {
           this.store.clearContinuationClaim(row.continuationId);
-          this.armContinuationTimer(250);
+          this.deferContinuation(row.threadId);
           continue;
         }
         this.store.deleteContinuation(row.continuationId);
@@ -958,20 +964,27 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
 
   /** Schedule the sweep for the next future continuation. One timer, no
    *  polling: a sweep re-arms it, and nothing is armed when nothing is due. */
-  private armContinuationTimer(minDelayMs = 0): void {
+  private deferContinuation(threadId: string): void {
+    this.continuationDeferredUntil.set(threadId, Date.now() + CONTINUATION_RESTORE_DEFER_MS);
+  }
+
+  private armContinuationTimer(): void {
     if (this.continuationTimer) {
       clearTimeout(this.continuationTimer);
       this.continuationTimer = null;
     }
     let next: number | null;
     try {
-      next = this.store.nextContinuationDueAt();
+      next = this.store.nextContinuationDueAt([...this.continuationDeferredUntil.keys()]);
     } catch (err) {
       console.warn("[agent] could not read the next continuation due time:", err);
       return;
     }
+    for (const until of this.continuationDeferredUntil.values()) {
+      next = next === null ? until : Math.min(next, until);
+    }
     if (next === null) return;
-    const delay = Math.max(minDelayMs, next - Date.now());
+    const delay = Math.max(0, next - Date.now());
     const timer = setTimeout(() => {
       this.continuationTimer = null;
       void this.dispatchDueContinuations();
