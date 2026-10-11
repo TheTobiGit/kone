@@ -794,7 +794,8 @@ const api = {
       threadId: string,
       branch?: string,
     ): Promise<
-      { ok: true; worktreePath: string } | { ok: false; reason: "unknown" | "busy" | "failed"; detail?: string }
+      | { ok: true; worktreePath: string }
+      | { ok: false; reason: "unknown" | "busy" | "restoring" | "stop-unconfirmed" | "failed"; detail?: string }
     > => ipcRenderer.invoke("agent:move-thread-to-worktree", threadId, branch),
     // Native save dialog for a thread export — the main process owns the
     // dialog, the renderer only suggests a file name. A dismissal resolves

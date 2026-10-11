@@ -550,6 +550,7 @@ describe("gateway integration (real store + HTTP)", () => {
       // Phase 7 agent tools: link/unlink a thread's PR.
       "app_link_thread_pr",
       "app_unlink_thread_pr",
+      "app_move_thread_to_worktree",
       "app_get_provider_status",
       "app_get_usage_report",
       "app_set_provider_enabled",

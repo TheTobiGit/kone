@@ -1775,6 +1775,7 @@ describe("thread dispatcher: invoked skills", () => {
 describe("moving a thread into a worktree", () => {
   test("does not rebind when the old session stop is unconfirmed", async () => {
     const { store, dispatcher } = await harness();
+    provisioned.length = 0;
     FakeAdapter.stopError = new Error("stop timed out");
     try {
       expect(await dispatcher.moveThreadToWorktree(THREAD)).toMatchObject({
