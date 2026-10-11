@@ -663,6 +663,21 @@ describe("OpenCode subagents at the turn boundary", () => {
     expect(ofType(events, "turn.completed")).toHaveLength(1);
   });
 
+  test("child questions surface tagged on the parent and reply to the child session", async () => {
+    const events: RuntimeEvent[] = [];
+    const { adapter, turnId } = await liveRun(events);
+    pushRaw!({ type: "question.asked", properties: { sessionID: "ses_child", id: "que_child", questions: [{ question: "Choose", header: "Choice", options: [{ label: "A" }] }] } });
+    await waitFor(events, (e) => e.type === "user-input.requested");
+    const asked = ofType(events, "user-input.requested")[0];
+    expect(asked?.turnId).toBe(turnId);
+    expect(asked?.subagentToolUseId).toBe("call-task");
+    if (!asked) throw new Error("child question was not emitted");
+    await adapter.respondToUserInput(THREAD, asked.requestId, { [asked.questions[0]?.id ?? ""]: "A" });
+    await waitFor(events, (e) => e.type === "user-input.resolved");
+    closeStream?.();
+    await adapter.stopAll();
+  });
+
   test("a background run is settled too — nothing could settle it later", async () => {
     const events: RuntimeEvent[] = [];
     await liveRun(events, { background: true });
