@@ -1,0 +1,15 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/claudeGatewayInjection.test.ts:
+(pass) Claude gateway injection > a native fork does not publish the source UUID as its resume cursor [475.90ms]
+(pass) Claude gateway injection > fresh session: mcpServers + kone host-context append layered on the stock preset [8.40ms]
+(pass) Claude gateway injection > resumed session: same gateway config reaches the resumed conversation [2.29ms]
+(pass) Claude gateway injection > no gateway connection: no mcpServers, no kone block (agent is never promised tools it lacks) [1.01ms]
+(pass) Claude agent identity > a thread handed to an agent starts a session that knows whose it is [1.96ms]
+(pass) Claude agent identity > a guest session is told nothing at all [2.40ms]
+(pass) Claude agent identity > an agent keeps its name with no gateway to talk to [0.60ms]
+
+ 7 pass
+ 0 fail
+ 27 expect() calls
+Ran 7 tests across 1 file. [1128.00ms]

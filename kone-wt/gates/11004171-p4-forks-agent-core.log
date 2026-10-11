@@ -1,0 +1,1462 @@
+# 2026-10-10T18:29:36Z /home/gideonsarfo/Developer/kone-wt/p4-forks bun 1.4.2 bash --noprofile --norc -c cd packages/agent-core && bun test
+bun test v1.4.2 (744846f84)
+
+src/AttachmentStore.test.ts:
+(pass) AttachmentStore.deleteThreadFiles > unlinks spawned children's files, not just the parent thread's [3.25ms]
+(pass) AttachmentStore.deleteThreadFiles > a thread with no children leaves a sibling thread's file alone [0.70ms]
+(pass) AttachmentStore.deleteThreadFiles > a thread with no attachment rows is a no-op [0.40ms]
+(pass) AttachmentStore.deleteThreadFiles > when unlink fails, the registry row is forgotten [0.60ms]
+(pass) AttachmentStore.deleteThreadFiles > a relPath that escapes the attachments dir is never unlinked [0.34ms]
+(pass) AttachmentStore.save > a file uploaded before its thread has a row still resolves, and registers once it does [1.80ms]
+(pass) AttachmentStore.save > a held-back file is not swept as an orphan [1.78ms]
+(pass) AttachmentStore.save > deleting a thread removes its held-back files too [0.79ms]
+
+src/agentCheckpoints.test.ts:
+(pass) AgentService turn checkpoints > sendTurn captures a checkpoint and records (thread, turn) → ref [160.14ms]
+(pass) AgentService turn checkpoints > a second capture for the same turn keeps the first snapshot [42.45ms]
+[agent] turn checkpoint capture failed for t-fail/checkpoint-turn-1 — continuing without one: warn: store exploded
+      at getTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:99:33)
+      at captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1651:17)
+      at sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+[agent] listTurnCheckpoints failed for t-fail: warn: store exploded
+      at listTurnCheckpoints (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:104:33)
+      at listTurnCheckpoints (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1683:36)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:215:22)
+
+(pass) AgentService turn checkpoints > a store failure degrades to no checkpoint without failing the turn [13.14ms]
+[agent] turn checkpoint capture failed for t-plain/checkpoint-turn-1 — continuing without one: GitError: "/tmp/kone-test-run-LNlEkW/kone-checkpoint-plain-JG0rhz" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) AgentService turn checkpoints > a non-repo project path degrades to no checkpoint [3.38ms]
+(pass) AgentService turn checkpoints > an unforced revert refuses with the exact file lists, then force restores [264.49ms]
+(pass) AgentService turn checkpoints > preview answers missing for an unknown turn [14.20ms]
+(pass) AgentService turn checkpoints > revert answers checkpoint-gone when the git object is gone [62.34ms]
+(pass) AgentService turn checkpoints > revert answers no-workdir when the workspace directory is gone [43.19ms]
+(pass) AgentService turn checkpoints > revert answers missing for an unknown turn and busy for a live one [11.55ms]
+(pass) AgentService turn checkpoints > concurrent reverts for one thread both settle [145.18ms]
+
+src/agentInbox.recovery.test.ts:
+(pass) the stored inbox > the same settled turn reported twice is stored once [47.99ms]
+[conversation-store] insertInboxMessage failed: 474 |                                       kind, urgent, rings, reply_to, body, state, dedupe_key,
+475 |                                       project_path, created_at)
+476 |              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
+477 |              ON CONFLICT (dedupe_key) DO NOTHING`,
+478 |           )
+479 |           .run(
+                 ^
+SQLiteError: FOREIGN KEY constraint failed
+      errno: 787,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_FOREIGNKEY"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:479:12)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at insertInboxMessage (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:470:16)
+      at enqueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/tools/irc.ts:706:31)
+      at postFromKone (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/gateway/tools/irc.ts:696:15)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentInbox.recovery.test.ts:87:7)
+
+(pass) the stored inbox > a message to a thread the store does not know fails at the sender [47.96ms]
+(pass) recovery of a hand-over that was on its way > a refused steer is never settled to an unrelated turn that started after it [64.22ms]
+(pass) recovery of a hand-over that was on its way > a hand-over whose settle was lost is settled by the link written when the provider took it [54.47ms]
+(pass) recovery of a hand-over that was on its way > restarting again and again tells the recipient and the sender once each [67.14ms]
+(pass) recovery of a hand-over that was on its way > the recipient's inbox read lists an uncertain message, flagged, and marks it seen [67.09ms]
+(pass) recovery of a hand-over that was on its way > reading an uncertain job leaves it uncertain to whoever waits on it [64.52ms]
+[conversation-store] could not release orphaned inbox claims: 363 |      ON CONFLICT (dedupe_key) DO NOTHING`,
+364 |   );
+365 |   const exists = db.prepare(`SELECT 1 FROM threads WHERE thread_id = ?`);
+366 |   const tell = (to: string, body: string, key: string, projectPath: string): void => {
+367 |     if (!exists.get(to)) return;
+368 |     insert.run(`msg_${randomUUID()}`, to, body, key, projectPath, now);
+                 ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at tell (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:368:12)
+      at reconcileOrphanedInboxClaims (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:372:5)
+      at releaseOrphanedInboxClaims (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:303:23)
+      at recoverInbox (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:441:21)
+      at handle (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:142:12)
+      at inboxMessage (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:767:25)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentInbox.recovery.test.ts:226:25)
+
+(pass) recovery of a hand-over that was on its way > a boot recovery that could not be written is finished once writes come back [1062.74ms]
+(pass) recovery of a hand-over that was on its way > a hand-over never marked sent goes back to unseen and is handed over again [61.92ms]
+
+src/agentList.siblings.test.ts:
+(pass) a delegate's roster lists its sibling delegate, read from the store [57.34ms]
+
+src/agentModel.test.ts:
+(pass) resolveAgentModel > no model is no preference, not a failure [0.29ms]
+(pass) resolveAgentModel > an available model resolves to itself [0.22ms]
+(pass) resolveAgentModel > a model whose provider isn't logged in is unavailable [0.08ms]
+(pass) resolveAgentModel > a model the provider doesn't offer is unavailable [0.06ms]
+(pass) resolveAgentModel > an exhausted model is unavailable [0.07ms]
+(pass) resolveAgentModel > a provider absent from the snapshot is treated as unavailable [0.05ms]
+(pass) resolveAgentModel > an empty exhausted list blocks nothing [0.10ms]
+(pass) resolveAgentModelChain > walks past an unavailable primary and keeps the untried tail [0.07ms]
+(pass) resolveModelWithFallback > an available primary model resolves immediately [0.09ms]
+(pass) resolveModelWithFallback > falls back smoothly when primary provider is marked unavailable [0.05ms]
+(pass) resolveModelWithFallback > falls back when primary model is exhausted [0.05ms]
+(pass) resolveModelWithFallback > transitions across multiple unavailable candidates to first available [0.04ms]
+(pass) resolveModelWithFallback > resolves a fallback candidate with no model specified if provider is available [0.12ms]
+(pass) resolveModelWithFallback > returns unavailable when primary and all fallbacks cannot run [0.06ms]
+(pass) resolveModelWithFallback > returns unavailable when primary is unavailable and fallbacks list is empty [0.03ms]
+(pass) planSpawnModel > a requested model beats the entity's own chain [0.18ms]
+(pass) planSpawnModel > an assigned chain walks to the first runnable rung and keeps the rest [0.10ms]
+(pass) planSpawnModel > an empty chain inherits the caller's provider and model [0.09ms]
+(pass) planSpawnModel > a preferred model keeps the caller's own model as its failover rung [0.09ms]
+(pass) planSpawnModel > a preferred model that is the caller's own needs no failover rung [0.09ms]
+(pass) planSpawnModel > a requested model that cannot run is refused rather than inherited [0.07ms]
+
+src/agentRead.test.ts:
+(pass) latestTurn > is the newest request and every piece of the turn answering it [0.41ms]
+(pass) latestTurn > keeps a message steered in before the reply said anything with the turn, not as its request [0.12ms]
+(pass) latestTurn > is null before any turn started [0.04ms]
+(pass) finalReplyOf > is the text after the turn's last step, across its pieces [0.28ms]
+(pass) finalReplyOf > passes over the tool calls a turn ended on [0.10ms]
+(pass) finalReplyOf > is null when the turn said nothing [0.05ms]
+(pass) actionsLine > names each tool with its target, marks failures, and counts past the cap [0.40ms]
+(pass) actionsLine > is null for a turn that ran nothing [0.09ms]
+(pass) rendering > a running turn says the reply is not finished [0.23ms]
+(pass) rendering > a failed turn says why [0.30ms]
+(pass) rendering > a turn that said nothing after its work points at the whole response [0.08ms]
+(pass) rendering > the response names who asked and where a message arrived mid-turn [0.19ms]
+(pass) rendering > a reply over the cap is cut with a marker [0.12ms]
+(pass) rendering > a thread with no turn says so [0.04ms]
+
+src/agentService.queue.test.ts:
+[agent] promotion of queued turn q-2 failed (try 1): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:217:26)
+
+[agent] promotion of queued turn q-2 failed (try 2): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:217:26)
+
+[agent] promotion of queued turn q-2 failed (try 3): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:217:26)
+
+(pass) retry and hold, against the real store > a refused promotion retries on its backoff, then is held and announced [203.95ms]
+[agent] promotion of queued turn q-5 failed (try 1): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:248:26)
+
+[agent] promotion of queued turn q-5 failed (try 2): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:248:26)
+
+[agent] promotion of queued turn q-5 failed (try 3): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:248:26)
+
+(pass) retry and hold, against the real store > a provider that reports the failed turn before rejecting still gets the backoff [199.53ms]
+[agent] promotion of queued turn q-7 failed (try 1): warn: not yet
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:267:28)
+
+(pass) retry and hold, against the real store > a pending retry never fires after the thread's stop [152.88ms]
+[agent] promotion of queued turn q-9 failed (try 1): warn: not yet
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:267:28)
+
+(pass) retry and hold, against the real store > a pending retry never fires after the thread's delete [143.44ms]
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3745:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:333:21)
+
+(pass) Stop whose cancellation could not be written > a Stop retry cannot cancel a replacement after its highest row is deleted and the store reopens [77.69ms]
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3745:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:365:21)
+
+(pass) Stop whose cancellation could not be written > a Stop reads the durable boundary after another store writes, and spares a later direct insert [94.79ms]
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3744:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:386:19)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3744:29)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3757:14)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3744:29)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3757:14)
+
+(pass) Stop whose cancellation could not be written > a stopped row never runs while its cancellation waits, and is cancelled once writes come back [125.56ms]
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2736:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2738:16)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 485 |         }>;
+486 |         if (active.length === 0) return;
+487 |         db.prepare(
+488 |           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+489 |             WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+490 |         ).run(Date.now(), ...args);
+                ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:490:11)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3744:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:406:19)
+
+(pass) Stop whose cancellation could not be written > a row sent now whose release was owed is cancelled, not put back, when Stop lands late [139.08ms]
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3707:33)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:424:19)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3784:30)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3711:91)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:424:19)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3745:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:424:19)
+
+(pass) Stop whose cancellation could not be written > a Stop that could not read the queue cancels only what was queued before it [80.03ms]
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3707:33)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:451:21)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3784:30)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3711:91)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:451:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3745:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:451:21)
+
+(pass) Stop whose cancellation could not be written > a Stop that could not read the queue still takes a row queued before the clock moved back [118.71ms]
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3707:33)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:472:21)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3784:30)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3711:91)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:472:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3745:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:472:21)
+
+(pass) Stop whose cancellation could not be written > a row written straight to the store after such a Stop, in the same millisecond, is kept [81.04ms]
+[conversation-store] pendingQueueIds failed: 512 |     if (!db) return null;
+513 |     try {
+514 |       // SAFETY: the projection names only the queue id.
+515 |       const rows = db
+516 |         .prepare(`SELECT queue_id FROM queued_turns WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}`)
+517 |         .all(threadId) as Array<{ queue_id: string }>;
+               ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at pendingQueueIds (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:517:10)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3707:33)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:492:21)
+
+[conversation-store] queueBoundary failed: 561 |   // SAFETY: sqlite_sequence has one integer seq per named AUTOINCREMENT table.
+562 |   const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`).get() as { seq: number } | undefined;
+563 |   if (row) return Number(row.seq);
+564 |   // An empty queue has no sequence entry yet; an unavailable table must not
+565 |   // be mistaken for that empty queue.
+566 |   db.prepare(`SELECT 1 FROM queued_turns LIMIT 0`).all();
+           ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at allocatedQueueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:566:6)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:35:27)
+      at queueBoundary (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3784:30)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3711:91)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:492:21)
+
+[conversation-store] cancelQueuedTurnsForThread failed: 470 |       let queueIds: string[] = [];
+471 |       this.dbh.durably(db, () => {
+472 |         // SAFETY: the projection names only the row's queue id, thread, prior
+473 |         // state, and journaled block.
+474 |         const active = db
+475 |           .prepare(
+                 ^
+SQLiteError: no such table: queued_turns
+      errno: 1,
+ byteOffset: -1,
+       code: "SQLITE_ERROR"
+
+      at prepare (bun:sqlite:327:37)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:475:12)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at cancelQueuedTurnsForThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:471:16)
+      at cancelRows (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3745:29)
+      at cancelThreadQueue (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3725:10)
+      at cancelQueuedForStop (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3687:10)
+      at cancelQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3674:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:492:21)
+
+(pass) Stop whose cancellation could not be written > a prompt queued in the same millisecond as such a Stop, but after it, is kept [75.77ms]
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2736:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2738:16)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2736:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2738:16)
+
+(pass) Send now's release, against the real store > two rows sent now in one outage are both released once writes come back [84.78ms]
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2736:31)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2738:16)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3526:12)
+
+(pass) Send now's release, against the real store > a row whose release lands after the running turn ended runs then [103.32ms]
+[agent] promotion of queued turn q-38 failed (try 2): warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:555:26)
+
+(pass) Send now's release, against the real store > a refused send now on an idle thread goes back in line and the queue runs it [92.27ms]
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at deliverQueuedTurnNow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:2764:12)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:570:65)
+
+(pass) Send now's release, against the real store > a refused send now whose release lands late is retried by the queue [89.61ms]
+(pass) Send now, against the real store > refuses without a session and leaves the row where Send now and remove can reach it [61.16ms]
+(pass) Send now, against the real store > a held row's replayed send dedupes onto it, and sending it then works [71.56ms]
+(pass) Send now, against the real store > can't be overtaken by a drain into a second concurrent turn [93.24ms]
+(pass) Send now, against the real store > a Stop before the provider takes it cancels the delivery [77.58ms]
+(pass) Send now, against the real store > a Stop while the provider is taking it stops the turn it started [94.11ms]
+(pass) Send now, against the real store > a delivery that outlives its session never interrupts the next session's turn [95.87ms]
+(pass) Send now, against the real store > a Stop during a steer that fell back to a fresh turn stops that turn [78.54ms]
+(pass) Send now, against the real store > moves a row ahead of a held one and it runs, on a provider that can't steer [51.22ms]
+(pass) a steer on a provider that can't steer, against the real store > a turn parked on the user's approval is not interrupted; the steer waits [54.28ms]
+(pass) a steer on a provider that can't steer, against the real store > once the approval is answered, the next steer interrupts [75.88ms]
+(pass) a steer on a provider that can't steer, against the real store > a turn not parked is interrupted as before [72.97ms]
+(pass) kone steer, against the real store > reads as after-step in the thread's runtime [75.83ms]
+(pass) kone steer, against the real store > with no tool call open the turn ends now; streaming text does not hold it [81.37ms]
+(pass) kone steer, against the real store > mid tool call it waits, and ends the turn only on that call's completion, not on streaming text [77.14ms]
+(pass) kone steer, against the real store > the tool call's completion is recorded before the interrupt [71.98ms]
+(pass) kone steer, against the real store > waits for every open tool call, a subagent's included [71.03ms]
+(pass) kone steer, against the real store > never while parked on the user: held through the call's completion, then ended when the user answers [78.49ms]
+(pass) kone steer, against the real store > parked with no tool call open, it holds until the user answers [68.46ms]
+(pass) kone steer, against the real store > Interrupt now ends the turn without waiting for the tool call, once, for the wait it was offered for [67.61ms]
+(pass) kone steer, against the real store > the turn it ended is followed by the steer, told the task goes on [83.46ms]
+(pass) kone steer, against the real store > a turn that finished on its own before the cancel was not cut short [70.00ms]
+(pass) kone steer, against the real store > a wait goes with its turn [73.86ms]
+(pass) kone steer, against the real store > a turn already being ended is not cancelled twice, whoever asks [76.69ms]
+(pass) kone steer, against the real store > a cancelled steer takes its carry-on line with it, across a session exit [73.27ms]
+(pass) kone steer, against the real store > a cancelled steer takes its carry-on line with it [61.19ms]
+(pass) kone steer, against the real store > a steer that replaces a cancelled one before the abort cancels nothing again, and is told to carry on [62.03ms]
+(pass) kone steer, against the real store > a cut with nothing left owed adds no line, and still cancels once [45.64ms]
+(pass) kone steer, against the real store > a cancelled steer's wait ends no turn [48.90ms]
+(pass) kone steer, against the real store > the carry-on line does not outlive the session [68.26ms]
+[agent] promotion of queued turn 1419c399-031c-446e-949e-b93d4f3dc5ab failed (try 1): warn: busy, try again
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1092:26)
+
+(pass) kone steer, against the real store > the carry-on line goes with the turn the provider accepts, not one it refused [83.03ms]
+(pass) kone steer, against the real store > an agent's urgent mail joins the wait; the user's steer makes it theirs [49.68ms]
+(pass) a live-only steer, against the real store > is refused, not queued, while a send is on its way and no turn is announced [62.70ms]
+(pass) a live-only steer, against the real store > into a turn the provider announced, reports the turn that took it [48.12ms]
+(pass) threadRuntime: what a thread is doing, for a sender > a tool call first reported under way is the one in progress, under the target an update names [47.52ms]
+(pass) threadRuntime: what a thread is doing, for a sender > a session that fails under an open tool call leaves nothing of it for the next turn [47.24ms]
+(pass) threadRuntime: what a thread is doing, for a sender > a session that exits under an open tool call leaves nothing of it for the next turn [47.31ms]
+(pass) threadRuntime: what a thread is doing, for a sender > of two tool calls open at once, the one still open stays when the other ends [58.99ms]
+(pass) threadRuntime: what a thread is doing, for a sender > between tool calls, the step its turn is on; nothing open says nothing [68.59ms]
+(pass) threadRuntime: what a thread is doing, for a sender > reads the live turn, the tool in progress, the parked ask and the steer channel [86.71ms]
+(pass) the turn slot carries the inbox, against the real store > a queued message carries the inbox, settled with the turn the provider started [99.77ms]
+(pass) the turn slot carries the inbox, against the real store > with nothing queued, what rings starts a turn of its own [68.34ms]
+(pass) the turn slot carries the inbox, against the real store > an urgent job waiting runs as its own turn ahead of the user's queued message [63.23ms]
+(pass) the turn slot carries the inbox, against the real store > nothing ringing, nothing queued: the slot stays empty [83.11ms]
+[agent] a turn for t-96's inbox did not start: warn: provider is down
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1421:26)
+
+(pass) the turn slot carries the inbox, against the real store > a refused turn puts what it carried back [60.20ms]
+(pass) the turn slot carries the inbox, against the real store > what a turn delivers is settled before its checkpoint is taken [51.02ms]
+(pass) the turn slot carries the inbox, against the real store > what a turn carries is marked sending before the provider has it [55.97ms]
+[agent] not sending a turn on t-100: what it carries could not be marked sent: 1340 |         const entry: Carried = { turn: turn?.input ?? null, own, settled: null, released: false };
+1341 |         log.push(entry);
+1342 |         return {
+1343 |           input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
+1344 |           sending: () => {
+1345 |             if (options.markerFails) throw new Error("database is locked");
+                                                      ^
+error: database is locked
+      at sending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1480:18)
+      at noteSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1599:7)
+      at sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1515:12)
+      at dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+      at runInboxTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3421:18)
+      at drainQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3386:20)
+
+[agent] a turn for t-100's inbox did not start: warn: database is locked
+      at sending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1480:18)
+      at noteSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1599:7)
+      at sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1515:12)
+      at dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+      at runInboxTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3421:18)
+      at drainQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3386:20)
+
+(pass) the turn slot carries the inbox, against the real store > a turn whose carried mail could not be marked sent never reaches the provider [56.37ms]
+[agent] not sending a turn on t-101: what it carries could not be marked sent: 1340 |         const entry: Carried = { turn: turn?.input ?? null, own, settled: null, released: false };
+1341 |         log.push(entry);
+1342 |         return {
+1343 |           input: { threadId, input: turn ? `INBOX\n\n${turn.input}` : "INBOX" },
+1344 |           sending: () => {
+1345 |             if (options.markerFails) throw new Error("database is locked");
+                                                      ^
+error: database is locked
+      at sending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1480:18)
+      at noteSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1599:7)
+      at sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1515:12)
+      at dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+      at drainQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3397:35)
+
+[agent] promotion of queued turn q-102 failed (try 1): warn: database is locked
+      at sending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentService.queue.test.ts:1345:48)
+      at onSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1480:18)
+      at noteSending (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1599:7)
+      at sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1515:12)
+      at dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+      at drainQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3397:35)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at retryOrHold (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3578:10)
+      at drainQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3406:14)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3526:12)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3526:12)
+
+[conversation-store] releaseQueuedTurn failed: 311 |       const result = db
+312 |         .prepare(
+313 |           `UPDATE queued_turns SET state = ?, updated_at = ?
+314 |             WHERE queue_id = ? AND state = 'promoting'`,
+315 |         )
+316 |         .run(to, Date.now(), queueId);
+               ^
+SQLiteError: disk I/O error
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at releaseQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/queuedTurns.ts:316:10)
+      at releaseRow (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3488:20)
+      at releaseThen (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3511:27)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3526:12)
+
+(pass) the turn slot carries the inbox, against the real store > a queued message whose release could not be written runs once writes come back [187.33ms]
+(pass) the turn slot carries the inbox, against the real store > a message sent straight to an idle thread carries the inbox too [54.08ms]
+(pass) a queued row says who wrote it > the queue read and turn.queued carry the row's sender: the user's, or the agent's [63.23ms]
+(pass) a queued row says who wrote it > a row with no block on record has no sender, so it never reads as the user's [56.88ms]
+
+src/antigravityAcpAdapter.test.ts:
+(pass) parseAntigravityConfigOptions > reads the model and mode selects [0.40ms]
+(pass) parseAntigravityConfigOptions > skips entries without ids or option values [0.30ms]
+(pass) toAntigravityModelDescriptor > projects value + name [0.17ms]
+(pass) isAntigravityQuestion > detects the interaction_ prefix [0.08ms]
+(pass) toAntigravityQuestion + selectQuestionOption > normalizes the fixed choices [0.23ms]
+(pass) toAntigravityQuestion + selectQuestionOption > matches exact optionIds and unique labels [0.35ms]
+(pass) toAntigravityQuestion + selectQuestionOption > rejects duplicate or empty option ids [0.09ms]
+(pass) antigravityToolTarget > prefers native command spellings, then paths, then the title [0.20ms]
+(pass) antigravityToolDetail > collects text blocks and structured output [0.15ms]
+(pass) antigravityToolDetail > bounds runaway output [0.04ms]
+(pass) antigravityToolStatus > maps the three states [0.05ms]
+(pass) parseAntigravityPlan > re-spells in_progress [0.09ms]
+(pass) parseAntigravityPlan > ignores empty entry lists [0.02ms]
+(pass) AntigravityAcpAdapter fake protocol > runs a basic turn: chunks stream, tool completes, turn completes [161.70ms]
+(pass) AntigravityAcpAdapter fake protocol > parks an approval and answers it with the selected option [31.73ms]
+(pass) AntigravityAcpAdapter fake protocol > parks a native question and answers it by label [27.05ms]
+(pass) AntigravityAcpAdapter fake protocol > refuses a same-thread replacement while a turn is live [26.08ms]
+
+src/antigravityAcpBinary.test.ts:
+(pass) antigravityHarnessFileName > windows uses the exe harness [0.05ms]
+(pass) readAntigravityAcpActiveRecord > reads a well-formed active pointer [0.32ms]
+(pass) readAntigravityAcpActiveRecord > returns null for a missing or malformed record [0.28ms]
+(pass) resolveAntigravityAcpBinary > an explicit absolute path wins and pairs the sibling harness [0.34ms]
+(pass) resolveAntigravityAcpBinary > a missing explicit path resolves to null [0.07ms]
+(pass) resolveAntigravityAcpBinary > a managed runtime resolves with verified files [0.42ms]
+(pass) resolveAntigravityAcpBinary > a managed record with missing files falls through to null [0.36ms]
+(pass) resolveAntigravityAcpBinary > a bare override name resolves on PATH [0.66ms]
+(pass) findOnPath > finds an executable in PATH order [0.50ms]
+
+src/antigravityAcpInstall.test.ts:
+(pass) installedAntigravityAcpVersion > reads the active pointer when its files exist [0.69ms]
+(pass) installedAntigravityAcpVersion > returns null when files are missing or nothing is installed [0.33ms]
+(pass) ensureAntigravityAcpRuntime > rejects hosts with no published runtime [0.94ms]
+(pass) ensureAntigravityAcpRuntime > rejects bytes that fail verification and cleans up [7.90ms]
+(pass) ensureAntigravityAcpRuntime > shares one download between concurrent callers [24.67ms]
+(pass) removeAntigravityAcpRuntime > removes the managed dir [0.56ms]
+
+src/antigravityAcpProfile.test.ts:
+(pass) antigravityAcpAuthConfigIssue > personal sign-in never needs config [0.05ms]
+(pass) antigravityAcpAuthConfigIssue > enterprise needs a project and a location [0.06ms]
+(pass) antigravityAcpAuthConfigIssue > labels name the method [0.04ms]
+(pass) antigravityAcpProfileSettings > names the method and carries the GCP pair, never a credential [0.13ms]
+(pass) antigravityAcpProfileSettings > omits the gcp block for personal sign-in [0.03ms]
+(pass) ensureAntigravityAcpProfile > creates the profile layout and rewrites settings on every call [0.55ms]
+(pass) buildAntigravityBrowserCommand > reports the URL on stderr and never opens a browser [0.05ms]
+(pass) parseAntigravityBrowserLine > reads the suppressor helper's stderr marker [0.09ms]
+(pass) parseAntigravityBrowserLine > reads the server's native stdout prefix [0.02ms]
+(pass) parseAntigravityBrowserLine > ignores ordinary output [0.07ms]
+(pass) buildAntigravityAcpEnv > isolated mode points the server at the kone profile and strips ambient credentials [0.31ms]
+(pass) buildAntigravityAcpEnv > shared mode passes GEMINI_HOME through so the server finds the CLI login [0.37ms]
+(pass) buildAntigravityAcpEnv > shared mode leaves GEMINI_HOME unset when the user has none [0.24ms]
+(pass) buildAntigravityAcpSpawnInput > linux builds take the empty --uid flag, others take no args [0.13ms]
+(pass) parseAntigravityAuthUrl > accepts the exact Google loopback shape [0.33ms]
+(pass) parseAntigravityAuthUrl > rejects anything else [0.19ms]
+(pass) isAntigravitySignInRequiredError > recognizes the server's auth failure code [0.21ms]
+
+src/antigravityAdapter.test.ts:
+(pass) AntigravityAdapter routing > serves ACP when the server resolves [27.15ms]
+(pass) AntigravityAdapter routing > falls back to print mode when no server resolves [208.16ms]
+(pass) AntigravityAdapter routing > merges sessions across both transports [209.87ms]
+
+src/antigravityPrintAdapter.test.ts:
+(pass) Antigravity capture plugin > keeps the globally installed hook neutral outside kone sessions [16.26ms]
+(pass) Antigravity capture plugin > answers pre-tool with a decision from the capture script when capture is inactive [31.31ms]
+(pass) Antigravity capture plugin > answers pre-invocation allow from the capture script when capture is inactive [30.98ms]
+(pass) Antigravity capture plugin > runs the capture script for kone-managed sessions and captures tool args [36.33ms]
+(pass) Antigravity capture plugin > answers pre-invocation allow for kone-managed sessions so subagent launches survive [45.13ms]
+(pass) Antigravity capture plugin > keeps the windows wrapper invocation free of double quotes [0.16ms]
+(pass) Antigravity capture plugin > marks every generated hook as a command hook [0.13ms]
+(pass) Antigravity turn guards > rejects every interaction mode but full access [193.81ms]
+(pass) Antigravity turn guards > guards Windows command-line limits before spawning the CLI [4.54ms]
+(pass) Antigravity turn guards > advances file offsets only past complete JSONL records [3.11ms]
+(pass) Antigravity turn guards > rejects sendTurn when both prompt and attachments are empty [231.12ms]
+(pass) Antigravity turn guards > accepts image attachments in sendTurn and includes them in the prompt [23.84ms]
+(pass) Antigravity native subagents > surfaces a native subagent run without losing the parent conversation [1078.62ms]
+(pass) Antigravity token usage emission > emits thread.token-usage.updated on turn completion and on session resume [47.41ms]
+(pass) print-mode questions use the live gateway > an auto-skipped native ask never opens an answer-as-message modal [32.41ms]
+
+src/antigravityPrintQuestions.test.ts:
+(pass) Antigravity CLI model translation > collapses CLI model/effort labels into base models with effort ladders [0.45ms]
+(pass) Antigravity CLI model translation > collapses tab-separated slug/label rows from newer agy models output [0.09ms]
+(pass) Antigravity CLI model translation > rebuilds the exact CLI model label only at dispatch [0.09ms]
+(pass) Antigravity CLI model translation > accepts bullet-prefixed model output [0.12ms]
+(pass) Antigravity CLI model translation > discovers future CLI models without requiring a static catalog update [0.09ms]
+(pass) Antigravity CLI model translation > dispatches a discovered model with its discovered default effort [0.04ms]
+(pass) Antigravity install detection > falls back to `agy` for a blank override, keeps a real path [0.07ms]
+(pass) Antigravity install detection > reads the bare semver from --version output [0.09ms]
+(pass) antigravityTurnOutcome > a clean exit completes the turn [0.06ms]
+(pass) antigravityTurnOutcome > a non-zero exit with no Stop behind it fails the turn [0.03ms]
+(pass) antigravityTurnOutcome > a signalled exit with no Stop behind it reads as interrupted [0.02ms]
+(pass) antigravityTurnOutcome > the user's interrupt wins over everything [0.02ms]
+(pass) antigravityTurnOutcome > a non-zero exit after the Stop hook completes the turn [0.02ms]
+(pass) antigravityTurnOutcome > the teardown escalating to SIGKILL still completes the turn [0.02ms]
+(pass) print-mode tool-arg recovery > summarizeAntigravityTool extracts human-readable target text and details [0.18ms]
+(pass) print-mode ask recovery > recognizes only the ask_question tool, case-insensitively [0.09ms]
+(pass) print-mode ask recovery > parses the CLI's ask args into modal questions [0.59ms]
+(pass) print-mode ask recovery > reads multi-select flags, headers and structured options [0.12ms]
+(pass) print-mode ask recovery > drops shapes with no askable question [0.08ms]
+(pass) collectPostTurnQuestions > keeps option text containing separators distinct [0.32ms]
+(pass) collectPostTurnQuestions > treats header, descriptions and multi-select as content [0.22ms]
+(pass) collectPostTurnQuestions > collapses repeats keeping first-seen order [0.23ms]
+
+src/antigravityRelease.test.ts:
+(pass) resolveAntigravityReleaseAsset > resolves the pinned release for supported hosts [0.31ms]
+(pass) resolveAntigravityReleaseAsset > windows builds are exes, posix builds are extensionless helpers [0.09ms]
+(pass) resolveAntigravityReleaseAsset > returns null where no runtime is published [0.04ms]
+
+src/antigravitySubagents.test.ts:
+(pass) parseInvokeSubagentSpecs > reads the briefs out of the doubly-encoded tool arguments [0.13ms]
+(pass) parseInvokeSubagentSpecs > keeps the briefs in the order they were listed [0.12ms]
+(pass) parseInvokeSubagentSpecs > reports a real model but never the inherit sentinel [0.08ms]
+(pass) parseInvokeSubagentSpecs > yields nothing for arguments that carry no subagents [0.10ms]
+(pass) parseCreatedSubagents > reads every child, in order, with its transcript path [0.10ms]
+(pass) parseCreatedSubagents > ignores a step that is not a subagent result [0.04ms]
+(pass) parseInboundMessage > reads a child's report and who sent it [0.06ms]
+(pass) parseInboundMessage > keeps a multi-line report whole [0.05ms]
+(pass) parseInboundMessage > passes over the CLI talking about itself [0.04ms]
+
+src/assistantWorkspace.test.ts:
+(pass) assistantWorkingDir > is a directory that exists, under the state dir [0.29ms]
+(pass) assistantWorkingDir > is not the state directory [0.05ms]
+(pass) workingDirFor > resolves the assistant's sentinel to its directory [0.04ms]
+(pass) workingDirFor > hands back a real project path unchanged [0.02ms]
+(pass) isAssistantProjectPath > recognises the sentinel and nothing else [0.04ms]
+
+src/cancelKeepsCompletedTools.test.ts:
+(pass) AgentService.providerCancelKeepsCompletedTools > reads the provider's capability [0.27ms]
+(pass) AgentService.providerCancelKeepsCompletedTools > a provider that never declares it does not keep them [0.07ms]
+(pass) AgentService.providerCancelKeepsCompletedTools > an unregistered provider does not keep them [0.06ms]
+(pass) the cancel probe's results > Cursor [0.16ms]
+(pass) the cancel probe's results > Cline [0.10ms]
+(pass) the cancel probe's results > Droid [0.11ms]
+(pass) the cancel probe's results > Antigravity ACP [0.11ms]
+(pass) the cancel probe's results > Antigravity print [0.05ms]
+(pass) the cancel probe's results > Antigravity [0.05ms]
+
+src/claudeAdapter.test.ts:
+(pass) Claude result handler > result with no active turn (resume handshake) keeps usage, drops the lifecycle event, tripwires [8.33ms]
+(pass) Claude result handler > result with a live turn still completes it [5.06ms]
+(pass) Claude result handler > compact_boundary announces the boundary; the meter restarts from its afterTokens [1.76ms]
+(pass) Claude result handler > compact_boundary without metadata still announces the boundary [1.74ms]
+(pass) Claude liveness > thinking counted in tokens, a request retried and a status keep the turn alive [2.23ms]
+(pass) Claude liveness > with no turn running, nothing is kept alive [1.70ms]
+(pass) Claude context fill > the meter reads the turn's last call, not the result's summed spend [3.15ms]
+(pass) Claude context fill > a streamed call's output settles on message_delta, not the placeholder [2.08ms]
+(pass) Claude context fill > a turn that made no call leaves the fill unreported [1.90ms]
+(pass) Claude background subagents > a backgrounded run is NOT settled when the parent turn ends [4.97ms]
+(pass) Claude background subagents > a foreground run still open at the turn end IS settled [4.38ms]
+(pass) Claude background subagents > its notification still lands after the turn ended, under the turn that spawned it [5.50ms]
+(pass) Claude background subagents > settling after the turn ended asks for a wake, batched across siblings [1558.12ms]
+(pass) Claude background subagents > no wake when the run settles inside its own turn [1564.42ms]
+(pass) Claude background subagents > a new turn cancels an armed wake [1556.65ms]
+(pass) Claude background subagents > a live background run survives the next turn's bookkeeping reset [5.83ms]
+(pass) Claude stop paths > stopSession settles live subagents as stopped, seals the turn, emits session.exited exactly once, evicts [3.57ms]
+(pass) Claude stop paths > stopAll seals every session's turn and emits one exit per session [3.26ms]
+(pass) Claude stop paths > stopSubagent: an acknowledged stop settles the run synthetically [2.08ms]
+(pass) Claude stop paths > stopSubagent: a refused stop is left to the notification (no synthetic settle) [2.01ms]
+(pass) Claude stop paths > interruptTurn stops live subagent tasks, settles acknowledged ones, and interrupts the turn [2.55ms]
+(pass) Claude steerTurn > steer with a live turn: no turn.started, same turn id, message offered to the queue, turn.steered [1.11ms]
+(pass) Claude steerTurn > steer with a session but no active turn falls back to sendTurn [0.47ms]
+(pass) Claude steerTurn > steer with no session falls back to sendTurn, which rejects [0.16ms]
+(pass) Claude steerTurn > stopSession after a steer closes the queue and drops the unconsumed steer [0.49ms]
+(pass) Claude startSession resume fallback > startSession surfaces a transport failure instead of masking it with a fresh start [0.74ms]
+[claude] resume "abc" failed (No conversation found with session ID: abc) — starting a fresh conversation
+(pass) Claude startSession resume fallback > startSession falls back to a fresh conversation only on a missing-resume refusal [0.74ms]
+[kone] Claude discovery probe failed: 814 | 
+815 | describe("Claude discovery", () => {
+816 |   test("a handshake that throws is an error row, marked transient, not a sign-in verdict", async () => {
+817 |     const { adapter } = setup();
+818 |     state.initializationResult = mock(async () => {
+819 |       throw new Error("spawn ENOENT\nstack line that should not reach the row");
+                      ^
+error: spawn ENOENT
+stack line that should not reach the row
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:819:17)
+      at initializationResult (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:106:45)
+      at runInitProbe (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/adapters/ClaudeAdapter.ts:357:28)
+
+(pass) Claude discovery > a handshake that throws is an error row, marked transient, not a sign-in verdict [1.61ms]
+[kone] Claude discovery probe failed: 838 |       stderr: "",
+839 |       code: null,
+840 |       error: new Error("spawn claude ENOENT"),
+841 |     };
+842 |     state.initializationResult = mock(async () => {
+843 |       throw new Error("spawn ENOENT");
+                      ^
+error: spawn ENOENT
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:843:17)
+      at initializationResult (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:106:45)
+      at runInitProbe (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/adapters/ClaudeAdapter.ts:357:28)
+
+(pass) Claude discovery > a handshake that throws with no CLI to run is not-installed, and lands [1.18ms]
+[kone] Claude discovery probe failed: 862 |       stdout: "",
+863 |       stderr: "",
+864 |       code: null,
+865 |     };
+866 |     state.initializationResult = mock(async () => {
+867 |       throw new Error("connection refused");
+                      ^
+error: connection refused
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:867:17)
+      at initializationResult (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/claudeAdapter.test.ts:106:45)
+      at runInitProbe (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/adapters/ClaudeAdapter.ts:357:28)
+
+(pass) Claude discovery > a handshake that throws on a CLI that ran is still transient [0.99ms]
+(pass) Claude discovery > a completed handshake with no account is a real logged-out verdict [0.59ms]
+(pass) ClaudeAdapter live model and effort > a model change on a later turn reaches the running session [0.42ms]
+(pass) ClaudeAdapter live model and effort > the model the session already runs is not re-sent [0.34ms]
+(pass) ClaudeAdapter live model and effort > a refusal fallback stays in force across later turns [1.75ms]
+(pass) ClaudeAdapter live model and effort > an effort change merges into the session's flag layer [0.52ms]
+(pass) ClaudeAdapter live model and effort > an effort the session already runs is not re-sent [0.37ms]
+(pass) ClaudeAdapter live model and effort > the adapter reports its model switch as in-session [0.05ms]
+(pass) Claude turn input with invoked skills > a native .claude skill leads the prompt as its slash command [1.37ms]
+(pass) Claude turn input with invoked skills > a skill Claude Code can't load is inlined after the prompt [1.84ms]
+
+src/claudeGatewayInjection.test.ts:
+(pass) Claude gateway injection > a native fork does not publish the source UUID as its resume cursor [0.98ms]
+(pass) Claude gateway injection > fresh session: mcpServers + kone host-context append layered on the stock preset [1.56ms]
+(pass) Claude gateway injection > resumed session: same gateway config reaches the resumed conversation [0.71ms]
+(pass) Claude gateway injection > no gateway connection: no mcpServers, no kone block (agent is never promised tools it lacks) [0.46ms]
+(pass) Claude agent identity > a thread handed to an agent starts a session that knows whose it is [0.54ms]
+(pass) Claude agent identity > a guest session is told nothing at all [0.46ms]
+(pass) Claude agent identity > an agent keeps its name with no gateway to talk to [0.50ms]
+
+src/claudeTaskTracker.test.ts:
+(pass) claudeTaskTracker > isClaudeTaskTool is case-insensitive [0.14ms]
+(pass) claudeTaskTracker > TaskCreate reads structured tool_use_result [0.86ms]
+(pass) claudeTaskTracker > TaskUpdate marks a tracked task completed [0.33ms]
+(pass) claudeTaskTracker > TaskUpdate reads status from structured statusChange when input omits it [0.25ms]
+(pass) claudeTaskTracker > decodes a JSON-encoded string structured result [0.25ms]
+
+src/clineAdapter.test.ts:
+(pass) Cline install detection > resolves a blank override to `cline`, keeps a real path [0.24ms]
+(pass) Cline install detection > reads the bare semver `cline --version` prints [0.09ms]
+(pass) Cline install detection > auth > an API key in the env is a login, and a blank one is not [1.15ms]
+(pass) Cline install detection > auth > only a non-empty provider-settings file counts — the settings dir alone does not [1.65ms]
+(pass) Cline discovery > a missing binary is not installed, with the npm install hint [1.03ms]
+(pass) Cline discovery > installed but signed out needs login, and says how [0.46ms]
+(pass) Cline discovery > installed with credentials on disk is ready [0.54ms]
+(pass) Cline config options and catalog > projects the live matrix, keeping the boolean option's value as text [0.56ms]
+(pass) Cline config options and catalog > tolerates malformed rows [0.12ms]
+(pass) Cline config options and catalog > the catalog is models.availableModels, and falls back to the model option [0.45ms]
+(pass) Cline config options and catalog > featured models come from the sections that run on the `cline` provider [0.16ms]
+(pass) Cline config options and catalog > featured models the catalog lacks go first; a signed-out empty catalog stays empty [0.12ms]
+(pass) Cline config options and catalog > a session that opened off `act` is switched onto it, once [0.05ms]
+(pass) Cline auth-required detection > recognises the live signed-out answer, and nothing else [0.14ms]
+(pass) Cline permission policy > full-access lets everything through; reads always; edits from accept-edits up [0.10ms]
+(pass) Cline permission policy > selects the option by ACP kind, not by id [0.22ms]
+(pass) Cline permission policy > reads the command and classifies the ask [0.29ms]
+(pass) Cline tool-call and plan translation > prefers the command, then the path, then the title [0.23ms]
+(pass) Cline tool-call and plan translation > collects text blocks and raw output; unknown output shapes are stringified [0.32ms]
+(pass) Cline tool-call and plan translation > only completed and failed close a tool row [0.08ms]
+(pass) Cline tool-call and plan translation > re-spells ACP's in_progress and drops empty entries [0.18ms]
+(pass) ClineAdapter startSession > initializes over `cline --acp`, opens a session, and adopts its model and catalog [3.14ms]
+(pass) ClineAdapter startSession > a session that opened in plan mode is switched to act; an act session is left alone [0.53ms]
+(pass) ClineAdapter startSession > a requested catalog model is set and adopted from the refreshed matrix [0.55ms]
+(pass) ClineAdapter startSession > a featured model the bundled catalog lacks is listed and can be set [0.32ms]
+(pass) ClineAdapter startSession > a featured fetch that came back empty is retried on the next catalog read [0.38ms]
+(pass) ClineAdapter startSession > a featured fetch that throws costs only the featured models [0.60ms]
+(pass) ClineAdapter startSession > a model outside the catalog is never sent — cline would accept it and fail at the prompt [0.64ms]
+(pass) ClineAdapter startSession > signed out: fails with the `cline auth` message, never runs authenticate, and kills the child [0.90ms]
+(pass) ClineAdapter startSession > signed out with CLINE_API_KEY set: one headless authenticate, then the open is retried [0.45ms]
+(pass) ClineAdapter startSession > a server that refuses the MCP entry costs the app tools, not the thread [2.35ms]
+(pass) ClineAdapter startSession > hands the agent a stdio MCP proxy: cline advertises no http capability [0.89ms]
+(pass) ClineAdapter resume > resumes through session/load — cline has no session/resume — and keeps the id [0.64ms]
+(pass) ClineAdapter resume > a load cline refuses (session gone, or never prompted) starts fresh instead of failing the thread [0.79ms]
+(pass) ClineAdapter resume > a load that fails for any other reason surfaces [0.52ms]
+(pass) ClineAdapter resume > a signed-out load is an auth failure, not a stale id to paper over with a fresh session [0.65ms]
+(pass) ClineAdapter streamed turn > maps thought, message, tool and plan updates onto runtime items, then completes [8.64ms]
+(pass) ClineAdapter streamed turn > the first turn carries the host-context block only when there is a gateway, and only once [0.60ms]
+(pass) ClineAdapter streamed turn > a turn asking for another catalog model switches it first; one asking for the current model does not [0.59ms]
+(pass) ClineAdapter streamed turn > a rejected prompt fails the turn instead of leaving it spinning [0.65ms]
+(pass) ClineAdapter streamed turn > a prompt refused as signed out tells the user to run `cline auth` [0.77ms]
+(pass) ClineAdapter streamed turn > interrupt sends session/cancel and the turn ends aborted, not completed [6.49ms]
+(pass) ClineAdapter streamed turn > an interrupt asked for on a completion the turn's end emits cancels nothing [6.15ms]
+(pass) ClineAdapter streamed turn > stopping mid-turn seals the live turn and kills the child [0.85ms]
+(pass) ClineAdapter permissions > ask: a command is parked, surfaced, and answered with the user's decision [0.99ms]
+(pass) ClineAdapter permissions > ask: a read is answered at once, without bothering the user [0.22ms]
+(pass) ClineAdapter permissions > ask: a rejection selects the reject option [0.30ms]
+(pass) ClineAdapter permissions > reject-and-stop cancels the call and interrupts the turn [0.33ms]
+(pass) ClineAdapter permissions > accept-edits: an edit goes through, a command still asks [0.43ms]
+(pass) ClineAdapter permissions > full-access: auto-approves with allow_once, never persisting an always rule [1.32ms]
+(pass) ClineAdapter permissions > full-access: falls back to allow_always when that is the only allow option [0.95ms]
+[kone] full-access t1: REFUSED — Filesystem Formatting (mkfs-format) — Formatting a filesystem destroys existing partition tables and all data. Command: mkfs.ext4 /dev/sda1
+(pass) ClineAdapter permissions > full-access: still refuses a critical command [0.81ms]
+[kone] full-access t1: REFUSED — Recursive Root/Home Deletion (rm-rf-root-or-home) — Destructive recursive deletion targeting the root directory or user home folder. Command: rm -rf ~
+(pass) ClineAdapter permissions > full-access: a critical command hidden in the title of a command-less ask is still refused [0.77ms]
+(pass) ClineAdapter permissions > a request with no turn in flight is cancelled rather than parked [0.45ms]
+(pass) ClineAdapter permissions > interrupting drains a parked ask as a rejection so nothing hangs [0.51ms]
+
+src/codexOverlay.test.ts:
+(pass) prepareCodexHomeOverlay > keeps every non-config entry reachable and rebuilds config with the managed region [1.30ms]
+(pass) prepareCodexHomeOverlay > the user's real config.toml is never modified [0.41ms]
+(pass) prepareCodexHomeOverlay > a second build with a new URL replaces the old region instead of stacking [0.56ms]
+(pass) prepareCodexHomeOverlay > a stale unmarked kone server entry is dropped so the table stays unique [0.29ms]
+(pass) prepareCodexHomeOverlay > merges the token exclusion into an existing user shell policy instead of duplicating the table [0.59ms]
+(pass) prepareCodexHomeOverlay > a database of the overlay's own keeps its sidecars local, while a linked one's are linked [0.97ms]
+(pass) prepareCodexHomeOverlay > a database that cannot be linked is copied whole, with the changes still in its log [2.71ms]
+(pass) prepareCodexHomeOverlay > works when the source home does not exist at all [0.34ms]
+(pass) prepareCodexHomeOverlay > linked auth resolves back to the very file codex would read at the real home [0.36ms]
+
+src/commandSafety.test.ts:
+(pass) commandSafety — pattern matching > detects recursive root/home deletion in every spelling of the flags [0.09ms]
+(pass) commandSafety — pattern matching > detects filesystem formatting [0.07ms]
+(pass) commandSafety — pattern matching > detects raw device writes, fork bombs and device-node redirection [0.08ms]
+(pass) commandSafety — pattern matching > rates a hard git reset as recoverable rather than catastrophic [0.03ms]
+(pass) commandSafety — pattern matching > leaves ordinary commands alone [0.09ms]
+(pass) commandSafety — argument extraction > reads every command-bearing key, including argv arrays [2.43ms]
+(pass) commandSafety — argument extraction > identifies shell tools by whole name segments [0.32ms]
+(pass) commandSafety — screenToolCall > flags a dangerous command on a shell tool [0.71ms]
+(pass) commandSafety — screenToolCall > ignores tools that are not shells [0.13ms]
+(pass) commandSafety — screenToolCall > does not flag a destructive command merely quoted in free text [0.33ms]
+(pass) commandSafety — screenToolCall > returns nothing for a call with no arguments [0.25ms]
+(pass) commandSafety — screenToolCall > accepts caller-supplied rules [0.43ms]
+(pass) commandSafety — screenToolCall > describes a screened call with the rule and the command [0.21ms]
+(pass) commandSafety — screenToolCall > ships only critical rules plus the one recoverable tier [0.11ms]
+
+src/conversationMigrations.agentInbox.test.ts:
+(pass) migration 22: AgentInbox > creates the table empty, with its pending index [58.22ms]
+(pass) migration 22: AgentInbox > refuses an unknown kind, state or seen_via, and a sender that is not JSON [67.67ms]
+(pass) migration 22: AgentInbox > a row needs a real recipient thread, and goes when the thread does [88.64ms]
+(pass) migration 22: AgentInbox > a dedupe key is unique; rows without one are not [87.84ms]
+(pass) migration 23: InboxRings > rows stored before it ring; a new row may be held [78.00ms]
+(pass) migration 24: InboxSentAt > rows stored before it were never sent [82.64ms]
+(pass) migration 25: InboxUncertain > keeps every row and column, and takes an uncertain row [77.13ms]
+(pass) migration 26: InboxUncertainAt > an uncertain row keeps when it turned uncertain; nothing else gets a time [61.19ms]
+
+src/conversationMigrations.clineProvider.test.ts:
+(pass) migration 14: ClineProvider > a v13 database cannot hold a cline thread or job — the reason the rung exists [14.05ms]
+(pass) migration 14: ClineProvider > after it, threads and jobs accept cline, still reject unknown providers, and lose nothing [22.38ms]
+(pass) migration 14: ClineProvider > references survive: foreign keys are back on, the cascades still fire, and nothing is orphaned [23.16ms]
+(pass) migration 14: ClineProvider > the rebuilt tables keep their indexes, columns and partial-index predicates [26.76ms]
+(pass) migration 14: ClineProvider > a store that already lists cline is left alone [26.68ms]
+(pass) migration 14: ClineProvider > a failed rung rolls back whole and still restores foreign keys [32.61ms]
+
+src/conversationMigrations.queuedTurnRowid.test.ts:
+(pass) migration 27 preserves queue rows, rowids and indexes, and never reuses a deleted id after reopen [66.76ms]
+
+src/conversationMigrations.senderAndContract.test.ts:
+(pass) migration 16: ThreadContract > existing threads carry no contract, and the column refuses anything but JSON [58.00ms]
+(pass) migration 15: BlockSender > existing prompts keep reading as the user [57.05ms]
+(pass) migration 15: BlockSender > the column takes a JSON sender and refuses anything else [63.30ms]
+
+src/conversationSearch.test.ts:
+(pass) conversation full-text search > user prompts and assistant items are searchable with snippets and jump ids [66.04ms]
+(pass) conversation full-text search > bm25 ranks the denser match first [53.97ms]
+(pass) conversation full-text search > global search spans threads; threadId scopes to one [52.47ms]
+(pass) conversation full-text search > phrase queries match adjacency, not scattered words [78.74ms]
+(pass) conversation full-text search > tool call names and payloads are indexed [59.30ms]
+(pass) conversation full-text search > hostile FTS5-looking input never throws and matches literally [55.62ms]
+(pass) conversation full-text search > streaming deltas do not touch the index; completion does [56.10ms]
+(pass) conversation full-text search > turn completion backfills items that never completed [48.03ms]
+(pass) conversation full-text search > aborted turns are indexed too [53.09ms]
+(pass) conversation full-text search > deleting a thread removes its index rows [53.89ms]
+(pass) conversation full-text search > limit bounds the hits [51.84ms]
+(pass) conversation full-text search > migration backfills rows written before the index existed [59.39ms]
+(pass) toFtsQuery > quotes terms, keeps phrases, empties to null [0.37ms]
+
+src/conversationStore.agentInbox.test.ts:
+(pass) the agent inbox store > a claim takes the oldest unseen up to its limit, and no second claim gets them [59.63ms]
+(pass) the agent inbox store > settle marks the batch seen with its turn; settling again changes nothing [44.48ms]
+(pass) the agent inbox store > release puts the batch back to unseen and keeps the block it was written as [42.86ms]
+(pass) the agent inbox store > markSeen takes only what is unseen, so a claimed message cannot be taken twice [53.26ms]
+(pass) the agent inbox store > retract takes back only an unseen message [55.84ms]
+(pass) the agent inbox store > the first open of a new process puts every claimed message back, block kept [49.69ms]
+(pass) the agent inbox store > resetInboxHandingAtBoot releases what a dead hand-over held [45.38ms]
+(pass) the agent inbox store > a dedupe key refuses a second copy of the same message [49.62ms]
+[conversation-store] insertInboxMessage failed: 474 |                                       kind, urgent, rings, reply_to, body, state, dedupe_key,
+475 |                                       project_path, created_at)
+476 |              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
+477 |              ON CONFLICT (dedupe_key) DO NOTHING`,
+478 |           )
+479 |           .run(
+                 ^
+SQLiteError: FOREIGN KEY constraint failed
+      errno: 787,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_FOREIGNKEY"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:479:12)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/ConversationDb.ts:199:7)
+      at insertInboxMessage (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/agentInbox.ts:470:16)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.agentInbox.test.ts:171:18)
+
+(pass) the agent inbox store > a message for a thread that does not exist is not stored [43.93ms]
+(pass) the agent inbox store > a message with no known sender stores and reads back as null [57.62ms]
+(pass) the agent inbox store > a thread's messages go with it [59.87ms]
+(pass) the agent inbox store > a held message is claimed only as held, and a ringing one only as ringing [61.92ms]
+(pass) the agent inbox store > history lists seen messages, newest first, and leaves out retracted ones [53.30ms]
+(pass) what a turn takes from the inbox > answers first, then oldest, held and ringing alike [69.97ms]
+(pass) what a turn takes from the inbox > urgent is claimed on its own, and always rings [70.76ms]
+(pass) what a turn takes from the inbox > one message reads back by id whatever its state [70.63ms]
+(pass) what the app hears about an inbox > every state move tells the listener whose inbox moved [72.26ms]
+(pass) what the app hears about an inbox > nothing that changed nothing is announced [68.29ms]
+(pass) what the app hears about an inbox > a listener that throws does not undo the write [71.57ms]
+(pass) what the app hears about an inbox > waiting lists a message a restart left uncertain [57.99ms]
+(pass) what the app hears about an inbox > a read uncertain message moves to history and stays uncertain [59.86ms]
+(pass) what the app hears about an inbox > waiting lists unseen and handing, oldest first, and nothing seen [52.48ms]
+
+src/conversationStore.blockOrder.test.ts:
+(pass) a block moved to the end reads after everything written before the move [59.96ms]
+(pass) a block moves past another thread's newer block without colliding with it [63.63ms]
+(pass) claiming a queued row while another thread wrote last still claims it [56.41ms]
+(pass) mail carried by the first queued prompt does not put the second ahead of it [57.23ms]
+
+src/conversationStore.editFork.test.ts:
+(pass) forkThreadAtBlock > forking at a middle block copies the prefix exactly and journals the edit [85.21ms]
+(pass) forkThreadAtBlock > an edit fork carries each request's tier, and the edit inherits the replaced message's [61.78ms]
+(pass) forkThreadAtBlock > forking at the first block yields just the edited message [82.23ms]
+(pass) forkThreadAtBlock > titles version over the whole lineage, not the immediate parent [91.59ms]
+(pass) forkThreadAtBlock > refusals leave the source untouched [78.05ms]
+(pass) forkThreadAtBlock > a queued-but-unrun prompt refuses instead of becoming answered history [61.34ms]
+(pass) forkThreadAtBlock > the fork pages like any thread (keyset cursor survives the copy) [86.41ms]
+(pass) findEditLineageRoot > walks parent pointers to the root [0.19ms]
+(pass) findEditLineageRoot > a pointer cycle terminates instead of hanging [0.07ms]
+(pass) findEditLineageRoot > a self-loop terminates [0.06ms]
+(pass) findEditLineageRoot > a missing or cross-project parent stops the walk as incomplete [0.08ms]
+(pass) fork titles > parseForkVersion only honors well-formed numeric suffixes [0.09ms]
+(pass) fork titles > buildEditForkTitle versions over the whole family [0.12ms]
+
+src/conversationStore.itemTextChunks.test.ts:
+(pass) ConversationStore append-only item text > migration v6 creates the chunks table and the text_json column [71.77ms]
+(pass) ConversationStore append-only item text > streaming deltas read back byte-identical mid-stream and after completion [73.09ms]
+(pass) ConversationStore append-only item text > a mid-stream restart recovers the append offset and stays byte-identical [57.11ms]
+(pass) ConversationStore append-only item text > an interrupted (never-completed) item keeps its streamed text [54.08ms]
+(pass) ConversationStore append-only item text > NUL bytes and unpaired surrogates round-trip through chunks and the settled row [215.67ms]
+(pass) ConversationStore append-only item text > streaming 400 deltas writes linear bytes, not a quadratic rewrite [134.39ms]
+(pass) ConversationStore append-only item text > unchanged non-text columns write nothing; changed ones write once [87.52ms]
+(pass) ConversationStore append-only item text > a shortened snapshot folds once into the base and keeps reading [66.42ms]
+
+src/conversationStore.jobs.test.ts:
+(pass) job rows > a filed draft round-trips every target field [56.97ms]
+(pass) job rows > a job with no worktree choice stores null, not an empty record [88.03ms]
+(pass) job rows > a corrupt workspace column reads as no choice rather than throwing [80.55ms]
+(pass) job rows > editing is refused once the job is running [75.24ms]
+(pass) job rows > queueing and unqueueing only move between draft and queued [70.08ms]
+(pass) claiming > claims in drain order, explicit positions first [70.53ms]
+(pass) claiming > with no reorder, the oldest queued job drains first [47.89ms]
+(pass) claiming > a draft is never claimed [45.46ms]
+(pass) claiming > one job at a time per project [47.06ms]
+(pass) claiming > a busy project does not block another project's queue [64.11ms]
+(pass) claiming > attempts number upward across retries [68.46ms]
+(pass) run lifecycle > binding a thread ends the claim window [50.19ms]
+(pass) run lifecycle > binding twice is refused [60.03ms]
+(pass) run lifecycle > settling a run settles its job in the same breath [51.06ms]
+(pass) run lifecycle > a settled job frees the project for the next claim [60.49ms]
+(pass) run lifecycle > a failed dispatch returns the job to the queue, not to failed [43.51ms]
+(pass) run lifecycle > releasing a bound run is refused — the thread is already live [52.97ms]
+(pass) run lifecycle > settling the same run twice changes nothing the second time [60.31ms]
+(pass) crash recovery > reopening releases a claim the previous process was holding [58.82ms]
+(pass) crash recovery > reopening leaves a run that reached its thread alone [50.56ms]
+(pass) crash recovery > an expired claim returns the job to the queue [62.05ms]
+(pass) crash recovery > the sweep leaves a bound run alone — the thread is the evidence [56.19ms]
+(pass) crash recovery > a live lease is not swept [45.24ms]
+(pass) listing > queued jobs lead the list in the order they will run [61.70ms]
+(pass) listing > a listed job carries the branch its latest attempt ran on [53.23ms]
+(pass) listing > a job that has not run yet carries no branch [47.53ms]
+(pass) listing > a retry's branch replaces the earlier attempt's [60.04ms]
+(pass) listing > a project's list holds only its own jobs [56.21ms]
+(pass) listing > the global list holds every project's jobs [68.31ms]
+(pass) listing > the global list keeps each project's queue in the order it will run [59.35ms]
+(pass) listing > deleting a settled job takes its runs with it [63.99ms]
+(pass) listing > deleting a running job is refused [50.04ms]
+(pass) migrating a v9 database to v10 > adds the column, settles the order, and pins one run per thread [59.29ms]
+(pass) migrating a v9 database to v10 > is idempotent [57.62ms]
+
+src/conversationStore.queueHold.test.ts:
+(pass) a held queued turn > pauses the queue behind it, stays listed in its place, and resumes once removed [52.14ms]
+(pass) a held queued turn > pauses only what runs after it: a row moved ahead of it still runs [51.21ms]
+(pass) a held queued turn > dedupes a replay of its prompt instead of queueing a second copy [48.57ms]
+(pass) a held queued turn > migration 19 settles held copies already on disk before indexing them [59.95ms]
+(pass) a held queued turn > is cancelled with the rest on stop [69.43ms]
+(pass) claiming one named row (send now) > claims a waiting or held row and reports which it was [75.98ms]
+(pass) claiming one named row (send now) > refuses a row that is already claimed, sent or gone [76.71ms]
+(pass) claiming one named row (send now) > hands back the attachments the row was queued with [72.24ms]
+(pass) steered user blocks > are marked on reload, and only user blocks take the mark [64.34ms]
+(pass) steered user blocks > split the reply on reload where the provider took them in [71.59ms]
+(pass) steered user blocks > read above the reply when taken in before it said anything [86.65ms]
+(pass) steered user blocks > read above a running reply that has said nothing yet [83.54ms]
+(pass) steered user blocks > leave the reply whole when nothing came after them [69.88ms]
+(pass) steered user blocks > keep an empty piece below them while the turn is still running [96.95ms]
+(pass) steered user blocks > settle the piece above at the moment the provider took them in, not the send [58.32ms]
+(pass) steered user blocks > taken in one after another at the same point, both read before what followed [58.23ms]
+(pass) steered user blocks > delivered agent messages split the reply where each delivery landed, keeping who said them [59.80ms]
+(pass) steered user blocks > keep a split turn on one page [54.97ms]
+(pass) steered user blocks > keep a split turn on one page past the raw row ceiling [63.61ms]
+
+src/conversationStore.queueOrder.test.ts:
+(pass) a promoted queued turn keeps its place before its own reply > the drained prompt reads before the reply it produced [53.70ms]
+(pass) a promoted queued turn keeps its place before its own reply > Send now places its row the same way a drain does [55.86ms]
+(pass) a promoted queued turn keeps its place before its own reply > the prompt keeps its sent-at time, not its promotion time [61.78ms]
+
+src/conversationStore.roster.test.ts:
+(pass) the shipped presets > each gets a row, in the order the renderer asked for [56.85ms]
+(pass) the shipped presets > a row nobody has edited carries no values of its own [46.13ms]
+(pass) the shipped presets > hydrating twice changes nothing [59.10ms]
+(pass) the shipped presets > an edit survives the next hydrate [52.41ms]
+(pass) the shipped presets > a built-in shipped by a later build gets its row without a migration [61.82ms]
+(pass) the shipped presets > hydrating never resurrects a built-in the user deleted [62.93ms]
+(pass) the shipped presets > nothing to ensure is not an error [47.76ms]
+(pass) editing an agent > a field left out of the patch is left alone [60.78ms]
+(pass) editing an agent > null hands a field back to the preset; an empty string blanks it [53.92ms]
+(pass) editing an agent > surrounding space is not part of a stored field [60.56ms]
+(pass) editing an agent > a field longer than the row allows is clamped, not refused [52.98ms]
+(pass) editing an agent > an empty patch is a read, not a write [55.45ms]
+(pass) editing an agent > editing somebody who isn't there reports it rather than inventing them [46.91ms]
+(pass) editing an agent > an edit bumps updated_at and leaves created_at alone [50.83ms]
+(pass) a user-made agent > is created with its own values and no inheritance [92.78ms]
+(pass) a user-made agent > lands at the end of the roster [107.86ms]
+(pass) a user-made agent > gets an id of its own when the caller doesn't mint one [73.55ms]
+(pass) a user-made agent > cannot be created nameless [71.83ms]
+(pass) a user-made agent > cannot be created botless [48.69ms]
+[conversation-store] updateAgent failed: 257 |       const result = db
+258 |         .prepare(
+259 |           `UPDATE agents SET ${assignments}, updated_at = ?
+260 |             WHERE agent_id = ? AND deleted_at IS NULL`,
+261 |         )
+262 |         .run(...values, Date.now(), agentId);
+               ^
+SQLiteError: CHECK constraint failed: preset_id IS NOT NULL OR (name IS NOT NULL AND length(trim(name)) > 0)
+      errno: 275,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_CHECK"
+
+      at #run (bun:sqlite:187:20)
+      at updateAgent (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/store/roster.ts:262:10)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/conversationStore.roster.test.ts:228:18)
+
+(pass) a user-made agent > cannot have its name cleared to nothing [58.85ms]
+(pass) leaving the roster > a deleted agent drops out of the roster but keeps its row [60.53ms]
+(pass) leaving the roster > asking for the deleted ones back gets them, in roster order [50.00ms]
+(pass) leaving the roster > deleting twice changes nothing the second time [47.59ms]
+(pass) leaving the roster > deleting somebody who was never there is not a delete [47.39ms]
+(pass) leaving the roster > a deleted agent cannot be edited [54.66ms]
+(pass) forking an agent > a copy of a user-made agent carries its values and no inheritance [44.83ms]
+(pass) forking an agent > a copy of a built-in takes the caller's resolved values for the gaps [43.42ms]
+(pass) forking an agent > the copy is named by the caller when they want it renamed on the spot [44.31ms]
+(pass) forking an agent > the copy sits straight after the agent it came from [53.73ms]
+(pass) forking an agent > a copy with nothing to name it is refused [44.91ms]
+(pass) forking an agent > there is nothing to fork from a deleted agent, or from nobody [44.38ms]
+(pass) an agent's capabilities > an unedited row inherits every capability [46.53ms]
+(pass) an agent's capabilities > a chain stores primary first and fallbacks as the tail [62.03ms]
+(pass) an agent's capabilities > a new agent keeps the capabilities it was made with [66.24ms]
+(pass) an agent's capabilities > a new agent left silent about its capabilities inherits them [68.74ms]
+(pass) an agent's capabilities > a pinned model is stored as an answer; null hands the field back [69.57ms]
+(pass) an agent's capabilities > a capability left out of a patch is left alone [44.50ms]
+(pass) an agent's capabilities > a malformed capability entry is dropped, not stored [42.28ms]
+(pass) an agent's capabilities > a model ref without a label comes back without one [43.17ms]
+(pass) an agent's capabilities > a fork carries capabilities, the row's own winning over the preset's [43.56ms]
+(pass) an agent's capabilities > capabilities survive a round trip through the database [51.85ms]

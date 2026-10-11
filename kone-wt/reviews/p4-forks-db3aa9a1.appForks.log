@@ -1,0 +1,20 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/gateway/tools/appForks.test.ts:
+(pass) app_fork_thread (assistant text) > the success text carries the new thread id and where it opens [166.25ms]
+(pass) app_fork_thread (assistant text) > a replayed creation says the thread already exists and names it [119.70ms]
+(pass) app_fork_thread (assistant text) > an omitted thread id replays the request binding [263.00ms]
+(pass) app_fork_thread (assistant text) > checks service busy state before creating a fork [195.17ms]
+(pass) app_fork_thread (assistant text) > refuses a rolled-back turn as isError text naming the reason [207.05ms]
+(pass) app_fork_thread (assistant text) > refuses a running source as isError text naming the reason [99.89ms]
+(pass) app_fork_thread (assistant text) > refuses an unknown source as isError text naming the reason [74.54ms]
+(pass) app_fork_thread (assistant text) > refuses a turn that is not part of the source as isError text [84.31ms]
+(pass) app_merge_back (assistant text) > the success text carries both thread ids and the timeline block id [94.25ms]
+(pass) app_merge_back (assistant text) > refuses a fork that came from another source as isError text [80.19ms]
+(pass) app_merge_back (assistant text) > refuses an unknown fork as isError text naming it [74.61ms]
+(pass) app_merge_back (assistant text) > refuses an unknown source as isError text naming it [74.19ms]
+
+ 12 pass
+ 0 fail
+ 53 expect() calls
+Ran 12 tests across 1 file. [2.08s]

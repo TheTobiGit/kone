@@ -1,0 +1,9 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p4-forks-db3aa9a1.claude-repro.test.ts:
+(pass) F5 native fork has no source resume UUID; first own answer persists fork-local cursor and resumes it [262.56ms]
+
+ 1 pass
+ 0 fail
+ 12 expect() calls
+Ran 1 test across 1 file. [549.00ms]

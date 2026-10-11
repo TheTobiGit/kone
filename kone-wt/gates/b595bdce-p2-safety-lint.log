@@ -1,0 +1,3 @@
+# 2026-10-10T19:05:12Z /home/gideonsarfo/Developer/kone-wt/p2-safety bun 1.4.2 bun run lint
+$ oxlint --report-unused-disable-directives
+# exit=0

@@ -1,0 +1,77 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p4-forks-5c88bce7.repro.test.ts:
+38 | // These tests assert the pinned faulty behavior, so passing means reproduced.
+39 | test("F1 normal startThread drops native fork and portable replay is disabled", async () => {
+40 |   const store = seed(); fork();
+41 |   const { starts, dispatch } = dispatcher(store);
+42 |   await dispatch.startThread({ threadId: "fork", provider: "codex", cwd: dir });
+43 |   expect(starts[0].forkFrom).toBeUndefined();
+                                  ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  conversationId: "native-source",
+  beforeTurnId: "turn-1",
+}
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p4-forks-5c88bce7.repro.test.ts:43:30)
+(fail) F1 normal startThread drops native fork and portable replay is disabled [138.72ms]
+48 | test("F2 native fork passes Codex conversation to chosen Claude provider", async () => {
+49 |   const store = seed(); fork({ target: { provider: "claudeAgent" } });
+50 |   const { starts, dispatch } = dispatcher(store);
+51 |   await dispatch.ensureThreadSession("fork", { resume: true });
+52 |   expect(starts[0].provider).toBe("claudeAgent");
+53 |   expect(starts[0].forkFrom).toEqual({ conversationId: "native-source", beforeTurnId: "turn-1" });
+                                  ^
+error: expect(received).toEqual(expected)
+
+- {
+-   "beforeTurnId": "turn-1",
+-   "conversationId": "native-source",
+- }
++ undefined
+
+- Expected  - 4
++ Received  + 1
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p4-forks-5c88bce7.repro.test.ts:53:30)
+(fail) F2 native fork passes Codex conversation to chosen Claude provider [139.09ms]
+(pass) real prompt id works, null works with answer, null without answer refuses [168.30ms]
+78 |   seed(); let n = 0;
+79 |   const tools = registry({ newThreadId: () => `generated-${++n}` });
+80 |   const params = { sourceThreadId: "source", turnId: "turn-1", requestId: "same-request" };
+81 |   expect((await tools.call(ctx, "app_fork_thread", params)).isError).toBeUndefined();
+82 |   const replay = await tools.call(ctx, "app_fork_thread", params);
+83 |   expect(replay.isError).toBe(true);
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: undefined
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p4-forks-5c88bce7.repro.test.ts:83:26)
+(fail) gateway retry without threadId conflicts with its own requestId [128.96ms]
+ 95 |     store.recordTurnCheckpoint({ threadId: "source", turnId: "turn-1", checkpointId: checkpoint.id, ref: `refs/kone/checkpoints/${checkpoint.id}` });
+ 96 |     writeFileSync(path.join(repo, "review-file.txt"), "after");
+ 97 |     service = new AgentService({ adapters: () => [], retentionSweepMs: 0, pullRequestSweepMs: 0 });
+ 98 |     expect(await service.revertToTurnCheckpoint("source", "turn-1", true)).toEqual({ ok: true });
+ 99 |     expect(readFileSync(path.join(repo, "review-file.txt"), "utf8")).toBe("before");
+100 |     expect(store.isTurnRolledBack("source", "turn-1")).toBe(false);
+                                                             ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p4-forks-5c88bce7.repro.test.ts:100:56)
+(fail) F3 real successful restore leaves turn forkable [321.85ms]
+(pass) finished failed/interrupted/cancelled turns can fork portable context [114.96ms]
+(pass) migrations 32 and 33 run independently and rerun without losing rows [70.67ms]
+(pass) F4 gateway accepts a source with dispatch in flight before turn.started [170.84ms]
+(pass) Claude native target still starts after source rollback stamp [91.23ms]
+
+ 5 pass
+ 4 fail
+ 33 expect() calls
+Ran 9 tests across 1 file. [2.24s]

@@ -1,0 +1,17 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p4-forks-5c88bce7.repro.test.ts:
+(pass) F1 normal startThread drops native fork and portable replay is disabled [88.94ms]
+(pass) F2 native fork passes Codex conversation to chosen Claude provider [69.49ms]
+(pass) real prompt id works, null works with answer, null without answer refuses [144.86ms]
+(pass) gateway retry without threadId conflicts with its own requestId [87.81ms]
+(pass) F3 real successful restore leaves turn forkable [225.97ms]
+(pass) finished failed/interrupted/cancelled turns can fork portable context [71.38ms]
+(pass) migrations 32 and 33 run independently and rerun without losing rows [53.60ms]
+(pass) F4 gateway accepts a source with dispatch in flight before turn.started [59.55ms]
+(pass) Claude native target still starts after source rollback stamp [51.37ms]
+
+ 9 pass
+ 0 fail
+ 40 expect() calls
+Ran 9 tests across 1 file. [1332.00ms]

@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/threadFork.test.ts:
+(pass) resolveTurnCutBlock > cuts at the turn's last assistant block [8.41ms]
+(pass) resolveTurnCutBlock > falls back to the prompt block when the turn produced no answer [0.45ms]
+(pass) sourceThreadRunning > is true while a turn's assistant block is running [0.30ms]
+(pass) markTurnsRolledBack > stamps the chosen turn and every later turn [298.71ms]
+(pass) markTurnsRolledBack > from the last turn stamps only that turn [69.48ms]
+(pass) markTurnsRolledBack > an unknown boundary turn stamps nothing [67.36ms]
+(pass) forkThreadAtTurn > forks a branch from the chosen turn's end, with the source as placeholder [76.08ms]
+(pass) forkThreadAtTurn > refuses a source with a running turn [68.88ms]
+(pass) forkThreadAtTurn > refuses a turn that was rolled back [79.28ms]
+(pass) forkThreadAtTurn > refuses a turn that is not part of the source [90.92ms]
+(pass) forkThreadAtTurn > the placeholder provider is replaced by the first send while no session exists [189.82ms]
+(pass) native forks > keeps portable history beside a native target for provider changes [109.02ms]
+(pass) native forks > a fork explicitly targeting another provider uses portable history [86.30ms]
+(pass) native forks > a Claude fork with no recorded uuid falls back to the portable import [94.82ms]
+(pass) turn assistant uuid > records the uuid a turn.completed carries, per turn [72.91ms]
+
+ 15 pass
+ 0 fail
+ 42 expect() calls
+Ran 15 tests across 1 file. [1.62s]

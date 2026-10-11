@@ -1,0 +1,39 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/agentCheckpoints.test.ts:
+(pass) AgentService turn checkpoints > sendTurn captures a checkpoint and records (thread, turn) → ref [362.35ms]
+(pass) AgentService turn checkpoints > a second capture for the same turn keeps the first snapshot [174.24ms]
+[agent] turn checkpoint capture failed for t-fail/checkpoint-turn-1 — continuing without one: warn: store exploded
+      at getTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:99:33)
+      at captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1651:17)
+      at sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+[agent] listTurnCheckpoints failed for t-fail: warn: store exploded
+      at listTurnCheckpoints (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:104:33)
+      at listTurnCheckpoints (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1683:36)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/agentCheckpoints.test.ts:215:22)
+
+(pass) AgentService turn checkpoints > a store failure degrades to no checkpoint without failing the turn [28.41ms]
+[agent] turn checkpoint capture failed for t-plain/checkpoint-turn-1 — continuing without one: GitError: "/tmp/kone-checkpoint-plain-NeYDfk" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) AgentService turn checkpoints > a non-repo project path degrades to no checkpoint [6.47ms]
+(pass) AgentService turn checkpoints > an unforced revert refuses with the exact file lists, then force restores [366.56ms]
+(pass) AgentService turn checkpoints > preview answers missing for an unknown turn [14.91ms]
+(pass) AgentService turn checkpoints > revert answers checkpoint-gone when the git object is gone [71.57ms]
+(pass) AgentService turn checkpoints > revert answers no-workdir when the workspace directory is gone [56.58ms]
+(pass) AgentService turn checkpoints > revert answers missing for an unknown turn and busy for a live one [21.08ms]
+(pass) AgentService turn checkpoints > concurrent reverts for one thread both settle [207.48ms]
+
+ 10 pass
+ 0 fail
+ 36 expect() calls
+Ran 10 tests across 1 file. [2.27s]

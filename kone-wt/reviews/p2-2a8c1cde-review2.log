@@ -1,0 +1,21 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/agentSafety.review2.test.ts:
+(pass) P2 review round 2 > a continuation whose row is gone is dropped at the handoff [43.18ms]
+(pass) P2 review round 2 > a stop during adoption consumes the continuation without retry [9.97ms]
+(pass) P2 review round 2 > an interrupt during adoption yields an interrupted turn, not a retry [27.44ms]
+(pass) P2 review round 2 > back-to-back sends carry the restart note only once [14.46ms]
+(pass) P2 review round 2 > an empty restart note still delivers the shells-and-monitors line [5.61ms]
+(pass) P2 review round 2 > refused non-carrier must not release another send's reservation [5.71ms]
+(pass) P2 review round 2 > cancelled queued carrier must release restart note [4.43ms]
+(pass) a cancelled queued carrier frees the restart note > row-before-ack [6.84ms]
+(pass) a cancelled queued carrier frees the restart note > bulk-before-ack [4.71ms]
+(pass) a cancelled queued carrier frees the restart note > stop-before-ack [5.17ms]
+(pass) a cancelled queued carrier frees the restart note > bulk-after-ack [4.76ms]
+(pass) a cancelled queued carrier frees the restart note > stop-after-ack [6.83ms]
+
+ 12 pass
+ 0 fail
+ 20 expect() calls
+Ran 12 tests across 1 file. [492.00ms]
+# exit=0

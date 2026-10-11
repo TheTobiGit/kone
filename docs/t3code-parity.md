@@ -2,8 +2,9 @@
 
 ## Start here
 
-**Newest state (2026-10-09, after the Mac power cut): read
-`T3CODE-PARITY-RESUME.md` on `origin/parity-handoff` and the "Back to Linux" section below.**
+**Newest state (2026-10-11, end of the Linux session): read
+`T3CODE-PARITY-RESUME.md` on `origin/parity-handoff` (same text as
+`docs/t3code-parity-resume.md`) and the "Linux session" section below.**
 Older pointer: `T3CODE-PARITY-RESUME.md` on `origin/teamwork`, or
 `docs/t3code-parity-resume.md` in the earlier handoff archive. It defines the
 restart order, remote pins, portable setup, migration conflicts and scope.
@@ -14,6 +15,31 @@ A simple opening request is: “Continue t3code parity. Read
 T3CODE-PARITY-RESUME.md, then the docs it names; verify current refs and resume
 pending work. Keep teamwork separate until independently reviewed and
 migration-reconciled. Preserve review pins and existing user scope decisions.”
+
+## Linux session (2026-10-10/11, coordinator: Basalt). CURRENT
+
+Ended 2026-10-11 to continue on the Mac. Read `docs/t3code-parity-resume.md` first. All phase branches below were pushed (fast-forward only) at the user's request.
+
+### Pins
+
+| Branch | Pin | State |
+|---|---|---|
+| p2-safety | `b595bdce` | Four Linux review rounds (reviewer **Wren**, Codex GPT-6.1 Sol medium). Commits on 1f7550ec: `411c5c6c` counted restore claims; `ab0915a5` recheck busy+isolation at the restore handoff and claim the dir; `c5ae1d34` turnUserBlockId by transcript order; `c4c2f6fb` every turn path held by the claim (sendToAdapter guard, sends queue behind a restore, drain holds off, Send now refuses, wake on release); `bcaf7028` queued note carrier settled when its row ended before the ack; `b37b836e` still-queued/held prompts passed over by turnUserBlockId; `2a8c1cde` liveOnly steer and compaction refuse under a restore; `b595bdce` enqueue-failure fallback rethrows under a restore, steers in flight count as busy for a restore. Reviews: `reviews/p2-c5ae1d34.md`, `p2-b37b836e.md`, `p2-2a8c1cde.md` (all CHANGES, all addressed). **Gated b595bdce:** types/lint 0, agent-core 2701/0, protocol 124/0, git-core 73/0, desktop 405/0, web 1498/0; **build not run** (session ended). **Next: round-4 review of 2a8c1cde..b595bdce** |
+| p6-queue | `6da5ecc5` | `8c3714cd` cancelled queued prompt unlisted from search, both cancel paths, one transaction; `6da5ecc5` orphan FTS rows skipped. Gated, all 0 incl. build. **APPROVED** by Ines (`reviews/p6-queue-6da5ecc5.md`). Merge after P2 |
+| p4-forks | `fd980fa2` | Tobias at 5c88bce7: CHANGES F1–F6 (`reviews/p4-forks-5c88bce7.md`). Selin (Codex GPT-6 Luna high) fixed: F1 `0d2fbf34`, F2 `b2521ce4`+`11004171`, F3 `b2521ce4`, F4/F6 `b060f99b`, F5 `c5c406c3`, lint `db3aa9a1`. Tobias at db3aa9a1: F1–F6 fixed; new F7 (`reviews/p4-forks-db3aa9a1.md`): native fork snapshot dropped sender and model/effort; fixed in `fd980fa2` (Gemini 3.8 Flash worker; reviewed by Basalt). Tobias also checked the P2 merge-tree keeps F3's stamp on the verified-success path. **Gated fd980fa2:** types/lint 0, agent-core 2769/0, protocol 124/0, git-core 73/0, desktop 430/0, web 1498/0; **build not run**. db3aa9a1 build passed. **Next: confirm F7, then merge after P3** |
+| t3-parity | `6a4bac3c` | Unchanged. Nothing merged yet |
+| p3-limits, p7b-handoff-wip | `70592fc0`, `5f687467` | Unchanged |
+
+Null userBlockId with no assistant block in P4's conversation-only rewind: an isError refusal naming the turn is acceptable (Basalt), since every started turn has an assistant block.
+
+### Tooling and lessons (Linux)
+
+- No zsh on Linux: `kone-wt/gate.sh` was ported to bash (`bash --noprofile --norc`; macOS bash 3.2 compatible; same lock/log/INVALID behaviour). Bun on Linux is `~/.local/bin/bun` 1.4.2.
+- Build: the default ~2 GB Node heap OOMs `web#build` on this 7 GB box (baseline 6a4bac3c too): `NODE_OPTIONS=--max-old-space-size=4096`. web and desktop build Nuxt into the shared `apps/web/node_modules/.cache/nuxt` and race on `.nuxt/dist/client/manifest.json` when parallel; gate.sh now passes `--concurrency=1`. A raced log is kept in `gates/raced/`. (The Linux OOM run overwrote the Mac's 6a4bac3c baseline build log; the ledger keeps both lines.)
+- Workers: OpenCode Muse Spark 1.3 Free and Antigravity Gemini 3.8 Flash work (Gemini must be full-access). Pay-per-use `opencode/` models fail with "Insufficient account funds". Gemini 3.8 Flash did the F7 fix and Wren's mechanical runs fine. Selin's P4 fix run cost ~19M tokens on Codex: give implementers tighter, per-finding briefs.
+- Killing a chained shell command (`pkill -f`) also kills the `git stash pop` after it: never stash-test inside a chain that may be killed; copy the file aside instead.
+- Contracted agents settle when their turn ends: answer them with agent_followup, not agent_message.
+- `docs/agent-delivery-design.md` / `agent-roles-design.md`: the Linux main checkout has uncommitted edits to both, so the handoff copies were not extracted there (parked in /tmp on Linux). The parity-handoff branch keeps the Mac copies unchanged.
 
 ## Back to Linux after the Mac power cut (2026-10-09, about 06:00 UTC). START HERE
 

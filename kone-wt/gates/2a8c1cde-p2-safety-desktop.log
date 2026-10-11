@@ -1,0 +1,52 @@
+# 2026-10-10T18:45:00Z /home/gideonsarfo/Developer/kone-wt/p2-safety bun 1.4.2 bash --noprofile --norc -c cd apps/desktop && bun test
+bun test v1.4.2 (744846f84)
+
+src/modules/git/worktreeCleanup.test.ts:
+[git] could not list worktrees for deleted thread 'parent': db is gone
+[git] could not remove worktree '/wt/first': git said no
+[git] could not check references to '/wt/unknown': db is gone
+
+src/modules/git/worktreeInclude.test.ts:
+[git] could not list private files for the new worktree: 128 |       (error instanceof Error ? error.message : "git command failed");
+129 |     const rawCode =
+130 |       error instanceof Error && "code" in error ? error.code : undefined;
+131 |     // SAFETY: Number.isInteger verified rawCode is an integer exit code.
+132 |     const code = Number.isInteger(rawCode) ? (rawCode as number) : null;
+133 |     throw new GitError(message, code, stdout);
+                ^
+GitError: fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+   code: 128,
+ stdout: "",
+   kind: null,
+
+      at git (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/git-core/src/core.ts:133:11)
+      at async listIgnored (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/git/worktreeInclude.ts:55:21)
+
+
+src/modules/git/worktreeSweep.test.ts:
+[git] removed 1 idle worktree(s)
+
+src/modules/jev/route.test.ts:
+[jev] routing failed, falling back to the default partner: JevRequestError: routing request failed (500)
+ status: 500,
+
+      at once (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/client.ts:174:11)
+      at async systemOne (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/client.ts:145:20)
+      at async route (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/route.ts:138:26)
+      at async <anonymous> (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/route.test.ts:114:26)
+
+[jev] routing failed, falling back to the default partner: JevRequestError: routing request failed (429)
+ status: 429,
+
+      at once (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/client.ts:174:11)
+      at async systemOne (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/client.ts:145:20)
+      at async route (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/route.ts:138:26)
+      at async <anonymous> (/home/gideonsarfo/Developer/kone-wt/p2-safety/apps/desktop/src/modules/jev/route.test.ts:170:26)
+
+
+ 405 pass
+ 0 fail
+ 865 expect() calls
+Ran 405 tests across 38 files. [21.31s]
+# exit=0

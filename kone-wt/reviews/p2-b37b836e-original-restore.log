@@ -1,0 +1,16 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-c5ae1d34-original-restore-race-repro.test.ts:
+(pass) P2 review round 2 > a continuation whose row is gone is dropped at the handoff [47.75ms]
+(pass) P2 review round 2 > a stop during adoption consumes the continuation without retry [12.56ms]
+(pass) P2 review round 2 > an interrupt during adoption yields an interrupted turn, not a retry [28.18ms]
+(pass) P2 review round 2 > back-to-back sends carry the restart note only once [15.13ms]
+(pass) P2 review round 2 > an empty restart note still delivers the shells-and-monitors line [3.63ms]
+(pass) new overlapping session during preview must block file restore [3.37ms]
+
+ 6 pass
+ 0 fail
+ 12 expect() calls
+Ran 6 tests across 1 file. [467.00ms]
+
+# exit=0

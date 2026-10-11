@@ -1,0 +1,62 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-c5ae1d34-reservation-repro.test.ts:
+(pass) P2 review round 2 > a continuation whose row is gone is dropped at the handoff [208.55ms]
+(pass) P2 review round 2 > a stop during adoption consumes the continuation without retry [25.83ms]
+(pass) P2 review round 2 > an interrupt during adoption yields an interrupted turn, not a retry [129.49ms]
+(pass) P2 review round 2 > back-to-back sends carry the restart note only once [43.58ms]
+(pass) P2 review round 2 > an empty restart note still delivers the shells-and-monitors line [3.19ms]
+(pass) cancelled queued carrier must release restart note [8.63ms]
+(pass) refused non-carrier must not release another send's reservation [12.83ms]
+(pass) ordinary turn rewind target resolves its starting user block [5.63ms]
+(pass) restart reservation cancellation edge: bulk-after-ack [10.98ms]
+(pass) restart reservation cancellation edge: stop-after-ack [7.28ms]
+272 |   await first;
+273 |   if (cancel.startsWith("stop")) await svc.startSession({threadId:id,provider:"codex",cwd:"/tmp"});
+274 |   await dispatcher.sendThreadTurn({threadId:id,input:"retry after edge cancellation"});
+275 |   const last = adapter.sent.at(-1);
+276 |   await svc.stopAll();
+277 |   expect(last).toContain("lost edge research");
+                     ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "lost edge research"
+Received: "retry after edge cancellation"
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-reservation-repro.test.ts:277:16)
+(fail) restart reservation cancellation edge: row-before-ack [8.76ms]
+272 |   await first;
+273 |   if (cancel.startsWith("stop")) await svc.startSession({threadId:id,provider:"codex",cwd:"/tmp"});
+274 |   await dispatcher.sendThreadTurn({threadId:id,input:"retry after edge cancellation"});
+275 |   const last = adapter.sent.at(-1);
+276 |   await svc.stopAll();
+277 |   expect(last).toContain("lost edge research");
+                     ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "lost edge research"
+Received: "retry after edge cancellation"
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-reservation-repro.test.ts:277:16)
+(fail) restart reservation cancellation edge: bulk-before-ack [6.68ms]
+272 |   await first;
+273 |   if (cancel.startsWith("stop")) await svc.startSession({threadId:id,provider:"codex",cwd:"/tmp"});
+274 |   await dispatcher.sendThreadTurn({threadId:id,input:"retry after edge cancellation"});
+275 |   const last = adapter.sent.at(-1);
+276 |   await svc.stopAll();
+277 |   expect(last).toContain("lost edge research");
+                     ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "lost edge research"
+Received: "retry after edge cancellation"
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-reservation-repro.test.ts:277:16)
+(fail) restart reservation cancellation edge: stop-before-ack [7.55ms]
+
+ 10 pass
+ 3 fail
+ 22 expect() calls
+Ran 13 tests across 1 file. [1.62s]
+
+# exit=1

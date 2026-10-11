@@ -1,0 +1,317 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/dispatch.test.ts:
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a steer lands in the transcript, like a send [205.69ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > two steers are two queue rows, not one swallowed as a replay [90.35ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > each queue row anchors to its OWN user block [125.65ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-2 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a silent turn reaches the agent but leaves no user block [148.89ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > an agent-sent turn is journaled with its sender and dispatched under a header [151.45ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > an agent-sent turn is announced to renderers under the block id it was stored with [132.92ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a message recorded without a turn is journaled and announced; the user's own words never are [97.51ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a user turn reads back with no sender [177.47ms]
+(pass) thread dispatcher: a steer is the user speaking > a contractor's session wakes as the contractor, whoever starts it [380.32ms]
+(pass) thread dispatcher: a steer is the user speaking > a guest's session wakes knowing the call sign other agents address it by [103.23ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a silent first turn does not name the thread after itself [177.68ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a steer with no live turn is a plain send, and still journaled [246.48ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a send the provider refuses leaves no block behind [831.60ms]
+(pass) thread dispatcher: a steer is the user speaking > a refused send takes back its block even when it named none [299.45ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a steer is the user speaking > a refused send never takes a block a queue row still carries [264.89ms]
+(pass) thread dispatcher: a steer is the user speaking > an agent's refused message is taken back down wherever it was announced [101.61ms]
+(pass) thread dispatcher native fork startup > normal startThread resolves the saved native fork target [196.82ms]
+(pass) composeTurnDelivery > an ordinary turn is journaled and dispatched as itself [0.11ms]
+(pass) composeTurnDelivery > a preamble reaches the provider and never the transcript [0.08ms]
+(pass) composeTurnDelivery > a silent turn is dispatched but journaled nowhere — nobody said it [0.04ms]
+(pass) composeTurnDelivery > the two axes are independent: a silent turn can still carry a preamble [0.05ms]
+(pass) composeTurnDelivery > an agent sender is headed in the dispatch and kept out of the journal [0.12ms]
+(pass) composeTurnDelivery > the sender header sits between the preamble and the words it attributes [0.07ms]
+(pass) composeTurnDelivery > the user as sender changes nothing [0.04ms]
+(pass) composeTurnDelivery > an empty preamble changes nothing [0.05ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+[agent] codex session for t-dispatch ended on its own; the next send restarts it
+[agent] turn checkpoint capture failed for t-dispatch/turn-2 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: a session that ends on its own > the next wake brings it back up, resuming its conversation [307.56ms]
+(pass) thread dispatcher: a session that ends on its own > an exit the adapter has already replaced leaves the thread live [330.05ms]
+(pass) thread dispatcher: a session that ends on its own > an exit from a provider the thread is not on leaves it live [282.41ms]
+(pass) thread dispatcher: where a session is spawned > an assistant thread keeps the sentinel and spawns in a real directory [186.12ms]
+(pass) thread dispatcher: where a session is spawned > a project thread spawns where it lives [1692.55ms]
+(pass) thread dispatcher: where a session is spawned > a thread with a worktree spawns there, not in its project [271.93ms]
+(pass) thread dispatcher: where a session is spawned > a thread that asks for a worktree gets one built before its session [112.49ms]
+(pass) thread dispatcher: where a session is spawned > two conversations in one project run on two branches [382.36ms]
+(pass) thread dispatcher: where a session is spawned > reopening a worktree thread reuses its directory, building nothing [87.24ms]
+(pass) thread dispatcher: where a session is spawned > a failed build fails the send and spawns nothing [59.98ms]
+(pass) thread dispatcher: where a session is spawned > asking for local changes nothing [86.97ms]
+(pass) thread dispatcher: where a session is spawned > reports each step of the build, in order [91.35ms]
+(pass) thread dispatcher: where a session is spawned > a new branch starts from the freshened base, and says where [79.05ms]
+(pass) thread dispatcher: where a session is spawned > a freshen that throws still builds, from the base as asked [89.81ms]
+(pass) thread dispatcher: where a session is spawned > a named branch is moved in as it stands, not freshened [87.42ms]
+(pass) thread dispatcher: where a session is spawned > the thread's first title names its worktree branch [86.58ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: where a session is spawned > a thread in the project's own checkout has no branch to rename [89.70ms]
+(pass) thread dispatcher: where a session is spawned > a thread that never asked for a worktree reports nothing [130.41ms]
+(pass) thread dispatcher: where a session is spawned > a failed build marks the step it failed on and stops there [86.36ms]
+(pass) thread dispatcher: where a session is spawned > the start says which worktree the thread runs in, and a local one says none [80.55ms]
+(pass) thread dispatcher: where a session is spawned > cancelling mid-build removes what the creation produced [95.30ms]
+(pass) thread dispatcher: where a session is spawned > cancelling a generated-branch build reclaims its branch [95.90ms]
+(pass) thread dispatcher: where a session is spawned > cancelling an attached-existing build keeps its branch [89.13ms]
+[dispatch] could not remove a cancelled worktree: 269 |         generatedBranch: provisionGeneratedOverride ?? (request.branch === undefined),
+270 |         attachedExisting: provisionAttachedOverride ?? false,
+271 |       };
+272 |     },
+273 |     releaseWorkspace: async (input) => {
+274 |       if (releaseFails) throw new Error("remove refused");
+                                        ^
+error: remove refused
+      at releaseWorkspace (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.test.ts:274:35)
+      at discardWorkspace (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:1395:18)
+      at buildThreadWorktree (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:1241:18)
+      at async resolveThreadPlace (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:1145:32)
+      at async startThread (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/dispatch.ts:415:30)
+
+(pass) thread dispatcher: where a session is spawned > a failed removal still reports the cancellation [89.00ms]
+(pass) thread dispatcher: where a session is spawned > a cancel that arrives after the build finished does not affect the next one [105.79ms]
+(pass) thread dispatcher: where a session is spawned > forgetting a thread clears a stale cancel so a reused id builds normally [111.45ms]
+(pass) thread dispatcher: where a session is spawned > a cancel landing during the session start does not stop it [133.00ms]
+(pass) thread dispatcher: where a session is spawned > a thread pending on a stored request builds it without being re-asked [95.74ms]
+(pass) thread dispatcher: where a session is spawned > a pending thread with no stored branch still provisions with a generated one [84.03ms]
+(pass) thread dispatcher: where a session is spawned > a reload that wipes the staged workspace still builds from the store [94.06ms]
+(pass) thread dispatcher: where a session is spawned > an explicit request wins over a stale stored branch [90.61ms]
+(pass) thread dispatcher: compactThread > rejects an unknown thread [72.59ms]
+(pass) thread dispatcher: compactThread > rejects a thread with no conversation yet [65.45ms]
+(pass) thread dispatcher: compactThread > rejects when the provider supports no manual compaction [75.96ms]
+(pass) thread dispatcher: compactThread > compacts without journaling anything [73.23ms]
+(pass) thread dispatcher: compactThread > adopts a live session when the thread has history but none [63.97ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: invoked skills > a skill resolved by name, any case, is journaled and sent as the listed copy [272.17ms]
+(pass) thread dispatcher: invoked skills > an unknown skill rejects before anything is journaled or sent [142.40ms]
+(pass) thread dispatcher: invoked skills > a malformed reference rejects before anything is journaled [116.10ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: invoked skills > a busy send queues its skills and the promoted turn carries them [201.96ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-2 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+      at async drainQueuedTurns (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:3397:35)
+
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: invoked skills > a steer while busy carries its skills onto the queue row and its block [567.70ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: invoked skills > a skill send followed at once by a plain send journals in call order [404.18ms]
+[agent] turn checkpoint capture failed for t-dispatch/turn-1 — continuing without one: GitError: "/tmp/kone-dispatch" is not inside a git repository.
+   code: null,
+ stdout: "",
+   kind: null,
+
+      at createCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/checkpoint.ts:27:11)
+      at async captureTurnCheckpoint (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1654:32)
+      at async sendToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1522:18)
+      at async dispatchToAdapter (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/agent-core/src/AgentService.ts:1478:25)
+
+(pass) thread dispatcher: invoked skills > a plain send with nothing ahead of it journals in the same tick [153.98ms]
+(pass) worktree setup progress and cancellation > reports staged progress and finishes only after the session starts [185.16ms]
+(pass) worktree setup progress and cancellation > a failed build reports the setup failed [177.83ms]
+(pass) worktree setup progress and cancellation > a cancel during the setup script is honoured before linking [235.77ms]
+(pass) worktree setup progress and cancellation > the agent stage runs while the session connects [156.19ms]
+(pass) worktree setup progress and cancellation > a provider startup failure leaves the agent stage failed [92.32ms]
+
+ 73 pass
+ 0 fail
+ 181 expect() calls
+Ran 73 tests across 1 file. [13.10s]

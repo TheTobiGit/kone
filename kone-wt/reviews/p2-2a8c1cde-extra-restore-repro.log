@@ -1,0 +1,19 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-b37b836e-extra-restore-repro.test.ts:
+(pass) checkpoint restore race > a session started in the directory during the preview stops the restore [41.90ms]
+(pass) checkpoint restore race > a turn the owner starts during the preview stops the restore as busy [131.84ms]
+(pass) checkpoint restore race > no session starts in the directory while the reset runs [7.27ms]
+(pass) turns held by a restore > a send during the reset queues and goes out once the restore lets go [129.34ms]
+(pass) turns held by a restore > the queue drain holds off during the reset and runs after it [114.39ms]
+(pass) turns held by a restore > Send now during the reset is refused before it claims the row [75.19ms]
+(pass) turns held by a restore > an inbox turn waits out the reset [41.94ms]
+(pass) liveOnly steer must refuse rather than queue during restore [71.38ms]
+(pass) command compaction must not start an adapter turn during restore [12.78ms]
+(pass) post-restore kicks must not double-start alongside an existing drain [90.27ms]
+
+ 10 pass
+ 0 fail
+ 23 expect() calls
+Ran 10 tests across 1 file. [1264.00ms]
+# exit=0

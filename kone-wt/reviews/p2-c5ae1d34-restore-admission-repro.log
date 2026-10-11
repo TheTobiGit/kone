@@ -1,0 +1,55 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-c5ae1d34-restore-admission-repro.test.ts:
+(pass) checkpoint restore race > a session started in the directory during the preview stops the restore [14.94ms]
+(pass) checkpoint restore race > a turn the owner starts during the preview stops the restore as busy [130.15ms]
+(pass) checkpoint restore race > no session or turn starts in the directory while the reset runs [2.27ms]
+218 |       svc.kickTurnSlot("owner");
+219 |       await new Promise(resolve => setTimeout(resolve, 20));
+220 |       const during = sends;
+221 |       restoreRelease.open();
+222 |       await reverting;
+223 |       expect(during).toBe(0);
+                           ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-restore-admission-repro.test.ts:223:22)
+(fail) inbox turn slot must not start an adapter turn while restore is active [23.83ms]
+245 |    if (delivery === "send-now") await svc.sendQueuedTurnNow("owner","q");
+246 |    else { svc.kickTurnSlot("owner"); await new Promise(resolve => setTimeout(resolve,20)); }
+247 |    const during = sends;
+248 |    restoreRelease.open();
+249 |    await reverting;
+250 |    expect(during).toBe(0);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-restore-admission-repro.test.ts:250:19)
+(fail) queued automatic-drain must not reach adapter while restore is active [182.95ms]
+245 |    if (delivery === "send-now") await svc.sendQueuedTurnNow("owner","q");
+246 |    else { svc.kickTurnSlot("owner"); await new Promise(resolve => setTimeout(resolve,20)); }
+247 |    const during = sends;
+248 |    restoreRelease.open();
+249 |    await reverting;
+250 |    expect(during).toBe(0);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-restore-admission-repro.test.ts:250:19)
+(fail) queued send-now must not reach adapter while restore is active [179.55ms]
+
+ 3 pass
+ 3 fail
+ 12 expect() calls
+Ran 6 tests across 1 file. [2.45s]
+
+# exit=1

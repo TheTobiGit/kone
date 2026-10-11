@@ -1,28 +1,22 @@
-# Resume t3code parity on Linux (after the Mac power cut, 2026-10-09)
+# Resume t3code parity on the Mac (after the Linux session, 2026-10-11)
 
-Give this to the new coordinating agent. It replaces the earlier Mac resume instruction. The phase plan, earlier user scope decisions and the rules in `kone-wt/RULES.md` still govern. Pushing is limited to what the user authorizes: new phase commits stay local unless the user says otherwise.
+Give this to the coordinating agent. It replaces the Linux resume instruction of 2026-10-09. The phase plan (`docs/t3code-parity-phases.md`), the user's scope decisions, the lead decisions in `docs/t3code-parity.md` and the rules in `kone-wt/RULES.md` still govern. Push only what the user authorizes.
 
 ## 1. Get the docs and tooling
 
 ```sh
 cd ~/Developer/kone
 git fetch origin
-git show origin/parity-handoff:T3CODE-PARITY-RESUME.md | less   # this file
-mkdir -p docs ../kone-wt
 git archive origin/parity-handoff docs | tar -x            # ignored planning docs -> docs/
-git archive origin/parity-handoff kone-wt | tar -x -C .. --strip-components=0
-# The second command creates ../kone-wt/{gate.sh,RULES.md,reviews/,gates/}. Merge it with any
-# existing ~/Developer/kone-wt; don't overwrite newer local reviews.
-chmod +x ../kone-wt/gate.sh; touch ../kone-wt/.gate.lock; mkdir -p ../kone-wt/gates
+git archive origin/parity-handoff kone-wt | tar -x -C ..   # gate.sh, RULES.md, reviews/, gates/
+chmod +x ../kone-wt/gate.sh; touch ../kone-wt/.gate.lock
 ```
 
-Read `docs/t3code-parity.md`, section **"Back to Linux after the Mac power cut"**, which has the pinned refs, findings, decisions and lessons. Then read `docs/t3code-parity-phases.md`, `../kone-wt/RULES.md`, `CLAUDE.md` and `AGENTS.md`.
+`docs/agent-delivery-design.md` and `docs/agent-roles-design.md` on parity-handoff are the Mac handoff copies; if the Mac checkout has newer local edits to either, keep yours (`--exclude` them from the tar). Merge the kone-wt archive into any existing `~/Developer/kone-wt`; don't overwrite newer local reviews.
 
-`RULES.md` was written on the Mac. On Linux, read its t3code path as wherever t3code lives (formerly `~/Developer/opensource/t3code`). gate.sh uses `flock` automatically when it's installed.
+Read `docs/t3code-parity.md`, section **"Linux session (2026-10-10/11)"** (current state, top of the ledger), then `docs/t3code-parity-phases.md`, `../kone-wt/RULES.md`, `CLAUDE.md`, `AGENTS.md`.
 
-## 2. Worktrees
-
-The Linux machine may still have the old worktrees at older pins. Inspect them first, keep any uncommitted edits, and then fast-forward:
+## 2. Worktrees: fast-forward to the pushed pins
 
 ```sh
 for b in t3-parity p2-safety p3-limits p4-forks p6-queue p7b-handoff-wip; do
@@ -33,29 +27,27 @@ for b in t3-parity p2-safety p3-limits p4-forks p6-queue p7b-handoff-wip; do
 done
 ```
 
-Expected tips: t3-parity `6a4bac3c`, p2-safety `1f7550ec`, p6-queue `4d4de1e6`, p4-forks `5c88bce7`, p3-limits `70592fc0`, p7b-handoff-wip `5f687467`. If a tip differs, someone moved it; inspect before acting.
+Expected tips: t3-parity `6a4bac3c`, **p2-safety `b595bdce`**, **p6-queue `6da5ecc5`**, **p4-forks `fd980fa2`**, p3-limits `70592fc0`, p7b-handoff-wip `5f687467`. The Mac worktrees may still have uncommitted WIP from the power cut (p2-safety, p6-queue); that WIP was finished on Linux as proper commits, so discard it (`git -C <wt> stash` first if unsure) before fast-forwarding. The `origin/mac-wip/*` refs are obsolete.
 
-Check `bun --version` (the repo pins 1.3.13) and make sure the bun that gate.sh finds first is a current one.
+## 3. Tooling
 
-## 3. Unfinished work in mac-wip refs
+- `gate.sh` is now **bash** (works with macOS bash 3.2; uses `flock` if present, else `lockf`). It puts `~/.bun/bin` then `~/.local/bin` first on PATH and builds with `--concurrency=1` (web and desktop otherwise race on the shared Nuxt cache: `manifest.json` ENOENT).
+- Build: on Linux the default Node heap OOMs `web#build`; use `NODE_OPTIONS=--max-old-space-size=4096 ~/Developer/kone-wt/gate.sh build`. On the Mac, the build was waived because Node couldn't reach fonts.gstatic.com; try it with `--concurrency=1` and the larger heap, and say if it is still the fonts fetch.
+- Workers (user, 2026-10-10): use **OpenCode Muse Spark 1.3 Free** (`opencode/muse-spark-1.3-contributor-free`) or **Antigravity Gemini 3.8 Flash** (must be started full-access) for mechanical work; keep Claude and Codex for coordination, hard fixes and reviews. The pay-per-use `opencode/` models are out of funds. Withdraw any worker that loops on "fetch failed".
 
-`origin/mac-wip/p2-safety` (`b7126ba4`) and `origin/mac-wip/p6-queue` (`201cc642`) are snapshots of uncommitted edits taken when the power went: one commit on top of each branch tip. They are unreviewed and may be half done.
+## 4. Next actions, in order
 
-For each, run `git diff <branch> origin/mac-wip/<branch>`. Then finish the work in the branch worktree as proper small commits with tests. Never fast-forward a branch to the WIP snapshot.
-
-## 4. Next assignments, in order
-
-1. **P2** (p2-safety): finish finding 1 (restore race; the WIP likely has it) and finding 4 (userBlockId lookup, not started). Then gate the tip and get an independent re-review of the range 7b87bba..tip. Fold in the earlier findings 2 and 3 commits.
-2. **P6a** (p6-queue): finish finding 3 (cancelled queue text in FTS, all cancel paths, skip orphan rows; the WIP likely has part of it). Then gate and re-review.
-3. **P4** (p4-forks @ 5c88bce7, already gated): first review per `kone-wt/reviews/p4-review-request-5c88bce7.md`. The conversation-only rewind is blocking.
-4. Merge into t3-parity as each phase is approved: P2 → P6a → P3 → P4. Renumber migrations at each merge and gate the combined tip, including the build.
-5. Then P3 (carry it onto the new base first), P7b, 6b (including user-attached references), P5 (design approved), P8, P9.
+1. **P2** (p2-safety `b595bdce`): gated (all 0 except build, which did not run before the session ended; run `gate.sh build`). Needs its **fourth review** of `2a8c1cde..b595bdce` (two fixes for Wren's round-3 findings: enqueue-failure fallback and in-flight steers; see the ledger). Wren's audit listed every direct adapter call; these were the last two. Approve → merge first.
+2. **P6a** (p6-queue `6da5ecc5`): **APPROVED** (Ines, `reviews/p6-queue-6da5ecc5.md`). Merge right after P2.
+3. **P4** (p4-forks `fd980fa2`): F1–F6 fixed (Selin) and confirmed by Tobias at db3aa9a1; F7 fixed in `fd980fa2` (native fork snapshot keeps sender and turn stamp). Gated all 0 except build (not run). Needs Tobias-style confirmation of F7 only, then merge after P3.
+4. Merge into t3-parity in order P2 → P6a → P3 → P4. Renumber migrations at each merge (P2 Continuations → 32, P3 LimitAndSnooze → 33, P4 TurnRollbacks/TurnAssistantUuid → 34/35; confirm against the destination manifest) and gate the combined tip including the build.
+5. Then P3 (carry onto the new base first; unreviewed), P7b, 6b (incl. user-attached references), P5 (design approved), P8, P9.
 
 ## 5. Rules worth repeating
 
-- Pin each review to a commit. Findings land as new commits; no amend, rebase or force-push under review.
-- Heavy gates run one at a time through `kone-wt/gate.sh` in the foreground. Don't edit a worktree while its gate runs.
-- Gateway text is what the global assistant sees (target:'assistant'). Refusals are isError text.
+- Pin every review to a commit. Findings land as new commits; no amend, rebase or force-push.
+- Heavy gates only through `kone-wt/gate.sh`, one at a time, foreground (or a background run you wait for). Don't edit a worktree while its gate runs.
+- Gateway text is what the global assistant sees (target:'assistant' strips structuredContent). Refusals are isError text.
 - Never cite an outside source in a code comment.
-- Anything an agent must act on goes as a question or report, never a note. Address agents by thread id when two share a name.
-- Leave `linux/desktop-shell` alone. Keep teamwork separate.
+- Anything an agent must act on goes as a question or report (or an agent_followup), never a note: notes wait for a turn that may never come.
+- Leave `linux/desktop-shell` and the main checkout alone. Keep teamwork separate.

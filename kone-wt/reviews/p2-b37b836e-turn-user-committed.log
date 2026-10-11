@@ -1,0 +1,17 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/conversationStore.turnUserBlock.test.ts:
+(pass) an ordinary prompt is the block that started its turn [71.71ms]
+(pass) a queued prompt moved to the tail on promotion still names its turn [65.18ms]
+(pass) a turn no prompt led into has none, even after an earlier prompt [37.21ms]
+(pass) a steer is never taken for a turn's prompt [37.21ms]
+(pass) an unknown turn has no prompt [33.12ms]
+(pass) a prompt still waiting in the queue is passed over [37.38ms]
+(pass) a claimed row's prompt names the turn it starts [35.08ms]
+
+ 7 pass
+ 0 fail
+ 14 expect() calls
+Ran 7 tests across 1 file. [469.00ms]
+
+# exit=0

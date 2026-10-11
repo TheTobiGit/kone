@@ -1,0 +1,29 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-2a8c1cde-steer-handoff-repro.test.ts:
+415 |    return;
+416 |   }
+417 |   steerRelease.open();await steering.catch(()=>null);
+418 |   const sent=[...adapter.sent];
+419 |   restoreRelease.open();await reverting;
+420 |   expect(sent).toEqual([]);
+                     ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "late steer",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-2a8c1cde-steer-handoff-repro.test.ts:420:16)
+(fail) a steer that becomes a fresh turn must keep restore admission closed [16.52ms]
+
+ 0 pass
+ 9 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [1048.00ms]
+# exit=1

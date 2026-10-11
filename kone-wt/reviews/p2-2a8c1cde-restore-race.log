@@ -1,0 +1,18 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/checkpointRestoreRace.test.ts:
+(pass) checkpoint restore race > a session started in the directory during the preview stops the restore [6.72ms]
+(pass) checkpoint restore race > a turn the owner starts during the preview stops the restore as busy [57.52ms]
+(pass) checkpoint restore race > no session starts in the directory while the reset runs [2.61ms]
+(pass) turns held by a restore > a send during the reset queues and goes out once the restore lets go [121.09ms]
+(pass) turns held by a restore > the queue drain holds off during the reset and runs after it [112.04ms]
+(pass) turns held by a restore > Send now during the reset is refused before it claims the row [73.18ms]
+(pass) turns held by a restore > a liveOnly steer refuses instead of queueing [50.07ms]
+(pass) turns held by a restore > a command compaction is refused while the reset runs [2.88ms]
+(pass) turns held by a restore > an inbox turn waits out the reset [42.38ms]
+
+ 9 pass
+ 0 fail
+ 23 expect() calls
+Ran 9 tests across 1 file. [1018.00ms]
+# exit=0

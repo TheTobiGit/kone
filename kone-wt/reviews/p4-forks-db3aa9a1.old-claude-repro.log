@@ -1,0 +1,18 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p4-forks-5c88bce7.claude-repro.test.ts:
+20 |   const adapter = new ClaudeAdapter((event: any) => events.push(event));
+21 |   await adapter.startSession({ threadId: "fork", provider: "claudeAgent", cwd: "/tmp", forkFrom: { conversationId: "source-session", assistantUuid: "source-uuid" } });
+22 |   expect(options.resume).toBe("fork-session");
+23 |   expect(options.resumeSessionAt).toBeUndefined();
+24 |   const started = events.find((e) => e.type === "session.started");
+25 |   expect(started.refs.resumeSessionAt).toBe("source-uuid");
+                      ^
+TypeError: undefined is not an object (evaluating 'started.refs.resumeSessionAt')
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p4-forks-5c88bce7.claude-repro.test.ts:25:18)
+(fail) F5 fork session publishes its source UUID as a resume cursor even though forkSession remaps UUIDs [209.85ms]
+
+ 0 pass
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [389.00ms]

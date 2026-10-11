@@ -1,0 +1,81 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-2a8c1cde-enqueue-failure-repro.test.ts:
+[agent] enqueueQueuedTurn failed — falling back to direct send: 392 |  const adapter=new Adapter();const {store,svc}=buildWithStore(adapter);
+393 |  try {
+394 |   await svc.startSession({threadId:"owner",provider:"codex",cwd:root});
+395 |   const reverting=svc.revertToTurnCheckpoint("owner","old",true);
+396 |   await restoreEntered.promise;
+397 |   store.enqueueQueuedTurn=()=>{throw new Error("SQLITE_FULL: database or disk is full");};
+                                               ^
+error: SQLITE_FULL: database or disk is full
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-2a8c1cde-enqueue-failure-repro.test.ts:397:42)
+      at enqueueTurn (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/AgentService.ts:3013:30)
+      at sendTurn (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/AgentService.ts:1047:19)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-2a8c1cde-enqueue-failure-repro.test.ts:399:18)
+
+397 |   store.enqueueQueuedTurn=()=>{throw new Error("SQLITE_FULL: database or disk is full");};
+398 |   let error:unknown;
+399 |   try {await svc.sendTurn({threadId:"owner",input:"must wait"});}catch(e){error=e;}
+400 |   const sent=[...adapter.sent];
+401 |   restoreRelease.open();await reverting;
+402 |   expect(sent).toEqual([]);
+                     ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "must wait",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-2a8c1cde-enqueue-failure-repro.test.ts:402:16)
+(fail) enqueue failure must not fall back to a direct send during restore [114.26ms]
+[agent] enqueueQueuedTurn failed — falling back to direct send: 92 |              attempt_count, created_at, updated_at
+93 |            ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+94 |            ON CONFLICT (thread_id, user_block_id)
+95 |              WHERE state IN ${PENDING_QUEUE_STATES} DO NOTHING`,
+96 |         )
+97 |         .run(
+              ^
+SQLiteError: queue write unavailable
+      errno: 1811,
+ byteOffset: -1,
+       code: "SQLITE_CONSTRAINT_TRIGGER"
+
+      at #run (bun:sqlite:187:20)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/store/queuedTurns.ts:97:10)
+      at durably (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/store/ConversationDb.ts:210:7)
+      at enqueueQueuedTurn (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/store/queuedTurns.ts:86:14)
+      at enqueueTurn (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/AgentService.ts:3013:30)
+      at sendTurn (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/AgentService.ts:1047:19)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-2a8c1cde-enqueue-failure-repro.test.ts:421:18)
+
+419 |   await restoreEntered.promise;
+420 |   let error:unknown;
+421 |   try {await svc.sendTurn({threadId:"owner",input:"real database failure send"});}catch(e){error=e;}
+422 |   const sent=[...adapter.sent];
+423 |   restoreRelease.open();await reverting;
+424 |   expect(sent).toEqual([]);
+                     ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "real database failure send",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-2a8c1cde-enqueue-failure-repro.test.ts:424:16)
+(fail) real SQLite enqueue failure must not send under the restore claim [53.06ms]
+
+ 0 pass
+ 9 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [672.00ms]
+# exit=1

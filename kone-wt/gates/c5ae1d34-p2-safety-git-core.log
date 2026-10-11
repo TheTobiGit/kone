@@ -1,0 +1,8 @@
+# 2026-10-10T17:31:35Z /home/gideonsarfo/Developer/kone-wt/p2-safety bun 1.4.2 bash --noprofile --norc -c cd packages/git-core && bun test
+bun test v1.4.2 (744846f84)
+
+ 73 pass
+ 0 fail
+ 227 expect() calls
+Ran 73 tests across 8 files. [2.84s]
+# exit=0

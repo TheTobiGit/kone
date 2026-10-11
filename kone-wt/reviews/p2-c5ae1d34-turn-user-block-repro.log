@@ -1,0 +1,31 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-c5ae1d34-turn-user-block-repro.test.ts:
+(pass) an ordinary prompt is the block that started its turn [136.92ms]
+(pass) a queued prompt moved to the tail on promotion still names its turn [54.59ms]
+(pass) a turn no prompt led into has none, even after an earlier prompt [60.96ms]
+(pass) a steer is never taken for a turn's prompt [52.79ms]
+(pass) an unknown turn has no prompt [56.52ms]
+(pass) several inbox-linked blocks select the first starting block and exclude later steers [66.40ms]
+(pass) a fork resolves copied prefix blocks to the fork's own block IDs [69.50ms]
+135 |  // and stays before the first assistant block in transcript order.
+136 |  const row = store.claimNextQueuedTurn("t")!;
+137 |  expect(row.queueId).toBe("queued-second");
+138 |  expect(store.releaseQueuedTurn(row.queueId,"failed")).toBe(true);
+139 |  expect(store.claimNextQueuedTurn("t")).toBeNull();
+140 |  expect(store.turnUserBlockId("t","first-turn")).toBe("actual-prompt");
+                                                       ^
+error: expect(received).toBe(expected)
+
+Expected: "actual-prompt"
+Received: "queued-third"
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-c5ae1d34-turn-user-block-repro.test.ts:140:50)
+(fail) an unpromoted queued block before the assistant must not become an earlier turn's rewind target [59.40ms]
+
+ 7 pass
+ 1 fail
+ 17 expect() calls
+Ran 8 tests across 1 file. [756.00ms]
+
+# exit=1

@@ -1,6 +1,6 @@
 # Standing rules for t3code parity work (Mac, from 2026-10-09)
 
-Coordinator and lead: **Rill**. Send everything you need acted on to Rill as a `question` or `report`, never a `note`.
+Coordinator and lead: whoever the user names (Rill on the Mac until 2026-10-09, Basalt on Linux 2026-10-10/11). Send everything you need acted on to the coordinator as a `question` or `report`, never a `note`.
 
 - Read first: ~/Developer/kone/docs/t3code-parity.md (ledger), docs/t3code-parity-phases.md (requirements), docs/t3code-parity-resume.md, then ~/Developer/kone/CLAUDE.md and AGENTS.md. The t3code reference repo is at ~/Developer/opensource/t3code (mostly apps/server/src/orchestration-v2). Borrow ideas, not code.
 - Work only in your assigned worktree under ~/Developer/kone-wt/. Check `git branch --show-current` and the tip before editing. Every instruction names a commit; if the tip has moved past it, tell Rill rather than redoing work.

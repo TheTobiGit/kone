@@ -1,0 +1,13 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/threadSpawn.test.ts:
+(pass) spawn engine > a stop during a child's startup marks it stopped, keeps the brief, and takes no failover [11.38ms]
+(pass) continueThread > a stop during a child's startup for a follow-up reports cancelled, takes no provider-failure path, and leaves the queue and brief intact [4.07ms]
+
+ 2 pass
+ 105 filtered out
+ 0 fail
+ 17 expect() calls
+Ran 2 tests across 1 file. [179.00ms]
+
+# exit=0

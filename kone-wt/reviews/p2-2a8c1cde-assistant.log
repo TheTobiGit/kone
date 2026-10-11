@@ -1,0 +1,27 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/gateway/registry.test.ts:
+[gateway] tool "app_boom" failed: 362 |       jsonSchema: { type: "object" },
+363 |       permission: "allow" as const,
+364 |       requiresActiveTurn: false,
+365 |       target,
+366 |       handler: async () => {
+367 |         if (fail) throw new Error("disk full");
+                                  ^
+error: disk full
+      at handler (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/gateway/registry.test.ts:367:29)
+      at dispatch (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/gateway/registry.ts:263:25)
+      at call (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/gateway/registry.ts:178:26)
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/p2-safety/packages/agent-core/src/gateway/registry.test.ts:379:35)
+
+(pass) registry: what an assistant tool hands the provider > an assistant tool's result is its text alone, errors included [7.72ms]
+(pass) registry: what an assistant tool hands the provider > tools/list serves the core and on-demand sets apart, and all of them by default [0.89ms]
+(pass) registry: what an assistant tool hands the provider > an on-demand tool is still callable from any set [0.42ms]
+(pass) registry: what an assistant tool hands the provider > a worker tool keeps its structured half [2.52ms]
+
+ 4 pass
+ 19 filtered out
+ 0 fail
+ 11 expect() calls
+Ran 4 tests across 1 file. [135.00ms]
+# exit=0

@@ -1,0 +1,21 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p4-forks-db3aa9a1.repro.test.ts:
+(pass) F1 normal startThread supplies native target and preserves fallback history [65.58ms]
+(pass) F2 explicit provider change starts without foreign native pointer [47.75ms]
+(pass) real prompt id works, null works with answer, null without answer refuses [54.36ms]
+(pass) F6 gateway retry without threadId returns original fork [45.56ms]
+(pass) F3 real successful restore stamps rolled-back turns and refuses forks [140.94ms]
+(pass) finished failed/interrupted/cancelled turns can fork portable context [74.98ms]
+(pass) migrations 32 and 33 run independently and rerun without losing rows [64.84ms]
+(pass) F4 gateway refuses a source with dispatch in flight before turn.started [58.53ms]
+(pass) Claude native target still starts after source rollback stamp [61.96ms]
+(pass) F2 provider changes only on first message after native fork creation [54.60ms]
+(pass) F1 native provider first send does not duplicate portable history [73.92ms]
+(pass) F3 stamps boundary and later turns only on successful restore [192.37ms]
+(pass) F7 native fork snapshot drops system sender and prompt model stamp [52.82ms]
+
+ 13 pass
+ 0 fail
+ 61 expect() calls
+Ran 13 tests across 1 file. [1316.00ms]

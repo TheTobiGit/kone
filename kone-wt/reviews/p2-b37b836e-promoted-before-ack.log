@@ -1,0 +1,13 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-b37b836e-promoted-before-ack.test.ts:
+(pass) promotion before queued acknowledgement consumes the restart note [61.40ms]
+(pass) real service can promote a carrier before dispatcher queued acknowledgement [7.13ms]
+
+ 2 pass
+ 13 filtered out
+ 0 fail
+ 6 expect() calls
+Ran 2 tests across 1 file. [401.00ms]
+
+# exit=0

@@ -1,0 +1,50 @@
+bun test v1.4.2 (744846f84)
+
+../reviews/p2-b37b836e-extra-restore-repro.test.ts:
+(pass) checkpoint restore race > a session started in the directory during the preview stops the restore [5.85ms]
+(pass) checkpoint restore race > a turn the owner starts during the preview stops the restore as busy [54.01ms]
+(pass) checkpoint restore race > no session starts in the directory while the reset runs [1.37ms]
+(pass) turns held by a restore > a send during the reset queues and goes out once the restore lets go [102.31ms]
+(pass) turns held by a restore > the queue drain holds off during the reset and runs after it [100.70ms]
+(pass) turns held by a restore > Send now during the reset is refused before it claims the row [77.72ms]
+(pass) turns held by a restore > an inbox turn waits out the reset [41.60ms]
+354 |   await restoreEntered.promise;
+355 |   let error:unknown;
+356 |   try { await svc.steerTurn({threadId:"owner",input:"urgent live only"},{liveOnly:true}); } catch(e) { error=e; }
+357 |   const queued=store.listQueuedTurns("owner");
+358 |   restoreRelease.open(); await reverting; await pause(20);
+359 |   expect(error).toBeDefined();
+                      ^
+error: expect(received).toBeDefined()
+
+Received: undefined
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-b37b836e-extra-restore-repro.test.ts:359:17)
+(fail) liveOnly steer must refuse rather than queue during restore [62.73ms]
+371 |   await restoreEntered.promise;
+372 |   const compacting=svc.compactThread("owner").catch(()=>null);
+373 |   await pause(10);
+374 |   const sent=[...adapter.sent];
+375 |   restoreRelease.open(); await reverting; await compacting;
+376 |   expect(sent).toEqual([]);
+                     ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "/compact",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (/home/gideonsarfo/Developer/kone-wt/reviews/p2-b37b836e-extra-restore-repro.test.ts:376:16)
+(fail) command compaction must not start an adapter turn during restore [32.82ms]
+(pass) post-restore kicks must not double-start alongside an existing drain [77.78ms]
+
+ 8 pass
+ 2 fail
+ 22 expect() calls
+Ran 10 tests across 1 file. [929.00ms]
+
+# exit=1

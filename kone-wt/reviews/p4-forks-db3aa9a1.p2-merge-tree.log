@@ -1,0 +1,38 @@
+024d527a76775eee99453b7a702080ff60e576dc
+100644 7a849a7d6f023bc605b442e2cb8fc8800f19d1fd 1	packages/agent-core/src/AgentService.ts
+100644 163f67d7cd29afcbbf237498b81f5c8085fb4a82 2	packages/agent-core/src/AgentService.ts
+100644 a4b9c92931bb1492e96917bd5452d4f013563417 3	packages/agent-core/src/AgentService.ts
+100644 2dc296b7df98b3f18c14cf93d1bc9b46a8fc8a8e 1	packages/agent-core/src/ConversationStore.ts
+100644 c6bef68995786fcec14297e95354c9bc39242808 2	packages/agent-core/src/ConversationStore.ts
+100644 808e16a128bbebc51a4189b770cc6376753bcf66 3	packages/agent-core/src/ConversationStore.ts
+100644 01b641a29fe034a8291c885d324e5266a6985f13 1	packages/agent-core/src/conversationMigrations.ts
+100644 0638ac2927bfa27660b5ef0a8306b0afaf58a0c2 2	packages/agent-core/src/conversationMigrations.ts
+100644 41877adb964f92c38a53a1461a33e0cc290111e8 3	packages/agent-core/src/conversationMigrations.ts
+100644 f5d02caf16cb28b56223d9e3983e015965ec57d4 1	packages/agent-core/src/conversationStore.test.ts
+100644 d8ebc14027e23714bf467287b05778655227edaa 2	packages/agent-core/src/conversationStore.test.ts
+100644 ab963b6f727a7ba8dadf9d645852957bd2e067f6 3	packages/agent-core/src/conversationStore.test.ts
+100644 0ea50e42eb3781808afeb96fd92a7f765c0fd99a 1	packages/agent-core/src/dispatch.ts
+100644 d248bf517c54a7b7db38012f80e896e1aea8f801 2	packages/agent-core/src/dispatch.ts
+100644 2761f45f75e2efc1b18b44ecd70e79e49150097d 3	packages/agent-core/src/dispatch.ts
+
+Auto-merging apps/desktop/src/agent/agent-ipc.ts
+Auto-merging packages/agent-core/src/AgentService.ts
+CONFLICT (content): Merge conflict in packages/agent-core/src/AgentService.ts
+Auto-merging packages/agent-core/src/ConversationStore.ts
+CONFLICT (content): Merge conflict in packages/agent-core/src/ConversationStore.ts
+Auto-merging packages/agent-core/src/agentCheckpoints.test.ts
+Auto-merging packages/agent-core/src/agentService.test.ts
+Auto-merging packages/agent-core/src/conversationMigrations.ts
+CONFLICT (content): Merge conflict in packages/agent-core/src/conversationMigrations.ts
+Auto-merging packages/agent-core/src/conversationStore.test.ts
+CONFLICT (content): Merge conflict in packages/agent-core/src/conversationStore.test.ts
+Auto-merging packages/agent-core/src/dispatch.test.ts
+Auto-merging packages/agent-core/src/dispatch.ts
+CONFLICT (content): Merge conflict in packages/agent-core/src/dispatch.ts
+Auto-merging packages/agent-core/src/gateway/gateway.test.ts
+Auto-merging packages/agent-core/src/gateway/schemas.ts
+Auto-merging packages/agent-core/src/gateway/tools/appThreads.test.ts
+Auto-merging packages/agent-core/src/gateway/tools/appThreads.ts
+Auto-merging packages/agent-core/src/store/threads.ts
+Auto-merging packages/agent-core/src/store/workspaces.ts
+Auto-merging packages/agent-core/src/types.ts

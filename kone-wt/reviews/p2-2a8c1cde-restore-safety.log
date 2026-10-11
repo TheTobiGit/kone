@@ -1,0 +1,19 @@
+bun test v1.4.2 (744846f84)
+
+packages/agent-core/src/checkpointRestoreSafety.test.ts:
+(pass) checkpointRestoreIsolation > a thread in the project checkout is never isolated [0.44ms]
+(pass) checkpointRestoreIsolation > a worktree no other thread names is isolated [0.34ms]
+(pass) checkpointRestoreIsolation > a checkpoint directory that is not the declared worktree is refused [0.43ms]
+(pass) checkpointRestoreIsolation > another thread's identical directory is refused, naming it [0.54ms]
+(pass) checkpointRestoreIsolation > nesting is caught in both directions [0.85ms]
+(pass) checkpointRestoreIsolation > a symlinked worktree resolves to the same directory [0.70ms]
+(pass) checkpointRestoreIsolation > a sibling worktree and a null claim do not count as overlaps [0.61ms]
+(pass) checkpointRestoreIsolation > a checkpoint directory that cannot be resolved is refused [0.15ms]
+(pass) claimRestoreDir and isRestoreActive > tracks active restore directory and detects overlap in both directions [1.51ms]
+(pass) claimRestoreDir and isRestoreActive > a second claim on the same directory survives the first release [0.49ms]
+
+ 10 pass
+ 0 fail
+ 25 expect() calls
+Ran 10 tests across 1 file. [36.00ms]
+# exit=0

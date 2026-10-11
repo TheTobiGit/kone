@@ -1,0 +1,554 @@
+# 2026-10-10T18:33:32Z /home/gideonsarfo/Developer/kone-wt/p4-forks bun 1.4.2 bash --noprofile --norc -c cd apps/desktop && bun test
+bun test v1.4.2 (744846f84)
+
+src/appProtocol.test.ts:
+(pass) resolveAppProtocolPath > unfixed path.join after decodeURIComponent escapes the renderer root [0.19ms]
+(pass) resolveAppProtocolPath > maps app://./ and empty pathname to renderer index.html [1.48ms]
+(pass) resolveAppProtocolPath > maps a renderer asset under the root [0.48ms]
+(pass) resolveAppProtocolPath > refuses encoded-slash traversal to a host file [0.16ms]
+(pass) resolveAppProtocolPath > refuses leftover .. segments [0.14ms]
+(pass) resolveAppProtocolPath > malformed percent-encoding fails closed [0.30ms]
+(pass) resolveAppProtocolPath > NUL in the pathname fails closed [0.17ms]
+(pass) resolveAppProtocolPath > unparseable URL fails closed [0.23ms]
+(pass) resolveAppProtocolPath > contained path is never a prefix-sibling of the renderer root [0.19ms]
+
+src/attachmentProtocol.test.ts:
+(pass) resolveAttachmentProtocolPath > resolves standard attachment://<id> URL [0.39ms]
+(pass) resolveAttachmentProtocolPath > resolves attachment://<id>/<fileName> URL [0.08ms]
+(pass) resolveAttachmentProtocolPath > resolves pathname style attachment:///att_xxx [0.10ms]
+(pass) resolveAttachmentProtocolPath > refuses non-attachment protocols [0.07ms]
+(pass) resolveAttachmentProtocolPath > refuses directory traversal attempts in attachment id [0.08ms]
+(pass) resolveAttachmentProtocolPath > refuses invalid / unsanitized attachment id patterns [0.13ms]
+(pass) resolveAttachmentProtocolPath > returns null when attachment id is not found in store [0.09ms]
+(pass) resolveAttachmentProtocolPath > fails closed on unparseable URL [0.08ms]
+
+src/chrome.test.ts:
+(pass) getMacTrafficLightPosition > positions the traffic-light row with compact top inset [0.08ms]
+(pass) titleBarOptions > darwin keeps the native traffic lights and insets them in the content [0.05ms]
+(pass) titleBarOptions > win32 drops the frame for renderer-drawn caption buttons [0.02ms]
+(pass) titleBarOptions > linux drops the frame for renderer-drawn caption buttons [0.02ms]
+(pass) windowChromeState > reads both maximized and fullscreen flags [0.05ms]
+(pass) windowChromeState > reports false for both flags when the window is normal [0.03ms]
+(pass) windowChromeState > reflects fullscreen independently of maximized [0.03ms]
+
+src/localImageProtocol.test.ts:
+(pass) isPathInside > accepts a descendant and refuses the root, a sibling and a parent [0.23ms]
+(pass) isPathInside > a file whose name starts with dots is still inside [0.03ms]
+(pass) local image grants > a file in the workspace is allowed, from a subfolder cwd too [2.07ms]
+(pass) local image grants > a file in the temp folder is allowed without a cwd [0.37ms]
+(pass) local image grants > the real system temp folder is allowed by default [0.36ms]
+(pass) local image grants > a folder named in place of a thread opens nothing [0.57ms]
+(pass) local image grants > a .txt in the temp folder is refused [0.17ms]
+(pass) local image grants > a file outside every allowed folder is refused [0.60ms]
+(pass) local image grants > a symlink in the workspace pointing outside it is refused [0.36ms]
+(pass) local image grants > relative, empty, NUL-bearing and missing paths are refused [0.34ms]
+(pass) local image grants > a folder is refused even with an image extension [0.32ms]
+(pass) local image grants > a cwd at the filesystem root opens nothing [0.43ms]
+(pass) local image grants > a file replaced after the grant is not served [0.69ms]
+(pass) local image grants > an expired token is not served [0.47ms]
+(pass) local image grants > unknown tokens and other schemes are not served [0.20ms]
+
+src/mainLog.test.ts:
+(pass) the main process log > every console line lands in the file, stamped with its level, and still prints [4.01ms]
+(pass) the main process log > a full log moves aside and starts over [0.37ms]
+(pass) the main process log > a log that can't be written leaves the console working [0.30ms]
+(pass) the main process log > the undo puts the console back [0.14ms]
+
+src/pageProtocol.test.ts:
+(pass) resolvePageTarget > names a stored page by its attachment id [0.50ms]
+(pass) resolvePageTarget > names a held preview by its token [0.08ms]
+(pass) resolvePageTarget > serves the document alone, never a path inside it [0.05ms]
+(pass) resolvePageTarget > refuses anything that is not a page address [0.09ms]
+(pass) previews > are held until released [0.22ms]
+(pass) pageResponse > serves the page sandboxed, with the bootstrap ahead of it [0.63ms]
+(pass) servePage > serves a held preview under the page's sandbox [0.32ms]
+(pass) servePage > answers 404 for a released preview, a path inside a page, or no page address at all [0.38ms]
+
+src/renderScope.test.ts:
+(pass) renderScope > passes work through that finishes inside the deadline [2.70ms]
+(pass) renderScope > stops any step still running when the deadline passes [20.52ms]
+(pass) renderScope > stops the step in flight the moment the caller aborts [0.41ms]
+(pass) renderScope > starts stopped when the caller has already aborted [0.22ms]
+
+src/windowState.test.ts:
+(pass) renderer recovery gate > allows up to MAX_ATTEMPTS reloads within the rolling window [0.31ms]
+(pass) renderer recovery gate > re-allows recovery once attempts age out of the window [0.10ms]
+(pass) renderer recovery gate > attempts recorded before the window are pruned, not counted [0.05ms]
+(pass) renderer recovery gate > gates are per-window instances with independent counters [0.08ms]
+(pass) renderer recovery gate > defaults: 500ms reload delay, 3 attempts, 60s window [0.05ms]
+(pass) getInitialWindowState restore > rejects non-finite saved dimensions instead of opening with Infinity [5.30ms]
+(pass) getInitialWindowState restore > clamps a saved size that is larger than the current display [0.59ms]
+(pass) getInitialWindowState restore > centers a window saved on an unplugged display instead of dropping x/y [0.19ms]
+(pass) getInitialWindowState restore > close without a user move does not overwrite unrestorable saved bounds [0.76ms]
+(pass) getInitialWindowState restore > falls back to finite defaults when the display list is unavailable [0.22ms]
+(pass) parsePersistedWindowState > accepts a well-formed persisted state [0.12ms]
+(pass) parsePersistedWindowState > rejects a non-positive, non-number, or missing width [0.48ms]
+(pass) parsePersistedWindowState > rejects a non-object value [0.22ms]
+(pass) parsePersistedWindowState > rejects a width of 1e309, which JSON.parse turns into Infinity [0.15ms]
+(pass) parsePersistedWindowState > omits x when it is not a number but still returns width and height [0.12ms]
+(pass) resolveVisibleWindowState > keeps visible saved bounds unchanged with persistEnabled true [0.07ms]
+(pass) resolveVisibleWindowState > centers off-screen saved bounds on the work area with persistEnabled false [0.12ms]
+(pass) resolveVisibleWindowState > clamps an oversized saved size to the work area with persistEnabled true [0.10ms]
+(pass) resolveVisibleWindowState > keeps bounds on the display with the largest intersection [0.07ms]
+(pass) resolveVisibleWindowState > omits x and y when no work areas are available and reports persistEnabled false [0.07ms]
+(pass) manageWindowState > writes the new bounds after a user move from an off-display restore [0.99ms]
+(pass) manageWindowState > registers a maximize listener [0.08ms]
+
+src/lib/ipcTimeout.test.ts:
+(pass) withTimeout > resolves with the task's value when the task settles before the deadline [0.34ms]
+(pass) withTimeout > rejects with an IpcTimeoutError when the task never settles [20.63ms]
+(pass) withTimeout > passes an AbortSignal to the task and aborts it when the timer fires [20.54ms]
+(pass) withTimeout > rethrows the task's own error unchanged when the task rejects before the deadline [0.18ms]
+(pass) withTimeout > clears its timer on success so the process can exit [0.20ms]
+
+src/lib/safeExternalUrl.test.ts:
+(pass) parseSafeExternalUrl > passes an https URL through unchanged [0.10ms]
+(pass) parseSafeExternalUrl > allows http URLs (local dev servers) [0.04ms]
+(pass) parseSafeExternalUrl > canonicalizes per WHATWG: host lowercased, path case kept [0.04ms]
+(pass) parseSafeExternalUrl > refuses file: URLs [0.03ms]
+(pass) parseSafeExternalUrl > refuses javascript: URLs [0.03ms]
+(pass) parseSafeExternalUrl > refuses unknown custom protocols [0.02ms]
+(pass) parseSafeExternalUrl > refuses an empty string [0.02ms]
+(pass) parseSafeExternalUrl > refuses non-string inputs [0.12ms]
+(pass) parseSafeExternalUrl > refuses a bare scheme with no URL [0.03ms]
+(pass) parseSafeExternalUrl > refuses input that is not a URL at all [0.02ms]
+(pass) isRendererOriginNavigation > matches the same protocol and host as the application URL [0.06ms]
+(pass) isRendererOriginNavigation > rejects a different host entirely [0.03ms]
+(pass) isRendererOriginNavigation > matches the custom app: scheme against itself [0.03ms]
+(pass) isRendererOriginNavigation > rejects a file: navigation from the app: origin [0.02ms]
+(pass) isRendererOriginNavigation > rejects a javascript: navigation from the app: origin [0.02ms]
+(pass) isRendererOriginNavigation > rejects a navigation target that is not a URL [0.04ms]
+(pass) isRendererOriginNavigation > a different port is a different host, so it is rejected [0.02ms]
+
+src/lib/singleFlightCache.test.ts:
+(pass) createKeyedSingleFlightCache > concurrent get for the same key calls load once and shares the value [1.65ms]
+(pass) createKeyedSingleFlightCache > different keys load independently [1.34ms]
+(pass) createKeyedSingleFlightCache > a cached value within its TTL is served without a second load [0.38ms]
+(pass) createKeyedSingleFlightCache > ttlMs 0 never caches but still coalesces while in flight [1.42ms]
+(pass) createKeyedSingleFlightCache > invalidate during an in-flight load fences the stale result [2.77ms]
+(pass) createKeyedSingleFlightCache > invalidateAll prevents a subsequent get from hitting the previous cache [0.59ms]
+(pass) createKeyedSingleFlightCache > invalidateAll fences a load already in flight [2.60ms]
+(pass) createKeyedSingleFlightCache > maxEntries evicts the oldest entry in LRU order [0.66ms]
+(pass) createKeyedSingleFlightCache > a rejected load is not cached and a later get retries [0.48ms]
+
+src/modules/fs/fs.test.ts:
+(pass) listDir > lists visible subdirectories with absolute paths, repo flags, and case-insensitive sort [3.53ms]
+(pass) listDir > rejects an empty string instead of listing the process cwd [0.25ms]
+(pass) listDir > never reports the process cwd as the listing path [0.18ms]
+(pass) listDir > rejects a whitespace-only path [0.08ms]
+(pass) listDir > rejects non-string inputs [0.14ms]
+(pass) listDir > rejects a relative path instead of resolving it against the cwd [0.12ms]
+(pass) listDir > rejects a path that does not exist [0.28ms]
+(pass) listDir > rejects a file instead of listing it as a directory [0.25ms]
+(pass) listDir > expands `~` to the home directory [1.39ms]
+(pass) listDir > rejects when the caller's AbortSignal is already aborted [0.18ms]
+(pass) project files > lists folders first, hides git and packages, keeps other dotfiles [1.05ms]
+(pass) project files > returns root-relative paths for nested folders [0.34ms]
+(pass) project files > refuses to list or read outside the project [1.12ms]
+(pass) project files > reads text, flags binary, and caps large files [5.05ms]
+(pass) project files > refuses to read a directory [0.44ms]
+(pass) project files > writes project files safely and refuses writing outside [2.01ms]
+(pass) project files > refuses to write through a symlink pointing outside the project [0.41ms]
+(pass) project files > keeps a restricted file mode across an atomic write [0.76ms]
+
+src/modules/git/files.test.ts:
+(pass) files() > eight overlapping queries of the same repo spawn one git ls-files, not eight [42.58ms]
+(pass) files() > a later query within the TTL does not spawn another ls-files [30.09ms]
+(pass) files() > invalidateFileIndex drops the cached listing so a new file is visible [35.50ms]
+(pass) files() > indexes for two repos do not coalesce [55.51ms]
+
+src/modules/git/history.test.ts:
+(pass) branches > marks a local branch with a slash as local, not remote [78.30ms]
+(pass) commitDetail files > pairs statuses with line counts across awkward paths [60.66ms]
+(pass) commitDetail files > reports a rename with the path it came from [52.20ms]
+
+src/modules/git/mutationLock.test.ts:
+(pass) withRepoMutation > same cwd: overlapping calls never run fn concurrently, FIFO [38.78ms]
+(pass) withRepoMutation > same-repo subdirectory shares the queue via git-common-dir [41.86ms]
+(pass) withRepoMutation > different directories overlap in time [9.79ms]
+(pass) withRepoMutation > a thrown fn still releases the queue [5.10ms]
+(pass) withRepoMutation > queue cap refuses the 65th waiter [121.75ms]
+
+src/modules/git/mutations.test.ts:
+(pass) checkout > creates an attached local branch tracking the selected remote [79.39ms]
+(pass) checkout > preserves an existing local branch and its commits [74.23ms]
+(pass) checkout > a conflicting edit blocks the switch without creating a local branch [65.51ms]
+(pass) checkout > uses the selected remote when multiple remotes have the same branch [68.62ms]
+(pass) checkout > switches local branches with slashes and rejects missing branches [75.74ms]
+(pass) createBranch > creates the branch and switches to it [55.59ms]
+(pass) createBranch > rolls the branch back when the checkout fails [53.98ms]
+(pass) createBranch > without checkout the branch stays (nothing to roll back) [46.98ms]
+(pass) createBranch > never rolls back a branch it did not create [52.98ms]
+(pass) stage > overlapping stages of two untracked files both land [51.56ms]
+(pass) stage > overlapping stages of eight distinct files all land [95.97ms]
+
+src/modules/git/stacked.test.ts:
+(pass) runStackedAction > commits already staged changes and returns sha [52.33ms]
+(pass) runStackedAction > stages selective filePaths and commits only those files [47.15ms]
+(pass) runStackedAction > creates feature branch when requested and commits onto it [61.40ms]
+
+src/modules/git/stash.test.ts:
+(pass) stash > push saves a stash, drop removes it [63.91ms]
+(pass) stash > message with a colon survives untouched [48.98ms]
+(pass) stash > overlapping pushes serialize without an index.lock error [52.60ms]
+
+src/modules/git/state.test.ts:
+(pass) repoState conflicts > names a conflicted file exactly as the change list does [76.01ms]
+(pass) repoState conflicts > keeps a filename's leading and trailing spaces [72.28ms]
+(pass) repoState conflicts > reports no conflicts on a clean repo [29.63ms]
+
+src/modules/git/sync.test.ts:
+(pass) fetch > skips a repo with no remotes instead of failing [47.09ms]
+(pass) fetch > fetches from an existing origin [87.32ms]
+(pass) isAuthFailure > classifies credential errors [0.22ms]
+(pass) isAuthFailure > does not classify non-credential errors [0.03ms]
+(pass) classifyNetworkError > classifies credential errors as AUTH_FAILURE [0.04ms]
+(pass) classifyNetworkError > classifies transport/offline errors as NETWORK [0.08ms]
+(pass) classifyNetworkError > leaves non-network, non-auth errors unclassified [0.02ms]
+(pass) rewordNetworkError > rewrites an auth GitError with an AUTH_FAILURE kind [0.14ms]
+(pass) rewordNetworkError > rewrites a network GitError with a NETWORK kind [0.04ms]
+(pass) rewordNetworkError > passes an unclassified GitError through unchanged [0.03ms]
+(pass) rewordNetworkError > rewraps a non-GitError without a kind [0.05ms]
+
+src/modules/git/textGen.test.ts:
+(pass) textGen > extractJsonObject > extracts a simple JSON object from raw text [0.12ms]
+(pass) textGen > extractJsonObject > handles nested braces and strings with escaped quotes [0.04ms]
+(pass) textGen > extractJsonObject > returns raw text if no JSON found [0.07ms]
+(pass) textGen > sanitizeCommitSubject > removes trailing periods and clips to first line [0.15ms]
+(pass) textGen > sanitizeCommitSubject > truncates subjects longer than 72 characters [0.03ms]
+(pass) textGen > sanitizeCommitSubject > returns fallback for empty string [0.03ms]
+(pass) textGen > sanitizeBranchFragment > converts strings to safe git branch slugs [0.07ms]
+(pass) textGen > deriveFallbackCommitSubject > derives Add for single added file [0.24ms]
+(pass) textGen > deriveFallbackCommitSubject > derives Remove for single deleted file [0.04ms]
+(pass) textGen > deriveFallbackCommitSubject > derives Rename for single renamed file [0.02ms]
+(pass) textGen > deriveFallbackCommitSubject > derives Update for single modified file [0.02ms]
+(pass) textGen > deriveFallbackCommitSubject > derives directory summary for multiple files in same folder [0.07ms]
+(pass) textGen > createFallbackCommitSuggestion > builds fallback suggestion with branch if requested [0.06ms]
+(pass) textGen > buildCommitPrompt > includes branch, summary, and patch in prompt [0.12ms]
+
+src/modules/git/watch.test.ts:
+(pass) watchStatus invalidates the file index > a linked worktree's branch rename is reported without waiting for a poll [250.51ms]
+(pass) watchStatus invalidates the file index > a newly created file is visible to files() after the watcher fires, without waiting out the index TTL [233.93ms]
+(pass) watchStatus invalidates the file index > a write inside node_modules does not fire onStatus [929.76ms]
+
+src/modules/git/worktree.test.ts:
+(pass) parseWorktreePorcelain > reads a branch record and a detached one [0.77ms]
+(pass) parseWorktreePorcelain > keeps a lock reason containing a newline intact [0.09ms]
+(pass) parseWorktreePorcelain > a lock with no reason is still locked [0.05ms]
+(pass) parseWorktreePorcelain > a bare entry carries no HEAD [0.05ms]
+(pass) parseWorktreePorcelain > records a prunable reason [0.08ms]
+(pass) worktrees > lists the primary checkout first [36.37ms]
+(pass) worktrees > is empty outside a repository [2.33ms]
+(pass) addWorktree > creates a worktree on a new branch [78.54ms]
+(pass) addWorktree > the new branch starts from the base ref, not HEAD [85.96ms]
+(pass) addWorktree > refuses a branch another worktree already holds [87.54ms]
+(pass) addWorktree > refuses a branch that merely exists [51.77ms]
+(pass) addWorktree > refuses a non-empty directory and leaves no branch behind [67.93ms]
+(pass) addWorktree > accepts an existing empty directory [66.34ms]
+(pass) addWorktree > rejects a relative path before touching git [39.62ms]
+(pass) addWorktree > rejects a base ref that does not resolve [33.91ms]
+(pass) removeWorktree > removes a clean worktree [91.99ms]
+(pass) removeWorktree > refuses a dirty worktree until forced [96.04ms]
+(pass) removeWorktree > a single force does not remove a locked worktree [88.05ms]
+(pass) removeWorktree > refuses the main working tree [44.86ms]
+(pass) removeWorktree > works when called from inside the worktree being removed [103.37ms]
+(pass) removeWorktree > reclaims a generated branch, leaving no ref behind [135.57ms]
+(pass) removeWorktree > leaves a user-named branch behind, even when asked to reclaim [138.73ms]
+(pass) removeWorktree > leaves a generated branch behind without the reclaim flag [85.87ms]
+(pass) removeWorktree > a failed removal never fails on the reclaim [105.98ms]
+(pass) pruneWorktrees > unregisters a worktree whose directory is gone, immediately [91.40ms]
+(pass) pruneWorktrees > leaves an intact worktree alone [113.46ms]
+(pass) isLinkedWorktree > true for a linked worktree, false for its primary checkout [113.90ms]
+(pass) isLinkedWorktree > false for a submodule, whose .git file has the same shape [52.09ms]
+(pass) isLinkedWorktree > false for a directory merely named like a worktrees root [59.98ms]
+(pass) isLinkedWorktree > false where there is no .git at all [0.83ms]
+
+src/modules/git/worktreeBase.test.ts:
+(pass) freshestBase > a copy that is only behind starts from the remote's latest [241.49ms]
+(pass) freshestBase > with no branch named, the project's current branch is freshened [173.14ms]
+(pass) freshestBase > a copy with commits the remote lacks keeps them [191.89ms]
+(pass) freshestBase > an up-to-date copy changes nothing and says nothing [149.39ms]
+(pass) freshestBase > a branch with no remote copy starts from the local one, quietly [104.45ms]
+(pass) freshestBase > an unreachable remote falls back to the local copy and says why [113.16ms]
+(pass) freshestBase > outside a repository there is nothing to freshen [2.66ms]
+
+src/modules/git/worktreeCleanup.test.ts:
+(pass) collectSubtreeWorktrees > dedupes a directory siblings share and drops threads with none [0.23ms]
+[git] could not list worktrees for deleted thread 'parent': db is gone
+(pass) collectSubtreeWorktrees > an unreadable store collects nothing rather than failing the delete [0.27ms]
+(pass) removeCollectedWorktrees > removes what nothing references and leaves what something does [0.64ms]
+[git] could not remove worktree '/wt/first': git said no
+(pass) removeCollectedWorktrees > a failure on one directory never stops the next [0.35ms]
+[git] could not check references to '/wt/unknown': db is gone
+(pass) removeCollectedWorktrees > an unreadable reference check keeps the directory [0.20ms]
+(pass) removeCollectedWorktrees > a directory outside the managed root is never removed [0.17ms]
+(pass) removeCollectedWorktrees > nothing to do resolves without touching git or the root [0.15ms]
+
+src/modules/git/worktreeInclude.test.ts:
+(pass) private files > ignored env files come along with no list at all [31.27ms]
+(pass) private files > a file git would track is never a candidate [24.84ms]
+(pass) private files > .worktreeinclude adds files, directories and paths inside ignored directories [27.07ms]
+(pass) private files > the list reads the way a .gitignore does: classes, escapes and a ! taking one back [30.20ms]
+(pass) private files > a character class in the list picks only what it names [27.97ms]
+(pass) private files > an env file inside an untracked directory comes along without the directory [35.86ms]
+(pass) private files > a listed directory a tool regenerates copies whole, and nothing inside is walked otherwise [36.68ms]
+(pass) private files > copies into the new directory and leaves what is already there alone [32.78ms]
+[git] could not list private files for the new worktree: 135 |       (error instanceof Error ? error.message : "git command failed");
+136 |     const rawCode =
+137 |       error instanceof Error && "code" in error ? error.code : undefined;
+138 |     // SAFETY: Number.isInteger verified rawCode is an integer exit code.
+139 |     const code = Number.isInteger(rawCode) ? (rawCode as number) : null;
+140 |     throw new GitError(message, code, stdout);
+                ^
+GitError: fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+   code: 128,
+ stdout: "",
+   kind: null,
+
+      at git (/home/gideonsarfo/Developer/kone-wt/p4-forks/packages/git-core/src/core.ts:140:11)
+      at async listIgnored (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/git/worktreeInclude.ts:55:21)
+
+(pass) private files > a directory that is not a repository copies nothing and does not throw [2.88ms]
+
+src/modules/git/worktreePaths.test.ts:
+(pass) branchSegmentOrNull > is null when nothing survives, where the path form falls back [0.31ms]
+(pass) sanitizeBranchSegment > flattens a namespaced branch into one component [0.15ms]
+(pass) sanitizeBranchSegment > lowercases, strips quotes, and collapses runs [0.05ms]
+(pass) sanitizeBranchSegment > never returns an empty string [0.07ms]
+(pass) sanitizeBranchSegment > caps length without leaving a trailing separator [0.07ms]
+(pass) generated branch names > a generated name is recognized, a person's is not [0.11ms]
+(pass) generated branch names > two calls do not collide [0.77ms]
+(pass) worktreeDirFor > groups by repository and names by branch [0.86ms]
+(pass) worktreeDirFor > branches that differ only in case get different directories [0.32ms]
+(pass) worktreeDirFor > branches that sanitize alike get different directories [0.27ms]
+(pass) worktreeDirFor > the same project and branch always resolve to the same directory [0.24ms]
+(pass) worktreeDirFor > the same branch in two projects does not collide [0.12ms]
+(pass) worktreeDirFor > aliased spellings of one checkout share a digest and a directory [0.74ms]
+(pass) worktreeDirFor > lands outside the project it came from [0.41ms]
+(pass) isInsideWorktreesRoot > accepts a directory under the root [0.22ms]
+(pass) isInsideWorktreesRoot > refuses the root itself [0.08ms]
+(pass) isInsideWorktreesRoot > refuses anything outside, including a traversal and a prefix match [0.22ms]
+(pass) isInsideWorktreesRoot > an aliased root still contains its directories [0.74ms]
+
+src/modules/git/worktreeSweep.test.ts:
+(pass) what an idle worktree may lose > a clean worktree with its copied env and installed packages may go [116.79ms]
+(pass) what an idle worktree may lose > uncommitted work, a changed env file or a stray ignored file keeps it [153.05ms]
+(pass) what an idle worktree may lose > a directory the project lists comes along whole and does not keep the worktree [136.32ms]
+(pass) what an idle worktree may lose > an env file in a nested folder does not keep the worktree [113.32ms]
+(pass) what an idle worktree may lose > a directory outside kone's worktrees folder is never offered [28.55ms]
+[git] removed 1 idle worktree(s)
+(pass) the sweep > removes an idle worktree, keeps its branch and detaches its threads [112.73ms]
+(pass) the sweep > a thread open in a column keeps its worktree, and off means off [83.02ms]
+
+src/modules/git/github.test.ts:
+(pass) branchPullRequest outcome > a repo with no GitHub remote reports the lookup unavailable, not no-PR [100.24ms]
+(pass) branchPullRequest outcome > a failed repository resolution is unavailable, not a known-empty PR list [935.91ms]
+(pass) classifyGhError > maps gh auth failures to NOT_AUTHENTICATED [0.09ms]
+(pass) classifyGhError > maps missing-remote failures to NO_GITHUB_REMOTE [0.04ms]
+(pass) classifyGhError > maps missing-PR failures to NOT_FOUND [0.03ms]
+(pass) classifyGhError > maps connection failures to NETWORK [0.13ms]
+(pass) classifyGhError > returns null for unrecognized stderr lines [0.03ms]
+(pass) status (record parsing) > handles empty stdout and corrupt JSON without crashing [359.94ms]
+(pass) status (record parsing) > parses active user from hosts payload [192.48ms]
+(pass) me (record parsing) > maps a gh user record onto the flat shape [193.42ms]
+(pass) me (record parsing) > a non-object answer reads as no user, never a crash [184.08ms]
+(pass) me (record parsing) > a record without a login reads as no user [188.56ms]
+(pass) me (record parsing) > empty or corrupt stdout reads as null, never throws [745.48ms]
+(pass) repo (record parsing) > maps stargazerCount and forkCount to stars and forks [307.84ms]
+(pass) repo (record parsing) > empty stdout reads as null [204.81ms]
+(pass) prs (record parsing) > maps headRefName and baseRefName to branch and base [196.71ms]
+(pass) prs (record parsing) > empty stdout returns empty list [213.25ms]
+(pass) prs (record parsing) > throws GitError on non-array responses [197.69ms]
+(pass) prDetail (record parsing) > maps milestone title and handles nullable isMinimized comments [1292.56ms]
+(pass) prDetail (record parsing) > empty stdout reads as null [233.80ms]
+(pass) contributors & commitAuthors (tolerant decoding) > contributors tolerates malformed rows and filters non-users [265.82ms]
+(pass) contributors & commitAuthors (tolerant decoding) > contributors returns null on empty stdout [272.07ms]
+(pass) contributors & commitAuthors (tolerant decoding) > commitAuthors tolerates malformed rows [578.01ms]
+(pass) contributors & commitAuthors (tolerant decoding) > commitAuthors returns null on empty stdout [244.22ms]
+
+src/modules/git/projectScripts.test.ts:
+(pass) tailOutput > passes short output through [0.05ms]
+(pass) tailOutput > keeps the tail and marks the cut [0.08ms]
+(pass) runProjectScript > runs a command and returns its output [72.33ms]
+(pass) runProjectScript > reports a non-zero exit as data [87.26ms]
+(pass) runProjectScript > captures stderr too [85.33ms]
+(pass) runProjectScript > kills a command that overruns its timeout [151.82ms]
+(pass) runProjectScript > treats a blank command as a no-op [0.22ms]
+(pass) runProjectScript > clips very long output to the tail [75.80ms]
+
+src/modules/git/threadPullRequestCheck.test.ts:
+(pass) checkThreadPullRequest > an explicit link is looked up by its full identity, never the local repo [0.69ms]
+(pass) checkThreadPullRequest > an explicit link that cannot be resolved is unknown, not the branch PR [0.28ms]
+(pass) checkThreadPullRequest > a throwing linked lookup is unknown [0.24ms]
+(pass) checkThreadPullRequest > a thread with no link uses the branch PR [0.17ms]
+(pass) checkThreadPullRequest > a branch lookup error is unknown (fail closed) [0.15ms]
+(pass) checkThreadPullRequest > an unavailable branch lookup is unknown, not known-empty [0.17ms]
+(pass) checkThreadPullRequest > a branch with no PR is known-empty, not unknown [0.18ms]
+
+src/modules/git/worktreeBranchName.test.ts:
+(pass) branch names from titles > a title becomes a branch-safe slug [0.49ms]
+(pass) branch names from titles > a title with nothing a branch can carry gives no slug [0.06ms]
+(pass) branch names from titles > a title that is just the word update is still a slug [0.03ms]
+(pass) renaming a worktree's placeholder branch > the placeholder takes the title's name, and stays kone's [114.06ms]
+(pass) renaming a worktree's placeholder branch > a name already taken gets a number [117.68ms]
+(pass) renaming a worktree's placeholder branch > a branch someone named is left alone [100.51ms]
+(pass) renaming a worktree's placeholder branch > removing the worktree reclaims the renamed branch like the placeholder [145.63ms]
+(pass) renaming a worktree's placeholder branch > a branch the user renames afterwards is theirs, and removal keeps it [125.98ms]
+(pass) renaming a placeholder that already left the repo > a pushed placeholder with an upstream keeps its name [132.50ms]
+(pass) regenerating a title-named branch > a branch kone named from a title can be named again [131.01ms]
+(pass) regenerating a title-named branch > a branch a person named is still left alone [103.74ms]
+
+src/modules/git/worktreeProvision.test.ts:
+(pass) provisionWorktree > brings the project's ignored env files into the new directory [105.66ms]
+(pass) provisionWorktree > creates the worktree outside the project and leaves its branch alone [98.15ms]
+(pass) provisionWorktree > two conversations get two branches, and the project stays where it was [153.11ms]
+(pass) provisionWorktree > asking twice for the same branch gives the same worktree [95.10ms]
+(pass) provisionWorktree > invents a branch when none is named, and marks it as ours [116.23ms]
+(pass) provisionWorktree > starts the branch from an explicit base [175.25ms]
+(pass) provisionWorktree > adopts a worktree the user already made on that branch [159.95ms]
+(pass) provisionWorktree > moves an existing branch into a worktree instead of refusing it [260.17ms]
+(pass) provisionWorktree > refuses the branch the project itself is sitting on [316.63ms]
+(pass) provisionWorktree > refuses when something is already in the way, and creates nothing [529.21ms]
+(pass) provisionWorktree > refuses a directory that is not a repository [21.24ms]
+(pass) rollbackDirectory > unregisters a registered worktree instead of stranding it [379.44ms]
+(pass) rollbackDirectory > deletes a directory git has no record of [202.58ms]
+(pass) rollbackDirectory > leaves anything outside the managed root alone [79.62ms]
+(pass) provisionWorktree setup progress > reports checkout stages and a skipped submodule step [397.28ms]
+
+src/modules/jev/route.test.ts:
+(pass) route > hands the request to the agent whose area it is in [12.60ms]
+(pass) route > routes ordinary work a generalist could also do [0.45ms]
+(pass) route > routes a near-tie between two agents rather than declining it [0.39ms]
+(pass) route > keeps the default partner when it wins outright [2.12ms]
+(pass) route > declines a winner barely ahead of nobody at all [0.64ms]
+(pass) route > declines a choice naming somebody who is not a candidate [1.63ms]
+[jev] routing failed, falling back to the default partner: JevRequestError: routing request failed (500)
+ status: 500,
+
+      at once (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:174:11)
+      at async systemOne (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:145:20)
+      at async route (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.ts:138:26)
+      at async <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.test.ts:114:26)
+
+(pass) route > falls back rather than throwing when the call fails [1.85ms]
+(pass) route > never calls out with no key configured [0.25ms]
+(pass) route > never calls out with nobody to route to [0.18ms]
+(pass) route > asks one question, over the request as typed [1.76ms]
+[jev] routing failed, falling back to the default partner: JevRequestError: routing request failed (429)
+ status: 429,
+
+      at once (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:174:11)
+      at async systemOne (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/client.ts:145:20)
+      at async route (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.ts:138:26)
+      at async <anonymous> (/home/gideonsarfo/Developer/kone-wt/p4-forks/apps/desktop/src/modules/jev/route.test.ts:170:26)
+
+(pass) the routing deadline > stops retrying once the budget is spent, and falls back [1222.76ms]
+(pass) the routing deadline > a prompt answer still wins, with no extra attempts [0.39ms]
+
+src/modules/system/system.test.ts:
+(pass) reveal > reveals a directory via openPath with the resolved absolute path [0.79ms]
+(pass) reveal > reveals a file via showItemInFolder and does not launch it [0.29ms]
+(pass) reveal > rejects a path that does not exist without calling the shell [0.33ms]
+(pass) reveal > rejects an empty string without calling the shell [0.16ms]
+(pass) reveal > rejects a whitespace-only target without calling the shell [0.13ms]
+(pass) reveal > rejects a non-string without calling the shell [0.16ms]
+(pass) reveal > rejects when openPath returns an error string [1.61ms]
+(pass) appearance mirror > mirrors the appearance and the library the renderer reports [0.91ms]
+(pass) appearance mirror > keeps the last roster when a push carries none [0.08ms]
+(pass) appearance mirror > drops an entry it cannot read and keeps the rest [0.09ms]
+(pass) appearance mirror > keeps the last roster when nothing in a push survives validation [0.09ms]
+(pass) appearance mirror > falls back to the theme's own appearance when it reports no schemes [0.06ms]
+(pass) appearance mirror > mirrors the page theme, keeping only the variables a page is promised [0.09ms]
+(pass) appearance mirror > keeps the last page theme when a push carries none it can read [0.08ms]
+
+src/modules/terminal/Pty.test.ts:
+(pass) buildPtyEnv > blocklist keys are removed even when present in the base env [0.23ms]
+(pass) buildPtyEnv > TERM and COLORTERM are pinned to the embedded terminal [0.07ms]
+(pass) buildPtyEnv > the pin wins over both the base env and the extra env [0.07ms]
+(pass) buildPtyEnv > extra env wins over the base env [0.06ms]
+(pass) buildPtyEnv > arbitrary user vars pass through untouched [0.07ms]
+(pass) buildPtyEnv > undefined base values are dropped, not carried as undefined keys [0.06ms]
+(pass) createPtySubscriptions > unsubscribing an earlier onExit handler leaves later handlers subscribed [0.33ms]
+(pass) createPtySubscriptions > unsubscribing an earlier onData handler leaves later handlers subscribed [0.23ms]
+
+src/modules/terminal/modeReplay.test.ts:
+(pass) createModeReplayTracker > application cursor keys is replayed [14.78ms]
+(pass) createModeReplayTracker > bracketed paste is replayed [3.31ms]
+(pass) createModeReplayTracker > cursor hidden is replayed [1.70ms]
+(pass) createModeReplayTracker > kitty keyboard protocol flags are replayed [2.07ms]
+(pass) createModeReplayTracker > kitty push and pop restore the prior flags [2.70ms]
+(pass) createModeReplayTracker > mouse tracking modes are NOT replayed [3.69ms]
+(pass) createModeReplayTracker > synchronized output mode is replayed [1.24ms]
+(pass) createModeReplayTracker > synchronized output mode set then unset is not replayed [2.55ms]
+(pass) createModeReplayTracker > no modes set yields an empty preamble [2.43ms]
+(pass) createModeReplayTracker > modes set then unset are not replayed [1.38ms]
+(pass) createModeReplayTracker > a sequence split across feed chunks still applies [1.67ms]
+(pass) createModeReplayTracker > resize keeps the tracked modes [9.78ms]
+(pass) buildModeReplayPreamble > builds a preamble from a one-shot history string [3.78ms]
+(pass) buildModeReplayPreamble > returns an empty preamble for plain history [1.74ms]
+
+src/modules/terminal/sanitize.test.ts:
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > device status report queries (final n) [0.95ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > cursor position report replies (final R) [0.22ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > device attribute queries/replies (final c) [0.13ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > XTVERSION query (final >q) [0.14ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > Kitty keyboard protocol query (final ?u) [0.08ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > DECRQM mode queries (…$p) and DECRPM replies (…$y) [0.27ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > DECRQSS-style ?$u query [0.11ms]
+(pass) sanitizeTerminalHistoryChunk > strips CSI queries > 8-bit C1 CSI form (0x9b) [0.06ms]
+(pass) sanitizeTerminalHistoryChunk > strips DCS queries and replies > DECRQSS query ($q) [0.36ms]
+(pass) sanitizeTerminalHistoryChunk > strips DCS queries and replies > XTGETTCAP query (+q) [0.09ms]
+(pass) sanitizeTerminalHistoryChunk > strips DCS queries and replies > DECRQSS/XTGETTCAP replies ([01]$r / [01]+r) [0.07ms]
+(pass) sanitizeTerminalHistoryChunk > strips DCS queries and replies > BEL-terminated DCS [0.05ms]
+(pass) sanitizeTerminalHistoryChunk > strips OSC colour queries > OSC 10;? (fg colour report) [0.20ms]
+(pass) sanitizeTerminalHistoryChunk > strips OSC colour queries > OSC 11;rgb:… (bg palette update) [0.09ms]
+(pass) sanitizeTerminalHistoryChunk > strips OSC colour queries > OSC 12;? (cursor colour report) [0.05ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > DECSTR soft reset (!p) [0.07ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > DECSCL conformance level ("p) [0.05ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > DECSCUSR cursor style (space-intermediate q) [0.06ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > restore cursor (bare u) [0.03ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > OSC title sequences [0.08ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > plain text [0.05ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > SGR colour codes [0.05ms]
+(pass) sanitizeTerminalHistoryChunk > keeps setters and visible content > queries stripped from a mixed stream, setters kept [0.08ms]
+(pass) sanitizeTerminalHistoryChunk > chunk boundaries > a split CSI query is held pending and stripped once completed [0.14ms]
+(pass) sanitizeTerminalHistoryChunk > chunk boundaries > a kept CSI sequence held pending is emitted once completed [0.10ms]
+(pass) sanitizeTerminalHistoryChunk > chunk boundaries > a split OSC query is held pending and stripped once terminated [0.08ms]
+(pass) sanitizeTerminalHistoryChunk > chunk boundaries > a split OSC title is held pending and kept once terminated [0.09ms]
+(pass) sanitizeTerminalHistoryChunk > chunk boundaries > a split DCS query split across three chunks [0.08ms]
+(pass) sanitizeTerminalHistoryChunk > chunk boundaries > a bare ESC at the end of a chunk stays pending [0.17ms]
+(pass) sanitizeTerminalHistory > one-shot full-buffer sanitization [0.09ms]
+(pass) sanitizeTerminalHistory > empty input [0.04ms]
+
+src/modules/terminal/screenText.test.ts:
+(pass) renderScreenText > reads what the screen shows, not the bytes that drew it [6.52ms]
+(pass) renderScreenText > keeps only the last lines asked for [5.84ms]
+(pass) renderScreenText > joins a row the terminal wrapped back into one line [3.87ms]
+
+src/modules/terminal/TerminalManager.test.ts:
+(pass) TerminalManager > open emits a started event with a snapshot and a monotonic sequence [2.63ms]
+(pass) TerminalManager > history is sanitized (queries stripped) while the renderer gets raw bytes [2.17ms]
+(pass) TerminalManager > snapshot history starts with the mode-replay preamble [1.46ms]
+(pass) TerminalManager > a query split across chunks is sanitized once complete [1.81ms]
+(pass) TerminalManager > sequence increments per event and is carried across restart [72.35ms]
+(pass) TerminalManager > restart does not emit an exited event for the deliberate kill [30.25ms]
+(pass) TerminalManager > close does not emit an exited event for the deliberate kill [33.39ms]
+(pass) TerminalManager > backpressure: pauses the PTY past the high watermark, resumes on acks [105.66ms]
+(pass) TerminalManager > restart resets history and re-spawns via the seam [97.17ms]
+(pass) TerminalManager > exit emits an exited event with code and stops the session [24.39ms]
+(pass) TerminalManager > close emits closed and a later open spawns fresh [101.62ms]
+(pass) TerminalManager > restart preserves the session's env [40.29ms]
+(pass) TerminalManager > restarting a missing session throws [0.28ms]
+(pass) TerminalManager > activity polling takes one shared snapshot per tick for every terminal [1234.20ms]
+(pass) TerminalManager > failed snapshots keep the last known state and back off [1180.15ms]
+(pass) TerminalManager.closeIdleInDir > closes only shells proven idle by a fresh snapshot [2178.88ms]
+(pass) TerminalManager.closeIdleInDir > closes nothing when the process snapshot is unavailable [1056.72ms]
+(pass) TerminalManager.closeIdleInDir > revalidates each shell right before closing it [2112.20ms]
+(pass) TerminalManager.closeIdleInDir > ignores shells in another directory [1052.94ms]
+
+ 430 pass
+ 0 fail
+ 908 expect() calls
+Ran 430 tests across 40 files. [29.67s]
+# exit=0

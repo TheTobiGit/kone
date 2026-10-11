@@ -1,0 +1,97 @@
+# 2026-10-10T18:33:29Z /home/gideonsarfo/Developer/kone-wt/p4-forks bun 1.4.2 bash --noprofile --norc -c cd packages/git-core && bun test
+bun test v1.4.2 (744846f84)
+
+src/checkpoint.test.ts:
+(pass) git-core checkpoint > creates a checkpoint on clean repo and lists it with exact metadata [81.20ms]
+(pass) git-core checkpoint > creates a checkpoint on a dirty worktree with untracked files and preserves metadata [86.96ms]
+(pass) git-core checkpoint > filters checkpoints by threadId [82.98ms]
+(pass) git-core checkpoint > drops a checkpoint and returns accurate boolean [76.81ms]
+(pass) git-core checkpoint > handles non-existent checkpoint error on restore [29.73ms]
+(pass) git-core checkpoint > previews an empty diff on a tree that still matches the checkpoint [74.82ms]
+(pass) git-core checkpoint > previews exactly the files a hard restore would rewrite and remove [62.28ms]
+(pass) git-core checkpoint > previews a deleted checkpoint file as a rewrite, and rejects unknown ids [119.03ms]
+(pass) git-core checkpoint > preserves staged index changes across soft and hard restore [72.90ms]
+(pass) git-core checkpoint > works seamlessly from a subdirectory cwd [67.29ms]
+(pass) git-core checkpoint > handles later commits before hard restore without corrupting git history or index [87.87ms]
+
+src/clone.test.ts:
+(pass) clone > failed clone does not occupy dest — retry can start [383.98ms]
+(pass) clone > successful local clone lands on dest, staging is gone [56.21ms]
+(pass) clone > abort via signal does not abort a sibling clone [40.27ms]
+(pass) clone > cancelAllClones aborts every live clone [1.49ms]
+(pass) clone > timeout sweeps staging and dest never appears [105.12ms]
+(pass) clone > progress still parses [189.77ms]
+
+src/core.test.ts:
+(pass) GitError > unclassified errors keep a plain message and null kind [0.17ms]
+(pass) GitError > classified() carries the kind in the message and the field [0.08ms]
+(pass) GitError > is still an instanceof GitError for existing catch sites [0.05ms]
+(pass) lastStderrLine > returns the last non-empty line [0.04ms]
+(pass) lastStderrLine > falls back when there is nothing usable [0.03ms]
+(pass) isExecTimeout > killed runs are timeouts [0.05ms]
+(pass) isExecTimeout > ETIMEDOUT code is a timeout [0.03ms]
+(pass) isExecTimeout > a real exit code is not a timeout [0.03ms]
+(pass) isExecTimeout > killed: false is not a timeout [0.02ms]
+(pass) isExecTimeout > an ordinary error is not a timeout [0.03ms]
+
+src/fileMutationQueue.test.ts:
+(pass) withFileMutationQueue > serializes concurrent operations targeting the same file [1.92ms]
+(pass) withFileMutationQueue > runs operations targeting different files in parallel [0.72ms]
+(pass) withFileMutationQueue > cleans up queue properly after rejected operations so subsequent operations proceed [0.84ms]
+(pass) withFileMutationQueue > serializes operations for a path that does not exist yet [1.03ms]
+
+src/numstat.test.ts:
+(pass) parseNumstat > reads a plain entry [0.21ms]
+(pass) parseNumstat > reads a rename as one entry carrying its from-path [0.06ms]
+(pass) parseNumstat > reports a binary file as 0/0 rather than NaN [0.05ms]
+(pass) parseNumstat > keeps a path containing a newline in one piece [0.03ms]
+(pass) parseNumstat > keeps a path containing a tab in one piece [0.03ms]
+(pass) parseNumstat > ignores empty and malformed records [0.04ms]
+(pass) parseNumstat > parses what git actually emits for an awkward path [30.36ms]
+(pass) numstat > returns paths as raw bytes, not git's quoted form [29.24ms]
+(pass) numstat > pairs a renamed non-ASCII path with where it came from [33.77ms]
+
+src/processTree.identity.test.ts:
+(pass) parseProcessCommandMap > maps indented pid + full command lines, collapsing inner whitespace [0.20ms]
+(pass) parseProcessCommandMap > skips malformed and empty lines without throwing [0.05ms]
+(pass) createProcessTreeKiller > SIGKILL signals only pids whose live command still matches the capture [0.43ms]
+(pass) createProcessTreeKiller > SIGTERM signals the tree deepest-first without a command re-read [0.16ms]
+(pass) createProcessTreeKiller > inspect reports only descendants whose command still matches [0.14ms]
+(pass) createProcessTreeKiller > inspect fails closed when the command re-read returns null [0.06ms]
+(pass) createProcessTreeKiller > SIGKILL with includeRoot false never signals the root, even when identity matches [0.07ms]
+(pass) createProcessTreeKiller > SIGKILL still reaches the root when the identity re-read fails [0.06ms]
+(pass) createProcessTreeKiller > SIGKILL reaches the root when the capture never learned its command [0.07ms]
+(pass) createProcessTreeKiller > SIGKILL skips a root whose command changed under it [0.06ms]
+(pass) createProcessTreeKiller > an empty descendant tree inspects as verified with no survivors [0.04ms]
+
+src/processTree.test.ts:
+(pass) process tree > inspectSubprocessActivity sees the real subprocess under a shell and labels it [69.50ms]
+(pass) process tree > killProcessTree kills the grandchildren below the shell [121.20ms]
+(pass) process tree > killProcessTree SIGKILL still reaps a TERM-ignoring child after the root has exited [377.09ms]
+(pass) process tree > killProcessTree SIGKILL reaps a child started during the SIGTERM grace period [533.29ms]
+(pass) process tree > a bogus pid yields an empty tree without failing the capture [68.15ms]
+(pass) process tree > invalid root pids are rejected up front, never throwing [21.99ms]
+(pass) mergeProcessTreeCaptures > keeps descendants only the remembered capture knows about [0.12ms]
+(pass) mergeProcessTreeCaptures > adds descendants that appeared after the remembered capture [0.07ms]
+(pass) mergeProcessTreeCaptures > prefers the fresh command for a pid present in both [0.05ms]
+(pass) mergeProcessTreeCaptures > keeps the remembered root identity, since that is what is escalated on [0.03ms]
+(pass) mergeProcessTreeCaptures > falls back to the fresh root identity when the remembered one is unknown [0.03ms]
+(pass) mergeProcessTreeCaptures > stays unproven when either capture was unproven [0.03ms]
+(pass) mergeProcessTreeCaptures > passes the fresh capture straight through when nothing was remembered [0.03ms]
+(pass) merged captures still respect the pid-recycling guard > skips a remembered pid that a stranger has since recycled [0.29ms]
+(pass) merged captures still respect the pid-recycling guard > kills a pid the fresh capture found under the root, on its current command [0.18ms]
+(pass) merged captures still respect the pid-recycling guard > still refuses the root when its command no longer matches the remembered one [0.19ms]
+
+src/status.test.ts:
+(pass) status line counts > counts lines for paths git would otherwise quote [62.16ms]
+(pass) status line counts > counts a staged edit as well as an unstaged one [37.15ms]
+(pass) status line counts > counts an untracked file's whole contents [35.33ms]
+(pass) status line counts > reports a binary file as 0/0, never NaN [34.34ms]
+(pass) status line counts > dates every change that has a file, and no deletion [34.20ms]
+(pass) status line counts > still reports counts on an unborn branch, where there is no HEAD [27.00ms]
+
+ 73 pass
+ 0 fail
+ 227 expect() calls
+Ran 73 tests across 8 files. [3.19s]
+# exit=0
