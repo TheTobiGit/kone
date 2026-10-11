@@ -6,6 +6,7 @@ import path from "node:path";
 import { setUserDataDir } from "./userDataDir.js";
 import { JobRunner, type DrainResult, type JobThreadDispatcher } from "./jobRunner.js";
 import type { JobCreateInput } from "./conversationStoreTypes.js";
+import { StartCancelled } from "./types.js";
 import type { SendTurnInput, Session, SessionStartInput, TurnStartResult } from "./types.js";
 
 import { Database } from "bun:sqlite";
@@ -222,8 +223,20 @@ describe("start failures", () => {
     expect(store.getJob("j1")?.startedAt).toBeUndefined();
   });
 
-  test("a re-queued job is picked up by the next drain", async () => {
+  test("a stop during startup re-queues the job and never takes the provider-failure path", async () => {
     const store = freshStore();
+    store.createJob(job({ jobId: "j1" }));
+    const { runner, failStartWith, stopped } = makeRunner(store);
+    failStartWith(new StartCancelled("thread-1"));
+
+    const result = await runner.drainProject(PROJECT);
+    expect(result.outcome).toBe("failed");
+    // Re-queued for a later drain, and nothing was torn down.
+    expect(store.getJob("j1")?.status).toBe("queued");
+    expect(stopped).toEqual([]);
+  });
+
+  test("a re-queued job is picked up by the next drain", async () => {    const store = freshStore();
     store.createJob(job({ jobId: "j1" }));
     const first = makeRunner(store);
     first.failStartWith(new Error("transient"));

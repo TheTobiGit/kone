@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, type IpcRendererEvent } from "electron";
 
+import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
+
 import type {
   AgentRecord,
   ConversationSearchHit,
@@ -108,6 +110,12 @@ import type {
   BenchQueueInput,
   BenchReorderInput,
   BenchUpdateInput,
+  ScheduleCreateInput,
+  ScheduleIdInput,
+  ScheduleListInput,
+  ScheduleRow,
+  ScheduleRunNowResult,
+  ScheduleUpdateInput,
 } from "./modules/bench/index.js";
 import type { JevRouteInput, JevRouteResult, JevStatus } from "./modules/jev/index.js";
 import type {
@@ -470,6 +478,12 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    /** The provider's handoff history cap in tokens (its own getter/setter so a
+     *  settings surface can read/write just the number; the setter merges). */
+    getHandoffBudget: (provider: ProviderKind): Promise<number> =>
+      ipcRenderer.invoke("agent:get-handoff-budget", provider),
+    setHandoffBudget: (provider: ProviderKind, cap: number): Promise<ProviderSettingsMap> =>
+      ipcRenderer.invoke("agent:set-handoff-budget", provider, cap),
     // How each provider's CLI is installed, and whether a newer one exists.
     // `checkLatest` is the network half — the settings pane asks for it when the
     // user is looking; nothing else in the app does.
@@ -573,6 +587,13 @@ const api = {
       ipcRenderer.invoke("agent:queue-cancel", threadId, queueId),
     reorderQueuedTurns: (threadId: string, queueIds: string[]): Promise<boolean> =>
       ipcRenderer.invoke("agent:queue-reorder", threadId, queueIds),
+    // Edit a waiting row in place; position is kept. The new words come back on
+    // turn.queued-updated.
+    editQueuedTurn: (
+      threadId: string,
+      queueId: string,
+      patch: QueuedTurnEditPatch,
+    ): Promise<boolean> => ipcRenderer.invoke("agent:queue-edit", threadId, queueId, patch),
     // Deliver one queued row now with the settings it was queued with; the
     // row stays in the queue unless the provider takes it.
     sendQueuedTurnNow: (threadId: string, queueId: string): Promise<boolean> =>
@@ -860,6 +881,24 @@ const api = {
       ipcRenderer.invoke("bench:reorder", input),
     delete: (input: BenchJobIdInput): Promise<boolean> =>
       ipcRenderer.invoke("bench:delete", input),
+  },
+  schedules: {
+    list: (input: ScheduleListInput): Promise<ScheduleRow[]> =>
+      ipcRenderer.invoke("schedules:list", input),
+    get: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:get", input),
+    create: (input: ScheduleCreateInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:create", input),
+    update: (input: ScheduleUpdateInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:update", input),
+    pause: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:pause", input),
+    resume: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:resume", input),
+    runNow: (input: ScheduleIdInput): Promise<ScheduleRunNowResult> =>
+      ipcRenderer.invoke("schedules:run-now", input),
+    delete: (input: ScheduleIdInput): Promise<boolean> =>
+      ipcRenderer.invoke("schedules:delete", input),
   },
   jev: {
     status: (): Promise<JevStatus> => ipcRenderer.invoke("jev:status"),

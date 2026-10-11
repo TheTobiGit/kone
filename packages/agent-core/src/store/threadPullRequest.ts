@@ -127,6 +127,60 @@ export class ThreadPullRequestRepo {
     }
   }
 
+  /** Re-read one thread as a settle candidate using the same selection as
+   *  settleCandidates, ignoring the backoff. Used to validate that a check's
+   *  inputs (project, branch, worktree, link) are unchanged after gh ran and to
+   *  derive cleanup from the live workspace, not a stale one. */
+  threadPullRequestCandidate(threadId: string): ThreadPullRequestCandidate | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names the link columns plus the thread's
+      // project/branch/place; branch falls back to requested_branch.
+      const row = db
+        .prepare(
+          `SELECT thread_id, project_path,
+                  COALESCE(NULLIF(branch, ''), requested_branch) AS branch,
+                  worktree_path, ${LINK_COLUMNS}
+             FROM threads
+            WHERE thread_id = ?
+              AND archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+              AND (
+                (linked_pr_url IS NOT NULL AND linked_pr_url <> '')
+                OR (worktree_path IS NOT NULL AND worktree_path <> '')
+              )
+            LIMIT 1`,
+        )
+        .get(threadId) as
+        | {
+            thread_id: string;
+            project_path: string;
+            branch: string | null;
+            worktree_path: string | null;
+            linked_pr_repository: string | null;
+            linked_pr_number: number | null;
+            linked_pr_url: string | null;
+            linked_pr_state: string | null;
+            linked_pr_checked_at: number | null;
+            linked_pr_merged_at: number | null;
+          }
+        | undefined;
+      if (!row) return null;
+      const link = rowToLink(row);
+      return {
+        threadId: row.thread_id,
+        projectPath: row.project_path,
+        branch: row.branch,
+        worktreePath: row.worktree_path,
+        link: link.url || link.number > 0 ? link : null,
+      };
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest candidate failed:", err);
+      return null;
+    }
+  }
+
   /** Record what the latest check saw without touching the link identity. Used
    *  by the settle sweep so a merge is visible next time without another gh
    *  call. */
@@ -144,6 +198,47 @@ export class ThreadPullRequestRepo {
       ).run(input.state, input.checkedAt, input.mergedAt, threadId);
     } catch (err) {
       console.error("[conversation-store] threadPullRequest recordChecked failed:", err);
+    }
+  }
+
+  /** Advance a thread's check time without touching PR identity or state. Used
+   *  when a check could not produce a result (gh unavailable, an unreadable
+   *  link, or a busy thread) so the bounded candidate query moves past it
+   *  instead of returning the same first threads forever. */
+  recordAttempt(threadId: string, checkedAt: number): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET linked_pr_checked_at = ? WHERE thread_id = ?`).run(
+        checkedAt,
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest recordAttempt failed:", err);
+    }
+  }
+
+  /** Whether a thread is still a settle candidate right now: it exists, is not
+   *  archived, and is not already settled. Re-read immediately before actually
+   *  settling, because a check is asynchronous and these facts can change while
+   *  gh runs. */
+  threadIsSettleEligible(threadId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      // SAFETY: the projection is the constant 1 under the alias asked for.
+      const row = db
+        .prepare(
+          `SELECT 1 AS one FROM threads
+            WHERE thread_id = ? AND archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+            LIMIT 1`,
+        )
+        .get(threadId) as { one: number } | undefined;
+      return row !== null && row !== undefined;
+    } catch (err) {
+      console.error("[conversation-store] threadPullRequest threadIsSettleEligible failed:", err);
+      return false;
     }
   }
 
@@ -195,11 +290,13 @@ export class ThreadPullRequestRepo {
    *  fallback — its own worktree (a local thread's `branch` is the shared repo
    *  branch, which would settle every thread on one PR, so it is excluded).
    *  `notCheckedAfter` backs off: candidates checked at or after that epoch are
-   *  skipped, so a two-minute tick does not fan out a gh call per thread. */
-  settleCandidates(limit: number, notCheckedAfter?: number): ThreadPullRequestCandidate[] {
+   *  skipped, so a two-minute tick does not fan out a gh call per thread. The
+   *  cutoff is required: a caller must say how stale a check may be, rather
+   *  than silently getting "everything is due". */
+  settleCandidates(limit: number, notCheckedAfter: number): ThreadPullRequestCandidate[] {
     const db = this.dbh.handle();
     if (!db) return [];
-    const backoff = notCheckedAfter ?? 0;
+    const backoff = notCheckedAfter;
     try {
       // SAFETY: the projection names the link columns plus the thread's
       // project/branch/place; branch falls back to requested_branch for a

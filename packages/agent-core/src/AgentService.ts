@@ -11,6 +11,7 @@ import {
   DONE_CLEARED,
   type CheckpointStore,
   type QueuedTurnEnqueueInput,
+  type QueuedTurnEditPatch,
   type TurnCheckpointRecord,
 } from "./conversationStoreTypes.js";
 import {
@@ -26,11 +27,19 @@ import { formatThreadTitleContext } from "./threadTitleContext.js";
 import {
   toThreadPullRequestLink,
   pullRequestMerged,
+  samePullRequest,
   type ThreadPullRequestLink,
   type ThreadPullRequestLinkInput,
 } from "./threadPullRequest.js";
 import { prMergeSettlesThread } from "./threadSettlement.js";
-import { copyTurnStamp, isCompactionSupported } from "./types.js";
+import {
+  checkpointRestoreIsolation,
+  checkoutOverlaps,
+  claimRestoreDir,
+  isRestoreActive,
+  type RestorePathClaim,
+} from "./checkpointRestoreSafety.js";
+import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -61,11 +70,13 @@ import {
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import {
   assertProviderEnabled,
+  handoffTokenCapFor,
   isProviderEnabled,
   readProviderSettings,
+  setProviderHandoffTokenCap as persistProviderHandoffTokenCap,
   writeProviderSettings,
 } from "./providerSettings.js";
-import { sidechatBootstrapForTurn } from "./sidechat.js";
+import { sidechatBootstrapForTurn, type HandoffBudgetOptions } from "./sidechat.js";
 import { forkThreadForEdit } from "./editFork.js";
 import { subagentWakePrompt } from "./subagentWake.js";
 // Resolved at call time, not imported as a value binding: the dispatcher is
@@ -78,6 +89,7 @@ import { withViewBlock } from "./gateway/viewPreamble.js";
 import { UserQuestionRequests, type UserQuestionRequest } from "./userQuestionRequests.js";
 import type {
   ApprovalDecision,
+  ChatAttachment,
   InteractionMode,
   CompactThreadResult,
   EmitEvent,
@@ -99,6 +111,7 @@ import type {
   SessionStartInput,
   ThreadArchiveResult,
   ThreadCompactionCapability,
+  ThreadStopResult,
   TurnSendOptions,
   TurnStartResult,
   UserInputAnswers,
@@ -182,7 +195,13 @@ const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
 /** A `/compact` command turn (the fallback for providers without a native
  *  call) is an ordinary turn, but it still must settle eventually — this long. */
 const FALLBACK_COMPACT_TIMEOUT_MS = 10 * 60_000;
-
+/** How long a stop waits for a session start still in flight before answering
+ *  with `confirmedStopped: false`. The start is separately marked cancelled, so
+ *  it is torn down whenever it lands; this only bounds the caller's wait. */
+/** The whole stop — the wait for a start still in flight plus the teardown —
+ *  is bounded by one deadline, so a provider that never answers cannot hold
+ *  the caller open. */
+const STOP_TOTAL_TIMEOUT_MS = 20_000;
 /** How long a queued follow-up that failed to start waits before each retry.
  *  One delay per retry, so a row gets the first try plus this many more; when
  *  they run out the row is held for the user rather than retried forever. */
@@ -246,6 +265,8 @@ export type AgentServiceOptions = {
   compactFallbackTimeoutMs?: number;
   /** Queued-turn retry backoff (see QUEUE_RETRY_DELAYS_MS). Tests shrink it. */
   queueRetryDelaysMs?: readonly number[];
+  /** The whole-stop deadline (see STOP_TOTAL_TIMEOUT_MS). Tests shrink it. */
+  stopTotalTimeoutMs?: number;
   /** The conversation store's queue surface, injected by tests. Defaults to
    *  the app-wide store (getConversationStore) when absent. */
   store?: QueuedTurnStore;
@@ -257,7 +278,7 @@ export type AgentServiceOptions = {
     | "setDone"
     | "threadMeta"
     | "staleThreadIds"
-    | "setTitle"
+    | "setTitleIfAuto"
     | "titleOrigin"
     | "titleMessages"
     | "threadWorkspace"
@@ -266,8 +287,12 @@ export type AgentServiceOptions = {
     | "clearThreadPullRequestLink"
     | "settleThreadPullRequestCandidates"
     | "recordThreadPullRequestChecked"
+    | "recordThreadPullRequestAttempt"
+    | "threadIsSettleEligible"
+    | "threadPullRequestCandidate"
     | "latestUserAuthoredAt"
     | "threadIsBusy"
+    | "cancelContinuationsForThread"
   >;
   /** Settle-on-merge tuning. `pullRequestSweepMs: 0` disables the sweep. */
   pullRequestSweepMs?: number;
@@ -320,6 +345,17 @@ export type AgentServiceOptions = {
   adapters?: (emit: EmitEvent) => ProviderAdapter[];
 };
 
+/** Where the caller is sent for a conversation-only rewind when a file restore
+ *  is refused: the existing branch-at-block path, named by the turn that was
+ *  rolled back and the user block that started it. */
+export type ConversationRewindTarget = {
+  sourceThreadId: string;
+  turnId: string;
+  /** The user block that began the turn, or null when the turn has none (a
+   *  steer, or a prompt that was never journaled). */
+  userBlockId: string | null;
+};
+
 /** What restoring a turn's snapshot would change, without changing anything.
  *  `wouldWrite` names checkpoint files whose worktree content differs (the
  *  uncommitted work a restore would overwrite); `wouldDelete` names worktree
@@ -330,6 +366,12 @@ export type PreviewTurnCheckpointResult =
       ok: false;
       reason: "missing" | "no-workdir" | "checkpoint-gone" | "failed";
       detail?: string;
+    }
+  | {
+      ok: false;
+      reason: "shared-checkout";
+      detail: string;
+      rewind: ConversationRewindTarget;
     };
 
 /** Outcome of reverting a thread's working tree to a turn's pre-turn
@@ -340,11 +382,14 @@ export type PreviewTurnCheckpointResult =
  *  live on the thread and restoring under it would corrupt the running turn,
  *  `checkpoint-gone` means the row survived but the git object behind its ref
  *  did not (garbage-collected, or the repo was re-cloned — `detail` names the
- *  ref), `dirty` means the restore would overwrite uncommitted work and the
- *  caller did not pass `force` (`wouldWrite`/`wouldDelete` name exactly what
- *  would change, so the confirmation step can show it), and `failed` means the
- *  git restore itself refused or left the tree only partly reconciled
- *  (`detail` carries git's own message — nothing fails silently). */
+ *  ref), `shared-checkout` means the thread runs in a checkout another thread
+ *  also shares, so a file restore would clobber that thread's work — `detail`
+ *  names the overlap and `rewind` names the conversation-only alternative —
+ *  `dirty` means the restore would overwrite uncommitted work and the caller
+ *  did not pass `force` (`wouldWrite`/`wouldDelete` name exactly what would
+ *  change, so the confirmation step can show it), and `failed` means the git
+ *  restore itself refused or left the tree only partly reconciled (`detail`
+ *  carries git's own message — nothing fails silently). */
 export type RevertTurnCheckpointResult =
   | { ok: true }
   | {
@@ -352,7 +397,13 @@ export type RevertTurnCheckpointResult =
       reason: "missing" | "no-workdir" | "busy" | "checkpoint-gone" | "failed";
       detail?: string;
     }
-  | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] };
+  | { ok: false; reason: "dirty"; wouldWrite: string[]; wouldDelete: string[] }
+  | {
+      ok: false;
+      reason: "shared-checkout";
+      detail: string;
+      rewind: ConversationRewindTarget;
+    };
 
 /** The failure both checkpoint answers share. Factored so every catch in the
  *  preview/revert paths formats a thrown value or a leftover-files report the
@@ -501,6 +552,10 @@ export class AgentService {
    *  without this a burst of sends walks straight past the busy-intercept and
    *  starts concurrent turns on one session. See `isBusy`. */
   private readonly dispatchingTurns = new Set<string>();
+  /** Steers in flight into a live turn, per thread. A steer can outlive the
+   *  turn it aimed at and fall back to a fresh one, so a restore treats a
+   *  thread mid-steer as busy (see `steering`). */
+  private readonly steersInFlight = new Map<string, number>();
   /** Threads with a manual context compaction in flight. One at a time per
    *  thread (the check-then-add in compactThread is synchronous, so two
    *  callers can't both claim it), and no turn may start while one runs — a
@@ -534,6 +589,15 @@ export class AgentService {
   private readonly openStep = new Map<string, { itemId: string; kind: Exclude<RuntimeItemKind, "tool_call"> }>();
   /** Threads whose session is being started right now. */
   private readonly startingSessions = new Set<string>();
+  /** The in-flight start per thread, so a stop issued while a session is
+   *  connecting can wait for it and then tear it down instead of racing it. */
+  private readonly startingSessionPromises = new Map<string, Promise<Session>>();
+  /** Threads whose in-flight session start an interrupt has cancelled: the
+   *  session still comes up, but its pending first turn is not sent. */
+  private readonly startInterrupted = new Set<string>();
+  /** Threads whose in-flight session start a stop has cancelled: the session
+   *  is torn down on arrival and the start rejects as cancelled. */
+  private readonly startStopRequested = new Set<string>();
   /** Per-thread tail of queued-row deliveries — the drain and Send now share
    *  it, so one row at a time is handed to the provider (withQueueDelivery). */
   private readonly queueDeliveries = new Map<string, Promise<void>>();
@@ -584,6 +648,11 @@ export class AgentService {
    *  delay, cleared on stopAll. */
   private pullRequestTimer: ReturnType<typeof setInterval> | null = null;
   private pullRequestStartTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The sweep currently running, so a second tick skips instead of selecting
+   *  the same threads and double-settling them. */
+  private pullRequestSweepInFlight: Promise<number> | null = null;
+  /** Set by stopAll to make a running pass bail at its next step. */
+  private pullRequestSweepAborted = false;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
     // A provider's questions join the thread's one question queue on their
@@ -855,6 +924,93 @@ export class AgentService {
     return next;
   }
 
+  /** Persist one provider's handoff history cap (in tokens). Returns the full
+   *  updated map; the next fork/handoff/hand-in replay on that provider sizes
+   *  its history from it. */
+  setProviderHandoffTokenCap(provider: ProviderKind, cap: number): ProviderSettingsMap {
+    return persistProviderHandoffTokenCap(provider, cap);
+  }
+
+  /** The budget a fork/handoff/hand-in replay is sized with on the target: the
+   *  provider's configured cap, the target model's window from the catalog,
+   *  and zero native occupancy — a synthetic replay starts a fresh session, so
+   *  there is nothing already occupying the target's context. */
+  private handoffBudgetOptions(
+    provider: ProviderKind | undefined,
+    model: string | undefined,
+    threadId: string,
+    attachments: readonly ChatAttachment[] | undefined,
+  ): HandoffBudgetOptions {
+    const options: HandoffBudgetOptions = { nativeTokens: 0 };
+    if (attachments?.length) options.attachments = attachments;
+    // The coverage note may only name a tool the receiving session actually
+    // has: without the kone gateway injected, the app tools do not exist.
+    options.readBackTool = this.gateway ? "app_read_thread" : null;
+    if (!provider) return options;
+    options.tokenCap = handoffTokenCapFor(provider);
+    const effectiveModel = this.effectiveReceivingModel(provider, model, threadId);
+    const window = this.handoffWindowFor(provider, effectiveModel, threadId);
+    if (window) options.windowTokens = window;
+    return options;
+  }
+
+  /** The model the receiving session will actually run: the turn's requested
+   *  model when it survives validation, else the live session's, else the
+   *  thread's stored one, else the provider's own default (undefined). Budget
+   *  sizing must use this, not the raw request — a follow-up that omits the
+   *  model still runs on the session's, and its window is what matters. */
+  private effectiveReceivingModel(
+    provider: ProviderKind,
+    model: string | undefined,
+    threadId: string,
+  ): string | undefined {
+    // Validate the requested override FIRST. If it is dropped, the adapter
+    // keeps running the live session's model, so that is the next candidate —
+    // not the dropped id, and not an unrelated stored one while a session is
+    // live. Only then the thread's stored model.
+    if (model) {
+      const requested = this.validModelFor(provider, model);
+      if (requested) return requested;
+    }
+    const sessionModel = this.sessionInputs.get(threadId)?.model;
+    if (sessionModel) {
+      const valid = this.validModelFor(provider, sessionModel);
+      if (valid) return valid;
+    }
+    const storedModel = this.historyStore?.threadMeta(threadId)?.model;
+    return storedModel ? this.validModelFor(provider, storedModel) : undefined;
+  }
+
+  /** The effective context window for a replay on `provider`, in the order the
+   *  spec names: the auto-compact window the thread selected, then the model's
+   *  catalog capacity, then the provider's last reported window for the thread,
+   *  then undefined (the budget's conservative 128k default). */
+  private handoffWindowFor(
+    provider: ProviderKind,
+    model: string | undefined,
+    threadId: string,
+  ): number | undefined {
+    const descriptor = model ? this.catalogFor(provider)?.find((entry) => entry.id === model) : undefined;
+    const meta = this.historyStore?.threadMeta(threadId);
+    const selected = meta?.selection?.contextWindow;
+    const selectedTokens = selected
+      ? descriptor?.contextWindows?.find((entry) => entry.id === selected)?.tokens
+      : undefined;
+    return selectedTokens ?? descriptor?.contextWindowTokens ?? meta?.contextWindow;
+  }
+
+  /** The context window a replay on this thread would be sized from, for the
+   *  effective receiving model (the request's, else the session's, else the
+   *  stored one). Undefined means the budget's conservative default applies.
+   *  Exposed so the resolution can be exercised without a live turn. */
+  handoffWindowTokensFor(threadId: string, model?: string): number | undefined {
+    const provider =
+      this.routing.get(threadId) ?? this.historyStore?.threadMeta(threadId)?.provider;
+    if (!provider) return undefined;
+    const effective = this.effectiveReceivingModel(provider, model, threadId);
+    return this.handoffWindowFor(provider, effective, threadId);
+  }
+
   // ── install maintenance ─────────────────────────────────────────────────────
 
   /** The version discovery last read for `provider`. Taken from the disk
@@ -995,14 +1151,28 @@ export class AgentService {
 
   async startSession(input: SessionStartInput): Promise<Session> {
     this.startingSessions.add(input.threadId);
+    const starting = this.startSessionNow(input);
+    this.startingSessionPromises.set(input.threadId, starting);
     try {
-      return await this.startSessionNow(input);
+      return await starting;
     } finally {
       this.startingSessions.delete(input.threadId);
+      // A start that failed (or was never reached) leaves no stop to honour. An
+      // interrupt is NOT cleared here: it is applied to the first turn the
+      // provider accepts, which may be after the start resolves.
+      this.startStopRequested.delete(input.threadId);
+      if (this.startingSessionPromises.get(input.threadId) === starting) {
+        this.startingSessionPromises.delete(input.threadId);
+      }
     }
   }
 
   private async startSessionNow(input: SessionStartInput): Promise<Session> {
+    // A checkpoint restore is rewriting this directory; a session started now
+    // would work on a tree that is being reset under it.
+    if (isRestoreActive(input.cwd)) {
+      throw new Error(`a checkpoint restore is running in ${input.cwd}; start the session once it finishes`);
+    }
     this.bumpSessionGeneration(input.threadId);
     assertProviderEnabled(readProviderSettings(), input.provider);
     this.sessionInputs.set(input.threadId, input);
@@ -1029,6 +1199,20 @@ export class AgentService {
     this.routing.set(input.threadId, input.provider);
     this.ensureWedgeWatchdog();
     this.ensureIdleReaper();
+    // A stop that arrived while the session was connecting: the provider has
+    // taken the start, so tear it down and reject as cancelled rather than
+    // returning a dead session a caller would dispatch into. Queued work is
+    // not promoted into a session being stopped.
+    if (this.startStopRequested.delete(input.threadId)) {
+      await this.stopSession(input.threadId).catch((err) => {
+        console.warn(`[agent] tearing down a stopped start for ${input.threadId} failed:`, err);
+      });
+      throw new StartCancelled(input.threadId);
+    }
+    // An interrupt that arrived while connecting is applied to the first turn
+    // once the provider accepts it (noteAccepted), exactly like a stop one
+    // instant after it started. The session stays up and the queue is
+    // untouched; the caller sends its first turn as usual.
     // Crash-recovery drain: queued rows survive a quit, so when the thread
     // reopens and a session comes up, any rows still waiting are promoted
     // into it (boot itself has no sessions, so there is nothing to drain
@@ -1047,9 +1231,14 @@ export class AgentService {
     // A fork's FIRST turn carries the one-shot context bootstrap
     // (sidechat.ts): the imported transcript, the boundary instruction, and
     // the user's message wrapped in `<latest_user_message>`. Null for every
-    // other turn/thread. Overlong turns (imported context + message > send
-    // cap) reject here, up front.
-    const sidechatInput = sidechatBootstrapForTurn(input.threadId, input.input);
+    // other turn/thread. The history budget is sized from the target model's
+    // window and the provider's cap; a new prompt that cannot fit even with
+    // zero history rejects here, up front, rather than dropping context.
+    const sidechatInput = sidechatBootstrapForTurn(
+      input.threadId,
+      input.input,
+      this.handoffBudgetOptions(provider, input.model, input.threadId, input.attachments),
+    );
     // dispatchMode is the service's own routing hint — strip it before
     // anything reaches an adapter (adapters don't know the queue exists).
     const { dispatchMode, ...base } = input;
@@ -1063,7 +1252,10 @@ export class AgentService {
     // error. Queue behind it exactly like a busy send: the row promotes when
     // the compaction settles (see compactThread) and runs against the
     // compacted context.
-    if (this.isCompacting(input.threadId)) {
+    // A checkpoint restore rewriting this thread's checkout holds it the same
+    // way: the row promotes when the restore lets go (runRevert kicks the
+    // slot), against the restored tree.
+    if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
@@ -1093,6 +1285,28 @@ export class AgentService {
     return this.activeTurns.has(threadId) || this.dispatchingTurns.has(threadId);
   }
 
+  /** Run one adapter handoff that `dispatchingTurns` doesn't cover (a steer
+   *  into a live turn, or the direct send after a failed queue write), counted
+   *  in `steersInFlight` for its whole round-trip: the adapter can start a
+   *  fresh turn at the end of it, so a restore must see it as busy. */
+  private async steering<T>(threadId: string, steer: () => Promise<T>): Promise<T> {
+    this.steersInFlight.set(threadId, (this.steersInFlight.get(threadId) ?? 0) + 1);
+    try {
+      return await steer();
+    } finally {
+      const left = (this.steersInFlight.get(threadId) ?? 1) - 1;
+      if (left > 0) this.steersInFlight.set(threadId, left);
+      else this.steersInFlight.delete(threadId);
+    }
+  }
+
+  /** Is a checkpoint restore rewriting the directory this thread's session
+   *  runs in? No turn may start there until it lets go. */
+  private restoreHolds(threadId: string): boolean {
+    const cwd = this.sessionInputs.get(threadId)?.cwd;
+    return cwd !== undefined && isRestoreActive(cwd);
+  }
+
   /** Whether this thread has a live provider session — the only threads a wake
    *  or a steer can reach. A thread with none is not broken, just away: whatever
    *  was addressed to it keeps until it comes back. */
@@ -1104,6 +1318,22 @@ export class AgentService {
    *  running turn or start one. */
   isThreadBusy(threadId: string): boolean {
     return this.isBusy(threadId);
+  }
+
+  /** Whether a thread must not be settled right now. Work can be in flight in
+   *  the service before the store knows: a claimed dispatch, a starting
+   *  provider session, an in-flight compaction, or parked work (a question or
+   *  approval the thread waits on). A quiescent CONNECTED session is
+   *  deliberately not a blocker — an idle session that has nothing queued or
+   *  parked may settle; the store's own busy read (history.threadIsBusy) covers
+   *  queued rows and running turns. */
+  private settlementBlocked(threadId: string): boolean {
+    return (
+      this.isBusy(threadId) ||
+      this.startingSessions.has(threadId) ||
+      this.isCompacting(threadId) ||
+      (this.parkedByThread.get(threadId)?.size ?? 0) > 0
+    );
   }
 
   /** Whether `provider` can take a message into a running turn. One that
@@ -1381,6 +1611,13 @@ export class AgentService {
     }
     const currentProvider = this.routing.get(threadId);
     const adapter = this.adapterForThread(threadId);
+    // Every turn path ends here, so this is where a restore's claim is
+    // honoured: checked in the same tick the thread turns busy, which is what
+    // runRevert checks before it claims. The drain and Send now hold off
+    // earlier; this catches any path that does not.
+    if (this.restoreHolds(threadId)) {
+      throw new Error(`a checkpoint restore is running in ${this.sessionInputs.get(threadId)?.cwd}; the turn was not sent`);
+    }
     this.dispatchingTurns.add(threadId);
     try {
       this.noteSending(threadId, hooks.onSending);
@@ -1477,6 +1714,14 @@ export class AgentService {
   /** Tell the caller the provider took the turn. Never throws: the turn is
    *  running whatever the bookkeeping does. */
   private noteAccepted(threadId: string, turnId: string, accepted: ((turnId: string) => void) | undefined): void {
+    // An interrupt that arrived while the session was connecting is applied
+    // here: the provider has just accepted the turn, so interrupt it exactly
+    // like a stop one instant after it started.
+    if (this.startInterrupted.delete(threadId)) {
+      void this.interruptTurn(threadId).catch((err) => {
+        console.warn(`[agent] applying the startup interrupt to ${threadId} failed:`, err);
+      });
+    }
     if (!accepted) return;
     try {
       accepted(turnId);
@@ -1502,6 +1747,65 @@ export class AgentService {
     } catch {
       return null;
     }
+  }
+
+  /** Whether a file restore at `dir` is isolated to this thread, or the
+   *  refusal that sends the caller to a conversation-only rewind instead.
+   *  Null when the restore may proceed.
+   *
+   *  Every other thread counts, archived included: a put-away thread still owns
+   *  its checkout, and a hard reset under it would wipe work nobody is
+   *  watching. A thread with no worktree runs in its project's shared checkout
+   *  and is never isolated. Reads fail closed — a store that cannot be read
+   *  throws out of `runRevert`'s catch as a `failed` refusal, never as a
+   *  silent restore. */
+  private checkpointRestoreRefusal(
+    store: CheckpointStore,
+    threadId: string,
+    turnId: string,
+    dir: string,
+  ): { ok: false; reason: "shared-checkout"; detail: string; rewind: ConversationRewindTarget } | null {
+    const workspace = store.threadWorkspace(threadId);
+    const others: RestorePathClaim[] = [];
+    const seen = new Set<string>();
+    const addClaim = (otherId: string, path: string | null): void => {
+      if (otherId === threadId || !path) return;
+      const key = `${otherId}\u0000${path}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      others.push({ threadId: otherId, path });
+    };
+    for (const other of store.allThreadWorkspaces()) {
+      addClaim(
+        other.threadId,
+        threadWorkingDir({ projectPath: other.projectPath, ...other.workspace }),
+      );
+      addClaim(other.threadId, this.sessionInputs.get(other.threadId)?.cwd ?? null);
+    }
+    // Every live or starting session is a claim in its own right: a session can
+    // be running with no stored workspace row, or one that names another
+    // directory, and a restore under it would clobber that thread's work.
+    for (const [otherId, input] of this.sessionInputs) {
+      addClaim(otherId, input.cwd);
+    }
+    const isolation = isRestoreActive(dir)
+      ? { isolated: false as const, detail: `another checkpoint restore is running in ${dir}` }
+      : checkpointRestoreIsolation({
+          cwd: dir,
+          worktreePath: workspace?.worktreePath ?? null,
+          otherPaths: others,
+        });
+    if (isolation.isolated) return null;
+    return {
+      ok: false,
+      reason: "shared-checkout",
+      detail: isolation.detail,
+      rewind: {
+        sourceThreadId: threadId,
+        turnId,
+        userBlockId: store.turnUserBlockId(threadId, turnId),
+      },
+    };
   }
 
   /** Snapshot the tree for a turn that was just accepted and record
@@ -1573,6 +1877,11 @@ export class AgentService {
       const dir = this.checkpointDir(threadId);
       if (!dir) return { ok: false, reason: "no-workdir" };
       if (!existsSync(dir)) return { ok: false, reason: "no-workdir", detail: dir };
+      // Isolation is checked before the repo is touched at all: a refusal is a
+      // different action, not a failed restore, and must answer without a git
+      // call.
+      const shared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (shared) return shared;
       if (!(await checkpointExists(dir, row.checkpointId))) {
         return { ok: false, reason: "checkpoint-gone", detail: row.ref };
       }
@@ -1635,7 +1944,7 @@ export class AgentService {
     force: boolean,
   ): Promise<RevertTurnCheckpointResult> {
     try {
-      if (this.isBusy(threadId)) return { ok: false, reason: "busy" };
+      if (this.isBusy(threadId) || this.steersInFlight.has(threadId)) return { ok: false, reason: "busy" };
       const store = this.checkpointStore;
       if (!store) return { ok: false, reason: "missing" };
       const row = store.getTurnCheckpoint(threadId, turnId);
@@ -1647,6 +1956,12 @@ export class AgentService {
       // read as no-workdir (with the expected path attached), never as a
       // restore into whatever happens to sit at a stale path.
       if (!existsSync(dir)) return { ok: false, reason: "no-workdir", detail: dir };
+      // A snapshot covers the whole checkout, so a hard restore is only safe
+      // when the checkout belongs to this thread alone. Refuse before touching
+      // the repo — and before the dirty check: the fix is a different action
+      // (rewind the conversation), not a confirmation.
+      const shared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (shared) return shared;
       // The row outlives its object when the ref is pruned or the repo was
       // re-cloned around it. Restoring from a dangling ref could only fail
       // inside git — say so up front, naming the dead ref.
@@ -1672,30 +1987,50 @@ export class AgentService {
           wouldDelete: preview.wouldDelete,
         };
       }
+      // The checks above ran before two awaits. A turn on this thread, or a
+      // session in an overlapping directory, may have started meanwhile, so
+      // both are checked again at the handoff and the directory is claimed
+      // in the same tick: no session or turn starts under it until the
+      // restore is done.
+      if (this.isBusy(threadId) || this.steersInFlight.has(threadId)) return { ok: false, reason: "busy" };
+      const handoffShared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
+      if (handoffShared) return handoffShared;
+      const releaseRestore = claimRestoreDir(dir);
       try {
-        await restoreCheckpoint(dir, row.checkpointId, { hard: true });
-      } catch (err) {
-        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return failedCheckpoint(err);
-      }
-      // A restore that dies partway leaves a half-written tree — deletes done,
-      // rewrites missing. Re-previewing must come back empty; anything left is
-      // reported as a failure with the still-dirty files named, never silence.
-      try {
-        const after = await previewCheckpointRestore(dir, row.checkpointId);
-        if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
-          const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
-          console.warn(
-            `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
-            leftovers,
-          );
-          return failedCheckpoint(
-            `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
-          );
+        try {
+          await restoreCheckpoint(dir, row.checkpointId, { hard: true });
+        } catch (err) {
+          console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+          return failedCheckpoint(err);
         }
-      } catch (err) {
-        console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
-        return failedCheckpoint(err);
+        // A restore that dies partway leaves a half-written tree — deletes done,
+        // rewrites missing. Re-previewing must come back empty; anything left is
+        // reported as a failure with the still-dirty files named, never silence.
+        try {
+          const after = await previewCheckpointRestore(dir, row.checkpointId);
+          if (after.wouldWrite.length > 0 || after.wouldDelete.length > 0) {
+            const leftovers = [...after.wouldWrite, ...after.wouldDelete].sort();
+            console.warn(
+              `[agent] revert to checkpoint left ${leftovers.length} file(s) unreconciled for ${threadId}/${turnId}:`,
+              leftovers,
+            );
+            return failedCheckpoint(
+              `restore left ${leftovers.length} file(s) unreconciled: ${leftovers.join(", ")}`,
+            );
+          }
+        } catch (err) {
+          console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
+          return failedCheckpoint(err);
+        }
+      } finally {
+        releaseRestore();
+        // Whatever arrived during the reset waited for it (queued sends, the
+        // inbox): wake the turn slot of every session in that checkout.
+        for (const [otherId, input] of this.sessionInputs) {
+          if (input.cwd && !isRestoreActive(input.cwd) && checkoutOverlaps(input.cwd, dir)) {
+            this.kickTurnSlot(otherId);
+          }
+        }
       }
       return { ok: true };
     } catch (err) {
@@ -1707,7 +2042,61 @@ export class AgentService {
   async interruptTurn(threadId: string): Promise<void> {
     this.userQuestions.cancel(threadId);
     this.endAsked.add(threadId);
+    // A session still connecting has no adapter turn to interrupt yet. Cancel
+    // the pending first turn only — the session comes up and its queued
+    // follow-ups are untouched; startSession rejects as cancelled so no caller
+    // sends the first prompt.
+    if (this.startingSessions.has(threadId)) {
+      this.startInterrupted.add(threadId);
+      return;
+    }
     return this.adapterForThread(threadId).interruptTurn(threadId);
+  }
+
+  /** Stop a thread, reporting the request and its confirmation separately.
+   *  Never throws: the whole stop — a start still in flight plus the teardown —
+   *  is bounded by one deadline, an unresolved start counts as not confirmed,
+   *  and a teardown failure is reported rather than escaping. */
+  async stopThread(threadId: string): Promise<ThreadStopResult> {
+    const starting = this.startingSessionPromises.get(threadId);
+    // A session still connecting counts as one that exists: the start is real,
+    // and a caller reading this to narrate the stop must not call it idle.
+    const wasRunning = this.hasLiveSession(threadId) || this.startingSessions.has(threadId);
+    const interruptRequested = wasRunning || this.isBusy(threadId);
+    // A session coming up must not run a turn after this stop: startSessionNow
+    // tears it down and rejects as cancelled.
+    if (this.startingSessions.has(threadId)) this.startStopRequested.add(threadId);
+    const deadline = Date.now() + (this.options.stopTotalTimeoutMs ?? STOP_TOTAL_TIMEOUT_MS);
+    if (starting) {
+      const remaining = Math.max(0, deadline - Date.now());
+      const settled = await withTimeout(starting, remaining, "session start before stop").then(
+        () => "resolved" as const,
+        (err: Error) =>
+          err instanceof StartCancelled ? ("cancelled" as const) : ("timeout" as const),
+      );
+      if (settled === "timeout") {
+        return {
+          interruptRequested,
+          confirmedStopped: false,
+          wasRunning,
+          detail: "the session start did not finish before the stop deadline",
+        };
+      }
+      // "cancelled": startSessionNow already tore the session down; the
+      // teardown below is then a no-op that confirms it.
+    }
+    let detail: string | undefined;
+    try {
+      const remaining = Math.max(0, deadline - Date.now());
+      await withTimeout(this.stopSession(threadId), remaining, "session teardown");
+    } catch (err) {
+      detail = err instanceof Error ? err.message : String(err);
+      console.warn(`[agent] stop teardown for ${threadId} did not confirm:`, err);
+    }
+    const confirmedStopped = !this.hasLiveSession(threadId) && !this.isBusy(threadId);
+    return detail === undefined
+      ? { interruptRequested, confirmedStopped, wasRunning }
+      : { interruptRequested, confirmedStopped, wasRunning, detail };
   }
 
   /** Did somebody ask to end what `threadId` was doing — an interrupt or a
@@ -1765,6 +2154,10 @@ export class AgentService {
       if (!provider) throw new Error(`No agent session for thread ${threadId}`);
       if (this.isBusy(threadId)) {
         throw new Error("Context compaction is unavailable while a provider turn is running.");
+      }
+      // A command compaction is a turn, and no turn starts under a restore.
+      if (this.restoreHolds(threadId)) {
+        throw new Error("Context compaction is unavailable while a checkpoint restore is running.");
       }
       const adapter = this.adapter(provider);
       const capability = adapter.capabilities.compaction;
@@ -1927,6 +2320,9 @@ export class AgentService {
 
   async stopSession(threadId: string): Promise<void> {
     this.userQuestions.cancel(threadId);
+    // A session torn down before its first turn consumes any pending startup
+    // interrupt with it.
+    this.startInterrupted.delete(threadId);
     const provider = this.routing.get(threadId);
     if (!provider) return;
     this.endAsked.add(threadId);
@@ -2468,11 +2864,18 @@ export class AgentService {
       // really went into the live turn (it falls back to a plain send when its
       // own turn has just ended).
       if (adapter.steerTurn) {
+        const steerTurn = adapter.steerTurn.bind(adapter);
         this.noteSending(threadId, options?.onSending);
-        const result = await adapter.steerTurn(input);
+        const result = await this.steering(threadId, () => steerTurn(input));
         options?.onAccepted?.(result.turnId);
         return result;
       }
+    }
+    // A restore holding the checkout leaves no live turn either, and a plain
+    // steer queues behind it like a send; a liveOnly one refuses, so its
+    // caller keeps what it carries for a turn that can take it.
+    if (options?.liveOnly && this.restoreHolds(threadId)) {
+      throw new Error(`No running turn on ${threadId} can take this steer yet.`);
     }
     if (this.isBusy(threadId)) {
       if (options?.liveOnly) throw new Error(`No running turn on ${threadId} can take this steer yet.`);
@@ -2506,7 +2909,7 @@ export class AgentService {
    *  returns false when no such row exists. */
   async cancelQueuedTurn(threadId: string, queueId: string): Promise<boolean> {
     const store = this.queueStore;
-    const cancelled = store.cancelQueuedTurn(queueId);
+    const cancelled = store.cancelQueuedTurn(queueId, threadId);
     if (cancelled) {
       this.dropQueuedCount(threadId);
       // Its backoff goes with it; the rest of the queue needn't wait it out.
@@ -2556,9 +2959,15 @@ export class AgentService {
     if (this.isCompacting(threadId)) {
       throw new Error("Wait for context compaction to finish before sending another message.");
     }
+    if (this.restoreHolds(threadId)) {
+      throw new Error("Wait for the checkpoint restore to finish before sending another message.");
+    }
     if (!this.routing.has(threadId)) throw new Error(`No agent session for thread ${threadId}`);
     // Stopped already, though the store has yet to write it.
     if (this.cancelOwed(threadId, queueId)) return false;
+    // Bind the queue id to this thread: a row that belongs to another thread
+    // is refused rather than claimed and run under the wrong thread.
+    if (!store.listQueuedTurns(threadId).some((row) => row.queueId === queueId)) return false;
     const claimed = store.claimQueuedTurn(queueId);
     if (!claimed) return false;
     const { row, from } = claimed;
@@ -2575,7 +2984,8 @@ export class AgentService {
       // nor when that cancellation is still waiting to be written.
       if (!store.isQueuedTurnClaimed(queueId) || this.cancelOwed(threadId, queueId)) return false;
       if (liveTurnId && adapter.steerTurn) {
-        const result = await adapter.steerTurn({ ...input, userBlockId: row.userBlockId });
+        const steerTurn = adapter.steerTurn.bind(adapter);
+        const result = await this.steering(threadId, () => steerTurn({ ...input, userBlockId: row.userBlockId }));
         // A steer can fall back to a fresh turn when the one it aimed at ended
         // meanwhile; if the row was stopped by then, that turn is stopped too.
         if (!this.settlePromoted(threadId, queueId, result.turnId)) {
@@ -2639,6 +3049,39 @@ export class AgentService {
     return store.listQueuedTurns(threadId);
   }
 
+  /** Edit a waiting queued follow-up in place. The store rewrites the row and
+   *  its hidden transcript block in one transaction; this emits
+   *  turn.queued-updated carrying the new content so the queue strip restates
+   *  the row without moving it. Refuses a row that is promoting or settled. */
+  async editQueuedTurn(
+    threadId: string,
+    queueId: string,
+    patch: QueuedTurnEditPatch,
+  ): Promise<boolean> {
+    const store = this.queueStore;
+    const row = store.editQueuedTurn(threadId, queueId, patch);
+    if (!row) return false;
+    const provider = this.routing.get(threadId);
+    if (provider) {
+      this.dispatch({
+        type: "turn.queued-updated",
+        threadId,
+        provider,
+        at: Date.now(),
+        source: "kone.store",
+        queueId: row.queueId,
+        state: row.state === "failed" ? "failed" : "queued",
+        attemptCount: row.attemptCount,
+        input: row.input,
+        // An explicit [] in the patch clears the field, so emit [] rather than
+        // undefined; undefined means "unchanged" to the reducer.
+        attachments: patch.attachments !== undefined ? patch.attachments : row.attachments,
+        skills: patch.skills !== undefined ? patch.skills : row.skills,
+      });
+    }
+    return true;
+  }
+
   /** Reorder the thread's active queued follow-ups. Emits
    *  turn.queued-reordered on success. */
   async reorderQueuedTurns(threadId: string, queueIds: string[]): Promise<boolean> {
@@ -2680,6 +3123,8 @@ export class AgentService {
       const at = Date.now();
       if (archived) {
         this.cancelThreadQueue(id, provider, "archive");
+        // A continuation scheduled for a put-away thread is stale.
+        history.cancelContinuationsForThread(id);
         this.dispatch({
           type: "thread.archived",
           threadId: id,
@@ -2718,6 +3163,8 @@ export class AgentService {
     // skip the write too instead of stamping a row that doesn't exist.
     if (!provider) return;
     history.setDone(threadId, done);
+    // A continuation scheduled for a thread the user finished with is stale.
+    if (done) history.cancelContinuationsForThread(threadId);
     const at = Date.now();
     this.dispatch({
       type: "thread.done.updated",
@@ -2778,34 +3225,36 @@ export class AgentService {
     if (!title?.trim()) return { ok: false, reason: "generation_failed" };
     title = title.trim();
 
-    const changed = title !== meta.title;
-    if (changed) {
-      history.setTitle(threadId, title);
-      this.dispatch({
-        type: "thread.title.updated",
-        threadId,
-        provider: meta.provider,
-        at: Date.now(),
-        source: "kone.store",
-        title,
-      });
-      // Follow the worktree branch rename off the hot path: a generated branch
-      // name came from the old title and should not outlive it.
-      const rename = this.options.renameWorkspaceBranch;
-      if (rename) {
-        try {
-          const workspace = history.threadWorkspace(threadId);
-          if (workspace?.worktreePath) {
-            void rename({ worktreePath: workspace.worktreePath, title }).catch((err) => {
-              console.warn("[thread-title] worktree branch rename failed:", err);
-            });
-          }
-        } catch {
-          // A workspace that cannot be read leaves the branch as it was.
+    if (title === meta.title) return { ok: true, title, changed: false };
+    // Commit only if the title is still the one the generator saw and is still
+    // auto-owned. A manual rename while the one-shot ran wins.
+    if (!history.setTitleIfAuto(threadId, meta.title ?? null, title)) {
+      return { ok: false, reason: "manual_title" };
+    }
+    this.dispatch({
+      type: "thread.title.updated",
+      threadId,
+      provider: meta.provider,
+      at: Date.now(),
+      source: "kone.store",
+      title,
+    });
+    // Follow the worktree branch rename off the hot path: a generated branch
+    // name came from the old title and should not outlive it.
+    const rename = this.options.renameWorkspaceBranch;
+    if (rename) {
+      try {
+        const workspace = history.threadWorkspace(threadId);
+        if (workspace?.worktreePath) {
+          void rename({ worktreePath: workspace.worktreePath, title }).catch((err) => {
+            console.warn("[thread-title] worktree branch rename failed:", err);
+          });
         }
+      } catch {
+        // A workspace that cannot be read leaves the branch as it was.
       }
     }
-    return { ok: true, title, changed };
+    return { ok: true, title, changed: true };
   }
 
   /** Link a pull request to a thread, replacing any previous link. The link is
@@ -2909,67 +3358,125 @@ export class AgentService {
    *
    *  Public for tests; the timer calls it. */
   async sweepPullRequestSettlements(): Promise<number> {
+    // One pass at a time. A tick that lands while a previous sweep is awaiting
+    // gh returns immediately, so the same threads cannot be selected twice and
+    // their settle actions cannot run twice.
+    if (this.pullRequestSweepInFlight) return 0;
+    const run = this.runPullRequestSweep().finally(() => {
+      this.pullRequestSweepInFlight = null;
+    });
+    this.pullRequestSweepInFlight = run;
+    return run;
+  }
+
+  private async runPullRequestSweep(): Promise<number> {
     const history = this.historyStore;
     const checker = this.options.pullRequestChecker;
     if (!history || !checker) return 0;
+    this.pullRequestSweepAborted = false;
     let settled = 0;
-    for (const candidate of history.settleThreadPullRequestCandidates(
+    const sameLink = (
+      before: ThreadPullRequestLink | null,
+      after: ThreadPullRequestLink | null,
+    ): boolean => {
+      if (before === null || after === null) return before === null && after === null;
+      return samePullRequest(before, after);
+    };
+    for (const initial of history.settleThreadPullRequestCandidates(
       PR_SETTLE_BATCH_SIZE,
       Date.now() - PR_CHECK_MIN_INTERVAL_MS,
     )) {
-      // Work that will wake the thread outranks a merge: leave it to finish.
-      if (history.threadIsBusy(candidate.threadId)) continue;
-      let checked: ThreadPullRequestLink | null = null;
-      try {
-        checked = await checker({
-          threadId: candidate.threadId,
-          projectPath: candidate.projectPath,
-          branch: candidate.branch,
-          worktreePath: candidate.worktreePath,
-          link: candidate.link,
-        });
-      } catch (err) {
-        console.warn(`[agent] PR check failed for ${candidate.threadId}:`, err);
+      if (this.pullRequestSweepAborted) break;
+      // Work that will wake the thread outranks a merge — in the store and in
+      // the service, where a claimed dispatch or a starting session may not
+      // have reached the store yet. Record the attempt so a permanently busy
+      // thread does not head the bounded queue forever.
+      if (history.threadIsBusy(initial.threadId) || this.settlementBlocked(initial.threadId)) {
+        history.recordThreadPullRequestAttempt(initial.threadId, Date.now());
         continue;
       }
-      if (!checked) continue;
+      let checked: ThreadPullRequestLink | null = null;
+      let failed = false;
+      try {
+        checked = await checker({
+          threadId: initial.threadId,
+          projectPath: initial.projectPath,
+          branch: initial.branch,
+          worktreePath: initial.worktreePath,
+          link: initial.link,
+        });
+      } catch (err) {
+        failed = true;
+        console.warn(`[agent] PR check failed for ${initial.threadId}:`, err);
+      }
+      if (this.pullRequestSweepAborted) break;
       const checkedAt = Date.now();
+      // Re-read the candidate after the await: its link, branch, worktree,
+      // project or thread state may all have moved while gh ran. Drop a result
+      // whose discovery inputs changed, so an old lookup cannot settle a thread
+      // on a PR it no longer points at or clean a worktree it has left.
+      const current = history.threadPullRequestCandidate(initial.threadId);
+      if (
+        !current ||
+        current.projectPath !== initial.projectPath ||
+        current.branch !== initial.branch ||
+        current.worktreePath !== initial.worktreePath ||
+        !sameLink(initial.link, current.link)
+      ) {
+        continue;
+      }
+      if (failed || !checked) {
+        // No result: advance the backoff but write no PR state.
+        history.recordThreadPullRequestAttempt(initial.threadId, checkedAt);
+        continue;
+      }
       // Record what the check saw so the next pass can order candidates and a
       // merge survives a restart without another gh call.
-      history.recordThreadPullRequestChecked(candidate.threadId, {
+      history.recordThreadPullRequestChecked(initial.threadId, {
         state: checked.state,
         mergedAt: checked.mergedAt,
         checkedAt,
       });
       if (!pullRequestMerged(checked)) continue;
+      // Re-validate the admission facts immediately before settling: a turn may
+      // have started (in the store or the service), or the thread been
+      // archived/marked done, while gh ran.
+      if (history.threadIsBusy(initial.threadId) || this.settlementBlocked(initial.threadId)) {
+        continue;
+      }
+      if (!history.threadIsSettleEligible(initial.threadId)) continue;
       if (
         !prMergeSettlesThread({
           mergedAt: checked.mergedAt,
-          lastUserAuthoredAt: history.latestUserAuthoredAt(candidate.threadId),
+          lastUserAuthoredAt: history.latestUserAuthoredAt(initial.threadId),
         })
       ) {
         continue;
       }
-      this.setThreadDone(candidate.threadId, true);
+      if (this.pullRequestSweepAborted) break;
+      this.setThreadDone(initial.threadId, true);
       settled++;
       const closeIdle = this.options.closeIdleShells;
       if (closeIdle) {
         await closeIdle({
-          threadId: candidate.threadId,
-          projectPath: candidate.projectPath,
-          worktreePath: candidate.worktreePath,
+          threadId: initial.threadId,
+          projectPath: current.projectPath,
+          worktreePath: current.worktreePath,
         }).catch((err) => {
-          console.warn(`[agent] closing idle shells for ${candidate.threadId} failed:`, err);
+          console.warn(`[agent] closing idle shells for ${initial.threadId} failed:`, err);
         });
+        // Shutdown may have been requested while cleanup ran; do not start the
+        // settle script after it.
+        if (this.pullRequestSweepAborted) break;
       }
       const runScript = this.options.runSettleScript;
       if (runScript) {
         await runScript({
-          threadId: candidate.threadId,
-          projectPath: candidate.projectPath,
-          cwd: candidate.worktreePath ?? candidate.projectPath,
+          threadId: initial.threadId,
+          projectPath: current.projectPath,
+          cwd: current.worktreePath ?? current.projectPath,
         }).catch((err) => {
-          console.warn(`[agent] settle script for ${candidate.threadId} failed:`, err);
+          console.warn(`[agent] settle script for ${initial.threadId} failed:`, err);
         });
       }
     }
@@ -3069,7 +3576,10 @@ export class AgentService {
       }
     } catch (err) {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
-      return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
+      // Not under a restore: the turn would start on a tree being reset.
+      if (this.restoreHolds(input.threadId)) throw err;
+      const adapter = this.adapterForThread(input.threadId);
+      return this.steering(input.threadId, () => adapter.sendTurn(this.withViewBlock(input)));
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
     // Queued after a Stop whose cancellation is still owed: not one it takes.
@@ -3175,6 +3685,8 @@ export class AgentService {
       // so does the queue drain — a row must never promote into a session
       // mid-compaction and read a half-compacted context.
       if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
+      // A restore holding the checkout: the drain runs again when it lets go.
+      if (this.restoreHolds(threadId)) return;
       // A row waiting out its backoff is retried by its own timer, not by
       // whatever turn event happens to come first.
       if (this.queueRetries.has(threadId) || this.hasPendingRelease(threadId) || this.pendingCancels.has(threadId)) {
@@ -3669,6 +4181,9 @@ export class AgentService {
       clearInterval(this.pullRequestTimer);
       this.pullRequestTimer = null;
     }
+    // Invalidate any pass already awaiting gh, so it bails instead of settling
+    // threads during shutdown.
+    this.pullRequestSweepAborted = true;
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();
     this.parkedByThread.clear();

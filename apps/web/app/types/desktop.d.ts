@@ -796,6 +796,9 @@ export type ProviderConfig = {
   binaryPath?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
+   *  this provider (default 16000; clamped 1024–64000). */
+  handoffTokenCap?: number;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
@@ -1827,6 +1830,10 @@ export type RuntimeEvent =
       attemptCount: number;
       retryAt?: number;
       error?: string;
+      /** Present on an in-place edit: the row's new words. */
+      input?: string;
+      attachments?: ChatAttachment[];
+      skills?: SkillReference[];
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -2977,6 +2984,11 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** The provider's handoff history cap in tokens. */
+  getHandoffBudget: (provider: ProviderKind) => Promise<number>;
+  /** Set one provider's handoff history cap; merges and resolves to the
+   *  updated full map. */
+  setHandoffBudget: (provider: ProviderKind, cap: number) => Promise<ProviderSettingsMap>;
   /** How each provider's CLI is installed, and whether it's behind. Passing
    *  `checkLatest: false` keeps it entirely local (no registry call). */
   maintenance: (options?: {
@@ -3146,6 +3158,22 @@ export type KoneAgentApi = {
    *  when no such row exists. */
   cancelQueuedTurn: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  /** Edit a waiting follow-up in place; its position is kept. The new words
+   *  arrive on turn.queued-updated. Resolves false for a promoting/settled row. */
+  editQueuedTurn: (
+    threadId: string,
+    queueId: string,
+    patch: {
+      input: string;
+      attachments?: QueuedTurnRow["attachments"];
+      skills?: QueuedTurnRow["skills"];
+      model?: string | null;
+      mode?: string | null;
+      effort?: string | null;
+      serviceTier?: string | null;
+      contextWindow?: string | null;
+    },
+  ) => Promise<boolean>;
   /** Deliver one queued row now, with the settings it was queued with: steered
    *  into the live turn, started when idle, or moved to the front of the queue
    *  when the provider can't steer. Rejects with the row back where it was;
@@ -3436,6 +3464,50 @@ export type KoneBenchApi = {
   requeue: (input: BenchJobIdInput) => Promise<JobRow | null>;
   reorder: (input: BenchReorderInput) => Promise<boolean>;
   delete: (input: BenchJobIdInput) => Promise<boolean>;
+};
+
+export type ScheduleJobTemplate = {
+  title: string;
+  body: string;
+  target: JobTarget;
+  attachments?: ChatAttachment[];
+};
+export type ScheduleRow = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+  paused: boolean;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastJobId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ScheduleListInput = { projectPath?: string };
+export type ScheduleIdInput = { scheduleId: string };
+export type ScheduleCreateInput = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+};
+export type ScheduleUpdateInput = {
+  scheduleId: string;
+  patch: { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
+};
+export type ScheduleRunNowResult = { job: JobRow | null; reason?: string };
+export type KoneSchedulesApi = {
+  list: (input: ScheduleListInput) => Promise<ScheduleRow[]>;
+  get: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  create: (input: ScheduleCreateInput) => Promise<ScheduleRow | null>;
+  update: (input: ScheduleUpdateInput) => Promise<ScheduleRow | null>;
+  pause: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  resume: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  runNow: (input: ScheduleIdInput) => Promise<ScheduleRunNowResult>;
+  delete: (input: ScheduleIdInput) => Promise<boolean>;
 };
 
 // ── jev, the router ─────────────────────────────────────────────────────────
@@ -4015,6 +4087,7 @@ export type KoneDesktopApi = {
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
   bench: KoneBenchApi;
+  schedules: KoneSchedulesApi;
   jev: KoneJevApi;
   studio: KoneStudioApi;
   roster: KoneRosterApi;

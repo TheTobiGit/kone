@@ -12,6 +12,7 @@
 export * from "./types.js";
 export { AgentService } from "./AgentService.js";
 export type {
+  ConversationRewindTarget,
   PreviewTurnCheckpointResult,
   RevertTurnCheckpointResult,
 } from "./AgentService.js";

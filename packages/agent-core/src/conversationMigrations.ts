@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 33;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1228,12 +1228,22 @@ function migration0028TurnSeals(db: DatabaseSync): void {
   `);
 }
 
+/** The block/item ids a hand-in's one-shot replay omitted for lack of budget,
+ *  so the agent can read the rest back and the timeline can say what was left
+ *  out. JSON arrays; NULL means nothing was recorded. */
+function migration0029HandInOmittedHistory(db: DatabaseSync): void {
+  db.exec(`
+    ALTER TABLE thread_hand_ins ADD COLUMN omitted_block_ids_json TEXT;
+    ALTER TABLE thread_hand_ins ADD COLUMN omitted_item_ids_json TEXT;
+  `);
+}
+
 /** Who owns a thread's current title. `auto` marks a title kone wrote (the
  *  first-turn fallback or a generated one); `manual` marks a title the user
  *  typed. Regeneration reads this and never overwrites `manual`. Kone is
  *  unreleased, so there is no legacy case: every row is `auto` until a rename
  *  makes it `manual`. */
-function migration0029TitleOrigin(db: DatabaseSync): void {
+function migration0030TitleOrigin(db: DatabaseSync): void {
   addColumn(
     db,
     "threads",
@@ -1247,13 +1257,60 @@ function migration0029TitleOrigin(db: DatabaseSync): void {
  *  what it is. `linked_pr_state` and `linked_pr_merged_at` are the last thing
  *  a PR check saw, so the settle sweep can act on a merge without a live gh
  *  call every time; a fresh check overwrites them. */
-function migration0030ThreadPullRequest(db: DatabaseSync): void {
+function migration0031ThreadPullRequest(db: DatabaseSync): void {
   addColumn(db, "threads", "linked_pr_repository", "TEXT");
   addColumn(db, "threads", "linked_pr_number", "INTEGER");
   addColumn(db, "threads", "linked_pr_url", "TEXT");
   addColumn(db, "threads", "linked_pr_state", "TEXT");
   addColumn(db, "threads", "linked_pr_checked_at", "INTEGER");
   addColumn(db, "threads", "linked_pr_merged_at", "INTEGER");
+}
+
+/** A durable, restart-safe scheduled continuation: something the app owes a
+ *  thread at or after `due_at` (resume a quit-interrupted chat, resume at a
+ *  usage-limit reset). `claimed_at` marks a row a dispatcher has taken and not
+ *  yet settled; at boot every claim is orphaned, so it is released and the row
+ *  becomes due again. */
+function migration0032Continuations(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS continuations (
+      continuation_id TEXT PRIMARY KEY,
+      thread_id       TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      kind            TEXT NOT NULL,
+      due_at          INTEGER NOT NULL,
+      payload_json    TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
+      created_at      INTEGER NOT NULL,
+      claimed_at      INTEGER,
+      attempts        INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_continuations_due
+      ON continuations (due_at) WHERE claimed_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_continuations_thread
+      ON continuations (thread_id);
+  `);
+}
+
+/** Persist cron schedules beside the bench queue and mark generated jobs so
+ *  schedule overlap checks can follow the exact job row. */
+function migration0033Schedules(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE schedules (
+      schedule_id TEXT PRIMARY KEY,
+      project_path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      cron TEXT NOT NULL,
+      job_template_json TEXT NOT NULL CHECK (json_valid(job_template_json)),
+      paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+      next_run_at INTEGER,
+      last_run_at INTEGER,
+      last_job_id TEXT REFERENCES jobs(job_id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_schedules_due ON schedules (paused, next_run_at);
+  `);
+  addColumn(db, "jobs", "schedule_id", "TEXT REFERENCES schedules(schedule_id) ON DELETE SET NULL");
+  db.exec("CREATE INDEX idx_jobs_schedule ON jobs (schedule_id, status)");
 }
 
 export const migrationEntries: readonly MigrationEntry[] = [
@@ -1285,8 +1342,11 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
-  { id: 29, name: "TitleOrigin", run: migration0029TitleOrigin },
-  { id: 30, name: "ThreadPullRequest", run: migration0030ThreadPullRequest },
+  { id: 29, name: "HandInOmittedHistory", run: migration0029HandInOmittedHistory },
+  { id: 30, name: "TitleOrigin", run: migration0030TitleOrigin },
+  { id: 31, name: "ThreadPullRequest", run: migration0031ThreadPullRequest },
+  { id: 32, name: "Continuations", run: migration0032Continuations },
+  { id: 33, name: "Schedules", run: migration0033Schedules },
 ];
 
 export interface MigrationOptions {

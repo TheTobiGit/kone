@@ -7,4 +7,11 @@ export type {
   BenchQueueInput,
   BenchReorderInput,
   BenchUpdateInput,
+  ScheduleCreateInput,
+  ScheduleIdInput,
+  ScheduleJobTemplate,
+  ScheduleListInput,
+  ScheduleRow,
+  ScheduleRunNowResult,
+  ScheduleUpdateInput,
 } from "./types.js";
