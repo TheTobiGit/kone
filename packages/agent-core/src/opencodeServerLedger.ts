@@ -105,23 +105,34 @@ export async function inspectProcessMarker(pid: number, marker: string): Promise
     }
   }
   if (process.platform === "darwin") {
-    return new Promise((resolve) => {
-      execFile("ps", ["-p", String(pid), "-Eww"], { encoding: "utf8", timeout: PROCESS_INSPECTION_TIMEOUT_MS }, (error, stdout) => {
-        if (error) {
-          resolve(processIsGone(pid) ? "gone" : "unknown");
-          return;
-        }
-        const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const environmentOutput = String(stdout);
-        if (!/\b[A-Za-z_][A-Za-z0-9_]*=/.test(environmentOutput)) {
-          resolve("unknown");
-          return;
-        }
-        resolve(new RegExp(`(?:^|\\s)${SERVER_MARKER_ENV}=${escapedMarker}(?:\\s|$)`).test(environmentOutput) ? "marked" : "unmarked");
-      });
-    });
+    return inspectDarwinProcessMarker(pid, marker);
   }
   return "unknown";
+}
+
+async function inspectDarwinProcessMarker(pid: number, marker: string): Promise<ProcessMarkerInspection> {
+  const [argvOutput, combinedOutput] = await Promise.all([readDarwinCommandLine(pid, false), readDarwinCommandLine(pid, true)]);
+  if (argvOutput === undefined || combinedOutput === undefined) return processIsGone(pid) ? "gone" : "unknown";
+  const argvText = argvOutput.replace(/\r?\n$/, "");
+  const combinedText = combinedOutput.replace(/\r?\n$/, "");
+  // Without an environment section there is nothing to match against: the
+  // marker may live only in argv, which is not ownership proof.  `ps -E`
+  // prints argv and the environment with no delimiter, so the only way to
+  // tell them apart is to strip the argv text this process actually has.
+  if (argvText.length === 0 || combinedText === argvText) return "unknown";
+  if (!combinedText.startsWith(`${argvText} `)) return "unknown";
+  const environmentText = combinedText.slice(argvText.length + 1);
+  const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${SERVER_MARKER_ENV}=${escapedMarker}(?:\\s|$)`).test(environmentText) ? "marked" : "unmarked";
+}
+
+function readDarwinCommandLine(pid: number, withEnvironment: boolean): Promise<string | undefined> {
+  const args = withEnvironment ? ["-p", String(pid), "-Eww", "-o", "command="] : ["-p", String(pid), "-ww", "-o", "command="];
+  return new Promise((resolve) => {
+    execFile("ps", args, { encoding: "utf8", timeout: PROCESS_INSPECTION_TIMEOUT_MS }, (error, stdout) => {
+      resolve(error ? undefined : String(stdout));
+    });
+  });
 }
 
 export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
@@ -171,75 +182,88 @@ export class OpenCodeServerLedger {
   ): Promise<void> {
     return this.serialize(async () => {
       const removed = new Set<number>();
+      const verified = new Set<number>();
       for (const entry of orphanSnapshot) {
         if (processOwnedPids.has(entry.pid)) continue;
-        const initial = await this.inspect(entry.pid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (initial.state === "unknown") continue;
-        if (initial.state === "gone") {
-          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
-          if (orphanResult === "gone") removed.add(entry.pid);
-          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
-          continue;
+        let outcome: "verified" | "unverifiable" | "none" = "none";
+        entryReap: {
+          const initial = await this.inspect(entry.pid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (initial.state === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (initial.state === "gone") {
+            const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+            if (orphanResult === "gone") removed.add(entry.pid);
+            else if (orphanResult === "unknown") outcome = "unverifiable";
+            break entryReap;
+          }
+          if (!matchesEntry(initial, entry)) { removed.add(entry.pid); break entryReap; }
+          const groupState = this.probeGroup(entry.pgid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (groupState === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (groupState !== "alive") break entryReap;
+          outcome = "verified";
+          const leaderAtSignal = await this.inspect(entry.pid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (leaderAtSignal.state === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (leaderAtSignal.state === "gone") {
+            const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+            if (orphanResult === "gone") removed.add(entry.pid);
+            else if (orphanResult === "unknown") outcome = "unverifiable";
+            break entryReap;
+          }
+          if (!matchesEntry(leaderAtSignal, entry)) { removed.add(entry.pid); break entryReap; }
+          try { this.kill(entry.pgid, "SIGTERM"); } catch { break entryReap; }
+          const afterTerm = await this.waitForGroupExit(entry.pgid);
+          if (afterTerm === "gone") { removed.add(entry.pid); break entryReap; }
+          if (afterTerm === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          const leaderBeforeKill = await this.inspect(entry.pid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (leaderBeforeKill.state === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (leaderBeforeKill.state === "alive" && !matchesEntry(leaderBeforeKill, entry)) { removed.add(entry.pid); break entryReap; }
+          if (leaderBeforeKill.state === "gone") {
+            const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+            if (orphanResult === "gone") removed.add(entry.pid);
+            else if (orphanResult === "unknown") outcome = "unverifiable";
+            break entryReap;
+          }
+          const groupBeforeKill = this.probeGroup(entry.pgid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (groupBeforeKill === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (groupBeforeKill !== "alive") break entryReap;
+          const leaderAtKill = await this.inspect(entry.pid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (leaderAtKill.state === "unknown") { outcome = "unverifiable"; break entryReap; }
+          if (leaderAtKill.state === "gone") {
+            const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+            if (orphanResult === "gone") removed.add(entry.pid);
+            else if (orphanResult === "unknown") outcome = "unverifiable";
+            break entryReap;
+          }
+          if (!matchesEntry(leaderAtKill, entry)) { removed.add(entry.pid); break entryReap; }
+          try { this.kill(entry.pgid, "SIGKILL"); } catch { break entryReap; }
+          const afterKill = await this.waitForGroupExit(entry.pgid);
+          if (processOwnedPids.has(entry.pid)) break entryReap;
+          if (afterKill === "gone") removed.add(entry.pid);
+          else if (afterKill === "unknown") outcome = "unverifiable";
         }
-        if (initial.state === "alive" && !matchesEntry(initial, entry)) {
-          removed.add(entry.pid);
-          continue;
+        if (outcome === "unverifiable") {
+          if (this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
+        } else if (outcome === "verified") {
+          // A verified attempt clears the retry count: whatever ran before, the
+          // entry is unambiguously ours right now.
+          entry.unverifiableAttempts = 0;
+          verified.add(entry.pid);
         }
-        if (this.probeGroup(entry.pgid) !== "alive" || processOwnedPids.has(entry.pid)) continue;
-        const leaderAtSignal = await this.inspect(entry.pid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (leaderAtSignal.state === "unknown") continue;
-        if (leaderAtSignal.state === "gone") {
-          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
-          if (orphanResult === "gone") removed.add(entry.pid);
-          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
-          continue;
-        }
-        if (!matchesEntry(leaderAtSignal, entry)) { removed.add(entry.pid); continue; }
-        try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
-        const afterTerm = await this.waitForGroupExit(entry.pgid);
-        if (afterTerm === "gone") {
-          removed.add(entry.pid);
-          continue;
-        }
-        if (afterTerm === "unknown") continue;
-        if (processOwnedPids.has(entry.pid)) continue;
-        const leaderBeforeKill = await this.inspect(entry.pid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (leaderBeforeKill.state === "unknown") continue;
-        if (leaderBeforeKill.state === "alive" && !matchesEntry(leaderBeforeKill, entry)) {
-          removed.add(entry.pid);
-          continue;
-        }
-        if (leaderBeforeKill.state === "gone") {
-          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
-          if (orphanResult === "gone") removed.add(entry.pid);
-          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
-          continue;
-        }
-        if (this.probeGroup(entry.pgid) !== "alive" || processOwnedPids.has(entry.pid)) continue;
-        const leaderAtKill = await this.inspect(entry.pid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (leaderAtKill.state === "unknown") continue;
-        if (leaderAtKill.state === "gone") {
-          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
-          if (orphanResult === "gone") removed.add(entry.pid);
-          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
-          continue;
-        }
-        if (!matchesEntry(leaderAtKill, entry)) { removed.add(entry.pid); continue; }
-        try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
-        const afterKill = await this.waitForGroupExit(entry.pgid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (afterKill === "gone") removed.add(entry.pid);
       }
       const entries = this.read();
       for (const entry of orphanSnapshot) {
         const current = entries.get(entry.pid);
-        if (current && sameIdentity(current, entry)) {
-          current.unverifiableAttempts = Math.max(current.unverifiableAttempts, entry.unverifiableAttempts);
-        }
+        if (!current || !sameIdentity(current, entry)) continue;
+        // A verified attempt resets to 0 and must outrank both the persisted
+        // count and a concurrent writer's increment; only unverifiable passes
+        // keep the running maximum.
+        current.unverifiableAttempts = verified.has(entry.pid) ? 0 : Math.max(current.unverifiableAttempts, entry.unverifiableAttempts);
       }
       for (const pid of removed) {
         const current = entries.get(pid);
@@ -266,7 +290,7 @@ export class OpenCodeServerLedger {
   ): Promise<"gone" | "keep" | "unknown"> {
     const groupState = this.probeGroup(entry.pgid);
     if (groupState === "gone") return "gone";
-    if (groupState === "unknown") return "keep";
+    if (groupState === "unknown") return "unknown";
     const initial = await this.inspectMarkedGroupMembers(entry);
     if (processOwnedPids.has(entry.pid)) return "keep";
     if (initial.state === "unknown") return "unknown";
@@ -329,6 +353,12 @@ export class OpenCodeServerLedger {
       if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return "owned";
       if (markerState === "unknown") return "unknown";
       if (markerState !== "marked") continue;
+      // The marker read may resolve after this pid was released and reused.
+      // Re-read the identity last, with no await between it and the signal.
+      const identityBeforeSignal = await this.inspect(member.pid);
+      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return "owned";
+      if (identityBeforeSignal.state === "unknown") return "unknown";
+      if (identityBeforeSignal.state === "gone" || !matchesProcess(identityBeforeSignal, member)) continue;
       try { this.signalProcess(member.pid, signal); } catch { return "unknown"; }
     }
     return "sent";

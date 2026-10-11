@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { killProcessGroup, OpenCodeServerLedger, type ProcessIdentity } from "./opencodeServerLedger.js";
+import { killProcessGroup, createOpenCodeServerMarker, inspectProcessMarker, OpenCodeServerLedger, type ProcessIdentity } from "./opencodeServerLedger.js";
 
 const originalLeader: ProcessIdentity = { pid: 41000, startTime: "old-server-start", command: "opencode" };
 const originalMember: ProcessIdentity = { pid: 41001, startTime: "old-worker-start", command: "opencode-worker" };
@@ -268,3 +268,83 @@ test("leaves a real unmarked replacement group running after its leader exits", 
     try { process.kill(-leaderPid, "SIGKILL"); } catch { /* the process group is already gone */ }
   }
 }));
+
+test("does not take a macOS argv marker as environment proof", async () => {
+  const marker = createOpenCodeServerMarker();
+  const child = spawn("/bin/sh", ["-c", "trap '' TERM; echo ready; while :; do /bin/sleep 30; done", `KONE_OPENCODE_SERVER=${marker}`], { env: {}, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const pid = child.pid;
+  if (!pid) throw new Error("missing argv marker test pid");
+  try {
+    await new Promise<void>((resolve, reject) => { child.once("error", reject); child.stdout.once("data", () => resolve()); });
+    expect(await inspectProcessMarker(pid, marker)).not.toBe("marked");
+  } finally {
+    killProcessGroup(pid, "SIGKILL");
+  }
+}, 10_000);
+
+test("counts and expires an entry whose leader inspection stays unknown", async () => withLedger(async (file) => {
+  writeFileSync(file, JSON.stringify([{ ...originalLeader, pid: 42000, pgid: 42000, marker: entryMarker }]));
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message: string) => { warnings.push(message); };
+  try {
+    const ledger = new OpenCodeServerLedger(file, async () => ({ state: "unknown" }));
+    for (let attempt = 0; attempt < 9; attempt++) await ledger.reap();
+    expect(ledger.snapshot()[0]?.unverifiableAttempts).toBe(9);
+    await ledger.reap();
+    expect(ledger.snapshot()).toEqual([]);
+    expect(warnings).toHaveLength(1);
+  } finally {
+    console.warn = originalWarn;
+  }
+}));
+
+test("counts and expires an entry whose group probe stays unknown", async () => withLedger(async (file) => {
+  writeFileSync(file, JSON.stringify([{ ...originalLeader, pid: 42001, pgid: 42001, marker: entryMarker }]));
+  const ledger = new OpenCodeServerLedger(file, async () => ({ state: "gone" }), undefined, undefined, () => "unknown");
+  for (let attempt = 0; attempt < 10; attempt++) await ledger.reap();
+  expect(ledger.snapshot()).toEqual([]);
+}));
+
+test("a verified leader whose TERM fails resets the unverifiable count to zero", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 42002, pgid: 42002, marker: entryMarker, unverifiableAttempts: 9 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const ledger = new OpenCodeServerLedger(
+    file,
+    async () => ({ state: "alive", startTime: originalLeader.startTime, command: originalLeader.command }),
+    () => { throw new Error("EPERM"); },
+    async () => [originalLeader],
+    () => "alive",
+  );
+  await ledger.reap();
+  expect(ledger.snapshot()).toEqual([{ ...entry, unverifiableAttempts: 0 }]);
+}));
+
+test("does not signal a pid reused while the final marker inspection awaits", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 61000, pgid: 61000, marker: "server-unique-marker", unverifiableAttempts: 0 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const member: ProcessIdentity = { pid: 61001, startTime: "old-member", command: "worker" };
+  let markerReads = 0;
+  let replacement = false;
+  const signals: Array<{ pid: number; signal: NodeJS.Signals; replacement: boolean }> = [];
+  const ledger = new OpenCodeServerLedger(
+    file,
+    async (pid) => {
+      if (pid === entry.pid) return { state: "gone" };
+      // SAFETY: the marker read below flips `replacement` mid-await; the ledger
+      // must re-read the identity after it and see this replacement.
+      return replacement ? { state: "alive", startTime: "new-unrelated", command: "unrelated" } : { state: "alive", startTime: member.startTime, command: member.command };
+    },
+    () => { throw new Error("unexpected group signal"); },
+    async () => [member],
+    () => "alive",
+    async () => {
+      markerReads += 1;
+      if (markerReads === 2) replacement = true;
+      return "marked";
+    },
+    (pid, signal) => { signals.push({ pid, signal, replacement }); },
+  );
+  await ledger.reap();
+  expect(signals).toEqual([]);
+}, 10_000));
