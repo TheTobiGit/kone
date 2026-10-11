@@ -246,6 +246,28 @@ describe("recovery of a hand-over that was on its way", () => {
     expect(second.store.inboxMessage(live)?.deliveryId).toBe(claim!.deliveryId);
   });
 
+  test("a late inbox subscriber hears about recovery that already finished", async () => {
+    const dir = freshDir();
+    const first = processOn(dir);
+    const { id: sent } = jobOnItsWay(first, "Revert the migration.");
+    const outage = new Database(path.join(dir, "kone.sqlite"));
+    outage.exec(`CREATE TRIGGER notices_fail BEFORE INSERT ON agent_inbox WHEN NEW.kind = 'notice'
+                  BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+
+    const second = processOn(dir);
+    expect(second.store.inboxMessage(sent)?.state).toBe("handing");
+    outage.exec("DROP TRIGGER notices_fail");
+    outage.close();
+
+    const start = Date.now();
+    while (second.store.inboxMessage(sent)?.state === "handing" && Date.now() - start < 3_000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const told: string[] = [];
+    second.store.onInboxChanged((threadIds) => told.push(...threadIds));
+    expect(told).toContain("parent");
+  });
+
   test("a hand-over never marked sent goes back to unseen and is handed over again", () => {
     const dir = freshDir();
     const first = processOn(dir);

@@ -434,16 +434,28 @@ export type InboxChangeListener = (recipientThreadIds: readonly string[]) => voi
 
 export class AgentInboxRepo implements AgentInboxStore {
   private readonly listeners = new Set<InboxChangeListener>();
+  private pendingRecoveryChanges: readonly string[] = [];
 
   constructor(private readonly dbh: ConversationDb) {
     // Orphans a failed boot recovery left are settled later, outside any
-    // write of this repo's: the ringer must hear of what went back to unseen.
-    dbh.onInboxRecovered((threadIds) => this.changed(threadIds));
+    // write of this repo's: retain the change until the ringer subscribes.
+    dbh.onInboxRecovered((threadIds) => {
+      if (this.listeners.size === 0) {
+        this.pendingRecoveryChanges = [...new Set([...this.pendingRecoveryChanges, ...threadIds])];
+        return;
+      }
+      this.changed(threadIds);
+    });
   }
 
   /** Hear about every change to anyone's inbox. Returns the unsubscribe. */
   onChanged(listener: InboxChangeListener): () => void {
     this.listeners.add(listener);
+    if (this.pendingRecoveryChanges.length > 0) {
+      const pending = this.pendingRecoveryChanges;
+      this.pendingRecoveryChanges = [];
+      this.changed(pending);
+    }
     return () => this.listeners.delete(listener);
   }
 
