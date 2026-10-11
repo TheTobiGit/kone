@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1266,6 +1266,30 @@ function migration0031ThreadPullRequest(db: DatabaseSync): void {
   addColumn(db, "threads", "linked_pr_merged_at", "INTEGER");
 }
 
+/** A durable, restart-safe scheduled continuation: something the app owes a
+ *  thread at or after `due_at` (resume a quit-interrupted chat, resume at a
+ *  usage-limit reset). `claimed_at` marks a row a dispatcher has taken and not
+ *  yet settled; at boot every claim is orphaned, so it is released and the row
+ *  becomes due again. */
+function migration0032Continuations(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS continuations (
+      continuation_id TEXT PRIMARY KEY,
+      thread_id       TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      kind            TEXT NOT NULL,
+      due_at          INTEGER NOT NULL,
+      payload_json    TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
+      created_at      INTEGER NOT NULL,
+      claimed_at      INTEGER,
+      attempts        INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_continuations_due
+      ON continuations (due_at) WHERE claimed_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_continuations_thread
+      ON continuations (thread_id);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1298,6 +1322,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 29, name: "HandInOmittedHistory", run: migration0029HandInOmittedHistory },
   { id: 30, name: "TitleOrigin", run: migration0030TitleOrigin },
   { id: 31, name: "ThreadPullRequest", run: migration0031ThreadPullRequest },
+  { id: 32, name: "Continuations", run: migration0032Continuations },
 ];
 
 export interface MigrationOptions {

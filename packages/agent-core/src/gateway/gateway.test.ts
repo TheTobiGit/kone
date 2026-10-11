@@ -1125,7 +1125,7 @@ describe("gateway integration (real store + HTTP)", () => {
       threadControls: {
         stopThread: async (threadId) => {
           stoppedId = threadId;
-          return { stopped: true, wasRunning: true };
+          return { stopped: true, wasRunning: true, interruptRequested: true, confirmedStopped: true };
         },
       },
     });

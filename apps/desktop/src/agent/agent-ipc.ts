@@ -284,6 +284,11 @@ export function registerAgentIpc(): void {
   // behind (prepared from main's before-quit). Claimed and resumed inside the
   // dispatcher — before the window exists, so no client command can race the
   // consume. Best-effort: resuming never fails boot.
+  // Restart background notes: the boot seal captured the live subagents and
+  // task-tracker tasks the last process died with. Staged before quit-resume
+  // so a resumed continuation carries its thread's note; either way the note
+  // only ever rides a thread's next turn, never wakes one.
+  dispatcher.recoverRestartBackgroundNotesAtBoot();
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
 
   // The bench runner: queued jobs become threads through the same dispatcher
@@ -374,12 +379,12 @@ export function registerAgentIpc(): void {
     },
     threadControls: {
       stopThread: async (threadId) => {
-        const wasRunning = svc.hasLiveSession(threadId);
-        await svc.stopSession(threadId);
         // `stopped` is the idempotent guarantee, not a torn-something-down
-        // report: stopSession no-ops on an idle thread, which still leaves it
-        // with nothing running. `wasRunning` says whether a session existed.
-        return { stopped: true, wasRunning };
+        // report: stopThread no-ops on an idle thread, which still leaves it
+        // with nothing running. The service splits the request
+        // (interruptRequested) from its confirmation (confirmedStopped).
+        const result = await svc.stopThread(threadId);
+        return { ...result, stopped: result.confirmedStopped };
       },
       archiveThread: async (threadId, archived) => {
         const res = await svc.setThreadArchived(threadId, archived);

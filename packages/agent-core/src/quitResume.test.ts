@@ -8,9 +8,9 @@ import {
   buildQuitResumeRecord,
   claimQuitResumeRecord,
   persistQuitResumeRecord,
+  planQuitResumeTurns,
   prepareQuitResume,
   readQuitResumeRecord,
-  resumeQuitInterruptedChats,
   type QuitResumeAssistantTurn,
   type QuitResumeRecord,
   type QuitResumeThreadSnapshot,
@@ -38,6 +38,7 @@ function snapshot(threadId: string, overrides: Partial<QuitResumeThreadSnapshot>
     threadId,
     missing: overrides.missing ?? false,
     archived: overrides.archived ?? false,
+    done: overrides.done ?? false,
     busy: overrides.busy ?? false,
     turns: overrides.turns ?? [],
   };
@@ -148,50 +149,8 @@ describe("quit resume record file", () => {
   });
 });
 
-describe("resume with no record", () => {
-  test("one existence check and no work", async () => {
-    const recordPath = freshRecordPath();
-    let snapshots = 0;
-    let dispatches = 0;
-    const claimed = claimQuitResumeRecord(recordPath);
-    expect(claimed).toEqual({ kind: "absent" });
-    const result = await resumeQuitInterruptedChats({
-      claimed,
-      readSnapshot: () => {
-        snapshots += 1;
-        return null;
-      },
-      dispatchResumeTurn: () => {
-        dispatches += 1;
-        return Promise.resolve();
-      },
-    });
-    expect(result).toEqual({ resumed: [], skipped: [] });
-    expect(snapshots).toBe(0);
-    expect(dispatches).toBe(0);
-  });
-
-  test("an unreadable record resumes nothing", async () => {
-    const recordPath = freshRecordPath();
-    writeFileSync(recordPath, "{ not json");
-    const claimed = claimQuitResumeRecord(recordPath);
-    expect(claimed).toEqual({ kind: "invalid" });
-    let snapshots = 0;
-    const result = await resumeQuitInterruptedChats({
-      claimed,
-      readSnapshot: () => {
-        snapshots += 1;
-        return null;
-      },
-      dispatchResumeTurn: () => Promise.resolve(),
-    });
-    expect(result).toEqual({ resumed: [], skipped: [] });
-    expect(snapshots).toBe(0);
-  });
-});
-
-describe("resume filtering", () => {
-  test("threads that moved on are filtered; the rest resume with the recorded prompt", async () => {
+describe("planQuitResumeTurns", () => {
+  test("threads that moved on are filtered; the rest are kept", () => {
     const record = recordWith([
       { threadId: "steady", turnId: "steady-turn" },
       { threadId: "superseded", turnId: "superseded-turn" },
@@ -199,120 +158,58 @@ describe("resume filtering", () => {
       { threadId: "answered", turnId: "answered-turn" },
       { threadId: "gone", turnId: "gone-turn" },
       { threadId: "archived", turnId: "archived-turn" },
+      { threadId: "done", turnId: "done-turn" },
       { threadId: "running", turnId: "running-turn" },
-      { threadId: "stolen", turnId: "stolen-turn" },
     ]);
-    const snapshots = new Map<string, QuitResumeThreadSnapshot>([
-      [
-        "steady",
-        snapshot("steady", {
-          turns: [assistantTurn("steady-turn", "interrupted", BEFORE, AFTER)],
-        }),
-      ],
-      [
-        // A later turn replaced the recorded one and was itself interrupted:
-        // still where the quit left it.
-        "superseded",
-        snapshot("superseded", {
-          turns: [
-            assistantTurn("superseded-turn", "interrupted", BEFORE, BEFORE),
-            assistantTurn("superseded-turn-2", "interrupted", AFTER, null),
-          ],
-        }),
-      ],
-      [
-        // Still connecting at quit; the earlier turn had settled long before.
-        "connecting",
-        snapshot("connecting", {
-          turns: [assistantTurn("connecting-old", "completed", BEFORE, BEFORE)],
-        }),
-      ],
-      [
-        "answered",
-        snapshot("answered", {
-          turns: [assistantTurn("answered-turn", "completed", BEFORE, AFTER)],
-        }),
-      ],
-      [
-        "archived",
-        snapshot("archived", {
-          archived: true,
-          turns: [assistantTurn("archived-turn", "interrupted", BEFORE, AFTER)],
-        }),
-      ],
-      [
-        "running",
-        snapshot("running", {
-          busy: true,
-          turns: [assistantTurn("running-turn", "running", BEFORE, null)],
-        }),
-      ],
-      [
-        "stolen",
-        snapshot("stolen", {
-          turns: [assistantTurn("stolen-turn", "interrupted", BEFORE, AFTER)],
-        }),
-      ],
-    ]);
-    const dispatched: Array<{ threadId: string; prompt: string }> = [];
-    // "stolen" reads clean at plan time, then a client turn lands on it before
-    // its dispatch — the re-check must filter it.
-    let stolenReads = 0;
-    const result = await resumeQuitInterruptedChats({
-      claimed: { kind: "record", record },
-      readSnapshot: (threadId) => {
-        if (threadId === "stolen") {
-          stolenReads += 1;
-          if (stolenReads > 1) {
-            return snapshot("stolen", {
-              busy: true,
-              turns: [assistantTurn("stolen-turn", "running", BEFORE, null)],
-            });
-          }
-        }
-        return snapshots.get(threadId) ?? null;
-      },
-      dispatchResumeTurn: (threadId, prompt) => {
-        dispatched.push({ threadId, prompt });
-        return Promise.resolve();
-      },
-    });
-    expect(result.resumed).toEqual(["steady", "superseded", "connecting"]);
-    expect(result.skipped).toEqual([
+    const snapshots: QuitResumeThreadSnapshot[] = [
+      snapshot("steady", {
+        turns: [assistantTurn("steady-turn", "interrupted", BEFORE, AFTER)],
+      }),
+      // A later turn replaced the recorded one and was itself interrupted:
+      // still where the quit left it.
+      snapshot("superseded", {
+        turns: [
+          assistantTurn("superseded-turn", "interrupted", BEFORE, BEFORE),
+          assistantTurn("superseded-turn-2", "interrupted", AFTER, null),
+        ],
+      }),
+      // Still connecting at quit; the earlier turn had settled long before.
+      snapshot("connecting", {
+        turns: [assistantTurn("connecting-old", "completed", BEFORE, BEFORE)],
+      }),
+      snapshot("answered", {
+        turns: [assistantTurn("answered-turn", "completed", BEFORE, AFTER)],
+      }),
+      snapshot("gone", { missing: true }),
+      snapshot("archived", {
+        archived: true,
+        turns: [assistantTurn("archived-turn", "interrupted", BEFORE, AFTER)],
+      }),
+      snapshot("done", {
+        done: true,
+        turns: [assistantTurn("done-turn", "interrupted", BEFORE, AFTER)],
+      }),
+      snapshot("running", {
+        busy: true,
+        turns: [assistantTurn("running-turn", "running", BEFORE, null)],
+      }),
+    ];
+    const plan = planQuitResumeTurns({ record, snapshots });
+    expect(plan.threadIds).toEqual(["steady", "superseded", "connecting"]);
+    expect(plan.skipped).toEqual([
       { threadId: "answered", reason: "turn-completed" },
       { threadId: "gone", reason: "thread-missing" },
       { threadId: "archived", reason: "thread-archived" },
+      { threadId: "done", reason: "thread-settled" },
       { threadId: "running", reason: "turn-in-flight" },
-      { threadId: "stolen", reason: "turn-in-flight" },
-    ]);
-    expect(dispatched).toEqual([
-      { threadId: "steady", prompt: DEFAULT_QUIT_RESUME_PROMPT },
-      { threadId: "superseded", prompt: DEFAULT_QUIT_RESUME_PROMPT },
-      { threadId: "connecting", prompt: DEFAULT_QUIT_RESUME_PROMPT },
     ]);
   });
 
-  test("a dispatch failure skips one thread without stopping the rest", async () => {
-    const record = recordWith([
-      { threadId: "a", turnId: "a-turn" },
-      { threadId: "b", turnId: "b-turn" },
-    ]);
-    const resumed: string[] = [];
-    const result = await resumeQuitInterruptedChats({
-      claimed: { kind: "record", record },
-      readSnapshot: (threadId) =>
-        snapshot(threadId, {
-          turns: [assistantTurn(`${threadId}-turn`, "interrupted", BEFORE, AFTER)],
-        }),
-      dispatchResumeTurn: (threadId) => {
-        if (threadId === "a") return Promise.reject(new Error("session gone"));
-        resumed.push(threadId);
-        return Promise.resolve();
-      },
-    });
-    expect(result.resumed).toEqual(["b"]);
-    expect(result.skipped).toEqual([{ threadId: "a", reason: "dispatch-failed" }]);
-    expect(resumed).toEqual(["b"]);
+  test("a missing snapshot is skipped, never resumed", () => {
+    const record = recordWith([{ threadId: "ghost", turnId: null }]);
+    const plan = planQuitResumeTurns({ record, snapshots: [] });
+    expect(plan.threadIds).toEqual([]);
+    expect(plan.skipped).toEqual([{ threadId: "ghost", reason: "thread-missing" }]);
   });
 });
 
