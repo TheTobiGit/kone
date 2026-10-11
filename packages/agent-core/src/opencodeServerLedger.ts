@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -7,10 +7,11 @@ export type ProcessInspectionResult =
   | { state: "alive"; startTime: string }
   | { state: "gone" }
   | { state: "unknown" };
-export type ProcessInspection = (pid: number) => ProcessInspectionResult;
+export type ProcessInspection = (pid: number) => Promise<ProcessInspectionResult>;
 export type ProcessKiller = (pgid: number, signal: NodeJS.Signals) => void;
 const REAP_POLL_MS = 100;
 const REAP_WAIT_MS = 2_000;
+const PROCESS_INSPECTION_TIMEOUT_MS = 2_000;
 
 function processIsGone(pid: number): boolean {
   try {
@@ -21,13 +22,17 @@ function processIsGone(pid: number): boolean {
   }
 }
 
-export function inspectProcessStartTime(pid: number): ProcessInspectionResult {
-  try {
-    const startTime = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    return startTime ? { state: "alive", startTime } : { state: "gone" };
-  } catch {
-    return processIsGone(pid) ? { state: "gone" } : { state: "unknown" };
-  }
+export function inspectProcessStartTime(pid: number): Promise<ProcessInspectionResult> {
+  return new Promise((resolve) => {
+    execFile("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: PROCESS_INSPECTION_TIMEOUT_MS }, (error, stdout) => {
+      if (error) {
+        resolve(processIsGone(pid) ? { state: "gone" } : { state: "unknown" });
+        return;
+      }
+      const startTime = String(stdout).trim();
+      resolve(startTime ? { state: "alive", startTime } : { state: "gone" });
+    });
+  });
 }
 
 export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
@@ -35,60 +40,73 @@ export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
 }
 
 export class OpenCodeServerLedger {
+  private mutations: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly filePath: string,
     private readonly inspect: ProcessInspection = inspectProcessStartTime,
     private readonly kill: ProcessKiller = killProcessGroup,
   ) {}
 
-  record(pid: number, pgid = pid): OpenCodeServerLedgerEntry | undefined {
-    const inspected = this.inspect(pid);
-    if (inspected.state !== "alive") return undefined;
-    const startTime = inspected.startTime;
-    const entry = { pid, pgid, startTime };
-    const entries = this.read();
-    entries.set(pid, entry);
-    this.write(entries);
-    return entry;
+  record(pid: number, pgid = pid): Promise<OpenCodeServerLedgerEntry | undefined> {
+    return this.serialize(async () => {
+      const inspected = await this.inspect(pid);
+      if (inspected.state !== "alive") return undefined;
+      const entry = { pid, pgid, startTime: inspected.startTime };
+      const entries = this.read();
+      entries.set(pid, entry);
+      this.write(entries);
+      return entry;
+    });
   }
 
-  remove(pid: number): void {
-    const entries = this.read();
-    if (!entries.delete(pid)) return;
-    this.write(entries);
+  remove(pid: number): Promise<void> {
+    return this.serialize(async () => {
+      const entries = this.read();
+      if (!entries.delete(pid)) return;
+      this.write(entries);
+    });
   }
 
-  async reap(): Promise<void> {
-    const entries = this.read();
-    for (const entry of entries.values()) {
-      const initial = this.inspect(entry.pid);
-      if (initial.state === "unknown") continue;
-      if (initial.state === "gone" || initial.startTime !== entry.startTime) {
-        entries.delete(entry.pid);
-        continue;
+  reap(): Promise<void> {
+    return this.serialize(async () => {
+      const entries = this.read();
+      for (const entry of entries.values()) {
+        const initial = await this.inspect(entry.pid);
+        if (initial.state === "unknown") continue;
+        if (initial.state === "gone" || initial.startTime !== entry.startTime) {
+          entries.delete(entry.pid);
+          continue;
+        }
+        try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
+        const afterTerm = await this.waitForExit(entry);
+        if (afterTerm === "gone") {
+          entries.delete(entry.pid);
+          continue;
+        }
+        if (afterTerm === "unknown") continue;
+        try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
+        if (await this.waitForExit(entry) === "gone") entries.delete(entry.pid);
       }
-      try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
-      const afterTerm = await this.waitForExit(entry);
-      if (afterTerm === "gone") {
-        entries.delete(entry.pid);
-        continue;
-      }
-      if (afterTerm === "unknown") continue;
-      try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
-      if (await this.waitForExit(entry) === "gone") entries.delete(entry.pid);
-    }
-    this.write(entries);
+      this.write(entries);
+    });
   }
 
   private async waitForExit(entry: OpenCodeServerLedgerEntry): Promise<"gone" | "same" | "unknown"> {
     const deadline = Date.now() + REAP_WAIT_MS;
     while (true) {
-      const current = this.inspect(entry.pid);
+      const current = await this.inspect(entry.pid);
       if (current.state === "gone" || (current.state === "alive" && current.startTime !== entry.startTime)) return "gone";
       if (current.state === "unknown") return "unknown";
       if (Date.now() >= deadline) return "same";
       await new Promise((resolve) => setTimeout(resolve, REAP_POLL_MS));
     }
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutations.then(operation);
+    this.mutations = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private read(): Map<number, OpenCodeServerLedgerEntry> {
