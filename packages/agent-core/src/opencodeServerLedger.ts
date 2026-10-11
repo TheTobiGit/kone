@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 export type ProcessIdentity = { pid: number; startTime: string; command: string };
-export type OpenCodeServerLedgerEntry = ProcessIdentity & { pgid: number; marker: string };
+export type OpenCodeServerLedgerEntry = ProcessIdentity & { pgid: number; marker: string; unverifiableAttempts: number };
 export type ProcessInspectionResult =
   | ({ state: "alive" } & Omit<ProcessIdentity, "pid">)
   | { state: "gone" }
@@ -22,6 +22,8 @@ const REAP_POLL_MS = 100;
 const REAP_WAIT_MS = 2_000;
 const PROCESS_INSPECTION_TIMEOUT_MS = 2_000;
 const SERVER_MARKER_ENV = "KONE_OPENCODE_SERVER";
+const MAX_UNVERIFIABLE_ATTEMPTS = 10;
+const warnedUnverifiableEntries = new Set<string>();
 
 export function createOpenCodeServerMarker(): string {
   return randomUUID();
@@ -143,7 +145,7 @@ export class OpenCodeServerLedger {
     return this.serialize(async () => {
       const inspected = await this.inspect(pid);
       if (inspected.state !== "alive") return undefined;
-      const entry = { pid, pgid, startTime: inspected.startTime, command: inspected.command, marker };
+      const entry = { pid, pgid, startTime: inspected.startTime, command: inspected.command, marker, unverifiableAttempts: 0 };
       const entries = this.read();
       entries.set(pid, entry);
       this.write(entries);
@@ -177,27 +179,24 @@ export class OpenCodeServerLedger {
         if (initial.state === "gone") {
           const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
           if (orphanResult === "gone") removed.add(entry.pid);
+          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
           continue;
         }
         if (initial.state === "alive" && !matchesEntry(initial, entry)) {
           removed.add(entry.pid);
           continue;
         }
-        const originalMembers = await this.inspectGroupMembers(entry.pgid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (!originalMembers?.length || originalMembers.some((member) => member.pid === entry.pid && !matchesEntry(member, entry))) {
-          if (originalMembers?.some((member) => member.pid === entry.pid)) removed.add(entry.pid);
-          continue;
-        }
-        if (initial.state === "alive" && !originalMembers.some((member) => member.pid === entry.pid && matchesEntry(member, entry))) continue;
-        const leaderBeforeTerm = await this.inspect(entry.pid);
-        if (processOwnedPids.has(entry.pid)) continue;
-        if (leaderBeforeTerm.state === "alive" && !matchesEntry(leaderBeforeTerm, entry)) {
-          removed.add(entry.pid);
-          continue;
-        }
-        if (leaderBeforeTerm.state === "unknown") continue;
         if (this.probeGroup(entry.pgid) !== "alive" || processOwnedPids.has(entry.pid)) continue;
+        const leaderAtSignal = await this.inspect(entry.pid);
+        if (processOwnedPids.has(entry.pid)) continue;
+        if (leaderAtSignal.state === "unknown") continue;
+        if (leaderAtSignal.state === "gone") {
+          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+          if (orphanResult === "gone") removed.add(entry.pid);
+          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
+          continue;
+        }
+        if (!matchesEntry(leaderAtSignal, entry)) { removed.add(entry.pid); continue; }
         try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
         const afterTerm = await this.waitForGroupExit(entry.pgid);
         if (afterTerm === "gone") {
@@ -213,17 +212,35 @@ export class OpenCodeServerLedger {
           removed.add(entry.pid);
           continue;
         }
-        const currentMembers = await this.inspectGroupMembers(entry.pgid);
+        if (leaderBeforeKill.state === "gone") {
+          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+          if (orphanResult === "gone") removed.add(entry.pid);
+          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
+          continue;
+        }
+        if (this.probeGroup(entry.pgid) !== "alive" || processOwnedPids.has(entry.pid)) continue;
+        const leaderAtKill = await this.inspect(entry.pid);
         if (processOwnedPids.has(entry.pid)) continue;
-        if (!currentMembers?.length || !membersBelongToSnapshot(currentMembers, originalMembers)) continue;
-        if (this.probeGroup(entry.pgid) !== "alive") continue;
-        if (processOwnedPids.has(entry.pid)) continue;
+        if (leaderAtKill.state === "unknown") continue;
+        if (leaderAtKill.state === "gone") {
+          const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
+          if (orphanResult === "gone") removed.add(entry.pid);
+          else if (orphanResult === "unknown" && this.recordUnverifiableAttempt(entry)) removed.add(entry.pid);
+          continue;
+        }
+        if (!matchesEntry(leaderAtKill, entry)) { removed.add(entry.pid); continue; }
         try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
         const afterKill = await this.waitForGroupExit(entry.pgid);
         if (processOwnedPids.has(entry.pid)) continue;
         if (afterKill === "gone") removed.add(entry.pid);
       }
       const entries = this.read();
+      for (const entry of orphanSnapshot) {
+        const current = entries.get(entry.pid);
+        if (current && sameIdentity(current, entry)) {
+          current.unverifiableAttempts = Math.max(current.unverifiableAttempts, entry.unverifiableAttempts);
+        }
+      }
       for (const pid of removed) {
         const current = entries.get(pid);
         const snapshot = orphanSnapshot.find((entry) => entry.pid === pid);
@@ -246,22 +263,40 @@ export class OpenCodeServerLedger {
   private async reapOrphanedGroup(
     entry: OpenCodeServerLedgerEntry,
     processOwnedPids: ReadonlySet<number>,
-  ): Promise<"gone" | "keep"> {
+  ): Promise<"gone" | "keep" | "unknown"> {
     const groupState = this.probeGroup(entry.pgid);
     if (groupState === "gone") return "gone";
     if (groupState === "unknown") return "keep";
     const initial = await this.inspectMarkedGroupMembers(entry);
-    if (processOwnedPids.has(entry.pid) || initial.state === "unknown") return "keep";
+    if (processOwnedPids.has(entry.pid)) return "keep";
+    if (initial.state === "unknown") return "unknown";
     if (initial.members.length === 0) return "gone";
-    if (!await this.signalMarkedMembers(entry, initial.members, "SIGTERM", processOwnedPids)) return "keep";
+    const termResult = await this.signalMarkedMembers(entry, initial.members, "SIGTERM", processOwnedPids);
+    if (termResult === "unknown") return "unknown";
+    if (termResult === "owned") return "keep";
     const afterTerm = await this.waitForMarkedMembers(entry, processOwnedPids);
     if (afterTerm === "gone") return "gone";
-    if (afterTerm === "unknown" || processOwnedPids.has(entry.pid)) return "keep";
+    if (afterTerm === "unknown") return "unknown";
+    if (processOwnedPids.has(entry.pid)) return "keep";
     const current = await this.inspectMarkedGroupMembers(entry);
-    if (processOwnedPids.has(entry.pid) || current.state === "unknown") return "keep";
+    if (processOwnedPids.has(entry.pid)) return "keep";
+    if (current.state === "unknown") return "unknown";
     if (current.members.length === 0) return "gone";
-    if (!await this.signalMarkedMembers(entry, current.members, "SIGKILL", processOwnedPids)) return "keep";
-    return await this.waitForMarkedMembers(entry, processOwnedPids) === "gone" ? "gone" : "keep";
+    const killResult = await this.signalMarkedMembers(entry, current.members, "SIGKILL", processOwnedPids);
+    if (killResult === "unknown") return "unknown";
+    if (killResult === "owned") return "keep";
+    const afterKill = await this.waitForMarkedMembers(entry, processOwnedPids);
+    return afterKill === "gone" ? "gone" : afterKill === "unknown" ? "unknown" : "keep";
+  }
+
+  private recordUnverifiableAttempt(entry: OpenCodeServerLedgerEntry): boolean {
+    const key = `${entry.pid}:${entry.startTime}:${entry.command}:${entry.marker}`;
+    if (!warnedUnverifiableEntries.has(key)) {
+      warnedUnverifiableEntries.add(key);
+      console.warn(`OpenCode orphan server group could not be verified (pid ${entry.pid})`);
+    }
+    entry.unverifiableAttempts += 1;
+    return entry.unverifiableAttempts >= MAX_UNVERIFIABLE_ATTEMPTS;
   }
 
   private async inspectMarkedGroupMembers(entry: OpenCodeServerLedgerEntry): Promise<{ state: "known"; members: ProcessIdentity[] } | { state: "unknown" }> {
@@ -283,20 +318,20 @@ export class OpenCodeServerLedger {
     members: readonly ProcessIdentity[],
     signal: NodeJS.Signals,
     processOwnedPids: ReadonlySet<number>,
-  ): Promise<boolean> {
+  ): Promise<"sent" | "unknown" | "owned"> {
     for (const member of members) {
-      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return false;
+      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return "owned";
       const current = await this.inspect(member.pid);
-      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return false;
-      if (current.state === "unknown") return false;
+      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return "owned";
+      if (current.state === "unknown") return "unknown";
       if (current.state === "gone" || !matchesProcess(current, member)) continue;
       const markerState = await this.inspectMarker(member.pid, entry.marker);
-      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return false;
-      if (markerState === "unknown") return false;
+      if (processOwnedPids.has(entry.pid) || processOwnedPids.has(member.pid)) return "owned";
+      if (markerState === "unknown") return "unknown";
       if (markerState !== "marked") continue;
-      try { this.signalProcess(member.pid, signal); } catch { return false; }
+      try { this.signalProcess(member.pid, signal); } catch { return "unknown"; }
     }
-    return true;
+    return "sent";
   }
 
   private async waitForMarkedMembers(
@@ -333,8 +368,9 @@ export class OpenCodeServerLedger {
           const startTime = String(row.startTime);
           const command = "command" in row ? String(row.command) : "";
           const marker = "marker" in row ? String(row.marker) : "";
-          if (Number.isSafeInteger(pid) && Number.isSafeInteger(pgid) && startTime === row.startTime && (!("command" in row) || command === row.command) && (!("marker" in row) || marker === row.marker)) {
-            entries.set(pid, { pid, pgid, startTime, command, marker });
+          const unverifiableAttempts = "unverifiableAttempts" in row ? Number(row.unverifiableAttempts) : 0;
+          if (Number.isSafeInteger(pid) && Number.isSafeInteger(pgid) && startTime === row.startTime && (!("command" in row) || command === row.command) && (!("marker" in row) || marker === row.marker) && Number.isSafeInteger(unverifiableAttempts) && unverifiableAttempts >= 0) {
+            entries.set(pid, { pid, pgid, startTime, command, marker, unverifiableAttempts });
           }
         }
       }
@@ -362,10 +398,6 @@ function sameIdentity(left: OpenCodeServerLedgerEntry, right: OpenCodeServerLedg
 
 function matchesEntry(identity: ProcessIdentity | ({ state: "alive" } & Omit<ProcessIdentity, "pid">), entry: OpenCodeServerLedgerEntry): boolean {
   return identity.startTime === entry.startTime && identity.command === entry.command;
-}
-
-function membersBelongToSnapshot(current: readonly ProcessIdentity[], original: readonly ProcessIdentity[]): boolean {
-  return current.every((member) => original.some((candidate) => candidate.pid === member.pid && candidate.startTime === member.startTime && candidate.command === member.command));
 }
 
 function matchesProcess(left: ProcessIdentity | ({ state: "alive" } & Omit<ProcessIdentity, "pid">), right: ProcessIdentity): boolean {

@@ -8,7 +8,8 @@ import { OpenCodeServerLedger } from "./opencodeServerLedger.js";
 
 test("reap keeps signaling a verified group after its leader exits on SIGTERM", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "p9-group-"));
-  const child = spawn("/bin/sh", ["-c", "/bin/sh -c 'trap \"\" TERM; echo CHILD:$$; exec /bin/sleep 30' & trap 'exit 0' TERM; wait"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const marker = "group-test-marker";
+  const child = spawn("/bin/sh", ["-c", "/bin/sh -c 'trap \"\" TERM; echo CHILD:$$; exec /bin/sleep 30' & trap 'exit 0' TERM; wait"], { detached: true, env: { ...process.env, KONE_OPENCODE_SERVER: marker }, stdio: ["ignore", "pipe", "ignore"] });
   if (!child.pid) throw new Error("no group leader");
   const pid = child.pid;
   let descendantPid = 0;
@@ -19,8 +20,8 @@ test("reap keeps signaling a verified group after its leader exits on SIGTERM", 
     });
     if (!descendantPid) throw new Error("no descendant pid");
     const file = path.join(dir, "ledger.json");
-    const ledger = new OpenCodeServerLedger(file);
-    await ledger.record(pid);
+    const ledger = new OpenCodeServerLedger(file, undefined, undefined, undefined, undefined, async (candidatePid, expectedMarker) => candidatePid === descendantPid && expectedMarker === marker ? "marked" : "unmarked");
+    await ledger.record(pid, pid, marker);
     await ledger.reap();
     let descendantAlive = true;
     try {

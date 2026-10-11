@@ -103,7 +103,7 @@ describe("OpenCodeServerLedger", () => {
     await subject.record(303, 303);
     starts.set(302, "new process");
     await subject.reap();
-    expect(killed).toEqual([301, 301]);
+    expect(killed).toEqual([301]);
   });
 
   test("reap escalates for a process group that ignores SIGTERM", async () => {
@@ -155,7 +155,7 @@ describe("OpenCodeServerLedger", () => {
     process.kill = denyProcessKill;
     try {
       await subject.reap();
-      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode", marker: "" }]);
+      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode", marker: "", unverifiableAttempts: 0 }]);
     } finally {
       process.kill = originalKill;
     }
