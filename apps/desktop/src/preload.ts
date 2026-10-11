@@ -675,6 +675,12 @@ const api = {
       // follows the thread across profiles.
       setPinned: (threadId: string, pinned: boolean): Promise<void> =>
         ipcRenderer.invoke("agent:set-pinned", threadId, pinned),
+      listThreadReferences: (ownerThreadId: string): Promise<string[]> =>
+        ipcRenderer.invoke("agent:thread-reference-list", ownerThreadId),
+      attachThreadReference: (ownerThreadId: string, targetThreadId: string): Promise<boolean> =>
+        ipcRenderer.invoke("agent:thread-reference-attach", ownerThreadId, targetThreadId),
+      detachThreadReference: (ownerThreadId: string, targetThreadId: string): Promise<boolean> =>
+        ipcRenderer.invoke("agent:thread-reference-detach", ownerThreadId, targetThreadId),
       // Mark a thread done, or take the mark off. Done state lives in the DB
       // beside pins for the same reason. It says you are finished with the
       // thread's claim on you — not that the work ended, and not that the

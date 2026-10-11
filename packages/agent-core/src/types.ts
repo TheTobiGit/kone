@@ -1774,6 +1774,7 @@ export type RuntimeEvent =
   // lists; `doneAt` is the stamp the store wrote (the cleared sentinel when
   // un-marked), so consumers agree with the row on when the mark landed.
   | (BaseEvent & { type: "thread.done.updated"; done: boolean; doneAt: number })
+  | (BaseEvent & { type: "thread.pinned.updated"; pinned: boolean; pinnedAt: number })
   // The provider rerouted the request to a different model mid-session (Codex
   // `model/rerouted`, Claude safeguard refusals falling back to another model).
   // Consumers update the session's model label; `reason` is the provider's own

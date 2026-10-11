@@ -1612,6 +1612,7 @@ export type RuntimeEvent =
   // lists; `doneAt` is the stamp the store wrote, so consumers agree with
   // the row on when the mark landed.
   | (AgentBaseEvent & { type: "thread.done.updated"; done: boolean; doneAt: number })
+  | (AgentBaseEvent & { type: "thread.pinned.updated"; pinned: boolean; pinnedAt: number })
   // The provider rerouted the request to a different model mid-session. Update
   // the session's model label; `reason` is the provider's own wording.
   | (AgentBaseEvent & {
@@ -2376,6 +2377,9 @@ export type KoneAgentHistoryApi = {
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;
+  listThreadReferences: (ownerThreadId: string) => Promise<string[]>;
+  attachThreadReference: (ownerThreadId: string, targetThreadId: string) => Promise<boolean>;
+  detachThreadReference: (ownerThreadId: string, targetThreadId: string) => Promise<boolean>;
   /** Mark a thread done (you are finished with its claim on you), or take the
    *  mark off. Stored in the DB beside pins, so it follows the thread across
    *  profiles. Not archive: the thread stays in the live list, and it starts
@@ -3204,6 +3208,10 @@ export type KoneAgentApi = {
    *  The spawn events aren't journaled, so a reloaded renderer has no record of
    *  them — this is how the Subagents dock repopulates after a reload. */
   spawnChildren: (threadId: string) => Promise<SpawnedThread[]>;
+  spawnChildrenPage: (
+    threadId: string,
+    options?: { limit?: number; cursor?: string | null },
+  ) => Promise<{ items: StoredThreadMeta[]; total: number; nextCursor: string | null }>;
   /** One frame on the `agent:event` channel: a single event, or a batch of
    *  per-delta snapshots folded in arrival order. The bridge fans batches out
    *  before invoking listeners, so `onEvent` callbacks always see one event

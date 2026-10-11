@@ -396,6 +396,8 @@ export function registerAgentIpc(): void {
       // Mark done through the service, so thread.done.updated fans out to every
       // surface (the gateway tool's canonical path).
       setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      setThreadPinned: (threadId: string, pinned: boolean) => svc.setThreadPinned(threadId, pinned),
+      hasAttachment: (attachmentId: string) => getAttachmentStore().resolveAbsPath(attachmentId) !== null,
       // Queue controls: list is a store read; the rest go through the service so
       // mirrors and broadcasts stay in step (promote reuses "send now").
       listQueuedTurns: (threadId: string) => store.listQueuedTurns(threadId),
@@ -1227,6 +1229,15 @@ export function registerAgentIpc(): void {
   // this instead of writing browser localStorage.
   ipcMain.handle("agent:set-pinned", (_event, threadId: string, pinned: boolean) =>
     store.setPinned(threadId, pinned),
+  );
+  ipcMain.handle("agent:thread-reference-list", (_event, ownerThreadId: string) =>
+    store.listThreadReferences(ownerThreadId),
+  );
+  ipcMain.handle("agent:thread-reference-attach", (_event, ownerThreadId: string, targetThreadId: string) =>
+    store.attachThreadReference(ownerThreadId, targetThreadId),
+  );
+  ipcMain.handle("agent:thread-reference-detach", (_event, ownerThreadId: string, targetThreadId: string) =>
+    store.detachThreadReference(ownerThreadId, targetThreadId),
   );
   // Done state lives in the DB alongside pins, so a thread you have finished
   // with stays finished with across browser profiles. Distinct from archive:

@@ -170,14 +170,15 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 33 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 34 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(33);
+    expect(version.user_version).toBe(34);
+    expect(columnNames(raw, "subagents")).toContain("duration_ms");
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -229,6 +230,7 @@ describe("v1 baseline migration and schema", () => {
       "agent_inbox",
       "continuations",
       "schedules",
+      "thread_references",
     ]) {
       expect(tables).toContain(table);
     }
@@ -271,6 +273,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 31, name: "ThreadPullRequest" },
       { migration_id: 32, name: "Continuations" },
       { migration_id: 33, name: "Schedules" },
+      { migration_id: 34, name: "ThreadReferencesAndSubagentDuration" },
     ]);
 
     const idx = raw
@@ -342,6 +345,29 @@ describe("v1 baseline migration and schema", () => {
     const countOps = raw.prepare(`SELECT COUNT(*) as n FROM gateway_ops`).get() as { n: number };
     expect(countOps.n).toBe(0);
 
+    raw.close();
+  });
+
+  test("thread references require distinct existing threads and cascade with either endpoint", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "ref-owner", projectPath: "/p", provider: "opencode" });
+    store.ensureThread({ threadId: "ref-target", projectPath: "/q", provider: "opencode" });
+    expect(store.attachThreadReference("ref-owner", "ref-owner")).toBe(false);
+    expect(store.attachThreadReference("missing", "ref-target")).toBe(false);
+    expect(store.attachThreadReference("ref-owner", "missing")).toBe(false);
+    expect(store.attachThreadReference("ref-owner", "ref-target", 123)).toBe(true);
+    expect(store.listThreadReferences("ref-owner")).toEqual(["ref-target"]);
+    expect(store.deleteThread("ref-target").ok).toBe(true);
+    expect(store.listThreadReferences("ref-owner")).toEqual([]);
+
+    store.ensureThread({ threadId: "ref-target-2", projectPath: "/q", provider: "opencode" });
+    expect(store.attachThreadReference("ref-owner", "ref-target-2")).toBe(true);
+    expect(store.deleteThread("ref-owner").ok).toBe(true);
+    expect(store.listThreadReferences("ref-owner")).toEqual([]);
+    const raw = rawDb();
+    // SAFETY: COUNT(*) aliases its single integer result as `count`.
+    const dangling = raw.prepare(`SELECT COUNT(*) AS count FROM thread_references WHERE target_thread_id = ?`).get("ref-target-2") as { count: number };
+    expect(dangling.count).toBe(0);
     raw.close();
   });
 
