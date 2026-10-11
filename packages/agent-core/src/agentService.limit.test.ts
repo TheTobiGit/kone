@@ -96,6 +96,10 @@ class FakeHistory {
   staleThreadIds(): string[] {
     return [];
   }
+  threadForkContext(): null {
+    return null;
+  }
+  markTurnsRolledBack(): void {}
 }
 
 class FakeContinuations implements ContinuationStore {
