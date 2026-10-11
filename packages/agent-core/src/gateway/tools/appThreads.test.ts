@@ -1219,6 +1219,64 @@ describe("app_start_thread", () => {
     expect(text(result)).toContain("no thread was cancelled");
   });
 
+  it("rechecks read authority during a wait and refuses a revoked target without dropping other targets", async () => {
+    let referenced = true;
+    let terminal = false;
+    const store = makeStore({
+      threadMeta: (threadId) =>
+        threadId === "owner"
+          ? thread({ threadId: "owner", projectPath: "/a" })
+          : threadId === "target"
+            ? thread({ threadId: "target", projectPath: "/b" })
+            : threadId === "keep"
+              ? thread({ threadId: "keep", projectPath: "/a" })
+              : null,
+      listThreadReferences: (ownerThreadId) =>
+        ownerThreadId === "owner" && referenced ? ["target"] : [],
+      loadThread: (threadId) =>
+        threadId === "target"
+          ? {
+              ...TRANSCRIPT,
+              threadId: "target",
+              blocks: [{ ...block("assistant", "target work", 2), turnId: "pinned" }],
+            }
+          : threadId === "keep"
+            ? { ...TRANSCRIPT, threadId: "keep" }
+            : null,
+      turnSpan: () => ({
+        startedAt: 1,
+        endedAt: terminal ? 2 : null,
+        runningTurns: terminal ? 0 : 1,
+        lastState: terminal ? "completed" : "running",
+      }),
+      turnAssistantText: () => (terminal ? "SECRET FINAL ANSWER" : null),
+    });
+    const registry = tools({ store });
+    const waiting = registry.call(makeCtx({ threadId: "owner" }), "app_wait_for_thread", {
+      threadIds: ["target", "keep"],
+      turnIds: ["pinned", "keep-turn"],
+      timeoutMs: 1000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    referenced = false;
+    terminal = true;
+    const result = await waiting;
+    const body = text(result);
+    expect(body).toContain('capability_denied: Thread "target" is outside what this conversation may read.');
+    expect(body).not.toContain("SECRET");
+    // SAFETY: the wait handler always writes `threads` as an array of records.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+    expect(threads).toMatchObject([
+      { threadId: "target", refused: true },
+      { threadId: "keep", terminal: true, summary: "SECRET FINAL ANSWER" },
+    ]);
+    // Read fresh after the detachment, the same target gives the same refusal.
+    const fresh = await registry.call(makeCtx({ threadId: "owner" }), "app_read_thread", {
+      threadId: "target",
+    });
+    expect(text(fresh)).toContain('capability_denied: Thread "target" is outside what this conversation may read.');
+  });
+
   it("hands the thread to a team agent, on that agent's own model", async () => {
     const calls: RunnerCalls = { started: [], turns: [] };
     const store = makeStore();
