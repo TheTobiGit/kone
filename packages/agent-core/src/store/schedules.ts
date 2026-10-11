@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import { nextOccurrence, parseCron } from "../cronSchedule.js";
 import type { ConversationDb } from "./ConversationDb.js";
 import { withTransaction } from "../conversationMigrations.js";
-import { JOB_SORT_UNSET, rowToJob, type JobDbRow, type JobRow, type ScheduleCreateInput, type ScheduleFireResult, type ScheduleJobTemplate, type SchedulePatch, type ScheduleRow } from "../conversationStoreTypes.js";
+import { JOB_SORT_UNSET, rowToJob, ScheduleJobTemplateSchema, type JobDbRow, type JobRow, type ScheduleCreateInput, type ScheduleFireResult, type ScheduleJobTemplate, type SchedulePatch, type ScheduleRow } from "../conversationStoreTypes.js";
 
 type ScheduleDbRow = { schedule_id: string; project_path: string; title: string; cron: string; job_template_json: string; paused: number; next_run_at: number | null; last_run_at: number | null; last_job_id: string | null; created_at: number; updated_at: number };
 const SCHEDULE_COLUMNS = "schedule_id, project_path, title, cron, job_template_json, paused, next_run_at, last_run_at, last_job_id, created_at, updated_at";
 const JOB_COLUMNS = "job_id, project_path, title, body, status, sort_key, provider, model, effort, mode, workspace_json, fallbacks_json, attachments_json, created_at, updated_at, started_at, ended_at, schedule_id";
 
 function toSchedule(row: ScheduleDbRow): ScheduleRow {
-  // SAFETY: templates are only written after serialization from typed inputs.
+  // SAFETY: JSON.parse yields stored data; new writes are schema-validated and
+  // the assertion preserves visibility for legacy rows created before validation.
   const template = JSON.parse(row.job_template_json) as ScheduleJobTemplate;
   return { scheduleId: row.schedule_id, projectPath: row.project_path, title: row.title, cron: row.cron, jobTemplate: template, paused: row.paused === 1, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at, lastJobId: row.last_job_id, createdAt: row.created_at, updatedAt: row.updated_at };
 }
@@ -19,10 +20,11 @@ export class ScheduleRepo {
 
   createSchedule(input: ScheduleCreateInput): ScheduleRow | null {
     const db = this.dbh.handle(); if (!db) return null;
+    const jobTemplate = ScheduleJobTemplateSchema.parse(input.jobTemplate);
     const at = input.at ?? Date.now();
     const next = nextOccurrence(input.cron, new Date(at)).getTime();
     db.prepare(`INSERT INTO schedules (${SCHEDULE_COLUMNS}) VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?)`)
-      .run(input.scheduleId, input.projectPath, input.title, input.cron, JSON.stringify(input.jobTemplate), next, at, at);
+      .run(input.scheduleId, input.projectPath, input.title, input.cron, JSON.stringify(jobTemplate), next, at, at);
     return this.getSchedule(input.scheduleId);
   }
 
@@ -46,10 +48,11 @@ export class ScheduleRepo {
     const current = this.getSchedule(id); const db = this.dbh.handle();
     if (!current || !db) return null;
     const cron = patch.cron ?? current.cron;
+    const jobTemplate = ScheduleJobTemplateSchema.parse(patch.jobTemplate ?? current.jobTemplate);
     parseCron(cron);
     const next = patch.cron !== undefined && !current.paused ? nextOccurrence(cron, new Date(at)).getTime() : current.nextRunAt;
     db.prepare(`UPDATE schedules SET title=?, cron=?, job_template_json=?, next_run_at=?, updated_at=? WHERE schedule_id=?`)
-      .run(patch.title ?? current.title, cron, JSON.stringify(patch.jobTemplate ?? current.jobTemplate), next, at, id);
+      .run(patch.title ?? current.title, cron, JSON.stringify(jobTemplate), next, at, id);
     return this.getSchedule(id);
   }
 
@@ -91,7 +94,7 @@ export class ScheduleRepo {
   }
 
   fireDue(now: number, graceMs = 10 * 60_000): ScheduleFireResult {
-    const db = this.dbh.handle(); const result: ScheduleFireResult = { fired: [], skipped: [] };
+    const db = this.dbh.handle(); const result: ScheduleFireResult = { fired: [], skipped: [], failures: [] };
     if (!db) return result;
     // SAFETY: the due query selects SCHEDULE_COLUMNS from schedules.
     const due = db.prepare(`SELECT ${SCHEDULE_COLUMNS} FROM schedules WHERE paused=0 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at`).all(now) as ScheduleDbRow[];
@@ -112,7 +115,13 @@ export class ScheduleRepo {
           if (!job) throw new Error("Could not create scheduled job");
           fired = { schedule: this.getSchedule(candidate.schedule_id) ?? schedule, job };
         }));
-      } catch (error) { console.error("[schedule-store] fireDue failed:", error); }
+      } catch (error) {
+        result.failures.push({
+          scheduleId: candidate.schedule_id,
+          occurrenceAt: candidate.next_run_at ?? now,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       if (fired) result.fired.push(fired);
       if (skipped) result.skipped.push(skipped);
     }

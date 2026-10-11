@@ -57,6 +57,16 @@ describe("assistant schedule tools", () => {
     expect(out.structuredContent).toBeUndefined();
   });
 
+  it("refuses invalid job target enums with the field name in assistant text", async () => {
+    const { registry } = fixture();
+    const invalid = await registry.call(ctx(), "app_create_schedule", {
+      project: "kone", title: "bad provider", cron: "0 9 * * *",
+      jobTemplate: { ...TEMPLATE, target: { provider: "not-a-provider" } },
+    }, "assistant");
+    expect(invalid.isError).toBe(true);
+    expect(body(invalid)).toContain("target.provider");
+  });
+
   it("updates a schedule and refuses an invalid cron from the store as assistant-visible text", async () => {
     const { registry } = fixture();
     const update = await registry.call(ctx(), "app_update_schedule", { scheduleId: "schedule-1", title: "Weekly" }, "assistant");

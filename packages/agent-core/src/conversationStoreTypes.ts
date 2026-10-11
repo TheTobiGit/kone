@@ -1106,6 +1106,29 @@ export type JobCreateInput = {
 };
 
 export type ScheduleJobTemplate = Omit<JobCreateInput, "jobId" | "projectPath" | "status" | "at" | "scheduleId">;
+export const ScheduleJobTemplateSchema = z.object({
+  title: z.string().trim().min(1),
+  body: z.string(),
+  target: z.object({
+    provider: ProviderKindSchema,
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    mode: z.enum(["ask", "accept-edits", "full-access"]).optional(),
+    workspace: z.object({
+      mode: z.enum(["local", "worktree"]),
+      branch: z.string().optional(),
+      base: z.string().optional(),
+    }).optional(),
+    fallbacks: z.array(z.object({ provider: ProviderKindSchema, model: z.string().optional() })).min(1).optional(),
+  }),
+  attachments: z.array(z.object({
+    type: z.enum(["image", "file"]),
+    id: z.string().min(1),
+    name: z.string().min(1),
+    mimeType: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+  })).optional(),
+});
 export type ScheduleRow = {
   scheduleId: string;
   projectPath: string;
@@ -1121,7 +1144,11 @@ export type ScheduleRow = {
 };
 export type ScheduleCreateInput = { scheduleId: string; projectPath: string; title: string; cron: string; jobTemplate: ScheduleJobTemplate; at?: number };
 export type SchedulePatch = { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
-export type ScheduleFireResult = { fired: Array<{ schedule: ScheduleRow; job: JobRow }>; skipped: Array<{ scheduleId: string; reason: "outside-grace" | "job-active" }> };
+export type ScheduleFireResult = {
+  fired: Array<{ schedule: ScheduleRow; job: JobRow }>;
+  skipped: Array<{ scheduleId: string; reason: "outside-grace" | "job-active" }>;
+  failures: Array<{ scheduleId: string; occurrenceAt: number; error: string }>;
+};
 
 /** Fields an edit may change. Absent means "leave alone"; `null` clears.
  *  `status` is deliberately not here — moving a job between states goes
