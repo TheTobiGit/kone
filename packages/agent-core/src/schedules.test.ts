@@ -19,6 +19,33 @@ function freshStore(dir = mkdtempSync(path.join(tmpdir(), "kone-schedules-"))) {
 
 const template = { title: "scheduled", body: "run", target: { provider: "codex" as const } };
 
+function fakeTimers() {
+  let callback: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let armed = false;
+  let delayMs = 0;
+  return {
+    setTimer(next: () => void, delay: number) {
+      callback = next;
+      delayMs = delay;
+      armed = true;
+      timer = setTimeout(() => {}, 100_000);
+      return timer;
+    },
+    clearTimer(activeTimer: ReturnType<typeof setTimeout>) {
+      clearTimeout(activeTimer);
+      armed = false;
+    },
+    fire() {
+      if (timer) clearTimeout(timer);
+      armed = false;
+      callback?.();
+    },
+    isArmed: () => armed,
+    delay: () => delayMs,
+  };
+}
+
 describe("schedule store", () => {
   test("job templates validate provider, mode, workspace, fallback and attachment enums", () => {
     const result = ScheduleJobTemplateSchema.safeParse({
@@ -126,8 +153,7 @@ describe("schedule store", () => {
 describe("schedule runner", () => {
   test("uses an injected clock and timer, caps its wait, and drains fired projects", async () => {
     let now = 10_000;
-    let timerCallback: (() => void) | undefined;
-    let timerDelay = 0;
+    const timers = fakeTimers();
     let fires = 0;
     const drains: string[] = [];
     const runner = new ScheduleRunner({
@@ -138,14 +164,14 @@ describe("schedule runner", () => {
       },
       drainProject: async (projectPath) => { drains.push(projectPath); },
       now: () => now,
-      setTimer: (callback, delay) => { timerCallback = callback; timerDelay = delay; return setTimeout(() => {}, 100_000); },
-      clearTimer: (timer) => clearTimeout(timer),
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
     });
     runner.start();
     await Promise.resolve();
-    expect(timerDelay).toBe(60_000);
+    expect(timers.delay()).toBe(60_000);
     now = 20_000;
-    timerCallback?.();
+    timers.fire();
     await Promise.resolve();
     await Promise.resolve();
     expect(fires).toBe(1);
@@ -155,8 +181,7 @@ describe("schedule runner", () => {
 
   test("retries a failed due occurrence after 30 seconds, backs off to 60, and logs once", async () => {
     let now = 10_000;
-    let timerCallback: (() => void) | undefined;
-    let timerDelay = 0;
+    const timers = fakeTimers();
     const runner = new ScheduleRunner({
       store: {
         fireDueSchedules: () => ({ fired: [], skipped: [], failures: [{ scheduleId: "bad", occurrenceAt: 9_000, error: "insert rejected" }] }),
@@ -165,21 +190,67 @@ describe("schedule runner", () => {
       },
       drainProject: async () => {},
       now: () => now,
-      setTimer: (callback, delay) => { timerCallback = callback; timerDelay = delay; return setTimeout(() => {}, 100_000); },
-      clearTimer: (timer) => clearTimeout(timer),
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
     });
     const errorLog = spyOn(console, "error").mockImplementation(() => {});
     runner.start();
     await Promise.resolve();
-    expect(timerDelay).toBe(30_000);
+    expect(timers.delay()).toBe(30_000);
     now = 40_000;
-    timerCallback?.();
+    timers.fire();
     await Promise.resolve();
     await Promise.resolve();
-    expect(timerDelay).toBe(60_000);
+    expect(timers.delay()).toBe(60_000);
     expect(errorLog).toHaveBeenCalledTimes(1);
     runner.stop();
     errorLog.mockRestore();
+  });
+
+  test("a rejected project drain is caught and leaves a heartbeat armed", async () => {
+    const timers = fakeTimers();
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const runner = new ScheduleRunner({
+      store: {
+        fireDueSchedules: () => ({ fired: [], skipped: [], failures: [] }),
+        listSchedules: () => [],
+        projectsWithQueuedJobs: () => ["/broken"],
+      },
+      drainProject: async () => { throw new Error("temporary drain failure"); },
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+    runner.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(timers.isArmed()).toBe(true);
+    runner.stop();
+    expect(timers.isArmed()).toBe(false);
+    errorLog.mockRestore();
+  });
+
+  test("a never-resolving drain leaves the heartbeat armed and stop clears it", () => {
+    const timers = fakeTimers();
+    let dueCalls = 0;
+    const runner = new ScheduleRunner({
+      store: {
+        fireDueSchedules: () => { dueCalls++; return { fired: [], skipped: [], failures: [] }; },
+        listSchedules: () => [],
+        projectsWithQueuedJobs: () => ["/slow"],
+      },
+      drainProject: () => new Promise(() => {}),
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+    runner.start();
+    expect(dueCalls).toBe(1);
+    expect(timers.isArmed()).toBe(true);
+    timers.fire();
+    expect(dueCalls).toBe(1);
+    expect(timers.isArmed()).toBe(true);
+    runner.stop();
+    expect(timers.isArmed()).toBe(false);
   });
 });
 
