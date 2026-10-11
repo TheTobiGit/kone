@@ -88,6 +88,7 @@ export function createAppScheduleTools(options: AppSchedulesToolOptions): ToolEn
   const id = options.createId ?? (() => crypto.randomUUID());
   const tool = (name: string, description: string, schema: z.ZodTypeAny, jsonSchema: GatewayRecord, handler: (args: GatewayRecord) => GatewayToolResult): ToolEntry => ({
     name, description, inputSchema: schema, jsonSchema, permission: "allow", requiresActiveTurn: true, target: "assistant",
+    promptSnippet: description,
     handler: async (_ctx, args) => handler(args),
   });
   return [
