@@ -476,6 +476,13 @@ export function registerAgentIpc(): void {
         return { ok: true, title: cleaned, previousTitle };
       },
     },
+    // Snooze and manual resume for the app_snooze_thread / app_resume_thread
+    // gateway tools.
+    snoozeControls: {
+      setSnooze: (threadId, until) => svc.setThreadSnooze(threadId, until),
+      snoozeUntilReset: (threadId) => svc.snoozeUntilResetFor(threadId),
+      resumeLimited: (threadId) => dispatcher.resumeLimitedThread(threadId),
+    },
     // And the provider surface the service already keeps warm, so a thread is
     // never started on a CLI this machine cannot run.
     threadAvailability: async () => {
@@ -974,11 +981,16 @@ export function registerAgentIpc(): void {
   // `history-thread` only if paging comes back empty), so a full-thread
   // reconstruction here would be built and thrown away on every project open.
   ipcMain.handle("agent:history-latest", (_event, projectPath: string) => {
-    return store.latestThreadMeta(projectPath);
+    const meta = store.latestThreadMeta(projectPath);
+    // The renderer's inbox list reads the computed snooze alongside the raw
+    // deadline from the same payload.
+    return meta ? { ...meta, ...dispatcher.threadSnoozeState(meta.threadId) } : null;
   });
   ipcMain.handle("agent:history-thread", (_event, threadId: string) => {
     const thread = store.loadThread(threadId);
-    return thread ? projectStoredThreadForIpc(thread) : null;
+    return thread
+      ? { ...projectStoredThreadForIpc(thread), ...dispatcher.threadSnoozeState(thread.threadId) }
+      : null;
   });
   // Settled compaction boundaries for a thread, oldest first — the timeline's
   // "when/where compacted" markers. Few rows ever (one per boundary event),
@@ -1232,6 +1244,22 @@ export function registerAgentIpc(): void {
   // thread.done.updated the way archive/restore fan out.
   ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
     svc.setThreadDone(threadId, done),
+  );
+  // Snooze: hold a thread out of the inbox until a time (or until its usage
+  // limit resets), and clear it. Wake-early rules live in limitState.
+  ipcMain.handle("agent:set-snooze", (_event, threadId: string, until: number | null) =>
+    svc.setThreadSnooze(threadId, until),
+  );
+  ipcMain.handle("agent:snooze-until-reset", (_event, threadId: string) => {
+    const until = svc.snoozeUntilResetFor(threadId);
+    if (until === null) return { ok: false, message: "No provider reset is known; use a timed snooze instead." };
+    svc.setThreadSnooze(threadId, until);
+    return { ok: true, until };
+  });
+  // Manual resume of a thread waiting out a usage limit: clear the mark and
+  // wake it now, cancelling its scheduled resume.
+  ipcMain.handle("agent:resume-limited", (_event, threadId: string) =>
+    dispatcher.resumeLimitedThread(threadId),
   );
   // Run the thread-retention sweep now instead of waiting for its timer. The
   // inbox asks for one when it opens, so quiet threads settle while someone

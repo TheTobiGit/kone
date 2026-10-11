@@ -16,6 +16,9 @@ export interface ThreadReading {
   project: ProjectRosterEntry | null;
   agentName: string | null;
   status: ThreadStatus;
+  /** Computed from the snooze and the wake-early rules — the inbox reads this
+   *  boolean rather than reimplementing the rule. */
+  snoozed: boolean;
 }
 
 export const TRUNCATION_MARKER = "\n...[truncated]";
@@ -155,6 +158,10 @@ export function threadPayload(reading: ThreadReading, withProject: boolean): Gat
   if (unread) row.unread = true;
   if (done) row.done = true;
   if (meta.archivedAt !== null) row.archived = true;
+  if (reading.snoozed) row.snoozed = true;
+  // A snooze is a future deadline; a past one has already woken the thread.
+  if ((meta.snoozedUntil ?? 0) > Date.now()) row.snoozedUntil = iso(meta.snoozedUntil ?? 0);
+  if ((meta.limitResetAt ?? null) !== null) row.limitResetAt = iso(meta.limitResetAt ?? 0);
   return compact(row);
 }
 
@@ -181,6 +188,8 @@ export function threadLine(reading: ThreadReading, withProject: boolean): string
     unread ? "unread" : null,
     done ? "done" : null,
     meta.archivedAt !== null ? "archived" : null,
+    reading.snoozed && (meta.snoozedUntil ?? 0) > Date.now() ? `snoozed until ${new Date(meta.snoozedUntil ?? 0).toISOString()}` : reading.snoozed ? "snoozed" : null,
+    (meta.limitedAt ?? null) !== null && (meta.limitResetAt ?? 0) > Date.now() ? `limited until ${new Date(meta.limitResetAt ?? 0).toISOString()}` : (meta.limitedAt ?? null) !== null ? "limited" : null,
   ].filter((mark): mark is string => mark !== null);
   return `- ${meta.title ?? "(untitled)"} — ${marks.join(" · ")}`;
 }

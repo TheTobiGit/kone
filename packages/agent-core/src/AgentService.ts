@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { getAttachmentStore } from "./AttachmentStore.js";
-import { isQuotaOrRateLimitError } from "./adapters/errors.js";
+import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
+import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
 import {
   resolveModelWithFallback,
   type ModelCandidate,
@@ -10,6 +11,7 @@ import {
 import {
   DONE_CLEARED,
   type CheckpointStore,
+  type ContinuationStore,
   type QueuedTurnEnqueueInput,
   type QueuedTurnEditPatch,
   type TurnCheckpointRecord,
@@ -39,6 +41,7 @@ import {
   isRestoreActive,
   type RestorePathClaim,
 } from "./checkpointRestoreSafety.js";
+import { snoozeUntilReset } from "./limitState.js";
 import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
@@ -195,13 +198,13 @@ const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
 /** A `/compact` command turn (the fallback for providers without a native
  *  call) is an ordinary turn, but it still must settle eventually — this long. */
 const FALLBACK_COMPACT_TIMEOUT_MS = 10 * 60_000;
-/** How long a stop waits for a session start still in flight before answering
- *  with `confirmedStopped: false`. The start is separately marked cancelled, so
- *  it is torn down whenever it lands; this only bounds the caller's wait. */
 /** The whole stop — the wait for a start still in flight plus the teardown —
  *  is bounded by one deadline, so a provider that never answers cannot hold
  *  the caller open. */
 const STOP_TOTAL_TIMEOUT_MS = 20_000;
+/** The continuation kind a usage-limit failure schedules: a resume at the
+ *  provider's own reset. */
+export const LIMIT_RESUME_CONTINUATION_KIND = "limit-reset";
 /** How long a queued follow-up that failed to start waits before each retry.
  *  One delay per retry, so a row gets the first try plus this many more; when
  *  they run out the row is held for the user rather than retried forever. */
@@ -276,6 +279,9 @@ export type AgentServiceOptions = {
     ConversationStore,
     | "setArchived"
     | "setDone"
+    | "setLimited"
+    | "clearLimited"
+    | "setSnooze"
     | "threadMeta"
     | "staleThreadIds"
     | "setTitleIfAuto"
@@ -339,6 +345,10 @@ export type AgentServiceOptions = {
    *  absent; pass null to disable checkpoints. Which queue slice was injected
    *  never affects this — the two slices are independent options. */
   checkpointStore?: CheckpointStore | null;
+  /** The conversation store's continuation slice the usage-limit path drives
+   *  (schedule a resume at a reset, cancel one on new work). Defaults to the
+   *  app-wide store when absent; pass null to disable limit recovery. */
+  continuationStore?: ContinuationStore | null;
   /** Adapters to register instead of the five real ones, handed the service's
    *  emit closure exactly like the real construction path. Injected by tests
    *  so no CLI is ever spawned. */
@@ -754,6 +764,16 @@ export class AgentService {
    *  protect. */
   private get checkpointStore(): CheckpointStore | null {
     if (this.options.checkpointStore !== undefined) return this.options.checkpointStore;
+    return getConversationStore();
+  }
+
+  /** The conversation store's continuation slice — the injected test double
+   *  when present, explicitly null when limit recovery is disabled, else the
+   *  app-wide singleton. Limit paths degrade to marking the thread without
+   *  scheduling a resume rather than crashing the turn. */
+  private get continuationStore(): ContinuationStore | null {
+    if (this.options.continuationStore !== undefined) return this.options.continuationStore;
+    if (this.options.store) return null;
     return getConversationStore();
   }
 
@@ -1256,6 +1276,7 @@ export class AgentService {
     // way: the row promotes when the restore lets go (runRevert kicks the
     // slot), against the restored tree.
     if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId)) {
+      if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
@@ -1272,6 +1293,7 @@ export class AgentService {
     // before the first await below, so the second call's synchronous prologue
     // sees it and queues instead.
     if (this.isBusy(input.threadId)) {
+      if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options);
@@ -1303,8 +1325,27 @@ export class AgentService {
   /** Is a checkpoint restore rewriting the directory this thread's session
    *  runs in? No turn may start there until it lets go. */
   private restoreHolds(threadId: string): boolean {
-    const cwd = this.sessionInputs.get(threadId)?.cwd;
+    const cwd =
+      this.sessionInputs.get(threadId)?.cwd ??
+      this.historyStore?.threadMeta(threadId)?.projectPath ??
+      undefined;
     return cwd !== undefined && isRestoreActive(cwd);
+  }
+
+  /** True while checkpoint restore owns this thread's checkout. */
+  isRestoreHoldingThread(threadId: string): boolean {
+    return this.restoreHolds(threadId);
+  }
+
+  /** Is this thread waiting out a provider usage limit? While it is, the queue
+   *  holds rather than failing, and a queued follow-up must not run ahead of
+   *  the resume. */
+  private isThreadLimited(threadId: string): boolean {
+    try {
+      return (this.historyStore?.threadMeta(threadId)?.limitedAt ?? null) !== null;
+    } catch {
+      return false;
+    }
   }
 
   /** Whether this thread has a live provider session — the only threads a wake
@@ -1722,6 +1763,9 @@ export class AgentService {
         console.warn(`[agent] applying the startup interrupt to ${threadId} failed:`, err);
       });
     }
+    // Real new work: the provider took the turn, so any limit mark and its
+    // scheduled resume are stale. A send that hits the limit again re-marks it.
+    this.clearThreadLimited(threadId);
     if (!accepted) return;
     try {
       accepted(turnId);
@@ -2468,6 +2512,22 @@ export class AgentService {
         this.activeTurns.delete(threadId);
         this.turnStartedAt.delete(threadId);
         this.forgetOpenItems(threadId);
+        // A failed turn that is a provider usage limit is a real state, not a
+        // generic failure: mark the thread limited with the provider's reset
+        // (the adapter's own, or one the message carries) when it gave one.
+        if (event.type === "turn.aborted" && event.reason === "failed") {
+          const now = Date.now();
+          // Reset order: the adapter's own field, then a real Retry-After hint
+          // in the message, then the provider's cached quota (guarded on age and
+          // exhaustion). Never invented.
+          let resetAt = event.limitResetAt ?? limitResetFromError(event.message, now);
+          if (resetAt === null && isQuotaCapableProvider(event.provider)) {
+            resetAt = cachedLimitResetFor(event.provider, now);
+          }
+          if (resetAt !== null || isQuotaOrRateLimitError(event.message)) {
+            this.setThreadLimited(threadId, resetAt);
+          }
+        }
         // A turn settling frees the one-live-turn slot: promote the next
         // queued follow-up (fire-and-forget; drain is serialized per thread
         // and sends at most one turn, so the next settlement drains again).
@@ -3283,6 +3343,108 @@ export class AgentService {
     return this.historyStore?.threadPullRequestLink(threadId) ?? null;
   }
 
+  /** Record that a turn failed on a provider usage limit — a real state, not a
+   *  generic failure. `resetAt` is the provider's own reset or null when it
+   *  gave none. A reset schedules a resume; no reset schedules nothing, so the
+   *  thread stays limited and the queue holds until a manual resume or the user
+   *  sends. Announces thread.limit.updated so lists move. */
+  setThreadLimited(threadId: string, resetAt: number | null): void {
+    const history = this.historyStore;
+    if (!history) return;
+    const meta = history.threadMeta(threadId);
+    const provider = meta?.provider ?? this.routing.get(threadId);
+    if (!provider) return;
+    history.setLimited(threadId, resetAt);
+    this.scheduleLimitResume(threadId, resetAt);
+    const at = Date.now();
+    this.dispatch({
+      type: "thread.limit.updated",
+      threadId,
+      provider,
+      at,
+      source: "kone.store",
+      limited: true,
+      limitedAt: at,
+      limitResetAt: resetAt,
+    });
+  }
+
+  /** Clear the limit mark: real new work, or a manual resume. No-op when the
+   *  thread is not limited, so the accepted-turn path can call it every time.
+   *  Cancels any scheduled resume. */
+  clearThreadLimited(threadId: string): void {
+    const history = this.historyStore;
+    if (!history) return;
+    const meta = history.threadMeta(threadId);
+    if (!meta || (meta.limitedAt ?? null) === null) return;
+    const provider = meta.provider ?? this.routing.get(threadId);
+    history.clearLimited(threadId);
+    // Resuming clears any "snooze until reset" along with the limit: the
+    // reason for the snooze is gone.
+    this.setThreadSnooze(threadId, null);
+    try {
+      this.continuationStore?.cancelContinuationsForThread(threadId);
+    } catch (err) {
+      console.warn(`[agent] could not cancel the limit resume for ${threadId}:`, err);
+    }
+    if (!provider) return;
+    this.dispatch({
+      type: "thread.limit.updated",
+      threadId,
+      provider,
+      at: Date.now(),
+      source: "kone.store",
+      limited: false,
+      limitedAt: null,
+      limitResetAt: null,
+    });
+  }
+
+  /** Schedule the resume-at-reset continuation. Only when the provider gave a
+   *  reset — never guessed. */
+  private scheduleLimitResume(threadId: string, resetAt: number | null): void {
+    const store = this.continuationStore;
+    if (!store) return;
+    try {
+      store.cancelContinuationsForThread(threadId);
+      if (resetAt === null) return;
+      store.scheduleContinuation({
+        threadId,
+        kind: LIMIT_RESUME_CONTINUATION_KIND,
+        dueAt: resetAt,
+        payloadJson: JSON.stringify({ resetAt }),
+      });
+    } catch (err) {
+      console.warn(`[agent] could not schedule the limit resume for ${threadId}:`, err);
+    }
+  }
+
+  /** Set or clear a thread's snooze. `until` null clears. Announces
+   *  thread.snooze.updated so lists move the row. */
+  setThreadSnooze(threadId: string, until: number | null): void {
+    const history = this.historyStore;
+    if (!history) return;
+    const meta = history.threadMeta(threadId);
+    const provider = meta?.provider ?? this.routing.get(threadId);
+    if (!provider) return;
+    history.setSnooze(threadId, until);
+    this.dispatch({
+      type: "thread.snooze.updated",
+      threadId,
+      provider,
+      at: Date.now(),
+      source: "kone.store",
+      snoozedUntil: until,
+    });
+  }
+
+  /** The deadline for "snooze until reset": this thread's provider reset when
+   *  it is still in the future, else null (no reset known — never guessed). */
+  snoozeUntilResetFor(threadId: string): number | null {
+    const meta = this.historyStore?.threadMeta(threadId);
+    return snoozeUntilReset(meta?.limitResetAt ?? null, Date.now());
+  }
+
   /** The thread-retention sweep, in two passes over the same timer:
    *
    *  1. Mark done — a thread quiet for three days stops asking. Done is an
@@ -3687,6 +3849,9 @@ export class AgentService {
       if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
       // A restore holding the checkout: the drain runs again when it lets go.
       if (this.restoreHolds(threadId)) return;
+      // Waiting out a provider usage limit: queued follow-ups hold here, and
+      // the resume-at-reset (or a manual resume) drains them once it clears.
+      if (this.isThreadLimited(threadId)) return;
       // A row waiting out its backoff is retried by its own timer, not by
       // whatever turn event happens to come first.
       if (this.queueRetries.has(threadId) || this.hasPendingRelease(threadId) || this.pendingCancels.has(threadId)) {
@@ -3872,9 +4037,27 @@ export class AgentService {
    *  nothing to release) is left alone: no status, no warning, no timer. */
   private retryOrHold(threadId: string, row: QueuedTurnRow, error: string, store: QueuedTurnStore): void {
     const delays = this.options.queueRetryDelaysMs ?? QUEUE_RETRY_DELAYS_MS;
+    const provider = this.routing.get(threadId);
+    // A usage limit is not a failure to retry: hold the row as queued and mark
+    // the thread limited, so the queue waits out the provider instead of
+    // burning attempts and then failing. The resume-at-reset (or a manual
+    // resume) clears the mark and drains.
+    if (isQuotaOrRateLimitError(error)) {
+      this.setThreadLimited(threadId, limitResetFromError(error, Date.now()));
+      this.releaseThen(threadId, store, row.queueId, "queued", () => {
+        this.announceQueuedState(threadId, row, "queued", { error });
+        if (provider) {
+          this.warn(
+            threadId,
+            provider,
+            `A queued message is waiting out a usage limit (${error}).`,
+          );
+        }
+      });
+      return;
+    }
     // attemptCount already counts this try (the claim bumped it).
     const retryIn = delays[row.attemptCount - 1];
-    const provider = this.routing.get(threadId);
     if (retryIn === undefined) {
       this.releaseThen(threadId, store, row.queueId, "failed", () => {
         // Held now: nothing retries it until the user says so.

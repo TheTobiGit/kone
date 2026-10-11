@@ -95,7 +95,7 @@ export class ContinuationRepo {
   /** Take every unclaimed continuation due at or before `now`, marking it
    *  claimed in the same statement. Atomic: a second caller sees the rows
    *  already claimed and gets none. */
-  claimDue(now: number): ContinuationRecord[] {
+  claimDue(now: number, excludedContinuationIds: string[] = []): ContinuationRecord[] {
     const db = this.dbh.handle();
     if (!db) return [];
     try {
@@ -103,13 +103,17 @@ export class ContinuationRepo {
       this.dbh.durably(db, () => {
         // SAFETY: RETURNING * of continuations is exactly ContinuationDbRow —
         // the columns this schema creates.
+        const exclusion = excludedContinuationIds.length > 0
+          ? ` AND continuation_id NOT IN (${excludedContinuationIds.map(() => "?").join(",")})`
+          : "";
+        // SAFETY: the SQL updates only continuation columns; exclusion placeholders match the supplied continuation ids.
         const rows = db
           .prepare(
             `UPDATE continuations SET claimed_at = ?
-              WHERE claimed_at IS NULL AND due_at <= ?
+              WHERE claimed_at IS NULL AND due_at <= ?${exclusion}
               RETURNING *`,
           )
-          .all(now, now) as ContinuationDbRow[];
+          .all(now, now, ...excludedContinuationIds) as ContinuationDbRow[];
         claimed = rows.map(rowToContinuation);
       });
       return claimed;
@@ -217,6 +221,7 @@ export class ContinuationRepo {
     if (!db) return null;
     try {
       // SAFETY: SELECT * of continuations is exactly ContinuationDbRow.
+      // SAFETY: MIN(due_at) returns the nullable integer column declared by the query.
       const row = db
         .prepare(`SELECT * FROM continuations WHERE continuation_id = ?`)
         .get(continuationId) as ContinuationDbRow | undefined;
@@ -228,14 +233,17 @@ export class ContinuationRepo {
   }
 
   /** When the next unclaimed continuation is due, or null when none is. */
-  nextDueAt(): number | null {
+  nextDueAt(excludedContinuationIds: string[] = []): number | null {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: MIN() over the due_at column answers one nullable integer.
+      const exclusion = excludedContinuationIds.length > 0
+        ? ` AND continuation_id NOT IN (${excludedContinuationIds.map(() => "?").join(",")})`
+        : "";
+      // SAFETY: MIN() over due_at returns a nullable integer; exclusion placeholders match continuation ids.
       const row = db
-        .prepare(`SELECT MIN(due_at) AS due_at FROM continuations WHERE claimed_at IS NULL`)
-        .get() as { due_at: number | null } | undefined;
+        .prepare(`SELECT MIN(due_at) AS due_at FROM continuations WHERE claimed_at IS NULL${exclusion}`)
+        .get(...excludedContinuationIds) as { due_at: number | null } | undefined;
       return row?.due_at ?? null;
     } catch (err) {
       console.error("[conversation-store] nextContinuationDueAt failed:", err);

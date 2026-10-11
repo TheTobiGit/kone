@@ -64,7 +64,7 @@ import {
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
-import { errorText, isResumeRefusalError } from "./errors.js";
+import { errorText, isResumeRefusalError, limitResetFromError } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import { buildSkillPrompt } from "../skillInvocation.js";
@@ -836,6 +836,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const session = this.requireSession(input.threadId);
+    session.limitResetAt = undefined;
     const userMessage = await this.buildUserMessage(input);
     await this.applyLiveSettings(session, input);
 
@@ -994,6 +995,7 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  activeTurnId while it's still set. */
   private sealLiveTurn(session: ClaudeSession): void {
     const turnId = session.activeTurnId;
+    session.limitResetAt = undefined;
     if (!turnId) return;
     session.activeTurnId = undefined;
     this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
@@ -1050,6 +1052,14 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleMessage(session: ClaudeSession, message: SDKMessage): void {
+    if (readString(message, "type") === "rate_limit_event") {
+      const info = asRecord(message)?.rate_limit_info;
+      if (session.activeTurnId && readString(info, "status") === "rejected") {
+        const resetAt = limitResetFromError(message, Date.now());
+        if (resetAt !== null) session.limitResetAt = resetAt;
+      }
+      return;
+    }
     // A message forwarded from a nested subagent belongs to that run's scope,
     // not the parent turn. Claude also sets parent_tool_use_id on async Bash
     // progress, so only ids we've *recognized* as a subagent spawn are routed.
@@ -1524,6 +1534,8 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
+    const turnResetAt = session.limitResetAt;
+    session.limitResetAt = undefined;
     const usage = message.usage;
     if (usage) {
       // The Anthropic usage object splits prompt tokens across three fields:
@@ -1650,6 +1662,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       reason,
     };
     if (detail) aborted.message = detail;
+    // A limit result can carry the reset (rate_limit_event / resetsAt); read it
+    // before the payload is flattened to text.
+    const resetAt = limitResetFromError(message, Date.now()) ?? turnResetAt ?? null;
+    if (resetAt !== null) aborted.limitResetAt = resetAt;
     this.emit(aborted);
   }
 
