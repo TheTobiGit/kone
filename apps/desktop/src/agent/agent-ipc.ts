@@ -15,6 +15,7 @@ import {
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
 import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
+import { ScheduleRunner } from "@kone/agent-core/scheduleRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
 import { branchPullRequest, pullRequestState } from "../modules/git/github.js";
@@ -132,6 +133,7 @@ let gateway: GatewayHandle | null = null;
  *  registerAgentIpc runs, so the event tap below tolerates its absence rather
  *  than assuming a boot order. */
 let jobRunner: JobRunner | null = null;
+let scheduleRunner: ScheduleRunner | null = null;
 
 /** Teardown for the IRC delivery subscription — dropped at quit so no armed
  *  delivery timer holds the process open. */
@@ -146,6 +148,8 @@ let stopWorktreeSweeper: (() => void) | null = null;
 export function getJobRunner(): JobRunner | null {
   return jobRunner;
 }
+
+export function getScheduleRunner(): ScheduleRunner | null { return scheduleRunner; }
 
 /** Rename a thread's generated worktree branch after its title. Refuses when
  *  the branch has an upstream or already heads a pull request: moving either
@@ -304,7 +308,14 @@ export function registerAgentIpc(): void {
   // After quit-resume, deliberately: a thread that was mid-turn when the app
   // died is work already in flight, and it should get its process back before
   // the queue starts handing out new ones. Best-effort, like the resume above.
-  void jobRunner.recoverAtBoot();
+  void jobRunner.recoverAtBoot().then(
+    () => scheduleRunner?.start(),
+    () => scheduleRunner?.start(),
+  );
+  scheduleRunner = new ScheduleRunner({
+    store,
+    drainProject: async (projectPath) => { await jobRunner?.drainProject(projectPath); },
+  });
 
   // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
   // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
@@ -313,6 +324,8 @@ export function registerAgentIpc(): void {
   // AgentService.startSession/stopSession.
   gateway = createGateway({
     store,
+    scheduleChanged: () => scheduleRunner?.rearm(),
+    drainProject: (projectPath) => { void jobRunner?.drainProject(projectPath); },
     askUser: (request) => svc.askUser(request),
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
@@ -1339,6 +1352,8 @@ export async function prepareQuitResumeForQuit(): Promise<void> {
 
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
+  scheduleRunner?.stop();
+  scheduleRunner = null;
   if (stopWorktreeSweeper) {
     stopWorktreeSweeper();
     stopWorktreeSweeper = null;
