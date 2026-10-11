@@ -21,6 +21,10 @@ describe("cron schedules", () => {
   it("uses the day-of-month OR day-of-week rule when both are restricted", () => {
     expect(nextOccurrence("0 9 13 * 1", date("2025-01-13T09:01:00"))).toEqual(date("2025-01-20T09:00:00"));
   });
+  it("keeps stepped wildcards in DOM/DOW wildcard semantics", () => {
+    expect(nextOccurrence("0 9 */1 * 1", date("2025-01-06T09:01:00"))).toEqual(date("2025-01-13T09:00:00"));
+    expect(nextOccurrence("0 9 13 * */2", date("2025-01-01T00:00:00"))).toEqual(date("2025-02-13T09:00:00"));
+  });
   it("handles month ends and leap day", () => {
     expect(nextOccurrence("0 0 31 * *", date("2025-04-01T00:00:00"))).toEqual(date("2025-05-31T00:00:00"));
     expect(nextOccurrence("0 0 29 2 *", date("2025-03-01T00:00:00"))).toEqual(date("2028-02-29T00:00:00"));
