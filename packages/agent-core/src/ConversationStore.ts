@@ -5,6 +5,7 @@ import { AttachmentRowRepo } from "./store/attachmentRows.js";
 import { WorkspaceRepo } from "./store/workspaces.js";
 import { ScratchpadRepo } from "./store/scratchpads.js";
 import { JobRepo, type ClaimedJob, type JobRunOutcome } from "./store/jobs.js";
+import { ScheduleRepo } from "./store/schedules.js";
 import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
 import { ModelPreferenceRepo } from "./store/modelPreferences.js";
@@ -31,7 +32,9 @@ import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnEditPatch, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow, type ScheduleCreateInput, type SchedulePatch, type ScheduleRow, type ScheduleFireResult } from "./conversationStoreTypes.js";
+import type { RestartCancelledBackgroundWork } from "./restartBackgroundNote.js";
+import { ContinuationRepo, type ContinuationRecord } from "./store/continuations.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -45,6 +48,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly workspaces: WorkspaceRepo;
   private readonly scratchpads: ScratchpadRepo;
   private readonly jobs: JobRepo;
+  private readonly schedules: ScheduleRepo;
   private readonly stats: StatsRepo;
   private readonly subagentPresets: SubagentPresetRepo;
   private readonly modelPreferences: ModelPreferenceRepo;
@@ -52,6 +56,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly queuedTurns: QueuedTurnRepo;
   private readonly agentInbox: AgentInboxRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
+  private readonly continuations: ContinuationRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
@@ -91,11 +96,13 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.queuedTurns = new QueuedTurnRepo(this.dbh);
     this.agentInbox = new AgentInboxRepo(this.dbh);
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
+    this.continuations = new ContinuationRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
     this.scratchpads = new ScratchpadRepo(this.dbh);
     this.jobs = new JobRepo(this.dbh);
+    this.schedules = new ScheduleRepo(this.dbh);
     this.gatewayOps = new GatewayOpRepo(this.dbh);
     this.studio = new StudioRepo(this.dbh);
     this.stats = new StatsRepo(this.dbh);
@@ -166,6 +173,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadRepo */
+  setTitleIfAuto(threadId: string, expectedTitle: string | null, title: string): boolean {
+    return this.threads.setTitleIfAuto(threadId, expectedTitle, title);
+  }
+
+  /** @see ThreadRepo */
   renameThread(threadId: string, title: string): boolean {
     return this.threads.renameThread(threadId, title);
   }
@@ -199,6 +211,21 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ThreadPullRequestRepo */
+  recordThreadPullRequestAttempt(threadId: string, checkedAt: number): void {
+    return this.threadPullRequests.recordAttempt(threadId, checkedAt);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  threadIsSettleEligible(threadId: string): boolean {
+    return this.threadPullRequests.threadIsSettleEligible(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  threadPullRequestCandidate(threadId: string): ThreadPullRequestCandidate | null {
+    return this.threadPullRequests.threadPullRequestCandidate(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
   linkedThreadPullRequests(limit: number): LinkedPullRequestThread[] {
     return this.threadPullRequests.linkedThreads(limit);
   }
@@ -206,7 +233,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadPullRequestRepo */
   settleThreadPullRequestCandidates(
     limit: number,
-    notCheckedAfter?: number,
+    notCheckedAfter: number,
   ): ThreadPullRequestCandidate[] {
     return this.threadPullRequests.settleCandidates(limit, notCheckedAfter);
   }
@@ -331,8 +358,13 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see QueuedTurnRepo */
-  cancelQueuedTurn(queueId: string): boolean {
-    return this.queuedTurns.cancelQueuedTurn(queueId);
+  editQueuedTurn(threadId: string, queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+    return this.queuedTurns.editQueuedTurn(threadId, queueId, patch);
+  }
+
+  /** @see QueuedTurnRepo */
+  cancelQueuedTurn(queueId: string, threadId?: string): boolean {
+    return this.queuedTurns.cancelQueuedTurn(queueId, threadId);
   }
 
   /** @see QueuedTurnRepo */
@@ -545,6 +577,73 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see WorkspaceRepo */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }> {
+    return this.workspaces.allThreadWorkspaces();
+  }
+
+  /** The background work a restart cancelled, captured at the boot seal,
+   *  grouped by thread. Read-once. @see ConversationDb */
+  takeRestartCancelledBackgroundWork(): Map<string, RestartCancelledBackgroundWork[]> {
+    return this.dbh.takeRestartCancelledBackgroundWork();
+  }
+
+  /** @see ContinuationRepo */
+  scheduleContinuation(
+    input: Parameters<ContinuationRepo["schedule"]>[0],
+  ): ContinuationRecord | null {
+    return this.continuations.schedule(input);
+  }
+
+  /** @see ContinuationRepo */
+  claimDueContinuations(now: number): ContinuationRecord[] {
+    return this.continuations.claimDue(now);
+  }
+
+  /** @see ContinuationRepo */
+  getContinuation(continuationId: string): ContinuationRecord | null {
+    return this.continuations.getContinuation(continuationId);
+  }
+
+  /** @see ContinuationRepo */
+  failContinuation(continuationId: string, nextDueAt: number): number {
+    return this.continuations.fail(continuationId, nextDueAt);
+  }
+
+  /** @see ContinuationRepo */
+  releaseOrphanedContinuationClaims(): void {
+    this.continuations.releaseOrphanedClaims();
+  }
+
+  /** @see ContinuationRepo */
+  clearContinuationClaim(continuationId: string): void {
+    this.continuations.clearClaim(continuationId);
+  }
+
+  /** @see ContinuationRepo */
+  deleteContinuation(continuationId: string): void {
+    this.continuations.deleteContinuation(continuationId);
+  }
+
+  /** Drop a thread's unclaimed continuations. @see ContinuationRepo */
+  cancelContinuationsForThread(threadId: string): number {
+    return this.continuations.cancelForThread(threadId);
+  }
+
+  /** @see ContinuationRepo */
+  nextContinuationDueAt(): number | null {
+    return this.continuations.nextDueAt();
+  }
+
+  /** @see ContinuationRepo */
+  listContinuationsForThread(threadId: string): ContinuationRecord[] {
+    return this.continuations.listForThread(threadId);
+  }
+
+  /** @see WorkspaceRepo */
   setThreadWorkspace(
     threadId: string,
     input: { envMode?: ThreadEnvMode; worktreePath?: string | null; requestedBranch?: string | null },
@@ -615,6 +714,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadRepo */
   latestUserBlockId(threadId: string): string | null {
     return this.threads.latestUserBlockId(threadId);
+  }
+
+  /** @see ThreadRepo */
+  turnUserBlockId(threadId: string, turnId: string): string | null {
+    return this.threads.turnUserBlockId(threadId, turnId);
   }
 
   /** @see TranscriptRepo */
@@ -713,6 +817,24 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** The hand-in still waiting to bootstrap its new session. @see HandInsRepo */
   pendingHandIn(threadId: string): HandInRecord | null {
     return this.handIns.pendingHandIn(threadId);
+  }
+
+  /** Record the ids a hand-in's one-shot replay omitted. @see HandInsRepo */
+  recordHandInOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    this.handIns.recordHandInOmittedHistory(threadId, omittedBlockIds, omittedItemIds);
+  }
+
+  /** Record the ids a fork's one-shot replay omitted. @see LineageRepo */
+  recordForkOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    this.lineage.recordForkOmittedHistory(threadId, omittedBlockIds, omittedItemIds);
   }
 
   /** @see LineageRepo */
@@ -872,6 +994,16 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   deleteJob(jobId: string): boolean {
     return this.jobs.deleteJob(jobId);
   }
+
+  createSchedule(input: ScheduleCreateInput): ScheduleRow | null { return this.schedules.createSchedule(input); }
+  getSchedule(id: string): ScheduleRow | null { return this.schedules.getSchedule(id); }
+  listSchedules(projectPath?: string): ScheduleRow[] { return this.schedules.listSchedules(projectPath); }
+  updateSchedule(id: string, patch: SchedulePatch, at?: number): ScheduleRow | null { return this.schedules.updateSchedule(id, patch, at); }
+  pauseSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.pauseSchedule(id, at); }
+  resumeSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.resumeSchedule(id, at); }
+  deleteSchedule(id: string): boolean { return this.schedules.deleteSchedule(id); }
+  runNow(id: string, at?: number): { job: JobRow | null; reason?: string } { return this.schedules.runNow(id, at); }
+  fireDueSchedules(now: number, graceMs?: number, deferredScheduleIds?: readonly string[]): ScheduleFireResult { return this.schedules.fireDue(now, graceMs, deferredScheduleIds); }
 
   /** @see JobRepo */
   claimNextJob(input: {

@@ -4,7 +4,9 @@ import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
+import { handoffTokenCapFor } from "@kone/agent-core/providerSettings.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
+import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
 import {
   getConversationStore,
   projectRuntimeEventForIpc,
@@ -14,9 +16,11 @@ import {
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
 import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
+import { ScheduleRunner } from "@kone/agent-core/scheduleRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
 import { branchPullRequest, pullRequestState } from "../modules/git/github.js";
+import { checkThreadPullRequest } from "../modules/git/threadPullRequestCheck.js";
 import {
   runProjectScript,
   SETTLE_SCRIPT_TIMEOUT_MS,
@@ -130,6 +134,7 @@ let gateway: GatewayHandle | null = null;
  *  registerAgentIpc runs, so the event tap below tolerates its absence rather
  *  than assuming a boot order. */
 let jobRunner: JobRunner | null = null;
+let scheduleRunner: ScheduleRunner | null = null;
 
 /** Teardown for the IRC delivery subscription — dropped at quit so no armed
  *  delivery timer holds the process open. */
@@ -145,6 +150,8 @@ export function getJobRunner(): JobRunner | null {
   return jobRunner;
 }
 
+export function getScheduleRunner(): ScheduleRunner | null { return scheduleRunner; }
+
 /** Rename a thread's generated worktree branch after its title. Refuses when
  *  the branch has an upstream or already heads a pull request: moving either
  *  would break the link. The PR check lives here because gh/electron lives
@@ -159,8 +166,10 @@ const renameWorktreeBranchAfterTitle = ({
   renameGeneratedBranch(worktreePath, title, {
     hasPullRequest: (dir, branch) =>
       branchPullRequest(dir, branch).then(
-        (pr) => pr !== null,
-        () => false,
+        // A PR exists OR the lookup was unavailable — either way, do not move
+        // the branch. Only a known-empty answer allows the rename.
+        (outcome) => !outcome.available || outcome.pullRequest !== null,
+        () => true,
       ),
   });
 
@@ -175,20 +184,16 @@ export function getAgentService(): AgentService {  if (!service) {
       // them, not construction.
       pullRequestChecker: async ({ projectPath, branch, worktreePath, link }) => {
         const dir = worktreePath ?? projectPath;
-        let state = await pullRequestState(dir, {
-          number: link?.number ?? null,
-          url: link?.url ?? null,
-        });
-        if (!state && branch) state = await branchPullRequest(dir, branch);
-        if (!state) return null;
-        return {
-          repository: link?.repository ?? "",
-          number: state.number,
-          url: state.url,
-          state: state.state,
-          checkedAt: Date.now(),
-          mergedAt: state.mergedAt ? Date.parse(state.mergedAt) : null,
-        };
+        const outcome = await checkThreadPullRequest(
+          { link, branch },
+          {
+            // Full identity only (URL or repository + number) — never a bare
+            // number in the local repo — so a foreign-repo link resolves to the
+            // right PR or to unknown.
+            fetchState: (ref) => pullRequestState(dir, ref),
+            fetchBranchPr: (head) => branchPullRequest(dir, head),          },
+        );
+        return outcome.link;
       },
       closeIdleShells: async ({ threadId, worktreePath }) => {
         // Only a thread's OWN worktree is ever touched, never the project
@@ -284,6 +289,11 @@ export function registerAgentIpc(): void {
   // behind (prepared from main's before-quit). Claimed and resumed inside the
   // dispatcher — before the window exists, so no client command can race the
   // consume. Best-effort: resuming never fails boot.
+  // Restart background notes: the boot seal captured the live subagents and
+  // task-tracker tasks the last process died with. Staged before quit-resume
+  // so a resumed continuation carries its thread's note; either way the note
+  // only ever rides a thread's next turn, never wakes one.
+  dispatcher.recoverRestartBackgroundNotesAtBoot();
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
 
   // The bench runner: queued jobs become threads through the same dispatcher
@@ -304,7 +314,14 @@ export function registerAgentIpc(): void {
   // After quit-resume, deliberately: a thread that was mid-turn when the app
   // died is work already in flight, and it should get its process back before
   // the queue starts handing out new ones. Best-effort, like the resume above.
-  void jobRunner.recoverAtBoot();
+  void jobRunner.recoverAtBoot().then(
+    () => scheduleRunner?.start(),
+    () => scheduleRunner?.start(),
+  );
+  scheduleRunner = new ScheduleRunner({
+    store,
+    drainProject: async (projectPath) => { await jobRunner?.drainProject(projectPath); },
+  });
 
   // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
   // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
@@ -313,6 +330,8 @@ export function registerAgentIpc(): void {
   // AgentService.startSession/stopSession.
   gateway = createGateway({
     store,
+    scheduleChanged: () => scheduleRunner?.rearm(),
+    drainProject: (projectPath) => { void jobRunner?.drainProject(projectPath); },
     askUser: (request) => svc.askUser(request),
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
@@ -374,13 +393,27 @@ export function registerAgentIpc(): void {
       moveThreadToWorktree: (threadId, options) => dispatcher.moveThreadToWorktree(threadId, options),
     },
     threadControls: {
+      // Mark done through the service, so thread.done.updated fans out to every
+      // surface (the gateway tool's canonical path).
+      setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      // Queue controls: list is a store read; the rest go through the service so
+      // mirrors and broadcasts stay in step (promote reuses "send now").
+      listQueuedTurns: (threadId: string) => store.listQueuedTurns(threadId),
+      editQueuedTurn: (threadId: string, queueId: string, input: string) =>
+        svc.editQueuedTurn(threadId, queueId, { input }),
+      reorderQueuedTurns: (threadId: string, queueIds: string[]) =>
+        svc.reorderQueuedTurns(threadId, queueIds),
+      cancelQueuedTurn: (threadId: string, queueId: string) =>
+        svc.cancelQueuedTurn(threadId, queueId),
+      promoteQueuedTurn: (threadId: string, queueId: string) =>
+        svc.sendQueuedTurnNow(threadId, queueId),
       stopThread: async (threadId) => {
-        const wasRunning = svc.hasLiveSession(threadId);
-        await svc.stopSession(threadId);
         // `stopped` is the idempotent guarantee, not a torn-something-down
-        // report: stopSession no-ops on an idle thread, which still leaves it
-        // with nothing running. `wasRunning` says whether a session existed.
-        return { stopped: true, wasRunning };
+        // report: stopThread no-ops on an idle thread, which still leaves it
+        // with nothing running. The service splits the request
+        // (interruptRequested) from its confirmation (confirmedStopped).
+        const result = await svc.stopThread(threadId);
+        return { ...result, stopped: result.confirmedStopped };
       },
       archiveThread: async (threadId, archived) => {
         const res = await svc.setThreadArchived(threadId, archived);
@@ -696,6 +729,18 @@ export function registerAgentIpc(): void {
       svc.setProviderSettings(provider, config),
   );
 
+  // The handoff history cap is part of provider settings, but its own getter
+  // and setter so a settings surface can read/write just the number without
+  // round-tripping the whole provider config. The setter merges, preserving
+  // every other field.
+  ipcMain.handle("agent:get-handoff-budget", (_event, provider: ProviderKind) =>
+    handoffTokenCapFor(provider, svc.getProviderSettings()),
+  );
+  ipcMain.handle(
+    "agent:set-handoff-budget",
+    (_event, provider: ProviderKind, cap: number) => svc.setProviderHandoffTokenCap(provider, cap),
+  );
+
   // Install maintenance: how each CLI was installed, and whether it's behind.
   // `check-latest` is the only provider call that reaches the network, so it's
   // its own channel — nothing on the launch or send path touches it.
@@ -869,6 +914,14 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
     svc.reorderQueuedTurns(threadId, queueIds),
+  );
+  // Edit a waiting follow-up in place, keeping its position. The store rewrites
+  // the row and its hidden transcript block, and turn.queued-updated carries the
+  // new words so the queue strip restates the row where it sits.
+  ipcMain.handle(
+    "agent:queue-edit",
+    (_event, threadId: string, queueId: string, patch: QueuedTurnEditPatch) =>
+      svc.editQueuedTurn(threadId, queueId, patch),
   );
   // "Send now" on a queued row: steered into the live turn, sent as a turn
   // when idle, or moved to the front when the provider can't steer. A failed
@@ -1335,6 +1388,8 @@ export async function prepareQuitResumeForQuit(): Promise<void> {
 
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
+  scheduleRunner?.stop();
+  scheduleRunner = null;
   if (stopWorktreeSweeper) {
     stopWorktreeSweeper();
     stopWorktreeSweeper = null;

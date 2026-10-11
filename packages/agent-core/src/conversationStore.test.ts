@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 30 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 33 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(30);
+    expect(version.user_version).toBe(33);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -227,6 +227,8 @@ describe("v1 baseline migration and schema", () => {
       "job_runs",
       "thread_hand_ins",
       "agent_inbox",
+      "continuations",
+      "schedules",
     ]) {
       expect(tables).toContain(table);
     }
@@ -264,8 +266,11 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 26, name: "InboxUncertainAt" },
       { migration_id: 27, name: "QueuedTurnDurableRowid" },
       { migration_id: 28, name: "TurnSeals" },
-      { migration_id: 29, name: "TitleOrigin" },
-      { migration_id: 30, name: "ThreadPullRequest" },
+      { migration_id: 29, name: "HandInOmittedHistory" },
+      { migration_id: 30, name: "TitleOrigin" },
+      { migration_id: 31, name: "ThreadPullRequest" },
+      { migration_id: 32, name: "Continuations" },
+      { migration_id: 33, name: "Schedules" },
     ]);
 
     const idx = raw
@@ -568,6 +573,25 @@ describe("pins, selection and rename", () => {
     // A later automatic write flips ownership back to kone.
     store.setTitle("a", "Regenerated title");
     expect(store.titleOrigin("a")).toBe("auto");
+  });
+
+  test("setTitleIfAuto commits only while the title is auto and unchanged", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    store.setTitle("a", "Generated");
+
+    // Commits when the expectation matches and ownership is auto.
+    expect(store.setTitleIfAuto("a", "Generated", "Regenerated")).toBe(true);
+    expect(store.getTitle("a")).toBe("Regenerated");
+
+    // A stale expectation is refused.
+    expect(store.setTitleIfAuto("a", "Generated", "Stale")).toBe(false);
+    expect(store.getTitle("a")).toBe("Regenerated");
+
+    // A manual rename blocks it.
+    store.renameThread("a", "Mine");
+    expect(store.setTitleIfAuto("a", "Mine", "Clobbered")).toBe(false);
+    expect(store.getTitle("a")).toBe("Mine");
   });
 });
 
@@ -3033,7 +3057,7 @@ describe("project scripts and settle candidates", () => {
     store.setArchived("archived", true);
 
     const ids = store
-      .settleThreadPullRequestCandidates(10)
+      .settleThreadPullRequestCandidates(10, Number.MAX_SAFE_INTEGER)
       .map((candidate) => candidate.threadId)
       .sort();
     expect(ids).toEqual(["linked", "wt"]);
@@ -3078,5 +3102,47 @@ describe("project scripts and settle candidates", () => {
     expect(store.threadIsBusy("t")).toBe(true);
     store.applyEvent(turnCompleted("t", "turn-1", 20));
     expect(store.threadIsBusy("t")).toBe(false);
+  });
+
+  test("a queued-but-not-promoted follow-up keeps threadIsBusy true on an idle thread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ blockId: "ub-1", threadId: "t", text: "later", at: 100 });
+    store.enqueueQueuedTurn({
+      queueId: "q1",
+      threadId: "t",
+      userBlockId: "ub-1",
+      input: "later",
+      at: 100,
+    });
+    expect(store.threadIsBusy("t")).toBe(true);
+    store.cancelQueuedTurn("q1");
+    expect(store.threadIsBusy("t")).toBe(false);
+  });
+
+  test("checked_at backoff advances a bounded candidate list past attempted threads", () => {
+    const store = freshStore();
+    for (let i = 0; i < 25; i++) {
+      store.ensureThread({ threadId: `w${i}`, projectPath: "/p", provider: "opencode" });
+      store.setThreadWorkspace(`w${i}`, {
+        envMode: "worktree",
+        worktreePath: `/p/.wt/${i}`,
+      });
+    }
+    const first = store.settleThreadPullRequestCandidates(20, Number.MAX_SAFE_INTEGER);
+    expect(first).toHaveLength(20);
+
+    // Every attempt advances the check time, even when there was no PR to see.
+    const now = Date.now();
+    for (const candidate of first) store.recordThreadPullRequestAttempt(candidate.threadId, now);
+
+    const next = store.settleThreadPullRequestCandidates(20, now - 1_000);
+    expect(next.map((c) => c.threadId).sort()).toEqual([
+      "w20",
+      "w21",
+      "w22",
+      "w23",
+      "w24",
+    ]);
   });
 });

@@ -64,6 +64,7 @@ export type GatewayErrorCode =
   | "not_found"
   | "invalid_input"
   | "provider_unavailable"
+  | "cancelled"
   | "internal";
 
 /** Who wrote a pad: an agent session, when known. `model` is the session's
@@ -380,6 +381,19 @@ export const ReadResponseInputSchema = z.object({
    *  read for final and response (default 48000); truncated with a visible
    *  marker. */
   maxTextChars: z.number().int().min(200).optional(),
+  /** Transcript only: read one message by its blockId, whole (or a slice from
+   *  textOffset). */
+  blockId: z.string().min(1).optional(),
+  /** Transcript only: continue older messages from a previous reply's
+   *  nextCursor. */
+  cursor: z.string().min(1).optional(),
+  /** Transcript only: start this many characters into the message text (for
+   *  an oversized message). */
+  textOffset: z.number().int().min(0).optional(),
+  /** Transcript only: which text to slice when continuing with textOffset —
+   *  "prose" (the default read) or "rich" (blockId/paged reads). Pass back
+   *  what the first slice reported. */
+  representation: z.enum(["prose", "rich"]).optional(),
 });
 
 export const ContinueThreadInputSchema = z.object({
@@ -575,6 +589,24 @@ export const READ_RESPONSE_JSON_SCHEMA = {
     maxTextChars: {
       type: "integer",
       description: "Text cap: per message for transcript (default 1500), on the whole read for final and response (default 48000).",
+    },
+    blockId: {
+      type: "string",
+      description: "transcript only: read one message by its blockId, whole (or a slice from textOffset).",
+    },
+    cursor: {
+      type: "string",
+      description: "transcript only: continue older messages from a previous reply's nextCursor.",
+    },
+    textOffset: {
+      type: "integer",
+      description: "transcript only: start this many characters into the message text (for an oversized message).",
+    },
+    representation: {
+      type: "string",
+      enum: ["prose", "rich"],
+      description:
+        "transcript only: which text to slice when continuing with textOffset — \"prose\" (the default read) or \"rich\" (blockId/paged reads). Pass back what the first slice reported.",
     },
   },
   required: ["threadId"],
@@ -2102,6 +2134,30 @@ export const ReadAppThreadInputSchema = z.object({
     .max(20_000)
     .optional()
     .describe("Truncate each message to this many characters (default 1500)."),
+  blockId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Read one message by its blockId, whole (or a slice from textOffset). Use it for a message a handoff omitted.",
+    ),
+  cursor: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Continue older messages from a previous reply's nextCursor."),
+  textOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Start this many characters into the message text (for an oversized message)."),
+  representation: z
+    .enum(["prose", "rich"])
+    .optional()
+    .describe(
+      "Which text to slice when continuing with textOffset: \"prose\" (the default read) or \"rich\" (blockId/paged reads). Pass back what the first slice reported.",
+    ),
 });
 
 export const READ_APP_THREAD_JSON_SCHEMA = {
@@ -2115,6 +2171,22 @@ export const READ_APP_THREAD_JSON_SCHEMA = {
     maxTextChars: {
       type: "integer",
       description: "Truncate each message to this many characters (default 1500).",
+    },
+    blockId: {
+      type: "string",
+      description:
+        "Read one message by its blockId, whole (or a slice from textOffset). Use it for a message a handoff omitted.",
+    },
+    cursor: { type: "string", description: "Continue older messages from a previous reply's nextCursor." },
+    textOffset: {
+      type: "integer",
+      description: "Start this many characters into the message text (for an oversized message).",
+    },
+    representation: {
+      type: "string",
+      enum: ["prose", "rich"],
+      description:
+        "Which text to slice when continuing with textOffset: \"prose\" (the default read) or \"rich\" (blockId/paged reads). Pass back what the first slice reported.",
     },
   },
   required: ["threadId"],
@@ -2333,6 +2405,162 @@ export type ArchiveAppThreadInput = z.infer<typeof ArchiveAppThreadInputSchema>;
 export type DeleteAppThreadInput = z.infer<typeof DeleteAppThreadInputSchema>;
 export type RenameAppThreadInput = z.infer<typeof RenameAppThreadInputSchema>;
 
+export const SetThreadPinnedInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to pin or unpin, as app_list_threads reports it."),
+  pinned: z.boolean().describe("True to pin the thread, false to unpin it."),
+});
+
+export const SET_THREAD_PINNED_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to pin or unpin, as app_list_threads reports it."),
+    pinned: { type: "boolean", description: "True to pin the thread, false to unpin it." },
+  },
+  required: ["threadId", "pinned"],
+} satisfies GatewayRecord;
+
+export const SetThreadDoneInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to mark done or not done, as app_list_threads reports it."),
+  done: z.boolean().describe("True to mark the thread done (settled), false to clear the mark."),
+});
+
+export const SET_THREAD_DONE_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to mark done or not done, as app_list_threads reports it."),
+    done: {
+      type: "boolean",
+      description: "True to mark the thread done (settled), false to clear the mark.",
+    },
+  },
+  required: ["threadId", "done"],
+} satisfies GatewayRecord;
+
+export const MarkThreadUnreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to mark unread, as app_list_threads reports it."),
+});
+
+export const MARK_THREAD_UNREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to mark unread, as app_list_threads reports it."),
+  },
+} satisfies GatewayRecord;
+
+export type SetThreadPinnedInput = z.infer<typeof SetThreadPinnedInputSchema>;
+export type SetThreadDoneInput = z.infer<typeof SetThreadDoneInputSchema>;
+export type MarkThreadUnreadInput = z.infer<typeof MarkThreadUnreadInputSchema>;
+
+export const SEARCH_APP_THREADS_DEFAULT_LIMIT = 10;
+export const SEARCH_APP_THREADS_MAX_LIMIT = 50;
+
+export const SearchAppThreadsInputSchema = z.object({
+  query: z.string().min(1).describe("The text to search for across conversations."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(SEARCH_APP_THREADS_MAX_LIMIT)
+    .optional()
+    .describe(`Maximum conversations to return (default ${SEARCH_APP_THREADS_DEFAULT_LIMIT}).`),
+});
+
+export const SEARCH_APP_THREADS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    query: { type: "string", description: "The text to search for across conversations." },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: SEARCH_APP_THREADS_MAX_LIMIT,
+      description: `Maximum conversations to return (default ${SEARCH_APP_THREADS_DEFAULT_LIMIT}).`,
+    },
+  },
+  required: ["query"],
+} satisfies GatewayRecord;
+
+export type SearchAppThreadsInput = z.infer<typeof SearchAppThreadsInputSchema>;
+
+/** Queue-control inputs (Phase 6). */
+export const ListQueuedTurnsInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose queued follow-ups to list."),
+});
+
+export const ListQueuedTurnsJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose queued follow-ups to list."),
+  },
+} satisfies GatewayRecord;
+
+export const EditQueuedTurnInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-up to edit."),
+  queueId: z.string().min(1).describe("The queued row to edit, as app_list_queued_turns reports it."),
+  input: z.string().min(1).describe("The new prompt text."),
+});
+
+export const EditQueuedTurnJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-up to edit."),
+    queueId: { type: "string", description: "The queued row to edit, as app_list_queued_turns reports it." },
+    input: { type: "string", description: "The new prompt text." },
+  },
+  required: ["threadId", "queueId", "input"],
+} satisfies GatewayRecord;
+
+export const ReorderQueuedTurnsInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-ups to reorder."),
+  queueIds: z
+    .array(z.string().min(1))
+    .describe("The waiting rows in the order they should run, as app_list_queued_turns reports them."),
+});
+
+export const ReorderQueuedTurnsJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-ups to reorder."),
+    queueIds: {
+      type: "array",
+      items: { type: "string" },
+      description: "The waiting rows in the order they should run, as app_list_queued_turns reports them.",
+    },
+  },
+  required: ["threadId", "queueIds"],
+} satisfies GatewayRecord;
+
+export const CancelQueuedTurnInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-up to cancel."),
+  queueId: z.string().min(1).describe("The queued row to cancel, as app_list_queued_turns reports it."),
+});
+
+export const CancelQueuedTurnJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-up to cancel."),
+    queueId: { type: "string", description: "The queued row to cancel, as app_list_queued_turns reports it." },
+  },
+  required: ["threadId", "queueId"],
+} satisfies GatewayRecord;
+
+export const PromoteQueuedTurnInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread whose waiting follow-up to run now."),
+  queueId: z.string().min(1).describe("The queued row to run now, as app_list_queued_turns reports it."),
+});
+
+export const PromoteQueuedTurnJson = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread whose waiting follow-up to run now."),
+    queueId: { type: "string", description: "The queued row to run now, as app_list_queued_turns reports it." },
+  },
+  required: ["threadId", "queueId"],
+} satisfies GatewayRecord;
+
+export type EditQueuedTurnInput = z.infer<typeof EditQueuedTurnInputSchema>;
+export type ReorderQueuedTurnsInput = z.infer<typeof ReorderQueuedTurnsInputSchema>;
+export type CancelQueuedTurnInput = z.infer<typeof CancelQueuedTurnInputSchema>;
+export type PromoteQueuedTurnInput = z.infer<typeof PromoteQueuedTurnInputSchema>;
 export const LinkThreadPullRequestInputSchema = ThreadIdInputSchema.extend({
   threadId: threadIdField("The thread to link the pull request to, as app_list_threads reports it."),
   repository: z

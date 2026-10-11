@@ -53,12 +53,20 @@ class CheckpointFakeAdapter {
 }
 
 /** In-memory stand-in for the store's turn-checkpoint slice, mirroring the
- *  real repo contract: first record wins, prune keeps the newest rows. */
+ *  real repo contract: first record wins, prune keeps the newest rows. The
+ *  thread runs in a worktree at `worktreePath` so the restore-safety guard
+ *  treats it as isolated unless `others` names a sharing thread. */
 class FakeCheckpointStore implements CheckpointStore {
   rows = new Map<string, TurnCheckpointRecord>();
   constructor(
     private readonly projectPath: string,
     private readonly explode = false,
+    private readonly worktreePath: string | null = projectPath,
+    private readonly others: Array<{
+      threadId: string;
+      projectPath: string;
+      workspace: ThreadWorkspace;
+    }> = [],
   ) {}
 
   private key(threadId: string, turnId: string): string {
@@ -72,7 +80,25 @@ class FakeCheckpointStore implements CheckpointStore {
 
   threadWorkspace(_threadId: string): ThreadWorkspace | null {
     if (this.explode) throw new Error("store exploded");
-    return { envMode: "local", worktreePath: null, requestedBranch: null };
+    return {
+      envMode: this.worktreePath ? "worktree" : "local",
+      worktreePath: this.worktreePath,
+      requestedBranch: null,
+    };
+  }
+
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }> {
+    if (this.explode) throw new Error("store exploded");
+    return this.others;
+  }
+
+  turnUserBlockId(_threadId: string, _turnId: string): string | null {
+    if (this.explode) throw new Error("store exploded");
+    return null;
   }
 
   recordTurnCheckpoint(input: {
@@ -391,6 +417,65 @@ describe("AgentService turn checkpoints", () => {
       ]);
       expect(a).toEqual({ ok: true });
       expect(b).toEqual({ ok: true });
+    } finally {
+      await service.stopAll();
+    }
+  });
+
+  test("a thread in its project checkout refuses a file restore, even alone", async () => {
+    const repo = await initTestRepo("kone-checkpoint-shared-local-");
+    writeFileSync(path.join(repo, "note.txt"), "v1\n");
+    const checkpoints = new FakeCheckpointStore(repo, false, null);
+    const service = buildService(checkpoints);
+    try {
+      await service.startSession({ threadId: "t-shared-local", provider: "codex", cwd: repo });
+      const result = await service.sendTurn({ threadId: "t-shared-local", input: "hi" });
+      writeFileSync(path.join(repo, "note.txt"), "v2-after-agent\n");
+      const refused = await service.revertToTurnCheckpoint("t-shared-local", result.turnId, true);
+      expect(refused.ok).toBe(false);
+      if (!refused.ok && refused.reason === "shared-checkout") {
+        expect(refused.detail).toContain("shared checkout");
+        expect(refused.rewind).toEqual({
+          sourceThreadId: "t-shared-local",
+          turnId: result.turnId,
+          userBlockId: null,
+        });
+      } else {
+        throw new Error("expected a shared-checkout refusal");
+      }
+      // The preview refuses the same way, before the caller asks for force.
+      expect(await service.previewTurnCheckpoint("t-shared-local", result.turnId)).toMatchObject({
+        ok: false,
+        reason: "shared-checkout",
+      });
+      // The refusal changed nothing.
+      expect(readFileSync(path.join(repo, "note.txt"), "utf8")).toBe("v2-after-agent\n");
+    } finally {
+      await service.stopAll();
+    }
+  });
+
+  test("a worktree another thread shares is refused, naming the overlap", async () => {
+    const repo = await initTestRepo("kone-checkpoint-shared-other-");
+    writeFileSync(path.join(repo, "note.txt"), "v1\n");
+    const checkpoints = new FakeCheckpointStore(repo, false, repo, [
+      {
+        threadId: "t-other",
+        projectPath: repo,
+        workspace: { envMode: "local", worktreePath: null, requestedBranch: null },
+      },
+    ]);
+    const service = buildService(checkpoints);
+    try {
+      await service.startSession({ threadId: "t-shared-other", provider: "codex", cwd: repo });
+      const result = await service.sendTurn({ threadId: "t-shared-other", input: "hi" });
+      const refused = await service.revertToTurnCheckpoint("t-shared-other", result.turnId, true);
+      expect(refused.ok).toBe(false);
+      if (!refused.ok && refused.reason === "shared-checkout") {
+        expect(refused.detail).toContain("t-other");
+      } else {
+        throw new Error("expected a shared-checkout refusal");
+      }
     } finally {
       await service.stopAll();
     }
