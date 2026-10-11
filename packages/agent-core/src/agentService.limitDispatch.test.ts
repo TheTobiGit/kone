@@ -197,11 +197,14 @@ describe("P3 usage-limit dispatch", () => {
 
   test("restore deferral bounds continuation sweeps until its retry time", async () => {
     const id = "limit-reset-restore-backoff";
+    const other = "limit-reset-restore-backoff-other";
     store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    store.ensureThread({ threadId: other, provider: "codex", projectPath: "/Users/gideonsarfo" });
     const adapter = new Adapter();
     const svc = build(adapter);
     const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
     svc.setThreadLimited(id, Date.now() + 15);
+    svc.setThreadLimited(other, Date.now() + 60);
     const release = claimRestoreDir("/tmp");
     let claims = 0;
     const claim = store.claimDueContinuations.bind(store);
@@ -212,15 +215,15 @@ describe("P3 usage-limit dispatch", () => {
     try {
       await dispatcher.dispatchDueContinuations();
       await pause(120);
-      expect(claims).toBeLessThanOrEqual(2);
-      expect(adapter.sent).toEqual([]);
+      expect(claims).toBeLessThanOrEqual(3);
+      expect(adapter.sent.filter((text) => text.includes("usage limit has reset"))).toHaveLength(1);
       expect(store.listContinuationsForThread(id)[0]?.attempts).toBe(0);
     } finally {
       release();
       store.claimDueContinuations = claim;
     }
     await pause(450);
-    expect(adapter.sent.some((text) => text.includes("usage limit has reset"))).toBe(true);
+    expect(adapter.sent.filter((text) => text.includes("usage limit has reset"))).toHaveLength(2);
     expect(store.listContinuationsForThread(id)).toEqual([]);
     await svc.stopAll();
   });
