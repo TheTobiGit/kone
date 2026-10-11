@@ -41,6 +41,8 @@ class Adapter {
   sent: string[] = [];
   sendError: Error | null = null;
   startError: Error | null = null;
+  startGate: Promise<void> | null = null;
+  startEntered: (() => void) | null = null;
   async discover(): Promise<Awaited<ReturnType<ProviderAdapter["discover"]>>> {
     return { provider: "codex", label: "Codex", available: false, authStatus: "unknown", readiness: "not-installed" };
   }
@@ -49,6 +51,8 @@ class Adapter {
   }
   async startSession(input: Parameters<ProviderAdapter["startSession"]>[0]): Promise<Awaited<ReturnType<ProviderAdapter["startSession"]>>> {
     if (this.startError) throw this.startError;
+    this.startEntered?.();
+    if (this.startGate) await this.startGate;
     return { threadId: input.threadId, provider: input.provider, cwd: input.cwd, status: "ready" };
   }
   async interruptTurn(): Promise<void> {}
@@ -217,6 +221,45 @@ describe("P3 usage-limit dispatch", () => {
     }
     await pause(450);
     expect(adapter.sent.some((text) => text.includes("usage limit has reset"))).toBe(true);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
+  test("restore during adoption holds a continuation without queueing a duplicate", async () => {
+    const id = "limit-reset-restore-adoption";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    let releaseStart = (): void => {};
+    let notifyStarted = (): void => {};
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+    adapter.startEntered = notifyStarted;
+    adapter.startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    svc.setThreadLimited(id, Date.now() + 60_000);
+    store.cancelContinuationsForThread(id);
+    store.scheduleContinuation({ threadId: id, kind: "limit-reset", dueAt: 0 });
+    const sweep = dispatcher.dispatchDueContinuations();
+    await started;
+    const releaseRestore = claimRestoreDir("/tmp");
+    releaseStart();
+    try {
+      await sweep;
+      expect(adapter.sent).toEqual([]);
+      expect(store.listQueuedTurns(id)).toEqual([]);
+      expect(store.listContinuationsForThread(id)).toHaveLength(1);
+    } finally {
+      releaseRestore();
+    }
+    await pause(450);
+    expect(adapter.sent.filter((text) => text.includes("usage limit has reset"))).toHaveLength(1);
+    expect(store.listQueuedTurns(id)).toEqual([]);
+    const emit = adapter.emit;
+    if (!emit) throw new Error("adapter emit not captured");
+    emit({ type: "turn.completed", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "t-1" });
+    await pause(40);
+    expect(adapter.sent.filter((text) => text.includes("usage limit has reset"))).toHaveLength(1);
+    expect(store.listQueuedTurns(id)).toEqual([]);
     expect(store.listContinuationsForThread(id)).toEqual([]);
     await svc.stopAll();
   });

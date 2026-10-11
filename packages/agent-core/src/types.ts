@@ -390,6 +390,8 @@ export type TurnStartResult = {
   /** The thread was busy, so the turn waits in the queue: no provider has it
    *  yet, and `turnId` will never name a turn. */
   queued?: true;
+  /** A noQueue send was held by restore, compaction, or a live turn. */
+  held?: true;
   /** A steer its provider cannot take mid-turn, waiting for the tool call
    *  the turn is in to finish before kone ends the turn and it goes next
    *  (kone steer): the call, and when the wait began. */
@@ -449,6 +451,8 @@ export type TurnSendOptions = {
   /** A steer that must land in a turn the provider is running, or not at all:
    *  refused rather than queued when no announced turn can take it. */
   liveOnly?: boolean;
+  /** Return held instead of persisting this turn when the service would queue it. */
+  noQueue?: boolean;
 };
 
 /** The naming source for a turn: prose first, then the invoked skill, then
