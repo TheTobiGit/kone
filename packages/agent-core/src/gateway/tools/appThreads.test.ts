@@ -509,6 +509,30 @@ describe("app_list_threads", () => {
     expect(threads[1]?.status).toBe("failed");
   });
 
+  it("a settled parent waits for its running kone child", async () => {
+    const base = makeStore();
+    const store: AppThreadsStore = {
+      ...base,
+      spawnedChildren: (parentThreadId) =>
+        parentThreadId === "t-newest"
+          ? [thread({ threadId: "child", parentThreadId, relationshipToParent: "subagent" })]
+          : [],
+      threadTurnSpan: (threadId) =>
+        threadId === "t-newest"
+          ? { startedAt: 1, endedAt: 2, runningTurns: 0, lastState: "completed" }
+          : threadId === "child"
+            ? { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" }
+            : null,
+    };
+    const result = await tools({ store, live: ["child"] }).call(makeCtx(), "app_list_threads", {
+      project: "kone",
+    });
+    // SAFETY: app_list_threads always returns structuredContent.threads.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(threads[0]?.status).toBe("waiting-for-children");
+  });
+
   it("reads the whole page's spans in one batch call when the store offers it", async () => {
     const batchCalls: string[][] = [];
     const store = makeStore({

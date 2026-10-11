@@ -1325,6 +1325,7 @@ export type ThreadStatus =
   | "working"
   | "waiting-for-approval"
   | "waiting-for-user-input"
+  | "waiting-for-children"
   | "idle"
   | "failed"
   | "interrupted";
