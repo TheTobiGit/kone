@@ -857,6 +857,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
               span: store.threadTurnSpan?.(thread.threadId) ?? null,
               gate: options.pendingGateFor?.(thread.threadId) ?? null,
               live: isLive(thread.threadId),
+              limited: (thread.limitedAt ?? null) !== null,
             }),
           }),
           messages: [message],
