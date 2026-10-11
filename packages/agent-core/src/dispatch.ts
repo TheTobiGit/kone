@@ -517,7 +517,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   async startThread(requested: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
-    const input = this.withThreadIdentity(requested);
+    let input = this.withThreadIdentity(requested);
+    const forkContext = this.store.threadForkContext(input.threadId);
+    if (forkContext?.nativeFork && !this.store.threadMeta(input.threadId)?.conversationId) {
+      if (input.provider === forkContext.sourceProvider) input = { ...input, forkFrom: forkContext.nativeFork };
+      else input = { ...input, forkFrom: undefined };
+    }
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
     // Register the thread BEFORE the session starts: the gateway mints the
     // session's MCP token in startSession and the provider connects to it
@@ -689,6 +694,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (options.resume) {
       if (meta.conversationId) start.resume = meta.conversationId;
       if (meta.resumeSessionAt) start.resumeSessionAt = meta.resumeSessionAt;
+    }
+    // A native fork's first start asks the provider to fork the source
+    // conversation rather than resuming or starting fresh. Once the fork has
+    // its own conversation id, later starts resume it as usual.
+    const forkContext = this.store.threadForkContext(threadId);
+    if (forkContext?.nativeFork && !meta.conversationId) {
+      start.forkFrom = forkContext.nativeFork;
     }
     if (meta.selection?.mode) start.mode = meta.selection.mode;
     if (meta.selection?.effort) start.effort = meta.selection.effort;

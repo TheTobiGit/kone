@@ -54,7 +54,7 @@ const stubQuery = mock((input: { options: CapturedOptions }) => {
   };
 });
 
-mock.module("@anthropic-ai/claude-agent-sdk", () => ({ query: stubQuery }));
+mock.module("@anthropic-ai/claude-agent-sdk", () => ({ query: stubQuery, forkSession: async () => ({ sessionId: "fork-session" }) }));
 
 import type { EmitEvent, SessionStartInput } from "./types.js";
 // Must be a dynamic import: a static import is hoisted above the mock.module
@@ -83,10 +83,13 @@ const CONNECTION = {
   ],
 };
 
-function start(overrides: Partial<SessionStartInput>): Promise<ReturnType<ClaudeAdapter["startSession"]>> {
-  // SAFETY: a zero-arg arrow accepts every EmitEvent call signature, and the
-  // stubbed query() below never emits session events anyway.
-  const adapter = new ClaudeAdapter((() => {}) as EmitEvent);
+// SAFETY: a zero-arg arrow accepts every EmitEvent call signature, and the
+// stubbed query() below never emits session events unless the test does.
+function start(
+  overrides: Partial<SessionStartInput>,
+  emit: EmitEvent = (() => {}) as EmitEvent,
+): Promise<ReturnType<ClaudeAdapter["startSession"]>> {
+  const adapter = new ClaudeAdapter(emit);
   return adapter.startSession({
     threadId: "thread-1",
     provider: "claudeAgent",
@@ -96,6 +99,14 @@ function start(overrides: Partial<SessionStartInput>): Promise<ReturnType<Claude
 }
 
 describe("Claude gateway injection", () => {
+  test("a native fork does not publish the source UUID as its resume cursor", async () => {
+    const events: import("./types.js").RuntimeEvent[] = [];
+    await start({ forkFrom: { conversationId: "source-session", assistantUuid: "source-uuid" } }, (event) => events.push(event));
+    const started = events.find((event) => event.type === "session.started");
+    expect(started?.type).toBe("session.started");
+    if (started?.type === "session.started") expect(started.refs?.resumeSessionAt).toBeUndefined();
+  });
+
   test("fresh session: mcpServers + kone host-context append layered on the stock preset", async () => {
     const session = await start({ gatewayConnection: CONNECTION });
     expect(session.resumedFrom).toBeUndefined();

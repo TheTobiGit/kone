@@ -65,6 +65,7 @@ import {
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
 import { createAppSnoozeTools } from "./tools/snooze.js";
+import { createAppForkTools } from "./tools/appForks.js";
 import type { ThreadGateKind } from "../types.js";
 import type { PendingInteraction } from "../eventSubscriptions.js";
 import {
@@ -99,6 +100,7 @@ export type { AppTypographyToolOptions, TypographyReading } from "./tools/appTyp
 export { createAppProjectTools } from "./tools/appProjects.js";
 export type { ProjectRosterEntry } from "./tools/appProjects.js";
 export { createAppThreadTools } from "./tools/appThreads.js";
+export { createAppForkTools } from "./tools/appForks.js";
 export type { AppThreadsRunner } from "./tools/appThreads.js";
 export { createAppProviderTools } from "./tools/appProviders.js";
 export type { AppProvidersToolOptions } from "./tools/appProviders.js";
@@ -159,6 +161,11 @@ export interface GatewayInput {
    *  agent_list reads to tell a sender what a message would do. */
   threadRuntime?: (threadId: string) => ThreadRuntime | null;
   providerSteers?: (provider: ProviderKind) => boolean;
+  /** Whether a provider can fork natively (its adapter's supportsFork) — what
+   *  app_fork_thread reads to choose the native fork or the portable import. */
+  supportsFork?: (provider: ProviderKind) => boolean;
+  /** Authoritative service busy state, including accepted sends before turn.started. */
+  isThreadBusy?: (threadId: string) => boolean;
   /** What a thread is parked on, if anything — what the thread list reads to
    *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
    *  from one that is merely idle. Absent, no thread reads as parked, which
@@ -349,6 +356,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...(input.snoozeControls
       ? createAppSnoozeTools({ store: input.store, ...input.snoozeControls })
       : []),
+    ...createAppForkTools({ emit: input.emit, supportsFork: input.supportsFork, isThreadBusy: input.isThreadBusy }),
     ...createAppProviderTools(appProviderOptions),
     ...createAppViewTools(appViewOptions),
     ...createAppScheduleTools(appScheduleOptions),

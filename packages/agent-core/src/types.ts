@@ -162,6 +162,19 @@ export type AgentPersona = {
   instructions?: string;
 };
 
+/** A provider-native fork to perform when a fork thread's session first starts:
+ *  the source conversation and the turn to fork at. Codex forks via
+ *  `thread/fork` (`beforeTurnId` → `lastTurnId`); Claude via the SDK
+ *  `forkSession` (`assistantUuid` → `upToMessageId`). */
+export type NativeForkTarget = {
+  /** The source thread's native conversation id (StoredThreadMeta.conversationId). */
+  conversationId: string;
+  /** Codex: continue after this provider turn id. */
+  beforeTurnId?: string;
+  /** Claude: the assistant message uuid to fork up to. */
+  assistantUuid?: string;
+};
+
 export type SessionStartInput = {
   /** Caller-chosen thread id — kone owns this; the CLI's native id is mapped
    *  onto it via ProviderRefs. */
@@ -211,6 +224,11 @@ export type SessionStartInput = {
    *  at the last assistant message instead. Absent for every other provider and
    *  for Claude conversations that never produced an assistant message. */
   resumeSessionAt?: string;
+  /** A native fork to perform when this session starts (see NativeForkTarget):
+   *  the provider forks the source conversation at the turn and this session
+   *  continues the fork. Present only for a native fork thread's first start;
+   *  absent resumes or starts fresh as usual. */
+  forkFrom?: NativeForkTarget;
   /** MCP gateway connection for this session, filled main-side by
    *  AgentService.startSession when the gateway is live. The adapter injects
    *  it into the provider session's mcpServers config so the agent can call
@@ -1112,6 +1130,11 @@ export type ForkContext = {
    *  what the timeline's "Handed from" marker names. Only written for
    *  `"handoff"` forks. */
   sourceModel?: string;
+  /** A native fork to perform when this thread's session first starts: the
+   *  provider conversation to fork and the turn to fork at. Present only on a
+   *  native fork thread, whose import is empty — the first start asks the
+   *  provider to fork instead of replaying history. */
+  nativeFork?: NativeForkTarget;
   /** Block ids the one-shot replay omitted for lack of budget, recorded when
    *  the bootstrap was built so the agent can read the rest back and the
    *  timeline can say what was left out. Absent when nothing was omitted. */
@@ -1217,6 +1240,94 @@ export type ForkThreadAtBlockResult = {
    *  `"exists"` = a thread with this id was already there (idempotent replay
    *  of the same creation — the turn is not dispatched twice). */
   status: "created" | "exists";
+};
+
+/** Fork a thread from any finished run at a chosen turn — the conversation
+ *  taken from that run's end. Accepts exactly the shape a conversation-only
+ *  rewind names (`{ sourceThreadId, turnId, userBlockId }`), so a revert that
+ *  refuses a file restore can offer this fork as its alternative. Reuses the
+ *  branch continuation: the import is the source's history through the chosen
+ *  turn's last block. No provider session is started — the first send chooses
+ *  provider/model, falling back to the source's own as a placeholder. */
+export type ForkThreadAtTurnInput = {
+  /** Caller-chosen idempotency key, as create-handoff/create-side-chat use. */
+  requestId: string;
+  /** Renderer-minted id for the new fork thread. */
+  threadId: string;
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, when the caller has it. A turn whose assistant
+   *  block exists cuts at that block (the run's end); a turn that produced no
+   *  answer block falls back to the prompt block. */
+  userBlockId: string | null;
+  /** The provider/model the fork continues on. Omitted leaves the source's
+   *  provider/model as a placeholder — the first send may choose differently
+   *  while the fork has no session or conversation yet. */
+  target?: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  };
+  title?: string;
+  /** Whether the target provider can fork natively (the caller resolves this
+   *  from the adapter's supportsFork capability). When true and the source has
+   *  a native conversation id, the fork is native; otherwise it is the
+   *  portable branch import. */
+  supportsFork?: boolean;
+};
+
+export type ForkThreadAtTurnResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  provider: ProviderKind;
+  model?: string;
+  /** `"created"` = the fork was written; `"exists"` = a thread with this id
+   *  was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
+/** A conversation-only rewind: the source keeps its files and its turns, and
+ *  the conversation continues from a finished turn's end in a new thread. This
+ *  is exactly the rewind target a file-restore refusal hands over
+ *  (`{ sourceThreadId, turnId, userBlockId }`), plus the caller-minted
+ *  creation ids every fork path takes. No session starts and nothing is sent:
+ *  the fork waits for the user's first message like any lazy fork. */
+export type RewindConversationOnlyInput = {
+  /** Caller-chosen idempotency key, as create-handoff/create-side-chat use. */
+  requestId: string;
+  /** Renderer-minted id for the new thread. */
+  threadId: string;
+  /** The thread to rewind. */
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, or null when the turn has none (a steer, or a
+   *  prompt that was never journaled). Null cuts at the turn's last assistant
+   *  block instead. */
+  userBlockId: string | null;
+};
+
+export type RewindConversationOnlyResult = ForkThreadAtTurnResult;
+
+/** Deliver a fork's or side chat's outcome back into its source thread as an
+ *  attributed summary block. Data only — the caller emits the timeline event. */
+export type MergeBackInput = {
+  sourceThreadId: string;
+  forkThreadId: string;
+  /** The summary to deliver. When omitted, the fork's latest assistant reply
+   *  is used. */
+  summaryText?: string;
+  at?: number;
+};
+
+export type MergeBackResult = {
+  sourceThreadId: string;
+  forkThreadId: string;
+  /** The attributed (system-sender) block written into the source. */
+  block: Extract<StoredBlock, { role: "user" }>;
 };
 
 /** Where a stored block came from: a live conversation row (`"native"`) or a
@@ -2067,7 +2178,15 @@ export type RuntimeEvent =
       type: "turn.queued-reordered";
       queueIds: string[];
     })
-  | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
+  | (BaseEvent & {
+      type: "turn.completed";
+      turnId: string;
+      conversationId?: string;
+      /** Claude only: the last assistant message uuid this turn produced — the
+       *  anchor a native fork at this turn resumes from. Absent on providers
+       *  that name no per-turn message. */
+      assistantUuid?: string;
+    })
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string; /** The provider's own reset time (epoch millis) when the failure is a usage limit that carried one. */ limitResetAt?: number })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
   // turn itself: it belongs in that run's `items`, not the assistant block's.
@@ -2192,6 +2311,10 @@ export type AdapterCapabilities = {
   supportsToolEvents: boolean;
   /** Can resume a prior conversation. */
   supportsResume: boolean;
+  /** Can fork a prior conversation natively at a chosen turn (Codex
+   *  `thread/fork`, Claude `forkSession`). Absent reads as false; the portable
+   *  branch import is the fallback. */
+  supportsFork?: boolean;
   supportsModelList: boolean;
   /** Spawns provider-native subagents inside a turn and reports their nested
    *  transcripts (`subagent.*` events + items tagged with a run). */
