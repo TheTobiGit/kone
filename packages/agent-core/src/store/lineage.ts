@@ -353,10 +353,10 @@ function copyForkSatellites(
   db.prepare(
     `INSERT INTO subagents (tool_use_id, thread_id, turn_id, task_id, parent_item_id, agent_type,
                             description, prompt, model, effort, background, status, summary,
-                            last_tool_name, tokens, tool_uses, started_at, ended_at)
+                            last_tool_name, tokens, tool_uses, started_at, ended_at, duration_ms)
      SELECT tool_use_id, ?, turn_id, task_id, parent_item_id, agent_type,
             description, prompt, model, effort, background, status, summary,
-            last_tool_name, tokens, tool_uses, started_at, ended_at
+            last_tool_name, tokens, tool_uses, started_at, ended_at, duration_ms
        FROM subagents
       WHERE thread_id = ? AND turn_id IN (${placeholders})
       ORDER BY seq`,

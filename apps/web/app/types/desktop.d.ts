@@ -1456,6 +1456,7 @@ export type SubagentRunSnapshot = {
   toolUses?: number;
   startedAt: number;
   endedAt?: number;
+  durationMs?: number;
 };
 
 /** A subagent run plus the transcript it produced, in arrival order. */

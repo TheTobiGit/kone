@@ -1510,6 +1510,8 @@ export type SubagentRunSnapshot = {
   toolUses?: number;
   startedAt: number;
   endedAt?: number;
+  /** Elapsed time frozen when this run first reaches a terminal status. */
+  durationMs?: number;
 };
 
 /** A subagent run plus the transcript it produced, in arrival order. Items are
