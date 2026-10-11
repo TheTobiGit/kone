@@ -3439,6 +3439,50 @@ export type KoneBenchApi = {
   delete: (input: BenchJobIdInput) => Promise<boolean>;
 };
 
+export type ScheduleJobTemplate = {
+  title: string;
+  body: string;
+  target: JobTarget;
+  attachments?: ChatAttachment[];
+};
+export type ScheduleRow = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+  paused: boolean;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastJobId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ScheduleListInput = { projectPath?: string };
+export type ScheduleIdInput = { scheduleId: string };
+export type ScheduleCreateInput = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+};
+export type ScheduleUpdateInput = {
+  scheduleId: string;
+  patch: { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
+};
+export type ScheduleRunNowResult = { job: JobRow | null; reason?: string };
+export type KoneSchedulesApi = {
+  list: (input: ScheduleListInput) => Promise<ScheduleRow[]>;
+  get: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  create: (input: ScheduleCreateInput) => Promise<ScheduleRow | null>;
+  update: (input: ScheduleUpdateInput) => Promise<ScheduleRow | null>;
+  pause: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  resume: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  runNow: (input: ScheduleIdInput) => Promise<ScheduleRunNowResult>;
+  delete: (input: ScheduleIdInput) => Promise<boolean>;
+};
+
 // ── jev, the router ─────────────────────────────────────────────────────────
 // Picking who answers is its own decision, made before a session exists, so it
 // has a bridge of its own rather than riding on the roster's. Nothing here
@@ -4016,6 +4060,7 @@ export type KoneDesktopApi = {
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
   bench: KoneBenchApi;
+  schedules: KoneSchedulesApi;
   jev: KoneJevApi;
   studio: KoneStudioApi;
   roster: KoneRosterApi;

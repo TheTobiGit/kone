@@ -108,6 +108,12 @@ import type {
   BenchQueueInput,
   BenchReorderInput,
   BenchUpdateInput,
+  ScheduleCreateInput,
+  ScheduleIdInput,
+  ScheduleListInput,
+  ScheduleRow,
+  ScheduleRunNowResult,
+  ScheduleUpdateInput,
 } from "./modules/bench/index.js";
 import type { JevRouteInput, JevRouteResult, JevStatus } from "./modules/jev/index.js";
 import type {
@@ -858,6 +864,24 @@ const api = {
       ipcRenderer.invoke("bench:reorder", input),
     delete: (input: BenchJobIdInput): Promise<boolean> =>
       ipcRenderer.invoke("bench:delete", input),
+  },
+  schedules: {
+    list: (input: ScheduleListInput): Promise<ScheduleRow[]> =>
+      ipcRenderer.invoke("schedules:list", input),
+    get: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:get", input),
+    create: (input: ScheduleCreateInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:create", input),
+    update: (input: ScheduleUpdateInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:update", input),
+    pause: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:pause", input),
+    resume: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
+      ipcRenderer.invoke("schedules:resume", input),
+    runNow: (input: ScheduleIdInput): Promise<ScheduleRunNowResult> =>
+      ipcRenderer.invoke("schedules:run-now", input),
+    delete: (input: ScheduleIdInput): Promise<boolean> =>
+      ipcRenderer.invoke("schedules:delete", input),
   },
   jev: {
     status: (): Promise<JevStatus> => ipcRenderer.invoke("jev:status"),
