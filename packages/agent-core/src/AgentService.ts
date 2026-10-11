@@ -1327,6 +1327,11 @@ export class AgentService {
     return cwd !== undefined && isRestoreActive(cwd);
   }
 
+  /** True while checkpoint restore owns this thread's checkout. */
+  isRestoreHoldingThread(threadId: string): boolean {
+    return this.restoreHolds(threadId);
+  }
+
   /** Is this thread waiting out a provider usage limit? While it is, the queue
    *  holds rather than failing, and a queued follow-up must not run ahead of
    *  the resume. */

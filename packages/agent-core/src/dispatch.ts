@@ -855,6 +855,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       return { resumed, skipped };
     }
     for (const row of due) {
+      if (row.kind === LIMIT_RESUME_CONTINUATION_KIND && this.service.isRestoreHoldingThread(row.threadId)) {
+        this.store.clearContinuationClaim(row.continuationId);
+        this.armContinuationTimer(250);
+        continue;
+      }
       const decision = this.continuationDecision(row);
       if ("cancel" in decision) {
         this.store.deleteContinuation(row.continuationId);
@@ -877,10 +882,15 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
           skipped.push({ threadId: row.threadId, reason: recheck.cancel });
           continue;
         }
-        await this.sendThreadTurn(
+        const delivery = await this.sendThreadTurn(
           { threadId: row.threadId, input: recheck.prompt },
           { silent: true, generateTitle: false, continuationId: row.continuationId },
         );
+        if (delivery.queued) {
+          this.store.clearContinuationClaim(row.continuationId);
+          this.armContinuationTimer(250);
+          continue;
+        }
         this.store.deleteContinuation(row.continuationId);
         resumed.push(row.threadId);
       } catch (err) {
@@ -939,7 +949,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
 
   /** Schedule the sweep for the next future continuation. One timer, no
    *  polling: a sweep re-arms it, and nothing is armed when nothing is due. */
-  private armContinuationTimer(): void {
+  private armContinuationTimer(minDelayMs = 0): void {
     if (this.continuationTimer) {
       clearTimeout(this.continuationTimer);
       this.continuationTimer = null;
@@ -952,7 +962,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       return;
     }
     if (next === null) return;
-    const delay = Math.max(0, next - Date.now());
+    const delay = Math.max(minDelayMs, next - Date.now());
     const timer = setTimeout(() => {
       this.continuationTimer = null;
       void this.dispatchDueContinuations();
