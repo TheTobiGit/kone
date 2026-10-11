@@ -27,17 +27,40 @@ const store: Store = new ConversationStore();
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class Adapter {
+  // SAFETY: this test fake always represents the Codex adapter.
   provider = "codex" as const;
+  capabilities: ProviderAdapter["capabilities"] = {
+    sessionModelSwitch: "unsupported",
+    streamsText: false,
+    supportsToolEvents: false,
+    supportsResume: true,
+    supportsModelList: false,
+    supportsSubagents: false,
+  };
   emit: ((event: RuntimeEvent) => void) | null = null;
   sent: string[] = [];
   sendError: Error | null = null;
   startError: Error | null = null;
-  async startSession(input: { threadId: string }): Promise<Record<string, string>> {
-    if (this.startError) throw this.startError;
-    return { threadId: input.threadId, provider: "codex", status: "ready" };
+  async discover(): Promise<Awaited<ReturnType<ProviderAdapter["discover"]>>> {
+    return { provider: "codex", label: "Codex", available: false, authStatus: "unknown", readiness: "not-installed" };
   }
+  async listModels(): Promise<Awaited<ReturnType<ProviderAdapter["listModels"]>>> {
+    return [];
+  }
+  async startSession(input: Parameters<ProviderAdapter["startSession"]>[0]): Promise<Awaited<ReturnType<ProviderAdapter["startSession"]>>> {
+    if (this.startError) throw this.startError;
+    return { threadId: input.threadId, provider: input.provider, cwd: input.cwd, status: "ready" };
+  }
+  async interruptTurn(): Promise<void> {}
   async stopSession(): Promise<void> {}
   async stopAll(): Promise<void> {}
+  async respondToRequest(): Promise<void> {}
+  async respondToUserInput(): Promise<Awaited<ReturnType<ProviderAdapter["respondToUserInput"]>>> {
+    return { owned: false };
+  }
+  async listSessions(): Promise<Awaited<ReturnType<ProviderAdapter["listSessions"]>>> {
+    return [];
+  }
   async hasSession(): Promise<boolean> {
     return true;
   }
@@ -54,9 +77,7 @@ class Adapter {
 
 function build(adapter: Adapter): Service {
   return new AgentService({
-    // SAFETY: the real store satisfies the queue/history/continuation slices.
-    // eslint-disable-next-line anti-slop/no-chained-type-assertions
-    store: store as unknown as ConstructorParameters<typeof AgentService>[0]["store"],
+    store,
     historyStore: store,
     continuationStore: store,
     checkpointStore: null,
@@ -64,9 +85,7 @@ function build(adapter: Adapter): Service {
     stopTotalTimeoutMs: 60,
     adapters: (emit) => {
       adapter.emit = emit;
-      // SAFETY: one fake adapter is the whole roster here.
-      // eslint-disable-next-line anti-slop/no-chained-type-assertions
-      return [adapter as unknown as ProviderAdapter];
+      return [adapter];
     },
   });
 }

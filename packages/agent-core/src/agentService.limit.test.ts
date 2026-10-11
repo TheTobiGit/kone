@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
 import type { ContinuationStore } from "./conversationStoreTypes.js";
-import type { ProviderAdapter, QueuedTurnStore, StoredThreadMeta } from "./types.js";
+import type { ProviderAdapter, StoredThreadMeta } from "./types.js";
 
 // A usage-limit failure is a real state: the service marks the thread limited
 // with the provider's reset, schedules a resume at it, and clears both when
@@ -21,19 +21,45 @@ const RESET = Date.now() + 3_600_000;
 type EmitEvent = (event: import("./types.js").RuntimeEvent) => void;
 
 class LimitFakeAdapter {
+  // SAFETY: the fake implements the Codex provider identity exactly.
   provider = "codex" as const;
+  readonly capabilities: ProviderAdapter["capabilities"] = {
+    sessionModelSwitch: "unsupported",
+    streamsText: false,
+    supportsToolEvents: false,
+    supportsResume: false,
+    supportsModelList: false,
+    supportsSubagents: false,
+  };
   static emits: EmitEvent[] = [];
   static turnCounter = 0;
   constructor(public emit: EmitEvent) {
     LimitFakeAdapter.emits.push(emit);
   }
-  async startSession(): Promise<Record<string, never>> {
-    return {};
+  async discover(): Promise<Awaited<ReturnType<ProviderAdapter["discover"]>>> {
+    return { provider: "codex", label: "Codex", available: false, authStatus: "unknown", readiness: "not-installed" };
   }
+  async listModels(): Promise<Awaited<ReturnType<ProviderAdapter["listModels"]>>> {
+    return [];
+  }
+  async startSession(input: Parameters<ProviderAdapter["startSession"]>[0]): Promise<Awaited<ReturnType<ProviderAdapter["startSession"]>>> {
+    return { threadId: input.threadId, provider: input.provider, cwd: input.cwd, status: "ready" };
+  }
+  async interruptTurn(): Promise<void> {}
   async stopSession(): Promise<void> {}
   async stopAll(): Promise<void> {}
-  async sendTurn(input: { threadId: string }): Promise<{ threadId: string; turnId: string }> {
+  async sendTurn(input: Parameters<ProviderAdapter["sendTurn"]>[0]): Promise<Awaited<ReturnType<ProviderAdapter["sendTurn"]>>> {
     return { threadId: input.threadId, turnId: `turn-${++LimitFakeAdapter.turnCounter}` };
+  }
+  async respondToRequest(): Promise<void> {}
+  async respondToUserInput(): Promise<Awaited<ReturnType<ProviderAdapter["respondToUserInput"]>>> {
+    return { owned: false };
+  }
+  async listSessions(): Promise<Awaited<ReturnType<ProviderAdapter["listSessions"]>>> {
+    return [];
+  }
+  async hasSession(): Promise<boolean> {
+    return true;
   }
 }
 
@@ -95,21 +121,11 @@ let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 function build() {
   const history = new FakeHistory();
   const continuations = new FakeContinuations();
-  const queueStub = {
-    enqueueQueuedTurn: () => true,
-    claimNextQueuedTurn: () => null,
-    cancelQueuedTurnsForThread: () => [],
-  };
   const service = new AgentServiceCtor({
-    // SAFETY: the queue slice is never exercised by these limit paths.
-    // eslint-disable-next-line anti-slop/no-chained-type-assertions
-    store: queueStub as unknown as QueuedTurnStore,
     checkpointStore: null,
     continuationStore: continuations,
     historyStore: history,
-    // SAFETY: one fake adapter is the whole roster here.
-    // eslint-disable-next-line anti-slop/no-chained-type-assertions
-    adapters: (emit) => [new LimitFakeAdapter(emit) as unknown as ProviderAdapter],
+    adapters: (emit) => [new LimitFakeAdapter(emit)],
   });
   return { service, history, continuations };
 }
