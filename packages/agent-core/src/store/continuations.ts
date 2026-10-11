@@ -106,6 +106,7 @@ export class ContinuationRepo {
         const exclusion = excludedThreadIds.length > 0
           ? ` AND thread_id NOT IN (${excludedThreadIds.map(() => "?").join(",")})`
           : "";
+        // SAFETY: the SQL updates only continuation columns; exclusion placeholders match the supplied thread ids.
         const rows = db
           .prepare(
             `UPDATE continuations SET claimed_at = ?
@@ -220,6 +221,7 @@ export class ContinuationRepo {
     if (!db) return null;
     try {
       // SAFETY: SELECT * of continuations is exactly ContinuationDbRow.
+      // SAFETY: MIN(due_at) returns the nullable integer column declared by the query.
       const row = db
         .prepare(`SELECT * FROM continuations WHERE continuation_id = ?`)
         .get(continuationId) as ContinuationDbRow | undefined;
@@ -235,10 +237,10 @@ export class ContinuationRepo {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
-      // SAFETY: MIN() over the due_at column answers one nullable integer.
       const exclusion = excludedThreadIds.length > 0
         ? ` AND thread_id NOT IN (${excludedThreadIds.map(() => "?").join(",")})`
         : "";
+      // SAFETY: MIN() over due_at returns a nullable integer; exclusion placeholder count matches the bindings.
       const row = db
         .prepare(`SELECT MIN(due_at) AS due_at FROM continuations WHERE claimed_at IS NULL${exclusion}`)
         .get(...excludedThreadIds) as { due_at: number | null } | undefined;
