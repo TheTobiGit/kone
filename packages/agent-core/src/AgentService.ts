@@ -345,6 +345,11 @@ export type AgentServiceOptions = {
   adapters?: (emit: EmitEvent) => ProviderAdapter[];
 };
 
+type WorktreeMoveReservation = {
+  reason?: "busy" | "restoring";
+  release: () => void;
+};
+
 /** Where the caller is sent for a conversation-only rewind when a file restore
  *  is refused: the existing branch-at-block path, named by the turn that was
  *  rolled back and the user block that started it. */
@@ -1310,7 +1315,7 @@ export class AgentService {
 
   /** Atomically reserves an idle thread for a workspace handoff. Sends arriving
    *  during the reservation enter the normal durable queue until it is released. */
-  holdThreadForWorktreeMove(threadId: string) {
+  holdThreadForWorktreeMove(threadId: string): WorktreeMoveReservation {
     if (this.restoreHolds(threadId)) return { reason: "restoring", release: () => {} };
     if (this.isBusy(threadId) || this.worktreeMoveHolds.has(threadId)) return { reason: "busy", release: () => {} };
     this.worktreeMoveHolds.add(threadId);
