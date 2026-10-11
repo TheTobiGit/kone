@@ -207,6 +207,48 @@ describe("schedule runner", () => {
     errorLog.mockRestore();
   });
 
+  test("a retry delay for one schedule does not delay another due schedule", () => {
+    const { store, dir } = freshStore();
+    store.createSchedule({ scheduleId: "retry-a", projectPath: "/a", title: "a", cron: "* * * * *", jobTemplate: template, at: 1_000 });
+    store.createSchedule({ scheduleId: "due-b", projectPath: "/b", title: "b", cron: "* * * * *", jobTemplate: template, at: 1_000 });
+    const raw = new Database(path.join(dir, "kone.sqlite"));
+    raw.exec("UPDATE schedules SET next_run_at=80000 WHERE schedule_id='due-b'");
+    raw.exec("CREATE TRIGGER reject_retry_a BEFORE INSERT ON jobs WHEN NEW.schedule_id='retry-a' BEGIN SELECT RAISE(FAIL, 'retry test failure'); END");
+    const attempts: number[] = [];
+    let now = 60_000;
+    const timers = fakeTimers();
+    const dbh = new ConversationDb(dir);
+    const repo = new ScheduleRepo(dbh, { beforeFireTransaction: (id) => { if (id === "retry-a") attempts.push(now); } });
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const runner = new ScheduleRunner({
+      store: {
+        fireDueSchedules: (at, graceMs, deferred) => repo.fireDue(at, graceMs, deferred),
+        listSchedules: (projectPath) => store.listSchedules(projectPath),
+        projectsWithQueuedJobs: () => store.projectsWithQueuedJobs(),
+      },
+      drainProject: async () => {},
+      now: () => now,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+    runner.start();
+    expect(attempts).toEqual([60_000]);
+    expect(timers.delay()).toBe(20_000);
+    now = 80_000;
+    timers.fire();
+    expect(attempts).toEqual([60_000]);
+    expect(store.getSchedule("due-b")?.lastRunAt).toBe(80_000);
+    expect(timers.delay()).toBe(10_000);
+    now = 90_000;
+    timers.fire();
+    expect(attempts).toEqual([60_000, 90_000]);
+    runner.stop();
+    errorLog.mockRestore();
+    dbh.close();
+    raw.close();
+    store.close();
+  });
+
   test("a rejected project drain is caught and leaves a heartbeat armed", async () => {
     const timers = fakeTimers();
     const errorLog = spyOn(console, "error").mockImplementation(() => {});

@@ -88,12 +88,14 @@ export class ScheduleRepo {
     return job ? { job } : { job: null, reason: "the previous scheduled job is still queued or running" };
   }
 
-  fireDue(now: number, graceMs = 10 * 60_000): ScheduleFireResult {
+  fireDue(now: number, graceMs = 10 * 60_000, deferredScheduleIds: readonly string[] = []): ScheduleFireResult {
     const db = this.dbh.handle(); const result: ScheduleFireResult = { fired: [], skipped: [], failures: [] };
     if (!db) return result;
     // SAFETY: the due query selects SCHEDULE_COLUMNS from schedules.
     const due = db.prepare(`SELECT ${SCHEDULE_COLUMNS} FROM schedules WHERE paused=0 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at`).all(now) as ScheduleDbRow[];
+    const deferred = new Set(deferredScheduleIds);
     for (const candidate of due) {
+      if (deferred.has(candidate.schedule_id)) continue;
       let fired: { schedule: ScheduleRow; job: JobRow } | undefined;
       let skipped: ScheduleFireResult["skipped"][number] | undefined;
       try {
