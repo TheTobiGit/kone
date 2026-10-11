@@ -53,6 +53,7 @@ class Adapter {
     if (this.startError) throw this.startError;
     this.startEntered?.();
     if (this.startGate) await this.startGate;
+    if (this.startError) throw this.startError;
     return { threadId: input.threadId, provider: input.provider, cwd: input.cwd, status: "ready" };
   }
   async interruptTurn(): Promise<void> {}
@@ -224,6 +225,75 @@ describe("P3 usage-limit dispatch", () => {
     }
     await pause(450);
     expect(adapter.sent.filter((text) => text.includes("usage limit has reset"))).toHaveLength(2);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
+  test("session-less quit resume stays unclaimed through five restore sweeps", async () => {
+    const id = "quit-resume-restore-adoption";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    const recordedAt = Date.now() - 1_000;
+    store.scheduleContinuation({
+      threadId: id,
+      kind: "quit-resume",
+      dueAt: recordedAt,
+      payloadJson: JSON.stringify({ prompt: "continue after restart", recordedAt }),
+    });
+    const release = claimRestoreDir("/tmp");
+    try {
+      for (let sweep = 0; sweep < 5; sweep += 1) {
+        await dispatcher.dispatchDueContinuations();
+        await pause(270);
+      }
+      expect(adapter.sent).toEqual([]);
+      expect(store.listContinuationsForThread(id)).toHaveLength(1);
+      expect(store.listContinuationsForThread(id)[0]?.attempts).toBe(0);
+    } finally {
+      release();
+    }
+    await pause(400);
+    expect(adapter.sent).toEqual(["continue after restart"]);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
+  test("restore refusal during quit-resume adoption does not burn an attempt", async () => {
+    const id = "quit-resume-restore-adoption-race";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    let releaseStart = (): void => {};
+    let notifyStarted = (): void => {};
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+    adapter.startEntered = notifyStarted;
+    adapter.startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    const recordedAt = Date.now() - 1_000;
+    store.scheduleContinuation({
+      threadId: id,
+      kind: "quit-resume",
+      dueAt: recordedAt,
+      payloadJson: JSON.stringify({ prompt: "continue after adoption", recordedAt }),
+    });
+    const sweep = dispatcher.dispatchDueContinuations();
+    await started;
+    const releaseRestore = claimRestoreDir("/tmp");
+    adapter.startError = new Error("session admission refused by active restore");
+    releaseStart();
+    try {
+      await sweep;
+      expect(adapter.sent).toEqual([]);
+      expect(store.listContinuationsForThread(id)[0]?.attempts).toBe(0);
+    } finally {
+      releaseRestore();
+    }
+    adapter.startError = null;
+    await pause(300);
+    await dispatcher.dispatchDueContinuations();
+    expect(adapter.sent).toEqual(["continue after adoption"]);
     expect(store.listContinuationsForThread(id)).toEqual([]);
     await svc.stopAll();
   });

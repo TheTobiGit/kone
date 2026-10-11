@@ -873,7 +873,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       return { resumed, skipped };
     }
     for (const row of due) {
-      if (row.kind === LIMIT_RESUME_CONTINUATION_KIND && this.service.isRestoreHoldingThread(row.threadId)) {
+      if (this.service.isRestoreHoldingThread(row.threadId)) {
         this.store.clearContinuationClaim(row.continuationId);
         this.deferContinuation(row.threadId);
         continue;
@@ -912,6 +912,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         this.store.deleteContinuation(row.continuationId);
         resumed.push(row.threadId);
       } catch (err) {
+        // Session adoption can race a restore that begins after the preflight
+        // check. Its admission refusal is still a hold, not a failed attempt.
+        if (this.service.isRestoreHoldingThread(row.threadId)) {
+          this.store.clearContinuationClaim(row.continuationId);
+          this.deferContinuation(row.threadId);
+          continue;
+        }
         if (err instanceof ContinuationCancelled || err instanceof StartCancelled) {
           // Cancelled after the claim (settled, archived, superseded) or the
           // session was stopped during adoption: the row is done, not retried.
