@@ -342,6 +342,21 @@ export type QueuedTurnEnqueueInput = {
   contextWindow?: string;
 };
 
+/** The fields an in-place edit may change on a waiting queued follow-up. The
+ *  content fields (input/attachments/skills) are always written; the picker
+ *  knobs only when present, so an edit can change the prompt without resetting
+ *  the model the message was queued with. */
+export type QueuedTurnEditPatch = {
+  input: string;
+  attachments?: ChatAttachment[];
+  skills?: SkillReference[];
+  model?: string | null;
+  mode?: string | null;
+  effort?: string | null;
+  serviceTier?: string | null;
+  contextWindow?: string | null;
+};
+
 /** A queued turn as read back from the store — the shape the service layer
  *  promotes (claim returns it) and the UI lists. */
 export type QueuedTurnRow = {
@@ -862,11 +877,12 @@ function toStoredBlock(b: BlockRow, itemsByTurn: Map<string, RuntimeItem[]>): St
 export type ConversationSearchEntryKind = "block" | "item";
 
 /** Options for `searchConversations`. Omit `threadId` to search every thread;
- *  set it to scope the query to one. `limit` bounds the hits (default 20,
- *  capped at 100). */
+ *  set it to scope the query to one. `limit` bounds each page (default 20,
+ *  capped at 100); `offset` advances through the ranked results. */
 export type ConversationSearchOptions = {
   threadId?: string;
   limit?: number;
+  offset?: number;
 };
 
 /** One ranked search hit. `blockId` is the block itself for prompt hits and
@@ -877,6 +893,8 @@ export type ConversationSearchOptions = {
 export type ConversationSearchHit = {
   threadId: string;
   entryKind: ConversationSearchEntryKind;
+  /** False for imported assistant/system/agent messages represented as user-role blocks. */
+  isUserAuthored?: boolean;
   blockId: string | null;
   turnId: string | null;
   itemId: string | null;

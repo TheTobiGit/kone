@@ -31,7 +31,7 @@ import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnEditPatch, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
 import type { RestartCancelledBackgroundWork } from "./restartBackgroundNote.js";
 import { ContinuationRepo, type ContinuationRecord } from "./store/continuations.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
@@ -355,8 +355,13 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see QueuedTurnRepo */
-  cancelQueuedTurn(queueId: string): boolean {
-    return this.queuedTurns.cancelQueuedTurn(queueId);
+  editQueuedTurn(threadId: string, queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+    return this.queuedTurns.editQueuedTurn(threadId, queueId, patch);
+  }
+
+  /** @see QueuedTurnRepo */
+  cancelQueuedTurn(queueId: string, threadId?: string): boolean {
+    return this.queuedTurns.cancelQueuedTurn(queueId, threadId);
   }
 
   /** @see QueuedTurnRepo */

@@ -11,6 +11,7 @@ import {
   DONE_CLEARED,
   type CheckpointStore,
   type QueuedTurnEnqueueInput,
+  type QueuedTurnEditPatch,
   type TurnCheckpointRecord,
 } from "./conversationStoreTypes.js";
 import {
@@ -2908,7 +2909,7 @@ export class AgentService {
    *  returns false when no such row exists. */
   async cancelQueuedTurn(threadId: string, queueId: string): Promise<boolean> {
     const store = this.queueStore;
-    const cancelled = store.cancelQueuedTurn(queueId);
+    const cancelled = store.cancelQueuedTurn(queueId, threadId);
     if (cancelled) {
       this.dropQueuedCount(threadId);
       // Its backoff goes with it; the rest of the queue needn't wait it out.
@@ -2964,6 +2965,9 @@ export class AgentService {
     if (!this.routing.has(threadId)) throw new Error(`No agent session for thread ${threadId}`);
     // Stopped already, though the store has yet to write it.
     if (this.cancelOwed(threadId, queueId)) return false;
+    // Bind the queue id to this thread: a row that belongs to another thread
+    // is refused rather than claimed and run under the wrong thread.
+    if (!store.listQueuedTurns(threadId).some((row) => row.queueId === queueId)) return false;
     const claimed = store.claimQueuedTurn(queueId);
     if (!claimed) return false;
     const { row, from } = claimed;
@@ -3043,6 +3047,39 @@ export class AgentService {
   async listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]> {
     const store = this.queueStore;
     return store.listQueuedTurns(threadId);
+  }
+
+  /** Edit a waiting queued follow-up in place. The store rewrites the row and
+   *  its hidden transcript block in one transaction; this emits
+   *  turn.queued-updated carrying the new content so the queue strip restates
+   *  the row without moving it. Refuses a row that is promoting or settled. */
+  async editQueuedTurn(
+    threadId: string,
+    queueId: string,
+    patch: QueuedTurnEditPatch,
+  ): Promise<boolean> {
+    const store = this.queueStore;
+    const row = store.editQueuedTurn(threadId, queueId, patch);
+    if (!row) return false;
+    const provider = this.routing.get(threadId);
+    if (provider) {
+      this.dispatch({
+        type: "turn.queued-updated",
+        threadId,
+        provider,
+        at: Date.now(),
+        source: "kone.store",
+        queueId: row.queueId,
+        state: row.state === "failed" ? "failed" : "queued",
+        attemptCount: row.attemptCount,
+        input: row.input,
+        // An explicit [] in the patch clears the field, so emit [] rather than
+        // undefined; undefined means "unchanged" to the reducer.
+        attachments: patch.attachments !== undefined ? patch.attachments : row.attachments,
+        skills: patch.skills !== undefined ? patch.skills : row.skills,
+      });
+    }
+    return true;
   }
 
   /** Reorder the thread's active queued follow-ups. Emits

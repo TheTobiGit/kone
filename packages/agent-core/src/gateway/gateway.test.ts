@@ -536,9 +536,18 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_archive_thread",
       "app_delete_thread",
       "app_rename_thread",
-      // Phase 7 agent tools: the assistant links/unlinks a thread's PR so the
-      // settle-on-merge sweep can act on it. These belong to the app-steering
-      // set, like the other thread-state tools.
+      // Phase 6 thread-state tools: pin, done/settle, mark-unread, search.
+      "app_set_thread_pinned",
+      "app_set_thread_done",
+      "app_mark_thread_unread",
+      "app_search_threads",
+      // Phase 6 queue controls.
+      "app_list_queued_turns",
+      "app_edit_queued_turn",
+      "app_reorder_queued_turns",
+      "app_cancel_queued_turn",
+      "app_promote_queued_turn",
+      // Phase 7 agent tools: link/unlink a thread's PR.
       "app_link_thread_pr",
       "app_unlink_thread_pr",
       "app_get_provider_status",

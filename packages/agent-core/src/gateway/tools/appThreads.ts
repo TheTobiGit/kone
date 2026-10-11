@@ -59,8 +59,8 @@ import type {
   ThreadStatus,
   TurnStartResult,
 } from "../../types.js";
-import type { TurnSpan } from "../../conversationStoreTypes.js";
-import { encodeThreadPageCursor, type StoredThreadPage } from "../../conversationStoreTypes.js";
+import type { ConversationSearchHit, ConversationSearchOptions, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
+import { encodeThreadPageCursor, GLOBAL_ASSISTANT_PROJECT_PATH, type StoredThreadPage } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import type { ThreadAgentBinding } from "../../rosterRecord.js";
@@ -76,6 +76,25 @@ import {
   READ_APP_THREAD_JSON_SCHEMA,
   RenameAppThreadInputSchema,
   RENAME_APP_THREAD_JSON_SCHEMA,
+  SetThreadPinnedInputSchema,
+  SET_THREAD_PINNED_JSON_SCHEMA,
+  SetThreadDoneInputSchema,
+  SET_THREAD_DONE_JSON_SCHEMA,
+  MarkThreadUnreadInputSchema,
+  MARK_THREAD_UNREAD_JSON_SCHEMA,
+  SearchAppThreadsInputSchema,
+  SEARCH_APP_THREADS_JSON_SCHEMA,
+  SEARCH_APP_THREADS_DEFAULT_LIMIT,
+  ListQueuedTurnsInputSchema,
+  ListQueuedTurnsJson,
+  EditQueuedTurnInputSchema,
+  EditQueuedTurnJson,
+  ReorderQueuedTurnsInputSchema,
+  ReorderQueuedTurnsJson,
+  CancelQueuedTurnInputSchema,
+  CancelQueuedTurnJson,
+  PromoteQueuedTurnInputSchema,
+  PromoteQueuedTurnJson,
   LinkThreadPullRequestInputSchema,
   LINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
   UnlinkThreadPullRequestInputSchema,
@@ -96,6 +115,8 @@ import {
   type UnlinkThreadPullRequestInput,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
+import { collapseSearchHits, fetchSearchCandidates } from "../searchCollapse.js";
+import { canReadThread } from "../readScope.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
 import {
   readMessageRow,
@@ -158,6 +179,18 @@ export interface AppThreadsStore {
    *  (recency untouched), but change-detecting — false when the row is missing
    *  or the title is unchanged, so callers only announce real changes. */
   renameThread?(threadId: string, title: string): boolean;
+  /** Thread-state marks (Phase 6). Pin, settle, and unread all read/write the
+   *  existing columns; the canonical done path goes through the service so the
+   *  done event fans out. */
+  setPinned?(threadId: string, pinned: boolean): void;
+  setDone?(threadId: string, done: boolean): void;
+  setVisited?(threadId: string, at: number, force?: boolean): void;
+  /** Full-text conversation search (Phase 6). Returns raw ranked hits; the
+   *  tool collapses them to one best per thread. */
+  searchConversations?(
+    query: string,
+    options?: ConversationSearchOptions,
+  ): ConversationSearchHit[];
   /** Persist (or clear) a linked pull request on a thread. The settle sweep
    *  reads it to know when a merged PR means the thread is done. Absent, the
    *  link tools refuse. */
@@ -287,6 +320,16 @@ export interface AppThreadsToolOptions {
     threadId: string,
     title: string,
   ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
+  /** Mark a thread done (or clear it). Canonical in production (the service
+   *  emits thread.done.updated); the store fallback writes the same column. */
+  setThreadDone?: (threadId: string, done: boolean) => void;
+  /** Queue controls (Phase 6). All canonical in production, where the service
+   *  keeps mirrors and broadcasts in step; absent, the tools refuse. */
+  listQueuedTurns?: (threadId: string) => QueuedTurnRow[];
+  editQueuedTurn?: (threadId: string, queueId: string, input: string) => Promise<boolean>;
+  reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
+  promoteQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
 }
 
 /** Tags this module's cursors, so one handed to another tool is refused rather
@@ -711,12 +754,46 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
 
   // -- 2. app_read_thread ---------------------------------------------------
   const readHandler = async (
-    _ctx: GatewayToolContext,
+    ctx: GatewayToolContext,
     params: ReadAppThreadInput,
   ): Promise<GatewayToolResult> => {
     const limit = params.limit ?? 20;
     const maxTextChars = params.maxTextChars ?? 1500;
     const textOffset = params.textOffset ?? 0;
+
+    // Read scope, checked before any paging work. The assistant (kone's own
+    // co-pilot, on the sentinel project) reads across projects on the user's
+    // behalf; project threads may read themselves, their project, and their
+    // fork/source lineage.
+    const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
+    const assistantCaller = callerMeta?.projectPath === GLOBAL_ASSISTANT_PROJECT_PATH;
+    if (!assistantCaller) {
+      const targetMeta = store.threadMeta?.(params.threadId) ?? null;
+      const readable = canReadThread({
+        callerThreadId: ctx.threadId,
+        targetThreadId: params.threadId,
+        caller: callerMeta
+          ? {
+              projectPath: callerMeta.projectPath,
+              sourceThreadId: callerMeta.sourceThreadId,
+              parentThreadId: callerMeta.parentThreadId,
+            }
+          : null,
+        target: targetMeta
+          ? {
+              projectPath: targetMeta.projectPath,
+              sourceThreadId: targetMeta.sourceThreadId,
+              parentThreadId: targetMeta.parentThreadId,
+            }
+          : null,
+      });
+      if (!readable) {
+        throw new GatewayToolError(
+          "capability_denied",
+          `Thread "${params.threadId}" is outside what this conversation may read.`,
+        );
+      }
+    }
 
     // A single message read by id: whole, or a slice from textOffset. This is
     // what a handoff's coverage note points at for a message it omitted.
@@ -1290,6 +1367,221 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     });
   };
 
+  const pinHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = SetThreadPinnedInputSchema.parse(rawInput);
+    const { meta } = requireThread(input.threadId);
+    store.setPinned?.(input.threadId, input.pinned);
+    const verb = input.pinned ? "Pinned" : "Unpinned";
+    return singleLine(`${verb} thread "${meta?.title ?? input.threadId}".`, {
+      threadId: input.threadId,
+      pinned: input.pinned,
+    });
+  };
+
+  const doneHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = SetThreadDoneInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    // Canonical path first: the service owns the done event every surface
+    // reconciles from.
+    if (options.setThreadDone) options.setThreadDone(input.threadId, input.done);
+    else store.setDone?.(input.threadId, input.done);
+    const verb = input.done ? "Marked done" : "Reopened";
+    return singleLine(`${verb} thread "${input.threadId}".`, {
+      threadId: input.threadId,
+      done: input.done,
+    });
+  };
+
+  const unreadHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = MarkThreadUnreadInputSchema.parse(rawInput);
+    const { meta } = requireThread(input.threadId);
+    // Unread is derived as "last visit before the latest activity"; setting the
+    // visit just below that boundary makes it read unread again (the store's
+    // monotonic write needs `force` to move backwards).
+    const at = (meta?.lastActivityAt ?? Date.now()) - 1;
+    store.setVisited?.(input.threadId, at, true);
+    return singleLine(`Marked thread "${input.threadId}" unread.`, {
+      threadId: input.threadId,
+      unread: true,
+    });
+  };
+
+  const searchHandler = async (
+    ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = SearchAppThreadsInputSchema.parse(rawInput);
+    if (!store.searchConversations) {
+      throw failInternal(ctx.threadId, "search threads", "unsupported");
+    }
+    const limit = input.limit ?? SEARCH_APP_THREADS_DEFAULT_LIMIT;
+    // Fetch candidate pages and widen until the store is exhausted (or a hard
+    // cap), THEN scope-filter, collapse and rank. Limiting raw FTS hits first
+    // would let a page full of unreadable or assistant hits hide an eligible
+    // user match further down the ranking.
+    const raw = fetchSearchCandidates(store.searchConversations.bind(store), input.query);
+    const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
+    const caller = callerMeta
+      ? {
+          projectPath: callerMeta.projectPath,
+          sourceThreadId: callerMeta.sourceThreadId,
+          parentThreadId: callerMeta.parentThreadId,
+        }
+      : null;
+    const assistantCaller = callerMeta?.projectPath === GLOBAL_ASSISTANT_PROJECT_PATH;
+    const results = collapseSearchHits(raw)
+      .filter((hit) => {
+        if (assistantCaller) return true;
+        const meta = store.threadMeta?.(hit.threadId) ?? null;
+        return canReadThread({
+          callerThreadId: ctx.threadId,
+          targetThreadId: hit.threadId,
+          caller,
+          target: meta
+            ? {
+                projectPath: meta.projectPath,
+                sourceThreadId: meta.sourceThreadId,
+                parentThreadId: meta.parentThreadId,
+              }
+            : null,
+        });
+      })
+      .slice(0, limit)
+      .map((hit) => ({
+        threadId: hit.threadId,
+        title: store.threadMeta?.(hit.threadId)?.title ?? null,
+        snippet: hit.snippet,
+        entryKind: hit.entryKind,
+        at: hit.at,
+      }));
+
+    const lines = results.map(
+      (r) =>
+        `- ${r.threadId} [${r.entryKind}]${r.title ? ` "${r.title}"` : ""}: ${r.snippet.replace(/\s+/g, " ").trim()}`,
+    );
+    return singleLine(
+      results.length === 0
+        ? `No conversations matched "${input.query}".`
+        : `Found ${results.length} conversation${results.length === 1 ? "" : "s"} matching "${input.query}":\n${lines.join("\n")}`,
+      { query: input.query, results },
+    );
+  };
+
+  const queuedListHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = ListQueuedTurnsInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    const rows = options.listQueuedTurns?.(input.threadId) ?? [];
+    const lines = rows.map(
+      (row, index) => `- #${index + 1} ${row.queueId} [${row.state}] ${row.input}`,
+    );
+    return singleLine(
+      rows.length === 0
+        ? `Thread "${input.threadId}" has no queued follow-ups.`
+        : `Thread "${input.threadId}" has ${rows.length} queued follow-up${rows.length === 1 ? "" : "s"}:\n${lines.join("\n")}`,
+      {
+        threadId: input.threadId,
+        queuedTurns: rows.map((row, index) => ({
+          queueId: row.queueId,
+          position: index + 1,
+          input: row.input,
+          state: row.state,
+        })),
+      },
+    );
+  };
+
+  const queuedCancelHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = CancelQueuedTurnInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.cancelQueuedTurn) {
+      throw failInternal(input.threadId, "cancel queued follow-up", "unsupported");
+    }
+    const ok = await options.cancelQueuedTurn(input.threadId, input.queueId);
+    if (!ok) {
+      throw failInternal(input.threadId, "cancel queued follow-up", "no such waiting row");
+    }
+    return singleLine(`Cancelled queued row "${input.queueId}".`, {
+      threadId: input.threadId,
+      queueId: input.queueId,
+      ok: true,
+    });
+  };
+
+  const queuedPromoteHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = PromoteQueuedTurnInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.promoteQueuedTurn) {
+      throw failInternal(input.threadId, "run queued follow-up now", "unsupported");
+    }
+    const ok = await options.promoteQueuedTurn(input.threadId, input.queueId);
+    if (!ok) {
+      throw failInternal(input.threadId, "run queued follow-up now", "no such waiting row");
+    }
+    return singleLine(`Ran queued row "${input.queueId}" now.`, {
+      threadId: input.threadId,
+      queueId: input.queueId,
+      ok: true,
+    });
+  };
+
+  const queuedEditHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = EditQueuedTurnInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.editQueuedTurn) {
+      throw failInternal(input.threadId, "edit queued follow-up", "unsupported");
+    }
+    const ok = await options.editQueuedTurn(input.threadId, input.queueId, input.input);
+    if (!ok) {
+      throw failInternal(input.threadId, "edit queued follow-up", "no such waiting row");
+    }
+    return singleLine(`Edited queued row "${input.queueId}" in place.`, {
+      threadId: input.threadId,
+      queueId: input.queueId,
+      ok: true,
+    });
+  };
+
+  const queuedReorderHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = ReorderQueuedTurnsInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    if (!options.reorderQueuedTurns) {
+      throw failInternal(input.threadId, "reorder queued follow-ups", "unsupported");
+    }
+    const ok = await options.reorderQueuedTurns(input.threadId, input.queueIds);
+    if (!ok) {
+      throw failInternal(input.threadId, "reorder queued follow-ups", "no waiting rows matched");
+    }
+    return singleLine(`Reordered ${input.queueIds.length} queued follow-up(s).`, {
+      threadId: input.threadId,
+      queueIds: input.queueIds,
+      ok: true,
+    });
+  };
+
   const unlinkPullRequestHandler = async (
     _ctx: GatewayToolContext,
     params: UnlinkThreadPullRequestInput,
@@ -1455,6 +1747,126 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Use `app_rename_thread` to give a conversation a clear, descriptive title that reflects its topic.",
       ],
       handler: renameHandler,
+    },
+    {
+      name: "app_set_thread_pinned",
+      description:
+        "Pin a conversation to the front of the project board, or unpin it. Pinning is a durable per-thread mark, not a reorder.",
+      inputSchema: SetThreadPinnedInputSchema,
+      jsonSchema: SET_THREAD_PINNED_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_set_thread_pinned`: pin or unpin a conversation.",
+      promptGuidelines: [
+        "Pin a thread only when the user asks, or when they call it important to keep in view.",
+      ],
+      handler: pinHandler,
+    },
+    {
+      name: "app_set_thread_done",
+      description:
+        "Mark a conversation done (settled) so it stops asking for attention, or clear the mark to reopen it. Done is an attention mark, not an archive: the thread stays in the live list.",
+      inputSchema: SetThreadDoneInputSchema,
+      jsonSchema: SET_THREAD_DONE_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_set_thread_done`: mark a conversation done, or reopen it.",
+      promptGuidelines: [
+        "Mark a thread done when the user says the work is finished; use app_archive_thread to put it away entirely.",
+      ],
+      handler: doneHandler,
+    },
+    {
+      name: "app_mark_thread_unread",
+      description:
+        "Mark a conversation unread, so it shows as needing attention again in the inbox and board.",
+      inputSchema: MarkThreadUnreadInputSchema,
+      jsonSchema: MARK_THREAD_UNREAD_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_mark_thread_unread`: mark a conversation unread.",
+      promptGuidelines: [
+        "Mark a thread unread when the user says they still need to look at it.",
+      ],
+      handler: unreadHandler,
+    },
+    {
+      name: "app_search_threads",
+      description:
+        "Search across conversations' text and return one best match per conversation, with the user's own messages ranked above the agent's. Only conversations the caller may read are returned (same project, a fork/source relationship, or a reference the user attached).",
+      inputSchema: SearchAppThreadsInputSchema,
+      jsonSchema: SEARCH_APP_THREADS_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_search_threads`: find conversations by what was said in them, one best hit each.",
+      promptGuidelines: [
+        "Use app_search_threads to find a thread the user is describing by its content, then app_read_thread to read it.",
+      ],
+      handler: searchHandler,
+    },
+    {
+      name: "app_list_queued_turns",
+      description:
+        "List a conversation's waiting follow-ups in the order they will run: queue id, position, prompt, and whether each is waiting, being handed to the provider, or held after a failed start. Queued follow-ups are messages the user sent while a turn was running.",
+      inputSchema: ListQueuedTurnsInputSchema,
+      jsonSchema: ListQueuedTurnsJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_list_queued_turns`: the follow-ups waiting on a conversation.",
+      promptGuidelines: [
+        "Use app_list_queued_turns before editing, reordering, cancelling or running a queued follow-up, so you have the queue ids.",
+      ],
+      handler: queuedListHandler,
+    },
+    {
+      name: "app_edit_queued_turn",
+      description:
+        "Edit a waiting follow-up's prompt in place, keeping its position in the queue. Refused for a row already running or settled.",
+      inputSchema: EditQueuedTurnInputSchema,
+      jsonSchema: EditQueuedTurnJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_edit_queued_turn`: change a waiting follow-up's text without moving it.",
+      promptGuidelines: [
+        "Edit a queued follow-up only when the user asks; the change is visible to them immediately.",
+      ],
+      handler: queuedEditHandler,
+    },
+    {
+      name: "app_reorder_queued_turns",
+      description:
+        "Set the order a conversation's waiting follow-ups will run in, by listing their queue ids in the desired order.",
+      inputSchema: ReorderQueuedTurnsInputSchema,
+      jsonSchema: ReorderQueuedTurnsJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_reorder_queued_turns`: change the order queued follow-ups will run in.",
+      promptGuidelines: ["Reorder only when the user asks for a different order."],
+      handler: queuedReorderHandler,
+    },
+    {
+      name: "app_cancel_queued_turn",
+      description: "Cancel one waiting follow-up so it never runs.",
+      inputSchema: CancelQueuedTurnInputSchema,
+      jsonSchema: CancelQueuedTurnJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_cancel_queued_turn`: drop a waiting follow-up.",
+      promptGuidelines: ["Cancel only when the user asks to drop that message."],
+      handler: queuedCancelHandler,
+    },
+    {
+      name: "app_promote_queued_turn",
+      description:
+        "Run one waiting follow-up now, through the same path as the composer's 'send now': steered into the running turn, or started when the thread is idle.",
+      inputSchema: PromoteQueuedTurnInputSchema,
+      jsonSchema: PromoteQueuedTurnJson,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_promote_queued_turn`: run a waiting follow-up now.",
+      promptGuidelines: ["Promote only when the user asks to send that queued message now."],
+      handler: queuedPromoteHandler,
     },
     {
       name: "app_link_thread_pr",
