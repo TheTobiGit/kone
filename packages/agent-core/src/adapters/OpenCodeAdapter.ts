@@ -955,7 +955,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         this.emitSubagent(session, run, "subagent.updated");
       }
     } else if (String(part.tool ?? "") === "task") {
-      this.handleTaskTool(session, part, state);
+      this.handleTaskTool(session, part, state, subagentToolUseId);
     }
   }
 
@@ -965,12 +965,16 @@ export class OpenCodeAdapter implements ProviderAdapter {
    *  brief. Status mirrors the tool part's state ladder, and the run settles
    *  when the tool part completes/errors (which happens only after the child
    *  session's events have streamed). */
-  private handleTaskTool(session: OpenCodeSession, part: RecordLike, state: RecordLike): void {
+  private handleTaskTool(session: OpenCodeSession, part: RecordLike, state: RecordLike, ancestorToolUseId?: string): void {
     const toolUseId = String(part.callID ?? part.id);
     const input = record(state.input) ?? {};
     const metadata = record(state.metadata) ?? {};
     const childSessionId = stringField(metadata, "sessionId");
     const status = subagentStatus(state.status);
+    if (ancestorToolUseId) {
+      if (childSessionId) session.subagentChildSessions.set(childSessionId, ancestorToolUseId);
+      return;
+    }
     if (childSessionId) session.subagentChildSessions.set(childSessionId, toolUseId);
 
     // opencode re-delivers the completed tool part (each parent message.updated
