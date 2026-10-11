@@ -945,6 +945,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // The child's own tool calls are progress hints on the run; the parent's
     // `task` call is the run itself.
     if (subagentToolUseId) {
+      if (String(part.tool ?? "") === "task") this.handleTaskTool(session, part, state, subagentToolUseId);
       const run = session.subagentRuns.get(subagentToolUseId);
       if (run) {
         run.snapshot.lastToolName = String(part.tool ?? "tool");
