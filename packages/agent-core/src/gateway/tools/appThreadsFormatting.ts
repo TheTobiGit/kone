@@ -188,7 +188,8 @@ export function threadLine(reading: ThreadReading, withProject: boolean): string
     unread ? "unread" : null,
     done ? "done" : null,
     meta.archivedAt !== null ? "archived" : null,
-    reading.snoozed ? "snoozed" : null,
+    reading.snoozed && (meta.snoozedUntil ?? 0) > Date.now() ? `snoozed until ${new Date(meta.snoozedUntil ?? 0).toISOString()}` : reading.snoozed ? "snoozed" : null,
+    (meta.limitedAt ?? null) !== null && (meta.limitResetAt ?? 0) > Date.now() ? `limited until ${new Date(meta.limitResetAt ?? 0).toISOString()}` : (meta.limitedAt ?? null) !== null ? "limited" : null,
   ].filter((mark): mark is string => mark !== null);
   return `- ${meta.title ?? "(untitled)"} — ${marks.join(" · ")}`;
 }

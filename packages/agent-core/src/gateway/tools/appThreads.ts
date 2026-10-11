@@ -954,6 +954,12 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     const about = [
       `Thread ${thread.threadId}`,
       status,
+      (thread.limitedAt ?? null) !== null && (thread.limitResetAt ?? 0) > Date.now()
+        ? `limit resets ${new Date(thread.limitResetAt ?? 0).toISOString()}`
+        : null,
+      (thread.snoozedUntil ?? 0) > Date.now()
+        ? `snoozed until ${new Date(thread.snoozedUntil ?? 0).toISOString()}`
+        : null,
       [agent, thread.provider, thread.model].filter(Boolean).join(" / "),
       `project ${thread.projectPath}`,
       thread.blocks.length > messages.length ? `${thread.blocks.length} messages in all` : null,
