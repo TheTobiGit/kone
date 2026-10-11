@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -67,8 +67,17 @@ describe("classifyGhError", () => {
 // with a fake `gh` on PATH — the same trick clone.test.ts plays on `git`.
 const savedPath = process.env.PATH;
 const tempDirs: string[] = [];
+let restoreFetch: () => void;
+
+beforeEach(() => {
+  // These tests exercise CLI record parsing. Avatar requests must also be
+  // deterministic: an offline fetch lasts as long as the test's timeout.
+  const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 503 }));
+  restoreFetch = () => fetchSpy.mockRestore();
+});
 
 afterEach(() => {
+  restoreFetch();
   if (savedPath !== undefined) process.env.PATH = savedPath;
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs.length = 0;

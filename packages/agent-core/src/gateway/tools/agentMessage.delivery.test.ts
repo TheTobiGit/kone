@@ -60,6 +60,16 @@ class TreeStore implements IrcToolStore {
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
     return [...this.metas.values()].filter((m) => m.lineage?.parentThreadId === parentThreadId);
   }
+  listThreads(): StoredThreadMeta[] {
+    return [...this.metas.values()];
+  }
+  setContractClosed(threadId: string, closed: { at: number; reason: "delivered" | "withdrawn" } | null): boolean {
+    const meta = this.metas.get(threadId);
+    if (!meta?.contract) return false;
+    if (closed) meta.contractClosed = closed;
+    else delete meta.contractClosed;
+    return true;
+  }
 }
 
 function ctxFor(threadId: string): GatewayToolContext {
@@ -87,6 +97,7 @@ let mailbox: IrcMailbox;
 let runtimes: Map<string, ThreadRuntime | null>;
 let spawned: Map<string, SpawnedThreadStatus>;
 let waits: Map<string, { threadIds: string[]; since: number }>;
+let turns: Map<string, "running" | "completed">;
 
 function registryFor() {
   return createRegistry(
@@ -96,6 +107,7 @@ function registryFor() {
       threadRuntime: (id) => (runtimes.has(id) ? (runtimes.get(id) ?? null) : runtime()),
       spawnedStatus: (id) => spawned.get(id) ?? null,
       waitingOn: (id) => waits.get(id) ?? null,
+      turnState: (threadId, turnId) => turns.get(`${threadId}:${turnId}`) ?? null,
     }),
   );
 }
@@ -114,11 +126,15 @@ beforeEach(() => {
   runtimes = new Map();
   spawned = new Map();
   waits = new Map();
+  turns = new Map();
   registry = registryFor();
 });
 
-const send = (from: string, args: Record<string, string | boolean>) =>
+const send = (from: string, args: Record<string, string | boolean | Record<string, string>>) =>
   registry.call(ctxFor(from), "agent_message", args);
+
+const textOf = (result: Awaited<ReturnType<typeof send>>) =>
+  result.content.map((c) => ("text" in c ? c.text : "")).join("\n");
 
 function refusal(result: Awaited<ReturnType<typeof send>>) {
   expect(result.isError).toBe(true);
@@ -253,6 +269,103 @@ describe("refusals", () => {
     expect(refusal(await send("main", { to: "backend", message: "fyi" }))).toContain("inbox is full");
     const question = await send("main", { to: "backend", kind: "question", message: "Done?" });
     expect(question.isError).toBeUndefined();
+  });
+});
+
+describe("contracts that last the job", () => {
+  test("a contractor between turns takes messages: its turn ending is not its work ending", async () => {
+    runtimes.set("frontend", null);
+    spawned.set("frontend", "completed");
+    const question = await send("main", { to: "frontend", kind: "question", message: "Which route?" });
+    expect(question.isError).toBeUndefined();
+    expect(question.structuredContent).toMatchObject({ outcome: "restarting" });
+  });
+
+  test("a report marked final delivers the contract, and then it is over", async () => {
+    const sent = await send("frontend", { to: "delegator", kind: "report", message: "Screens done.", final: true });
+    expect(sent.isError).toBeUndefined();
+    expect(sent.structuredContent).toMatchObject({ contractClosed: true });
+    expect(JSON.stringify(sent.structuredContent)).toContain("closed as delivered");
+    expect(store.threadMeta("frontend")?.contractClosed?.reason).toBe("delivered");
+
+    runtimes.set("frontend", null);
+    spawned.set("frontend", "completed");
+    expect(refusal(await send("main", { to: "frontend", message: "One more thing." }))).toContain(
+      "contract is over (delivered)",
+    );
+  });
+
+  test("final is refused from anyone but a contractor, twice, or to anyone but its contracting agent", async () => {
+    expect(refusal(await send("backend", { to: "delegator", kind: "report", message: "Done.", final: true }))).toContain(
+      "not working under a contract",
+    );
+    expect(refusal(await send("frontend", { to: "backend", kind: "report", message: "Done.", final: true }))).toContain(
+      "send it to `delegator`",
+    );
+    await send("frontend", { to: "delegator", kind: "report", message: "Done.", final: true });
+    expect(refusal(await send("frontend", { to: "delegator", kind: "report", message: "Again.", final: true }))).toContain(
+      "already closed",
+    );
+  });
+
+  test("final needs kind report", async () => {
+    expect(refusal(await send("frontend", { to: "delegator", message: "Done.", final: true }))).toContain(
+      "Only a report delivers a contract",
+    );
+  });
+});
+
+describe("messages that say whether they will land", () => {
+  test("a note to an open contractor from up its chain rings; from a peer, or to a teammate, it waits", async () => {
+    const fromChain = await send("main", { to: "frontend", message: "Use the new tokens." });
+    expect(fromChain.structuredContent).toMatchObject({ outcome: "waking" });
+    expect(mailbox.ringingCount("frontend")).toBe(1);
+
+    await send("peer", { to: "frontend", message: "fyi" });
+    expect(mailbox.ringingCount("frontend")).toBe(1);
+    expect(mailbox.getUnreadCount("frontend")).toBe(2);
+
+    const toTeammate = await send("main", { to: "backend", message: "fyi" });
+    expect(toTeammate.structuredContent).toMatchObject({ outcome: "inbox" });
+    expect(mailbox.ringingCount("backend")).toBe(0);
+  });
+
+  test("a watched message counts in agent_list until it is opened, and agent_sent follows it to acted on", async () => {
+    const sent = await send("main", { to: "backend", kind: "question", message: "Review p3?", ackRequired: true });
+    // SAFETY: agent_message's structured result always carries the message id.
+    const id = (sent.structuredContent as { messageId: string }).messageId;
+    expect(textOf(sent)).toContain("agent_sent shows when");
+
+    const list = await registry.call(ctxFor("main"), "agent_list", {});
+    expect(textOf(list)).toMatch(/`backend`.*1 unacknowledged from you\./);
+    const waiting = await registry.call(ctxFor("main"), "agent_sent", { unacknowledged: true });
+    expect(waiting.structuredContent).toMatchObject({ count: 1, receipts: [{ id, stage: "waiting", ackRequired: true }] });
+
+    // backend reads it mid-turn; that turn is still running.
+    turns.set("backend:turn-1", "running");
+    await registry.call(ctxFor("backend"), "agent_inbox", {});
+    const opened = await registry.call(ctxFor("main"), "agent_sent", { messageIds: [id] });
+    expect(opened.structuredContent).toMatchObject({ receipts: [{ stage: "opened", turnId: "turn-1" }] });
+    expect(textOf(opened)).toContain("which is still running");
+    expect(textOf(await registry.call(ctxFor("main"), "agent_list", {}))).not.toContain("unacknowledged");
+
+    turns.set("backend:turn-1", "completed");
+    const acted = await registry.call(ctxFor("main"), "agent_sent", { messageIds: [id] });
+    expect(acted.structuredContent).toMatchObject({ receipts: [{ stage: "acted" }] });
+    expect(textOf(acted)).toContain("has since ended (completed)");
+  });
+
+  test("a message about a branch says, when opened, how far the branch has moved", async () => {
+    mailbox = new IrcMailbox(undefined, {
+      aboutDrift: (_cwd, about) => `${about.branch} moved 3 commits past ${about.commit}`,
+    });
+    registry = registryFor();
+    await send("main", { to: "backend", message: "Fix the review findings.", about: { branch: "p3", commit: "4c1e9a0" } });
+    const inbox = await registry.call(ctxFor("backend"), "agent_inbox", {});
+    expect(textOf(inbox)).toContain("Fix the review findings.\n(kone: p3 moved 3 commits past 4c1e9a0)");
+    expect(inbox.structuredContent).toMatchObject({
+      messages: [{ about: { branch: "p3", commit: "4c1e9a0" }, aboutDrift: "p3 moved 3 commits past 4c1e9a0" }],
+    });
   });
 });
 

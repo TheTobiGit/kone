@@ -39,6 +39,22 @@ describe("migration 16: ThreadContract", () => {
   });
 });
 
+describe("migration 29: ContractClosed", () => {
+  test("every contract on disk reads as open, and the reason takes only delivered or withdrawn", () => {
+    const { db, file } = v14Database();
+    migrate(db, file);
+    // SAFETY: one row projecting the two contract-closed columns.
+    const row = db.prepare("SELECT contract_closed_at, contract_closed_reason FROM threads WHERE thread_id = 't-1'").get() as {
+      contract_closed_at: number | null;
+      contract_closed_reason: string | null;
+    };
+    expect(row).toEqual({ contract_closed_at: null, contract_closed_reason: null });
+    db.exec(`UPDATE threads SET contract_closed_at = 5, contract_closed_reason = 'delivered' WHERE thread_id = 't-1'`);
+    expect(() => db.exec(`UPDATE threads SET contract_closed_reason = 'done' WHERE thread_id = 't-1'`)).toThrow(/CHECK/);
+    db.close();
+  });
+});
+
 describe("migration 15: BlockSender", () => {
   test("existing prompts keep reading as the user", () => {
     const { db, file } = v14Database();

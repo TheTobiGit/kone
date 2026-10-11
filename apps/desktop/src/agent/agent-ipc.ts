@@ -28,6 +28,7 @@ import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjectio
 import { startInboxDelivery } from "@kone/agent-core/inboxDelivery.js";
 import { createMailboxReportSink } from "@kone/agent-core/settleReports.js";
 import { inboxHistoryView, waitingInbox } from "@kone/agent-core/inboxView.js";
+import { boardsView } from "@kone/agent-core/boardView.js";
 import { configureIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
@@ -783,6 +784,9 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:inbox:history", (_event, threadId: string, limit?: number) =>
     inboxHistoryView(store, threadId, limit),
   );
+  // A project's crew boards, whole: who is on each, its live rules and its
+  // status rows. board.updated on the event stream says when to re-read.
+  ipcMain.handle("agent:boards:list", (_event, projectPath: string) => boardsView(store, projectPath));
   ipcMain.handle("agent:queue-cancel", (_event, threadId: string, queueId: string) =>
     svc.cancelQueuedTurn(threadId, queueId),
   );

@@ -30,6 +30,9 @@ export type InboxKind = (typeof INBOX_KINDS)[number];
  *  own; read from the inbox. */
 export type InboxState = "unseen" | "handing" | "seen" | "retracted" | "uncertain";
 export type InboxSeenVia = "turn" | "inbox" | "wait";
+/** What a message refers to: a branch at a commit. Opening it says how far
+ *  the branch has moved past that commit since. */
+export type MessageAbout = { branch: string; commit: string };
 /** kone itself, writing a notice of its own. */
 export type SystemSender = { kind: "system" };
 export type InboxSender = AgentSender | CourierSender | SystemSender;
@@ -76,6 +79,9 @@ export interface InboxRow {
   /** When a restart left it uncertain: handed to the provider with nothing
    *  on record to say whether it arrived. Stays once the row is read. */
   uncertainAt: number | null;
+  /** The sender watches it until the recipient opens it. */
+  ackRequired: boolean;
+  about: MessageAbout | null;
 }
 
 export interface InboxInsert {
@@ -92,6 +98,8 @@ export interface InboxInsert {
   dedupeKey?: string | null;
   projectPath: string;
   createdAt?: number;
+  ackRequired?: boolean;
+  about?: MessageAbout | null;
 }
 
 /** What an insert came to. `duplicate` is a replayed write its dedupe key
@@ -124,8 +132,9 @@ export interface AgentInboxStore {
   setInboxBlockId(inboxId: string, blockId: string): void;
   /** Mark these unseen messages seen, and return the ids that actually were
    *  unseen — a message already claimed or seen is left as it is. A read of
-   *  the inbox (`via` "inbox") takes an uncertain one too. */
-  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia): string[];
+   *  the inbox (`via` "inbox") takes an uncertain one too. `turnId` is the
+   *  turn that read it, so its sender can tell when it was acted on. */
+  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia, turnId?: string | null): string[];
   /** Messages a dead process left uncertain, oldest first. */
   listUncertainInbox(recipientThreadId: string): InboxRow[];
   /** The provider took the turn carrying this hand-over: link each message's
@@ -142,11 +151,29 @@ export interface AgentInboxStore {
   unseenInboxCount(recipientThreadId: string, which?: InboxRing): number;
   /** One message, whatever its state; null when there is none. */
   inboxMessage(inboxId: string): InboxRow | null;
+  /** What a sender sent, newest first: the named messages, or its latest —
+   *  only those it still watches, with `unacknowledged`. */
+  sentInbox(senderThreadId: string, query: SentInboxQuery): InboxRow[];
+  /** Per recipient, how many messages the sender watches that are not yet
+   *  opened. */
+  unacknowledgedCounts(senderThreadId: string): Map<string, number>;
+}
+
+export interface SentInboxQuery {
+  inboxIds?: readonly string[];
+  unacknowledged?: boolean;
+  limit: number;
+}
+
+/** Watched, and not yet opened or taken back. */
+function unacknowledged(row: Pick<InboxRow, "ackRequired" | "state">): boolean {
+  return row.ackRequired && row.state !== "seen" && row.state !== "retracted";
 }
 
 const INBOX_COLUMNS = `inbox_id, recipient_thread_id, sender_thread_id, sender_json, kind,
                        urgent, rings, reply_to, body, state, delivery_id, block_id, turn_id,
-                       seen_via, dedupe_key, project_path, created_at, seen_at, sent_at, uncertain_at`;
+                       seen_via, dedupe_key, project_path, created_at, seen_at, sent_at, uncertain_at,
+                       ack_required, about_json`;
 
 /** Arrival order. rowid settles two messages written in the same millisecond,
  *  which a broadcast does routinely. */
@@ -223,11 +250,25 @@ type InboxDbRow = {
   seen_at: number | null;
   sent_at: number | null;
   uncertain_at: number | null;
+  ack_required: number;
+  about_json: string | null;
   /** Present on RETURNING rows, which come back in no promised order. */
   row_seq?: number;
 };
 
 const SystemSenderSchema = z.object({ kind: z.literal("system") });
+
+export const MessageAboutSchema = z.object({ branch: z.string().trim().min(1).max(200), commit: z.string().trim().min(4).max(64) });
+
+function parseAbout(json: string | null): MessageAbout | null {
+  if (!json) return null;
+  try {
+    const parsed = MessageAboutSchema.safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 /** The stored sender, or null when it is the JSON null or no longer parses. */
 function parseInboxSender(json: string): InboxSender | null {
@@ -266,6 +307,8 @@ function rowToInbox(row: InboxDbRow): InboxRow {
     seenAt: row.seen_at,
     sentAt: row.sent_at,
     uncertainAt: row.uncertain_at,
+    ackRequired: row.ack_required !== 0,
+    about: parseAbout(row.about_json),
   };
 }
 
@@ -472,8 +515,8 @@ export class AgentInboxRepo implements AgentInboxStore {
           .prepare(
             `INSERT INTO agent_inbox (inbox_id, recipient_thread_id, sender_thread_id, sender_json,
                                       kind, urgent, rings, reply_to, body, state, dedupe_key,
-                                      project_path, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?)
+                                      project_path, created_at, ack_required, about_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unseen', ?, ?, ?, ?, ?)
              ON CONFLICT (dedupe_key) DO NOTHING`,
           )
           .run(
@@ -489,6 +532,8 @@ export class AgentInboxRepo implements AgentInboxStore {
             input.dedupeKey ?? null,
             input.projectPath,
             input.createdAt ?? Date.now(),
+            input.ackRequired ? 1 : 0,
+            input.about ? JSON.stringify(input.about) : null,
           );
         inserted = Number(run.changes) > 0;
         result = inserted ? "inserted" : "duplicate";
@@ -605,7 +650,7 @@ export class AgentInboxRepo implements AgentInboxStore {
     }
   }
 
-  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia): string[] {
+  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia, turnId: string | null = null): string[] {
     const db = this.dbh.handle();
     if (!db || inboxIds.length === 0) return [];
     try {
@@ -613,12 +658,12 @@ export class AgentInboxRepo implements AgentInboxStore {
       // SAFETY: RETURNING two TEXT columns.
       const rows = db
         .prepare(
-          `UPDATE agent_inbox SET state = 'seen', seen_via = ?, seen_at = ?
+          `UPDATE agent_inbox SET state = 'seen', seen_via = ?, seen_at = ?, turn_id = COALESCE(?, turn_id)
             WHERE inbox_id IN (${placeholders})
               AND (state = 'unseen' OR (state = 'uncertain' AND ? = 'inbox'))
             RETURNING inbox_id, recipient_thread_id`,
         )
-        .all(via, Date.now(), ...inboxIds, via) as Array<{ inbox_id: string; recipient_thread_id: string }>;
+        .all(via, Date.now(), turnId, ...inboxIds, via) as Array<{ inbox_id: string; recipient_thread_id: string }>;
       this.changed(rows.map((r) => r.recipient_thread_id));
       const flipped = new Set(rows.map((r) => r.inbox_id));
       return inboxIds.filter((id) => flipped.has(id));
@@ -778,6 +823,50 @@ export class AgentInboxRepo implements AgentInboxStore {
     }
   }
 
+  sentInbox(senderThreadId: string, query: SentInboxQuery): InboxRow[] {
+    const db = this.dbh.handle();
+    if (!db) return [];
+    try {
+      const named = query.inboxIds && query.inboxIds.length > 0 ? query.inboxIds : null;
+      const filters = [
+        "sender_thread_id = ?",
+        named ? `inbox_id IN (${named.map(() => "?").join(", ")})` : null,
+        query.unacknowledged ? "ack_required = 1 AND state NOT IN ('seen', 'retracted')" : null,
+      ].filter(Boolean);
+      // SAFETY: the projection is the column list InboxDbRow is declared from.
+      const rows = db
+        .prepare(
+          `SELECT ${INBOX_COLUMNS} FROM agent_inbox WHERE ${filters.join(" AND ")}
+            ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+        )
+        .all(senderThreadId, ...(named ?? []), Math.max(1, query.limit)) as InboxDbRow[];
+      return rows.map(rowToInbox);
+    } catch (err) {
+      console.error("[conversation-store] sentInbox failed:", err);
+      return [];
+    }
+  }
+
+  unacknowledgedCounts(senderThreadId: string): Map<string, number> {
+    const db = this.dbh.handle();
+    const counts = new Map<string, number>();
+    if (!db) return counts;
+    try {
+      // SAFETY: one TEXT and one integer column per group.
+      const rows = db
+        .prepare(
+          `SELECT recipient_thread_id, COUNT(*) AS n FROM agent_inbox
+            WHERE sender_thread_id = ? AND ack_required = 1 AND state NOT IN ('seen', 'retracted')
+            GROUP BY recipient_thread_id`,
+        )
+        .all(senderThreadId) as Array<{ recipient_thread_id: string; n: number }>;
+      for (const row of rows) counts.set(row.recipient_thread_id, row.n);
+    } catch (err) {
+      console.error("[conversation-store] unacknowledgedCounts failed:", err);
+    }
+    return counts;
+  }
+
   /** Put every message still being handed over back to unseen, block ids
    *  kept. What the first open of a process does; exposed for tests. */
   resetHandingAtBoot(): void {
@@ -815,6 +904,8 @@ export class MemoryAgentInbox implements AgentInboxStore {
       seenAt: null,
       sentAt: null,
       uncertainAt: null,
+      ackRequired: input.ackRequired ?? false,
+      about: input.about ?? null,
     });
     return "inserted";
   }
@@ -865,7 +956,7 @@ export class MemoryAgentInbox implements AgentInboxStore {
     if (row) row.blockId = blockId;
   }
 
-  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia): string[] {
+  markInboxSeen(inboxIds: readonly string[], via: InboxSeenVia, turnId: string | null = null): string[] {
     const now = Date.now();
     return inboxIds.filter((id) => {
       const row = this.rows.find((r) => r.inboxId === id);
@@ -873,8 +964,32 @@ export class MemoryAgentInbox implements AgentInboxStore {
       row.state = "seen";
       row.seenVia = via;
       row.seenAt = now;
+      if (turnId !== null) row.turnId = turnId;
       return true;
     });
+  }
+
+  sentInbox(senderThreadId: string, query: SentInboxQuery): InboxRow[] {
+    const named = query.inboxIds && query.inboxIds.length > 0 ? new Set(query.inboxIds) : null;
+    return this.rows
+      .filter(
+        (r) =>
+          r.senderThreadId === senderThreadId &&
+          (!named || named.has(r.inboxId)) &&
+          (!query.unacknowledged || unacknowledged(r)),
+      )
+      .reverse()
+      .slice(0, Math.max(1, query.limit))
+      .map((r) => ({ ...r }));
+  }
+
+  unacknowledgedCounts(senderThreadId: string): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const r of this.rows) {
+      if (r.senderThreadId !== senderThreadId || !unacknowledged(r)) continue;
+      counts.set(r.recipientThreadId, (counts.get(r.recipientThreadId) ?? 0) + 1);
+    }
+    return counts;
   }
 
   listUncertainInbox(recipientThreadId: string): InboxRow[] {

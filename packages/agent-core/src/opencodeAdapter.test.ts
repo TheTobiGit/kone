@@ -289,7 +289,7 @@ describe("OpenCode dialects", () => {
 
   test("model probes carry their retry as an attempt count", () => {
     expect(modelProbesForVersion("1.18.0").map((p) => [p.args.join(" "), p.attempts])).toEqual([["models --verbose", 2]]);
-    expect(modelProbesForVersion("2.0.12").map((p) => p.args.join(" "))).toEqual(["api model.list", "models"]);
+    expect(modelProbesForVersion("2.0.12").map((p) => [p.args.join(" "), p.attempts])).toEqual([["api model.list", 3], ["models", 1]]);
     expect(modelProbesForVersion(undefined)).toHaveLength(3);
   });
 });

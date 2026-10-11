@@ -818,6 +818,10 @@ export type StoredThreadMeta = {
    *  `"delegation"` edge whose identity came from the contract rather than the
    *  roster. Absent on every other thread. */
   contract?: ContractTerms;
+  /** Set once a contract is over: the contractor reported its deliverable, or
+   *  the contracting agent withdrew it. Absent while the contract is open —
+   *  between turns a contractor is idle, not done. */
+  contractClosed?: { at: number; reason: ContractClosedReason };
   /** Short text excerpt or preview of the latest turn/prompt. */
   snippet?: string;
 };
@@ -855,7 +859,7 @@ export type {
 } from "@kone/protocol/message-sender";
 import type { MessageSender } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
-import type { ContractTerms } from "@kone/protocol/contract";
+import type { ContractClosedReason, ContractTerms } from "@kone/protocol/contract";
 import type { ThreadAgentBinding } from "./rosterRecord.js";
 import type { ConversationStore } from "./ConversationStore.js";
 
@@ -1793,6 +1797,15 @@ export type RuntimeEvent =
       revision: number;
       savedAt: number;
       writer: ScratchpadWriter | null;
+    })
+  // A crew board changed (board_create, board_grant, board_write):
+  // `part` says what — the board itself or its brief, who is on it, a rule,
+  // or a status row. A view of the board reads it again; never journaled.
+  | (BaseEvent & {
+      type: "board.updated";
+      boardId: string;
+      projectPath: string;
+      part: "board" | "members" | "rule" | "row";
     })
   // An agent tool call mutated the workspace theme or visual appearance.
   // The renderer applies the new themeId, mode, or preview overrides in real-time.

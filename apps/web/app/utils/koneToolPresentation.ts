@@ -131,6 +131,11 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Couldn't answer an agent's question",
   ]),
 
+  agent_grant: kone(UserGroupIcon, "Grant", "agent", [
+    "Sharing access to an agent",
+    "Shared access to an agent",
+    "Couldn't share access to the agent",
+  ]),
   agent_message: kone(BubbleChatIcon, "Message", "agent", [
     "Messaging an agent",
     "Messaged an agent",
@@ -145,6 +150,31 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Reading messages",
     "Read messages",
     "Couldn't read messages",
+  ]),
+  board_create: kone(UserGroupIcon, "Board", "agent", [
+    "Making a crew board",
+    "Made a crew board",
+    "Couldn't make a crew board",
+  ]),
+  board_grant: kone(UserGroupIcon, "Board", "agent", [
+    "Changing who is on the board",
+    "Changed who is on the board",
+    "Couldn't change who is on the board",
+  ]),
+  board_read: kone(UserGroupIcon, "Board", "agent", [
+    "Reading the crew board",
+    "Read the crew board",
+    "Couldn't read the crew board",
+  ]),
+  board_write: kone(UserGroupIcon, "Board", "agent", [
+    "Writing to the crew board",
+    "Wrote to the crew board",
+    "Couldn't write to the crew board",
+  ]),
+  agent_sent: kone(InboxIcon, "Sent", "agent", [
+    "Checking messages it sent",
+    "Checked messages it sent",
+    "Couldn't check messages it sent",
   ]),
 
   // processes & code

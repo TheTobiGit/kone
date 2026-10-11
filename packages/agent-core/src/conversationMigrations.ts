@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 32;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1228,6 +1228,114 @@ function migration0028TurnSeals(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * A contract lasts as long as the job, not one turn: it closes when the
+ * contractor reports its deliverable, or when the contracting agent withdraws
+ * it. NULL on every thread whose contract is open, and on every thread that
+ * never had one.
+ */
+function migration0029ContractClosed(db: DatabaseSync): void {
+  if (!hasTable(db, "threads")) return;
+  addColumn(db, "threads", "contract_closed_at", "INTEGER");
+  addColumn(
+    db,
+    "threads",
+    "contract_closed_reason",
+    "TEXT CHECK (contract_closed_reason IS NULL OR contract_closed_reason IN ('delivered', 'withdrawn'))",
+  );
+}
+
+/**
+ * What a sender can learn of a message after it is sent. `ack_required` keeps
+ * it on the sender's watch list until the recipient opens it; `about_json`
+ * names the branch and commit it refers to, so opening it can say how far the
+ * branch has moved since. The sender index serves both: a sender's watch list
+ * and its receipts read by sender, never by recipient.
+ */
+function migration0030InboxReceipts(db: DatabaseSync): void {
+  if (!hasTable(db, "agent_inbox")) return;
+  addColumn(db, "agent_inbox", "ack_required", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "agent_inbox", "about_json", "TEXT CHECK (about_json IS NULL OR json_valid(about_json))");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_inbox_sender ON agent_inbox (sender_thread_id, created_at)`);
+}
+
+/**
+ * Grants: an agent up a hand-off's chain lets a named peer read, message or
+ * follow up the agent it handed work to. One row per holder and agent; both
+ * ends cascade with their threads.
+ */
+function migration0031AgentGrants(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_grants (
+      grantee_thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      target_thread_id     TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      access               TEXT NOT NULL CHECK (access IN ('read', 'message', 'followup')),
+      granted_by_thread_id TEXT NOT NULL,
+      created_at           INTEGER NOT NULL,
+      PRIMARY KEY (grantee_thread_id, target_thread_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_grants_target ON agent_grants (target_thread_id);
+  `);
+}
+
+/**
+ * Crew boards: one orchestrator's shared workspace — a brief, versioned
+ * standing rules, and owned status rows — with the members it granted access.
+ * A board goes with its owner's thread, and everything on it with the board.
+ */
+function migration0032CrewBoards(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS crew_boards (
+      board_id        TEXT PRIMARY KEY,
+      owner_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      project_path    TEXT NOT NULL,
+      title           TEXT NOT NULL,
+      brief           TEXT NOT NULL DEFAULT '',
+      revision        INTEGER NOT NULL DEFAULT 1,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crew_boards_project ON crew_boards (project_path, created_at);
+
+    CREATE TABLE IF NOT EXISTS crew_board_members (
+      board_id             TEXT NOT NULL REFERENCES crew_boards(board_id) ON DELETE CASCADE,
+      thread_id            TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      access               TEXT NOT NULL CHECK (access IN ('read', 'rows', 'admin')),
+      granted_by_thread_id TEXT NOT NULL,
+      rules_seen_revision  INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (board_id, thread_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_crew_board_members_thread ON crew_board_members (thread_id);
+
+    CREATE TABLE IF NOT EXISTS crew_board_rules (
+      board_id            TEXT NOT NULL REFERENCES crew_boards(board_id) ON DELETE CASCADE,
+      rule_id             TEXT NOT NULL,
+      text                TEXT NOT NULL,
+      version             INTEGER NOT NULL,
+      changed_at_revision INTEGER NOT NULL,
+      retired             INTEGER NOT NULL DEFAULT 0,
+      updated_at          INTEGER NOT NULL,
+      PRIMARY KEY (board_id, rule_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS crew_board_rows (
+      board_id             TEXT NOT NULL REFERENCES crew_boards(board_id) ON DELETE CASCADE,
+      row_id               TEXT NOT NULL,
+      item                 TEXT NOT NULL,
+      owner_thread_id      TEXT NOT NULL,
+      branch               TEXT,
+      commit_sha           TEXT,
+      state                TEXT NOT NULL CHECK (state IN ('building', 'gated', 'in-review', 'changes-needed', 'approved', 'merged', 'blocked')),
+      next_step            TEXT,
+      revision             INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL,
+      updated_by_thread_id TEXT NOT NULL,
+      PRIMARY KEY (board_id, row_id)
+    );
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1257,6 +1365,10 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 26, name: "InboxUncertainAt", run: migration0026InboxUncertainAt },
   { id: 27, name: "QueuedTurnDurableRowid", run: migration0027QueuedTurnDurableRowid },
   { id: 28, name: "TurnSeals", run: migration0028TurnSeals },
+  { id: 29, name: "ContractClosed", run: migration0029ContractClosed },
+  { id: 30, name: "InboxReceipts", run: migration0030InboxReceipts },
+  { id: 31, name: "AgentGrants", run: migration0031AgentGrants },
+  { id: 32, name: "CrewBoards", run: migration0032CrewBoards },
 ];
 
 export interface MigrationOptions {

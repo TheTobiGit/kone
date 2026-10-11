@@ -32,6 +32,13 @@ class TreeStore {
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
     return [...this.metas.values()].filter((m) => m.lineage?.parentThreadId === parentThreadId);
   }
+  setContractClosed(threadId: string, closed: { at: number; reason: "delivered" | "withdrawn" } | null): boolean {
+    const meta = this.metas.get(threadId);
+    if (!meta?.contract) return false;
+    if (closed) meta.contractClosed = closed;
+    else delete meta.contractClosed;
+    return true;
+  }
 }
 
 /** How something reached a thread: a turn sent or steered, or a notice put in
@@ -275,6 +282,13 @@ describe("withdrawing work", () => {
     expect(told?.text).toContain("withdrew this task");
     expect(h.stopped).not.toContain("docs");
     expect(h.ensured).toEqual([]);
+  });
+
+  test("withdrawing a contractor closes its contract; a teammate has none to close", async () => {
+    expect(await h.lifecycle.withdraw("main", "frontend")).toBe("told");
+    expect(h.store.threadMeta("frontend")?.contractClosed?.reason).toBe("withdrawn");
+    await h.lifecycle.withdraw("main", "docs");
+    expect(h.store.threadMeta("docs")?.contractClosed).toBeUndefined();
   });
 
   test("a delegate whose session is closed is brought back up to hear it", async () => {
