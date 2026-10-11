@@ -24,6 +24,7 @@ import {
   type SpawnRequest,
 } from "./threadSpawn.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
+import type { AgentGrant } from "./agentAccess.js";
 import { IrcMailbox, type IrcMessageRecord } from "./gateway/tools/irc.js";
 import { MemoryAgentInbox } from "./store/agentInbox.js";
 import { startInboxDelivery, type InboxDelivery } from "./inboxDelivery.js";
@@ -121,6 +122,19 @@ class FakeStore implements SpawnEngineStore {
     const list = this.childrenByParent.get(parent) ?? [];
     list.push(input.threadId);
     this.childrenByParent.set(parent, list);
+    return true;
+  }
+
+  grants: AgentGrant[] = [];
+  agentGrant(granteeThreadId: string, targetThreadId: string): AgentGrant | null {
+    return this.grants.find((g) => g.granteeThreadId === granteeThreadId && g.targetThreadId === targetThreadId) ?? null;
+  }
+
+  setContractClosed(threadId: string, closed: { at: number; reason: "delivered" | "withdrawn" } | null): boolean {
+    const meta = this.metas.get(threadId);
+    if (!meta?.contract) return false;
+    if (closed) meta.contractClosed = closed;
+    else delete meta.contractClosed;
     return true;
   }
 
@@ -1522,6 +1536,186 @@ describe("spawn engine", () => {
   });
 });
 
+describe("access shared through a grant", () => {
+  const LEAD: SpawnCaller = { ...CALLER, threadId: "lead-1", turnId: "lead-turn-1" };
+
+  function harness() {
+    const reports: SettledTurnReport[] = [];
+    const retractions: Array<[string, string]> = [];
+    const h = makeEngine({
+      reports: () => ({
+        deliver: (report) => {
+          reports.push(report);
+          return `msg-${reports.length}`;
+        },
+        retract: (threadId, messageId) => { retractions.push([threadId, messageId]); },
+      }),
+    });
+    setupParent(h.store, h.providers);
+    h.store.metas.set(LEAD.threadId, { threadId: LEAD.threadId, projectPath: CALLER.cwd, provider: "opencode", createdAt: 1, updatedAt: 1 });
+    return { h, reports, retractions };
+  }
+
+  const grant = (access: AgentGrant["access"], target: string): AgentGrant => ({
+    granteeThreadId: LEAD.threadId,
+    targetThreadId: target,
+    access,
+    grantedByThreadId: CALLER.threadId,
+    createdAt: 1,
+  });
+
+  test("a peer reaches an agent only as far as its grant says", async () => {
+    const { h } = harness();
+    const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+    expect(h.engine.canReach(LEAD.threadId, child, "read")).toBe(false);
+    h.store.grants.push(grant("read", child));
+    expect(h.engine.canReach(LEAD.threadId, child, "read")).toBe(true);
+    expect(h.engine.canReach(LEAD.threadId, child, "followup")).toBe(false);
+    await expect(h.engine.continueThread(LEAD, { threadId: child, message: "Status?" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    // Up the chain needs no grant.
+    expect(h.engine.canReach(CALLER.threadId, child, "followup")).toBe(true);
+  });
+
+  test("a grant lingering on a closed contract reaches nothing", async () => {
+    const { h } = harness();
+    const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+    const { threadId: child } = await h.engine.spawn(CALLER, { ...REQUEST, contract });
+    h.store.grants.push(grant("followup", child));
+    expect(h.engine.canReach(LEAD.threadId, child, "followup")).toBe(true);
+    // The close ends the grant; this store keeps the row anyway, the way a
+    // write that landed apart from the close would — the reach helpers
+    // still ignore it.
+    h.store.setContractClosed(child, { at: 5, reason: "delivered" });
+    expect(h.store.grants).toHaveLength(1);
+    expect(h.engine.canReach(LEAD.threadId, child, "read")).toBe(false);
+    expect(h.engine.canReach(LEAD.threadId, child, "followup")).toBe(false);
+    await expect(h.engine.continueThread(LEAD, { threadId: child, message: "More?" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    // Up the chain needs no grant, open or closed.
+    expect(h.engine.canReach(CALLER.threadId, child, "followup")).toBe(true);
+  });
+
+  test("a follow-up from a granted peer asks as that peer, and its turn's result goes back to it", async () => {
+    const { h, reports } = harness();
+    const { threadId: child, firstTurnId } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(child, 1));
+    h.bus.emit(turnStarted(child, firstTurnId ?? "turn-1", 2));
+    h.bus.emit(turnCompleted(child, firstTurnId ?? "turn-1", 3));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => r.parentThreadId)).toEqual([CALLER.threadId]);
+
+    h.store.grants.push(grant("followup", child));
+    await h.engine.continueThread(LEAD, { threadId: child, message: "Review p3 next." });
+    const claim = h.jobs.claimJob(child)!;
+    expect(claim.messages[0]?.sender).toMatchObject({ threadId: LEAD.threadId, relationship: "peer" });
+    h.jobs.settleDelivery(claim.deliveryId, "turn-review");
+    h.bus.emit(turnStarted(child, "turn-review", 4));
+    h.bus.emit(turnCompleted(child, "turn-review", 5));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([
+      [firstTurnId ?? "turn-1", CALLER.threadId],
+      ["turn-review", LEAD.threadId],
+    ]);
+  });
+
+  test("however many follow-ups race, each turn's result goes to whoever asked for it", async () => {
+    const { h, reports } = harness();
+    const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(child, 1));
+    const PEER2: SpawnCaller = { ...CALLER, threadId: "peer-2", turnId: "peer-2-turn-1" };
+    h.store.metas.set(PEER2.threadId, {
+      threadId: PEER2.threadId,
+      projectPath: CALLER.cwd,
+      provider: "opencode",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    h.store.grants.push(grant("followup", child));
+    h.store.grants.push({ ...grant("followup", child), granteeThreadId: PEER2.threadId });
+
+    // Take one job to the provider as it is posted: the turn it hands the
+    // follow-up to is the provider's, not the job's id.
+    const takeJob = async (): Promise<string> => {
+      const claim = h.jobs.claimJob(child)!;
+      h.jobs.sendingDelivery(claim.deliveryId);
+      const job = claim.messages[0]!;
+      const input: SendTurnInput = { threadId: child, input: job.message };
+      if (job.sender?.kind === "agent") input.sender = job.sender;
+      const sent = await h.dispatcher.sendThreadTurn(input);
+      h.jobs.settleDelivery(claim.deliveryId, sent.turnId);
+      return sent.turnId;
+    };
+    await h.engine.continueThread(LEAD, { threadId: child, message: "Review p3." });
+    const turnA = await takeJob();
+    // A second ask lands while the first turn is still under way: its job
+    // waits in the inbox, and the first turn settles with both out.
+    await h.engine.continueThread(PEER2, { threadId: child, message: "Review p4." });
+
+    h.bus.emit(turnStarted(child, turnA, 4));
+    h.bus.emit(turnCompleted(child, turnA, 5));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // The first result went to the first asker, not the latest one.
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([[turnA, LEAD.threadId]]);
+
+    const turnB = await takeJob();
+    h.bus.emit(turnStarted(child, turnB, 6));
+    h.bus.emit(turnCompleted(child, turnB, 7));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([
+      [turnA, LEAD.threadId],
+      [turnB, PEER2.threadId],
+    ]);
+  });
+
+  test("a peer's fast turn reports to it before hand-over settles, and a later wait retracts that report", async () => {
+    const { h, reports, retractions } = harness();
+    const { threadId: child } = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(child, 1));
+    h.store.grants.push(grant("followup", child));
+    await h.engine.continueThread(LEAD, { threadId: child, message: "Review now." });
+    const claim = h.jobs.claimJob(child)!;
+    h.jobs.sendingDelivery(claim.deliveryId);
+    h.dispatcher.emitBeforeSent = (threadId, turnId) => {
+      h.bus.emit(turnStarted(threadId, turnId, 4));
+      h.bus.emit(turnCompleted(threadId, turnId, 5));
+    };
+    const sent = await h.dispatcher.sendThreadTurn({ threadId: child, input: claim.messages[0]!.message });
+    // The settle-report microtask ran before the send's promise returned.
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([[sent.turnId, LEAD.threadId]]);
+    h.jobs.settleDelivery(claim.deliveryId, sent.turnId);
+    await h.engine.waitFor({ threadIds: [child], turnIds: [sent.turnId], scopeThreadId: LEAD.threadId, timeoutMs: 20 });
+    expect(retractions).toEqual([[LEAD.threadId, "msg-1"]]);
+  });
+
+  test("abandoning a peer's wait releases its held report to that peer", async () => {
+    const { h, reports } = harness();
+    const { threadId: first } = await h.engine.spawn(CALLER, REQUEST);
+    const { threadId: second } = await h.engine.spawn(CALLER, { ...REQUEST, requestId: "req-second" });
+    for (const child of [first, second]) {
+      h.bus.emit(sessionStarted(child, 1));
+      h.store.grants.push(grant("followup", child));
+      await h.engine.continueThread(LEAD, { threadId: child, message: "Review." });
+      h.jobs.settleDelivery(h.jobs.claimJob(child)!.deliveryId, `review-${child}`);
+      h.bus.emit(turnStarted(child, `review-${child}`, 4));
+    }
+    const controller = new AbortController();
+    const waiting = h.engine.waitFor({
+      threadIds: [first, second], turnIds: [`review-${first}`, `review-${second}`],
+      scopeThreadId: LEAD.threadId, signal: controller.signal, timeoutMs: 500,
+    }).catch(() => null);
+    h.bus.emit(turnCompleted(first, `review-${first}`, 5));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports).toHaveLength(0);
+    controller.abort();
+    await waiting;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reports.map((r) => [r.turnId, r.parentThreadId])).toEqual([[`review-${first}`, LEAD.threadId]]);
+  });
+});
+
 describe("continueThread", () => {
   /** Spawn one child through the engine and run its first turn to completion,
    *  so the harness holds a child whose projection has settled and whose
@@ -1571,6 +1765,43 @@ describe("continueThread", () => {
     // The child's events correlate back to the caller's turn (F10).
     expect(h.dispatcher.parentTurnsNoted).toEqual([{ threadId: child, parentTurnId: CALLER.turnId }]);
   });
+
+  test("a follow-up on a delivered contract reopens it: there is more to the job", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+    const spawned = await h.engine.spawn(CALLER, { ...REQUEST, contract });
+    h.bus.emit(sessionStarted(spawned.threadId, 1));
+    h.store.setContractClosed(spawned.threadId, { at: 5, reason: "delivered" });
+
+    await h.engine.continueThread(CALLER, { threadId: spawned.threadId, message: "Add the reset screen too." });
+    expect(h.store.metas.get(spawned.threadId)?.contractClosed).toBeUndefined();
+  });
+
+  for (const failure of ["provider", "inbox"] as const) {
+    test(`a ${failure} failure leaves a delivered contract closed`, async () => {
+      const h = makeEngine();
+      setupParent(h.store, h.providers);
+      const contract = { name: "Frontend Auth", role: "r", instructions: "i", scope: "s", deliverable: "d", doneCriteria: "c" };
+      const spawned = await h.engine.spawn(CALLER, { ...REQUEST, contract });
+      h.bus.emit(sessionStarted(spawned.threadId, 1));
+      const turnId = spawned.firstTurnId ?? "turn-1";
+      h.bus.emit(turnStarted(spawned.threadId, turnId, 2));
+      h.bus.emit(turnCompleted(spawned.threadId, turnId, 3));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      h.bus.emit({ type: "session.exited", threadId: spawned.threadId, provider: "opencode", at: 4, source: "kone.store" });
+      const closed = { at: 5, reason: "delivered" as const };
+      h.store.setContractClosed(spawned.threadId, closed);
+      if (failure === "provider") h.dispatcher.failStart = true;
+      else h.jobs.postJob = () => { throw new Error("inbox write failed"); };
+
+      await expect(h.engine.continueThread(CALLER, {
+        threadId: spawned.threadId, message: "Add the reset screen too.",
+      })).rejects.toThrow();
+      expect(h.store.metas.get(spawned.threadId)?.contractClosed).toEqual(closed);
+      expect(h.jobs.claimJob(spawned.threadId)).toBeNull();
+    });
+  }
 
   test("a follow-up from past the parent is labelled as from up the chain", async () => {
     const h = makeEngine();

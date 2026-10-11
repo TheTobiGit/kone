@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 
 import { COURIER_AGENT_ID, senderLabel, senderRelationshipLabel, type AgentSender, type CourierSender } from "@kone/protocol/message-sender";
+import type { ContractClosedReason } from "@kone/protocol/contract";
+import { describeGrantAccess, grantCovers, type AgentGrant, type GrantAccess } from "../../agentAccess.js";
 import type { ProviderKind, SenderRelationship, SpawnedThreadStatus, StoredThreadMeta, ThreadLineage } from "../../types.js";
 import { describeRecipientState, formatSince, recipientState, type RecipientState, type ThreadRuntime } from "../../recipientState.js";
 import { agentSenderFor, threadAgentName } from "../../senderHeader.js";
 import { deliveryReceipt } from "../../inboxDelivery.js";
 import type { AgentRecord } from "../../ConversationStore.js";
-import { MemoryAgentInbox, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRing, type InboxRow, type InboxSender, type SystemSender } from "../../store/agentInbox.js";
+import { describeAboutDrift, withDrift } from "../../messageAbout.js";
+import { MemoryAgentInbox, type MessageAbout, type SentInboxQuery, type AgentInboxStore, type InboxClaim, type InboxKind, type InboxRing, type InboxRow, type InboxSender, type SystemSender } from "../../store/agentInbox.js";
 import type {
   GatewayRecord,
   GatewayToolContext,
@@ -65,13 +69,21 @@ export interface IrcMessageRecord {
   /** kone restarted while handing it over, and nothing on record says whether
    *  the recipient got it: it may already be in the recipient's context. */
   uncertain?: true;
+  /** The sender watches it until it is opened. */
+  ackRequired?: true;
+  /** The branch and commit it refers to. */
+  about?: MessageAbout;
+  /** How far that branch has moved since, read when it is opened. */
+  aboutDrift?: string;
 }
 
-/** A hand-over the provider took: whose it was, when it was claimed, and the
- *  turn that took it (null when it settled with none). */
+/** A hand-over the provider took: whose it was, when it was claimed, the
+ *  inbox ids of the messages it carried, and the turn that took it (null
+ *  when it settled with none). */
 export interface DeliverySettled {
   recipient: string | null;
   claimedAt: number | null;
+  inboxIds: string[];
   turnId: string | null;
 }
 
@@ -80,6 +92,9 @@ export interface JobTurn {
   recipient: string;
   handedOver: boolean;
   turnId: string | null;
+  /** The job is being dispatched; its provider turn may arrive before the
+   *  send returns and the hand-over settles. */
+  sending?: true;
   /** kone restarted while handing it over; nothing says whether it arrived. */
   uncertain?: true;
 }
@@ -122,6 +137,10 @@ type PeerRow = {
   unseen: number;
   oldestUnseenAt: number | null;
   live: boolean;
+  /** Messages the reader sent it with ackRequired that it has not opened. */
+  unacknowledged: number;
+  /** What the reader was granted on it, beyond the chain. */
+  access?: GrantAccess;
 };
 
 /** How many agents one roster lists. A project's long tail is closed threads
@@ -156,6 +175,40 @@ export interface IrcToolStore {
   /** Who a thread runs as, for the sender's name. */
   getThreadAgent?(threadId: string): { agentId: string | null } | null;
   getAgent?(agentId: string): { name: string | null } | null;
+  /** What one agent was granted on another, beyond the chain. */
+  agentGrant?(granteeThreadId: string, targetThreadId: string): AgentGrant | null;
+  /** Close (or, with null, reopen) a contractor's contract. */
+  setContractClosed?(threadId: string, closed: { at: number; reason: ContractClosedReason } | null): boolean;
+}
+
+/** Whether `ancestorId` handed `threadId` its work, directly or further up
+ *  its chain. */
+export function isUpChain(store: IrcToolStore | undefined, ancestorId: string, threadId: string): boolean {
+  const seen = new Set<string>([threadId]);
+  let current = threadId;
+  for (let hops = 0; hops < 64; hops++) {
+    const parent = store?.threadLineage?.(current)?.parentThreadId;
+    if (!parent || seen.has(parent)) return false;
+    if (parent === ancestorId) return true;
+    seen.add(parent);
+    current = parent;
+  }
+  return false;
+}
+
+/** Whether `senderId` reaches `threadId` as its chain does for messages: up
+ *  its chain, or holding a grant of message or more on it. */
+export function messagesAsChain(store: IrcToolStore | undefined, senderId: string, threadId: string): boolean {
+  if (isUpChain(store, senderId, threadId)) return true;
+  // A closed contract's grants ended with it; any that linger — written
+  // apart from the close — reach nothing.
+  if (store?.threadMeta?.(threadId)?.contractClosed) return false;
+  return grantCovers(store?.agentGrant?.(senderId, threadId)?.access, "message");
+}
+
+/** Whether a thread is a contractor whose contract is still open. */
+export function contractOpen(meta: StoredThreadMeta | null | undefined): boolean {
+  return meta?.contract !== undefined && meta.contractClosed === undefined;
 }
 
 /**
@@ -198,6 +251,9 @@ export interface IrcToolInput {
   spawnedStatus?: (threadId: string) => SpawnedThreadStatus | null;
   /** The children a thread is parked in agent_wait on. */
   waitingOn?: (threadId: string) => { threadIds: string[]; since: number } | null;
+  /** How one of a thread's turns stands, for a receipt that says whether a
+   *  message was acted on; null when the store has no record of it. */
+  turnState?: (threadId: string, turnId: string) => "running" | "completed" | "failed" | "interrupted" | null;
 }
 
 const SYSTEM_SENDER: SystemSender = { kind: "system" };
@@ -219,6 +275,8 @@ function recordFromRow(row: InboxRow): IrcMessageRecord {
   if (row.sender) record.sender = row.sender;
   if (row.blockId) record.blockId = row.blockId;
   if (row.uncertainAt !== null) record.uncertain = true;
+  if (row.ackRequired) record.ackRequired = true;
+  if (row.about) record.about = row.about;
   return record;
 }
 
@@ -239,8 +297,24 @@ export class IrcMailbox {
    *  store, tests and a store-less process get an in-memory one. */
   constructor(
     private readonly inbox: AgentInboxStore = new MemoryAgentInbox(),
-    private readonly options: { storeRetryMs?: readonly number[] } = {},
+    private readonly options: {
+      storeRetryMs?: readonly number[];
+      /** How far a message's branch moved since it was sent, read when it is
+       *  opened; the real git check by default. */
+      aboutDrift?: (projectPath: string, about: MessageAbout) => string | null;
+    } = {},
   ) {}
+
+  /** A stored row as the record its reader opens: with what it is about
+   *  checked against the branch as it stands now. */
+  private opened(row: InboxRow): IrcMessageRecord {
+    const record = recordFromRow(row);
+    if (record.about && row.projectPath) {
+      const drift = (this.options.aboutDrift ?? describeAboutDrift)(row.projectPath, record.about);
+      if (drift) record.aboutDrift = drift;
+    }
+    return record;
+  }
 
   /** Threads parked in agent_message's wait, on whom, since when. */
   private readonly replyWaits = new Map<string, Array<{ threadIds: string[]; since: number }>>();
@@ -273,7 +347,18 @@ export class IrcMailbox {
 
   /** The thread's seen messages, newest first. */
   history(threadId: string, limit: number): IrcMessageRecord[] {
-    return this.inbox.inboxHistory(threadId, limit).map(recordFromRow);
+    return this.inbox.inboxHistory(threadId, limit).map((row) => this.opened(row));
+  }
+
+  /** What a thread sent, newest first, as the stored rows its receipts are
+   *  read from. */
+  sent(senderThreadId: string, query: SentInboxQuery): InboxRow[] {
+    return this.inbox.sentInbox(senderThreadId, query);
+  }
+
+  /** Per recipient, how many of the sender's watched messages wait unopened. */
+  unacknowledgedFrom(senderThreadId: string): Map<string, number> {
+    return this.inbox.unacknowledgedCounts(senderThreadId);
   }
 
   /** When the oldest message still unseen in the thread's inbox arrived. */
@@ -287,7 +372,7 @@ export class IrcMailbox {
   private readonly settleListeners = new Set<(settled: DeliverySettled) => void>();
   private readonly releaseListeners = new Set<(recipient: string) => void>();
   /** Who each open hand-over is for, and when it was claimed, by delivery id. */
-  private readonly claimedFor = new Map<string, { threadId: string; at: number }>();
+  private readonly claimedFor = new Map<string, { threadId: string; at: number; inboxIds: string[] }>();
   /** Hand-overs a provider took whose settle the store has yet to write, with
    *  the turn that took them. */
   private readonly unsettled = new Map<string, { turnId: string | null }>();
@@ -360,6 +445,24 @@ export class IrcMailbox {
             ? "You have not delegated to or contracted any agent."
             : "You have not started any workers.",
         );
+      }
+      return ids;
+    }
+
+    // 0b. The crew: the agents one orchestrator handed work to. An agent
+    //     with agents of its own is its crew's orchestrator; any other agent
+    //     reaches its delegator's crew, its delegator included.
+    if (lowered === "crew") {
+      const agentsOf = (threadId: string) =>
+        (store?.spawnedChildren?.(threadId) ?? [])
+          .filter((child) => child.lineage?.relationshipToParent === "delegation" && !child.contractClosed)
+          .map((child) => child.threadId);
+      const own = agentsOf(sender.threadId);
+      const delegator = store?.threadLineage?.(sender.threadId)?.parentThreadId ?? null;
+      const ids =
+        own.length > 0 ? own : delegator ? [delegator, ...agentsOf(delegator).filter((id) => id !== sender.threadId)] : [];
+      if (ids.length === 0) {
+        throw new GatewayToolError("not_found", "You have no crew: nobody handed you work alongside other agents, and you handed work to no agent.");
       }
       return ids;
     }
@@ -553,8 +656,15 @@ export class IrcMailbox {
     },
     input: IrcSendInput,
     store?: IrcToolStore,
-    /** How it is kept: whether it rings (default true) and is urgent. */
-    options: { rings?: boolean; urgent?: boolean } = {},
+    /** How it is kept: whether it rings (default true; `ringsFor` decides
+     *  per recipient) and is urgent, and whether the sender watches it. */
+    options: {
+      rings?: boolean;
+      ringsFor?: (recipientId: string) => boolean;
+      urgent?: boolean;
+      ackRequired?: boolean;
+      about?: MessageAbout;
+    } = {},
   ) {
     // Ensure sender is registered in memory
     if (!this.threads.has(sender.threadId)) {
@@ -593,6 +703,8 @@ export class IrcMailbox {
       record.replyTo = input.replyTo;
     }
     if (options.urgent) record.urgent = true;
+    if (options.ackRequired) record.ackRequired = true;
+    if (options.about) record.about = options.about;
 
     // Each recipient's copy is its own stored message, so each has its own id:
     // one recipient's copy can be seen or retracted without touching another's.
@@ -617,7 +729,8 @@ export class IrcMailbox {
         });
       }
 
-      this.enqueue(recipientId, messageCopy, undefined, options.rings ?? true);
+      const rings = options.ringsFor ? options.ringsFor(recipientId) : (options.rings ?? true);
+      this.enqueue(recipientId, messageCopy, undefined, rings);
       copyIds.push(copyId);
     }
 
@@ -716,6 +829,8 @@ export class IrcMailbox {
       projectPath: message.projectPath ?? "",
       createdAt: message.createdAt,
       rings,
+      ackRequired: message.ackRequired === true,
+      about: message.about ?? null,
     });
     if (result === "duplicate") return false;
     if (result === "failed") {
@@ -797,7 +912,7 @@ export class IrcMailbox {
       const reply = this.inbox.listUnseenInbox(threadId).find((row) => row.replyTo !== null && asked.has(row.replyTo));
       if (!reply) return null;
       if (this.inbox.markInboxSeen([reply.inboxId], "wait").length === 0) return null;
-      return { ...recordFromRow(reply), read: true };
+      return { ...this.opened(reply), read: true };
     };
     const already = take();
     if (already) return Promise.resolve(already);
@@ -854,7 +969,7 @@ export class IrcMailbox {
    */
   getInbox(
     threadId: string,
-    options?: { peek?: boolean; limit?: number },
+    options?: { peek?: boolean; limit?: number; turnId?: string },
   ) {
     const limit = options?.limit && options.limit > 0 ? options.limit : undefined;
     const uncertain = this.inbox.listUncertainInbox(threadId);
@@ -866,9 +981,9 @@ export class IrcMailbox {
     // on that turn: reading the inbox never takes it — unless it is uncertain,
     // which no turn will carry.
     const readable = unseen.filter((row) => row.kind !== "job" || row.state === "uncertain");
-    const taken = new Set(this.inbox.markInboxSeen(readable.map((row) => row.inboxId), "inbox"));
+    const taken = new Set(this.inbox.markInboxSeen(readable.map((row) => row.inboxId), "inbox", options?.turnId ?? null));
     return {
-      messages: readable.filter((row) => taken.has(row.inboxId)).map((row) => ({ ...recordFromRow(row), read: true })),
+      messages: readable.filter((row) => taken.has(row.inboxId)).map((row) => ({ ...this.opened(row), read: true })),
       unreadCount: this.inbox.unseenInboxCount(threadId),
     };
   }
@@ -878,8 +993,13 @@ export class IrcMailbox {
   private claim(threadId: string, limit: number, which: InboxRing): IrcDeliveryClaim | null {
     const claim: InboxClaim | null = this.inbox.claimInbox(threadId, limit, which);
     if (!claim) return null;
-    this.claimedFor.set(claim.deliveryId, { threadId, at: Date.now() });
-    return { deliveryId: claim.deliveryId, messages: claim.rows.map(recordFromRow) };
+    this.claimedFor.set(claim.deliveryId, {
+      threadId,
+      at: Date.now(),
+      // The ids a settle re-keys the hand-over's bindings by.
+      inboxIds: claim.rows.map((row) => row.inboxId),
+    });
+    return { deliveryId: claim.deliveryId, messages: claim.rows.map((row) => this.opened(row)) };
   }
 
   /** Claim up to `limit` unseen messages for one hand-over. Null when there
@@ -976,6 +1096,9 @@ export class IrcMailbox {
     // Taken by a turn whose settle the store has yet to write.
     const pending = row.state === "handing" && row.deliveryId ? this.unsettled.get(row.deliveryId) : undefined;
     if (pending) return { recipient: row.recipientThreadId, handedOver: true, turnId: pending.turnId };
+    if (row.state === "handing" && row.sentAt !== null) {
+      return { recipient: row.recipientThreadId, handedOver: false, turnId: null, sending: true };
+    }
     return { recipient: row.recipientThreadId, handedOver: row.state === "seen", turnId: row.turnId };
   }
 
@@ -1016,7 +1139,12 @@ export class IrcMailbox {
     }
     for (const listener of this.settleListeners) {
       try {
-        listener({ recipient: claimed?.threadId ?? null, claimedAt: claimed?.at ?? null, turnId });
+        listener({
+          recipient: claimed?.threadId ?? null,
+          claimedAt: claimed?.at ?? null,
+          inboxIds: claimed?.inboxIds ?? [],
+          turnId,
+        });
       } catch (err) {
         console.warn("[agent] an inbox settle listener failed:", err);
       }
@@ -1185,7 +1313,7 @@ const IRC_SEND_DESCRIPTION = [
   "",
   "`kind` says what it is for. note: information that changes what they do (the default). question: you need an answer — a delegate asking its delegator what the user meant, say. The answer reaches you on its own, so keep working on what does not depend on it; set wait only when you cannot go on without it. pushback: you disagree with the task you were handed and propose something else. report: results or a deliverable. answer: a reply to a question you were asked, with replyTo set to its message id; anything else sent as an answer goes as a note.",
   "",
-  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `all` broadcasts a note to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
+  "`to` names the reader by relationship — `delegator` (whoever handed you your work), `delegates` (the agents you delegated to or contracted), `children` (your workers), `main` (your tree's root) — or by name or id from agent_list. `crew` sends a note to every agent one orchestrator handed work to — yours, if you handed work to agents; otherwise your delegator and the agents it handed work to alongside you. `all` broadcasts a note to every agent on the project and is the main agent's alone. A worker may only report or ask its `parent`.",
   "",
   "When someone you handed work to asks you something, answer from what you know of the user's intent; ask the user only what you cannot answer, then pass the answer down. Never send an acknowledgement, a progress report, anything a tool could answer, or the next line of chit-chat. Between peers the bus refuses a pair that has traded 16 messages with nobody else involved; a question and its answer along a hand-off never count.",
 ].join("\n");
@@ -1195,6 +1323,27 @@ const IRC_LIST_DESCRIPTION = [
   "",
   "Look before you send: a message to an agent waiting on the user waits with it, and an urgent one to a busy agent on a provider that cannot steer waits for its current step, then interrupts its turn, or waits for the turn to end.",
 ].join("\n");
+
+const SENT_DESCRIPTION = [
+  "See what became of messages you sent: waiting in the recipient's inbox, opened (in which turn, or read with agent_inbox), or acted on (the turn that opened it has since ended). Name messages by id, or leave messageIds out for your latest; unacknowledged: true lists only the ones you sent with ackRequired that nobody has opened yet.",
+  "",
+  "Read it before telling anyone that an agent is working on something you sent: a message sitting unopened is not work under way. Never poll it.",
+].join("\n");
+
+const SentInputSchema = z.object({
+  messageIds: z.array(z.string().min(1)).max(50).optional(),
+  unacknowledged: z.boolean().optional(),
+  limit: z.number().int().positive().max(50).optional(),
+});
+
+const SENT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    messageIds: { type: "array", items: { type: "string" }, description: "Message ids agent_message returned." },
+    unacknowledged: { type: "boolean", description: "Only messages you sent with ackRequired that are not opened yet." },
+    limit: { type: "integer", description: "How many, newest first; 20 by default, 50 at most." },
+  },
+} satisfies GatewayRecord;
 
 const IRC_INBOX_DESCRIPTION = [
   "Read the messages waiting unseen in your inbox, with who sent each, what kind it is and what it replies to. Reading marks them seen. history: true adds the last 20 you have already seen.",
@@ -1210,7 +1359,7 @@ function renderInboxLine(m: IrcMessageRecord, now: number): string {
   const replyTo = m.replyTo ? `, replying to ${m.replyTo}` : "";
   const ago = formatSince(m.createdAt, now);
   const flag = m.uncertain ? " (uncertain: kone restarted while handing it to you — it may already be in your context)" : "";
-  return `[${m.id}] ${kind} from ${m.sender ? senderLabel(m.sender) : m.from}${replyTo}, ${ago} ago${flag}:\n${m.message}`;
+  return `[${m.id}] ${kind} from ${m.sender ? senderLabel(m.sender) : m.from}${replyTo}, ${ago} ago${flag}:\n${withDrift(m)}`;
 }
 
 /** One message as agent_inbox returns it in structured form. */
@@ -1226,6 +1375,8 @@ function inboxEntry(m: IrcMessageRecord): GatewayRecord {
   };
   if (m.sender?.kind === "agent") entry.relationship = m.sender.relationship;
   if (m.uncertain) entry.uncertain = true;
+  if (m.about) entry.about = { ...m.about };
+  if (m.aboutDrift) entry.aboutDrift = m.aboutDrift;
   return entry;
 }
 
@@ -1250,7 +1401,83 @@ function renderPeerLine(p: PeerRow, now: number): string {
   );
   const unseen =
     p.unseen > 0 ? ` ${p.unseen} unseen in its inbox, oldest ${formatSince(p.oldestUnseenAt, now) ?? "just now"}.` : "";
-  return `${name}\`${p.id}\` (${senderRelationshipLabel(p.relationship)}${provider}) — ${state}.${unseen}`;
+  const unacknowledged = p.unacknowledged > 0 ? ` ${p.unacknowledged} unacknowledged from you.` : "";
+  const access = p.access ? ` Granted to you: ${describeGrantAccess(p.access)}.` : "";
+  return `${name}\`${p.id}\` (${senderRelationshipLabel(p.relationship)}${provider}) — ${state}.${unseen}${unacknowledged}${access}`;
+}
+
+/** What became of one message, as its sender reads it: waiting, opened, or
+ *  acted on — the turn that opened it has run. */
+export type SentStage = "waiting" | "handing" | "opened" | "acted" | "retracted" | "uncertain";
+
+export interface SentReceipt {
+  id: string;
+  to: string;
+  kind: InboxKind;
+  createdAt: number;
+  stage: SentStage;
+  /** The turn that carried or read it, once it was opened. */
+  turnId: string | null;
+  openedAt: number | null;
+  ackRequired: boolean;
+  text: string;
+}
+
+/** One sent message's receipt, from its stored row and the state of the
+ *  turn that opened it. */
+export function sentReceipt(
+  row: InboxRow,
+  name: string,
+  turnState: (threadId: string, turnId: string) => "running" | "completed" | "failed" | "interrupted" | null,
+  now: number,
+): SentReceipt {
+  const base = {
+    id: row.inboxId,
+    to: row.recipientThreadId,
+    kind: row.kind,
+    createdAt: row.createdAt,
+    turnId: row.turnId,
+    openedAt: row.seenAt,
+    ackRequired: row.ackRequired,
+  };
+  const sentAgo = `sent ${formatSince(row.createdAt, now) ?? "just now"} ago`;
+  switch (row.state) {
+    case "unseen":
+      return {
+        ...base,
+        stage: "waiting",
+        text: `Waiting in ${name}'s inbox, ${sentAgo}: not opened yet${row.rings ? "" : "; it is a held note, so it waits for whatever next starts a turn there"}.`,
+      };
+    case "handing":
+      return { ...base, stage: "handing", text: `Being handed to ${name} right now (${sentAgo}).` };
+    case "retracted":
+      return { ...base, stage: "retracted", text: `Taken back before ${name} opened it.` };
+    case "uncertain":
+      return {
+        ...base,
+        stage: "uncertain",
+        text: `Uncertain: kone restarted while handing it to ${name}, and cannot tell whether it arrived. Send it again if it matters.`,
+      };
+    case "seen":
+      break;
+  }
+  const opened = `${formatSince(row.seenAt, now) ?? "just now"} ago`;
+  if (row.seenVia === "wait") {
+    return { ...base, stage: "acted", text: `Returned to ${name}, who was waiting on it, ${opened}.` };
+  }
+  const how = row.seenVia === "inbox" ? "read with agent_inbox" : "opened";
+  const turn = row.turnId ? turnState(row.recipientThreadId, row.turnId) : null;
+  if (!row.turnId || turn === null) {
+    return { ...base, stage: "opened", text: `${name} ${how} it ${opened}.` };
+  }
+  if (turn === "running") {
+    return { ...base, stage: "opened", text: `${name} ${how} it ${opened}, in turn ${row.turnId}, which is still running.` };
+  }
+  return {
+    ...base,
+    stage: "acted",
+    text: `${name} ${how} it ${opened}, in turn ${row.turnId}, which has since ended (${turn}).`,
+  };
 }
 
 /**
@@ -1280,10 +1507,13 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     }
 
     const target = parsed.to.trim().toLowerCase();
-    const broadcast = target === "all" || target === "*";
+    // The crew is a broadcast too, scoped to one orchestrator's agents: a note
+    // to everyone, which wakes nobody.
+    const crew = target === "crew";
+    const broadcast = target === "all" || target === "*" || crew;
     // A broadcast interrupts every agent on the project at once: the main
     // agent's call, never one of the agents working for it.
-    if (broadcast && parentThreadId) {
+    if (broadcast && !crew && parentThreadId) {
       throw new GatewayToolError(
         "permission_denied",
         "Only the main agent may message `all`. Message your `delegator`, or name the agents you mean.",
@@ -1336,11 +1566,38 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     // agent. Between peers it would be one agent deciding another's work is
     // less important than its own.
     if (urgent && parentThreadId) {
-      const peer = recipients.find((id) => relationshipOf(input.store, ctx.threadId, id) === "peer");
+      const peer = recipients.find(
+        (id) => relationshipOf(input.store, ctx.threadId, id) === "peer" && !messagesAsChain(input.store, ctx.threadId, id),
+      );
       if (peer) {
         throw new GatewayToolError(
           "permission_denied",
           `${nameOf(peer)} is not an agent you handed work to or work for, so you cannot send it urgent. Send it without urgent; it reaches ${nameOf(peer)} when its turn ends.`,
+        );
+      }
+    }
+
+    // The deliverable is reported, not implied by a turn ending: only a
+    // contractor delivers, only while its contract is open, and only to the
+    // agent that contracted it.
+    const senderMeta = input.store?.threadMeta?.(ctx.threadId) ?? null;
+    if (parsed.final === true) {
+      if (!senderMeta?.contract || relationshipToParent !== "delegation" || !parentThreadId) {
+        throw new GatewayToolError(
+          "permission_denied",
+          "Only a contractor delivers with final: you are not working under a contract. Send the report without final.",
+        );
+      }
+      if (senderMeta.contractClosed) {
+        throw new GatewayToolError(
+          "permission_denied",
+          `Your contract is already closed (${senderMeta.contractClosed.reason}). Send the report without final.`,
+        );
+      }
+      if (recipients.length !== 1 || recipients[0] !== parentThreadId) {
+        throw new GatewayToolError(
+          "permission_denied",
+          "A deliverable goes to the agent that contracted you: send it to `delegator`.",
         );
       }
     }
@@ -1351,9 +1608,12 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       const { state } = stateOf(id);
       // Over: nothing it is sent will be read by anyone working.
       if (state.state === "ended") {
+        const closed = input.store?.threadMeta?.(id)?.contractClosed;
         throw new GatewayToolError(
           "permission_denied",
-          `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
+          closed
+            ? `${nameOf(id)}'s contract is over (${closed.reason}). Reopen it with agent_followup if it has more to do, or message someone else.`
+            : `${nameOf(id)}'s work is over (${state.ended ?? "ended"}). Give it more with agent_followup, or message someone else.`,
         );
       }
       // Two agents each parked on the other's answer wait for ever.
@@ -1389,22 +1649,33 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     }
 
     // A note waits for the recipient's next turn; everything else rings. A
-    // broadcast is a note whatever it says.
+    // broadcast is a note whatever it says. A note to a contractor in an open
+    // contract, from up its chain, rings too: between turns it is idle with
+    // nothing else to wake it, and a note left there was a lost instruction.
     const rings = !broadcast && (kind !== "note" || urgent);
+    const ringsFor = (id: string): boolean =>
+      rings ||
+      (!broadcast && kind === "note" && contractOpen(input.store?.threadMeta?.(id)) && messagesAsChain(input.store, ctx.threadId, id));
     const outgoing: IrcSendInput = { ...parsed, kind };
+    delete outgoing.final;
     if (replyTo === undefined) delete outgoing.replyTo;
     else outgoing.replyTo = replyTo;
     // Read before it is sent: an answer to an agent parked on it is returned
     // to that wait, and never rings.
     const before = recipients.map((id) => ({ id, ...stateOf(id) }));
-    const result = mailbox.sendMessage(sender, outgoing, input.store, { rings, urgent });
+    const sendOptions: Parameters<IrcMailbox["sendMessage"]>[3] = { ringsFor, urgent };
+    if (parsed.ackRequired === true) sendOptions.ackRequired = true;
+    if (parsed.about) sendOptions.about = parsed.about;
+    delete outgoing.ackRequired;
+    delete outgoing.about;
+    const result = mailbox.sendMessage(sender, outgoing, input.store, sendOptions);
     const now = Date.now();
     const receipts = before.map(({ id, state }) => ({
       to: id,
       ...deliveryReceipt({
         name: nameOf(id),
         state,
-        rings,
+        rings: ringsFor(id),
         urgent,
         returned: kind === "answer" && (mailbox.waitingOn(id)?.threadIds.includes(ctx.threadId) ?? false),
         now,
@@ -1421,6 +1692,20 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     const downgradeNote = downgraded
       ? ` Sent as a note: ${downgraded} is not a question ${result.recipients.length === 1 ? nameOf(result.recipients[0]!) : "they"} asked you.`
       : "";
+    // Delivered: the contract closes with the report that carries it.
+    const delivered =
+      parsed.final === true &&
+      (input.store?.setContractClosed?.(ctx.threadId, { at: result.message.createdAt, reason: "delivered" }) ?? false);
+    const watchNote =
+      parsed.ackRequired === true
+        ? ` You are watching ${result.recipients.length === 1 ? "it" : "each copy"} until it is opened: agent_sent shows when.`
+        : "";
+    const deliveredNote =
+      parsed.final !== true
+        ? ""
+        : delivered
+          ? ` Your contract is closed as delivered; ${nameOf(parentThreadId!)} can reopen it with agent_followup.`
+          : " kone could not record your contract as delivered; it stays open.";
     const structured: GatewayRecord = {
       messageId: result.messageId,
       from: ctx.threadId,
@@ -1432,9 +1717,10 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       replyTo: replyTo ?? null,
       createdAt: result.message.createdAt,
       outcome,
-      text: receiptText + downgradeNote,
+      text: receiptText + downgradeNote + watchNote + deliveredNote,
       receipts,
     };
+    if (parsed.final === true) structured.contractClosed = delivered;
 
     if (parsed.wait === true) {
       const stopWaiting = mailbox.trackWait(ctx.threadId, result.recipients);
@@ -1468,7 +1754,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       content: [
         {
           type: "text",
-          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}]. ${receiptText}${downgradeNote}`,
+          text: `Sent ${kind} ${result.messageId} to ${parsed.to} [${recipientDesc}]. ${receiptText}${downgradeNote}${watchNote}${deliveredNote}`,
         },
       ],
       structuredContent: structured,
@@ -1484,7 +1770,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     // History first, so it holds what was seen before this read, not the
     // messages this read is about to return.
     const history = parsed.history === true ? mailbox.history(ctx.threadId, Math.min(parsed.limit ?? INBOX_HISTORY_MAX, INBOX_HISTORY_MAX)) : [];
-    const result = mailbox.getInbox(ctx.threadId, { limit: parsed.limit });
+    const result = mailbox.getInbox(ctx.threadId, { limit: parsed.limit, turnId: ctx.turnId ?? undefined });
 
     const parts: string[] = [];
     if (result.messages.length === 0) parts.push("Nothing unseen in your inbox.");
@@ -1523,6 +1809,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       spawned: input.spawnedStatus?.(id) ?? null,
       waitingOn,
       providerSteers: steersWhenClosed,
+      contractOpen: contractOpen(meta),
       unseen: mailbox.getUnreadCount(id),
       oldestUnseenAt: mailbox.oldestUnseenAt(id),
     });
@@ -1550,6 +1837,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     for (const meta of store?.listThreads?.(ctx.cwd) ?? []) add(meta.threadId);
     for (const peer of mailbox.listPeers({ threadId: ctx.threadId, projectPath: ctx.cwd, rootThreadId })) add(peer.id);
 
+    const unacknowledged = mailbox.unacknowledgedFrom(ctx.threadId);
     const rows = ids.map((id): PeerRow => {
       const meta = store?.threadMeta?.(id) ?? null;
       const { runtime, state } = stateOf(id);
@@ -1568,7 +1856,10 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
         unseen: state.unseen,
         oldestUnseenAt: state.oldestUnseenAt,
         live: runtime?.live ?? false,
+        unacknowledged: unacknowledged.get(id) ?? 0,
       };
+      const grant = store?.agentGrant?.(ctx.threadId, id);
+      if (grant) row.access = grant.access;
       const agentName = mailbox.getThread(id)?.agentName ?? (store ? threadAgentName(store, id) : undefined);
       if (agentName) row.agentName = agentName;
       if (meta) row.provider = meta.provider;
@@ -1591,6 +1882,23 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       content: [{ type: "text", text }],
       structuredContent: { peers: listed, count: listed.length, notListed: hidden },
     };
+  };
+
+  const sentHandler = async (ctx: GatewayToolContext, args: GatewayRecord): Promise<GatewayToolResult> => {
+    const parsed = SentInputSchema.parse(args);
+    const query: SentInboxQuery = { limit: parsed.limit ?? 20 };
+    if (parsed.messageIds) query.inboxIds = parsed.messageIds;
+    if (parsed.unacknowledged === true) query.unacknowledged = true;
+    const now = Date.now();
+    const turnState = input.turnState ?? (() => null);
+    const receipts = mailbox.sent(ctx.threadId, query).map((row) => sentReceipt(row, nameOf(row.recipientThreadId), turnState, now));
+    const text =
+      receipts.length === 0
+        ? parsed.unacknowledged === true
+          ? "Nothing unacknowledged: everything you sent with ackRequired has been opened."
+          : "No messages of yours to report on."
+        : receipts.map((r) => `[${r.id}] ${r.kind} to ${nameOf(r.to)}: ${r.text}`).join("\n");
+    return { content: [{ type: "text", text }], structuredContent: { receipts: receipts.map((r) => ({ ...r })), count: receipts.length } };
   };
 
   return [
@@ -1634,6 +1942,18 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       promptSnippet:
         "Read what waits unseen in your inbox between steps, before ending your turn, or after compaction; answers and results reach you on their own, so never poll it.",
       handler: inboxHandler,
+    },
+    {
+      name: "agent_sent",
+      description: SENT_DESCRIPTION,
+      inputSchema: SentInputSchema,
+      jsonSchema: SENT_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      onDemand: true,
+      promptSnippet:
+        "See what became of messages you sent: still waiting, opened, or acted on. Check it before saying an agent is working on something you sent.",
+      handler: sentHandler,
     },
   ];
 }

@@ -30,6 +30,8 @@ export interface SpawnContinuationDeps {
    *  spawned child. */
   adopt?: (threadId: string, parentTurnId: string, hasLiveSession: boolean) => TrackedChild | null;
   isInSubtree: (rootThreadId: string, threadId: string) => boolean;
+  /** Up the thread's chain, or granted follow-up on it. */
+  canFollowUp: (callerThreadId: string, threadId: string) => boolean;
   /** Where a follow-up goes: a job in the child's inbox. */
   jobs: SpawnJobs;
 }
@@ -54,10 +56,10 @@ export class ThreadContinuationManager {
         "That is your own thread — write your reply instead of continuing it.",
       );
     }
-    if (!this.deps.isInSubtree(caller.threadId, request.threadId)) {
+    if (!this.deps.canFollowUp(caller.threadId, request.threadId)) {
       throw new SpawnError(
         "not_found",
-        `Thread "${request.threadId}" is not in this conversation's subtree — you can only continue a thread you (or a descendant of yours) spawned.`,
+        `Thread "${request.threadId}" is not in this conversation's subtree — you can only continue a thread you (or a descendant of yours) spawned, or one you were granted follow-up on.`,
         { threadId: request.threadId },
       );
     }
@@ -170,9 +172,11 @@ export class ThreadContinuationManager {
     try {
       // Whoever above the child asks, the ask arrives as that agent's words —
       // never the user's — under the relationship the hand-off was made with,
-      // or as from up the chain when an ancestor past the parent asks.
-      const relationship =
-        lineage.parentThreadId !== caller.threadId
+      // or as from up the chain when an ancestor past the parent asks. A peer
+      // holding a follow-up grant asks as the peer it is.
+      const relationship = !this.deps.isInSubtree(caller.threadId, request.threadId)
+        ? "peer"
+        : lineage.parentThreadId !== caller.threadId
           ? "upstream"
           : meta.contract
             ? "contracting"
@@ -180,7 +184,13 @@ export class ThreadContinuationManager {
               ? "delegator"
               : "parent";
       const sender = agentSenderFor(this.deps.store, caller.threadId, relationship, "followup");
-      const result = finish(this.postJob(this.deps.jobs, caller, request, message, meta, sender), true);
+      const jobId = this.postJob(this.deps.jobs, caller, request, message, meta, sender);
+      // The job is in the child's inbox — durably accepted. More work on a
+      // closed contract reopens it here, not before the ask is out: a
+      // failure on the way (a provider that cannot come back up, a job that
+      // could not be posted) leaves the contract closed, as it was.
+      if (meta.contractClosed) this.deps.store.setContractClosed?.(request.threadId, null);
+      const result = finish(jobId, true);
       if (tracked) {
         this.deps.liveChildren.add(request.threadId);
       }
@@ -223,7 +233,17 @@ export class ThreadContinuationManager {
     if (request.requestId !== undefined) {
       job.dedupeKey = `job:${caller.threadId}:${caller.turnId}:${request.requestId}`;
     }
-    return jobs.postJob(job).messageId;
+    const turnId = jobs.postJob(job).messageId;
+    // A granted peer asked: this turn's result is that peer's news, not the
+    // parent's. Bound to the job's id here, in the same synchronous block the
+    // job is posted in — before it can be taken or settled — so however many
+    // follow-ups race, each turn reports to whoever asked for it. An
+    // up-chain ask reports to the parent, as it always did.
+    if (!this.deps.isInSubtree(caller.threadId, request.threadId)) {
+      const tracked = this.deps.tracked.get(request.threadId);
+      if (tracked) (tracked.reportees ??= new Map()).set(turnId, caller.threadId);
+    }
+    return turnId;
   }
 
   private personaFor(threadId: string, lineage: ThreadLineage): AgentPersona | undefined {

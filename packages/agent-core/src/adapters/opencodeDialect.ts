@@ -409,10 +409,13 @@ export type ModelProbe = {
 /** Probe list by version. v1 retries `--verbose` once: one transient timeout
  *  must not strip context windows and reasoning efforts off the inventory. v2
  *  goes straight to the rich `api model.list` inventory, then falls back to
- *  bare `models`. Unknown versions probe richest-first. */
+ *  bare `models`. `api model.list` answers through opencode's background
+ *  service, and the call that cold-starts it exits 0 with `{"data":[]}` — so
+ *  it gets retries before the bare list, which carries no efforts, wins.
+ *  Unknown versions probe richest-first. */
 export function modelProbesForVersion(version: string | undefined): ModelProbe[] {
   const verbose: ModelProbe = { args: ["models", "--verbose"], parse: parseOpenCodeModels, attempts: 1 };
-  const modelList: ModelProbe = { args: ["api", "model.list"], parse: parseOpenCodeModelListApi, attempts: 1 };
+  const modelList: ModelProbe = { args: ["api", "model.list"], parse: parseOpenCodeModelListApi, attempts: 3 };
   const bare: ModelProbe = { args: ["models"], parse: parseOpenCodeModels, attempts: 1 };
   if (version === undefined) return [verbose, modelList, bare];
   if (isOpenCodeV2(version)) return [modelList, bare];

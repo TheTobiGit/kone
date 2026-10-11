@@ -13,6 +13,8 @@
 // entry on the same server, which is what makes the next surface an agent can
 // steer a new tools/ module rather than a new transport.
 
+import { createGrantTools } from "./tools/grants.js";
+import { createBoardTools } from "./tools/board.js";
 import type { ConversationStore } from "../ConversationStore.js";
 import type { EmitEvent, GatewayConnection, ProviderKind, RuntimeEvent } from "../types.js";
 import { GatewayCredentials } from "./credentials.js";
@@ -236,6 +238,11 @@ function ircToolInput(input: GatewayInput): IrcToolInput {
     store: input.store,
     spawnedStatus: (threadId) => getSpawnEngine()?.snapshot(threadId)?.status ?? null,
     waitingOn: (threadId) => getSpawnEngine()?.waitingOn(threadId) ?? null,
+    turnState: (threadId, turnId) => {
+      const span = input.store.turnSpan(threadId, turnId);
+      if (!span) return null;
+      return span.runningTurns > 0 ? "running" : span.lastState;
+    },
   };
   if (input.isThreadLive) tools.isThreadLive = input.isThreadLive;
   if (input.threadRuntime) tools.threadRuntime = input.threadRuntime;
@@ -303,7 +310,13 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const lspManager = new LspManager();
   const workerTools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
-    ...createSpawnTools({ store: input.store }),
+    ...createSpawnTools({ store: input.store, grants: input.store }),
+    ...createGrantTools({ store: input.store }),
+    ...createBoardTools({
+      store: input.store,
+      notices: { sendNotice: (notice) => void getIrcMailbox().sendNotice(notice) },
+      emit: input.emit,
+    }),
     ...createIrcTools(ircToolInput(input)),
     ...createLaunchTools({ supervisor: launchSupervisor }),
     ...createLspTools({ manager: lspManager }),

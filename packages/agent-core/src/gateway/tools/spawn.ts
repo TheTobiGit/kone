@@ -82,9 +82,13 @@ import {
 import { activeModelPreferences } from "../../modelPreference.js";
 
 export type { SpawnToolStore } from "./spawnDispatch.js";
+import { applyHandOffGrants, type GrantToolStore } from "./grants.js";
+import type { GrantSpec } from "../schemas.js";
 
 export interface SpawnToolInput {
   store: SpawnToolStore;
+  /** Where grants named on a hand-off are written; absent, they are refused. */
+  grants?: GrantToolStore;
 }
 
 /** A one-line gist of a prose field for the discovery report — collapsed onto
@@ -317,13 +321,22 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
   /** A tool that dispatches one thing: it only maps its arguments onto an
    *  item. */
   const singleDispatchHandler =
-    <Args>(toItem: (args: Args) => DispatchItem) =>
-    (ctx: GatewayToolContext, args: Args): Promise<GatewayToolResult> =>
-      withActiveTurn(ctx, async (engine, caller) =>
-        singleResult(
-          await dispatchOne(input.store, engine, caller, toItem(args), availabilityOnce(engine, caller)),
-        ),
-      );
+    <Args extends object>(toItem: (args: Args) => DispatchItem) =>
+    (ctx: GatewayToolContext, { grants, ...rest }: Args & { grants?: GrantSpec[] }): Promise<GatewayToolResult> =>
+      withActiveTurn(ctx, async (engine, caller) => {
+        // SAFETY: `rest` is the tool's arguments less `grants`, a field no
+        // hand-off item names, so it is exactly the Args the item is cut from.
+        const args = rest as Args;
+        const dispatched = await dispatchOne(input.store, engine, caller, toItem(args), availabilityOnce(engine, caller));
+        const result = singleResult(dispatched);
+        if (!dispatched.ok || !grants || grants.length === 0) return result;
+        // The hand-off stands whatever comes of its grants; each is applied or
+        // refused on its own, and the result says which.
+        const note = input.grants
+          ? applyHandOffGrants(input.grants, ctx, dispatched.result.threadId, grants)
+          : "Not granted: kone has nowhere to keep grants here.";
+        return { ...result, content: [...result.content, { type: "text", text: note }] };
+      });
 
   type WorkerArgs = {
     task: string;
@@ -509,7 +522,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     // Scoped to the caller's subtree, and the same answer a nonexistent thread
     // gets — the tool never confirms the existence of a thread the caller may
     // not read.
-    if (!engine.isInSubtree(ctx.threadId, args.threadId)) {
+    if (!engine.canReach(ctx.threadId, args.threadId, "read")) {
       return gatewayToolErrorResult(
         new GatewayToolError("not_found", `No readable thread "${args.threadId}".`),
       );
@@ -613,7 +626,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     {
       name: "agent_contract" satisfies SpawnToolName,
       description:
-        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a person's first name (never a job title; the role says what it does), a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. It is not saved to the team: when the job is done the contract ends, and only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, kind, target and requestId work as in worker_start. The deliverable comes to you when it settles; agent_wait only when you need it before going on; follow up with agent_followup.",
+        "Contract a new agent for a large piece of work when no teammate fits: you write who it is — a person's first name (never a job title; the role says what it does), a one-line role, and standing instructions, the way the user would set up an agent — and the terms of the job: the task, its scope, the deliverable, and what done means. It runs as that agent in a thread of its own the user can open, can plan the work and start workers of its own, and reads your brief as yours, not the user's, so it may come back with a question or disagree. The contract lasts the job, not one turn: between turns it is idle and messages still reach it, and it ends when the contractor reports its deliverable (a report marked final) or you withdraw it. It is not saved to the team; only the user can hire it on. Prefer a teammate (agent_delegate) when one's role fits; contract when the work needs a specialist the team does not have. why, mode, kind, target and requestId work as in worker_start. The deliverable comes to you when it settles; agent_wait only when you need it before going on; follow up with agent_followup.",
       inputSchema: ContractAgentInputSchema,
       jsonSchema: CONTRACT_AGENT_JSON_SCHEMA,
       permission: "allow",

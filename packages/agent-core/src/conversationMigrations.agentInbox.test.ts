@@ -160,3 +160,24 @@ describe("migration 26: InboxUncertainAt", () => {
     db.close();
   });
 });
+
+// Migration 30 lets a sender watch a message and say what it is about. Every
+// row stored before it was sent unwatched, about nothing in particular.
+describe("migration 30: InboxReceipts", () => {
+  test("rows stored before it are unwatched and about nothing; about must be JSON; senders are indexed", () => {
+    const { db, file } = v21Database();
+    migrate(db, file, { toMigrationInclusive: 29 });
+    insert(db, { inbox_id: "'msg_old'" });
+    migrate(db, file);
+    // SAFETY: the projection is one INTEGER and one nullable TEXT column.
+    const row = db.prepare("SELECT ack_required, about_json FROM agent_inbox WHERE inbox_id = 'msg_old'").get() as {
+      ack_required: number;
+      about_json: string | null;
+    };
+    expect(row).toEqual({ ack_required: 0, about_json: null });
+    expect(() => insert(db, { about_json: "'not json'" })).toThrow(/CHECK/);
+    const index = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_inbox_sender'").get();
+    expect(index).toBeDefined();
+    db.close();
+  });
+});

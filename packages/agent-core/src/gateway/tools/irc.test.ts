@@ -600,6 +600,7 @@ describe("createIrcTools gateway registration and execution", () => {
       "agent_message",
       "agent_list",
       "agent_inbox",
+      "agent_sent",
     ]);
 
     const [msgTool, listTool, inboxTool] = tools;
