@@ -7,6 +7,7 @@ import { JsonRpcClient } from "../jsonRpc.js";
 import type { JsonObject, JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { probeResult } from "../spawn.js";
+import { freezeSubagentDuration } from "../subagentDuration.js";
 import { versionProbeFailure, versionProbeUsable } from "../providerHealth.js";
 import type {
   AdapterCapabilities,
@@ -1896,7 +1897,9 @@ export class CodexAdapter implements ProviderAdapter {
     if (run.settled) return;
     run.settled = true;
     run.snapshot.status = status;
-    run.snapshot.endedAt = Date.now();
+    const endedAt = Date.now();
+    freezeSubagentDuration(run.snapshot, endedAt);
+    run.snapshot.endedAt = endedAt;
     if (run.lastAssistantText) run.snapshot.summary = run.lastAssistantText;
     this.emitSubagent(session, run, "subagent.completed");
     const buffer = session.items.get(run.snapshot.toolUseId);

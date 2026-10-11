@@ -24,6 +24,7 @@ import type { JsonValue } from "../lib-jsonValue.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { errorText } from "./errors.js";
 import type { AgentPersona, ApprovalDecision, BaseEvent, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputRespondResult } from "../types.js";
+import { freezeSubagentDuration } from "../subagentDuration.js";
 import { normalizeUserInputQuestions } from "./userInputQuestions.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import type { TokenUsageSplits } from "../usage/report.js";
@@ -1072,7 +1073,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (run.settled) return;
     run.settled = true;
     run.snapshot.status = status;
-    run.snapshot.endedAt = Date.now();
+    const endedAt = Date.now();
+    freezeSubagentDuration(run.snapshot, endedAt);
+    run.snapshot.endedAt = endedAt;
     // Remember the id so neither a re-delivered tool part nor the child's event
     // tail can resurrect the run (see handleTaskTool / handleChildEvent).
     session.settledSubagentToolUseIds.add(run.snapshot.toolUseId);

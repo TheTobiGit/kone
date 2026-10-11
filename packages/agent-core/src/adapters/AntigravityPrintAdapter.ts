@@ -58,6 +58,7 @@ import type {
   UserInputRespondResult,
 } from "../types.js";
 import { inlineSkills } from "../skillInvocation.js";
+import { freezeSubagentDuration } from "../subagentDuration.js";
 
 // Antigravity adapter — drives Google's `agy` CLI in print mode: one fresh
 // process per turn (`agy -p`), the transcript it writes under
@@ -1733,7 +1734,9 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     }
     run.settled = true;
     run.snapshot.status = status;
-    run.snapshot.endedAt = Date.now();
+    const endedAt = Date.now();
+    freezeSubagentDuration(run.snapshot, endedAt);
+    run.snapshot.endedAt = endedAt;
     for (const pending of run.pendingTools) {
       this.emitToolItem(session, pending.itemId, pending.name, "failed", pending.args, run);
     }

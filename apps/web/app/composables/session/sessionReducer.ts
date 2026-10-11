@@ -271,7 +271,9 @@ export function useSessionReducer(deps: SessionReducerDeps) {
   function upsertRun(block: AssistantBlock, snapshot: SubagentRunSnapshot): SubagentRun | undefined {
     const existing = findRun(block, snapshot.toolUseId);
     if (existing) {
+      const frozenDurationMs = existing.durationMs ?? snapshot.durationMs;
       Object.assign(existing, snapshot);
+      if (frozenDurationMs !== undefined) existing.durationMs = frozenDurationMs;
       blocks.value = [...blocks.value];
       return existing;
     }
