@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1290,6 +1290,29 @@ function migration0032Continuations(db: DatabaseSync): void {
   `);
 }
 
+/** Persist cron schedules beside the bench queue and mark generated jobs so
+ *  schedule overlap checks can follow the exact job row. */
+function migration0033Schedules(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE schedules (
+      schedule_id TEXT PRIMARY KEY,
+      project_path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      cron TEXT NOT NULL,
+      job_template_json TEXT NOT NULL CHECK (json_valid(job_template_json)),
+      paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+      next_run_at INTEGER,
+      last_run_at INTEGER,
+      last_job_id TEXT REFERENCES jobs(job_id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_schedules_due ON schedules (paused, next_run_at);
+  `);
+  addColumn(db, "jobs", "schedule_id", "TEXT REFERENCES schedules(schedule_id) ON DELETE SET NULL");
+  db.exec("CREATE INDEX idx_jobs_schedule ON jobs (schedule_id, status)");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1323,6 +1346,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 30, name: "TitleOrigin", run: migration0030TitleOrigin },
   { id: 31, name: "ThreadPullRequest", run: migration0031ThreadPullRequest },
   { id: 32, name: "Continuations", run: migration0032Continuations },
+  { id: 33, name: "Schedules", run: migration0033Schedules },
 ];
 
 export interface MigrationOptions {

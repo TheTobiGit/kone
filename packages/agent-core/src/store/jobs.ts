@@ -26,7 +26,7 @@ export const JOB_CLAIM_LEASE_MS = 2 * 60_000;
 const JOB_COLUMNS = `job_id, project_path, title, body, status, sort_key,
                       provider, model, effort, mode, workspace_json,
                       fallbacks_json, attachments_json, created_at, updated_at,
-                      started_at, ended_at`;
+                      started_at, ended_at, schedule_id`;
 
 /** Where the job's latest attempt actually ran, read off the thread that
  *  attempt opened. The jobs table holds what was ASKED for — and a job in the
@@ -110,8 +110,8 @@ export class JobRepo {
         db.prepare(
           `INSERT INTO jobs (job_id, project_path, title, body, status, sort_key,
                               provider, model, effort, mode, workspace_json,
-                              fallbacks_json, attachments_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                              fallbacks_json, attachments_json, created_at, updated_at, schedule_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           input.jobId,
           input.projectPath,
@@ -130,6 +130,7 @@ export class JobRepo {
           input.attachments?.length ? JSON.stringify(input.attachments) : null,
           now,
           now,
+          input.scheduleId ?? null,
         );
       });
     } catch (err) {
