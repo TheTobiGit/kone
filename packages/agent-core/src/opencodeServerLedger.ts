@@ -3,19 +3,35 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export type OpenCodeServerLedgerEntry = { pid: number; pgid: number; startTime: string };
-export type ProcessInspection = (pid: number) => string | undefined;
-export type ProcessKiller = (pgid: number) => void;
+export type ProcessInspectionResult =
+  | { state: "alive"; startTime: string }
+  | { state: "gone" }
+  | { state: "unknown" };
+export type ProcessInspection = (pid: number) => ProcessInspectionResult;
+export type ProcessKiller = (pgid: number, signal: NodeJS.Signals) => void;
+const REAP_POLL_MS = 100;
+const REAP_WAIT_MS = 2_000;
 
-export function inspectProcessStartTime(pid: number): string | undefined {
+function processIsGone(pid: number): boolean {
   try {
-    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim() || undefined;
-  } catch {
-    return undefined;
+    process.kill(pid, 0);
+    return false;
+  } catch (cause) {
+    return cause instanceof Error && "code" in cause && cause.code === "ESRCH";
   }
 }
 
-export function killProcessGroup(pgid: number): void {
-  try { process.kill(-pgid, "SIGTERM"); } catch { return; }
+export function inspectProcessStartTime(pid: number): ProcessInspectionResult {
+  try {
+    const startTime = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return startTime ? { state: "alive", startTime } : { state: "gone" };
+  } catch {
+    return processIsGone(pid) ? { state: "gone" } : { state: "unknown" };
+  }
+}
+
+export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+  try { process.kill(-pgid, signal); } catch { /* the group may already be gone */ }
 }
 
 export class OpenCodeServerLedger {
@@ -26,8 +42,9 @@ export class OpenCodeServerLedger {
   ) {}
 
   record(pid: number, pgid = pid): OpenCodeServerLedgerEntry | undefined {
-    const startTime = this.inspect(pid);
-    if (!startTime) return undefined;
+    const inspected = this.inspect(pid);
+    if (inspected.state !== "alive") return undefined;
+    const startTime = inspected.startTime;
     const entry = { pid, pgid, startTime };
     const entries = this.read();
     entries.set(pid, entry);
@@ -41,12 +58,37 @@ export class OpenCodeServerLedger {
     this.write(entries);
   }
 
-  reap(): void {
+  async reap(): Promise<void> {
     const entries = this.read();
     for (const entry of entries.values()) {
-      if (this.inspect(entry.pid) === entry.startTime) this.kill(entry.pgid);
+      const initial = this.inspect(entry.pid);
+      if (initial.state === "unknown") continue;
+      if (initial.state === "gone" || initial.startTime !== entry.startTime) {
+        entries.delete(entry.pid);
+        continue;
+      }
+      try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
+      const afterTerm = await this.waitForExit(entry);
+      if (afterTerm === "gone") {
+        entries.delete(entry.pid);
+        continue;
+      }
+      if (afterTerm === "unknown") continue;
+      try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
+      if (await this.waitForExit(entry) === "gone") entries.delete(entry.pid);
     }
-    this.write(new Map());
+    this.write(entries);
+  }
+
+  private async waitForExit(entry: OpenCodeServerLedgerEntry): Promise<"gone" | "same" | "unknown"> {
+    const deadline = Date.now() + REAP_WAIT_MS;
+    while (true) {
+      const current = this.inspect(entry.pid);
+      if (current.state === "gone" || (current.state === "alive" && current.startTime !== entry.startTime)) return "gone";
+      if (current.state === "unknown") return "unknown";
+      if (Date.now() >= deadline) return "same";
+      await new Promise((resolve) => setTimeout(resolve, REAP_POLL_MS));
+    }
   }
 
   private read(): Map<number, OpenCodeServerLedgerEntry> {
