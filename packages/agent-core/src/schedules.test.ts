@@ -6,6 +6,8 @@ import { Database } from "bun:sqlite";
 import { setUserDataDir } from "./userDataDir.js";
 import { ScheduleRunner } from "./scheduleRunner.js";
 import { ScheduleJobTemplateSchema } from "./conversationStoreTypes.js";
+import { ConversationDb } from "./store/ConversationDb.js";
+import { ScheduleRepo } from "./store/schedules.js";
 
 mock.module("./sqlite.js", () => ({ DatabaseSync: Database }));
 let Store: typeof import("./ConversationStore.js").ConversationStore;
@@ -78,6 +80,24 @@ describe("schedule store", () => {
     expect(run.job?.scheduleId).toBe("manual");
     expect(store.getSchedule("manual")?.nextRunAt).toBe(before);
     expect(store.runNow("manual").reason).toContain("still queued or running");
+    store.close();
+  });
+
+  test("a run-now committed after due enumeration prevents the firing transaction from piling up", () => {
+    const { store, dir } = freshStore();
+    store.createSchedule({ scheduleId: "interleave", projectPath: "/p", title: "daily", cron: "* * * * *", jobTemplate: template, at: 1_000 });
+    const dbh = new ConversationDb(dir);
+    const repo = new ScheduleRepo(dbh, {
+      beforeFireTransaction: (scheduleId) => {
+        expect(scheduleId).toBe("interleave");
+        expect(store.runNow(scheduleId, 60_000).job?.scheduleId).toBe(scheduleId);
+      },
+    });
+    const result = repo.fireDue(60_000);
+    expect(result.fired).toHaveLength(0);
+    expect(result.skipped).toEqual([{ scheduleId: "interleave", reason: "job-active" }]);
+    expect(store.listJobs("/p").filter((job) => job.scheduleId === "interleave")).toHaveLength(1);
+    dbh.close();
     store.close();
   });
 
