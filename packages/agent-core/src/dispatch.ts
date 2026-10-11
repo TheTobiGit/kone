@@ -100,6 +100,13 @@ export class ContinuationCancelled extends Error {
  *  (or a manual resume). App-authored, so it is never journaled. */
 const LIMIT_RESUME_PROMPT = "Continue where you left off — the usage limit has reset.";
 
+export class ManualResumeHeldError extends Error {
+  constructor(readonly threadId: string) {
+    super(`Manual resume for ${threadId} is held by a restore or active turn. Try again when it is idle.`);
+    this.name = "ManualResumeHeldError";
+  }
+}
+
 /** Where a starting thread runs, and whether that place is its own worktree.
  *  `worktreePath` is null for a thread sharing the project's checkout. */
 type ThreadPlace = { dir: string; worktreePath: string | null };
@@ -730,19 +737,12 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   async resumeLimitedThread(threadId: string): Promise<void> {
-    const meta = this.store.threadMeta(threadId);
-    const resetAt = meta?.limitResetAt ?? null;
     await this.ensureThreadSession(threadId, { resume: true });
-    this.service.clearThreadLimited(threadId);
-    try {
-      await this.sendThreadTurn(
-        { threadId, input: LIMIT_RESUME_PROMPT },
-        { silent: true, generateTitle: false },
-      );
-    } catch (error) {
-      this.service.setThreadLimited(threadId, resetAt);
-      throw error;
-    }
+    const result = await this.sendThreadTurn(
+      { threadId, input: LIMIT_RESUME_PROMPT },
+      { silent: true, generateTitle: false, noQueue: true },
+    );
+    if (result.held || result.queued) throw new ManualResumeHeldError(threadId);
   }
 
   async resumeQuitInterruptedChatsAtBoot(): Promise<{

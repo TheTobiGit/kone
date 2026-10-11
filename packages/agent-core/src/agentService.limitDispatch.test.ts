@@ -301,4 +301,49 @@ describe("P3 usage-limit dispatch", () => {
     expect(adapter.sent.indexOf("queued follow-up")).toBeGreaterThan(adapter.sent.indexOf("usage limit has reset"));
     await svc.stopAll();
   });
+
+  test("manual resume held by restore preserves limit, snooze, continuation, and queue", async () => {
+    const id = "manual-resume-restore-held";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+    const resetAt = Date.now() + 60_000;
+    svc.setThreadLimited(id, resetAt);
+    svc.setThreadSnooze(id, resetAt);
+    const release = claimRestoreDir("/tmp");
+    try {
+      await expect(dispatcher.resumeLimitedThread(id)).rejects.toThrow("held by a restore");
+      expect(store.threadMeta(id)?.limitedAt ?? null).not.toBeNull();
+      expect(store.threadMeta(id)?.snoozedUntil).toBe(resetAt);
+      expect(store.listContinuationsForThread(id)).toHaveLength(1);
+      expect(store.listQueuedTurns(id)).toEqual([]);
+      expect(adapter.sent).toEqual([]);
+    } finally {
+      release();
+      await svc.stopAll();
+    }
+  });
+
+  test("a refused manual resume send preserves limit, snooze, and continuation", async () => {
+    const id = "manual-resume-send-refused";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+    const resetAt = Date.now() + 60_000;
+    svc.setThreadLimited(id, resetAt);
+    svc.setThreadSnooze(id, resetAt);
+    const before = store.listContinuationsForThread(id);
+    adapter.sendError = new Error("provider refused resume");
+    await expect(dispatcher.resumeLimitedThread(id)).rejects.toThrow("provider refused resume");
+    expect(store.threadMeta(id)?.limitedAt ?? null).not.toBeNull();
+    expect(store.threadMeta(id)?.snoozedUntil).toBe(resetAt);
+    expect(store.listContinuationsForThread(id)).toEqual(before);
+    expect(store.listQueuedTurns(id)).toEqual([]);
+    expect(adapter.sent).toEqual([]);
+    await svc.stopAll();
+  });
 });
