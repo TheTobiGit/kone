@@ -62,11 +62,18 @@ describe("app_snooze_thread", () => {
     expect(h.snoozed).toEqual([{ threadId: "t-1", until: RESET }]);
   });
 
-  test("with no reset it clears rather than guessing a deadline", async () => {
+  test("with no reset it leaves the snooze unchanged and explains why", async () => {
     const h = harness({ limited: true, reset: null });
     const result = await call(h.entry("app_snooze_thread"), { threadId: "t-1", untilReset: true });
+    expect(h.snoozed).toEqual([]);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContainEqual(expect.objectContaining({ text: expect.stringContaining("No provider reset is known") }));
+  });
+
+  test("an explicit null clears a snooze", async () => {
+    const h = harness();
+    await call(h.entry("app_snooze_thread"), { threadId: "t-1", until: null });
     expect(h.snoozed).toEqual([{ threadId: "t-1", until: null }]);
-    expect(result.structuredContent?.snoozedUntil).toBeNull();
   });
 
   test("refuses an unknown thread", async () => {

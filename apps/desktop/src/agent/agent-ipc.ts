@@ -1237,9 +1237,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:set-snooze", (_event, threadId: string, until: number | null) =>
     svc.setThreadSnooze(threadId, until),
   );
-  ipcMain.handle("agent:snooze-until-reset", (_event, threadId: string) =>
-    svc.setThreadSnooze(threadId, svc.snoozeUntilResetFor(threadId)),
-  );
+  ipcMain.handle("agent:snooze-until-reset", (_event, threadId: string) => {
+    const until = svc.snoozeUntilResetFor(threadId);
+    if (until === null) return { ok: false, message: "No provider reset is known; use a timed snooze instead." };
+    svc.setThreadSnooze(threadId, until);
+    return { ok: true, until };
+  });
   // Manual resume of a thread waiting out a usage limit: clear the mark and
   // wake it now, cancelling its scheduled resume.
   ipcMain.handle("agent:resume-limited", (_event, threadId: string) =>
