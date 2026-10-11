@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { inspectProcessStartTime, OpenCodeServerLedger, type ProcessInspectionResult } from "./opencodeServerLedger.js";
@@ -107,7 +107,7 @@ describe("OpenCodeServerLedger", () => {
   test("reap escalates for a process group that ignores SIGTERM", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-ledger-term-"));
     dirs.push(dir);
-    const child = spawn("/bin/sh", ["-c", "trap '' TERM; echo ready; while :; do sleep 1; done"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn("/bin/sh", ["-c", "trap '' TERM; echo ready; exec /bin/sleep 30"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     await new Promise<void>((resolve, reject) => {
       child.once("error", reject);
       child.stdout.once("data", () => resolve());
@@ -120,9 +120,13 @@ describe("OpenCodeServerLedger", () => {
       await subject.record(pid);
       await subject.reap();
       let alive = true;
-      try { process.kill(pid, 0); } catch { alive = false; }
+      try {
+        const state = await new Promise<string>((resolve, reject) => execFile("ps", ["-o", "stat=", "-p", String(pid)], (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
+        alive = !state.startsWith("Z");
+      } catch { alive = false; }
       expect(alive).toBe(false);
-      expect(readFileSync(filePath, "utf8")).toBe("[]");
+      const entries: unknown = JSON.parse(readFileSync(filePath, "utf8"));
+      expect(entries).toHaveLength(1);
     } finally {
       try { process.kill(-pid, "SIGKILL"); } catch { /* process exited */ }
     }
