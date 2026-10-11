@@ -91,6 +91,26 @@ describe("continuation store", () => {
     expect(store.nextContinuationDueAt()).toBeNull();
   });
 
+  test("excluding a deferred row does not exclude another row on its thread", () => {
+    const store = freshStore();
+    seedThread(store, "t-same-thread-rows");
+    const deferred = store.scheduleContinuation({
+      threadId: "t-same-thread-rows",
+      kind: "quit-resume",
+      dueAt: 100,
+    });
+    const ready = store.scheduleContinuation({
+      threadId: "t-same-thread-rows",
+      kind: "limit-reset",
+      dueAt: 100,
+    });
+
+    expect(store.nextContinuationDueAt([deferred?.continuationId ?? ""])).toBe(100);
+    expect(store.claimDueContinuations(100, [deferred?.continuationId ?? ""]).map((row) => row.continuationId)).toEqual([
+      ready?.continuationId,
+    ]);
+  });
+
   test("deleting a continuation removes it", () => {
     const store = freshStore();
     seedThread(store, "t-5");

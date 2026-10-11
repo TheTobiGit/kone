@@ -28,4 +28,14 @@ describe("restore continuation deferral", () => {
     const afterWarning = nextContinuationDeferral(warning.deferral, warning.deferral.retryAt);
     expect(afterWarning.shouldWarn).toBe(false);
   });
+
+  test("a new continuation starts a fresh deferral episode", () => {
+    const earlier = nextContinuationDeferral(undefined, 10_000).deferral;
+    const continued = nextContinuationDeferral(earlier, earlier.retryAt).deferral;
+    const later = nextContinuationDeferral(undefined, continued.retryAt + 60_000).deferral;
+
+    expect(later.intervalMs).toBe(250);
+    expect(later.startedAt).toBe(continued.retryAt + 60_000);
+    expect(later.warned).toBe(false);
+  });
 });
