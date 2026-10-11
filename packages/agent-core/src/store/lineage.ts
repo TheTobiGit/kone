@@ -1045,6 +1045,7 @@ export class LineageRepo {
     const after = decodeChildrenCursor(options.cursor);
     if (options.cursor && !after) return { items: [], total: 0, nextCursor: null };
     try {
+      // SAFETY: COUNT(*) aliases its single integer result as `total`.
       const totalRow = db.prepare(
         "SELECT COUNT(*) AS total FROM threads WHERE parent_thread_id = ?",
       ).get(parentThreadId) as { total: number };
@@ -1054,6 +1055,7 @@ export class LineageRepo {
             ORDER BY t.created_at ASC, t.thread_id ASC LIMIT ?`
         : `SELECT t.*, ${THREAD_USAGE_COLUMNS} FROM threads t
             WHERE t.parent_thread_id = ? ORDER BY t.created_at ASC, t.thread_id ASC LIMIT ?`;
+      // SAFETY: both SELECT variants project the exact ThreadRow columns and usage sums.
       const rows = (after
         ? db.prepare(pageQuery).all(parentThreadId, after.createdAt, after.createdAt, after.threadId, limit + 1)
         : db.prepare(pageQuery).all(parentThreadId, limit + 1)) as ThreadRow[];

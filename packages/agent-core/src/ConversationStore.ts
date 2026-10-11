@@ -64,6 +64,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
   private readonly threadPullRequests: ThreadPullRequestRepo;
+  private readonly threadReferences: ThreadReferenceRepo;
   private readonly projectScripts: ProjectScriptRepo;
   private readonly events: EventIngestRepo;
   private readonly search: SearchRepo;
@@ -74,6 +75,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.dbh = new ConversationDb(userDataDir);
     this.threads = new ThreadRepo(this.dbh);
     this.threadPullRequests = new ThreadPullRequestRepo(this.dbh);
+    this.threadReferences = new ThreadReferenceRepo(this.dbh);
     this.projectScripts = new ProjectScriptRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
     this.handIns = new HandInsRepo(this.dbh);
@@ -201,6 +203,18 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see ThreadPullRequestRepo */
   clearThreadPullRequestLink(threadId: string): boolean {
     return this.threadPullRequests.clearLink(threadId);
+  }
+
+  listThreadReferences(ownerThreadId: string): string[] {
+    return this.threadReferences.list(ownerThreadId);
+  }
+
+  attachThreadReference(ownerThreadId: string, targetThreadId: string, createdAt?: number): boolean {
+    return this.threadReferences.attach(ownerThreadId, targetThreadId, createdAt);
+  }
+
+  detachThreadReference(ownerThreadId: string, targetThreadId: string): boolean {
+    return this.threadReferences.detach(ownerThreadId, targetThreadId);
   }
 
   /** @see ThreadPullRequestRepo */

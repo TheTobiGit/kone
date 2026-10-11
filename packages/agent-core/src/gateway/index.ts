@@ -223,6 +223,8 @@ export interface GatewayInput {
     | "deleteThread"
     | "renameThread"
     | "setThreadDone"
+    | "setThreadPinned"
+    | "hasAttachment"
     | "listQueuedTurns"
     | "editQueuedTurn"
     | "reorderQueuedTurns"

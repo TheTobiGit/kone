@@ -303,6 +303,8 @@ function tools(
       title: string,
     ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
     setThreadDone?: (threadId: string, done: boolean) => void;
+    setThreadPinned?: (threadId: string, pinned: boolean) => void;
+    hasAttachment?: (attachmentId: string) => boolean;
     listQueuedTurns?: (threadId: string) => import("../../conversationStoreTypes.js").QueuedTurnRow[];
     editQueuedTurn?: (threadId: string, queueId: string, input: string) => Promise<boolean>;
     reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
@@ -340,6 +342,8 @@ function tools(
   if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
   if (options.renameThread) toolOptions.renameThread = options.renameThread;
   if (options.setThreadDone) toolOptions.setThreadDone = options.setThreadDone;
+  if (options.setThreadPinned) toolOptions.setThreadPinned = options.setThreadPinned;
+  if (options.hasAttachment) toolOptions.hasAttachment = options.hasAttachment;
   if (options.listQueuedTurns) toolOptions.listQueuedTurns = options.listQueuedTurns;
   if (options.editQueuedTurn) toolOptions.editQueuedTurn = options.editQueuedTurn;
   if (options.reorderQueuedTurns) toolOptions.reorderQueuedTurns = options.reorderQueuedTurns;
@@ -1091,6 +1095,130 @@ describe("app_start_thread", () => {
     expect(calls.started[0]).toMatchObject({ provider: "claudeAgent", model: "sonnet" });
   });
 
+  it("validates worktree refs, threads the selected workspace to dispatch and fingerprints it", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const registry = tools({ runner: makeRunner(calls) });
+    await registry.call(makeCtx(), "app_start_thread", { ...START, workspace: { mode: "worktree", base: "main", branch: "feature/new" } });
+    expect(calls.started[0]?.workspace).toEqual({ mode: "worktree", base: "main", branch: "feature/new" });
+    const conflict = await registry.call(makeCtx(), "app_start_thread", { ...START, workspace: { mode: "worktree", base: "other" } });
+    expect(conflict.isError).toBe(true);
+    expect(text(conflict)).toContain("idempotency_conflict");
+  });
+
+  it("refuses unsafe worktree refs before creating a thread", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const result = await tools({ runner: makeRunner(calls) }).call(makeCtx(), "app_start_thread", { ...START, workspace: { mode: "worktree", base: "../main" } });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("safe Git refs");
+    expect(calls.started).toHaveLength(0);
+  });
+
+  it("forwards only a stored attachment already given to the caller thread", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const attachment = { type: "file" as const, id: "att-owned", name: "brief.md", mimeType: "text/markdown", sizeBytes: 12 };
+    const callerThread = { ...TRANSCRIPT, blocks: [{ ...block("user", "Here", 4), attachments: [attachment] }] };
+    const store = makeStore({ loadThread: (threadId) => threadId === "t-newest" ? callerThread : null });
+    const result = await tools({ runner: makeRunner(calls), store, hasAttachment: (id) => id === "att-owned" }).call(
+      makeCtx({ threadId: "t-newest" }), "app_start_thread", { ...START, attachments: ["att-owned"] },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(calls.turns[0]?.input.attachments).toEqual([attachment]);
+  });
+
+  it("refuses unknown or unowned attachment ids by name", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const result = await tools({ runner: makeRunner(calls), hasAttachment: () => true }).call(
+      makeCtx({ threadId: "t-newest" }), "app_start_thread", { ...START, attachments: ["att-other"] },
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('Attachment id "att-other"');
+    expect(calls.started).toHaveLength(0);
+  });
+
+  it("rejects more than eight forwarded attachment ids", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const result = await tools({ runner: makeRunner(calls) }).call(makeCtx(), "app_start_thread", {
+      ...START, attachments: Array.from({ length: 9 }, (_, index) => `att-${index}`),
+    });
+    expect(result.isError).toBe(true);
+    expect(calls.started).toHaveLength(0);
+  });
+
+  it("starts batches sequentially and keeps per-item partial failures", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const result = await tools({ runner: makeRunner(calls) }).call(makeCtx(), "app_start_threads", {
+      items: [START, { ...START, requestId: "r2", project: "missing" }, { ...START, requestId: "r3" }],
+    });
+    expect(calls.started).toHaveLength(2);
+    expect(result.structuredContent?.items).toMatchObject([
+      { ok: true, requestId: "r1" },
+      { ok: false, requestId: "r2" },
+      { ok: true, requestId: "r3" },
+    ]);
+  });
+
+  it("requires a distinct idempotency key for each batch item", async () => {
+    const result = await tools().call(makeCtx(), "app_start_threads", { items: [START, START] });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("Each item");
+  });
+
+  it("refuses an unreadable cross-project wait target without revealing existence", async () => {
+    const registry = tools({});
+    const result = await registry.call(makeCtx({ threadId: "t-site" }), "app_wait_for_thread", { threadIds: ["t-newest"], timeoutMs: 0 });
+    const missing = await registry.call(makeCtx({ threadId: "t-site" }), "app_wait_for_thread", { threadIds: ["not-a-thread"], timeoutMs: 0 });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('Thread "t-newest" is outside what this conversation may read.');
+    expect(text(result)).not.toContain("does not exist");
+    expect(text(missing)).toBe(text(result).replaceAll("t-newest", "not-a-thread"));
+  });
+
+  it("allows cross-project reads and searches only through the caller's flat reference set", async () => {
+    const store = makeStore({
+      loadThread: (threadId) => threadId === "t-site" ? { ...TRANSCRIPT, threadId: "t-site" } : TRANSCRIPT,
+      listThreadReferences: (ownerThreadId) => ownerThreadId === "t-newest" ? ["t-site"] : [],
+      searchConversations: () => [{
+        threadId: "t-site", entryKind: "block", blockId: "b-site", turnId: null,
+        itemId: null, at: 1, snippet: "site result", rank: 1,
+      }],
+    });
+    const read = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_read_thread", { threadId: "t-site" });
+    const search = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", { query: "site" });
+    expect(read.isError).toBeUndefined();
+    expect(search.structuredContent?.results).toMatchObject([{ threadId: "t-site" }]);
+  });
+
+  it("keeps a wait pinned to the requested turn when a newer turn is present", async () => {
+    const spans: string[] = [];
+    const store = makeStore({
+      turnSpan: (_threadId, turnId) => {
+        spans.push(turnId);
+        return { startedAt: 1, endedAt: 2, runningTurns: 1, lastState: "completed" };
+      },
+      turnAssistantText: (_threadId, turnId) => `summary for ${turnId}`,
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_wait_for_thread", {
+      threadIds: ["t-newest"], turnIds: ["turn-1"], timeoutMs: 0,
+    });
+    expect(spans).toEqual(["turn-1"]);
+    expect(result.structuredContent?.threads).toMatchObject([
+      { threadId: "t-newest", turnId: "turn-1", terminal: true, summary: "summary for turn-1", read: { tool: "app_read_thread", threadId: "t-newest" } },
+    ]);
+  });
+
+  it("returns timeout progress without cancelling the waited-on turn", async () => {
+    let checked = false;
+    const store = makeStore({
+      turnSpan: () => { checked = true; return { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" }; },
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_wait_for_thread", {
+      threadIds: ["t-newest"], turnIds: ["turn-1"], timeoutMs: 0,
+    });
+    expect(checked).toBe(true);
+    expect(result.structuredContent).toMatchObject({ timedOut: true, threads: [{ terminal: false }] });
+    expect(text(result)).toContain("no thread was cancelled");
+  });
+
   it("hands the thread to a team agent, on that agent's own model", async () => {
     const calls: RunnerCalls = { started: [], turns: [] };
     const store = makeStore();
@@ -1218,7 +1346,7 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_cancel_queued_turn")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_promote_queued_turn")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(19);
+    expect(entries).toHaveLength(21);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
@@ -1739,10 +1867,10 @@ describe("app_rename_thread", () => {
 });
 
 describe("app_set_thread_pinned", () => {
-  it("pins and unpins through the store", async () => {
+  it("pins and unpins through the service callback", async () => {
     const pinned: Array<[string, boolean]> = [];
-    const store = makeStore({ setPinned: (threadId, value) => pinned.push([threadId, value]) });
-    const result = await tools({ store }).call(makeCtx(), "app_set_thread_pinned", {
+    const store = makeStore();
+    const result = await tools({ store, setThreadPinned: (threadId, value) => pinned.push([threadId, value]) }).call(makeCtx(), "app_set_thread_pinned", {
       threadId: "t-newest",
       pinned: true,
     });
@@ -1766,14 +1894,14 @@ describe("app_set_thread_done", () => {
     expect(result.structuredContent).toMatchObject({ threadId: "t-newest", done: true });
   });
 
-  it("falls back to the store when no service callback is wired", async () => {
-    const done: Array<[string, boolean]> = [];
-    const store = makeStore({ setDone: (id, value) => done.push([id, value]) });
-    await tools({ store }).call(makeCtx(), "app_set_thread_done", {
+  it("refuses when no service callback is wired", async () => {
+    const store = makeStore({ setDone: () => { throw new Error("store fallback should not run"); } });
+    const result = await tools({ store }).call(makeCtx(), "app_set_thread_done", {
       threadId: "t-newest",
       done: false,
     });
-    expect(done).toEqual([["t-newest", false]]);
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("requires the active agent service");
   });
 });
 
