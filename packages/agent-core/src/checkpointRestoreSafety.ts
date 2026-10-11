@@ -44,6 +44,20 @@ function realOrNull(value: string | null): string | null {
   }
 }
 
+/** A path compared against claims and checkouts: its real path, or for a
+ *  path that does not exist (yet), the real path of its nearest existing
+ *  ancestor with the rest appended. A plain `path.resolve` there would keep a
+ *  symlinked prefix (`/tmp` for `/private/tmp`) and miss a claim on the same
+ *  directory. */
+function comparablePath(value: string): string {
+  const resolved = path.resolve(value);
+  const real = realOrNull(resolved);
+  if (real) return real;
+  const parent = path.dirname(resolved);
+  if (parent === resolved) return resolved;
+  return path.join(comparablePath(parent), path.basename(resolved));
+}
+
 /** Whether `parent` is `child` itself or an ancestor of it. Both arguments are
  *  already real paths. */
 function contains(parent: string, child: string): boolean {
@@ -108,7 +122,7 @@ const activeRestoreDirs = new Map<string, number>();
 /** Claim `dir` for the duration of a destructive restore. Returns the release,
  *  which is idempotent; call it in a `finally`. */
 export function claimRestoreDir(dir: string): () => void {
-  const resolved = realOrNull(dir) ?? path.resolve(dir);
+  const resolved = comparablePath(dir);
   activeRestoreDirs.set(resolved, (activeRestoreDirs.get(resolved) ?? 0) + 1);
   let released = false;
   return () => {
@@ -123,15 +137,15 @@ export function claimRestoreDir(dir: string): () => void {
 /** Whether two directories are the same checkout or nest either way, by
  *  real path. */
 export function checkoutOverlaps(a: string, b: string): boolean {
-  const left = realOrNull(a) ?? path.resolve(a);
-  const right = realOrNull(b) ?? path.resolve(b);
+  const left = comparablePath(a);
+  const right = comparablePath(b);
   return contains(left, right) || contains(right, left);
 }
 
 /** Whether a restore in flight claims `dir`, a directory inside it, or one
  *  that contains it. */
 export function isRestoreActive(dir: string): boolean {
-  const resolved = realOrNull(dir) ?? path.resolve(dir);
+  const resolved = comparablePath(dir);
   for (const active of activeRestoreDirs.keys()) {
     if (contains(active, resolved) || contains(resolved, active)) return true;
   }
