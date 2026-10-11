@@ -230,27 +230,39 @@ describe("schedule runner", () => {
     errorLog.mockRestore();
   });
 
-  test("a never-resolving drain leaves the heartbeat armed and stop clears it", () => {
+  test("a hung project drain does not block another due project's occurrence or drain", () => {
+    const { store } = freshStore();
+    store.createSchedule({ scheduleId: "project-b", projectPath: "/b", title: "b", cron: "* * * * *", jobTemplate: template, at: 1_000 });
+    store.createJob({ jobId: "blocker-a", projectPath: "/a", title: "blocker", body: "run", status: "queued", target: { provider: "codex" } });
     const timers = fakeTimers();
-    let dueCalls = 0;
+    let now = 1_000;
+    const drained: string[] = [];
     const runner = new ScheduleRunner({
       store: {
-        fireDueSchedules: () => { dueCalls++; return { fired: [], skipped: [], failures: [] }; },
-        listSchedules: () => [],
-        projectsWithQueuedJobs: () => ["/slow"],
+        fireDueSchedules: (at) => store.fireDueSchedules(at),
+        listSchedules: (projectPath) => store.listSchedules(projectPath),
+        projectsWithQueuedJobs: () => store.projectsWithQueuedJobs(),
       },
-      drainProject: () => new Promise(() => {}),
+      drainProject: (projectPath) => {
+        drained.push(projectPath);
+        return projectPath === "/a" ? new Promise(() => {}) : Promise.resolve();
+      },
+      now: () => now,
       setTimer: timers.setTimer,
       clearTimer: timers.clearTimer,
     });
     runner.start();
-    expect(dueCalls).toBe(1);
+    expect(drained).toEqual(["/a"]);
     expect(timers.isArmed()).toBe(true);
+    expect(timers.delay()).toBe(59_000);
+    now = 60_000;
     timers.fire();
-    expect(dueCalls).toBe(1);
+    expect(store.getSchedule("project-b")?.lastRunAt).toBe(60_000);
+    expect(drained).toEqual(["/a", "/b"]);
     expect(timers.isArmed()).toBe(true);
     runner.stop();
     expect(timers.isArmed()).toBe(false);
+    store.close();
   });
 });
 

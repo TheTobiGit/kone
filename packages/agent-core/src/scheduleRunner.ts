@@ -20,6 +20,7 @@ export class ScheduleRunner {
   private timer: Timer | null = null;
   private stopped = true;
   private tickInFlight = false;
+  private readonly drainingProjects = new Set<string>();
   private readonly now: () => number;
   private readonly setTimer: (callback: () => void, delayMs: number) => Timer;
   private readonly clearTimer: (timer: Timer) => void;
@@ -36,7 +37,7 @@ export class ScheduleRunner {
   stop(): void { this.stopped = true; if (this.timer) this.clearTimer(this.timer); this.timer = null; }
   rearm(): void { if (!this.stopped) this.arm(); }
 
-  private async tick(): Promise<void> {
+  private tick(): void {
     if (this.stopped) return;
     if (this.tickInFlight) {
       this.arm();
@@ -62,21 +63,24 @@ export class ScheduleRunner {
     } catch (error) {
       console.error("[schedule-runner] schedule tick failed:", error);
     } finally {
+      this.tickInFlight = false;
       this.arm();
     }
 
+    for (const projectPath of projects) {
+      if (this.stopped || this.drainingProjects.has(projectPath)) continue;
+      this.drainingProjects.add(projectPath);
+      void this.drain(projectPath);
+    }
+  }
+
+  private async drain(projectPath: string): Promise<void> {
     try {
-      for (const projectPath of projects) {
-        if (this.stopped) break;
-        try {
-          await this.deps.drainProject(projectPath);
-        } catch (error) {
-          console.error(`[schedule-runner] could not drain queued jobs for ${projectPath}:`, error);
-        }
-      }
+      await this.deps.drainProject(projectPath);
+    } catch (error) {
+      console.error(`[schedule-runner] could not drain queued jobs for ${projectPath}:`, error);
     } finally {
-      this.tickInFlight = false;
-      if (!this.stopped && this.timer === null) this.arm();
+      this.drainingProjects.delete(projectPath);
     }
   }
 
@@ -99,7 +103,7 @@ export class ScheduleRunner {
         return [failed?.retryAt ?? schedule.nextRunAt];
       });
       const next = future.length ? Math.min(...future) : null;
-      delay = Math.min(60_000, Math.max(0, (next ?? this.now() + 60_000) - this.now()));
+      delay = Math.min(60_000, Math.max(1_000, (next ?? this.now() + 60_000) - this.now()));
     } catch (error) {
       console.error("[schedule-runner] could not inspect schedules for timer:", error);
     }
