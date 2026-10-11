@@ -1065,7 +1065,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
       }
       case "session.error": {
         if (!run) break;
-        this.settleSubagent(session, run, "failed", { error: errorMessage(p.error) });
+        const message = errorMessage(p.error);
+        if (run.snapshot.taskId === childSessionId) {
+          this.settleSubagent(session, run, "failed", { error: message });
+          break;
+        }
+        const turnId = run.turnId || session.activeTurnId;
+        if (turnId) this.emit({ ...base(session), type: "item.completed", turnId, item: { itemId: `${childSessionId}:error`, kind: "assistant_text", status: "failed", text: message }, subagentToolUseId: toolUseId });
         break;
       }
       case "session.status": if (record(p.status)?.type === "idle" && run) this.emitSubagent(session, run, "subagent.updated"); break;
