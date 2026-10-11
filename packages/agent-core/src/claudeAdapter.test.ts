@@ -401,6 +401,22 @@ describe("Claude context fill", () => {
 });
 
 describe("Claude background subagents", () => {
+  test("settled grandchild tail cannot reopen ancestor on next turn", async () => {
+    const { adapter, events } = setup();
+    const first = await liveTurnWithSubagent(adapter);
+    state.feed!.push({ type: "assistant", parent_tool_use_id: "tool-1", message: { id: "child-msg", content: [{ type: "tool_use", id: "nested-tool", name: "Task", input: { description: "nested" } }] } });
+    await flush();
+    state.feed!.push({ type: "result", subtype: "success", num_turns: 1, is_error: false, usage: { input_tokens: 5 } });
+    await flush();
+    const second = await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "next turn" });
+    const before = events.length;
+    state.feed!.push({ type: "assistant", parent_tool_use_id: "nested-tool", message: { id: "late-msg", content: [{ type: "text", text: "LATE GRANDCHILD FROM FIRST TURN" }] } });
+    await flush();
+    const late = events.slice(before);
+    expect(first.turnId).not.toBe(second.turnId);
+    expect(late.filter(e => e.type === "subagent.started" || e.type === "item.completed" || e.type === "item.started")).toHaveLength(0);
+  });
+
   test("a grandchild approval is tagged with its nearest known ancestor run", async () => {
     const { adapter, events } = setup();
     await liveTurnWithSubagent(adapter);

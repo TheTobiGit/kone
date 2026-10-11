@@ -494,6 +494,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       settledSubagents: new Map(),
       subagentToolUseOwners: new Map(),
       nestedTaskOwners: new Map(),
+      retiredSubagentToolUseIds: new Set(),
       pendingSubagentSteers: new Map(),
       pendingSubagentStops: new Set(),
       pendingWake: [],
@@ -1065,6 +1066,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // A settled run's tail (messages already in flight when it stopped) is
       // dropped rather than reopening a run the UI has already closed out.
       if (session.settledSubagents.has(runToolUseId)) return;
+      if (session.retiredSubagentToolUseIds.has(runToolUseId)) return;
       const run = this.ensureSubagentRun(session, runToolUseId);
       switch (message.type) {
         case "stream_event":
@@ -1603,6 +1605,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       message.subtype === "success" && !message.is_error ? "completed" : "stopped",
       { keepBackground: true },
     );
+    this.pruneSettledSubagentAliases(session);
     session.activeTurnId = undefined;
     if (!turnId) {
       // A result with no local turn is never a turn this adapter started: the
@@ -1861,6 +1864,15 @@ export class ClaudeAdapter implements ProviderAdapter {
     run.snapshot.endedAt = Date.now();
     session.settledSubagents.set(toolUseId, status);
     session.subagentRuns.delete(toolUseId);
+    session.retiredSubagentToolUseIds.add(toolUseId);
+    for (const [alias, owner] of session.subagentToolUseOwners) {
+      if (owner !== toolUseId) continue;
+      session.retiredSubagentToolUseIds.add(alias);
+      session.subagentToolUseOwners.delete(alias);
+    }
+    for (const [taskId, owner] of session.nestedTaskOwners) {
+      if (owner === toolUseId) session.nestedTaskOwners.delete(taskId);
+    }
     session.pendingSubagentSteers.delete(toolUseId);
     session.pendingSubagentStops.delete(toolUseId);
     this.emitSubagent(session, run, "subagent.completed");
@@ -1942,12 +1954,27 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  map is emptied — a run in it is one whose events are all in the past. */
   private forgetSettledSubagents(session: ClaudeSession): void {
     const live = new Set(session.subagentRuns.keys());
+    this.pruneSettledSubagentAliases(session);
     session.settledSubagents.clear();
     for (const toolUseId of session.pendingSubagentSteers.keys()) {
       if (!live.has(toolUseId)) session.pendingSubagentSteers.delete(toolUseId);
     }
     for (const toolUseId of session.pendingSubagentStops) {
       if (!live.has(toolUseId)) session.pendingSubagentStops.delete(toolUseId);
+    }
+  }
+
+  /** Drop owner aliases for settled runs while retaining aliases belonging to
+   *  background runs that can still report after their parent turn ends. */
+  private pruneSettledSubagentAliases(session: ClaudeSession): void {
+    const live = new Set(session.subagentRuns.keys());
+    for (const [alias, owner] of session.subagentToolUseOwners) {
+      if (live.has(owner)) continue;
+      session.retiredSubagentToolUseIds.add(alias);
+      session.subagentToolUseOwners.delete(alias);
+    }
+    for (const [taskId, owner] of session.nestedTaskOwners) {
+      if (!live.has(owner)) session.nestedTaskOwners.delete(taskId);
     }
   }
 

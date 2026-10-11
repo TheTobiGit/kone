@@ -161,6 +161,9 @@ export type ClaudeSession = {
    *  kone-visible ancestor run. */
   subagentToolUseOwners: Map<string, string>;
   nestedTaskOwners: Map<string, string>;
+  /** Tool-use ids whose nearest kone-visible run has already settled. Kept as
+   *  tombstones so late provider traffic cannot be mistaken for main-turn data. */
+  retiredSubagentToolUseIds: Set<string>;
   /** Mid-task messages queued per run. */
   pendingSubagentSteers: Map<string, string[]>;
   /** Stop requests that arrived before `task_started` mapped a run's tool-use
@@ -237,6 +240,7 @@ export function recognizedSubagentToolUseId(
 ): string | undefined {
   const parent = readParentToolUseId(message);
   if (!parent) return undefined;
+  if (session.retiredSubagentToolUseIds.has(parent)) return parent;
   if (session.subagentRuns.has(parent) || session.settledSubagents.has(parent)) return parent;
   return session.subagentToolUseOwners.get(parent);
 }
