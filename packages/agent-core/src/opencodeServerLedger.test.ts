@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { OpenCodeServerLedger } from "./opencodeServerLedger.js";
+import { OpenCodeServerPool } from "./opencodeServer.js";
+import { setUserDataDir } from "./userDataDir.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -14,6 +16,23 @@ function ledger(inspect: (pid: number) => string | undefined, killed: number[]) 
 }
 
 describe("OpenCodeServerLedger", () => {
+  test("ledger I/O failures do not poison later server starts", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-ledger-recovery-"));
+    dirs.push(dir);
+    mkdirSync(path.join(dir, "opencode-servers.json"));
+    setUserDataDir(dir);
+    const pool = new OpenCodeServerPool();
+    const input = { cwd: dir, env: process.env, binary: "/missing-opencode-for-ledger-test" };
+    let firstError = "";
+    try { await pool.start(input); } catch (error) { firstError = String(error); }
+    rmSync(path.join(dir, "opencode-servers.json"), { recursive: true, force: true });
+    let secondError = "";
+    try { await pool.start(input); } catch (error) { secondError = String(error); }
+    expect(firstError).not.toContain("EISDIR");
+    expect(secondError).not.toContain("EISDIR");
+    expect(secondError).toContain("ENOENT");
+  });
+
   test("records process identity and removes it on clean dispose", () => {
     const { subject, filePath } = ledger(() => "Mon Oct 11 05:00:00 2026", []);
     subject.record(301, 301);
