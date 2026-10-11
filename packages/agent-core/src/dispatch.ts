@@ -100,10 +100,10 @@ export class ContinuationCancelled extends Error {
  *  (or a manual resume). App-authored, so it is never journaled. */
 const LIMIT_RESUME_PROMPT = "Continue where you left off — the usage limit has reset.";
 
-export class ManualResumeHeldError extends Error {
+export class ThreadTurnHeldError extends Error {
   constructor(readonly threadId: string) {
-    super(`Manual resume for ${threadId} is held by a restore or active turn. Try again when it is idle.`);
-    this.name = "ManualResumeHeldError";
+    super(`The prompt for ${threadId} is held by a restore, compaction, or active turn. Try again when it is idle.`);
+    this.name = "ThreadTurnHeldError";
   }
 }
 
@@ -730,10 +730,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     await this.ensureThreadSession(threadId, { resume: true });
     // Silent: this prompt is the app's own voice, not something the user said
     // — journaling it would put words in their mouth.
-    await this.sendThreadTurn(
+    const result = await this.sendThreadTurn(
       { threadId, input: prompt },
-      { silent: true, generateTitle: false },
+      { silent: true, generateTitle: false, noQueue: true },
     );
+    if (result.held || result.queued) throw new ThreadTurnHeldError(threadId);
   }
 
   async resumeLimitedThread(threadId: string): Promise<void> {
@@ -742,7 +743,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       { threadId, input: LIMIT_RESUME_PROMPT },
       { silent: true, generateTitle: false, noQueue: true },
     );
-    if (result.held || result.queued) throw new ManualResumeHeldError(threadId);
+    if (result.held || result.queued) throw new ThreadTurnHeldError(threadId);
   }
 
   async resumeQuitInterruptedChatsAtBoot(): Promise<{
@@ -1250,7 +1251,6 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (options?.onAccepted) handOff.onAccepted = options.onAccepted;
     if (options?.onSending) handOff.onSending = options.onSending;
     if (options?.liveOnly) handOff.liveOnly = true;
-    if (options?.noQueue) handOff.noQueue = true;
     if (options?.noQueue) handOff.noQueue = true;
     const sent =
       destination === "steer"
