@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-import type { JobRow, ScheduleJobTemplate, ScheduleRow, SchedulePatch } from "../../conversationStoreTypes.js";
+import { ScheduleJobTemplateSchema, type JobRow, type ScheduleJobTemplate, type ScheduleRow, type SchedulePatch } from "../../conversationStoreTypes.js";
 import { compact } from "../helpers.js";
 import { GatewayToolError, type GatewayRecord } from "../schemas.js";
 import type { GatewayToolResult, ToolEntry } from "../registry.js";
@@ -29,13 +29,7 @@ export interface AppSchedulesToolOptions {
   drainProject?: (projectPath: string) => void;
 }
 
-const targetSchema = z.object({
-  provider: z.string().min(1), model: z.string().optional(), effort: z.string().optional(), mode: z.string().optional(),
-  workspace: z.object({ mode: z.string(), branch: z.string().optional(), base: z.string().optional() }).optional(),
-  fallbacks: z.array(z.object({ provider: z.string().min(1), model: z.string().optional() })).optional(),
-});
-const attachmentSchema = z.object({ type: z.string(), id: z.string(), name: z.string(), mimeType: z.string(), sizeBytes: z.number().int().nonnegative() });
-const templateSchema = z.object({ title: z.string().min(1), body: z.string(), target: targetSchema, attachments: z.array(attachmentSchema).optional() });
+const templateSchema = ScheduleJobTemplateSchema;
 const idSchema = z.object({ scheduleId: z.string().min(1) });
 const listSchema = z.object({ project: z.string().min(1).optional() });
 const createSchema = z.object({ project: z.string().min(1), title: z.string().min(1), cron: z.string().min(1), jobTemplate: templateSchema });

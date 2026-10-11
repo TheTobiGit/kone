@@ -1,10 +1,11 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 import { setUserDataDir } from "./userDataDir.js";
 import { ScheduleRunner } from "./scheduleRunner.js";
+import { ScheduleJobTemplateSchema } from "./conversationStoreTypes.js";
 
 mock.module("./sqlite.js", () => ({ DatabaseSync: Database }));
 let Store: typeof import("./ConversationStore.js").ConversationStore;
@@ -17,6 +18,23 @@ function freshStore(dir = mkdtempSync(path.join(tmpdir(), "kone-schedules-"))) {
 const template = { title: "scheduled", body: "run", target: { provider: "codex" as const } };
 
 describe("schedule store", () => {
+  test("job templates validate provider, mode, workspace, fallback and attachment enums", () => {
+    const result = ScheduleJobTemplateSchema.safeParse({
+      title: "invalid", body: "run",
+      target: { provider: "not-a-provider", mode: "unsafe", workspace: { mode: "remote" }, fallbacks: [{ provider: "unknown" }] },
+      attachments: [{ type: "video", id: "x", name: "x", mimeType: "video/mp4", sizeBytes: 1 }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const fields = result.error.issues.map((issue) => issue.path.join("."));
+      expect(fields).toContain("target.provider");
+      expect(fields).toContain("target.mode");
+      expect(fields).toContain("target.workspace.mode");
+      expect(fields).toContain("target.fallbacks.0.provider");
+      expect(fields).toContain("attachments.0.type");
+    }
+  });
+
   test("fires due occurrences once, creates linked queued job and skips pile-ups", () => {
     const { store, dir } = freshStore();
     const secondStore = freshStore(dir).store;
@@ -71,6 +89,18 @@ describe("schedule store", () => {
     expect(reopened.fireDueSchedules(61_000).fired).toHaveLength(1);
     reopened.close();
   });
+
+  test("reports a rolled-back firing occurrence for bounded retry", () => {
+    const { store, dir } = freshStore();
+    store.createSchedule({ scheduleId: "retry", projectPath: "/p", title: "retry", cron: "* * * * *", jobTemplate: template, at: 1_000 });
+    const raw = new Database(path.join(dir, "kone.sqlite"));
+    raw.exec("CREATE TRIGGER reject_scheduled_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(FAIL, 'test insert failure'); END");
+    const result = store.fireDueSchedules(60_000);
+    expect(result.failures).toEqual([{ scheduleId: "retry", occurrenceAt: 60_000, error: "test insert failure" }]);
+    expect(store.getSchedule("retry")?.nextRunAt).toBe(60_000);
+    raw.close();
+    store.close();
+  });
 });
 
 describe("schedule runner", () => {
@@ -82,7 +112,7 @@ describe("schedule runner", () => {
     const drains: string[] = [];
     const runner = new ScheduleRunner({
       store: {
-        fireDueSchedules: (at) => { if (at >= 20_000) fires++; return { fired: at >= 20_000 ? [{ schedule: { scheduleId: "s", projectPath: "/p", title: "t", cron: "* * * * *", jobTemplate: template, paused: false, nextRunAt: 80_000, lastRunAt: at, lastJobId: "j", createdAt: 0, updatedAt: at }, job: { jobId: "j", projectPath: "/p", title: "t", body: "run", status: "queued", target: template.target, createdAt: at, updatedAt: at } }] : [], skipped: [] }; },
+        fireDueSchedules: (at) => { if (at >= 20_000) fires++; return { fired: at >= 20_000 ? [{ schedule: { scheduleId: "s", projectPath: "/p", title: "t", cron: "* * * * *", jobTemplate: template, paused: false, nextRunAt: 80_000, lastRunAt: at, lastJobId: "j", createdAt: 0, updatedAt: at }, job: { jobId: "j", projectPath: "/p", title: "t", body: "run", status: "queued", target: template.target, createdAt: at, updatedAt: at } }] : [], skipped: [], failures: [] }; },
         listSchedules: () => [{ scheduleId: "s", projectPath: "/p", title: "t", cron: "* * * * *", jobTemplate: template, paused: false, nextRunAt: 80_000, lastRunAt: null, lastJobId: null, createdAt: 0, updatedAt: 0 }],
         projectsWithQueuedJobs: () => [],
       },
@@ -101,6 +131,35 @@ describe("schedule runner", () => {
     expect(fires).toBe(1);
     expect(drains).toEqual(["/p"]);
     runner.stop();
+  });
+
+  test("retries a failed due occurrence after 30 seconds, backs off to 60, and logs once", async () => {
+    let now = 10_000;
+    let timerCallback: (() => void) | undefined;
+    let timerDelay = 0;
+    const runner = new ScheduleRunner({
+      store: {
+        fireDueSchedules: () => ({ fired: [], skipped: [], failures: [{ scheduleId: "bad", occurrenceAt: 9_000, error: "insert rejected" }] }),
+        listSchedules: () => [{ scheduleId: "bad", projectPath: "/p", title: "bad", cron: "* * * * *", jobTemplate: template, paused: false, nextRunAt: 9_000, lastRunAt: null, lastJobId: null, createdAt: 0, updatedAt: 0 }],
+        projectsWithQueuedJobs: () => [],
+      },
+      drainProject: async () => {},
+      now: () => now,
+      setTimer: (callback, delay) => { timerCallback = callback; timerDelay = delay; return setTimeout(() => {}, 100_000); },
+      clearTimer: (timer) => clearTimeout(timer),
+    });
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    runner.start();
+    await Promise.resolve();
+    expect(timerDelay).toBe(30_000);
+    now = 40_000;
+    timerCallback?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(timerDelay).toBe(60_000);
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    runner.stop();
+    errorLog.mockRestore();
   });
 });
 

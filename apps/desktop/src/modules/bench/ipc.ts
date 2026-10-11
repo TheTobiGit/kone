@@ -1,9 +1,8 @@
 import { ipcMain } from "electron";
 
 import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
-import type { JobCreateInput, JobRow } from "@kone/agent-core/conversationStoreTypes.js";
+import { ScheduleJobTemplateSchema, type JobCreateInput, type JobRow } from "@kone/agent-core/conversationStoreTypes.js";
 import { z } from "zod";
-import { ProviderKindSchema } from "@kone/agent-core/types.js";
 
 import { getJobRunner, getScheduleRunner } from "../../agent/agent-ipc.js";
 
@@ -25,18 +24,7 @@ import type {
 
 const scheduleIdInputSchema = z.object({ scheduleId: z.string().min(1) });
 const scheduleListInputSchema = z.object({ projectPath: z.string().min(1).optional() });
-const scheduleJobTemplateSchema = z.object({
-  title: z.string().min(1),
-  body: z.string(),
-  target: z.object({ provider: ProviderKindSchema }).passthrough(),
-  attachments: z.array(z.object({
-    type: z.enum(["image", "file"]),
-    id: z.string(),
-    name: z.string(),
-    mimeType: z.string(),
-    sizeBytes: z.number(),
-  })).optional(),
-}).passthrough();
+const scheduleJobTemplateSchema = ScheduleJobTemplateSchema;
 const scheduleCreateInputSchema = z.object({
   scheduleId: z.string().min(1),
   projectPath: z.string().min(1),
