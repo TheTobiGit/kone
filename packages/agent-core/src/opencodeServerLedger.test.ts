@@ -3,17 +3,17 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { execFile, spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { inspectProcessStartTime, OpenCodeServerLedger, type ProcessInspectionResult } from "./opencodeServerLedger.js";
+import { inspectProcessStartTime, OpenCodeServerLedger, type ProcessGroupMembersInspection, type ProcessGroupProbe, type ProcessInspectionResult } from "./opencodeServerLedger.js";
 import { OpenCodeServerPool } from "./opencodeServer.js";
 import { setUserDataDir } from "./userDataDir.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function ledger(inspect: (pid: number) => Promise<ProcessInspectionResult>, killed: number[], onKill?: (pgid: number) => void) {
+function ledger(inspect: (pid: number) => Promise<ProcessInspectionResult>, killed: number[], onKill?: (pgid: number) => void, inspectGroupMembers?: ProcessGroupMembersInspection, probeGroup?: ProcessGroupProbe) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-ledger-"));
   dirs.push(dir);
   const filePath = path.join(dir, "servers.json");
-  return { subject: new OpenCodeServerLedger(filePath, inspect, (pgid) => { killed.push(pgid); onKill?.(pgid); }), filePath };
+  return { subject: new OpenCodeServerLedger(filePath, inspect, (pgid) => { killed.push(pgid); onKill?.(pgid); }, inspectGroupMembers, probeGroup), filePath };
 }
 
 describe("OpenCodeServerLedger", () => {
@@ -81,7 +81,7 @@ describe("OpenCodeServerLedger", () => {
   });
 
   test("records process identity and removes it on clean dispose", async () => {
-    const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "Mon Oct 11 05:00:00 2026" }), []);
+    const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "Mon Oct 11 05:00:00 2026", command: "opencode" }), []);
     await subject.record(301, 301);
     await subject.remove(301);
     expect(readFileSync(filePath, "utf8")).toBe("[]");
@@ -94,14 +94,14 @@ describe("OpenCodeServerLedger", () => {
     const { subject } = ledger(async (pid) => {
       if (pid === 301 && pid301Gone) return { state: "gone" };
       const startTime = starts.get(pid);
-      return startTime ? { state: "alive", startTime } : { state: "unknown" };
-    }, killed, (pgid) => { if (pgid === 301) pid301Gone = true; });
+      return startTime ? { state: "alive", startTime, command: "opencode" } : { state: "unknown" };
+    }, killed, (pgid) => { if (pgid === 301) pid301Gone = true; }, async (pgid) => [{ pid: pgid, startTime: "same", command: "opencode" }], () => "alive");
     await subject.record(301, 301);
     await subject.record(302, 302);
     await subject.record(303, 303);
     starts.set(302, "new process");
     await subject.reap();
-    expect(killed).toEqual([301]);
+    expect(killed).toEqual([301, 301]);
   });
 
   test("reap escalates for a process group that ignores SIGTERM", async () => {
@@ -116,7 +116,16 @@ describe("OpenCodeServerLedger", () => {
     if (!pid) throw new Error("server test process did not start");
     const filePath = path.join(dir, "servers.json");
     try {
-      const subject = new OpenCodeServerLedger(filePath);
+      let lastGroupProbe: "alive" | "gone" | "unknown" = "unknown";
+      const subject = new OpenCodeServerLedger(filePath, undefined, undefined, undefined, (pgid) => {
+        try {
+          process.kill(-pgid, 0);
+          lastGroupProbe = "alive";
+        } catch (cause) {
+          lastGroupProbe = cause instanceof Error && "code" in cause && cause.code === "ESRCH" ? "gone" : "unknown";
+        }
+        return lastGroupProbe;
+      });
       await subject.record(pid);
       await subject.reap();
       let alive = true;
@@ -125,19 +134,15 @@ describe("OpenCodeServerLedger", () => {
         alive = !state.startsWith("Z");
       } catch { alive = false; }
       expect(alive).toBe(false);
-      let groupState: "alive" | "gone" | "unknown" = "alive";
-      try { process.kill(-pid, 0); } catch (cause) {
-        groupState = cause instanceof Error && "code" in cause && cause.code === "ESRCH" ? "gone" : "unknown";
-      }
       const entries: unknown = JSON.parse(readFileSync(filePath, "utf8"));
-      expect(entries).toHaveLength(groupState === "gone" ? 0 : 1);
+      expect(entries).toHaveLength(lastGroupProbe === "gone" ? 0 : 1);
     } finally {
       try { process.kill(-pid, "SIGKILL"); } catch { /* process exited */ }
     }
   });
 
   test("retains an entry when group liveness cannot be confirmed", async () => {
-    const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "start" }), []);
+    const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "start", command: "opencode" }), [], undefined, async (pgid) => [{ pid: pgid, startTime: "start", command: "opencode" }]);
     await subject.record(41001, 41001);
     const originalKill = process.kill;
     const denyProcessKill: typeof process.kill = (pid, signal) => {
@@ -148,7 +153,7 @@ describe("OpenCodeServerLedger", () => {
     process.kill = denyProcessKill;
     try {
       await subject.reap();
-      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start" }]);
+      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode" }]);
     } finally {
       process.kill = originalKill;
     }
