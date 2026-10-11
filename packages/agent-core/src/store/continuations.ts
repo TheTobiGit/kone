@@ -95,7 +95,7 @@ export class ContinuationRepo {
   /** Take every unclaimed continuation due at or before `now`, marking it
    *  claimed in the same statement. Atomic: a second caller sees the rows
    *  already claimed and gets none. */
-  claimDue(now: number): ContinuationRecord[] {
+  claimDue(now: number, excludedThreadIds: string[] = []): ContinuationRecord[] {
     const db = this.dbh.handle();
     if (!db) return [];
     try {
@@ -103,13 +103,16 @@ export class ContinuationRepo {
       this.dbh.durably(db, () => {
         // SAFETY: RETURNING * of continuations is exactly ContinuationDbRow —
         // the columns this schema creates.
+        const exclusion = excludedThreadIds.length > 0
+          ? ` AND thread_id NOT IN (${excludedThreadIds.map(() => "?").join(",")})`
+          : "";
         const rows = db
           .prepare(
             `UPDATE continuations SET claimed_at = ?
-              WHERE claimed_at IS NULL AND due_at <= ?
+              WHERE claimed_at IS NULL AND due_at <= ?${exclusion}
               RETURNING *`,
           )
-          .all(now, now) as ContinuationDbRow[];
+          .all(now, now, ...excludedThreadIds) as ContinuationDbRow[];
         claimed = rows.map(rowToContinuation);
       });
       return claimed;
@@ -228,14 +231,17 @@ export class ContinuationRepo {
   }
 
   /** When the next unclaimed continuation is due, or null when none is. */
-  nextDueAt(): number | null {
+  nextDueAt(excludedThreadIds: string[] = []): number | null {
     const db = this.dbh.handle();
     if (!db) return null;
     try {
       // SAFETY: MIN() over the due_at column answers one nullable integer.
+      const exclusion = excludedThreadIds.length > 0
+        ? ` AND thread_id NOT IN (${excludedThreadIds.map(() => "?").join(",")})`
+        : "";
       const row = db
-        .prepare(`SELECT MIN(due_at) AS due_at FROM continuations WHERE claimed_at IS NULL`)
-        .get() as { due_at: number | null } | undefined;
+        .prepare(`SELECT MIN(due_at) AS due_at FROM continuations WHERE claimed_at IS NULL${exclusion}`)
+        .get(...excludedThreadIds) as { due_at: number | null } | undefined;
       return row?.due_at ?? null;
     } catch (err) {
       console.error("[conversation-store] nextContinuationDueAt failed:", err);
