@@ -31,7 +31,9 @@ class Adapter {
   emit: ((event: RuntimeEvent) => void) | null = null;
   sent: string[] = [];
   sendError: Error | null = null;
+  startError: Error | null = null;
   async startSession(input: { threadId: string }): Promise<Record<string, string>> {
+    if (this.startError) throw this.startError;
     return { threadId: input.threadId, provider: "codex", status: "ready" };
   }
   async stopSession(): Promise<void> {}
@@ -167,6 +169,44 @@ describe("P3 usage-limit dispatch", () => {
     expect(adapter.sent.some((text) => text.includes("usage limit has reset"))).toBe(true);
     expect(store.listContinuationsForThread(id)).toEqual([]);
     expect(store.threadMeta(id)?.limitedAt ?? null).toBeNull();
+    await svc.stopAll();
+  });
+
+  test("a failed manual resume session start keeps the limit and continuation", async () => {
+    const id = "manual-resume-start-failure";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    adapter.startError = new Error("session adoption failed");
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    svc.setThreadLimited(id, Date.now() + 60_000);
+    await expect(dispatcher.resumeLimitedThread(id)).rejects.toThrow("session adoption failed");
+    expect(store.threadMeta(id)?.limitedAt ?? null).not.toBeNull();
+    expect(store.listContinuationsForThread(id)).toHaveLength(1);
+    await svc.stopAll();
+  });
+
+  test("manual resume sends its reset prompt before queued follow-ups", async () => {
+    const id = "manual-resume-order";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+    const emit = adapter.emit;
+    if (!emit) throw new Error("adapter emit not captured");
+    emit({ type: "turn.started", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "resume-live" });
+    await svc.sendTurn({ threadId: id, input: "queued follow-up" });
+    expect(store.listQueuedTurns(id)).toHaveLength(1);
+    adapter.sendError = new Error("429 usage limit reached");
+    emit({ type: "turn.completed", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "resume-live" });
+    await pause(60);
+    expect(store.threadMeta(id)?.limitedAt ?? null).not.toBeNull();
+    await dispatcher.resumeLimitedThread(id);
+    emit({ type: "turn.completed", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "t-1" });
+    await pause(60);
+    expect(adapter.sent[0]).toContain("usage limit has reset");
+    expect(adapter.sent.indexOf("queued follow-up")).toBeGreaterThan(adapter.sent.indexOf("usage limit has reset"));
     await svc.stopAll();
   });
 });
