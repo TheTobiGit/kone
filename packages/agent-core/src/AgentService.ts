@@ -1077,8 +1077,10 @@ export class AgentService {
     return this.activeTurns.has(threadId) || this.dispatchingTurns.has(threadId);
   }
 
-  /** Run one steer into a live turn, counted in `steersInFlight` for its
-   *  whole round-trip. */
+  /** Run one adapter handoff that `dispatchingTurns` doesn't cover (a steer
+   *  into a live turn, or the direct send after a failed queue write), counted
+   *  in `steersInFlight` for its whole round-trip: the adapter can start a
+   *  fresh turn at the end of it, so a restore must see it as busy. */
   private async steering<T>(threadId: string, steer: () => Promise<T>): Promise<T> {
     this.steersInFlight.set(threadId, (this.steersInFlight.get(threadId) ?? 0) + 1);
     try {
@@ -3045,7 +3047,8 @@ export class AgentService {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
       // Not under a restore: the turn would start on a tree being reset.
       if (this.restoreHolds(input.threadId)) throw err;
-      return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(input));
+      const adapter = this.adapterForThread(input.threadId);
+      return this.steering(input.threadId, () => adapter.sendTurn(this.withViewBlock(input)));
     }
     this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
     // Queued after a Stop whose cancellation is still owed: not one it takes.
