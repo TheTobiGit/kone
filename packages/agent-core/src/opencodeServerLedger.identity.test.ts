@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { OpenCodeServerLedger, type ProcessIdentity } from "./opencodeServerLedger.js";
+import { killProcessGroup, OpenCodeServerLedger, type ProcessIdentity } from "./opencodeServerLedger.js";
 
 const originalLeader: ProcessIdentity = { pid: 41000, startTime: "old-server-start", command: "opencode" };
 const originalMember: ProcessIdentity = { pid: 41001, startTime: "old-worker-start", command: "opencode-worker" };
@@ -29,7 +29,7 @@ test("does not SIGKILL a replacement group after its leader exits", async () => 
   );
   await ledger.reap();
   expect(signals).toEqual(["SIGTERM"]);
-  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual([{ ...originalLeader, pgid: originalLeader.pid, marker: entryMarker }]);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual([]);
 }));
 
 test("rechecks owned pids after final leader inspection before SIGKILL", async () => withLedger(async (file) => {
@@ -51,7 +51,7 @@ test("rechecks owned pids after final leader inspection before SIGKILL", async (
   );
   await ledger.reap(undefined, owned);
   expect(signals).toEqual(["SIGTERM"]);
-  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual([{ ...originalLeader, pgid: originalLeader.pid, marker: entryMarker }]);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual([{ ...originalLeader, pgid: originalLeader.pid, marker: entryMarker, unverifiableAttempts: 0 }]);
 }));
 
 test("does not signal an unmarked replacement group after the recorded leader is gone", async () => withLedger(async (file) => {
@@ -101,6 +101,23 @@ test("reaps marked orphan members after the recorded leader is gone", async () =
   expect(ledger.snapshot()).toEqual([]);
 }));
 
+test("escalates a live leader despite ordinary process-group child churn", async () => withLedger(async (file) => {
+  const child = spawn("/bin/sh", ["-c", "trap '' TERM; /bin/sleep 0.05; echo ready; while :; do /bin/sleep 0.2; done"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const pid = child.pid;
+  if (!pid) throw new Error("missing churn test process pid");
+  try {
+    await new Promise<void>((resolve, reject) => { child.once("error", reject); child.stdout.once("data", () => resolve()); });
+    const ledger = new OpenCodeServerLedger(file);
+    await ledger.record(pid);
+    await ledger.reap();
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    expect(alive).toBe(false);
+  } finally {
+    killProcessGroup(pid, "SIGKILL");
+  }
+}, 10_000));
+
 test("keeps an orphan ledger entry when member environments cannot be read", async () => withLedger(async (file) => {
   const entry = { ...originalLeader, pgid: originalLeader.pid, marker: entryMarker };
   writeFileSync(file, JSON.stringify([entry]));
@@ -116,8 +133,62 @@ test("keeps an orphan ledger entry when member environments cannot be read", asy
   );
   await ledger.reap();
   expect(signals).toEqual([]);
-  expect(ledger.snapshot()).toEqual([entry]);
+  expect(ledger.snapshot()).toEqual([{ ...entry, unverifiableAttempts: 1 }]);
 }));
+
+test("expires leaderless entries after repeated unverifiable marker inspections", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 41900, pgid: 41900, marker: "expiry-marker", unverifiableAttempts: 0 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message: string) => { warnings.push(message); };
+  try {
+    const ledger = new OpenCodeServerLedger(file, async () => ({ state: "gone" }), undefined, async () => [replacementMember], () => "alive", async () => "unknown");
+    for (let attempt = 0; attempt < 10; attempt++) await ledger.reap();
+    expect(ledger.snapshot()).toEqual([]);
+    expect(warnings).toHaveLength(1);
+  } finally {
+    console.warn = originalWarn;
+  }
+}));
+
+test("escalates to current leaderless members after a member execs", async () => withLedger(async (file) => {
+  await verifyLeaderlessChurn(file, (termSent) => termSent ? [{ ...originalMember, command: "/bin/sleep" }] : [originalMember]);
+}));
+
+test("escalates to newly spawned marked leaderless members", async () => withLedger(async (file) => {
+  const newChild = { pid: 41003, startTime: "new-child-start", command: "/bin/sleep" };
+  await verifyLeaderlessChurn(file, (termSent) => termSent ? [originalMember, newChild] : [originalMember]);
+}));
+
+async function verifyLeaderlessChurn(file: string, membersFor: (termSent: boolean) => ProcessIdentity[]) {
+  const entry = { ...originalLeader, pgid: originalLeader.pid, marker: entryMarker };
+  writeFileSync(file, JSON.stringify([entry]));
+  let termSent = false;
+  let groupAlive = true;
+  const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+  const ledger = new OpenCodeServerLedger(
+    file,
+    async (pid) => {
+      if (pid === originalLeader.pid) return { state: "gone" };
+      const member = [...membersFor(termSent)].find((candidate) => candidate.pid === pid);
+      return member ? { state: "alive", startTime: member.startTime, command: member.command } : { state: "gone" };
+    },
+    undefined,
+    async () => groupAlive ? membersFor(termSent) : [],
+    () => groupAlive ? "alive" : "gone",
+    async () => "marked",
+    (pid, signal) => {
+      signals.push({ pid, signal });
+      if (signal === "SIGTERM") termSent = true;
+      if (signal === "SIGKILL") groupAlive = false;
+    },
+  );
+  await ledger.reap();
+  expect(signals.some(({ signal }) => signal === "SIGTERM")).toBe(true);
+  expect(signals.some(({ signal }) => signal === "SIGKILL")).toBe(true);
+  expect(ledger.snapshot()).toEqual([]);
+}
 
 test("reaps a real marked orphan after its process-group leader exits", async () => withLedger(async (file) => {
   const marker = "real-orphan-test-marker";
