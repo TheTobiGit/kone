@@ -280,6 +280,7 @@ type ResetPayload = {
   cause?: unknown;
   rate_limit?: unknown;
   rate_limit_event?: unknown;
+  rate_limit_info?: unknown;
   codexErrorInfo?: unknown;
   additionalDetails?: unknown;
   headers?: unknown;
@@ -310,6 +311,7 @@ const RESET_CONTAINER_FIELDS: ReadonlyArray<keyof ResetPayload> = [
   "cause",
   "rate_limit",
   "rate_limit_event",
+  "rate_limit_info",
   "codexErrorInfo",
   "additionalDetails",
   "headers",
@@ -417,4 +419,3 @@ function retryAfterHeader(cause: unknown, now: number): number | null {
     parsed.data.RetryAfter;
   return raw === undefined ? null : durationReset(raw, now);
 }
-
