@@ -74,6 +74,20 @@ afterAll(() => {
 });
 
 describe("P3 usage-limit dispatch", () => {
+  test("arms a reset timer when a limit is scheduled after an empty sweep", async () => {
+    const id = "limit-timer-after-boot";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    await dispatcher.dispatchDueContinuations();
+    svc.setThreadLimited(id, Date.now() + 50);
+    await pause(180);
+    expect(adapter.sent.some((text) => text.includes("usage limit has reset"))).toBe(true);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
   test("a queued follow-up that hits a limit is held, then drains after recovery", async () => {
     const id = "queue-hold";
     store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
