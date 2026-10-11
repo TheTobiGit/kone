@@ -81,6 +81,7 @@ import {
 } from "./providerSettings.js";
 import { sidechatBootstrapForTurn, type HandoffBudgetOptions } from "./sidechat.js";
 import { forkThreadForEdit } from "./editFork.js";
+import { forkThreadAtTurn } from "./threadFork.js";
 import { subagentWakePrompt } from "./subagentWake.js";
 // Resolved at call time, not imported as a value binding: the dispatcher is
 // built after the service (it takes one), so at module load there is nothing to
@@ -98,6 +99,7 @@ import type {
   EmitEvent,
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
+  ForkThreadAtTurnResult,
   ModelDescriptor,
   ProviderAdapter,
   ProviderConfig,
@@ -108,6 +110,7 @@ import type {
   ProviderUpdateResult,
   QueuedTurnRow,
   QueuedTurnStore,
+  RewindConversationOnlyInput,
   RuntimeEvent,
   Session,
   SendTurnInput,
@@ -299,6 +302,8 @@ export type AgentServiceOptions = {
     | "latestUserAuthoredAt"
     | "threadIsBusy"
     | "cancelContinuationsForThread"
+    | "threadForkContext"
+    | "markTurnsRolledBack"
   >;
   /** Settle-on-merge tuning. `pullRequestSweepMs: 0` disables the sweep. */
   pullRequestSweepMs?: number;
@@ -1254,7 +1259,11 @@ export class AgentService {
     // other turn/thread. The history budget is sized from the target model's
     // window and the provider's cap; a new prompt that cannot fit even with
     // zero history rejects here, up front, rather than dropping context.
-    const sidechatInput = sidechatBootstrapForTurn(
+    const forkContext = this.historyStore?.threadForkContext(input.threadId);
+    const nativeForkMatchesProvider = Boolean(
+      forkContext?.nativeFork && forkContext.sourceProvider === provider,
+    );
+    const sidechatInput = nativeForkMatchesProvider ? null : sidechatBootstrapForTurn(
       input.threadId,
       input.input,
       this.handoffBudgetOptions(provider, input.model, input.threadId, input.attachments),
@@ -2076,6 +2085,7 @@ export class AgentService {
           }
         }
       }
+      this.historyStore?.markTurnsRolledBack(threadId, turnId);
       return { ok: true };
     } catch (err) {
       console.warn(`[agent] revert to checkpoint failed for ${threadId}/${turnId}:`, err);
@@ -2172,6 +2182,13 @@ export class AgentService {
    *  initiative. */
   supportsThreadCompaction(provider: ProviderKind): boolean {
     return isCompactionSupported(this.adapter(provider).capabilities.compaction);
+  }
+
+  /** Whether a provider can fork a prior conversation natively (Codex
+   *  `thread/fork`, Claude `forkSession`). False means the portable branch
+   *  import is the fork path. */
+  supportsFork(provider: ProviderKind): boolean {
+    return this.adapter(provider).capabilities.supportsFork === true;
   }
 
   /** Trigger context compaction for the thread's session. Rejects when there
@@ -4320,6 +4337,31 @@ export class AgentService {
       );
     }
     return forkThreadForEdit(input);
+  }
+
+  /** Rewind the conversation only: continue a finished turn in a new thread
+   *  without touching files. This is what a file-restore refusal offers as
+   *  its alternative — the input is exactly the rewind target it hands over,
+   *  plus the caller-minted creation ids. Unlike the edit fork, no session
+   *  starts and nothing is sent: the fork waits for the user's first message.
+   *
+   *  Refuses while the source thread has a turn in flight, for the same
+   *  reason as the edit fork: rewinding would slice a moving transcript. */
+  rewindConversationOnly(input: RewindConversationOnlyInput): ForkThreadAtTurnResult {
+    if (this.isThreadBusy(input.sourceThreadId)) {
+      throw new Error(
+        "A turn is still running on this thread — wait for it to finish (or stop it) before rewinding the conversation.",
+      );
+    }
+    const provider = this.historyStore?.threadMeta(input.sourceThreadId)?.provider;
+    return forkThreadAtTurn({
+      requestId: input.requestId,
+      threadId: input.threadId,
+      sourceThreadId: input.sourceThreadId,
+      turnId: input.turnId,
+      userBlockId: input.userBlockId,
+      supportsFork: provider ? this.supportsFork(provider) : false,
+    });
   }
 
   /** Stop one nested subagent run without ending the parent turn. */

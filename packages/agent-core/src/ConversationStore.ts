@@ -14,6 +14,7 @@ import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
 import { AgentInboxRepo, type AgentInboxStore, type InboxChangeListener, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
+import { TurnRollbackRepo } from "./store/turnRollbacks.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
@@ -57,6 +58,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   private readonly agentInbox: AgentInboxRepo;
   private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly continuations: ContinuationRepo;
+  private readonly turnRollbacks: TurnRollbackRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
@@ -97,6 +99,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     this.agentInbox = new AgentInboxRepo(this.dbh);
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.continuations = new ContinuationRepo(this.dbh);
+    this.turnRollbacks = new TurnRollbackRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
@@ -512,6 +515,21 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
     return this.turnCheckpoints.recordTurnCheckpoint(input);
   }
 
+  /** @see TurnRollbackRepo */
+  markTurnsRolledBack(threadId: string, fromTurnId: string, at?: number): string[] {
+    return this.turnRollbacks.markTurnsRolledBack(threadId, fromTurnId, at);
+  }
+
+  /** @see TurnRollbackRepo */
+  rolledBackTurnIds(threadId: string): Set<string> {
+    return this.turnRollbacks.rolledBackTurnIds(threadId);
+  }
+
+  /** @see TurnRollbackRepo */
+  isTurnRolledBack(threadId: string, turnId: string): boolean {
+    return this.turnRollbacks.isTurnRolledBack(threadId, turnId);
+  }
+
   /** @see TurnCheckpointRepo */
   getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null {
     return this.turnCheckpoints.getTurnCheckpoint(threadId, turnId);
@@ -917,6 +935,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see TranscriptRepo */
   turnAssistantText(threadId: string, turnId: string): string | null {
     return this.transcript.turnAssistantText(threadId, turnId);
+  }
+
+  /** @see TranscriptRepo */
+  turnAssistantUuid(threadId: string, turnId: string): string | null {
+    return this.transcript.turnAssistantUuid(threadId, turnId);
   }
 
   /** @see TranscriptRepo */

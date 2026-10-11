@@ -550,6 +550,10 @@ describe("gateway integration (real store + HTTP)", () => {
       // Phase 7 agent tools: link/unlink a thread's PR.
       "app_link_thread_pr",
       "app_unlink_thread_pr",
+      // Phase 4 fork tools: fork a finished run at a turn, and merge a fork's
+      // outcome back into its source.
+      "app_fork_thread",
+      "app_merge_back",
       "app_get_provider_status",
       "app_get_usage_report",
       "app_set_provider_enabled",

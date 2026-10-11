@@ -57,6 +57,7 @@ class FakeAdapter {
   static startedAgents: Array<SessionStartInput["agent"]> = [];
   /** The conversation each session start asked to resume. */
   static startedResumes: Array<string | undefined> = [];
+  static startedForks: Array<SessionStartInput["forkFrom"]> = [];
   /** Whether the adapter still holds a session for the thread — what an exit
    *  from a session it has since replaced looks like. */
   static holding = false;
@@ -73,13 +74,14 @@ class FakeAdapter {
     return [];
   }
   async startSession(
-    input: Pick<SessionStartInput, "threadId" | "cwd" | "agent" | "resume">,
+    input: Pick<SessionStartInput, "threadId" | "cwd" | "agent" | "resume" | "forkFrom">,
   ): Promise<{ threadId: string; provider: "codex" }> {
     // The directory a provider process would have been spawned in. Recorded
     // before the gate so a test can tell the session has started coming up.
     FakeAdapter.startedCwds.push(input.cwd);
     FakeAdapter.startedAgents.push(input.agent);
     FakeAdapter.startedResumes.push(input.resume);
+    FakeAdapter.startedForks.push(input.forkFrom);
     if (FakeAdapter.startError) throw FakeAdapter.startError;
     if (startGate) await startGate;
     return { threadId: input.threadId, provider: "codex" };
@@ -389,7 +391,9 @@ describe("thread dispatcher: a steer is the user speaking", () => {
   });
 
   test("a silent turn reaches the agent but leaves no user block", async () => {
-    const { store, dispatcher } = await harness();
+    const { dispatcher } = await harness();
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
     await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
 
     await dispatcher.sendThreadTurn(
@@ -575,6 +579,35 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     // that view the store no longer has it.
     expect(journaledEvents).toHaveLength(1);
     expect(unjournaledEvents).toEqual([journaledEvents[0]!.id]);
+  });
+});
+
+describe("thread dispatcher native fork startup", () => {
+  test("normal startThread resolves the saved native fork target", async () => {
+    const { store, dispatcher } = await harness();
+    store.ensureThread({ threadId: "fork-source", projectPath: CWD, provider: "codex" });
+    store.recordUserBlock({ threadId: "fork-source", blockId: "prompt", text: "remember ALPHA", at: 1 });
+    store.applyEvent({ type: "turn.started", threadId: "fork-source", provider: "codex", turnId: "turn-native", at: 2, source: "test" });
+    store.applyEvent({ type: "item.updated", threadId: "fork-source", provider: "codex", turnId: "turn-native", at: 3, source: "test", item: { itemId: "answer", kind: "assistant_text", status: "completed", text: "ALPHA" } });
+    store.applyEvent({ type: "turn.completed", threadId: "fork-source", provider: "codex", turnId: "turn-native", at: 4, source: "test" });
+    store.captureConversationId("fork-source", "native-conversation");
+    store.writeForkThread({
+      requestId: "native-start", threadId: "fork-start", sourceThreadId: "fork-source", projectPath: CWD,
+      provider: "codex", createdAt: 5, importedBlocks: [], branch: null, envMode: null, worktreePath: null, requestedBranch: null,
+      forkContext: { sourceThreadId: "fork-source", forkPointBlockId: "answer", importedAt: 5, bootstrapStatus: "pending", forkKind: "branch", sourceProvider: "codex", nativeFork: { conversationId: "native-conversation", beforeTurnId: "turn-native" } },
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "fork-start" },
+    });
+    await dispatcher.startThread({ threadId: "fork-start", provider: "codex", cwd: CWD });
+    expect(FakeAdapter.startedForks.at(-1)).toEqual({ conversationId: "native-conversation", beforeTurnId: "turn-native" });
+    store.writeForkThread({
+      requestId: "portable-start", threadId: "fork-portable-start", sourceThreadId: "fork-source", projectPath: CWD,
+      provider: "codex", createdAt: 6, importedBlocks: [{ id: "portable-prompt", role: "user", text: "remember ALPHA", at: 1 }],
+      branch: null, envMode: null, worktreePath: null, requestedBranch: null,
+      forkContext: { sourceThreadId: "fork-source", forkPointBlockId: "answer", importedAt: 6, bootstrapStatus: "pending", forkKind: "branch", sourceProvider: "claudeAgent", nativeFork: { conversationId: "foreign-session", assistantUuid: "foreign-uuid" } },
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "fork-portable-start" },
+    });
+    await dispatcher.startThread({ threadId: "fork-portable-start", provider: "codex", cwd: CWD });
+    expect(FakeAdapter.startedForks.at(-1)).toBeUndefined();
   });
 });
 
