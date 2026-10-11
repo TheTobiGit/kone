@@ -270,6 +270,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // runner is the dispatcher, absent in a gateway built without one.
   // A message to a thread is a job in its inbox.
   const appThreadOptions: AppThreadsToolOptions = { store: input.store, emit: input.emit, jobs: getIrcMailbox() };
+  appThreadOptions.willReportChild = (threadId) => getSpawnEngine()?.willReport(threadId) ?? true;
   if (input.readProjects) appThreadOptions.readProjects = input.readProjects;
   if (input.isThreadLive) appThreadOptions.isThreadLive = input.isThreadLive;
   if (input.pendingThreadGate) appThreadOptions.pendingGateFor = input.pendingThreadGate;

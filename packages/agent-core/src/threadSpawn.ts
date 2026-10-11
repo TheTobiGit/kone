@@ -418,6 +418,8 @@ export interface SpawnEngine {
    *  its current turn comes to is no news to that agent, so it is not
    *  reported. A follow-up from up the chain lifts it. */
   muteReports(threadId: string): void;
+  /** Whether a future settled turn can be delivered to this thread's parent. */
+  willReport(threadId: string): boolean;
   /** The children `threadId` is parked in agent_wait on, and since when. */
   waitingOn(threadId: string): { threadIds: string[]; since: number } | null;
   waitFor(input: {
@@ -883,6 +885,10 @@ class SpawnEngineImpl implements SpawnEngine {
 
   muteReports(threadId: string): void {
     this.reportsOf(threadId).muted = true;
+  }
+
+  willReport(threadId: string): boolean {
+    return this.reportSink !== undefined && this.reports.get(threadId)?.muted !== true;
   }
 
   declineChildGate(
