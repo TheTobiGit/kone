@@ -143,7 +143,7 @@ describe("OpenCodeServerLedger", () => {
     }
   });
 
-  test("retains an entry when group liveness cannot be confirmed", async () => {
+  test("retains an entry and counts an unverifiable EPERM group probe", async () => {
     const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "start", command: "opencode" }), [], undefined, async (pgid) => [{ pid: pgid, startTime: "start", command: "opencode" }]);
     await subject.record(41001, 41001);
     const originalKill = process.kill;
@@ -155,7 +155,7 @@ describe("OpenCodeServerLedger", () => {
     process.kill = denyProcessKill;
     try {
       await subject.reap();
-      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode", marker: "", unverifiableAttempts: 0 }]);
+      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode", marker: "", unverifiableAttempts: 1 }]);
     } finally {
       process.kill = originalKill;
     }
