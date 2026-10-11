@@ -19,6 +19,7 @@ export type ScheduleRunnerDeps = {
 export class ScheduleRunner {
   private timer: Timer | null = null;
   private stopped = true;
+  private tickInFlight = false;
   private readonly now: () => number;
   private readonly setTimer: (callback: () => void, delayMs: number) => Timer;
   private readonly clearTimer: (timer: Timer) => void;
@@ -37,41 +38,71 @@ export class ScheduleRunner {
 
   private async tick(): Promise<void> {
     if (this.stopped) return;
-    const fired = this.deps.store.fireDueSchedules(this.now());
-    for (const failure of fired.failures) {
-      const previous = this.failedOccurrences.get(failure.scheduleId);
-      const attempt = previous?.occurrenceAt === failure.occurrenceAt ? previous.attempt + 1 : 1;
-      const retryAt = this.now() + Math.min(60_000, 30_000 * 2 ** (attempt - 1));
-      this.failedOccurrences.set(failure.scheduleId, { occurrenceAt: failure.occurrenceAt, attempt, retryAt });
-      const key = `${failure.scheduleId}:${failure.occurrenceAt}`;
-      if (!this.loggedFailures.has(key)) {
-        this.loggedFailures.add(key);
-        console.error(`[schedule-runner] schedule ${failure.scheduleId} occurrence ${failure.occurrenceAt} failed: ${failure.error}`);
-      }
+    if (this.tickInFlight) {
+      this.arm();
+      return;
     }
-    const projects = new Set([...fired.fired.map(({ schedule }) => schedule.projectPath), ...this.deps.store.projectsWithQueuedJobs()]);
-    for (const projectPath of projects) await this.deps.drainProject(projectPath);
-    this.arm();
+    this.tickInFlight = true;
+    const projects = new Set<string>();
+    try {
+      const fired = this.deps.store.fireDueSchedules(this.now());
+      for (const failure of fired.failures) {
+        const previous = this.failedOccurrences.get(failure.scheduleId);
+        const attempt = previous?.occurrenceAt === failure.occurrenceAt ? previous.attempt + 1 : 1;
+        const retryAt = this.now() + Math.min(60_000, 30_000 * 2 ** (attempt - 1));
+        this.failedOccurrences.set(failure.scheduleId, { occurrenceAt: failure.occurrenceAt, attempt, retryAt });
+        const key = `${failure.scheduleId}:${failure.occurrenceAt}`;
+        if (!this.loggedFailures.has(key)) {
+          this.loggedFailures.add(key);
+          console.error(`[schedule-runner] schedule ${failure.scheduleId} occurrence ${failure.occurrenceAt} failed: ${failure.error}`);
+        }
+      }
+      for (const { schedule } of fired.fired) projects.add(schedule.projectPath);
+      for (const projectPath of this.deps.store.projectsWithQueuedJobs()) projects.add(projectPath);
+    } catch (error) {
+      console.error("[schedule-runner] schedule tick failed:", error);
+    } finally {
+      this.arm();
+    }
+
+    try {
+      for (const projectPath of projects) {
+        if (this.stopped) break;
+        try {
+          await this.deps.drainProject(projectPath);
+        } catch (error) {
+          console.error(`[schedule-runner] could not drain queued jobs for ${projectPath}:`, error);
+        }
+      }
+    } finally {
+      this.tickInFlight = false;
+      if (!this.stopped && this.timer === null) this.arm();
+    }
   }
 
   private arm(): void {
     if (this.timer) this.clearTimer(this.timer);
     if (this.stopped) return;
-    const future = this.deps.store.listSchedules().flatMap((schedule) => {
-      if (schedule.paused || schedule.nextRunAt === null) {
-        this.failedOccurrences.delete(schedule.scheduleId);
-        return [];
-      }
-      const failed = this.failedOccurrences.get(schedule.scheduleId);
-      if (failed && failed.occurrenceAt !== schedule.nextRunAt) {
-        this.failedOccurrences.delete(schedule.scheduleId);
-        this.loggedFailures.delete(`${schedule.scheduleId}:${failed.occurrenceAt}`);
-        return [schedule.nextRunAt];
-      }
-      return [failed?.retryAt ?? schedule.nextRunAt];
-    });
-    const next = future.length ? Math.min(...future) : null;
-    const delay = Math.min(60_000, Math.max(0, (next ?? this.now() + 60_000) - this.now()));
+    let delay = 60_000;
+    try {
+      const future = this.deps.store.listSchedules().flatMap((schedule) => {
+        if (schedule.paused || schedule.nextRunAt === null) {
+          this.failedOccurrences.delete(schedule.scheduleId);
+          return [];
+        }
+        const failed = this.failedOccurrences.get(schedule.scheduleId);
+        if (failed && failed.occurrenceAt !== schedule.nextRunAt) {
+          this.failedOccurrences.delete(schedule.scheduleId);
+          this.loggedFailures.delete(`${schedule.scheduleId}:${failed.occurrenceAt}`);
+          return [schedule.nextRunAt];
+        }
+        return [failed?.retryAt ?? schedule.nextRunAt];
+      });
+      const next = future.length ? Math.min(...future) : null;
+      delay = Math.min(60_000, Math.max(0, (next ?? this.now() + 60_000) - this.now()));
+    } catch (error) {
+      console.error("[schedule-runner] could not inspect schedules for timer:", error);
+    }
     this.timer = this.setTimer(() => { this.timer = null; void this.tick(); }, delay);
     this.timer.unref?.();
   }
