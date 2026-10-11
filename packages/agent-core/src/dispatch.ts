@@ -478,6 +478,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.runSetupScript = deps.runSetupScript;
 
     this.service.onEvent?.((event) => {
+      if (event.type === "thread.limit.updated") {
+        this.armContinuationTimer();
+        return;
+      }
       if (event.type !== "turn.queued-cancelled" && event.type !== "turn.promoted") return;
       const outcome = event.type === "turn.promoted" ? "promoted" : "cancelled";
       const carrier = this.queuedCarrierNotes.get(event.queueId);
