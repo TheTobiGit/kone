@@ -726,10 +726,19 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   }
 
   async resumeLimitedThread(threadId: string): Promise<void> {
-    // Clear first: the resume turn is accepted as new work anyway, and the
-    // queue must be free to drain once the session is up.
+    const meta = this.store.threadMeta(threadId);
+    const resetAt = meta?.limitResetAt ?? null;
+    await this.ensureThreadSession(threadId, { resume: true });
     this.service.clearThreadLimited(threadId);
-    await this.dispatchQuitResumeTurn(threadId, LIMIT_RESUME_PROMPT);
+    try {
+      await this.sendThreadTurn(
+        { threadId, input: LIMIT_RESUME_PROMPT },
+        { silent: true, generateTitle: false },
+      );
+    } catch (error) {
+      this.service.setThreadLimited(threadId, resetAt);
+      throw error;
+    }
   }
 
   async resumeQuitInterruptedChatsAtBoot(): Promise<{
