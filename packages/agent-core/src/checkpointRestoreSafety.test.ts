@@ -166,4 +166,16 @@ describe("claimRestoreDir and isRestoreActive", () => {
     second();
     expect(isRestoreActive(worktree)).toBe(false);
   });
+
+  test("a not-yet-created directory under a symlinked path still sees the claim", () => {
+    const real = dir("p-claim-link-real", "wt");
+    const link = path.join(root, "p-claim-link");
+    symlinkSync(path.dirname(real), link);
+    const release = claimRestoreDir(real);
+    try {
+      expect(isRestoreActive(path.join(link, "wt", "not-created", "deeper"))).toBe(true);
+    } finally {
+      release();
+    }
+  });
 });
