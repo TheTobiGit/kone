@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { nextOccurrence, parseCron } from "../cronSchedule.js";
 import type { ConversationDb } from "./ConversationDb.js";
-import { withTransaction } from "../conversationMigrations.js";
 import { JOB_SORT_UNSET, rowToJob, ScheduleJobTemplateSchema, type JobDbRow, type JobRow, type ScheduleCreateInput, type ScheduleFireResult, type ScheduleJobTemplate, type SchedulePatch, type ScheduleRow } from "../conversationStoreTypes.js";
 
 type ScheduleDbRow = { schedule_id: string; project_path: string; title: string; cron: string; job_template_json: string; paused: number; next_run_at: number | null; last_run_at: number | null; last_job_id: string | null; created_at: number; updated_at: number };
@@ -16,7 +15,10 @@ function toSchedule(row: ScheduleDbRow): ScheduleRow {
 }
 
 export class ScheduleRepo {
-  constructor(private readonly dbh: ConversationDb) {}
+  constructor(
+    private readonly dbh: ConversationDb,
+    private readonly hooks: { beforeFireTransaction?: (scheduleId: string) => void } = {},
+  ) {}
 
   createSchedule(input: ScheduleCreateInput): ScheduleRow | null {
     const db = this.dbh.handle(); if (!db) return null;
@@ -79,17 +81,10 @@ export class ScheduleRepo {
     const db = this.dbh.handle(); const schedule = this.getSchedule(id);
     if (!db || !schedule) return { job: null, reason: "unknown schedule" };
     let job: JobRow | null = null;
-    this.dbh.durably(db, () => {
-      db.exec("BEGIN IMMEDIATE");
-      try {
+    this.dbh.durably(db, () => this.immediateTransaction(db, () => {
       const current = this.getSchedule(id);
-      if (current && !this.hasActiveJob(current)) job = this.insertScheduledJob(current, at);
-      db.exec("COMMIT");
-      } catch (error) {
-        try { db.exec("ROLLBACK"); } catch { /* no active transaction */ }
-        throw error;
-      }
-    });
+      if (current && !this.hasActiveJob(current.scheduleId)) job = this.insertScheduledJob(current, at);
+    }));
     return job ? { job } : { job: null, reason: "the previous scheduled job is still queued or running" };
   }
 
@@ -102,15 +97,17 @@ export class ScheduleRepo {
       let fired: { schedule: ScheduleRow; job: JobRow } | undefined;
       let skipped: ScheduleFireResult["skipped"][number] | undefined;
       try {
-        this.dbh.durably(db, () => withTransaction(db, () => {
-          const old = candidate.next_run_at;
-          if (old === null) return;
-          const advanced = nextOccurrence(candidate.cron, new Date(now)).getTime();
-          const cas = db.prepare("UPDATE schedules SET next_run_at=?, updated_at=? WHERE schedule_id=? AND next_run_at=? AND paused=0").run(advanced, now, candidate.schedule_id, old);
+        this.hooks.beforeFireTransaction?.(candidate.schedule_id);
+        this.dbh.durably(db, () => this.immediateTransaction(db, () => {
+          const current = this.readScheduleRow(candidate.schedule_id);
+          const old = current?.next_run_at ?? null;
+          if (!current || old === null || old !== candidate.next_run_at || old > now || current.paused === 1) return;
+          const advanced = nextOccurrence(current.cron, new Date(now)).getTime();
+          const cas = db.prepare("UPDATE schedules SET next_run_at=?, updated_at=? WHERE schedule_id=? AND next_run_at=? AND paused=0").run(advanced, now, current.schedule_id, old);
           if (cas.changes !== 1) return;
-          const schedule = toSchedule(candidate);
+          const schedule = toSchedule(current);
           if (now - old > graceMs) { skipped = { scheduleId: candidate.schedule_id, reason: "outside-grace" }; return; }
-          if (this.hasActiveJob(schedule)) { skipped = { scheduleId: candidate.schedule_id, reason: "job-active" }; return; }
+          if (this.hasActiveJob(schedule.scheduleId)) { skipped = { scheduleId: candidate.schedule_id, reason: "job-active" }; return; }
           const job = this.insertScheduledJob(schedule, now);
           if (!job) throw new Error("Could not create scheduled job");
           fired = { schedule: this.getSchedule(candidate.schedule_id) ?? schedule, job };
@@ -128,12 +125,26 @@ export class ScheduleRepo {
     return result;
   }
 
-  private hasActiveJob(schedule: ScheduleRow): boolean {
-    if (!schedule.lastJobId) return false;
+  private hasActiveJob(scheduleId: string): boolean {
     const db = this.dbh.handle(); if (!db) return false;
-    // SAFETY: the query selects one status string and returns no row when the linked job was deleted.
-    const row = db.prepare("SELECT status FROM jobs WHERE job_id=? AND schedule_id=?").get(schedule.lastJobId, schedule.scheduleId) as { status: string } | undefined;
-    return row?.status === "queued" || row?.status === "running";
+    return Boolean(db.prepare("SELECT 1 FROM jobs WHERE schedule_id=? AND status IN ('queued', 'running') LIMIT 1").get(scheduleId));
+  }
+
+  private readScheduleRow(id: string): ScheduleDbRow | null {
+    const db = this.dbh.handle(); if (!db) return null;
+    // SAFETY: this projection names every column in ScheduleDbRow and returns no row for an unknown id.
+    return (db.prepare(`SELECT ${SCHEDULE_COLUMNS} FROM schedules WHERE schedule_id=?`).get(id) as ScheduleDbRow | undefined) ?? null;
+  }
+
+  private immediateTransaction(db: NonNullable<ReturnType<ConversationDb["handle"]>>, write: () => void): void {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      write();
+      db.exec("COMMIT");
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* no active transaction */ }
+      throw error;
+    }
   }
 
   private insertScheduledJob(schedule: ScheduleRow, at: number): JobRow | null {
