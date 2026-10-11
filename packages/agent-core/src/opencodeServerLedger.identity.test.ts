@@ -111,7 +111,10 @@ test("escalates a live leader despite ordinary process-group child churn", async
     await ledger.record(pid);
     await ledger.reap();
     let alive = true;
-    try { process.kill(pid, 0); } catch { alive = false; }
+    try {
+      const state = await new Promise<string>((resolve, reject) => execFile("ps", ["-o", "stat=", "-p", String(pid)], (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
+      alive = state !== "" && !state.startsWith("Z");
+    } catch { alive = false; }
     expect(alive).toBe(false);
   } finally {
     killProcessGroup(pid, "SIGKILL");
