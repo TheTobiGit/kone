@@ -40,6 +40,10 @@ let holdPreview = true;
 let holdRestore = false;
 let restored = 0;
 
+// Bun's module mocks outlive this file in a shared test process; keep the real
+// module so afterAll can put it back for files that run real git.
+const realCheckpoint = { ...(await import("@kone/git-core/checkpoint.js")) };
+
 mock.module("@kone/git-core/checkpoint.js", () => ({
   checkpointExists: async () => true,
   createCheckpoint: async () => ({ id: "cp", ref: "refs/kone/checkpoints/cp", createdAt: 1 }),
@@ -158,6 +162,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
+  mock.module("@kone/git-core/checkpoint.js", () => realCheckpoint);
   rmSync(root, { recursive: true, force: true });
 });
 
