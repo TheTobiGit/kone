@@ -1050,6 +1050,11 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleMessage(session: ClaudeSession, message: SDKMessage): void {
+    if (readString(message, "type") === "rate_limit_event") {
+      const resetAt = limitResetFromError(message, Date.now());
+      if (resetAt !== null) session.limitResetAt = resetAt;
+      return;
+    }
     // A message forwarded from a nested subagent belongs to that run's scope,
     // not the parent turn. Claude also sets parent_tool_use_id on async Bash
     // progress, so only ids we've *recognized* as a subagent spawn are routed.
@@ -1652,7 +1657,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (detail) aborted.message = detail;
     // A limit result can carry the reset (rate_limit_event / resetsAt); read it
     // before the payload is flattened to text.
-    const resetAt = limitResetFromError(message, Date.now());
+    const resetAt = limitResetFromError(message, Date.now()) ?? session.limitResetAt ?? null;
+    session.limitResetAt = undefined;
     if (resetAt !== null) aborted.limitResetAt = resetAt;
     this.emit(aborted);
   }

@@ -151,6 +151,7 @@ export type ClaudeSession = {
   /** The uuid of the most recent main-conversation assistant message. */
   lastAssistantUuid?: string;
   activeTurnId?: string;
+  limitResetAt?: number;
   /** The main conversation's projection scope. */
   main: ClaudeScope;
   /** Live subagent runs, keyed by the spawning Task tool-use id. */
