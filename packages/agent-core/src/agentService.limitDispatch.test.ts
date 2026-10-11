@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
+import { claimRestoreDir } from "./checkpointRestoreSafety.js";
 import type { ProviderAdapter, RuntimeEvent } from "./types.js";
 
 // Phase 3: a queued follow-up that hits a usage limit is held (not failed) and
@@ -142,6 +143,30 @@ describe("P3 usage-limit dispatch", () => {
     await dispatcher.dispatchDueContinuations();
     expect(adapter.sent).toEqual([]);
     expect(store.listContinuationsForThread(cleared)).toEqual([]);
+    await svc.stopAll();
+  });
+
+  test("a reset due during restore stays scheduled and sends after restore releases", async () => {
+    const id = "limit-reset-restore";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    svc.setThreadLimited(id, Date.now() + 60_000);
+    store.cancelContinuationsForThread(id);
+    store.scheduleContinuation({ threadId: id, kind: "limit-reset", dueAt: 0 });
+    const release = claimRestoreDir("/tmp");
+    try {
+      await dispatcher.dispatchDueContinuations();
+      expect(adapter.sent).toEqual([]);
+      expect(store.listContinuationsForThread(id)).toHaveLength(1);
+    } finally {
+      release();
+    }
+    await pause(400);
+    expect(adapter.sent.some((text) => text.includes("usage limit has reset"))).toBe(true);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    expect(store.threadMeta(id)?.limitedAt ?? null).toBeNull();
     await svc.stopAll();
   });
 });

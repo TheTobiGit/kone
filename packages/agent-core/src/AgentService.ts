@@ -1323,7 +1323,10 @@ export class AgentService {
   /** Is a checkpoint restore rewriting the directory this thread's session
    *  runs in? No turn may start there until it lets go. */
   private restoreHolds(threadId: string): boolean {
-    const cwd = this.sessionInputs.get(threadId)?.cwd;
+    const cwd =
+      this.sessionInputs.get(threadId)?.cwd ??
+      this.historyStore?.threadMeta(threadId)?.projectPath ??
+      undefined;
     return cwd !== undefined && isRestoreActive(cwd);
   }
 
