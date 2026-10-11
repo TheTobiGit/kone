@@ -190,6 +190,33 @@ async function liveTurnWithSubagent(
 }
 
 describe("Claude result handler", () => {
+  test("carries a rejected rate-limit event reset into the failed turn", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    const { turnId } = await adapter.sendTurn({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      input: "hello",
+    });
+    const resetsAt = Math.floor(Date.now() / 1000) + 90;
+    state.feed!.push({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt },
+    });
+    state.feed!.push({
+      type: "result",
+      subtype: "error_during_execution",
+      num_turns: 1,
+      is_error: true,
+      errors: ["usage limit reached"],
+    });
+    await flush();
+    expect(ofType(events, "turn.aborted").find((event) => event.turnId === turnId)).toMatchObject({
+      reason: "failed",
+      limitResetAt: resetsAt * 1000,
+    });
+  });
+
   test("result with no active turn (resume handshake) keeps usage, drops the lifecycle event, tripwires", async () => {
     const { adapter, events } = setup();
     await start(adapter);
