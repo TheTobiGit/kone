@@ -2,7 +2,7 @@ import type { ScheduleRow, ScheduleFireResult } from "./conversationStoreTypes.j
 
 type Timer = ReturnType<typeof setTimeout>;
 export type ScheduleRunnerStore = {
-  fireDueSchedules(now: number, graceMs?: number): ScheduleFireResult;
+  fireDueSchedules(now: number, graceMs?: number, deferredScheduleIds?: readonly string[]): ScheduleFireResult;
   listSchedules(projectPath?: string): ScheduleRow[];
   projectsWithQueuedJobs(): string[];
 };
@@ -46,7 +46,11 @@ export class ScheduleRunner {
     this.tickInFlight = true;
     const projects = new Set<string>();
     try {
-      const fired = this.deps.store.fireDueSchedules(this.now());
+      const now = this.now();
+      const deferred = [...this.failedOccurrences]
+        .filter(([, failure]) => failure.retryAt > now)
+        .map(([scheduleId]) => scheduleId);
+      const fired = this.deps.store.fireDueSchedules(now, undefined, deferred);
       for (const failure of fired.failures) {
         const previous = this.failedOccurrences.get(failure.scheduleId);
         const attempt = previous?.occurrenceAt === failure.occurrenceAt ? previous.attempt + 1 : 1;

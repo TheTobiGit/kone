@@ -922,7 +922,7 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   resumeSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.resumeSchedule(id, at); }
   deleteSchedule(id: string): boolean { return this.schedules.deleteSchedule(id); }
   runNow(id: string, at?: number): { job: JobRow | null; reason?: string } { return this.schedules.runNow(id, at); }
-  fireDueSchedules(now: number, graceMs?: number): ScheduleFireResult { return this.schedules.fireDue(now, graceMs); }
+  fireDueSchedules(now: number, graceMs?: number, deferredScheduleIds?: readonly string[]): ScheduleFireResult { return this.schedules.fireDue(now, graceMs, deferredScheduleIds); }
 
   /** @see JobRepo */
   claimNextJob(input: {
