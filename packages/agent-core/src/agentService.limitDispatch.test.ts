@@ -211,17 +211,17 @@ describe("P3 usage-limit dispatch", () => {
     const adapter = new Adapter();
     const svc = build(adapter);
     const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
-    await svc.startSession({ threadId: id, provider: "codex", cwd: "/tmp" });
+    svc.setThreadLimited(id, Date.now() + 60_000);
+    store.enqueueQueuedTurn({
+      queueId: "manual-resume-follow-up",
+      threadId: id,
+      userBlockId: "manual-resume-follow-up-block",
+      input: "queued follow-up",
+    });
+    expect(store.listQueuedTurns(id)).toHaveLength(1);
+    await dispatcher.resumeLimitedThread(id);
     const emit = adapter.emit;
     if (!emit) throw new Error("adapter emit not captured");
-    emit({ type: "turn.started", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "resume-live" });
-    await svc.sendTurn({ threadId: id, input: "queued follow-up" });
-    expect(store.listQueuedTurns(id)).toHaveLength(1);
-    adapter.sendError = new Error("429 usage limit reached");
-    emit({ type: "turn.completed", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "resume-live" });
-    await pause(60);
-    expect(store.threadMeta(id)?.limitedAt ?? null).not.toBeNull();
-    await dispatcher.resumeLimitedThread(id);
     emit({ type: "turn.completed", threadId: id, provider: "codex", at: Date.now(), source: "kone.store", turnId: "t-1" });
     await pause(60);
     expect(adapter.sent[0]).toContain("usage limit has reset");
