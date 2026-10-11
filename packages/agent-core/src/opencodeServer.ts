@@ -10,9 +10,18 @@ import { userDataPath } from "./userDataDir.js";
 
 let serverLedger: OpenCodeServerLedger | undefined;
 let orphanServersReaped: Promise<void> | undefined;
+let ledgerFailureLogged = false;
 function getServerLedger(): OpenCodeServerLedger {
   serverLedger ??= new OpenCodeServerLedger(userDataPath("opencode-servers.json"));
   return serverLedger;
+}
+function logLedgerFailure(message: string): void {
+  if (ledgerFailureLogged) return;
+  ledgerFailureLogged = true;
+  console.warn(`[opencode] server ledger unavailable; continuing without orphan tracking: ${message}`);
+}
+function removeLedgerEntry(pid: number): void {
+  try { getServerLedger().remove(pid); } catch (error) { logLedgerFailure(error instanceof Error ? error.message : String(error)); }
 }
 
 /** Which HTTP protocol a running server speaks, read off its own listening
@@ -87,7 +96,9 @@ async function startOpenCodeServerOnce(input: {
    *  boot can be tracked (and torn down) before it becomes ready. */
   onChild?: (child: ChildProcess) => void;
 }): Promise<OpenCodeServer> {
-  orphanServersReaped ??= Promise.resolve().then(() => getServerLedger().reap());
+  orphanServersReaped ??= Promise.resolve()
+    .then(() => getServerLedger().reap())
+    .catch(() => { logLedgerFailure("startup reap failed"); });
   await orphanServersReaped;
   // Port 0 asks the OS for an ephemeral port at bind time and the server
   // prints the bound URL on its listening line (parsed below). Reserving a
@@ -101,7 +112,9 @@ async function startOpenCodeServerOnce(input: {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
-  if (child.pid !== undefined && process.platform !== "win32") getServerLedger().record(child.pid);
+  if (child.pid !== undefined && process.platform !== "win32") {
+    try { getServerLedger().record(child.pid); } catch (error) { logLedgerFailure(error instanceof Error ? error.message : String(error)); }
+  }
   input.onChild?.(child);
   let stdout = "";
   let stderr = "";
@@ -114,7 +127,7 @@ async function startOpenCodeServerOnce(input: {
       try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGTERM"); } catch { /* already gone */ }
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGKILL"); } catch { /* already gone */ }
-      getServerLedger().remove(child.pid);
+      removeLedgerEntry(child.pid);
     }
   };
 
@@ -163,7 +176,7 @@ async function startOpenCodeServerOnce(input: {
 async function disposeUnready(child: ChildProcess): Promise<void> {
   const pid = child.pid;
   if (child.exitCode !== null || child.signalCode !== null) {
-    if (pid !== undefined && process.platform !== "win32") getServerLedger().remove(pid);
+    if (pid !== undefined && process.platform !== "win32") removeLedgerEntry(pid);
     return;
   }
   if (pid !== undefined) {
@@ -184,7 +197,7 @@ async function disposeUnready(child: ChildProcess): Promise<void> {
   while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  if (pid !== undefined && process.platform !== "win32") getServerLedger().remove(pid);
+  if (pid !== undefined && process.platform !== "win32") removeLedgerEntry(pid);
 }
 
 type SpareEntry = { server: OpenCodeServer; idleTimer: ReturnType<typeof setTimeout> };
