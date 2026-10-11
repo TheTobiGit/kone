@@ -411,6 +411,31 @@ export type StepWait = {
   since: number;
 };
 
+/** Outcome of a stop, split into the request and its confirmation so a caller
+ *  can say which it has. `interruptRequested` is why the stop was worth
+ *  issuing — a live session, a turn in flight, or a session still connecting;
+ *  `confirmedStopped` is the state read after the teardown, false while a
+ *  provider is still coming down (or still coming up) and could yet deliver a
+ *  turn. `wasRunning` is the narrow "a session existed when we looked". */
+export type ThreadStopResult = {
+  interruptRequested: boolean;
+  confirmedStopped: boolean;
+  wasRunning: boolean;
+  /** Why a stop could not be confirmed (a start or teardown that did not
+   *  finish in time), when there is one. */
+  detail?: string;
+};
+
+/** Thrown by `startSession` when an interrupt or stop cancelled the session
+ *  start before it could run its first turn. Callers must treat it as
+ *  "cancelled", not "failed", and keep the prompt rather than discarding it. */
+export class StartCancelled extends Error {
+  constructor(readonly threadId: string) {
+    super(`Session start for ${threadId} was cancelled.`);
+    this.name = "StartCancelled";
+  }
+}
+
 /** What a caller of sendTurn or steerTurn asks of the hand-off. */
 export type TurnSendOptions = {
   /** Runs once, the moment the provider takes the turn — before the

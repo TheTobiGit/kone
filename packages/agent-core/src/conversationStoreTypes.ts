@@ -464,6 +464,16 @@ export function rowToTurnCheckpoint(row: TurnCheckpointDbRow): TurnCheckpointRec
 export type CheckpointStore = {
   threadProjectPath(threadId: string): string | null;
   threadWorkspace(threadId: string): ThreadWorkspace | null;
+  /** Every thread's directory claim, archived included — the restore-safety
+   *  guard's overlap candidates. Fails closed (throws) when unreadable. */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }>;
+  /** The user block that started a turn, for naming the conversation-only
+   *  rewind target in a refusal. */
+  turnUserBlockId(threadId: string, turnId: string): string | null;
   recordTurnCheckpoint(input: {
     threadId: string;
     turnId: string;
