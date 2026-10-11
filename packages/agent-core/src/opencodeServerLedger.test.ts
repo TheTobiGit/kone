@@ -125,10 +125,32 @@ describe("OpenCodeServerLedger", () => {
         alive = !state.startsWith("Z");
       } catch { alive = false; }
       expect(alive).toBe(false);
+      let groupState: "alive" | "gone" | "unknown" = "alive";
+      try { process.kill(-pid, 0); } catch (cause) {
+        groupState = cause instanceof Error && "code" in cause && cause.code === "ESRCH" ? "gone" : "unknown";
+      }
       const entries: unknown = JSON.parse(readFileSync(filePath, "utf8"));
-      expect(entries).toHaveLength(1);
+      expect(entries).toHaveLength(groupState === "gone" ? 0 : 1);
     } finally {
       try { process.kill(-pid, "SIGKILL"); } catch { /* process exited */ }
+    }
+  });
+
+  test("retains an entry when group liveness cannot be confirmed", async () => {
+    const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "start" }), []);
+    await subject.record(41001, 41001);
+    const originalKill = process.kill;
+    const denyProcessKill: typeof process.kill = (pid, signal) => {
+      void pid;
+      void signal;
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    };
+    process.kill = denyProcessKill;
+    try {
+      await subject.reap();
+      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start" }]);
+    } finally {
+      process.kill = originalKill;
     }
   });
 });
