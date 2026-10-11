@@ -1276,6 +1276,7 @@ export class AgentService {
     // way: the row promotes when the restore lets go (runRevert kicks the
     // slot), against the restored tree.
     if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId)) {
+      if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
@@ -1292,6 +1293,7 @@ export class AgentService {
     // before the first await below, so the second call's synchronous prologue
     // sees it and queues instead.
     if (this.isBusy(input.threadId)) {
+      if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
     return this.dispatchToAdapter(input.threadId, routed, input.userBlockId, undefined, options);

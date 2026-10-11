@@ -194,6 +194,8 @@ export interface StartThreadTurnOptions {
    *  actual handoff (after any dispatch-tail wait) and drops the turn if the
    *  row was cancelled in between. */
   continuationId?: string;
+  /** Do not put an app-authored continuation in the durable user queue. */
+  noQueue?: boolean;
 }
 
 export interface ThreadDispatcher {
@@ -899,9 +901,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         }
         const delivery = await this.sendThreadTurn(
           { threadId: row.threadId, input: recheck.prompt },
-          { silent: true, generateTitle: false, continuationId: row.continuationId },
+          { silent: true, generateTitle: false, continuationId: row.continuationId, noQueue: true },
         );
-        if (delivery.queued) {
+        if (delivery.queued || delivery.held) {
           this.store.clearContinuationClaim(row.continuationId);
           this.deferContinuation(row.threadId);
           continue;
@@ -1248,6 +1250,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     if (options?.onAccepted) handOff.onAccepted = options.onAccepted;
     if (options?.onSending) handOff.onSending = options.onSending;
     if (options?.liveOnly) handOff.liveOnly = true;
+    if (options?.noQueue) handOff.noQueue = true;
+    if (options?.noQueue) handOff.noQueue = true;
     const sent =
       destination === "steer"
         ? this.service.steerTurn(dispatched, handOff)
