@@ -1226,9 +1226,11 @@ export function registerAgentIpc(): void {
   });
   // Pin state lives in the DB (v18), so a pinned thread follows the thread
   // across browser profiles — the Project Home / launcher pin toggles call
-  // this instead of writing browser localStorage.
+  // this instead of writing browser localStorage. Runs through the service,
+  // not the bare store, so every window learns the mark over
+  // thread.pinned.updated the way archive/restore fan out.
   ipcMain.handle("agent:set-pinned", (_event, threadId: string, pinned: boolean) =>
-    store.setPinned(threadId, pinned),
+    svc.setThreadPinned(threadId, pinned),
   );
   ipcMain.handle("agent:thread-reference-list", (_event, ownerThreadId: string) =>
     store.listThreadReferences(ownerThreadId),

@@ -41,9 +41,16 @@ export class ThreadReferenceRepo {
   }
 
   detach(ownerThreadId: string, targetThreadId: string): boolean {
+    if (ownerThreadId === targetThreadId) return false;
     const db = this.dbh.handle();
     if (!db) return false;
     try {
+      // Detach validates the same two distinct existing endpoints attach does,
+      // so a stale id or a self-pair is refused rather than reported as a
+      // successful removal of an edge that never existed.
+      // SAFETY: COUNT(*) aliases its single integer result as `count`.
+      const endpoints = db.prepare(`SELECT count(*) AS count FROM threads WHERE thread_id IN (?, ?)`).get(ownerThreadId, targetThreadId) as { count: number } | undefined;
+      if (endpoints?.count !== 2) return false;
       db.prepare(`DELETE FROM thread_references WHERE owner_thread_id = ? AND target_thread_id = ?`).run(ownerThreadId, targetThreadId);
       return true;
     } catch (err) {

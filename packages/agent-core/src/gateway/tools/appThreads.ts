@@ -1252,9 +1252,13 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     const timeoutMs = Math.min(input.timeoutMs ?? SPAWN_WAIT_DEFAULT_MS, SPAWN_WAIT_MAX_MS);
     const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
     const assistantCaller = callerMeta?.projectPath === GLOBAL_ASSISTANT_PROJECT_PATH;
-    const targets = input.threadIds.map((threadId, index) => {
+    // Authority is re-derived on every poll, not just at entry: the user may
+    // detach the reference that made a cross-project target readable while the
+    // wait is parked, and the wait must not keep observing it afterwards.
+    const canReadNow = (threadId: string): boolean => {
+      if (assistantCaller) return true;
       const meta = store.threadMeta?.(threadId) ?? null;
-      if (!assistantCaller && !canReadThread({
+      return canReadThread({
         callerThreadId: ctx.threadId,
         targetThreadId: threadId,
         caller: callerMeta ? {
@@ -1268,18 +1272,27 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           parentThreadId: meta.parentThreadId,
         } : null,
         attachedReferences: new Set(store.listThreadReferences?.(ctx.threadId) ?? []),
-      })) {
-        throw new GatewayToolError("capability_denied", `Thread "${threadId}" is outside what this conversation may read.`);
+      });
+    };
+    const outOfScope = (threadId: string): string =>
+      `Thread "${threadId}" is outside what this conversation may read.`;
+    const targets = input.threadIds.map((threadId, index) => {
+      if (!canReadNow(threadId)) {
+        throw new GatewayToolError("capability_denied", outOfScope(threadId));
       }
       const thread = store.loadThread(threadId);
       const latestTurnId = [...(thread?.blocks ?? [])].reverse().find((block) => block.role === "assistant")?.turnId;
       return { threadId, turnId: input.turnIds?.[index] ?? latestTurnId };
     });
     const startedAt = Date.now();
-    let timedOut = false;
-    let results: GatewayRecord[] = [];
-    while (true) {
-      results = targets.map(({ threadId, turnId }) => {
+    // A target whose authority is gone reads as the same refusal app_read_thread
+    // gives an unreadable thread — no completion state and no existence clue.
+    // It counts as settled so one revocation cannot park the whole wait.
+    const pollTargets = (): GatewayRecord[] =>
+      targets.map(({ threadId, turnId }) => {
+        if (!canReadNow(threadId)) {
+          return { threadId, refused: true, terminal: true, refusal: `capability_denied: ${outOfScope(threadId)}` };
+        }
         const span = turnId ? store.turnSpan?.(threadId, turnId) ?? null : store.threadTurnSpan?.(threadId) ?? null;
         const terminal = turnId ? Boolean(span?.endedAt !== null && span?.endedAt !== undefined) : (span?.runningTurns ?? 0) === 0;
         return {
@@ -1291,7 +1304,9 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           read: { tool: "app_read_thread", threadId },
         };
       });
-      if (results.every((result) => result.terminal === true)) break;
+    let timedOut = false;
+    let results = pollTargets();
+    while (!results.every((result) => result.terminal === true)) {
       const remaining = timeoutMs - (Date.now() - startedAt);
       if (remaining <= 0) {
         timedOut = true;
@@ -1299,11 +1314,26 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       }
       if (ctx.signal?.aborted) throw ctx.signal.reason ?? new Error("Wait was aborted.");
       await new Promise((resolve) => setTimeout(resolve, Math.min(100, remaining)));
+      results = pollTargets();
     }
+    // Authority can change between the last poll and the reply; re-derive it
+    // once more so a just-revoked target cannot ride out on the result it last
+    // saw. Progress already read for still-readable targets is kept as-is.
+    const withCurrentAuthority = (observed: GatewayRecord[]): GatewayRecord[] =>
+      observed.map((entry) => {
+        const threadId = String(entry.threadId);
+        if (entry.refused === true || canReadNow(threadId)) return entry;
+        return { threadId, refused: true, terminal: true, refusal: `capability_denied: ${outOfScope(threadId)}` };
+      });
+    results = withCurrentAuthority(results);
+    const describe = (result: GatewayRecord): string =>
+      result.refused === true
+        ? String(result.refusal)
+        : `${result.threadId} (${result.turnId ?? "no turn"}): ${result.state ?? "running"}; read with app_read_thread.`;
     return {
       content: [{
         type: "text",
-        text: `${timedOut ? "Timed out with progress reported; no thread was cancelled." : "All requested turns settled."}\n${results.map((result) => `${result.threadId} (${result.turnId ?? "no turn"}): ${result.state ?? "running"}; read with app_read_thread.`).join("\n")}`,
+        text: `${timedOut ? "Timed out with progress reported; no thread was cancelled." : "All requested turns settled."}\n${results.map(describe).join("\n")}`,
       }],
       structuredContent: { timedOut, elapsedMs: Date.now() - startedAt, threads: results },
     };

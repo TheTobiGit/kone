@@ -371,6 +371,20 @@ describe("v1 baseline migration and schema", () => {
     raw.close();
   });
 
+  test("thread reference detach validates distinct existing endpoints", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "detach-owner", projectPath: "/p", provider: "opencode" });
+    store.ensureThread({ threadId: "detach-target", projectPath: "/q", provider: "opencode" });
+    expect(store.detachThreadReference("detach-owner", "detach-owner")).toBe(false);
+    expect(store.detachThreadReference("missing", "detach-target")).toBe(false);
+    expect(store.detachThreadReference("detach-owner", "missing")).toBe(false);
+    // Removing an edge that was never there stays idempotent once both ends exist.
+    expect(store.detachThreadReference("detach-owner", "detach-target")).toBe(true);
+    expect(store.attachThreadReference("detach-owner", "detach-target", 1)).toBe(true);
+    expect(store.detachThreadReference("detach-owner", "detach-target")).toBe(true);
+    expect(store.listThreadReferences("detach-owner")).toEqual([]);
+  });
+
   test("Foreign key rejects dangling parent_thread_id", () => {
     freshStore();
     const raw = rawDb();
