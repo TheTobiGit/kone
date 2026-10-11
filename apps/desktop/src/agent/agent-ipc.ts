@@ -7,6 +7,7 @@ import { AgentService } from "@kone/agent-core/AgentService.js";
 import { handoffTokenCapFor } from "@kone/agent-core/providerSettings.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
 import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
+import type { SpawnedChildrenPageOptions } from "@kone/agent-core/store/lineage.js";
 import {
   getConversationStore,
   projectRuntimeEventForIpc,
@@ -962,6 +963,9 @@ export function registerAgentIpc(): void {
   // has no record of them — this is the one read that repopulates the dock.
   ipcMain.handle("agent:spawn-children", (_event, threadId: string) =>
     getSpawnEngine()?.children(threadId) ?? [],
+  );
+  ipcMain.handle("agent:spawn-children-page", (_event, threadId: string, options?: SpawnedChildrenPageOptions) =>
+    store.spawnedChildrenPage(threadId, options),
   );
 
   // Persisted conversation history. Reads rehydrate a project's last thread on

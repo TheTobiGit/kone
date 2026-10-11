@@ -158,6 +158,38 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.writeSpawnedThread({ ...input })).toBe(false);
   });
 
+  test("spawned children page uses a stable opaque created-at and id cursor", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "parent", projectPath: "/tmp/proj", provider: "opencode" });
+    for (const threadId of ["child-c", "child-a", "child-b"]) {
+      expect(store.writeSpawnedThread({
+        threadId,
+        projectPath: "/tmp/proj",
+        provider: "opencode",
+        createdAt: 10,
+        title: threadId,
+        lineage: spawnedLineage("parent", "parent"),
+      })).toBe(true);
+    }
+
+    const first = store.spawnedChildrenPage("parent", { limit: 1 });
+    expect(first.items.map((thread) => thread.threadId)).toEqual(["child-a"]);
+    expect(first.total).toBe(3);
+    expect(first.nextCursor).toBeString();
+    expect(first.nextCursor).not.toContain("child-a");
+
+    const second = store.spawnedChildrenPage("parent", { limit: 1, cursor: first.nextCursor });
+    expect(second.items.map((thread) => thread.threadId)).toEqual(["child-b"]);
+    expect(second.total).toBe(3);
+    const third = store.spawnedChildrenPage("parent", { limit: 1, cursor: second.nextCursor });
+    expect(third.items.map((thread) => thread.threadId)).toEqual(["child-c"]);
+    expect(third.nextCursor).toBeNull();
+
+    expect(store.spawnedChildrenPage("parent", { limit: 1000 }).items).toHaveLength(3);
+    expect(store.spawnedChildrenPage("parent", { cursor: "invalid" })).toEqual({ items: [], total: 0, nextCursor: null });
+    expect(store.spawnedChildren("parent")).toHaveLength(3);
+  });
+
   test("boot recovery seals an undispatched spawned child as failed (F8)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-seal-"));
     useUserDataDir(dir);

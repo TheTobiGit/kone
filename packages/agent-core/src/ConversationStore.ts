@@ -14,12 +14,13 @@ import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
 import { AgentInboxRepo, type AgentInboxStore, type InboxChangeListener, type InboxClaim, type InboxInsert, type InboxRing, type InboxInsertResult, type InboxRow, type InboxSeenVia } from "./store/agentInbox.js";
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
-import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
+import { LineageRepo, type ForkThreadAtBlockResult, type SpawnedChildrenPage, type SpawnedChildrenPageOptions } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { ThreadPullRequestRepo } from "./store/threadPullRequest.js";
+import { ThreadReferenceRepo } from "./store/threadReferences.js";
 import { ProjectScriptRepo, type ProjectScriptKind } from "./store/projectScripts.js";
 import type {
   ThreadPullRequestLink,
@@ -882,6 +883,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   /** @see LineageRepo */
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
     return this.lineage.spawnedChildren(parentThreadId);
+  }
+
+  /** @see LineageRepo */
+  spawnedChildrenPage(parentThreadId: string, options?: SpawnedChildrenPageOptions): SpawnedChildrenPage {
+    return this.lineage.spawnedChildrenPage(parentThreadId, options);
   }
 
   /** @see LineageRepo */
