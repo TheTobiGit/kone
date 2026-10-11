@@ -28,6 +28,15 @@ import {
 } from "./appThreads.js";
 
 const KONE = "/Users/dev/Developer/kone";
+/** The assistant's own thread lives on a sentinel project, not a repo; the
+ *  read scope exempts it so it can read across projects. The harness must hold
+ *  it, exactly as the real store does. */
+const ASSISTANT_PROJECT = "__kone_assistant__";
+const ASSISTANT_META = thread({
+  threadId: "assistant-1",
+  title: "kone",
+  projectPath: ASSISTANT_PROJECT,
+});
 const SITE = "/Users/dev/Developer/site";
 
 const PROJECTS: readonly ProjectRosterEntry[] = [
@@ -169,6 +178,7 @@ function makeStore(
     },
     loadThread: (threadId) => (threadId === "t-newest" ? TRANSCRIPT : null),
     threadMeta: (threadId) => {
+      if (threadId === "assistant-1") return ASSISTANT_META;
       const found = [...KONE_THREADS, ...SITE_THREADS].find((t) => t.threadId === threadId);
       return found ?? null;
     },
@@ -292,6 +302,12 @@ function tools(
       threadId: string,
       title: string,
     ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
+    setThreadDone?: (threadId: string, done: boolean) => void;
+    listQueuedTurns?: (threadId: string) => import("../../conversationStoreTypes.js").QueuedTurnRow[];
+    editQueuedTurn?: (threadId: string, queueId: string, input: string) => Promise<boolean>;
+    reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+    cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
+    promoteQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
   } = {},
 ) {
   const live = new Set(options.live ?? []);
@@ -323,6 +339,12 @@ function tools(
   if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
   if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
   if (options.renameThread) toolOptions.renameThread = options.renameThread;
+  if (options.setThreadDone) toolOptions.setThreadDone = options.setThreadDone;
+  if (options.listQueuedTurns) toolOptions.listQueuedTurns = options.listQueuedTurns;
+  if (options.editQueuedTurn) toolOptions.editQueuedTurn = options.editQueuedTurn;
+  if (options.reorderQueuedTurns) toolOptions.reorderQueuedTurns = options.reorderQueuedTurns;
+  if (options.cancelQueuedTurn) toolOptions.cancelQueuedTurn = options.cancelQueuedTurn;
+  if (options.promoteQueuedTurn) toolOptions.promoteQueuedTurn = options.promoteQueuedTurn;
   if (options.threadRuntime) toolOptions.threadRuntime = options.threadRuntime;
   // `runner: null` is the "no dispatcher behind the gateway" case, which is a
   // different thing from a runner nobody passed — the option has to be absent,
@@ -745,15 +767,61 @@ describe("app_read_thread", () => {
     expect(text(result)).not.toContain(long);
   });
 
-  it("reads a thread this conversation did not open", async () => {
-    // The point of the tool: the assistant is not in the thread's spawn tree,
-    // and is still allowed to read it.
-    const result = await tools().call(
-      makeCtx({ threadId: "somewhere-else" }),
-      "app_read_thread",
-      { threadId: "t-newest" },
-    );
+  it("lets the assistant read a thread it did not open", async () => {
+    // The point of the tool: the assistant (on its sentinel project, not in the
+    // thread's spawn tree) is exempt from the project read scope and may read
+    // across projects on the user's behalf.
+    const result = await tools().call(makeCtx(), "app_read_thread", { threadId: "t-newest" });
 
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent?.thread).toMatchObject({ threadId: "t-newest" });
+  });
+
+  it("lets a spawned child read its parent across projects", async () => {
+    const base = makeStore();
+    const childMeta = thread({
+      threadId: "t-child",
+      title: "Child",
+      projectPath: SITE,
+      parentThreadId: "t-newest",
+    });
+    const store: AppThreadsStore = {
+      ...base,
+      threadMeta: (threadId) =>
+        threadId === "t-child" ? childMeta : (base.threadMeta?.(threadId) ?? null),
+    };
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-child" }), "app_read_thread", {
+      threadId: "t-newest",
+    });
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("refuses an unrelated project thread for a project caller", async () => {
+    const result = await tools().call(
+      makeCtx({ threadId: "t-done" }),
+      "app_read_thread",
+      { threadId: "t-site" },
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("outside what this conversation may read");
+  });
+
+  it("lets a fork read its source across projects (handoff read-back)", async () => {
+    const base = makeStore();
+    const forkMeta = thread({
+      threadId: "t-fork",
+      title: "Fork",
+      projectPath: SITE,
+      sourceThreadId: "t-newest",
+    });
+    const store: AppThreadsStore = {
+      ...base,
+      threadMeta: (threadId) =>
+        threadId === "t-fork" ? forkMeta : (base.threadMeta?.(threadId) ?? null),
+    };
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-fork" }), "app_read_thread", {
+      threadId: "t-newest",
+    });
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent?.thread).toMatchObject({ threadId: "t-newest" });
   });
@@ -1140,8 +1208,17 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_archive_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_delete_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_rename_thread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_set_thread_pinned")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_set_thread_done")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_mark_thread_unread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_search_threads")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_list_queued_turns")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_edit_queued_turn")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_reorder_queued_turns")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_cancel_queued_turn")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_promote_queued_turn")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(10);
+    expect(entries).toHaveLength(19);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
@@ -1658,5 +1735,285 @@ describe("app_rename_thread", () => {
 
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("not_found");
+  });
+});
+
+describe("app_set_thread_pinned", () => {
+  it("pins and unpins through the store", async () => {
+    const pinned: Array<[string, boolean]> = [];
+    const store = makeStore({ setPinned: (threadId, value) => pinned.push([threadId, value]) });
+    const result = await tools({ store }).call(makeCtx(), "app_set_thread_pinned", {
+      threadId: "t-newest",
+      pinned: true,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(pinned).toEqual([["t-newest", true]]);
+    expect(result.structuredContent).toMatchObject({ threadId: "t-newest", pinned: true });
+  });
+});
+
+describe("app_set_thread_done", () => {
+  it("routes done through the canonical service callback when present", async () => {
+    const done: Array<[string, boolean]> = [];
+    const store = makeStore({ setDone: () => { throw new Error("store fallback should not run"); } });
+    const result = await tools({ store, setThreadDone: (id, value) => done.push([id, value]) }).call(
+      makeCtx(),
+      "app_set_thread_done",
+      { threadId: "t-newest", done: true },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(done).toEqual([["t-newest", true]]);
+    expect(result.structuredContent).toMatchObject({ threadId: "t-newest", done: true });
+  });
+
+  it("falls back to the store when no service callback is wired", async () => {
+    const done: Array<[string, boolean]> = [];
+    const store = makeStore({ setDone: (id, value) => done.push([id, value]) });
+    await tools({ store }).call(makeCtx(), "app_set_thread_done", {
+      threadId: "t-newest",
+      done: false,
+    });
+    expect(done).toEqual([["t-newest", false]]);
+  });
+});
+
+describe("app_mark_thread_unread", () => {
+  it("moves the visit below the latest activity, forcing it back", async () => {
+    const visited: Array<[string, number, boolean | undefined]> = [];
+    const store = makeStore({
+      setVisited: (threadId, at, force) => visited.push([threadId, at, force]),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_mark_thread_unread", {
+      threadId: "t-newest",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(visited).toHaveLength(1);
+    const [, at, force] = visited[0]!;
+    const meta = store.threadMeta("t-newest");
+    expect(force).toBe(true);
+    expect(at).toBeLessThan(meta?.lastActivityAt ?? 0);
+    expect(result.structuredContent).toMatchObject({ threadId: "t-newest", unread: true });
+  });
+});
+
+describe("app_search_threads", () => {
+  const searchHit = (
+    threadId: string,
+    entryKind: "block" | "item",
+    rank: number,
+  ): import("../../conversationStoreTypes.js").ConversationSearchHit => ({
+    threadId,
+    entryKind,
+    blockId: entryKind === "block" ? `b-${threadId}` : null,
+    turnId: null,
+    itemId: entryKind === "item" ? `i-${threadId}` : null,
+    at: 1,
+    snippet: `${threadId} snippet`,
+    rank,
+  });
+
+  it("collapses to one best hit per thread, user messages first", async () => {
+    const store = makeStore({
+      searchConversations: () => [
+        searchHit("t-newest", "item", 1),
+        searchHit("t-newest", "block", 5),
+        searchHit("t-done", "block", 2),
+      ],
+    });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+    });
+    expect(result.isError).toBeUndefined();
+    // SAFETY: this tool's own payload always carries `results`.
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    // One hit per thread, and both are user blocks: the lower rank first.
+    expect(results.map((r) => r.threadId)).toEqual(["t-done", "t-newest"]);
+  });
+
+  it("drops a thread the caller may not read", async () => {
+    const store = makeStore({
+      searchConversations: () => [searchHit("t-newest", "block", 2), searchHit("site-1", "block", 1)],
+    });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+    });
+    // SAFETY: this tool's own payload always carries `results`.
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    // site-1 is another project with no lineage/reference to the caller.
+    expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);
+  });
+
+  it("lets the global assistant search across project read scopes", async () => {
+    const store = makeStore({
+      searchConversations: () => [searchHit("t-site", "block", 1)],
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_search_threads", { query: "auth" });
+    // SAFETY: this tool's own payload always carries `results`.
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    expect(results.map((r) => r.threadId)).toEqual(["t-site"]);
+  });
+});
+
+describe("queue gateway tools", () => {
+  const queuedRow = (
+    queueId: string,
+    input: string,
+  ): import("../../conversationStoreTypes.js").QueuedTurnRow => ({
+    queueId,
+    threadId: "t-newest",
+    userBlockId: `ub-${queueId}`,
+    dispatchMode: "queue",
+    state: "queued",
+    input,
+    attemptCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  it("lists a thread's waiting follow-ups in run order", async () => {
+    const result = await tools({
+      listQueuedTurns: () => [queuedRow("q1", "first"), queuedRow("q2", "second")],
+    }).call(makeCtx({ threadId: "t-newest" }), "app_list_queued_turns", { threadId: "t-newest" });
+    expect(result.isError).toBeUndefined();
+    // SAFETY: this tool's own payload always carries `queuedTurns`.
+    const rows = (result.structuredContent as { queuedTurns: Array<{ queueId: string; position: number }> })
+      .queuedTurns;
+    expect(rows.map((r) => [r.queueId, r.position])).toEqual([
+      ["q1", 1],
+      ["q2", 2],
+    ]);
+  });
+
+  it("edits a waiting row in place through the injected service path", async () => {
+    const edited: Array<[string, string, string]> = [];
+    const result = await tools({
+      editQueuedTurn: async (threadId, queueId, input) => {
+        edited.push([threadId, queueId, input]);
+        return true;
+      },
+    }).call(makeCtx({ threadId: "t-newest" }), "app_edit_queued_turn", {
+      threadId: "t-newest",
+      queueId: "q1",
+      input: "edited",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(edited).toEqual([["t-newest", "q1", "edited"]]);
+    expect(result.structuredContent).toMatchObject({ ok: true });
+  });
+
+  it("promotes through the injected send-now path", async () => {
+    const promoted: string[] = [];
+    await tools({
+      promoteQueuedTurn: async (_threadId, queueId) => {
+        promoted.push(queueId);
+        return true;
+      },
+    }).call(makeCtx({ threadId: "t-newest" }), "app_promote_queued_turn", {
+      threadId: "t-newest",
+      queueId: "q1",
+    });
+    expect(promoted).toEqual(["q1"]);
+  });
+
+  it("refuses when the host wires no queue control", async () => {
+    const result = await tools().call(makeCtx({ threadId: "t-newest" }), "app_cancel_queued_turn", {
+      threadId: "t-newest",
+      queueId: "q1",
+    });
+    expect(result.isError).toBe(true);
+  });
+});
+
+describe("phase 6a review fixes", () => {
+  it("queue-list text carries the ids and prompts an agent must act on", async () => {
+    const row = (queueId: string, input: string): import("../../conversationStoreTypes.js").QueuedTurnRow => ({
+      queueId,
+      threadId: "t-newest",
+      userBlockId: `ub-${queueId}`,
+      dispatchMode: "queue",
+      state: "queued",
+      input,
+      attemptCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const result = await tools({ listQueuedTurns: () => [row("q1", "fix the auth bug")] }).call(
+      makeCtx({ threadId: "t-newest" }),
+      "app_list_queued_turns",
+      { threadId: "t-newest" },
+    );
+    // The production registry strips structuredContent, so the text must hold
+    // the queue id and prompt.
+    expect(text(result)).toContain("q1");
+    expect(text(result)).toContain("fix the auth bug");
+  });
+
+  it("search text carries the thread id and snippet", async () => {
+    const hit = (threadId: string, entryKind: "block" | "item"): import("../../conversationStoreTypes.js").ConversationSearchHit => ({
+      threadId,
+      entryKind,
+      blockId: entryKind === "block" ? `b-${threadId}` : null,
+      turnId: null,
+      itemId: entryKind === "item" ? `i-${threadId}` : null,
+      at: 1,
+      snippet: "matched words here",
+      rank: 1,
+    });
+    const store = makeStore({ searchConversations: () => [hit("t-newest", "block")] });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+    });
+    expect(text(result)).toContain("t-newest");
+    expect(text(result)).toContain("matched words here");
+  });
+
+  it("a false queue callback is a refusal, not success prose", async () => {
+    const result = await tools({ cancelQueuedTurn: async () => false }).call(
+      makeCtx({ threadId: "t-newest" }),
+      "app_cancel_queued_turn",
+      { threadId: "t-newest", queueId: "q1" },
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).not.toContain("Cancelled");
+  });
+
+  it("pages candidate hits so an eligible thread behind unreadable ones is found", async () => {
+    const siteHit = (i: number): import("../../conversationStoreTypes.js").ConversationSearchHit => ({
+      threadId: `site-${i}`,
+      entryKind: "block",
+      blockId: `b-${i}`,
+      turnId: null,
+      itemId: null,
+      at: 1,
+      snippet: "noise",
+      rank: i,
+    });
+    const eligible: import("../../conversationStoreTypes.js").ConversationSearchHit = {
+      threadId: "t-newest",
+      entryKind: "block",
+      blockId: "b-ok",
+      turnId: null,
+      itemId: null,
+      at: 1,
+      snippet: "the one eligible match",
+      rank: 500,
+    };
+    // Unreadable (other-project) hits fill every page below the cap; the
+    // eligible same-project match only appears once we widen far enough.
+    const store = makeStore({
+      searchConversations: (_query, options) => {
+        const limit = options?.limit ?? 10;
+        const offset = options?.offset ?? 0;
+        if (offset === 100) return [eligible];
+        return offset === 0 ? Array.from({ length: limit }, (_, i) => siteHit(i)) : [];
+      },
+    });
+    const result = await tools({ store }).call(makeCtx({ threadId: "t-newest" }), "app_search_threads", {
+      query: "auth",
+      limit: 5,
+    });
+    // SAFETY: this tool's own payload always carries `results`.
+    const results = (result.structuredContent as { results: Array<{ threadId: string }> }).results;
+    expect(results.map((r) => r.threadId)).toEqual(["t-newest"]);
   });
 });

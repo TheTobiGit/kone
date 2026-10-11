@@ -6,6 +6,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { handoffTokenCapFor } from "@kone/agent-core/providerSettings.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
+import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
 import {
   getConversationStore,
   projectRuntimeEventForIpc,
@@ -378,6 +379,20 @@ export function registerAgentIpc(): void {
       ensureThreadSession: (threadId, options) => dispatcher.ensureThreadSession(threadId, options),
     },
     threadControls: {
+      // Mark done through the service, so thread.done.updated fans out to every
+      // surface (the gateway tool's canonical path).
+      setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      // Queue controls: list is a store read; the rest go through the service so
+      // mirrors and broadcasts stay in step (promote reuses "send now").
+      listQueuedTurns: (threadId: string) => store.listQueuedTurns(threadId),
+      editQueuedTurn: (threadId: string, queueId: string, input: string) =>
+        svc.editQueuedTurn(threadId, queueId, { input }),
+      reorderQueuedTurns: (threadId: string, queueIds: string[]) =>
+        svc.reorderQueuedTurns(threadId, queueIds),
+      cancelQueuedTurn: (threadId: string, queueId: string) =>
+        svc.cancelQueuedTurn(threadId, queueId),
+      promoteQueuedTurn: (threadId: string, queueId: string) =>
+        svc.sendQueuedTurnNow(threadId, queueId),
       stopThread: async (threadId) => {
         // `stopped` is the idempotent guarantee, not a torn-something-down
         // report: stopThread no-ops on an idle thread, which still leaves it
@@ -885,6 +900,14 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
     svc.reorderQueuedTurns(threadId, queueIds),
+  );
+  // Edit a waiting follow-up in place, keeping its position. The store rewrites
+  // the row and its hidden transcript block, and turn.queued-updated carries the
+  // new words so the queue strip restates the row where it sits.
+  ipcMain.handle(
+    "agent:queue-edit",
+    (_event, threadId: string, queueId: string, patch: QueuedTurnEditPatch) =>
+      svc.editQueuedTurn(threadId, queueId, patch),
   );
   // "Send now" on a queued row: steered into the live turn, sent as a turn
   // when idle, or moved to the front when the provider can't steer. A failed
