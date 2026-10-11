@@ -682,7 +682,7 @@ describe("OpenCode subagents at the turn boundary", () => {
     const events: RuntimeEvent[] = [];
     const { adapter } = await liveRun(events);
     pushRaw!({ type: "message.part.updated", properties: { sessionID: "ses_child", part: { id: "part-grandchild-task", type: "tool", tool: "task", callID: "call-grandchild-task", state: { status: "running", input: { description: "nested" }, metadata: { sessionId: "ses_grandchild" } } } } });
-    await waitFor(events, (e) => e.type === "item.started" && e.item.itemId === "call-grandchild-task");
+    await waitFor(events, (e) => (e.type === "item.started" || e.type === "item.updated") && e.item.itemId === "call-grandchild-task");
     pushRaw!({ type: "permission.asked", properties: { sessionID: "ses_grandchild", id: "perm_grandchild", permission: "bash", patterns: ["git status"] } });
     await waitFor(events, (e) => e.type === "approval.requested" && e.requestId === "perm_grandchild");
     const approval = ofType(events, "approval.requested").find((event) => event.requestId === "perm_grandchild");
