@@ -5,7 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { OPENCODE_BINARY } from "./opencodeHome.js";
-import { OpenCodeServerLedger } from "./opencodeServerLedger.js";
+import { createOpenCodeServerMarker, OpenCodeServerLedger } from "./opencodeServerLedger.js";
 import { userDataPath } from "./userDataDir.js";
 
 let serverLedger: OpenCodeServerLedger | undefined;
@@ -24,10 +24,10 @@ function logLedgerFailure(message: string): void {
 async function removeLedgerEntry(pid: number): Promise<void> {
   try { await getServerLedger().remove(pid); } catch (error) { logLedgerFailure(error instanceof Error ? error.message : String(error)); }
 }
-function recordLedgerEntry(pid: number): void {
+function recordLedgerEntry(pid: number, marker: string): void {
   processOwnedServerPids.add(pid);
   try {
-    void getServerLedger().record(pid).catch(() => { logLedgerFailure("record failed"); });
+    void getServerLedger().record(pid, pid, marker).catch(() => { logLedgerFailure("record failed"); });
   } catch (error) {
     logLedgerFailure(error instanceof Error ? error.message : String(error));
   }
@@ -118,6 +118,7 @@ async function startOpenCodeServerOnce(input: {
   onChild?: (child: ChildProcess) => void;
 }): Promise<OpenCodeServer> {
   startOrphanReapInBackground();
+  const marker = createOpenCodeServerMarker();
   // Port 0 asks the OS for an ephemeral port at bind time and the server
   // prints the bound URL on its listening line (parsed below). Reserving a
   // port up front instead — bind, read, close, re-bind — leaves a window
@@ -125,13 +126,13 @@ async function startOpenCodeServerOnce(input: {
   // EADDRINUSE failure and a full retry cycle.
   const child = spawn(input.binary || OPENCODE_BINARY, ["serve", `--hostname=127.0.0.1`, `--port=0`], {
     cwd: input.cwd,
-    env: input.env,
+    env: { ...input.env, KONE_OPENCODE_SERVER: marker },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
   if (child.pid !== undefined && process.platform !== "win32") {
-    recordLedgerEntry(child.pid);
+    recordLedgerEntry(child.pid, marker);
   }
   input.onChild?.(child);
   let stdout = "";

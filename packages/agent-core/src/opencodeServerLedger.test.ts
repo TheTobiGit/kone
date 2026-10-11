@@ -46,7 +46,8 @@ describe("OpenCodeServerLedger", () => {
     writeFileSync(shim, "#!/bin/sh\n/bin/sleep 2\necho start-time\n");
     chmodSync(shim, 0o700);
     const binary = path.join(dir, "fake-opencode");
-    writeFileSync(binary, "#!/bin/sh\necho 'opencode server listening on http://127.0.0.1:40123'\nexec /bin/sleep 30\n");
+    const markerFile = path.join(dir, "server-marker.txt");
+    writeFileSync(binary, "#!/bin/sh\necho \"$KONE_OPENCODE_SERVER\" > " + markerFile + "\necho 'opencode server listening on http://127.0.0.1:40123'\nexec /bin/sleep 30\n");
     chmodSync(binary, 0o700);
     const priorPath = process.env.PATH;
     process.env.PATH = dir;
@@ -56,6 +57,7 @@ describe("OpenCodeServerLedger", () => {
       const started = Date.now();
       server = await pool.start({ cwd: dir, env: process.env, binary });
       expect(Date.now() - started).toBeLessThan(1_000);
+      expect(readFileSync(markerFile, "utf8").trim()).not.toBe("");
     } finally {
       process.env.PATH = priorPath;
       if (server) await server.dispose();
@@ -153,7 +155,7 @@ describe("OpenCodeServerLedger", () => {
     process.kill = denyProcessKill;
     try {
       await subject.reap();
-      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode" }]);
+      expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([{ pid: 41001, pgid: 41001, startTime: "start", command: "opencode", marker: "" }]);
     } finally {
       process.kill = originalKill;
     }
