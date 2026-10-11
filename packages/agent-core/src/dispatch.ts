@@ -19,6 +19,7 @@ import {
   type QuitResumeThreadSnapshot,
 } from "./quitResume.js";
 import { buildResumeContext } from "./resumeContext.js";
+import { nextContinuationDeferral, type ContinuationDeferral } from "./continuationDeferral.js";
 import {
   restartCancelledBackgroundWorkNote,
   type RestartCancelledBackgroundWork,
@@ -81,7 +82,6 @@ const QUIT_RESUME_CONTINUATION_KIND = "quit-resume";
  *  attempts it gets before being dropped rather than retried forever. */
 const CONTINUATION_RETRY_BACKOFF_MS = 60_000;
 const MAX_CONTINUATION_ATTEMPTS = 5;
-const CONTINUATION_RESTORE_DEFER_MS = 250;
 
 /** Whether a thread is snoozed right now, and until when. */
 export type ThreadSnoozeState = { snoozed: boolean; snoozedUntil: number | null };
@@ -463,7 +463,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // covers everything already due. Nothing polls: each arm schedules exactly
   // the next due time, and a sweep re-arms it after.
   private continuationTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly continuationDeferredUntil = new Map<string, number>();
+  private readonly continuationDeferrals = new Map<string, ContinuationDeferral>();
 
   // Spawned children: threadId → the parent turn that spawned it, registered
   // at dispatch (startThread/sendThreadTurn parentTurnId). The IPC broadcast
@@ -862,12 +862,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const resumed: string[] = [];
     const skipped: QuitResumeSkipped[] = [];
     const now = Date.now();
-    for (const [threadId, until] of this.continuationDeferredUntil) {
-      if (until <= now) this.continuationDeferredUntil.delete(threadId);
-    }
     let due: ContinuationRecord[];
     try {
-      due = this.store.claimDueContinuations(now, [...this.continuationDeferredUntil.keys()]);
+      due = this.store.claimDueContinuations(
+        now,
+        [...this.continuationDeferrals]
+          .filter(([, deferral]) => deferral.retryAt > now)
+          .map(([threadId]) => threadId),
+      );
     } catch (err) {
       console.warn("[agent] continuation sweep failed:", err);
       return { resumed, skipped };
@@ -881,6 +883,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       const decision = this.continuationDecision(row);
       if ("cancel" in decision) {
         this.store.deleteContinuation(row.continuationId);
+        this.continuationDeferrals.delete(row.threadId);
         skipped.push({ threadId: row.threadId, reason: decision.cancel });
         continue;
       }
@@ -891,12 +894,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         // immediately before the send, so a cancelled or now-ineligible
         // continuation never reaches the provider.
         if (this.store.getContinuation(row.continuationId) === null) {
+          this.continuationDeferrals.delete(row.threadId);
           skipped.push({ threadId: row.threadId, reason: "cancelled" });
           continue;
         }
         const recheck = this.continuationDecision(row);
         if ("cancel" in recheck) {
           this.store.deleteContinuation(row.continuationId);
+          this.continuationDeferrals.delete(row.threadId);
           skipped.push({ threadId: row.threadId, reason: recheck.cancel });
           continue;
         }
@@ -910,6 +915,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
           continue;
         }
         this.store.deleteContinuation(row.continuationId);
+        this.continuationDeferrals.delete(row.threadId);
         resumed.push(row.threadId);
       } catch (err) {
         // Session adoption can race a restore that begins after the preflight
@@ -923,9 +929,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
           // Cancelled after the claim (settled, archived, superseded) or the
           // session was stopped during adoption: the row is done, not retried.
           this.store.deleteContinuation(row.continuationId);
+          this.continuationDeferrals.delete(row.threadId);
           skipped.push({ threadId: row.threadId, reason: "cancelled" });
           continue;
         }
+        this.continuationDeferrals.delete(row.threadId);
         console.warn(`[agent] continuation for thread ${row.threadId} could not be dispatched:`, err);
         // Back off and retry, but do not spin: each failure pushes the due time
         // out, and after a cap the row is dropped with a log.
@@ -975,7 +983,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   /** Schedule the sweep for the next future continuation. One timer, no
    *  polling: a sweep re-arms it, and nothing is armed when nothing is due. */
   private deferContinuation(threadId: string): void {
-    this.continuationDeferredUntil.set(threadId, Date.now() + CONTINUATION_RESTORE_DEFER_MS);
+    const now = Date.now();
+    const update = nextContinuationDeferral(this.continuationDeferrals.get(threadId), now);
+    this.continuationDeferrals.set(threadId, update.deferral);
+    if (update.shouldWarn) {
+      console.warn(
+        `[agent] continuation for ${threadId} has remained restore-held for more than five minutes; keeping it scheduled`,
+      );
+    }
   }
 
   private armContinuationTimer(): void {
@@ -985,13 +1000,19 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
     let next: number | null;
     try {
-      next = this.store.nextContinuationDueAt([...this.continuationDeferredUntil.keys()]);
+      const now = Date.now();
+      next = this.store.nextContinuationDueAt(
+        [...this.continuationDeferrals]
+          .filter(([, deferral]) => deferral.retryAt > now)
+          .map(([threadId]) => threadId),
+      );
     } catch (err) {
       console.warn("[agent] could not read the next continuation due time:", err);
       return;
     }
-    for (const until of this.continuationDeferredUntil.values()) {
-      next = next === null ? until : Math.min(next, until);
+    for (const deferral of this.continuationDeferrals.values()) {
+      if (deferral.retryAt <= Date.now()) continue;
+      next = next === null ? deferral.retryAt : Math.min(next, deferral.retryAt);
     }
     if (next === null) return;
     const delay = Math.max(0, next - Date.now());
