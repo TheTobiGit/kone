@@ -11,6 +11,7 @@ import { userDataPath } from "./userDataDir.js";
 let serverLedger: OpenCodeServerLedger | undefined;
 let orphanServersReaped: Promise<void> | undefined;
 let ledgerFailureLogged = false;
+const processOwnedServerPids = new Set<number>();
 function getServerLedger(): OpenCodeServerLedger {
   serverLedger ??= new OpenCodeServerLedger(userDataPath("opencode-servers.json"));
   return serverLedger;
@@ -24,10 +25,23 @@ async function removeLedgerEntry(pid: number): Promise<void> {
   try { await getServerLedger().remove(pid); } catch (error) { logLedgerFailure(error instanceof Error ? error.message : String(error)); }
 }
 function recordLedgerEntry(pid: number): void {
+  processOwnedServerPids.add(pid);
   try {
     void getServerLedger().record(pid).catch(() => { logLedgerFailure("record failed"); });
   } catch (error) {
     logLedgerFailure(error instanceof Error ? error.message : String(error));
+  }
+}
+function startOrphanReapInBackground(): void {
+  if (orphanServersReaped) return;
+  try {
+    const ledger = getServerLedger();
+    const orphanSnapshot = ledger.snapshot();
+    orphanServersReaped = ledger.reap(orphanSnapshot, processOwnedServerPids)
+      .catch(() => { logLedgerFailure("startup reap failed"); });
+  } catch (error) {
+    logLedgerFailure(error instanceof Error ? error.message : String(error));
+    orphanServersReaped = Promise.resolve();
   }
 }
 
@@ -103,9 +117,7 @@ async function startOpenCodeServerOnce(input: {
    *  boot can be tracked (and torn down) before it becomes ready. */
   onChild?: (child: ChildProcess) => void;
 }): Promise<OpenCodeServer> {
-  orphanServersReaped ??= Promise.resolve()
-    .then(() => getServerLedger().reap())
-    .catch(() => { logLedgerFailure("startup reap failed"); });
+  startOrphanReapInBackground();
   // Port 0 asks the OS for an ephemeral port at bind time and the server
   // prints the bound URL on its listening line (parsed below). Reserving a
   // port up front instead — bind, read, close, re-bind — leaves a window

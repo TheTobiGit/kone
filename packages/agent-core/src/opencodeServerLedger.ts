@@ -68,25 +68,41 @@ export class OpenCodeServerLedger {
     });
   }
 
-  reap(): Promise<void> {
+  snapshot(): OpenCodeServerLedgerEntry[] {
+    return [...this.read().values()];
+  }
+
+  reap(
+    orphanSnapshot: readonly OpenCodeServerLedgerEntry[] = this.snapshot(),
+    processOwnedPids: ReadonlySet<number> = new Set(),
+  ): Promise<void> {
     return this.serialize(async () => {
-      const entries = this.read();
-      for (const entry of entries.values()) {
+      const removed = new Set<number>();
+      for (const entry of orphanSnapshot) {
+        if (processOwnedPids.has(entry.pid)) continue;
         const initial = await this.inspect(entry.pid);
         if (initial.state === "unknown") continue;
         if (initial.state === "gone" || initial.startTime !== entry.startTime) {
-          entries.delete(entry.pid);
+          removed.add(entry.pid);
           continue;
         }
+        if (processOwnedPids.has(entry.pid)) continue;
         try { this.kill(entry.pgid, "SIGTERM"); } catch { continue; }
         const afterTerm = await this.waitForExit(entry);
         if (afterTerm === "gone") {
-          entries.delete(entry.pid);
+          removed.add(entry.pid);
           continue;
         }
         if (afterTerm === "unknown") continue;
+        if (processOwnedPids.has(entry.pid)) continue;
         try { this.kill(entry.pgid, "SIGKILL"); } catch { continue; }
-        if (await this.waitForExit(entry) === "gone") entries.delete(entry.pid);
+        if (await this.waitForExit(entry) === "gone") removed.add(entry.pid);
+      }
+      const entries = this.read();
+      for (const pid of removed) {
+        const current = entries.get(pid);
+        const snapshot = orphanSnapshot.find((entry) => entry.pid === pid);
+        if (current && snapshot && sameIdentity(current, snapshot) && !processOwnedPids.has(pid)) entries.delete(pid);
       }
       this.write(entries);
     });
@@ -141,4 +157,8 @@ export class OpenCodeServerLedger {
     // The user data directory is created by the host before provider startup.
     if (!existsSync(parent)) throw new Error(`OpenCode server ledger directory does not exist: ${parent}`);
   }
+}
+
+function sameIdentity(left: OpenCodeServerLedgerEntry, right: OpenCodeServerLedgerEntry): boolean {
+  return left.pid === right.pid && left.pgid === right.pgid && left.startTime === right.startTime;
 }
