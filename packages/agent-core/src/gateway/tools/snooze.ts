@@ -50,8 +50,13 @@ export function createAppSnoozeTools(options: AppSnoozeToolOptions): ToolEntry[]
       handler: async (_ctx: GatewayToolContext, rawInput: GatewayRecord): Promise<GatewayToolResult> => {
         const input = SnoozeAppThreadInputSchema.parse(rawInput);
         requireThread(input.threadId);
-        const until =
-          input.untilReset === true ? options.snoozeUntilReset(input.threadId) : (input.until ?? null);
+        const until = input.untilReset === true ? options.snoozeUntilReset(input.threadId) : (input.until ?? null);
+        if (input.untilReset === true && until === null) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: `No provider reset is known for thread "${input.threadId}"; use a timed snooze instead.` }],
+          };
+        }
         options.setSnooze(input.threadId, until);
         const summary =
           until === null
