@@ -234,6 +234,8 @@ export interface AppThreadsToolOptions {
   /** Whether a thread has a live provider session, so a list can say which
    *  threads are running rather than only when they last spoke. */
   isThreadLive?: (threadId: string) => boolean;
+  /** Whether a spawned child's eventual settled turn can be sent to its parent. */
+  willReportChild?: (threadId: string) => boolean;
   /** What a thread is parked on, if anything — an approval the user must
    *  decide, or a question for the user. Outranks the turn readout when
    *  deriving `status`: a parked thread is the one state where nothing moves
@@ -447,6 +449,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
   const hasLiveReportingChild = (threadId: string): boolean =>
     (store.spawnedChildren?.(threadId) ?? []).some((child) => {
       if (child.relationshipToParent === "side_chat") return false;
+      if (options.willReportChild?.(child.threadId) === false) return false;
       const childSpan = store.threadTurnSpan?.(child.threadId) ?? null;
       return (childSpan?.runningTurns ?? 0) > 0 && isLive(child.threadId);
     });
