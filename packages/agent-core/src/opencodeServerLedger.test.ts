@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { OpenCodeServerLedger, type ProcessInspectionResult } from "./opencodeServerLedger.js";
+import { inspectProcessStartTime, OpenCodeServerLedger, type ProcessInspectionResult } from "./opencodeServerLedger.js";
 import { OpenCodeServerPool } from "./opencodeServer.js";
 import { setUserDataDir } from "./userDataDir.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function ledger(inspect: (pid: number) => ProcessInspectionResult, killed: number[], onKill?: (pgid: number) => void) {
+function ledger(inspect: (pid: number) => Promise<ProcessInspectionResult>, killed: number[], onKill?: (pgid: number) => void) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-ledger-"));
   dirs.push(dir);
   const filePath = path.join(dir, "servers.json");
@@ -17,6 +17,52 @@ function ledger(inspect: (pid: number) => ProcessInspectionResult, killed: numbe
 }
 
 describe("OpenCodeServerLedger", () => {
+  test("process inspection does not block the event loop and times out", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-ps-timeout-"));
+    dirs.push(dir);
+    const shim = path.join(dir, "ps");
+    writeFileSync(shim, "#!/bin/sh\n/bin/sleep 2\necho start-time\n");
+    chmodSync(shim, 0o700);
+    const priorPath = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      const started = Date.now();
+      let eventLoopAdvanced = false;
+      const timer = setTimeout(() => { eventLoopAdvanced = true; }, 25);
+      await inspectProcessStartTime(process.pid);
+      clearTimeout(timer);
+      expect(eventLoopAdvanced).toBe(true);
+      expect(Date.now() - started).toBeLessThan(3_000);
+    } finally {
+      process.env.PATH = priorPath;
+    }
+  });
+
+  test("first server start does not wait for the orphan reap or pid inspection", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-first-start-"));
+    dirs.push(dir);
+    setUserDataDir(dir);
+    const shim = path.join(dir, "ps");
+    writeFileSync(shim, "#!/bin/sh\n/bin/sleep 2\necho start-time\n");
+    chmodSync(shim, 0o700);
+    const binary = path.join(dir, "fake-opencode");
+    writeFileSync(binary, "#!/bin/sh\necho 'opencode server listening on http://127.0.0.1:40123'\nexec /bin/sleep 30\n");
+    chmodSync(binary, 0o700);
+    const priorPath = process.env.PATH;
+    process.env.PATH = dir;
+    const pool = new OpenCodeServerPool();
+    let server: Awaited<ReturnType<OpenCodeServerPool["start"]>> | undefined;
+    try {
+      const started = Date.now();
+      server = await pool.start({ cwd: dir, env: process.env, binary });
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      process.env.PATH = priorPath;
+      if (server) await server.dispose();
+      await pool.dispose();
+    }
+  });
+
   test("ledger I/O failures do not poison later server starts", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "kone-opencode-ledger-recovery-"));
     dirs.push(dir);
@@ -34,10 +80,10 @@ describe("OpenCodeServerLedger", () => {
     expect(secondError).toContain("ENOENT");
   });
 
-  test("records process identity and removes it on clean dispose", () => {
-    const { subject, filePath } = ledger(() => ({ state: "alive", startTime: "Mon Oct 11 05:00:00 2026" }), []);
-    subject.record(301, 301);
-    subject.remove(301);
+  test("records process identity and removes it on clean dispose", async () => {
+    const { subject, filePath } = ledger(async () => ({ state: "alive", startTime: "Mon Oct 11 05:00:00 2026" }), []);
+    await subject.record(301, 301);
+    await subject.remove(301);
     expect(readFileSync(filePath, "utf8")).toBe("[]");
   });
 
@@ -45,14 +91,14 @@ describe("OpenCodeServerLedger", () => {
     const killed: number[] = [];
     const starts = new Map([[301, "same"], [302, "reused"], [303, undefined]]);
     let pid301Gone = false;
-    const { subject } = ledger((pid) => {
+    const { subject } = ledger(async (pid) => {
       if (pid === 301 && pid301Gone) return { state: "gone" };
       const startTime = starts.get(pid);
       return startTime ? { state: "alive", startTime } : { state: "unknown" };
     }, killed, (pgid) => { if (pgid === 301) pid301Gone = true; });
-    subject.record(301, 301);
-    subject.record(302, 302);
-    subject.record(303, 303);
+    await subject.record(301, 301);
+    await subject.record(302, 302);
+    await subject.record(303, 303);
     starts.set(302, "new process");
     await subject.reap();
     expect(killed).toEqual([301]);
@@ -71,7 +117,7 @@ describe("OpenCodeServerLedger", () => {
     const filePath = path.join(dir, "servers.json");
     try {
       const subject = new OpenCodeServerLedger(filePath);
-      subject.record(pid);
+      await subject.record(pid);
       await subject.reap();
       let alive = true;
       try { process.kill(pid, 0); } catch { alive = false; }
