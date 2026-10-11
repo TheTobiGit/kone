@@ -1134,8 +1134,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return (async (): Promise<TurnStartResult> => {
       try {
         const result = await started;
-        if (!result.queued) {
+        if (!result.queued && !result.held) {
           onAccepted(result.turnId);
+        } else if (result.held) {
+          // A restore/compaction/busy refusal owns nothing: leave recovery
+          // context staged for the next attempt and free this note reservation.
+          if (replay !== null) this.threadsNeedingReplay.add(named.threadId);
+          this.releaseRestartNotePreamble(named.threadId, carrierToken);
         } else if (restartNote !== null) {
           // The row may already be gone: cancelled or promoted while the
           // service was still acknowledging it.
@@ -1153,6 +1158,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         return result;
       } catch (err) {
         // A refused send leaves the note for the retry.
+        if (replay !== null) this.threadsNeedingReplay.add(named.threadId);
         this.releaseRestartNotePreamble(named.threadId, carrierToken);
         throw err;
       }
