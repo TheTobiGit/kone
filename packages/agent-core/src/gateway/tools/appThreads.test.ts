@@ -1238,7 +1238,7 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_cancel_queued_turn")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_promote_queued_turn")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(19);
+    expect(entries).toHaveLength(20);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");

@@ -233,7 +233,8 @@ export interface AppThreadsRunner {
     threadId: string,
     options?: { branch?: string },
   ): Promise<
-    { ok: true; worktreePath: string } | { ok: false; reason: "unknown" | "busy" | "failed"; detail?: string }
+    | { ok: true; worktreePath: string }
+    | { ok: false; reason: "unknown" | "busy" | "restoring" | "stop-unconfirmed" | "failed"; detail?: string }
   >;
 }
 
