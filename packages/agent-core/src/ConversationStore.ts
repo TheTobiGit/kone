@@ -611,8 +611,8 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ContinuationRepo */
-  claimDueContinuations(now: number, excludedThreadIds: string[] = []): ContinuationRecord[] {
-    return this.continuations.claimDue(now, excludedThreadIds);
+  claimDueContinuations(now: number, excludedContinuationIds: string[] = []): ContinuationRecord[] {
+    return this.continuations.claimDue(now, excludedContinuationIds);
   }
 
   /** @see ContinuationRepo */
@@ -646,8 +646,8 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ContinuationRepo */
-  nextContinuationDueAt(excludedThreadIds: string[] = []): number | null {
-    return this.continuations.nextDueAt(excludedThreadIds);
+  nextContinuationDueAt(excludedContinuationIds: string[] = []): number | null {
+    return this.continuations.nextDueAt(excludedContinuationIds);
   }
 
   /** @see ContinuationRepo */

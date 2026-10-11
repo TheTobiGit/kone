@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -295,6 +295,63 @@ describe("P3 usage-limit dispatch", () => {
     await dispatcher.dispatchDueContinuations();
     expect(adapter.sent).toEqual(["continue after adoption"]);
     expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
+  test("manual recovery gives a later reset and restore fresh deferral state", async () => {
+    const id = "limit-reset-fresh-deferral-episode";
+    store.ensureThread({ threadId: id, provider: "codex", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    await dispatcher.ensureThreadSession(id, { resume: true });
+
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    const claim = store.claimDueContinuations.bind(store);
+    let releaseRestore = claimRestoreDir("/tmp");
+    try {
+      svc.setThreadLimited(id, now - 1);
+      await dispatcher.dispatchDueContinuations();
+      expect(store.listContinuationsForThread(id)[0]?.attempts).toBe(0);
+
+      releaseRestore();
+      releaseRestore = () => {};
+      await dispatcher.resumeLimitedThread(id);
+      expect(adapter.sent).toHaveLength(1);
+      expect(store.listContinuationsForThread(id)).toEqual([]);
+
+      svc.setThreadLimited(id, Date.now() - 1);
+      await dispatcher.dispatchDueContinuations();
+      expect(adapter.sent).toEqual([
+        "Continue where you left off — the usage limit has reset.",
+        "Continue where you left off — the usage limit has reset.",
+      ]);
+      expect(store.listContinuationsForThread(id)).toEqual([]);
+
+      svc.setThreadLimited(id, Date.now() + 60_000);
+      store.cancelContinuationsForThread(id);
+      store.scheduleContinuation({ threadId: id, kind: "limit-reset", dueAt: Date.now() - 1 });
+      const claimedCounts: number[] = [];
+      store.claimDueContinuations = (at, excluded = []) => {
+        const rows = claim(at, excluded);
+        claimedCounts.push(rows.length);
+        return rows;
+      };
+      releaseRestore = claimRestoreDir("/tmp");
+      await dispatcher.dispatchDueContinuations();
+      clock.mockReturnValue(now + 249);
+      await dispatcher.dispatchDueContinuations();
+      clock.mockReturnValue(now + 250);
+      await dispatcher.dispatchDueContinuations();
+      expect(claimedCounts).toEqual([1, 0, 1]);
+      expect(store.listContinuationsForThread(id)[0]?.attempts).toBe(0);
+    } finally {
+      releaseRestore();
+      svc.clearThreadLimited(id);
+      clock.mockRestore();
+      store.claimDueContinuations = claim;
+    }
     await svc.stopAll();
   });
 

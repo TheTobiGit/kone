@@ -463,7 +463,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   // covers everything already due. Nothing polls: each arm schedules exactly
   // the next due time, and a sweep re-arms it after.
   private continuationTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly continuationDeferrals = new Map<string, ContinuationDeferral>();
+  private readonly continuationDeferrals = new Map<
+    string,
+    { threadId: string; state: ContinuationDeferral }
+  >();
 
   // Spawned children: threadId → the parent turn that spawned it, registered
   // at dispatch (startThread/sendThreadTurn parentTurnId). The IPC broadcast
@@ -862,13 +865,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const resumed: string[] = [];
     const skipped: QuitResumeSkipped[] = [];
     const now = Date.now();
+    this.pruneContinuationDeferrals();
     let due: ContinuationRecord[];
     try {
       due = this.store.claimDueContinuations(
         now,
         [...this.continuationDeferrals]
-          .filter(([, deferral]) => deferral.retryAt > now)
-          .map(([threadId]) => threadId),
+          .filter(([, entry]) => entry.state.retryAt > now)
+          .map(([continuationId]) => continuationId),
       );
     } catch (err) {
       console.warn("[agent] continuation sweep failed:", err);
@@ -877,13 +881,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     for (const row of due) {
       if (this.service.isRestoreHoldingThread(row.threadId)) {
         this.store.clearContinuationClaim(row.continuationId);
-        this.deferContinuation(row.threadId);
+        this.deferContinuation(row);
         continue;
       }
       const decision = this.continuationDecision(row);
       if ("cancel" in decision) {
         this.store.deleteContinuation(row.continuationId);
-        this.continuationDeferrals.delete(row.threadId);
+        this.continuationDeferrals.delete(row.continuationId);
         skipped.push({ threadId: row.threadId, reason: decision.cancel });
         continue;
       }
@@ -894,14 +898,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         // immediately before the send, so a cancelled or now-ineligible
         // continuation never reaches the provider.
         if (this.store.getContinuation(row.continuationId) === null) {
-          this.continuationDeferrals.delete(row.threadId);
+          this.continuationDeferrals.delete(row.continuationId);
           skipped.push({ threadId: row.threadId, reason: "cancelled" });
           continue;
         }
         const recheck = this.continuationDecision(row);
         if ("cancel" in recheck) {
           this.store.deleteContinuation(row.continuationId);
-          this.continuationDeferrals.delete(row.threadId);
+          this.continuationDeferrals.delete(row.continuationId);
           skipped.push({ threadId: row.threadId, reason: recheck.cancel });
           continue;
         }
@@ -911,29 +915,29 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         );
         if (delivery.queued || delivery.held) {
           this.store.clearContinuationClaim(row.continuationId);
-          this.deferContinuation(row.threadId);
+          this.deferContinuation(row);
           continue;
         }
         this.store.deleteContinuation(row.continuationId);
-        this.continuationDeferrals.delete(row.threadId);
+        this.continuationDeferrals.delete(row.continuationId);
         resumed.push(row.threadId);
       } catch (err) {
         // Session adoption can race a restore that begins after the preflight
         // check. Its admission refusal is still a hold, not a failed attempt.
         if (this.service.isRestoreHoldingThread(row.threadId)) {
           this.store.clearContinuationClaim(row.continuationId);
-          this.deferContinuation(row.threadId);
+          this.deferContinuation(row);
           continue;
         }
         if (err instanceof ContinuationCancelled || err instanceof StartCancelled) {
           // Cancelled after the claim (settled, archived, superseded) or the
           // session was stopped during adoption: the row is done, not retried.
           this.store.deleteContinuation(row.continuationId);
-          this.continuationDeferrals.delete(row.threadId);
+          this.continuationDeferrals.delete(row.continuationId);
           skipped.push({ threadId: row.threadId, reason: "cancelled" });
           continue;
         }
-        this.continuationDeferrals.delete(row.threadId);
+        this.continuationDeferrals.delete(row.continuationId);
         console.warn(`[agent] continuation for thread ${row.threadId} could not be dispatched:`, err);
         // Back off and retry, but do not spin: each failure pushes the due time
         // out, and after a cap the row is dropped with a log.
@@ -982,18 +986,34 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
 
   /** Schedule the sweep for the next future continuation. One timer, no
    *  polling: a sweep re-arms it, and nothing is armed when nothing is due. */
-  private deferContinuation(threadId: string): void {
+  private deferContinuation(row: ContinuationRecord): void {
     const now = Date.now();
-    const update = nextContinuationDeferral(this.continuationDeferrals.get(threadId), now);
-    this.continuationDeferrals.set(threadId, update.deferral);
+    const update = nextContinuationDeferral(
+      this.continuationDeferrals.get(row.continuationId)?.state,
+      now,
+    );
+    this.continuationDeferrals.set(row.continuationId, {
+      threadId: row.threadId,
+      state: update.deferral,
+    });
     if (update.shouldWarn) {
       console.warn(
-        `[agent] continuation for ${threadId} has remained restore-held for more than five minutes; keeping it scheduled`,
+        `[agent] continuation for ${row.threadId} has remained restore-held for more than five minutes; keeping it scheduled`,
       );
     }
   }
 
+  /** Drop in-memory retry state after its durable continuation was cancelled. */
+  private pruneContinuationDeferrals(): void {
+    for (const continuationId of this.continuationDeferrals.keys()) {
+      if (this.store.getContinuation(continuationId) === null) {
+        this.continuationDeferrals.delete(continuationId);
+      }
+    }
+  }
+
   private armContinuationTimer(): void {
+    this.pruneContinuationDeferrals();
     if (this.continuationTimer) {
       clearTimeout(this.continuationTimer);
       this.continuationTimer = null;
@@ -1003,16 +1023,16 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       const now = Date.now();
       next = this.store.nextContinuationDueAt(
         [...this.continuationDeferrals]
-          .filter(([, deferral]) => deferral.retryAt > now)
-          .map(([threadId]) => threadId),
+          .filter(([, entry]) => entry.state.retryAt > now)
+          .map(([continuationId]) => continuationId),
       );
     } catch (err) {
       console.warn("[agent] could not read the next continuation due time:", err);
       return;
     }
-    for (const deferral of this.continuationDeferrals.values()) {
-      if (deferral.retryAt <= Date.now()) continue;
-      next = next === null ? deferral.retryAt : Math.min(next, deferral.retryAt);
+    for (const { state } of this.continuationDeferrals.values()) {
+      if (state.retryAt <= Date.now()) continue;
+      next = next === null ? state.retryAt : Math.min(next, state.retryAt);
     }
     if (next === null) return;
     const delay = Math.max(0, next - Date.now());
