@@ -79,7 +79,7 @@ type OpenCodeSession = {
   pendingPermissions: Map<string, OpenCodeJsonValue>;
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
-  pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
+  pendingUserInputs: Map<string, PendingUserInput>;
   /** In-flight permission approvals, keyed by the permission request's id. Each
    *  holds the ask we surfaced and the resolver that posts the reply — settled
    *  by respondToRequest (the user decided) or drained on interrupt/stop. */
@@ -99,6 +99,7 @@ type OpenCodeSession = {
   settledSubagentToolUseIds: Set<string>;
   disposed: boolean; interrupting: boolean; planTasks: PlanTask[]; exitNotified: boolean;
 };
+type PendingUserInput = { questions: UserInputQuestion[]; subagentToolUseId?: string; resolve: (answers: UserInputAnswers) => void };
 
 /** A parked opencode permission approval: the ask we surfaced and the resolver
  *  that posts the `permission/{id}/reply` once the renderer decides. When the
@@ -785,8 +786,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
         if (!translateOpenCodeEvent(session.openCodeSessionId, event)) {
           const childId = this.eventSessionId(event);
           const toolUseId = childId ? session.subagentChildSessions.get(childId) : undefined;
-          if (!toolUseId) continue;
-          this.handleChildEvent(session, toolUseId, event);
+          if (!childId || !toolUseId) continue;
+          this.handleChildEvent(session, toolUseId, childId, event);
           continue;
         }
         this.handleEvent(session, event);
@@ -1003,7 +1004,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /** Folds a child session's events into its run: roles, transcript items
    *  (scoped with the run's tool-use id), token spend. Never touches the parent
    *  turn's lifecycle — the child going idle is not the parent finishing. */
-  private handleChildEvent(session: OpenCodeSession, toolUseId: string, event: OpenCodeEvent): void {
+  private handleChildEvent(session: OpenCodeSession, toolUseId: string, childSessionId: string, event: OpenCodeEvent): void {
     const p = event.properties ?? {};
     // A settled run's in-flight tail is dropped the same way the Claude adapter
     // drops one — the run is closed, and re-projecting its leftovers would
@@ -1039,6 +1040,17 @@ export class OpenCodeAdapter implements ProviderAdapter {
       }
       case "message.part.updated": this.handlePart(session, record(p.part), toolUseId); break;
       case "permission.asked": void this.permissionAsked(session, p, toolUseId); break;
+      case "question.asked": this.questionAsked(session, p, toolUseId, childSessionId); break;
+      case "question.replied": {
+        const repliedId = requestIdOf(p);
+        if (repliedId !== undefined) this.questionResolved(session, repliedId, answerRows(p.answers));
+        break;
+      }
+      case "question.rejected": {
+        const rejectedId = requestIdOf(p);
+        if (rejectedId !== undefined) this.questionResolved(session, rejectedId, []);
+        break;
+      }
       case "session.next.step.ended": {
         if (!run) break;
         const usage = normalizeOpenCodeTokenUsage(p.tokens);
@@ -1176,7 +1188,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
   /** Settle one parked permission approval (idempotent — a no-op once drained). */
   private resolveApproval(session: OpenCodeSession, requestId: string, decision: ApprovalDecision): void { const pending = session.pendingApprovals.get(requestId); if (!pending) return; session.pendingApprovals.delete(requestId); pending.resolve(decision); }
-  private questionAsked(session: OpenCodeSession, p: RecordLike): void {
+  private questionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string, providerSessionId = session.openCodeSessionId): void {
     // opencode's question payload walks through the shared normalizer with
     // its own id scheme (positional `question-{i}-{slug}`, unchanged) and its
     // own multi-select spelling (`multiple`). Tightenings versus the old
@@ -1194,18 +1206,24 @@ export class OpenCodeAdapter implements ProviderAdapter {
       console.warn(`[opencode] question.asked without a request id; no modal to park and no reply to post — dropping, the provider turn may be waiting for a reply that never comes (thread ${session.threadId})`);
       return;
     }
-    this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions });
-    session.pendingUserInputs.set(requestId, {
+    const requested: Extract<RuntimeEvent, { type: "user-input.requested" }> = { ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions };
+    if (subagentToolUseId) requested.subagentToolUseId = subagentToolUseId;
+    this.emit(requested);
+    const pending: PendingUserInput = {
       questions,
       resolve: (answers) => {
         const rows = questions.map((q) => {
           const value = answers[q.id];
           return Array.isArray(value) ? value : value == null ? [] : [value];
         });
-        this.postQuestionReply(session, requestId, rows);
-        this.emit({ ...base(session), type: "user-input.resolved", requestId, answers });
+        this.postQuestionReply(session, requestId, rows, providerSessionId);
+        const resolved: Extract<RuntimeEvent, { type: "user-input.resolved" }> = { ...base(session), type: "user-input.resolved", requestId, answers };
+        if (subagentToolUseId) resolved.subagentToolUseId = subagentToolUseId;
+        this.emit(resolved);
       },
-    });
+    };
+    if (subagentToolUseId) pending.subagentToolUseId = subagentToolUseId;
+    session.pendingUserInputs.set(requestId, pending);
   }
   private questionResolved(session: OpenCodeSession, requestId: string, answers: string[][]): void {
     const pending = session.pendingUserInputs.get(requestId);
@@ -1215,13 +1233,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
       mapped[q.id] = joinAnswerValues(answers[i]);
     });
     session.pendingUserInputs.delete(requestId);
-    this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped });
+    const resolved: Extract<RuntimeEvent, { type: "user-input.resolved" }> = { ...base(session), type: "user-input.resolved", requestId, answers: mapped };
+    if (pending.subagentToolUseId) resolved.subagentToolUseId = pending.subagentToolUseId;
+    this.emit(resolved);
   }
   /** POST a question answer. The modal already resolved optimistically, so a
    *  reply the provider never got would look answered while the turn hangs:
    *  a failure surfaces as a session error plus a log, never silently. */
-  private postQuestionReply(session: OpenCodeSession, requestId: string, answers: string[][]): void {
-    const { route, body } = session.dialect.questionReply(session.openCodeSessionId, requestId, answers);
+  private postQuestionReply(session: OpenCodeSession, requestId: string, answers: string[][], providerSessionId = session.openCodeSessionId): void {
+    const { route, body } = session.dialect.questionReply(providerSessionId, requestId, answers);
     void session.client.request("POST", route, body).then(
       () => undefined,
       (cause: unknown) => this.failQuestionReply(session, requestId, cause),
