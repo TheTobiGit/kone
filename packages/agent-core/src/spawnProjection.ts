@@ -130,6 +130,8 @@ export interface ThreadStatusInput {
   lastState: "running" | "completed" | "failed" | "interrupted" | null;
   /** Whether a live provider session still backs this thread. */
   hasLiveSession: boolean;
+  /** A spawned child is still running and its eventual report will return here. */
+  waitingForChildren?: boolean;
 }
 
 /** The full status input: the shared facts plus what "settled and quiet"
@@ -172,6 +174,9 @@ export function projectStatus(input: StatusProjectionInput): SpawnedThreadStatus
  *  never settles terminally. Pure: no store, no I/O, never throws. */
 export function projectThreadStatus(input: ThreadStatusInput): ThreadStatus {
   const status = projectStatus({ ...input, terminalKind: "idle" });
+  if (status === "idle" && input.lastState === "completed" && input.waitingForChildren) {
+    return "waiting-for-children";
+  }
   // SAFETY: terminalKind "idle" answers "starting", "idle" or a shared rung —
   // never "completed" or "stillborn" — so narrowing to ThreadStatus holds.
   return status as ThreadStatus;
