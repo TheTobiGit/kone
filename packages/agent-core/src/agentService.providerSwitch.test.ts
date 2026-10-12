@@ -550,4 +550,53 @@ describe("P5 review: delivery races, pending inheritance and the fork return", (
       await resumed.stopAll();
     }
   });
+
+  test("a failed queue write during a hand-in never reaches the outgoing provider", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "switch", provider: "claudeAgent", model: "claude-x", userBlockId: "ub-switch" });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let entered = false;
+    codex.stopSession = async () => { entered = true; await blocked; };
+    codex.finishTurn(thread, "live-1");
+    await waitFor(() => entered, "the outgoing teardown to begin");
+
+    const originalEnqueue = store.enqueueQueuedTurn.bind(store);
+    store.enqueueQueuedTurn = () => { throw new Error("disk full"); };
+    try {
+      await expect(
+        service.sendTurn({ threadId: thread, input: "mid-switch", userBlockId: "new" }),
+      ).rejects.toThrow("disk full");
+      // The gate owns the thread, so the failed write must not fall back to a
+      // direct send into the session being torn down.
+      expect(codex.sent).toHaveLength(0);
+    } finally {
+      store.enqueueQueuedTurn = originalEnqueue;
+    }
+    release();
+    await waitFor(() => claude.sent.length === 1, "the switched row to run");
+  });
+
+  test("during a deferred replacement startup a continuation is held and an ordinary send queues", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "switch", provider: "claudeAgent", model: "claude-x", userBlockId: "ub-switch" });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let entered = false;
+    claude.startSession = async () => { entered = true; await blocked; return {}; };
+    codex.finishTurn(thread, "live-1");
+    await waitFor(() => entered, "the replacement startup");
+
+    // Routing is torn down between the stop and the start; the reservation has
+    // to hold the thread anyway.
+    const continuation = await service.sendTurn({ threadId: thread, input: "P3 continuation" }, { noQueue: true });
+    expect(continuation.held).toBe(true);
+    const ordinary = await service.sendTurn({ threadId: thread, input: "ordinary", userBlockId: "ordinary" });
+    expect(ordinary.queued).toBe(true);
+    expect(store.listQueuedTurns(thread).find((r) => r.userBlockId === "ordinary")?.provider).toBe("claudeAgent");
+    release();
+    await waitFor(() => claude.sent.length === 1, "the switched row to run");
+  });
 });
