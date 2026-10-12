@@ -4,6 +4,7 @@ import { decodeChunkArray, decodeStoredText } from "./store/itemTextChunks.js";
 import type {
   BlockSource,
   ChatAttachment,
+  ForkContext,
   SkillReference,
   InteractionMode,
   JobStatus,
@@ -11,11 +12,13 @@ import type {
   RelationshipToParent,
   RuntimeItem,
   StoredBlock,
+  StoredThread,
   StoredThreadMeta,
   SubagentRun,
 } from "./types.js";
 import { copyTurnStamp } from "./types.js";
 import { ProviderKindSchema, SkillReferenceListSchema } from "./types.js";
+import type { SelectionKnobs, TurnSelection } from "./selection.js";
 import { parseMessageSender, type MessageSender } from "@kone/protocol/message-sender";
 import { parseContractTerms, type ContractClosedReason } from "@kone/protocol/contract";
 import { steerContinuationId } from "@kone/protocol/steer-split";
@@ -531,6 +534,41 @@ export type CheckpointStore = {
   getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null;
   listTurnCheckpoints(threadId: string): TurnCheckpointRecord[];
   pruneTurnCheckpoints(threadId: string, keep: number): TurnCheckpointRecord[];
+};
+
+/** The selection surface the provider-switch paths drive: the thread's current
+ *  and pending picks, the per-provider+model knob memory, and the same-provider
+ *  change marks. Narrow and structural so a test can inject a fake without a
+ *  database. */
+export type SelectionStore = {
+  threadMeta(threadId: string): StoredThreadMeta | null;
+  threadForkContext(threadId: string): ForkContext | null;
+  loadThread(threadId: string): StoredThread | null;
+  listQueuedTurns(threadId: string): QueuedTurnRow[];
+  setThreadSelection(
+    threadId: string,
+    selection: {
+      model?: string;
+      effort?: string;
+      serviceTier?: string;
+      contextWindow?: string;
+      mode?: InteractionMode | string;
+    },
+  ): void;
+  getProviderModelOptions(
+    provider: ProviderKind,
+    model: string,
+  ): { provider: ProviderKind; model: string; knobs: SelectionKnobs; updatedAt: number } | null;
+  upsertProviderModelOptions(input: {
+    provider: ProviderKind;
+    model: string;
+    knobs: SelectionKnobs;
+    at?: number;
+  }): void;
+  setPendingSelection(threadId: string, selection: TurnSelection): void;
+  pendingSelection(threadId: string): TurnSelection | null;
+  clearPendingSelection(threadId: string): void;
+  retargetThreadSelection(threadId: string, selection: TurnSelection): boolean;
 };
 
 /** The continuation surface the usage-limit path drives: schedule a resume at a

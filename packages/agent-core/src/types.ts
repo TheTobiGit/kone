@@ -382,6 +382,11 @@ export type SendTurnInput = {
   sender?: MessageSender;
   /** Override the session model for this turn. */
   model?: string;
+  /** The provider this turn should run on, when it differs from the thread's
+   *  current owner. A busy thread queues it with that provider (the drain
+   *  hands the thread in first); an idle thread is handed in before the turn
+   *  is dispatched. Absent means the thread's current owner. */
+  provider?: ProviderKind;
   mode?: InteractionMode;
   /** Reasoning effort tier. Providers that bake effort into the model id
    *  ignore it; flag-based providers (Codex) map it to their own turn param. */
