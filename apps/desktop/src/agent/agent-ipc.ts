@@ -99,6 +99,7 @@ import type {
   HandInInput,
   CreateSideChatInput,
   ForkThreadAtBlockInput,
+  InteractionMode,
   ProviderConfig,
   ProviderKind,
   RewindConversationOnlyInput,
@@ -108,6 +109,7 @@ import type {
   UploadAttachmentInput,
   UserInputAnswers,
 } from "@kone/agent-core/types.js";
+import type { TurnSelection } from "@kone/agent-core/selection.js";
 
 // IPC wiring for the agent layer — the direct analogue of git/ipc.ts. Request/
 // ack calls are `ipcMain.handle` (agent:*); the one runtime event stream is
@@ -529,6 +531,11 @@ export function registerAgentIpc(): void {
         return svc.setProviderSettings(provider, { ...current, enabled });
       },
       updateProvider: (provider) => svc.updateProvider(provider),
+    },
+    // The self-switch tool's own-thread change: clamped by the tool, applied
+    // by the service (pending while a turn runs, direct when idle).
+    providerSwitch: {
+      switchOwnSelection: (threadId, selection) => svc.switchOwnSelection(threadId, selection),
     },
   });
   svc.attachGateway(gateway);
@@ -1043,6 +1050,11 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:history-hand-ins", (_event, threadId: string) =>
     store.handInsForThread(threadId),
   );
+  // Same-provider model/knob changes between turns, oldest first — the
+  // timeline's model-change marks, the counterpart to a hand-in's boundary.
+  ipcMain.handle("agent:history-model-changes", (_event, threadId: string) =>
+    store.modelChangesForThread(threadId),
+  );
   // Windowed thread read (user-anchored keyset pages): first page when no
   // cursor is given, then the next strictly older page per cursor. The
   // renderer treats `nextCursor` as opaque and echoes it back — this is
@@ -1341,6 +1353,39 @@ export function registerAgentIpc(): void {
       threadId: string,
       selection: { model?: string; effort?: string; serviceTier?: string; contextWindow?: string },
     ) => store.setThreadSelection(threadId, selection),
+  );
+  // A pick made while a turn runs with nothing queued: stored on the thread and
+  // applied at the next turn end, with no turn of its own. Returns what the
+  // thread now holds.
+  ipcMain.handle(
+    "agent:set-pending-selection",
+    (_event, threadId: string, selection: TurnSelection) => {
+      svc.setPendingSelection(threadId, selection);
+      return store.pendingSelection(threadId);
+    },
+  );
+  // The knobs remembered per provider+model, newest first.
+  ipcMain.handle("agent:provider-model-options", () => store.listProviderModelOptions());
+  // Remember (or replace) the knobs for one provider+model.
+  ipcMain.handle(
+    "agent:set-provider-model-options",
+    (
+      _event,
+      input: {
+        provider: ProviderKind;
+        model: string;
+        knobs: {
+          effort?: string;
+          serviceTier?: string;
+          contextWindow?: string;
+          mode?: InteractionMode;
+        };
+        at?: number;
+      },
+    ) => {
+      store.upsertProviderModelOptions(input);
+      return store.getProviderModelOptions(input.provider, input.model);
+    },
   );
   // User-initiated rename (the strip-header / recents-row rename). Sets the
   // title WITHOUT touching recency ordering (a rename is bookkeeping, not

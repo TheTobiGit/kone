@@ -75,6 +75,10 @@ import {
   type AppProvidersToolOptions,
 } from "./tools/appProviders.js";
 import {
+  createAppProviderSwitchTools,
+  type AppProviderSwitchControls,
+} from "./tools/appProvidersSwitch.js";
+import {
   createAppViewTools,
   type AppViewToolOptions,
   type TerminalScreenReading,
@@ -254,6 +258,9 @@ export interface GatewayInput {
    *  adds no per-field mapping of its own, so the option names stay in one
    *  place instead of drifting across two. */
   providers?: AppProvidersToolOptions;
+  /** Self-switch backing `app_switch_provider`: applies a thread's own
+   *  provider/model change for its next turn. Absent, the tool refuses. */
+  providerSwitch?: AppProviderSwitchControls;
   /** What the renderer last said is on screen. Feeds `app_get_view` and the
    *  block in front of every assistant turn. Absent, the tool says the screen
    *  is unknown and no block is sent. */
@@ -329,6 +336,13 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // The provider tools take their options as one object, passed straight
   // through — no per-field mapping here to drift from AppProvidersToolOptions.
   const appProviderOptions: AppProvidersToolOptions = input.providers ?? {};
+  // The self-switch tool clamps against the same availability the thread tools
+  // read, and applies through the service's own-thread switch.
+  const appProviderSwitchOptions: Parameters<typeof createAppProviderSwitchTools>[0] = {
+    store: input.store,
+  };
+  if (input.threadAvailability) appProviderSwitchOptions.availability = input.threadAvailability;
+  if (input.providerSwitch) appProviderSwitchOptions.controls = input.providerSwitch;
 
   const appViewOptions: AppViewToolOptions = { store: input.store };
   if (input.readView) appViewOptions.readView = input.readView;
@@ -374,6 +388,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
       : []),
     ...createAppForkTools({ emit: input.emit, supportsFork: input.supportsFork, isThreadBusy: input.isThreadBusy }),
     ...createAppProviderTools(appProviderOptions),
+    ...createAppProviderSwitchTools(appProviderSwitchOptions),
     ...createAppViewTools(appViewOptions),
     ...createAppScheduleTools(appScheduleOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
