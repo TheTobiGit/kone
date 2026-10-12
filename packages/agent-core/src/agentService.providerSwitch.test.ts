@@ -46,6 +46,12 @@ class FakeProv {
   sent: SendTurnInput[] = [];
   starts = 0;
   stops = 0;
+  interrupts = 0;
+  interruptedTurns: string[] = [];
+  liveTurn: string | null = null;
+  /** When set, the next sendTurn waits on it before accepting — a delivery the
+   *  test can hold open. One send only. */
+  sendGate: Promise<void> | null = null;
   private turns = 0;
   private readonly emit: EmitEvent;
   constructor(readonly provider: ProviderKind, emit: EmitEvent) {
@@ -62,13 +68,24 @@ class FakeProv {
     return {};
   }
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    if (this.sendGate) {
+      const gate = this.sendGate;
+      this.sendGate = null;
+      await gate;
+    }
     this.sent.push(input);
     const turnId = `t-${this.provider}-${++this.turns}`;
+    this.liveTurn = turnId;
     this.emit({ ...this.base(input.threadId), type: "turn.started", turnId });
     return { threadId: input.threadId, turnId };
   }
   finishTurn(threadId: string, turnId: string): void {
+    if (this.liveTurn === turnId) this.liveTurn = null;
     this.emit({ ...this.base(threadId), type: "turn.completed", turnId });
+  }
+  async interruptTurn(): Promise<void> {
+    this.interrupts += 1;
+    if (this.liveTurn) this.interruptedTurns.push(this.liveTurn);
   }
   async stopSession(): Promise<void> {
     this.stops += 1;
@@ -368,5 +385,169 @@ describe("self-switch", () => {
     // The live codex turn is untouched.
     expect(codex.stops).toBe(0);
     expect(store.threadMeta(thread)?.provider).toBe("codex");
+  });
+});
+
+describe("P5 review: delivery races, pending inheritance and the fork return", () => {
+  test("a delivery hand-in reserves the thread: a continuation is held and a move refused", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "switch", provider: "claudeAgent", model: "claude-x", userBlockId: "ub-switch" });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let entered = false;
+    codex.stopSession = async () => { entered = true; await blocked; };
+    codex.finishTurn(thread, "live-1");
+    await waitFor(() => entered, "the outgoing teardown to begin");
+
+    const continuation = await service.sendTurn({ threadId: thread, input: "P3 continuation" }, { noQueue: true });
+    expect(continuation.held).toBe(true);
+    expect(store.listQueuedTurns(thread).some((r) => r.input === "P3 continuation")).toBe(false);
+    const move = service.holdThreadForWorktreeMove(thread, "codex");
+    expect(move.reason).toBe("busy");
+    move.release();
+    release();
+    await waitFor(() => claude.sent.length === 1, "the switched row to run");
+  });
+
+  test("stopping while a switched delivery is being taken interrupts the replacement turn", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "switch", provider: "claudeAgent", model: "claude-x", userBlockId: "ub-switch" });
+    let release!: () => void;
+    claude.sendGate = new Promise<void>((resolve) => { release = resolve; });
+    codex.finishTurn(thread, "live-1");
+    await waitFor(() => claude.sendGate === null, "claude's send to be taken");
+    await service.cancelQueuedTurns(thread);
+    release();
+    await waitFor(() => claude.sent.length === 1, "claude's turn to land");
+    await tick();
+    // The orphaned turn is judged against the replacement session, so it is
+    // interrupted exactly as an ordinary cancelled delivery is.
+    expect(claude.interruptedTurns).toEqual(["t-claudeAgent-1"]);
+  });
+
+  test("rows enqueued after a pending pick carry it", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "before", userBlockId: "before" });
+    await service.switchOwnSelection(thread, { provider: "claudeAgent", model: "claude-x", effort: "high" });
+    await service.sendTurn({ threadId: thread, input: "after", userBlockId: "after" });
+    const after = store.listQueuedTurns(thread).find((r) => r.userBlockId === "after");
+    expect(after?.provider).toBe("claudeAgent");
+    expect(after?.model).toBe("claude-x");
+    expect(after?.effort).toBe("high");
+    expect(store.listQueuedTurns(thread).find((r) => r.userBlockId === "before")?.provider).toBe("codex");
+  });
+
+  test("a terminal refused row does not block the pending pick", async () => {
+    cacheStatuses([
+      {
+        provider: "claudeAgent",
+        label: "Claude",
+        available: false,
+        authStatus: "unknown",
+        readiness: "not-installed",
+        enabled: true,
+        message: "not installed",
+      },
+    ]);
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "refuse", provider: "claudeAgent", userBlockId: "refuse" });
+    service.setPendingSelection(thread, { provider: "codex", model: "gpt-new" });
+    codex.finishTurn(thread, "live-1");
+    await waitFor(() => store.listQueuedTurns(thread).some((r) => r.state === "refused"), "the refusal");
+    await waitFor(() => store.pendingSelection(thread) === null, "the pending pick to apply");
+    expect(store.threadMeta(thread)?.model).toBe("gpt-new");
+  });
+
+  test("a send resolves remembered options instead of clearing them", async () => {
+    const thread = await openCodexThread();
+    store.upsertProviderModelOptions({ provider: "codex", model: "gpt-5", knobs: { effort: "high" }, at: 1 });
+    await service.sendTurn({ threadId: thread, input: "return", model: "gpt-5" });
+    expect(codex.sent[0]?.effort).toBe("high");
+    expect(store.getProviderModelOptions("codex", "gpt-5")?.knobs.effort).toBe("high");
+  });
+
+  test("a picker commit remembers the effective options", async () => {
+    const thread = await openCodexThread();
+    store.setThreadSelection(thread, { model: "gpt-5", effort: "high" });
+    expect(store.getProviderModelOptions("codex", "gpt-5")?.knobs.effort).toBe("high");
+  });
+
+  test("the legacy manual hand-in still cancels queued follow-ups", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "old queued prompt", userBlockId: "old" });
+    const { handInThread } = await import("./handIn.js");
+    // No preserveQueue: the immediate user hand-in keeps its old teardown.
+    await handInThread(service, { threadId: thread, target: { provider: "claudeAgent", model: "claude-x" } });
+    await tick();
+    expect(store.threadMeta(thread)?.provider).toBe("claudeAgent");
+    expect(codex.sent).toHaveLength(0);
+  });
+
+  test("a native fork returning to its source provider replays the hand-in", async () => {
+    const source = await openCodexThread();
+    store.captureConversationId(source, "native-source");
+    const { forkThreadAtTurn } = await import("./threadFork.js");
+    const forkId = `native-fork-${++seq}`;
+    forkThreadAtTurn({
+      requestId: `nf-${seq}`,
+      threadId: forkId,
+      sourceThreadId: source,
+      turnId: "seed",
+      userBlockId: null,
+      supportsFork: true,
+    });
+    expect(store.threadForkContext(forkId)?.nativeFork).toBeDefined();
+    await service.switchOwnSelection(forkId, { provider: "claudeAgent", model: "claude-x" });
+    await service.startSession({ threadId: forkId, provider: "claudeAgent", cwd: "/tmp", mode: "ask" });
+    claude.startTurn(forkId, "fork-live");
+    await service.sendTurn({ threadId: forkId, input: "return on codex", provider: "codex", model: "gpt-5", userBlockId: "back" });
+    claude.finishTurn(forkId, "fork-live");
+    await waitFor(() => codex.sent.length === 1, "codex to run the returned turn");
+    expect(codex.sent[0]?.input).toContain("first question");
+  });
+
+  test("a crash between rows resumes on the stored owner without losing or repeating a row", async () => {
+    const thread = await openCodexThread();
+    liveTurn(thread, "live-1");
+    await service.sendTurn({ threadId: thread, input: "row one", provider: "claudeAgent", model: "claude-x", userBlockId: "r1" });
+    await service.sendTurn({ threadId: thread, input: "row two", provider: "codex", model: "gpt-5", userBlockId: "r2" });
+    codex.finishTurn(thread, "live-1");
+    await waitFor(() => claude.sent.length === 1, "row one delivered");
+    // The stored owner is durable before the replacement session runs: this is
+    // the fact a crash between rows resumes from. The old service's in-memory
+    // state is gone (nothing completes row one's turn through it), and a fresh
+    // service reopens the thread on the stored owner.
+    expect(store.threadMeta(thread)?.provider).toBe("claudeAgent");
+    let codex2!: FakeProv;
+    const resumed = new AgentServiceCtor({
+      store,
+      historyStore: store,
+      selectionStore: store,
+      checkpointStore: null,
+      retentionSweepMs: 0,
+      wedgeSweepMs: 60_000,
+      idleSweepMs: 60_000,
+      queueRetryDelaysMs: [20, 20],
+      adapters: (emit) => {
+        codex2 = new FakeProv("codex", emit);
+        // SAFETY: the fake covers every adapter method this path reaches.
+        return [codex2, new FakeProv("claudeAgent", emit)] as ProviderAdapter[];
+      },
+    });
+    try {
+      await resumed.startSession({ threadId: thread, provider: "claudeAgent", cwd: "/tmp", mode: "ask" });
+      await waitFor(() => codex2.sent.length === 1, "row two to resume");
+      expect(codex2.sent[0]?.input).toContain("row two");
+      // Row one ran exactly once — the resume did not replay it.
+      expect(claude.sent).toHaveLength(1);
+      expect(store.listQueuedTurns(thread).filter((r) => r.state === "queued")).toHaveLength(0);
+    } finally {
+      await resumed.stopAll();
+    }
   });
 });

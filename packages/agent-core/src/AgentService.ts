@@ -530,18 +530,6 @@ function failedCheckpoint(cause: unknown): FailedCheckpoint {
   return { ok: false, reason: "failed", detail: String(cause) };
 }
 
-/** The selection a turn input names on `provider`: the picker axes it carries,
- *  for the remembered-options memory and the pending/queued selection. */
-function selectionFromInput(provider: ProviderKind, input: SendTurnInput): TurnSelection {
-  const selection: TurnSelection = { provider };
-  if (input.model) selection.model = input.model;
-  if (input.effort) selection.effort = input.effort;
-  if (input.serviceTier) selection.serviceTier = input.serviceTier;
-  if (input.contextWindow) selection.contextWindow = input.contextWindow;
-  if (input.mode) selection.mode = input.mode;
-  return selection;
-}
-
 // The cross-provider facade that lives in the Electron main process. It owns
 // the adapter registry, routes thread-scoped calls to the adapter that owns the
 // thread, and fans every
@@ -1097,19 +1085,31 @@ export class AgentService {
 
   // ── provider and model selection ────────────────────────────────────────────
 
-  /** Remember the knobs a turn ran with, keyed provider+model, so returning to
-   *  that model restores them. Explicit knobs only: a knob the turn did not
-   *  carry ran on the provider's default, and recording another provider's
-   *  value under this pair would make the memory lie about what ran. */
-  private rememberSelection(selection: TurnSelection): void {
+  /** Remember the knobs that actually took effect for a provider+model, so
+   *  returning to it restores them. Resolved the same way a returning pick
+   *  reads: the selection's own knobs, then what was already remembered, then
+   *  the thread's. Never replaces memory with an empty set — a commit that
+   *  named no knobs and has nothing to fall back on teaches nothing, and
+   *  writing empty would wipe what a prior commit learned. */
+  private rememberSelection(threadId: string, selection: TurnSelection): void {
     const store = this.selectionStore;
     if (!store || !selection.model) return;
-    const knobs: SelectionKnobs = {};
-    if (selection.effort) knobs.effort = selection.effort;
-    if (selection.serviceTier) knobs.serviceTier = selection.serviceTier;
-    if (selection.contextWindow) knobs.contextWindow = selection.contextWindow;
-    if (selection.mode) knobs.mode = selection.mode;
+    const explicit: SelectionKnobs = {};
+    if (selection.effort) explicit.effort = selection.effort;
+    if (selection.serviceTier) explicit.serviceTier = selection.serviceTier;
+    if (selection.contextWindow) explicit.contextWindow = selection.contextWindow;
+    if (selection.mode) explicit.mode = selection.mode;
+    const remembered = store.getProviderModelOptions(selection.provider, selection.model)?.knobs ?? null;
+    const current = selectionKnobs(store.threadMeta(threadId));
+    const knobs = resolveSelectionKnobs({ explicit, remembered, current });
+    if (Object.keys(knobs).length === 0) return;
     store.upsertProviderModelOptions({ provider: selection.provider, model: selection.model, knobs });
+  }
+
+  /** Drop a pending pick once a send has folded it into the turn or row it now
+   *  carries, so it is not applied a second time at that turn's end. */
+  private consumePending(threadId: string, pending: TurnSelection | null): void {
+    if (pending) this.selectionStore?.clearPendingSelection(threadId);
   }
 
   /** Write a selection onto the thread. `retarget` is the session-less path (a
@@ -1269,19 +1269,31 @@ export class AgentService {
     this.selectionStore?.setPendingSelection(threadId, selection);
   }
 
+  /** Whether a thread has a row the drain will still run (waiting, claimed, or
+   *  held). A terminal refused row is listed but inert, so it must not keep a
+   *  pending pick from applying. */
+  private hasRunnableQueuedTurns(threadId: string): boolean {
+    const store = this.selectionStore;
+    if (!store) return false;
+    return store
+      .listQueuedTurns(threadId)
+      .some((row) => row.state === "queued" || row.state === "promoting" || row.state === "failed");
+  }
+
   /** Apply a pending pick at turn end, with no turn: a same-provider change
-   *  writes the knobs, a provider change hands the thread over. Cleared first,
-   *  so a refusal cannot be retried forever. */
+   *  writes the knobs, a provider change hands the thread over. Cleared only
+   *  after the attempt, so a crash between reading and applying leaves the pick
+   *  to retry rather than losing it. */
   private async applyPendingSelection(threadId: string): Promise<void> {
     const store = this.selectionStore;
     const pending = store?.pendingSelection(threadId) ?? null;
     if (!store || !pending) return;
-    store.clearPendingSelection(threadId);
-    this.rememberSelection(pending);
+    this.rememberSelection(threadId, pending);
     const prepared = await this.prepareSelectedTurn(threadId, pending, {
       threadId,
       input: "",
     });
+    store.clearPendingSelection(threadId);
     if ("refused" in prepared) {
       const provider = this.routing.get(threadId);
       if (provider) this.warn(threadId, provider, `The provider change did not apply: ${prepared.refused}`);
@@ -1305,17 +1317,15 @@ export class AgentService {
   ): Promise<{ applied: "direct" | "pending"; selection: TurnSelection } | { refused: string }> {
     const selection = this.resolveFullSelection(threadId, explicit);
     if (!selection) return { refused: `Thread not found: ${threadId}` };
-    const store = this.selectionStore;
-    const queued = store?.listQueuedTurns(threadId).length ?? 0;
-    if (this.isBusy(threadId) || queued > 0) {
+    if (this.isBusy(threadId) || this.hasRunnableQueuedTurns(threadId)) {
       this.setPendingSelection(threadId, selection);
-      this.rememberSelection(selection);
+      this.rememberSelection(threadId, selection);
       return { applied: "pending", selection };
     }
     const preview = { threadId, input: "" };
     const prepared = await this.prepareSelectedTurn(threadId, selection, preview);
     if ("refused" in prepared) return { refused: prepared.refused };
-    this.rememberSelection(selection);
+    this.rememberSelection(threadId, selection);
     return { applied: "direct", selection };
   }
 
@@ -1545,31 +1555,52 @@ export class AgentService {
     // sets `session.model = input.model`), so guarding startSession alone left
     // the desync fully live — every turn re-supplied the foreign id.
     const provider = this.routing.get(input.threadId);
-    // A provider override names the hands this turn wants. It rides the row
-    // when the thread is busy (the drain hands over first) and changes hands
-    // before dispatch when the thread is idle.
-    const turnProvider = input.provider ?? provider;
+    const store = this.selectionStore;
+    // A switch the drain is mid-hand-in leaves a reservation naming its target:
+    // a send arriving then rides the switch, not the outgoing hands.
+    const holdTarget = this.handInHolds.get(input.threadId);
+    // A pick made while a turn ran and nothing was queued is the thread's
+    // pending selection; a later send carries it unless it names its own.
+    const pending = store?.pendingSelection(input.threadId) ?? null;
+    // Resolve the turn's full pick: explicit fields, then a pending pick, then
+    // the knobs remembered for the target provider+model, then the thread's.
+    const selection = this.resolveFullSelection(input.threadId, {
+      provider: input.provider ?? holdTarget ?? pending?.provider,
+      model: input.model ?? pending?.model,
+      effort: input.effort ?? pending?.effort,
+      serviceTier: input.serviceTier ?? pending?.serviceTier,
+      contextWindow: input.contextWindow ?? pending?.contextWindow,
+      mode: input.mode ?? pending?.mode,
+    });
+    const turnProvider = selection?.provider ?? provider;
     if (turnProvider) assertProviderEnabled(readProviderSettings(), turnProvider);
-    if (turnProvider) this.rememberSelection(selectionFromInput(turnProvider, input));
+    if (selection) this.rememberSelection(input.threadId, selection);
+    // The turn runs on the resolved pick: fold it into the input so every path
+    // below — and the adapter — sees the same model and knobs.
+    const resolved: SendTurnInput = { ...input };
+    if (selection?.model) resolved.model = selection.model;
+    if (selection?.effort !== undefined) resolved.effort = selection.effort;
+    if (selection?.serviceTier !== undefined) resolved.serviceTier = selection.serviceTier;
+    if (selection?.contextWindow !== undefined) resolved.contextWindow = selection.contextWindow;
+    if (selection?.mode !== undefined) resolved.mode = selection.mode;
     // A fork's FIRST turn carries the one-shot context bootstrap
     // (sidechat.ts): the imported transcript, the boundary instruction, and
     // the user's message wrapped in `<latest_user_message>`. Null for every
-    // other turn/thread. The history budget is sized from the target model's
-    // window and the provider's cap; a new prompt that cannot fit even with
-    // zero history rejects here, up front, rather than dropping context.
-    const forkContext = this.historyStore?.threadForkContext(input.threadId);
-    const nativeForkMatchesProvider = Boolean(
-      forkContext?.nativeFork && forkContext.sourceProvider === turnProvider,
-    );
-    const sidechatInput = nativeForkMatchesProvider ? null : sidechatBootstrapForTurn(
-      input.threadId,
-      input.input,
-      this.handoffBudgetOptions(turnProvider, input.model, input.threadId, input.attachments),
-    );
+    // other turn/thread; a pending hand-in outranks a stale native fork. The
+    // history budget is sized from the target model's window and the provider's
+    // cap; a new prompt that cannot fit even with zero history rejects here, up
+    // front, rather than dropping context.
+    const sidechatInput = this.nativeForkWillRun(input.threadId, turnProvider)
+      ? null
+      : sidechatBootstrapForTurn(
+          input.threadId,
+          resolved.input,
+          this.handoffBudgetOptions(turnProvider, resolved.model, input.threadId, resolved.attachments),
+        );
     // dispatchMode and the provider override are the service's own routing
     // hints — strip them before anything reaches an adapter (adapters don't
     // know the queue exists, and a session's provider is fixed at start).
-    const { dispatchMode, provider: _providerOverride, ...base } = input;
+    const { dispatchMode, provider: _providerOverride, ...base } = resolved;
     const next = sidechatInput ? { ...base, input: sidechatInput } : base;
     // A workspace handoff owns the thread from reservation through rebind, and
     // spans the window where the session is down (between stop and restart).
@@ -1582,12 +1613,15 @@ export class AgentService {
       if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
       const model = this.validModelFor(moveProvider, next.model);
       const effort = this.validEffortFor(moveProvider, model, next.effort);
-      return this.enqueueTurn({ ...next, model, effort }, dispatchMode ?? "queue", moveProvider);
+      const queued = await this.enqueueTurn({ ...next, model, effort }, dispatchMode ?? "queue", moveProvider);
+      this.consumePending(input.threadId, pending);
+      return queued;
     }
     if (!provider) return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(next));
     // `provider` is narrowed to a live owner here; the turn's target is the
-    // override when it names one.
-    const hands = input.provider ?? provider;
+    // resolved pick (an explicit override, a switch in progress, or a pending
+    // pick), which the enqueue paths record on the row.
+    const hands = turnProvider ?? provider;
     const model = this.validModelFor(hands, next.model);
     const effort = this.validEffortFor(hands, model, next.effort);
     const routed = { ...next, model, effort };
@@ -1601,7 +1635,9 @@ export class AgentService {
     // slot), against the restored tree.
     if (this.admissionRefusal(input.threadId) !== null) {
       if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
-      return this.enqueueTurn(routed, dispatchMode ?? "queue", hands);
+      const queued = await this.enqueueTurn(routed, dispatchMode ?? "queue", hands);
+      this.consumePending(input.threadId, pending);
+      return queued;
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
     // rather than racing the live turn (sending straight to the adapter would
@@ -1618,20 +1654,19 @@ export class AgentService {
     // sees it and queues instead.
     if (this.isBusy(input.threadId)) {
       if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
-      return this.enqueueTurn(routed, dispatchMode ?? "queue", hands);
+      const queued = await this.enqueueTurn(routed, dispatchMode ?? "queue", hands);
+      this.consumePending(input.threadId, pending);
+      return queued;
     }
     // Idle, and the turn wants different hands than the thread is in: change
     // hands now, with no turn to interrupt.
     let deliver: SendTurnInput = routed;
-    if (input.provider && input.provider !== provider) {
-      const prepared = await this.prepareSelectedTurn(
-        input.threadId,
-        selectionFromInput(input.provider, input),
-        deliver,
-      );
+    if (selection && selection.provider !== provider) {
+      const prepared = await this.prepareSelectedTurn(input.threadId, selection, deliver);
       if ("refused" in prepared) throw new Error(prepared.refused);
       deliver = prepared.input;
     }
+    this.consumePending(input.threadId, pending);
     return this.dispatchToAdapter(input.threadId, deliver, input.userBlockId, undefined, options);
   }
 
@@ -4221,24 +4256,34 @@ export class AgentService {
     };
     if (input.attachments?.length) row.attachments = input.attachments;
     if (input.skills?.length) row.skills = input.skills;
-    row.provider = provider;
-    if (input.model) row.model = input.model;
-    if (input.mode) row.mode = input.mode;
-    if (input.effort) row.effort = input.effort;
-    if (input.serviceTier) row.serviceTier = input.serviceTier;
-    if (input.contextWindow) row.contextWindow = input.contextWindow;
+    // A pick made earlier rides this row too: a row enqueued after a pick keeps
+    // that pick unless it names its own provider (the caller's `provider`) or
+    // its own knobs. This is where a pick reaches a steer as well as a send.
+    const pendingPick = this.selectionStore?.pendingSelection(input.threadId) ?? null;
+    row.provider = pendingPick?.provider ?? provider;
+    const rowModel = input.model ?? pendingPick?.model;
+    const rowMode = input.mode ?? pendingPick?.mode;
+    const rowEffort = input.effort ?? pendingPick?.effort;
+    const rowServiceTier = input.serviceTier ?? pendingPick?.serviceTier;
+    const rowContextWindow = input.contextWindow ?? pendingPick?.contextWindow;
+    if (rowModel) row.model = rowModel;
+    if (rowMode) row.mode = rowMode;
+    if (rowEffort) row.effort = rowEffort;
+    if (rowServiceTier) row.serviceTier = rowServiceTier;
+    if (rowContextWindow) row.contextWindow = rowContextWindow;
     // The row is the durable commit of this selection: remember the knobs for
     // the provider+model now, so returning to it restores them even if the row
     // is cancelled.
-    const remembered: TurnSelection = { provider };
-    if (input.model) remembered.model = input.model;
-    if (input.effort) remembered.effort = input.effort;
-    if (input.serviceTier) remembered.serviceTier = input.serviceTier;
-    if (input.contextWindow) remembered.contextWindow = input.contextWindow;
-    if (input.mode) remembered.mode = input.mode;
-    this.rememberSelection(remembered);
+    const remembered: TurnSelection = { provider: row.provider };
+    if (rowModel) remembered.model = rowModel;
+    if (rowEffort) remembered.effort = rowEffort;
+    if (rowServiceTier) remembered.serviceTier = rowServiceTier;
+    if (rowContextWindow) remembered.contextWindow = rowContextWindow;
+    if (rowMode) remembered.mode = rowMode;
+    this.rememberSelection(input.threadId, remembered);
     try {
       const accepted = store.enqueueQueuedTurn(row);
+      if (accepted && pendingPick) this.selectionStore?.clearPendingSelection(input.threadId);
       if (!accepted) {
         // A row with this (thread_id, user_block_id) is still pending — an
         // idempotent replay of this exact follow-up. Ack with the existing
@@ -4382,7 +4427,7 @@ export class AgentService {
       // turn end with no turn of its own.
       if (
         (this.selectionStore?.pendingSelection(threadId) ?? null) &&
-        store.listQueuedTurns(threadId).length === 0
+        !this.hasRunnableQueuedTurns(threadId)
       ) {
         await this.applyPendingSelection(threadId);
         await this.runInboxTurn(threadId);

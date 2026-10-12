@@ -86,7 +86,7 @@ describe("app_switch_provider", () => {
       provider: "claudeAgent",
     });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0]?.text ?? "").toContain("when the turn now running ends");
+    expect(result.content[0]?.text ?? "").toContain("once the queue drains and the current turn ends");
   });
 
   it("refuses a switch outside a pinned agent's model and fallbacks", async () => {

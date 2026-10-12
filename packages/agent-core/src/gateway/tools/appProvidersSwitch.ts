@@ -166,7 +166,7 @@ export function createAppProviderSwitchTools(options: AppProvidersSwitchToolOpti
 
     const when =
       outcome.applied === "pending"
-        ? "It applies when the turn now running ends; this turn is untouched."
+        ? "It applies once the queue drains and the current turn ends; this turn is untouched."
         : "It applies from this thread's next turn.";
     return {
       content: [
