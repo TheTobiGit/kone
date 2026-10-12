@@ -322,10 +322,13 @@ export type QueuedTurnDispatchMode = "queue" | "steer";
 /** Lifecycle of a queued turn: 'queued' → 'promoting' (claimed) → 'promoted'
  *  (ran), 'promoting' → 'queued' (released after a failed drain, to retry),
  *  'promoting' → 'failed' (held: its retries ran out, and it waits for the
- *  user), and any pending state → 'cancelled' (stop/delete). queued,
- *  promoting and failed are pending; promoted/cancelled rows are inert
- *  history. */
-export type QueuedTurnState = "queued" | "promoting" | "promoted" | "failed" | "cancelled";
+ *  user), any pending state → 'cancelled' (stop/delete), and 'queued' →
+ *  'refused' when a provider switch at delivery cannot be honoured (an
+ *  unreachable target, or a replay that no longer fits). queued, promoting and
+ *  failed are pending; promoted/cancelled/refused rows are inert history — a
+ *  refused row keeps its prompt and reason visible but pauses nothing, so the
+ *  queue runs on past it. */
+export type QueuedTurnState = "queued" | "promoting" | "promoted" | "failed" | "cancelled" | "refused";
 
 /** The enqueue payload the service layer hands the store. `userBlockId` is the
  *  journaled user-prompt block UUID (recordUserBlock mints it) — the replay
@@ -405,6 +408,9 @@ export type QueuedTurnRow = {
    *  otherwise. Absent when the row has no block on record, which a user's
    *  send always has — so absent is never the user's. */
   sender?: MessageSender;
+  /** Why a refused row could not run — the target was unreachable or the
+   *  replay no longer fit. Absent on every other state. */
+  refusalReason?: string;
 };
 
 export type QueuedTurnDbRow = {
@@ -425,6 +431,8 @@ export type QueuedTurnDbRow = {
   effort: string | null;
   service_tier: string | null;
   context_window: string | null;
+  /** Why a refused row could not run (migration 42). */
+  refusal_reason?: string | null;
   attempt_count: number;
   created_at: number;
   updated_at: number;
@@ -460,6 +468,7 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   if (row.service_tier) queued.serviceTier = row.service_tier;
   if (row.context_window) queued.contextWindow = row.context_window;
   if (row.promoted_at !== null) queued.promotedAt = row.promoted_at;
+  if (row.refusal_reason) queued.refusalReason = row.refusal_reason;
   if (row.sort_key !== null && row.sort_key !== undefined) queued.sortKey = row.sort_key;
   if (row.has_block) queued.sender = parseMessageSender(row.sender_json ?? null) ?? { kind: "user" };
   return queued;

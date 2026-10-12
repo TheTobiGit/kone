@@ -1049,6 +1049,7 @@ export type QueuedTurnStore = Pick<
   | "isQueuedTurnClaimed"
   | "markQueuedTurnPromoted"
   | "releaseQueuedTurn"
+  | "refuseQueuedTurn"
   | "cancelQueuedTurn"
   | "cancelQueuedTurnsForThread"
   | "listQueuedTurns"
@@ -2163,7 +2164,7 @@ export type RuntimeEvent =
   | (BaseEvent & {
       type: "turn.queued-updated";
       queueId: string;
-      state: "queued" | "promoting" | "failed";
+      state: "queued" | "promoting" | "failed" | "refused";
       attemptCount: number;
       retryAt?: number;
       error?: string;

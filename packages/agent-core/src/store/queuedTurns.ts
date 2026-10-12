@@ -1,7 +1,7 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { rowToQueuedTurn, serializeAttachments, serializeSkillReferences, type QueuedTurnDbRow, type QueuedTurnEditPatch, type QueuedTurnEnqueueInput, type QueuedTurnRow } from "../conversationStoreTypes.js";
-import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
+import { LISTED_QUEUE_STATES, moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
 import { indexBlockRow } from "./search.js";
 
 /** Queue drain order, shared by claim and list so the UI shows exactly what
@@ -428,6 +428,31 @@ export class QueuedTurnRepo {
     }
   }
 
+  /** Refuse a claimed or waiting row: 'queued'/'promoting' → 'refused', with
+   *  the reason kept for the strip. A refused row is terminal but inert — the
+   *  claim skips it and the prompt stays visible — so this is where a provider
+   *  switch the delivery cannot honour lands. Returns whether a row flipped. */
+  refuseQueuedTurn(queueId: string, reason: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      let refused = false;
+      this.dbh.durably(db, () => {
+        const result = db
+          .prepare(
+            `UPDATE queued_turns SET state = 'refused', refusal_reason = ?, updated_at = ?
+              WHERE queue_id = ? AND state IN ('queued', 'promoting')`,
+          )
+          .run(reason, Date.now(), queueId);
+        refused = Number(result.changes) > 0;
+      });
+      return refused;
+    } catch (err) {
+      console.error("[conversation-store] refuseQueuedTurn failed:", err);
+      return false;
+    }
+  }
+
   /** Reorder the active queued turns for `threadId`. Writes the caller's
    *  explicit order into sort_key (0-based over the FULL active set), so
    *  listings (`listQueuedTurns`) and claims (`claimNextQueuedTurn`) — which
@@ -640,12 +665,13 @@ export class QueuedTurnRepo {
     }
   }
 
-  /** Pending queued turns for a thread, in execution order — QUEUED_TURN_ORDER,
+  /** The queue strip's rows for a thread, in execution order — QUEUED_TURN_ORDER,
    *  the same explicit-first then steer-first-then-FIFO ordering claimNext
    *  uses, so the UI shows exactly what will run next. Held ('failed') rows
-   *  are listed in their place: they are still the user's unsent messages.
-   *  Settled rows (promoted/cancelled) are excluded: they are history, not
-   *  queue. */
+   *  are listed in their place: they are still the user's unsent messages. A
+   *  'refused' row is listed too — its prompt and reason stay visible — even
+   *  though the claim skips it. Settled rows (promoted/cancelled) are
+   *  excluded: they are history, not queue. */
   listQueuedTurns(threadId: string): QueuedTurnRow[] {
     const db = this.dbh.handle();
     if (!db) return [];
@@ -661,9 +687,9 @@ export class QueuedTurnRepo {
                     WHERE b.thread_id = queued_turns.thread_id AND b.block_id = queued_turns.user_block_id) AS sender_json,
                   EXISTS (SELECT 1 FROM blocks b
                     WHERE b.thread_id = queued_turns.thread_id AND b.block_id = queued_turns.user_block_id) AS has_block
-             FROM queued_turns
-            WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}
-            ORDER BY ${QUEUED_TURN_ORDER}`,
+              FROM queued_turns
+             WHERE thread_id = ? AND state IN ${LISTED_QUEUE_STATES}
+             ORDER BY ${QUEUED_TURN_ORDER}`,
         )
         .all(threadId) as QueuedTurnDbRow[];
       return rows.map(rowToQueuedTurn);

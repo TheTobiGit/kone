@@ -162,4 +162,32 @@ describe("queued row selection", () => {
     expect(rows[0]?.model).toBe("opus-4");
     expect(rows[0]?.effort).toBe("high");
   });
+
+  test("a refused row stays listed with its reason and does not pause the row behind it", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex" });
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: "ub-1",
+      input: "first",
+      provider: "claudeAgent",
+      at: 1,
+    });
+    store.enqueueQueuedTurn({
+      queueId: "q-2",
+      threadId: "t-1",
+      userBlockId: "ub-2",
+      input: "second",
+      provider: "codex",
+      at: 2,
+    });
+    expect(store.refuseQueuedTurn("q-1", "claudeAgent is not installed")).toBe(true);
+    const rows = store.listQueuedTurns("t-1");
+    expect(rows.map((r) => r.queueId)).toEqual(["q-1", "q-2"]);
+    expect(rows[0]?.state).toBe("refused");
+    expect(rows[0]?.refusalReason).toBe("claudeAgent is not installed");
+    // The claim skips the refused row and takes the one behind it.
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-2");
+  });
 });
