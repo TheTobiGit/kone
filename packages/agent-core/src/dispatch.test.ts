@@ -9,6 +9,7 @@ import { composeTurnDelivery } from "./dispatch.js";
 import { isWorkspaceCancel } from "@kone/protocol/ipc-error";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
+  AdapterCapabilities,
   EmitEvent,
   ProviderAdapter,
   QueuedTurnStore,
@@ -43,14 +44,21 @@ let lastDataDir = "";
  *  steer lane, which is where the userBlockId collision lived. */
 class FakeAdapter {
   provider = "codex" as const;
-  capabilities = {
-    sessionModelSwitch: "unsupported" as const,
+  capabilities: AdapterCapabilities = {
+    sessionModelSwitch: "unsupported",
     streamsText: false,
     supportsToolEvents: false,
     supportsResume: false,
     supportsModelList: false,
     supportsSubagents: false,
   };
+  /** When set, a live steer round trip a test can gate — how a steer already
+   *  admitted to the adapter outlives the turn it aimed at. `declare` so the
+   *  field adds no own property that would shadow a subclass's method. */
+  declare steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
+  /** When set, the provider's native compaction call, for a test that holds a
+   *  compaction running across a move. */
+  declare compactThread?: (threadId: string) => Promise<void>;
   static sent: string[] = [];
   static sentSkills: Array<SendTurnInput["skills"]> = [];
   static startedCwds: string[] = [];
@@ -215,6 +223,7 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
   emit: EmitEvent;
   service: import("./AgentService.js").AgentService;
   mailbox: import("./gateway/tools/irc.js").IrcMailbox;
+  adapter: FakeAdapter;
 }> {
   // A fresh process on the same disk for a reopen, else a fresh disk.
   if (!options.reopen) lastDataDir = mkdtempSync(path.join(tmpdir(), "kone-dispatch-test-"));
@@ -226,15 +235,17 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
   const store = new ConversationStoreCtor();
   const mailbox = new IrcMailboxCtor(store);
   let captured: EmitEvent | undefined;
+  let capturedAdapter: FakeAdapter | undefined;
   const serviceOptions: ConstructorParameters<typeof AgentServiceCtor>[0] = {
     // SAFETY: the real store satisfies the queue slice the service reads.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     store: store as unknown as QueuedTurnStore,
     adapters: (emit) => {
       captured = emit;
+      capturedAdapter = new FakeAdapter(emit);
       // SAFETY: one fake adapter is the whole provider roster here.
       // eslint-disable-next-line anti-slop/no-chained-type-assertions
-      return [new FakeAdapter(emit) as unknown as ProviderAdapter];
+      return [capturedAdapter as unknown as ProviderAdapter];
     },
   };
   if (options.checkpoints) serviceOptions.checkpointStore = options.checkpoints;
@@ -295,8 +306,8 @@ async function harness(options: { reopen?: boolean; checkpoints?: CheckpointStor
   });
   store.ensureThread({ threadId: THREAD, projectPath: CWD, provider: "codex" });
   await dispatcher.startThread({ threadId: THREAD, provider: "codex", cwd: CWD });
-  if (!captured) throw new Error("the fake adapter was not constructed");
-  return { store, dispatcher, emit: captured, service, mailbox };
+  if (!captured || !capturedAdapter) throw new Error("the fake adapter was not constructed");
+  return { store, dispatcher, emit: captured, service, mailbox, adapter: capturedAdapter };
 }
 
 /** Whether the last provision request carried an onProgress callback. */
@@ -2213,6 +2224,55 @@ describe("moving a thread into a worktree", () => {
       releaseRestore.fn();
       FakeAdapter.prototype.stopSession = original;
       releaseStop();
+    }
+  });
+
+  test("a connecting old-checkout start is refused by move admission", async () => {
+    const { dispatcher, service } = await harness();
+    await service.stopSession(THREAD);
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+    holdSessionStart();
+    try {
+      const oldStart = dispatcher.startThread({ threadId: THREAD, provider: "codex", cwd: CWD });
+      await waitFor(() => FakeAdapter.startedCwds.length >= 1);
+      expect(service.hasLiveSession(THREAD)).toBe(false);
+
+      // The connecting start owns the thread: the move refuses rather than
+      // racing it and starting a second session in the worktree.
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toEqual({ ok: false, reason: "busy" });
+      expect(provisioned).toHaveLength(0);
+
+      releaseSessionStart();
+      await oldStart;
+      expect(service.hasLiveSession(THREAD)).toBe(true);
+      // It came up in the original checkout; the move never redirected it.
+      expect(FakeAdapter.startedCwds).toEqual([CWD]);
+
+      // Once the start has settled, the move runs its real path.
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toMatchObject({ ok: true });
+      expect(service.hasLiveSession(THREAD)).toBe(true);
+    } finally {
+      releaseSessionStart();
+    }
+  });
+
+  test("a competing start is refused while a move holds the thread", async () => {
+    const { dispatcher, service } = await harness();
+    provisioned.length = 0;
+    holdProvisioning();
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => provisioned.length === 1);
+      // The move's reservation owns the thread: a competing start is refused,
+      // so nothing can publish an old-checkout session after the move.
+      await expect(
+        service.startSession({ threadId: THREAD, provider: "codex", cwd: CWD }),
+      ).rejects.toThrow(/being moved into a worktree/);
+      releaseProvisioning();
+      expect(await moving).toMatchObject({ ok: true });
+    } finally {
+      releaseProvisioning();
     }
   });
 
