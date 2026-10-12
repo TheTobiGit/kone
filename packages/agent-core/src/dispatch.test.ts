@@ -2276,6 +2276,61 @@ describe("moving a thread into a worktree", () => {
     }
   });
 
+  test("a steer already in flight blocks move admission until it settles", async () => {
+    const { dispatcher, service, emit, adapter } = await harness();
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.turnCounter = 0;
+    provisioned.length = 0;
+    let releaseSteer = (): void => {};
+    const steerGate = new Promise<void>((resolve) => {
+      releaseSteer = resolve;
+    });
+    adapter.steerTurn = async (input) => {
+      await steerGate;
+      turnStarted(emit, "late-steer-turn");
+      return adapter.sendTurn(input);
+    };
+    turnStarted(emit, "original-turn");
+    const steering = service.steerTurn({ threadId: THREAD, input: "accepted user nudge" });
+    // The original turn settles while the admitted steer still prepares: the
+    // thread reads idle to `isBusy`, but the steer round trip owns it.
+    // SAFETY: a complete turn.completed literal, the shape an adapter emits.
+    emit({
+      type: "turn.completed",
+      threadId: THREAD,
+      provider: "codex",
+      turnId: "original-turn",
+      at: Date.now(),
+      source: "codex.app-server",
+    } as RuntimeEvent);
+    expect(service.isThreadBusy(THREAD)).toBe(false);
+    try {
+      // The move refuses before stopping rather than tearing down the session
+      // under the steer and starting a fresh old-checkout turn.
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toEqual({ ok: false, reason: "busy" });
+      expect(FakeAdapter.sent).toEqual([]);
+
+      releaseSteer();
+      expect((await steering).queued).toBeUndefined();
+      expect(FakeAdapter.sent).toEqual(["accepted user nudge"]);
+      // SAFETY: a complete turn.completed literal, the shape an adapter emits.
+      emit({
+        type: "turn.completed",
+        threadId: THREAD,
+        provider: "codex",
+        turnId: "late-steer-turn",
+        at: Date.now(),
+        source: "codex.app-server",
+      } as RuntimeEvent);
+
+      // Once the steer has settled, the move runs its real path.
+      FakeAdapter.sent.length = 0;
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toMatchObject({ ok: true });
+    } finally {
+      releaseSteer();
+    }
+  });
+
   test("builds a worktree, rebinds the session and resumes the conversation", async () => {
     const { store, dispatcher } = await harness();
     store.captureConversationId(THREAD, "conv-move");
