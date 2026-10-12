@@ -89,6 +89,9 @@ import type {
   UserInputRespondResult,
 } from "@kone/agent-core/index.js";
 import type { AgentEventFrame } from "@kone/agent-core/eventSubscriptions.js";
+import type { TurnSelection } from "@kone/agent-core/selection.js";
+import type { ProviderModelOptionsRecord } from "@kone/agent-core/store/providerModelOptions.js";
+import type { ModelChangeRecord } from "@kone/agent-core/store/modelChanges.js";
 import type {
   TerminalAckInput,
   TerminalCloseInput,
@@ -658,6 +661,10 @@ const api = {
       // "changed hands" markers.
       handInsForThread: (threadId: string): Promise<HandInRecord[]> =>
         ipcRenderer.invoke("agent:history-hand-ins", threadId),
+      // Same-provider model/knob changes between turns, oldest first — the
+      // timeline's model-change marks.
+      modelChangesForThread: (threadId: string): Promise<ModelChangeRecord[]> =>
+        ipcRenderer.invoke("agent:history-model-changes", threadId),
       // Windowed thread read (user-anchored keyset pages): first page when no
       // cursor is given; pass `nextCursor` back verbatim for the next strictly
       // older page. Null when the thread is missing. The renderer treats the
@@ -781,6 +788,30 @@ const api = {
         mode?: InteractionMode;
       },
     ): Promise<void> => ipcRenderer.invoke("agent:set-thread-selection", threadId, selection),
+    // A pick made while a turn runs with nothing queued: stored and applied at
+    // the next turn end, with no turn of its own. Returns what the thread now
+    // holds.
+    setPendingSelection: (
+      threadId: string,
+      selection: TurnSelection,
+    ): Promise<TurnSelection | null> =>
+      ipcRenderer.invoke("agent:set-pending-selection", threadId, selection),
+    // The knobs remembered per provider+model, newest first, and the setter
+    // that replaces one pair's.
+    providerModelOptions: (): Promise<ProviderModelOptionsRecord[]> =>
+      ipcRenderer.invoke("agent:provider-model-options"),
+    setProviderModelOptions: (input: {
+      provider: ProviderKind;
+      model: string;
+      knobs: {
+        effort?: string;
+        serviceTier?: string;
+        contextWindow?: string;
+        mode?: InteractionMode;
+      };
+      at?: number;
+    }): Promise<ProviderModelOptionsRecord | null> =>
+      ipcRenderer.invoke("agent:set-provider-model-options", input),
     // User-initiated rename. Resolves true when the title changed. Does not
     // touch recency ordering; the title.updated event follows on the stream.
     renameThread: (threadId: string, title: string): Promise<boolean> =>

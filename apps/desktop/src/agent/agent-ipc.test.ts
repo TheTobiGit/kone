@@ -21,3 +21,26 @@ describe("agent:set-pinned IPC routing", () => {
     expect(source).not.toMatch(/store\.setPinned\s*\(/);
   });
 });
+
+// The P5 selection handlers: the pending pick goes through the service (so the
+// drain's own bookkeeping and any announcement are in step), and the
+// remembered-options reads/writes go straight to the store — they are plain
+// rows with no event of their own.
+describe("P5 selection IPC routing", () => {
+  it("stores a pending selection through the service", () => {
+    const start = source.indexOf('ipcMain.handle(\n    "agent:set-pending-selection"');
+    expect(start).toBeGreaterThan(-1);
+    const registration = source.slice(start, source.indexOf("agent:provider-model-options", start));
+    expect(registration).toContain("svc.setPendingSelection");
+    expect(registration).toContain("store.pendingSelection");
+  });
+
+  it("reads and writes remembered options and model-change marks on the store", () => {
+    expect(source).toContain('"agent:provider-model-options"');
+    expect(source).toContain('"agent:set-provider-model-options"');
+    expect(source).toContain("store.listProviderModelOptions()");
+    expect(source).toContain("store.upsertProviderModelOptions");
+    expect(source).toContain('"agent:history-model-changes"');
+    expect(source).toContain("store.modelChangesForThread");
+  });
+});
