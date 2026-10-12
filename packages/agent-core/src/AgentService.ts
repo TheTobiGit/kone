@@ -1095,7 +1095,7 @@ export class AgentService {
    *  that model restores them. Explicit knobs only: a knob the turn did not
    *  carry ran on the provider's default, and recording another provider's
    *  value under this pair would make the memory lie about what ran. */
-  private rememberSelection(threadId: string, selection: TurnSelection): void {
+  private rememberSelection(selection: TurnSelection): void {
     const store = this.selectionStore;
     if (!store || !selection.model) return;
     const knobs: SelectionKnobs = {};
@@ -1253,7 +1253,7 @@ export class AgentService {
     const pending = store?.pendingSelection(threadId) ?? null;
     if (!store || !pending) return;
     store.clearPendingSelection(threadId);
-    this.rememberSelection(threadId, pending);
+    this.rememberSelection(pending);
     const prepared = await this.prepareSelectedTurn(threadId, pending, {
       threadId,
       input: "",
@@ -1285,13 +1285,13 @@ export class AgentService {
     const queued = store?.listQueuedTurns(threadId).length ?? 0;
     if (this.isBusy(threadId) || queued > 0) {
       this.setPendingSelection(threadId, selection);
-      this.rememberSelection(threadId, selection);
+      this.rememberSelection(selection);
       return { applied: "pending", selection };
     }
     const preview = { threadId, input: "" };
     const prepared = await this.prepareSelectedTurn(threadId, selection, preview);
     if ("refused" in prepared) return { refused: prepared.refused };
-    this.rememberSelection(threadId, selection);
+    this.rememberSelection(selection);
     return { applied: "direct", selection };
   }
 
@@ -1526,7 +1526,7 @@ export class AgentService {
     // before dispatch when the thread is idle.
     const turnProvider = input.provider ?? provider;
     if (turnProvider) assertProviderEnabled(readProviderSettings(), turnProvider);
-    if (turnProvider) this.rememberSelection(input.threadId, selectionFromInput(turnProvider, input));
+    if (turnProvider) this.rememberSelection(selectionFromInput(turnProvider, input));
     // A fork's FIRST turn carries the one-shot context bootstrap
     // (sidechat.ts): the imported transcript, the boundary instruction, and
     // the user's message wrapped in `<latest_user_message>`. Null for every
@@ -1561,8 +1561,11 @@ export class AgentService {
       return this.enqueueTurn({ ...next, model, effort }, dispatchMode ?? "queue", moveProvider);
     }
     if (!provider) return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(next));
-    const model = this.validModelFor(turnProvider, next.model);
-    const effort = this.validEffortFor(turnProvider, model, next.effort);
+    // `provider` is narrowed to a live owner here; the turn's target is the
+    // override when it names one.
+    const hands = input.provider ?? provider;
+    const model = this.validModelFor(hands, next.model);
+    const effort = this.validEffortFor(hands, model, next.effort);
     const routed = { ...next, model, effort };
     // A compaction in flight owns the session until its boundary lands — but
     // the user's words still belong in the transcript's future, not in an
@@ -1574,7 +1577,7 @@ export class AgentService {
     // slot), against the restored tree.
     if (this.admissionRefusal(input.threadId) !== null) {
       if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
-      return this.enqueueTurn(routed, dispatchMode ?? "queue", turnProvider);
+      return this.enqueueTurn(routed, dispatchMode ?? "queue", hands);
     }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
     // rather than racing the live turn (sending straight to the adapter would
@@ -1591,11 +1594,11 @@ export class AgentService {
     // sees it and queues instead.
     if (this.isBusy(input.threadId)) {
       if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
-      return this.enqueueTurn(routed, dispatchMode ?? "queue", turnProvider);
+      return this.enqueueTurn(routed, dispatchMode ?? "queue", hands);
     }
     // Idle, and the turn wants different hands than the thread is in: change
     // hands now, with no turn to interrupt.
-    let deliver = routed;
+    let deliver: SendTurnInput = routed;
     if (input.provider && input.provider !== provider) {
       const prepared = await this.prepareSelectedTurn(
         input.threadId,
@@ -4184,7 +4187,7 @@ export class AgentService {
     if (input.serviceTier) remembered.serviceTier = input.serviceTier;
     if (input.contextWindow) remembered.contextWindow = input.contextWindow;
     if (input.mode) remembered.mode = input.mode;
-    this.rememberSelection(input.threadId, remembered);
+    this.rememberSelection(remembered);
     try {
       const accepted = store.enqueueQueuedTurn(row);
       if (!accepted) {

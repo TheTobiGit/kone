@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { ConversationDb } from "./ConversationDb.js";
-import type { InteractionMode, ProviderKind } from "../types.js";
+import type { ProviderKind } from "../types.js";
 
 // The mark for a model or knob change between turns: the same conversation,
 // running on a different model or the same model with different knobs, without
@@ -128,13 +128,13 @@ export function changedKnobNames(
     effort?: string;
     serviceTier?: string;
     contextWindow?: string;
-    mode?: InteractionMode;
+    mode?: string;
   },
   to: {
     effort?: string;
     serviceTier?: string;
     contextWindow?: string;
-    mode?: InteractionMode;
+    mode?: string;
   },
 ): string[] {
   const names: string[] = [];

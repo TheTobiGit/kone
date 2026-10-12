@@ -114,15 +114,21 @@ export function resolveSelectionKnobs(input: {
   current?: SelectionKnobs | null;
 }): SelectionKnobs {
   const layers = [input.explicit, input.remembered, input.current];
-  const out: SelectionKnobs = {};
-  for (const key of ["effort", "serviceTier", "contextWindow", "mode"] as const) {
+  const pick = <K extends keyof SelectionKnobs>(key: K): SelectionKnobs[K] => {
     for (const layer of layers) {
       const value = layer?.[key];
-      if (value) {
-        out[key] = value;
-        break;
-      }
+      if (value) return value;
     }
-  }
+    return undefined;
+  };
+  const out: SelectionKnobs = {};
+  const effort = pick("effort");
+  if (effort) out.effort = effort;
+  const serviceTier = pick("serviceTier");
+  if (serviceTier) out.serviceTier = serviceTier;
+  const contextWindow = pick("contextWindow");
+  if (contextWindow) out.contextWindow = contextWindow;
+  const mode = pick("mode");
+  if (mode) out.mode = mode;
   return out;
 }
