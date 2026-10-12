@@ -194,6 +194,8 @@ export class OpenCodeServerLedger {
             const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
             if (orphanResult === "gone") removed.add(entry.pid);
             else if (orphanResult === "unknown") outcome = "unverifiable";
+            else if (orphanResult === "verified") outcome = "verified";
+            else outcome = "none";
             break entryReap;
           }
           if (!matchesEntry(initial, entry)) { removed.add(entry.pid); break entryReap; }
@@ -209,6 +211,8 @@ export class OpenCodeServerLedger {
             const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
             if (orphanResult === "gone") removed.add(entry.pid);
             else if (orphanResult === "unknown") outcome = "unverifiable";
+            else if (orphanResult === "verified") outcome = "verified";
+            else outcome = "none";
             break entryReap;
           }
           if (!matchesEntry(leaderAtSignal, entry)) { removed.add(entry.pid); break entryReap; }
@@ -225,6 +229,8 @@ export class OpenCodeServerLedger {
             const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
             if (orphanResult === "gone") removed.add(entry.pid);
             else if (orphanResult === "unknown") outcome = "unverifiable";
+            else if (orphanResult === "verified") outcome = "verified";
+            else outcome = "none";
             break entryReap;
           }
           const groupBeforeKill = this.probeGroup(entry.pgid);
@@ -238,6 +244,8 @@ export class OpenCodeServerLedger {
             const orphanResult = await this.reapOrphanedGroup(entry, processOwnedPids);
             if (orphanResult === "gone") removed.add(entry.pid);
             else if (orphanResult === "unknown") outcome = "unverifiable";
+            else if (orphanResult === "verified") outcome = "verified";
+            else outcome = "none";
             break entryReap;
           }
           if (!matchesEntry(leaderAtKill, entry)) { removed.add(entry.pid); break entryReap; }
@@ -287,30 +295,36 @@ export class OpenCodeServerLedger {
   private async reapOrphanedGroup(
     entry: OpenCodeServerLedgerEntry,
     processOwnedPids: ReadonlySet<number>,
-  ): Promise<"gone" | "keep" | "unknown"> {
+  ): Promise<"gone" | "unknown" | "verified" | "none"> {
     const groupState = this.probeGroup(entry.pgid);
     if (groupState === "gone") return "gone";
     if (groupState === "unknown") return "unknown";
     const initial = await this.inspectMarkedGroupMembers(entry);
-    if (processOwnedPids.has(entry.pid)) return "keep";
+    if (processOwnedPids.has(entry.pid)) return "none";
     if (initial.state === "unknown") return "unknown";
     if (initial.members.length === 0) return "gone";
     const termResult = await this.signalMarkedMembers(entry, initial.members, "SIGTERM", processOwnedPids);
     if (termResult === "unknown") return "unknown";
-    if (termResult === "owned") return "keep";
+    if (termResult === "owned") return "none";
     const afterTerm = await this.waitForMarkedMembers(entry, processOwnedPids);
     if (afterTerm === "gone") return "gone";
     if (afterTerm === "unknown") return "unknown";
-    if (processOwnedPids.has(entry.pid)) return "keep";
+    if (processOwnedPids.has(entry.pid)) return "none";
     const current = await this.inspectMarkedGroupMembers(entry);
-    if (processOwnedPids.has(entry.pid)) return "keep";
+    if (processOwnedPids.has(entry.pid)) return "none";
     if (current.state === "unknown") return "unknown";
     if (current.members.length === 0) return "gone";
     const killResult = await this.signalMarkedMembers(entry, current.members, "SIGKILL", processOwnedPids);
     if (killResult === "unknown") return "unknown";
-    if (killResult === "owned") return "keep";
+    if (killResult === "owned") return "none";
     const afterKill = await this.waitForMarkedMembers(entry, processOwnedPids);
-    return afterKill === "gone" ? "gone" : afterKill === "unknown" ? "unknown" : "keep";
+    if (afterKill === "gone") return "gone";
+    if (afterKill === "unknown") return "unknown";
+    // Members were inspected as marked and matching and both signals were sent:
+    // ownership is verified even though the group outlived the polls (a task in
+    // uninterruptible I/O can hold SIGKILL pending). A verified attempt resets
+    // the retry count; only an ownership exclusion is left untouched.
+    return "verified";
   }
 
   private recordUnverifiableAttempt(entry: OpenCodeServerLedgerEntry): boolean {
