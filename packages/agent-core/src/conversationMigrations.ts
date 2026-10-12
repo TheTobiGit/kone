@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1469,6 +1469,53 @@ function migration0041ThreadReferences(db: DatabaseSync): void {
   if (hasTable(db, "subagents")) addColumn(db, "subagents", "duration_ms", "INTEGER");
 }
 
+/**
+ * Provider selection memory and the same-provider change mark.
+ *
+ *  - `provider_model_options` remembers the knobs (effort, service tier,
+ *    context window, mode) that last ran with a provider+model, so returning
+ *    to that model restores what it ran with rather than the knobs of
+ *    whichever provider ran in between.
+ *  - `threads.pending_selection_json` holds a pick made while a turn runs with
+ *    nothing queued: it is applied at the next turn end without a turn of its
+ *    own.
+ *  - `queued_turns.provider` gives each durable follow-up the provider it was
+ *    queued on, so a row whose provider differs from the thread's owner is
+ *    handed in before it runs. NULL reads as the thread's current owner, which
+ *    is every row enqueued without a selection.
+ *  - `thread_model_changes` is the mark for a same-provider model/knob change
+ *    between turns — the counterpart to a hand-in's from→to provider mark,
+ *    which a provider switch already writes.
+ */
+function migration0042ProviderSelection(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE provider_model_options (
+      provider       TEXT NOT NULL,
+      model          TEXT NOT NULL,
+      effort         TEXT,
+      service_tier   TEXT,
+      context_window TEXT,
+      mode           TEXT,
+      updated_at     INTEGER NOT NULL,
+      PRIMARY KEY (provider, model)
+    );
+
+    CREATE TABLE thread_model_changes (
+      change_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id          TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      at                 INTEGER NOT NULL,
+      from_provider      TEXT,
+      from_model         TEXT,
+      to_provider        TEXT NOT NULL,
+      to_model           TEXT,
+      changed_knobs_json TEXT
+    );
+    CREATE INDEX idx_thread_model_changes_thread ON thread_model_changes (thread_id, at);
+  `);
+  addColumn(db, "threads", "pending_selection_json", "TEXT");
+  addColumn(db, "queued_turns", "provider", "TEXT");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1511,6 +1558,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 39, name: "AgentGrants", run: migration0039AgentGrants },
   { id: 40, name: "CrewBoards", run: migration0040CrewBoards },
   { id: 41, name: "ThreadReferencesAndSubagentDuration", run: migration0041ThreadReferences },
+  { id: 42, name: "ProviderSelection", run: migration0042ProviderSelection },
 ];
 
 export interface MigrationOptions {
