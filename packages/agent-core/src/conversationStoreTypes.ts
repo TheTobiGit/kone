@@ -563,6 +563,7 @@ export type SubagentRow = {
   tool_uses: number | null;
   started_at: number;
   ended_at: number | null;
+  duration_ms: number | null;
 };
 
 /** The item and subagent rows of a thread's turns, fetched together. */
@@ -743,6 +744,7 @@ export function rowToSubagent(row: SubagentRow): SubagentRun {
     toolUses: row.tool_uses ?? undefined,
     startedAt: row.started_at,
     endedAt: row.ended_at ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
     items: [],
   };
 }

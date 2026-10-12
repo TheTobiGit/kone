@@ -285,6 +285,7 @@ export type AgentServiceOptions = {
     | "setLimited"
     | "clearLimited"
     | "setSnooze"
+    | "setPinned"
     | "threadMeta"
     | "staleThreadIds"
     | "setTitleIfAuto"
@@ -3251,6 +3252,25 @@ export class AgentService {
       source: "kone.store",
       done,
       doneAt: done ? at : DONE_CLEARED,
+    });
+  }
+
+  setThreadPinned(threadId: string, pinned: boolean): void {
+    const history = this.historyStore;
+    if (!history) return;
+    const meta = history.threadMeta(threadId);
+    const provider = meta?.provider ?? this.routing.get(threadId);
+    if (!provider) return;
+    history.setPinned(threadId, pinned);
+    const at = Date.now();
+    this.dispatch({
+      type: "thread.pinned.updated",
+      threadId,
+      provider,
+      at,
+      source: "kone.store",
+      pinned,
+      pinnedAt: pinned ? at : 0,
     });
   }
 

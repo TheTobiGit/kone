@@ -2291,6 +2291,15 @@ export const StartAppThreadInputSchema = z.object({
     .describe(
       "What the thread may do without stopping to ask. Nobody is sitting in a thread you start: one that parks for permission stays parked until the user notices.",
     ),
+  workspace: z.union([
+    z.object({ mode: z.literal("root") }),
+    z.object({
+      mode: z.literal("worktree"),
+      base: z.string().trim().min(1).max(200),
+      branch: z.string().trim().min(1).max(200).optional(),
+    }),
+  ]).optional(),
+  attachments: z.array(z.string().trim().min(1).max(200)).max(8).optional(),
   requestId: z
     .string()
     .min(1)
@@ -2330,6 +2339,16 @@ export const START_APP_THREAD_JSON_SCHEMA = {
       description:
         "What the thread may do without stopping to ask. Nobody is sitting in a thread you start: one that parks for permission stays parked until the user notices.",
     },
+    workspace: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["root", "worktree"] },
+        base: { type: "string", description: "Non-empty base ref for the worktree mode." },
+        branch: { type: "string", description: "Optional worktree branch name." },
+      },
+      required: ["mode"],
+    },
+    attachments: { type: "array", maxItems: 8, items: { type: "string" }, description: "Attachment ids already present on a turn in this conversation." },
     requestId: {
       type: "string",
       description:
@@ -2337,6 +2356,34 @@ export const START_APP_THREAD_JSON_SCHEMA = {
     },
   },
   required: ["project", "prompt", "requestId"],
+} satisfies GatewayRecord;
+
+export const StartAppThreadsInputSchema = z.object({
+  items: z.array(StartAppThreadInputSchema).min(1).max(8),
+});
+
+export const START_APP_THREADS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    items: { type: "array", minItems: 1, maxItems: 8, items: START_APP_THREAD_JSON_SCHEMA },
+  },
+  required: ["items"],
+} satisfies GatewayRecord;
+
+export const WaitForAppThreadsInputSchema = z.object({
+  threadIds: z.array(z.string().min(1)).min(1).max(12),
+  turnIds: z.array(z.string().min(1)).min(1).max(12).optional(),
+  timeoutMs: z.number().int().min(0).optional(),
+});
+
+export const WAIT_FOR_APP_THREADS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadIds: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" } },
+    turnIds: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" }, description: "Optional positional turn ids, one per thread." },
+    timeoutMs: { type: "integer", minimum: 0 },
+  },
+  required: ["threadIds"],
 } satisfies GatewayRecord;
 
 const SEND_MESSAGE_DESCRIPTION =
@@ -2371,6 +2418,8 @@ export type SendAppThreadMessageInput = z.infer<typeof SendAppThreadMessageInput
 export type ListAppThreadsInput = z.infer<typeof ListAppThreadsInputSchema>;
 export type ReadAppThreadInput = z.infer<typeof ReadAppThreadInputSchema>;
 export type StartAppThreadInput = z.infer<typeof StartAppThreadInputSchema>;
+export type StartAppThreadsInput = z.infer<typeof StartAppThreadsInputSchema>;
+export type WaitForAppThreadsInput = z.infer<typeof WaitForAppThreadsInputSchema>;
 
 /** One thread by id. Every lifecycle tool takes one of these, so the shape
  *  lives here once: each tool re-states only its own description. */

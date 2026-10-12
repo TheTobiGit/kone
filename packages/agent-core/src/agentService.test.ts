@@ -1251,6 +1251,7 @@ describe("AgentService thread archive + retention", () => {
     archivedStamp = new Map<string, number | null>();
     /** threadId → the done stamp, with the store's done_at semantics. */
     doneStamps = new Map<string, number | null>();
+    pinnedStamps = new Map<string, number | null>();
     /** Idle age per thread, what staleThreadIds's cutoffs read. */
     private ages = new Map<string, number>();
     /** When set to a thread id, the next archive write over that subtree
@@ -1267,6 +1268,7 @@ describe("AgentService thread archive + retention", () => {
       this.providers.set(threadId, provider);
       this.archivedStamp.set(threadId, null);
       this.doneStamps.set(threadId, null);
+      this.pinnedStamps.set(threadId, null);
       this.ages.set(threadId, idleMs);
     }
 
@@ -1302,6 +1304,10 @@ describe("AgentService thread archive + retention", () => {
 
     setDone(threadId: string, done: boolean): void {
       this.doneStamps.set(threadId, done ? Date.now() : 0);
+    }
+
+    setPinned(threadId: string, pinned: boolean): void {
+      this.pinnedStamps.set(threadId, pinned ? Date.now() : null);
     }
 
     /** This fake has no continuations; the service calls it on settle/archive. */
@@ -1539,6 +1545,22 @@ describe("AgentService thread archive + retention", () => {
     // announcing would send every list chasing a thread that isn't there.
     events.length = 0;
     archiveService.setThreadDone("never-existed", true);
+    expect(events).toHaveLength(0);
+  });
+
+  test("setThreadPinned announces the mark and the un-mark, and ignores unknown threads", () => {
+    history.seed("pin-1", "codex");
+    archiveService.setThreadPinned("pin-1", true);
+    expect(history.pinnedStamps.get("pin-1")).not.toBeNull();
+    expect(events).toMatchObject([{ type: "thread.pinned.updated", threadId: "pin-1", pinned: true }]);
+
+    events.length = 0;
+    archiveService.setThreadPinned("pin-1", false);
+    expect(history.pinnedStamps.get("pin-1")).toBeNull();
+    expect(events).toMatchObject([{ type: "thread.pinned.updated", threadId: "pin-1", pinned: false }]);
+
+    events.length = 0;
+    archiveService.setThreadPinned("never-existed", true);
     expect(events).toHaveLength(0);
   });
 

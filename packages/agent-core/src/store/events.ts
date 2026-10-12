@@ -261,8 +261,8 @@ export class EventIngestRepo {
             `INSERT INTO subagents (
                tool_use_id, thread_id, turn_id, task_id, parent_item_id, agent_type,
                description, prompt, model, effort, background, status, summary,
-               last_tool_name, tokens, tool_uses, started_at, ended_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               last_tool_name, tokens, tool_uses, started_at, ended_at, duration_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(thread_id, turn_id, tool_use_id) DO UPDATE SET
                task_id        = COALESCE(excluded.task_id, subagents.task_id),
                parent_item_id = COALESCE(excluded.parent_item_id, subagents.parent_item_id),
@@ -277,7 +277,8 @@ export class EventIngestRepo {
                last_tool_name = COALESCE(excluded.last_tool_name, subagents.last_tool_name),
                tokens         = COALESCE(excluded.tokens, subagents.tokens),
                tool_uses      = COALESCE(excluded.tool_uses, subagents.tool_uses),
-               ended_at       = COALESCE(excluded.ended_at, subagents.ended_at)`,
+               ended_at       = COALESCE(excluded.ended_at, subagents.ended_at),
+               duration_ms    = COALESCE(subagents.duration_ms, excluded.duration_ms)`,
           ).run(
             s.toolUseId,
             event.threadId,
@@ -297,6 +298,7 @@ export class EventIngestRepo {
             s.toolUses ?? null,
             s.startedAt,
             s.endedAt ?? null,
+            s.durationMs ?? null,
           );
           break;
         }

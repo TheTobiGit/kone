@@ -1641,6 +1641,8 @@ export type SubagentRunSnapshot = {
   toolUses?: number;
   startedAt: number;
   endedAt?: number;
+  /** Elapsed time frozen when this run first reaches a terminal status. */
+  durationMs?: number;
 };
 
 /** A subagent run plus the transcript it produced, in arrival order. Items are
@@ -1916,6 +1918,7 @@ export type RuntimeEvent =
   // A thread's snooze changed: `snoozedUntil` is the deadline (null clears).
   // Lists move the row out of / back into the inbox without a reload.
   | (BaseEvent & { type: "thread.snooze.updated"; snoozedUntil: number | null })
+  | (BaseEvent & { type: "thread.pinned.updated"; pinned: boolean; pinnedAt: number })
   // The provider rerouted the request to a different model mid-session (Codex
   // `model/rerouted`, Claude safeguard refusals falling back to another model).
   // Consumers update the session's model label; `reason` is the provider's own

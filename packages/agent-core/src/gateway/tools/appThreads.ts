@@ -55,6 +55,7 @@ import type {
   SessionStartInput,
   StoredThread,
   StoredThreadMeta,
+  ChatAttachment,
   ThreadGateKind,
   ThreadStatus,
   TurnStartResult,
@@ -101,6 +102,10 @@ import {
   UNLINK_THREAD_PULL_REQUEST_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
+  StartAppThreadsInputSchema,
+  START_APP_THREADS_JSON_SCHEMA,
+  WaitForAppThreadsInputSchema,
+  WAIT_FOR_APP_THREADS_JSON_SCHEMA,
   SendAppThreadMessageInputSchema,
   SEND_APP_THREAD_MESSAGE_JSON_SCHEMA,
   StopAppThreadInputSchema,
@@ -117,6 +122,7 @@ import {
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { collapseSearchHits, fetchSearchCandidates } from "../searchCollapse.js";
 import { canReadThread } from "../readScope.js";
+import { SPAWN_WAIT_DEFAULT_MS, SPAWN_WAIT_MAX_MS } from "../../threadSpawn.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
 import { isSnoozed } from "../../limitState.js";
 import {
@@ -137,6 +143,9 @@ export interface AppThreadsStore {
    *  whole thread. */
   loadThreadPage?(threadId: string, options?: { limit?: number; maxRaw?: number; cursor?: string; countBlocks?: boolean }): StoredThreadPage | null;
   threadMeta?(threadId: string): StoredThreadMeta | null;
+  listThreadReferences?(ownerThreadId: string): string[];
+  turnSpan?(threadId: string, turnId: string): TurnSpan | null;
+  turnAssistantText?(threadId: string, turnId: string): string | null;
   /** The project's team, in roster order — the agents a thread here can be
    *  handed to. A thread is handed to a team member or to nobody: an agent the
    *  user has not put on the project is not on it. */
@@ -183,8 +192,6 @@ export interface AppThreadsStore {
   /** Thread-state marks (Phase 6). Pin, settle, and unread all read/write the
    *  existing columns; the canonical done path goes through the service so the
    *  done event fans out. */
-  setPinned?(threadId: string, pinned: boolean): void;
-  setDone?(threadId: string, done: boolean): void;
   setVisited?(threadId: string, at: number, force?: boolean): void;
   /** Full-text conversation search (Phase 6). Returns raw ranked hits; the
    *  tool collapses them to one best per thread. */
@@ -321,9 +328,11 @@ export interface AppThreadsToolOptions {
     threadId: string,
     title: string,
   ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
-  /** Mark a thread done (or clear it). Canonical in production (the service
-   *  emits thread.done.updated); the store fallback writes the same column. */
+  /** Mark a thread done (or clear it) through the service event path. */
   setThreadDone?: (threadId: string, done: boolean) => void;
+  /** Pin or unpin a thread through the service event path. */
+  setThreadPinned?: (threadId: string, pinned: boolean) => void;
+  hasAttachment?: (attachmentId: string) => boolean;
   /** Queue controls (Phase 6). All canonical in production, where the service
    *  keeps mirrors and broadcasts in step; absent, the tools refuse. */
   listQueuedTurns?: (threadId: string) => QueuedTurnRow[];
@@ -350,6 +359,21 @@ function fingerprintOf(parts: Array<string | undefined>): string {
     hash = (hash * 0x01000193) >>> 0;
   }
   return hash.toString(16);
+}
+
+function safeGitRef(value: string): boolean {
+  return value.length > 0 &&
+    !value.startsWith("-") &&
+    !value.endsWith(".") &&
+    !value.endsWith("/") &&
+    !value.includes("//") &&
+    !value.includes("..") &&
+    !value.includes("@{") &&
+    !value.split("/").some((part) => part.startsWith(".") || part.endsWith(".lock")) &&
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x20 || code === 0x7f || "~^:?*\\[".includes(character);
+    });
 }
 
 /** The two fields a replayed op's text repeats, read off the stored payload. */
@@ -811,6 +835,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
               parentThreadId: targetMeta.parentThreadId,
             }
           : null,
+        attachedReferences: new Set(store.listThreadReferences?.(ctx.threadId) ?? []),
       });
       if (!readable) {
         throw new GatewayToolError(
@@ -1012,6 +1037,30 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       );
     }
     const project = resolveProject(requireProjects(options), params.project);
+    if (params.workspace?.mode === "worktree" &&
+      (!safeGitRef(params.workspace.base) ||
+        (params.workspace.branch !== undefined && !safeGitRef(params.workspace.branch)))) {
+      throw new GatewayToolError("invalid_input", "Worktree base and branch must be non-empty safe Git refs.");
+    }
+    let forwardedAttachments: ChatAttachment[] = [];
+    if (params.attachments?.length) {
+      const callerThread = store.loadThread(ctx.threadId);
+      const owned = new Map<string, ChatAttachment>(
+        (callerThread?.blocks ?? []).flatMap((block) =>
+          (block.role === "user" ? block.attachments ?? [] : []).map((attachment) => [attachment.id, attachment] as const),
+        ),
+      );
+      for (const id of params.attachments) {
+        const attachment = owned.get(id);
+        if (!attachment || !options.hasAttachment?.(id)) {
+          throw new GatewayToolError(
+            "invalid_input",
+            `Attachment id "${id}" is unknown or was not given to this conversation.`,
+          );
+        }
+        forwardedAttachments.push(attachment);
+      }
+    }
 
     // The registry refuses this tool without a live turn, so a turn id is
     // present by the time the handler runs - but the op key needs a concrete
@@ -1034,6 +1083,8 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         params.provider,
         params.model,
         params.mode,
+        params.workspace ? JSON.stringify(params.workspace) : undefined,
+        params.attachments ? JSON.stringify(params.attachments) : undefined,
       ]),
     });
     if (reserve === null) {
@@ -1122,6 +1173,11 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       provider: target.provider,
       cwd: project.path,
     };
+    if (params.workspace) {
+      sessionInput.workspace = params.workspace.mode === "root"
+        ? { mode: "local" }
+        : { mode: "worktree", base: params.workspace.base, branch: params.workspace.branch };
+    }
     if (target.model) sessionInput.model = target.model;
     if (params.mode) sessionInput.mode = params.mode;
     if (persona) sessionInput.agent = persona;
@@ -1153,6 +1209,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       input: params.prompt,
       sender: agentSenderFor(store, ctx.threadId, "peer", "brief"),
     };
+    if (forwardedAttachments.length > 0) turnInput.attachments = forwardedAttachments;
     if (target.model) turnInput.model = target.model;
     if (params.mode) turnInput.mode = params.mode;
     const turn = await runner.sendThreadTurn(
@@ -1186,6 +1243,132 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         },
       ],
       structuredContent: payload,
+    };
+  };
+
+  const batchStartHandler = async (
+    ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const { items } = StartAppThreadsInputSchema.parse(rawInput);
+    if (new Set(items.map((item) => item.requestId)).size !== items.length) {
+      throw new GatewayToolError("invalid_input", "Each item in app_start_threads must have its own requestId.");
+    }
+    const results: GatewayRecord[] = [];
+    for (const item of items) {
+      try {
+        const result = await startHandler(ctx, item);
+        results.push({ ok: true, requestId: item.requestId, ...result.structuredContent });
+      } catch (error) {
+        results.push({
+          ok: false,
+          requestId: item.requestId,
+          refusal: error instanceof Error ? error.message : "Thread start was refused.",
+        });
+      }
+    }
+    const succeeded = results.filter((item) => item.ok === true).length;
+    return {
+      content: [{ type: "text", text: `Started ${succeeded} of ${results.length} requested threads.\n${results.map((item) => JSON.stringify(item)).join("\n")}` }],
+      structuredContent: { items: results },
+    };
+  };
+
+  const waitForThreadsHandler = async (
+    ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = WaitForAppThreadsInputSchema.parse(rawInput);
+    if (input.turnIds && input.turnIds.length !== input.threadIds.length) {
+      throw new GatewayToolError("invalid_input", "turnIds must contain one positional turn id per threadId.");
+    }
+    const timeoutMs = Math.min(input.timeoutMs ?? SPAWN_WAIT_DEFAULT_MS, SPAWN_WAIT_MAX_MS);
+    const callerMeta = store.threadMeta?.(ctx.threadId) ?? null;
+    const assistantCaller = callerMeta?.projectPath === GLOBAL_ASSISTANT_PROJECT_PATH;
+    // Authority is re-derived on every poll, not just at entry: the user may
+    // detach the reference that made a cross-project target readable while the
+    // wait is parked, and the wait must not keep observing it afterwards.
+    const canReadNow = (threadId: string): boolean => {
+      if (assistantCaller) return true;
+      const meta = store.threadMeta?.(threadId) ?? null;
+      return canReadThread({
+        callerThreadId: ctx.threadId,
+        targetThreadId: threadId,
+        caller: callerMeta ? {
+          projectPath: callerMeta.projectPath,
+          sourceThreadId: callerMeta.sourceThreadId,
+          parentThreadId: callerMeta.parentThreadId,
+        } : null,
+        target: meta ? {
+          projectPath: meta.projectPath,
+          sourceThreadId: meta.sourceThreadId,
+          parentThreadId: meta.parentThreadId,
+        } : null,
+        attachedReferences: new Set(store.listThreadReferences?.(ctx.threadId) ?? []),
+      });
+    };
+    const outOfScope = (threadId: string): string =>
+      `Thread "${threadId}" is outside what this conversation may read.`;
+    const targets = input.threadIds.map((threadId, index) => {
+      if (!canReadNow(threadId)) {
+        throw new GatewayToolError("capability_denied", outOfScope(threadId));
+      }
+      const thread = store.loadThread(threadId);
+      const latestTurnId = [...(thread?.blocks ?? [])].reverse().find((block) => block.role === "assistant")?.turnId;
+      return { threadId, turnId: input.turnIds?.[index] ?? latestTurnId };
+    });
+    const startedAt = Date.now();
+    // A target whose authority is gone reads as the same refusal app_read_thread
+    // gives an unreadable thread — no completion state and no existence clue.
+    // It counts as settled so one revocation cannot park the whole wait.
+    const pollTargets = (): GatewayRecord[] =>
+      targets.map(({ threadId, turnId }): GatewayRecord => {
+        if (!canReadNow(threadId)) {
+          return { threadId, refused: true, terminal: true, refusal: `capability_denied: ${outOfScope(threadId)}` };
+        }
+        const span = turnId ? store.turnSpan?.(threadId, turnId) ?? null : store.threadTurnSpan?.(threadId) ?? null;
+        const terminal = turnId ? Boolean(span?.endedAt !== null && span?.endedAt !== undefined) : (span?.runningTurns ?? 0) === 0;
+        return {
+          threadId,
+          turnId: turnId ?? null,
+          terminal,
+          state: span?.lastState ?? null,
+          summary: turnId ? store.turnAssistantText?.(threadId, turnId) ?? null : null,
+          read: { tool: "app_read_thread", threadId },
+        };
+      });
+    let timedOut = false;
+    let results = pollTargets();
+    while (!results.every((result) => result.terminal === true)) {
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        timedOut = true;
+        break;
+      }
+      if (ctx.signal?.aborted) throw ctx.signal.reason ?? new Error("Wait was aborted.");
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, remaining)));
+      results = pollTargets();
+    }
+    // Authority can change between the last poll and the reply; re-derive it
+    // once more so a just-revoked target cannot ride out on the result it last
+    // saw. Progress already read for still-readable targets is kept as-is.
+    const withCurrentAuthority = (observed: GatewayRecord[]): GatewayRecord[] =>
+      observed.map((entry): GatewayRecord => {
+        const threadId = String(entry.threadId);
+        if (entry.refused === true || canReadNow(threadId)) return entry;
+        return { threadId, refused: true, terminal: true, refusal: `capability_denied: ${outOfScope(threadId)}` };
+      });
+    results = withCurrentAuthority(results);
+    const describe = (result: GatewayRecord): string =>
+      result.refused === true
+        ? String(result.refusal)
+        : `${result.threadId} (${result.turnId ?? "no turn"}): ${result.state ?? "running"}; read with app_read_thread.`;
+    return {
+      content: [{
+        type: "text",
+        text: `${timedOut ? "Timed out with progress reported; no thread was cancelled." : "All requested turns settled."}\n${results.map(describe).join("\n")}`,
+      }],
+      structuredContent: { timedOut, elapsedMs: Date.now() - startedAt, threads: results },
     };
   };
 
@@ -1406,7 +1589,10 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
   ): Promise<GatewayToolResult> => {
     const input = SetThreadPinnedInputSchema.parse(rawInput);
     const { meta } = requireThread(input.threadId);
-    store.setPinned?.(input.threadId, input.pinned);
+    if (!options.setThreadPinned) {
+      throw new GatewayToolError("provider_unavailable", "Thread pinning requires the active agent service.");
+    }
+    options.setThreadPinned(input.threadId, input.pinned);
     const verb = input.pinned ? "Pinned" : "Unpinned";
     return singleLine(`${verb} thread "${meta?.title ?? input.threadId}".`, {
       threadId: input.threadId,
@@ -1422,8 +1608,10 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     requireThread(input.threadId);
     // Canonical path first: the service owns the done event every surface
     // reconciles from.
-    if (options.setThreadDone) options.setThreadDone(input.threadId, input.done);
-    else store.setDone?.(input.threadId, input.done);
+    if (!options.setThreadDone) {
+      throw new GatewayToolError("provider_unavailable", "Thread done state requires the active agent service.");
+    }
+    options.setThreadDone(input.threadId, input.done);
     const verb = input.done ? "Marked done" : "Reopened";
     return singleLine(`${verb} thread "${input.threadId}".`, {
       threadId: input.threadId,
@@ -1486,6 +1674,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
                 parentThreadId: meta.parentThreadId,
               }
             : null,
+          attachedReferences: new Set(store.listThreadReferences?.(ctx.threadId) ?? []),
         });
       })
       .slice(0, limit)
@@ -1704,6 +1893,26 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Nobody is sitting in a thread you open: one that stops for permission stays stopped until the user notices it. Say what you started and where, so they can go and look.",
       ],
       handler: startHandler,
+    },
+    {
+      name: "app_start_threads",
+      description: "Open one to eight independent project threads in sequence. Each item has its own requestId; successful starts remain open if a later item is refused.",
+      inputSchema: StartAppThreadsInputSchema,
+      jsonSchema: START_APP_THREADS_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: true,
+      promptSnippet: "`app_start_threads`: start several independent project threads with per-item results.",
+      handler: batchStartHandler,
+    },
+    {
+      name: "app_wait_for_thread",
+      description: `Long-poll for readable thread turns to settle, up to ${SPAWN_WAIT_MAX_MS}ms. This never wakes or messages a thread. A timeout reports progress and cancels nothing. Pair turnIds positionally to pin results to exact turns. Use app_read_thread to read the full transcript.`,
+      inputSchema: WaitForAppThreadsInputSchema,
+      jsonSchema: WAIT_FOR_APP_THREADS_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "`app_wait_for_thread`: wait for readable threads without waking or messaging them.",
+      handler: waitForThreadsHandler,
     },
     {
       name: "app_send_to_thread",

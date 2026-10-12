@@ -146,6 +146,32 @@ function seedSource(store: ConversationStore, threadId = "t-src"): string[] {
       toolUses: 2,
       startedAt: 115,
       endedAt: 120,
+      durationMs: 5,
+    },
+  } as RuntimeEvent);
+  // SAFETY: this update is the provider's full snapshot for the same run id.
+  store.applyEvent({
+    type: "subagent.updated",
+    threadId,
+    turnId: "turn-1",
+    provider: "opencode",
+    at: 130,
+    source: "kone.store",
+    subagent: {
+      toolUseId: "su-1",
+      taskId: "task-1",
+      parentItemId: "i-read",
+      agentType: "explore",
+      description: "find the leak",
+      prompt: "find it",
+      model: "m1",
+      status: "running",
+      summary: "found it",
+      tokens: 7,
+      toolUses: 2,
+      startedAt: 115,
+      endedAt: 120,
+      durationMs: 999,
     },
   } as RuntimeEvent);
   store.applyEvent(turnCompleted(threadId, "turn-1", 150));
@@ -216,7 +242,7 @@ describe("forkThreadAtBlock", () => {
     if (copiedAssistant.role !== "assistant") throw new Error("expected an assistant block second");
     const toolCall = copiedAssistant.items.find((i) => i.kind === "tool_call");
     expect(toolCall).toMatchObject({ name: "Read", text: "leak.ts", detail: '{"path":"leak.ts"}' });
-    expect(toolCall?.subagent).toMatchObject({ toolUseId: "su-1", summary: "found it", tokens: 7 });
+    expect(toolCall?.subagent).toMatchObject({ toolUseId: "su-1", summary: "found it", tokens: 7, durationMs: 5 });
     expect(copiedAssistant.items.find((i) => i.kind === "assistant_text")?.text).toBe("did the thing");
     // The edited replacement closes the fork, carrying the original's
     // attachments and the new text.

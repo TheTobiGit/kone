@@ -56,6 +56,11 @@ describe("restart background work capture", () => {
     store.applyEvent({ ...base(threadId, turnId), type: "turn.started" });
     store.applyEvent({
       ...base(threadId, turnId),
+      type: "item.started",
+      item: { itemId: "call-1", kind: "tool_call", status: "in-progress", text: "Agent" },
+    });
+    store.applyEvent({
+      ...base(threadId, turnId),
       type: "subagent.started",
       subagent: {
         toolUseId: "tool-1",
@@ -83,6 +88,12 @@ describe("restart background work capture", () => {
 
     // The next process opens the same disk and seals the orphaned turn.
     store = reopenStore();
+    const restartedThread = store.loadThread(threadId);
+    const restartedRun = restartedThread?.blocks
+      .filter((block) => block.role === "assistant")
+      .flatMap((block) => block.items)
+      .find((item) => item.subagent?.toolUseId === "tool-1")?.subagent;
+    expect(restartedRun?.durationMs).toBeGreaterThan(0);
     const captured = store.takeRestartCancelledBackgroundWork();
     expect([...captured.keys()]).toEqual([threadId]);
     expect(captured.get(threadId)).toEqual([

@@ -543,6 +543,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_list_threads",
       "app_read_thread",
       "app_start_thread",
+      "app_start_threads",
+      "app_wait_for_thread",
       "app_send_to_thread",
       "app_stop_thread",
       "app_archive_thread",

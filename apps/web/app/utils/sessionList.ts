@@ -52,6 +52,7 @@ export const ROW_CHANGING_EVENTS = new Set<RuntimeEvent["type"]>([
   "thread.archived",
   "thread.unarchived",
   "thread.done.updated",
+  "thread.pinned.updated",
 ]);
 
 /** localStorage pin key — browser-dev fallback and the one-time migration
@@ -338,4 +339,3 @@ export async function resolveThreadSummary(
     return null;
   }
 }
-

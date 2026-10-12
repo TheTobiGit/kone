@@ -7,6 +7,7 @@ import { AgentService } from "@kone/agent-core/AgentService.js";
 import { handoffTokenCapFor } from "@kone/agent-core/providerSettings.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
 import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
+import type { SpawnedChildrenPageOptions } from "@kone/agent-core/store/lineage.js";
 import {
   getConversationStore,
   projectRuntimeEventForIpc,
@@ -399,6 +400,8 @@ export function registerAgentIpc(): void {
       // Mark done through the service, so thread.done.updated fans out to every
       // surface (the gateway tool's canonical path).
       setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      setThreadPinned: (threadId: string, pinned: boolean) => svc.setThreadPinned(threadId, pinned),
+      hasAttachment: (attachmentId: string) => getAttachmentStore().resolveAbsPath(attachmentId) !== null,
       // Queue controls: list is a store read; the rest go through the service so
       // mirrors and broadcasts stay in step (promote reuses "send now").
       listQueuedTurns: (threadId: string) => store.listQueuedTurns(threadId),
@@ -987,6 +990,9 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:spawn-children", (_event, threadId: string) =>
     getSpawnEngine()?.children(threadId) ?? [],
   );
+  ipcMain.handle("agent:spawn-children-page", (_event, threadId: string, options?: SpawnedChildrenPageOptions) =>
+    store.spawnedChildrenPage(threadId, options),
+  );
 
   // Persisted conversation history. Reads rehydrate a project's last thread on
   // open and back the "recent conversations" block; the two mutations let a row
@@ -1249,9 +1255,20 @@ export function registerAgentIpc(): void {
   });
   // Pin state lives in the DB (v18), so a pinned thread follows the thread
   // across browser profiles — the Project Home / launcher pin toggles call
-  // this instead of writing browser localStorage.
+  // this instead of writing browser localStorage. Runs through the service,
+  // not the bare store, so every window learns the mark over
+  // thread.pinned.updated the way archive/restore fan out.
   ipcMain.handle("agent:set-pinned", (_event, threadId: string, pinned: boolean) =>
-    store.setPinned(threadId, pinned),
+    svc.setThreadPinned(threadId, pinned),
+  );
+  ipcMain.handle("agent:thread-reference-list", (_event, ownerThreadId: string) =>
+    store.listThreadReferences(ownerThreadId),
+  );
+  ipcMain.handle("agent:thread-reference-attach", (_event, ownerThreadId: string, targetThreadId: string) =>
+    store.attachThreadReference(ownerThreadId, targetThreadId),
+  );
+  ipcMain.handle("agent:thread-reference-detach", (_event, ownerThreadId: string, targetThreadId: string) =>
+    store.detachThreadReference(ownerThreadId, targetThreadId),
   );
   // Done state lives in the DB alongside pins, so a thread you have finished
   // with stays finished with across browser profiles. Distinct from archive:

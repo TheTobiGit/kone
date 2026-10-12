@@ -33,6 +33,7 @@ import { claudeMcpServers } from "../gateway/injection.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { versionProbeFailure, versionProbeUsable } from "../providerHealth.js";
 import { probeResult, type ProbeResult } from "../spawn.js";
+import { freezeSubagentDuration } from "../subagentDuration.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
@@ -1872,7 +1873,9 @@ export class ClaudeAdapter implements ProviderAdapter {
     const { toolUseId } = run.snapshot;
     if (session.settledSubagents.has(toolUseId)) return;
     run.snapshot.status = status;
-    run.snapshot.endedAt = Date.now();
+    const endedAt = Date.now();
+    freezeSubagentDuration(run.snapshot, endedAt);
+    run.snapshot.endedAt = endedAt;
     session.settledSubagents.set(toolUseId, status);
     session.subagentRuns.delete(toolUseId);
     session.pendingSubagentSteers.delete(toolUseId);
