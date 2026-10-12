@@ -1617,7 +1617,25 @@ export class AgentService {
       this.consumePending(input.threadId, pending);
       return queued;
     }
-    if (!provider) return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(next));
+    if (!provider) {
+      // No live route: a delivery hand-in is between its stop and its start.
+      // Honour the reservation rather than throwing into a session that is not
+      // there — hold a noQueue send, and queue an ordinary one for the target.
+      const reservedTarget = turnProvider ?? null;
+      if (this.admissionRefusal(input.threadId) !== null && reservedTarget) {
+        if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
+        const reservedModel = this.validModelFor(reservedTarget, next.model);
+        const reservedEffort = this.validEffortFor(reservedTarget, reservedModel, next.effort);
+        const queued = await this.enqueueTurn(
+          { ...next, model: reservedModel, effort: reservedEffort },
+          dispatchMode ?? "queue",
+          reservedTarget,
+        );
+        this.consumePending(input.threadId, pending);
+        return queued;
+      }
+      return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(next));
+    }
     // `provider` is narrowed to a live owner here; the turn's target is the
     // resolved pick (an explicit override, a switch in progress, or a pending
     // pick), which the enqueue paths record on the row.
@@ -4297,11 +4315,12 @@ export class AgentService {
       }
     } catch (err) {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
-      // Not under a restore or a workspace handoff: either owns the session,
-      // and dispatching straight to the adapter would start a turn into a tree
-      // being reset or a session being torn down and rebuilt. Refuse instead;
-      // the caller keeps the words.
-      if (this.restoreHolds(input.threadId) || this.worktreeMoveHolds.has(input.threadId)) throw err;
+      // The common admission gate owns the thread: a restore, a workspace
+      // handoff or a delivery hand-in is rewriting or replacing the session,
+      // and a thread with a live turn is not a place to start a second one. A
+      // failed queue write must not reach any adapter there — rethrow so the
+      // caller keeps the words.
+      if (this.threadOwned(input.threadId)) throw err;
       const adapter = this.adapterForThread(input.threadId);
       return this.steering(input.threadId, () => adapter.sendTurn(this.withViewBlock(input)));
     }
