@@ -4316,11 +4316,10 @@ export class AgentService {
     } catch (err) {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
       // The common admission gate owns the thread: a restore, a workspace
-      // handoff or a delivery hand-in is rewriting or replacing the session,
-      // and a thread with a live turn is not a place to start a second one. A
+      // handoff or a delivery hand-in is rewriting or replacing the session. A
       // failed queue write must not reach any adapter there — rethrow so the
       // caller keeps the words.
-      if (this.threadOwned(input.threadId)) throw err;
+      if (this.admissionRefusal(input.threadId) !== null) throw err;
       const adapter = this.adapterForThread(input.threadId);
       return this.steering(input.threadId, () => adapter.sendTurn(this.withViewBlock(input)));
     }
