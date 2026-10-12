@@ -661,6 +661,12 @@ export class AgentService {
   private readonly queueDeliveries = new Map<string, Promise<void>>();
   /** Threads with a drain already waiting in their delivery chain. */
   private readonly drainWaiting = new Set<string>();
+  /** Threads a delivery hand-in has reserved, mapped to the target provider.
+   *  Held from before the outgoing session is stopped until the replacement is
+   *  prepared, so no turn, steer, compaction, restore or workspace handoff can
+   *  start against the half-swapped thread. Also names the hands a send
+   *  arriving mid-switch should ride. */
+  private readonly handInHolds = new Map<string, ProviderKind>();
   /** In-memory mirror of how many rows are queued per thread — the fallback
    *  for `turn.queued` positions when the store read fails. Drift from the
    *  store (crash recovery) self-corrects on the next successful read. */
@@ -1208,9 +1214,18 @@ export class AgentService {
       budget: this.handoffBudgetOptions(selection.provider, selection.model, threadId, input.attachments),
     });
     if (refusal) return { refused: refusal };
-    await handInThread(this, { threadId, target });
-    this.writeThreadSelection(threadId, selection, true);
-    return { input: this.applyHandInBootstrap(threadId, input) };
+    // Reserve the thread for the whole hand-in, before its first await and
+    // until the replacement is prepared: every admission surface — a turn, a
+    // steer, a compaction, a restore, a workspace handoff — must see the
+    // thread as owned across the stop-to-start gap.
+    this.handInHolds.set(threadId, selection.provider);
+    try {
+      await handInThread(this, { threadId, target, preserveQueue: true });
+      this.writeThreadSelection(threadId, selection, true);
+      return { input: this.applyHandInBootstrap(threadId, input) };
+    } finally {
+      this.handInHolds.delete(threadId);
+    }
   }
 
   /** Whether this thread is a fork that has not run its first turn yet — a
@@ -1665,10 +1680,13 @@ export class AgentService {
    *  the thread's one turn slot; every admission path routes through this so a
    *  turn can never start against a session that is being rewritten or torn
    *  down. */
-  private admissionRefusal(threadId: string): "compacting" | "restoring" | "moving" | null {
+  private admissionRefusal(
+    threadId: string,
+  ): "compacting" | "restoring" | "moving" | "switching" | null {
     if (this.isCompacting(threadId)) return "compacting";
     if (this.restoreHolds(threadId)) return "restoring";
     if (this.worktreeMoveHolds.has(threadId)) return "moving";
+    if (this.handInHolds.has(threadId)) return "switching";
     return null;
   }
 
@@ -1685,7 +1703,8 @@ export class AgentService {
       this.startingSessions.has(threadId) ||
       this.steersInFlight.has(threadId) ||
       this.isCompacting(threadId) ||
-      this.restoreHolds(threadId)
+      this.restoreHolds(threadId) ||
+      this.handInHolds.has(threadId)
     );
   }
 
@@ -2377,7 +2396,9 @@ export class AgentService {
     force: boolean,
   ): Promise<RevertTurnCheckpointResult> {
     try {
-      if (this.isBusy(threadId) || this.steersInFlight.has(threadId)) return { ok: false, reason: "busy" };
+      if (this.isBusy(threadId) || this.steersInFlight.has(threadId) || this.handInHolds.has(threadId)) {
+        return { ok: false, reason: "busy" };
+      }
       const store = this.checkpointStore;
       if (!store) return { ok: false, reason: "missing" };
       const row = store.getTurnCheckpoint(threadId, turnId);
@@ -2425,7 +2446,9 @@ export class AgentService {
       // both are checked again at the handoff and the directory is claimed
       // in the same tick: no session or turn starts under it until the
       // restore is done.
-      if (this.isBusy(threadId) || this.steersInFlight.has(threadId)) return { ok: false, reason: "busy" };
+      if (this.isBusy(threadId) || this.steersInFlight.has(threadId) || this.handInHolds.has(threadId)) {
+        return { ok: false, reason: "busy" };
+      }
       const handoffShared = this.checkpointRestoreRefusal(store, threadId, turnId, dir);
       if (handoffShared) return handoffShared;
       const releaseRestore = claimRestoreDir(dir);
@@ -2605,6 +2628,11 @@ export class AgentService {
       // it would enter a provider the move is about to replace.
       if (this.worktreeMoveHolds.has(threadId)) {
         throw new Error("Context compaction is unavailable while the thread is being moved into a worktree.");
+      }
+      // A delivery hand-in is replacing the session underneath: a compaction
+      // would enter a provider the switch is about to replace.
+      if (this.handInHolds.has(threadId)) {
+        throw new Error("Context compaction is unavailable while the thread is changing providers.");
       }
       const adapter = this.adapter(provider);
       const capability = adapter.capabilities.compaction;
@@ -3332,6 +3360,14 @@ export class AgentService {
       if (options?.liveOnly) throw new Error(`No running turn on ${threadId} can take this steer yet.`);
       return this.enqueueTurn(input, "steer", moveProvider);
     }
+    // A delivery hand-in owns the thread across its stop-to-start gap: a steer
+    // waits durably on the row instead of reaching a session being replaced,
+    // and rides the switch's target rather than the outgoing provider.
+    const holdTarget = this.handInHolds.get(threadId);
+    if (holdTarget !== undefined) {
+      if (options?.liveOnly) throw new Error(`No running turn on ${threadId} can take this steer yet.`);
+      return this.enqueueTurn(input, "steer", holdTarget);
+    }
     const liveTurnId = this.activeTurns.get(threadId);
     if (liveTurnId) {
       const adapter = this.adapterForThread(threadId);
@@ -3454,7 +3490,7 @@ export class AgentService {
     const { row, from } = claimed;
     // Sent by hand: it no longer waits out a backoff.
     if (this.queueRetries.get(threadId)?.queueId === queueId) this.clearQueueRetry(threadId);
-    const generation = this.sessionGeneration(threadId);
+    let generation = this.sessionGeneration(threadId);
     this.announceQueuedState(threadId, row, "promoting");
     try {
       let input = this.turnInputFromQueuedRow(row);
@@ -3512,6 +3548,10 @@ export class AgentService {
           return false;
         }
         input = prepared.input;
+        // The hand-in replaced the session: judge an orphaned turn by the
+        // replacement's generation, and recheck the row the switch took time on.
+        generation = this.sessionGeneration(threadId);
+        if (!store.isQueuedTurnClaimed(queueId) || this.cancelOwed(threadId, queueId)) return false;
       }
       let promoted = false;
       const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, {
@@ -4314,7 +4354,7 @@ export class AgentService {
       // A compaction in flight owns the session until its boundary lands, and
       // so does the queue drain — a row must never promote into a session
       // mid-compaction and read a half-compacted context.
-      if (this.isBusy(threadId) || this.isCompacting(threadId) || this.worktreeMoveHolds.has(threadId) || !this.routing.has(threadId)) return;
+      if (this.isBusy(threadId) || this.isCompacting(threadId) || this.worktreeMoveHolds.has(threadId) || this.handInHolds.has(threadId) || !this.routing.has(threadId)) return;
       // A restore holding the checkout: the drain runs again when it lets go.
       if (this.restoreHolds(threadId)) return;
       // Waiting out a provider usage limit: queued follow-ups hold here, and
@@ -4344,7 +4384,6 @@ export class AgentService {
         await this.runInboxTurn(threadId);
         return;
       }
-      const generation = this.sessionGeneration(threadId);
       this.announceQueuedState(threadId, row, "promoting");
       try {
         let input = this.turnInputFromQueuedRow(row);
@@ -4360,6 +4399,11 @@ export class AgentService {
           return;
         }
         input = prepared.input;
+        // The hand-in replaced the session underneath: an orphaned turn must
+        // be judged against the replacement's generation, not the outgoing
+        // one, and the row may have been stopped while the switch was running.
+        const generation = this.sessionGeneration(threadId);
+        if (!store.isQueuedTurnClaimed(row.queueId) || this.cancelOwed(threadId, row.queueId)) return;
         let promoted = false;
         const result = await this.dispatchToAdapter(threadId, input, row.userBlockId, undefined, {
           onAccepted: (turnId) => {
