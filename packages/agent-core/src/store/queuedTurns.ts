@@ -89,9 +89,9 @@ export class QueuedTurnRepo {
         .prepare(
           `INSERT INTO queued_turns (
              queue_id, thread_id, user_block_id, dispatch_mode, state, input,
-             attachments_json, skills_json, model, mode, effort, service_tier, context_window,
+             attachments_json, skills_json, provider, model, mode, effort, service_tier, context_window,
              attempt_count, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT (thread_id, user_block_id)
              WHERE state IN ${PENDING_QUEUE_STATES} DO NOTHING`,
         )
@@ -103,6 +103,7 @@ export class QueuedTurnRepo {
           input.input,
           serializeAttachments(input.attachments),
           serializeSkillReferences(input.skills),
+          input.provider ?? null,
           input.model ?? null,
           input.mode ?? null,
           input.effort ?? null,
@@ -163,6 +164,10 @@ export class QueuedTurnRepo {
             values.push(skillsJson);
             blockSets.push("skills_json = ?");
             blockValues.push(skillsJson);
+          }
+          if (patch.provider !== undefined) {
+            sets.push("provider = ?");
+            values.push(patch.provider ?? null);
           }
           if (patch.model !== undefined) {
             sets.push("model = ?");

@@ -346,6 +346,10 @@ export type QueuedTurnEnqueueInput = {
   skills?: SkillReference[];
   /** Enqueue timestamp; defaults to now (callers pass it for ordering tests). */
   at?: number;
+  /** The provider this follow-up was queued on. A row whose provider differs
+   *  from the thread's owner when it is delivered is handed in first; a row
+   *  that names none runs on the thread's current owner. */
+  provider?: ProviderKind;
   model?: string;
   mode?: string;
   effort?: string;
@@ -361,6 +365,7 @@ export type QueuedTurnEditPatch = {
   input: string;
   attachments?: ChatAttachment[];
   skills?: SkillReference[];
+  provider?: ProviderKind | null;
   model?: string | null;
   mode?: string | null;
   effort?: string | null;
@@ -379,6 +384,8 @@ export type QueuedTurnRow = {
   input: string;
   attachments?: ChatAttachment[];
   skills?: SkillReference[];
+  /** The provider this row was queued on; absent runs on the thread's owner. */
+  provider?: ProviderKind;
   model?: string;
   mode?: string;
   effort?: string;
@@ -410,6 +417,9 @@ export type QueuedTurnDbRow = {
   attachments_json: string | null;
   /** Absent on databases read before migration 17 ran in a test fixture. */
   skills_json?: string | null;
+  /** The provider the row was queued on (migration 42); NULL runs on the
+   *  thread's owner. */
+  provider?: string | null;
   model: string | null;
   mode: string | null;
   effort: string | null;
@@ -442,6 +452,8 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   if (attachments?.length) queued.attachments = attachments;
   const skills = parseSkillReferences(row.skills_json);
   if (skills) queued.skills = skills;
+  const provider = row.provider ? ProviderKindSchema.safeParse(row.provider) : null;
+  if (provider?.success) queued.provider = provider.data;
   if (row.model) queued.model = row.model;
   if (row.mode) queued.mode = row.mode;
   if (row.effort) queued.effort = row.effort;
