@@ -261,9 +261,12 @@ export class ConversationDb {
       ).run();
       // Only the live rungs of SubagentStatus — 'stopped' is already settled.
       db.prepare(
-        `UPDATE subagents SET status = 'failed', ended_at = COALESCE(ended_at, ?)
+        `UPDATE subagents
+            SET status = 'failed',
+                ended_at = COALESCE(ended_at, ?),
+                duration_ms = COALESCE(duration_ms, MAX(0, ? - started_at))
          WHERE status IN ('starting', 'running')`,
-      ).run(now);
+      ).run(now, now);
     } catch (err) {
       console.error("[conversation-store] could not seal orphaned turns:", err);
     }

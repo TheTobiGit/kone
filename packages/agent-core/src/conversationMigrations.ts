@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1455,6 +1455,20 @@ function migration0040CrewBoards(db: DatabaseSync): void {
   `);
 }
 
+function migration0041ThreadReferences(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE thread_references (
+      owner_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      target_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (owner_thread_id, target_thread_id),
+      CHECK (owner_thread_id <> target_thread_id)
+    );
+    CREATE INDEX idx_thread_references_target ON thread_references (target_thread_id);
+  `);
+  if (hasTable(db, "subagents")) addColumn(db, "subagents", "duration_ms", "INTEGER");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1496,6 +1510,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 38, name: "InboxReceipts", run: migration0038InboxReceipts },
   { id: 39, name: "AgentGrants", run: migration0039AgentGrants },
   { id: 40, name: "CrewBoards", run: migration0040CrewBoards },
+  { id: 41, name: "ThreadReferencesAndSubagentDuration", run: migration0041ThreadReferences },
 ];
 
 export interface MigrationOptions {

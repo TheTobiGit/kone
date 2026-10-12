@@ -175,6 +175,40 @@ function itemEvent(turnId: string, itemId: string, text: string, type: "item.sta
   };
 }
 
+describe("subagent snapshot duration", () => {
+  test("a later running snapshot cannot replace the frozen duration", () => {
+    const session = makeSession();
+    session.reduce(turnStarted("turn-1", 110));
+    session.reduce({
+      ...base,
+      type: "item.started",
+      turnId: "turn-1",
+      item: { itemId: "parent", kind: "tool_call", status: "in-progress", text: "Agent" },
+      at: 111,
+    });
+    const run = {
+      toolUseId: "run-1",
+      parentItemId: "parent",
+      status: "completed" as const,
+      startedAt: 100,
+      endedAt: 150,
+      durationMs: 50,
+    };
+    session.reduce({ ...base, type: "subagent.completed", turnId: "turn-1", subagent: run, at: 150 });
+    session.reduce({
+      ...base,
+      type: "subagent.updated",
+      turnId: "turn-1",
+      subagent: { ...run, status: "running", endedAt: undefined, durationMs: undefined },
+      at: 200,
+    });
+    const block = session.blocks.value.find((entry) => entry.role === "assistant");
+    const snapshot = block?.role === "assistant" ? block.items[0]?.subagent : undefined;
+    expect(snapshot?.durationMs).toBe(50);
+    expect(snapshot?.status).toBe("running");
+  });
+});
+
 function steered(turnId: string, userBlockId: string, at: number): RuntimeEvent {
   return { ...base, type: "turn.steered", turnId, message: "", userBlockId, at };
 }

@@ -636,6 +636,11 @@ const api = {
       ipcRenderer.invoke("agent:revert-turn-checkpoint", threadId, turnId, force),
     spawnChildren: (threadId: string): Promise<SpawnedThread[]> =>
       ipcRenderer.invoke("agent:spawn-children", threadId),
+    spawnChildrenPage: (
+      threadId: string,
+      options?: { limit?: number; cursor?: string | null },
+    ): Promise<{ items: StoredThreadMeta[]; total: number; nextCursor: string | null }> =>
+      ipcRenderer.invoke("agent:spawn-children-page", threadId, options),
     // Persisted conversation history (read-only): rehydrate a project's last
     // thread on open, or list past ones. Null when nothing is stored yet.
     history: {
@@ -684,6 +689,12 @@ const api = {
       // follows the thread across profiles.
       setPinned: (threadId: string, pinned: boolean): Promise<void> =>
         ipcRenderer.invoke("agent:set-pinned", threadId, pinned),
+      listThreadReferences: (ownerThreadId: string): Promise<string[]> =>
+        ipcRenderer.invoke("agent:thread-reference-list", ownerThreadId),
+      attachThreadReference: (ownerThreadId: string, targetThreadId: string): Promise<boolean> =>
+        ipcRenderer.invoke("agent:thread-reference-attach", ownerThreadId, targetThreadId),
+      detachThreadReference: (ownerThreadId: string, targetThreadId: string): Promise<boolean> =>
+        ipcRenderer.invoke("agent:thread-reference-detach", ownerThreadId, targetThreadId),
       // Mark a thread done, or take the mark off. Done state lives in the DB
       // beside pins for the same reason. It says you are finished with the
       // thread's claim on you — not that the work ended, and not that the

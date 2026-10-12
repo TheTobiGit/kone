@@ -19,12 +19,13 @@ import { CrewBoardRepo } from "./store/crewBoards.js";
 import type { BoardMember, BoardRow, BoardRule, BoardWrite, CrewBoard, CrewBoardStore } from "./crewBoard.js";
 import type { AgentGrant } from "./agentAccess.js";
 import { TurnRollbackRepo } from "./store/turnRollbacks.js";
-import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
+import { LineageRepo, type ForkThreadAtBlockResult, type SpawnedChildrenPage, type SpawnedChildrenPageOptions } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { ThreadPullRequestRepo } from "./store/threadPullRequest.js";
+import { ThreadReferenceRepo } from "./store/threadReferences.js";
 import { ProjectScriptRepo, type ProjectScriptKind } from "./store/projectScripts.js";
 import type {
   ThreadPullRequestLink,
@@ -72,6 +73,7 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
   private readonly threadPullRequests: ThreadPullRequestRepo;
+  private readonly threadReferences: ThreadReferenceRepo;
   private readonly projectScripts: ProjectScriptRepo;
   private readonly events: EventIngestRepo;
   private readonly search: SearchRepo;
@@ -82,6 +84,7 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     this.dbh = new ConversationDb(userDataDir);
     this.threads = new ThreadRepo(this.dbh);
     this.threadPullRequests = new ThreadPullRequestRepo(this.dbh);
+    this.threadReferences = new ThreadReferenceRepo(this.dbh);
     this.projectScripts = new ProjectScriptRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
     this.handIns = new HandInsRepo(this.dbh);
@@ -212,6 +215,18 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see ThreadPullRequestRepo */
   clearThreadPullRequestLink(threadId: string): boolean {
     return this.threadPullRequests.clearLink(threadId);
+  }
+
+  listThreadReferences(ownerThreadId: string): string[] {
+    return this.threadReferences.list(ownerThreadId);
+  }
+
+  attachThreadReference(ownerThreadId: string, targetThreadId: string, createdAt?: number): boolean {
+    return this.threadReferences.attach(ownerThreadId, targetThreadId, createdAt);
+  }
+
+  detachThreadReference(ownerThreadId: string, targetThreadId: string): boolean {
+    return this.threadReferences.detach(ownerThreadId, targetThreadId);
   }
 
   /** @see ThreadPullRequestRepo */
@@ -1036,6 +1051,11 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see LineageRepo */
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
     return this.lineage.spawnedChildren(parentThreadId);
+  }
+
+  /** @see LineageRepo */
+  spawnedChildrenPage(parentThreadId: string, options?: SpawnedChildrenPageOptions): SpawnedChildrenPage {
+    return this.lineage.spawnedChildrenPage(parentThreadId, options);
   }
 
   /** @see LineageRepo */
