@@ -96,18 +96,30 @@ export function createAppProviderSwitchTools(options: AppProvidersSwitchToolOpti
     if (!meta) return errorResult(`Thread not found: ${ctx.threadId}`);
 
     // (a) The pin: an agent pinned to a model runs only on that model or its
-    // fallbacks. An unpinned agent may pick any provider.
+    // fallbacks. Resolve the full provider AND model first, then clamp the
+    // resolved pair against the chain, so a provider-only request can never
+    // settle on a provider default (or a stale current model) outside it.
     const chain = pinnedChain(options.store, ctx.threadId);
     let targetProvider = request.provider ?? (chain[0]?.provider ?? meta.provider);
     let targetModel = request.model;
     if (chain.length > 0) {
+      if (!targetModel) {
+        const rungs = chain.filter((ref) => ref.provider === targetProvider);
+        if (rungs.length === 1) {
+          targetModel = rungs[0]?.model;
+        } else if (rungs.length > 1) {
+          const names = rungs.map((ref) => ref.model ?? "the provider default").join(", ");
+          return errorResult(
+            `This agent is pinned to several models on \`${targetProvider}\` (${names}). Name the model you want to switch to.`,
+          );
+        }
+      }
       if (!chainAllows(chain, targetProvider, targetModel)) {
         const names = chain.map((ref) => `${ref.provider}${ref.model ? `/${ref.model}` : ""}`).join(", ");
         return errorResult(
           `This agent is pinned to ${names}. A self-switch outside that pin and its fallbacks is refused; the user can change the pin or the thread's model directly.`,
         );
       }
-      if (!targetModel && targetProvider === chain[0]?.provider) targetModel = chain[0]?.model;
     }
 
     // (b) Availability: never switch to what the install cannot reach. Only a
