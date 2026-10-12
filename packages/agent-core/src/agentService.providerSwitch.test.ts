@@ -321,6 +321,18 @@ describe("self-switch", () => {
     expect(store.getProviderModelOptions("claudeAgent", "claude-x")?.knobs.effort).toBe("high");
   });
 
+  test("returning to a provider/model restores the knobs it last ran with", async () => {
+    const thread = await openCodexThread();
+    await service.switchOwnSelection(thread, { provider: "claudeAgent", model: "claude-x", effort: "high" });
+    // Away and back, naming no effort the second time.
+    await service.switchOwnSelection(thread, { provider: "codex", model: "gpt-5" });
+    const back = await service.switchOwnSelection(thread, { provider: "claudeAgent", model: "claude-x" });
+    expect(back).toEqual({
+      applied: "direct",
+      selection: { provider: "claudeAgent", model: "claude-x", effort: "high" },
+    });
+  });
+
   test("a switch on a fork before its first message retargets the placeholder", async () => {
     const source = await openCodexThread();
     const forkId = `fork-${++seq}`;
