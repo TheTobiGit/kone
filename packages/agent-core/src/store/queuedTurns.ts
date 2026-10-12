@@ -556,14 +556,14 @@ export class QueuedTurnRepo {
         // SAFETY: the projection names only the row's thread + journaled block.
         const row = db
           .prepare(
-            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
+            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ?${bind} AND state IN ('queued', 'failed', 'refused')`,
           )
           .get(...rowArgs) as { thread_id: string; user_block_id: string } | undefined;
         if (!row) return;
         const result = db
           .prepare(
             `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE queue_id = ?${bind} AND state IN ('queued', 'failed')`,
+            WHERE queue_id = ?${bind} AND state IN ('queued', 'failed', 'refused')`,
           )
           .run(...updateArgs);
         if (Number(result.changes) === 0) return;
@@ -617,7 +617,7 @@ export class QueuedTurnRepo {
         const active = db
           .prepare(
             `SELECT queue_id, thread_id, user_block_id, state FROM queued_turns
-              WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}
+              WHERE thread_id = ? AND state IN ${LISTED_QUEUE_STATES}${among}
               ORDER BY ${QUEUED_TURN_ORDER}`,
           )
           .all(...args) as Array<{
@@ -629,7 +629,7 @@ export class QueuedTurnRepo {
         if (active.length === 0) return;
         db.prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE thread_id = ? AND state IN ${PENDING_QUEUE_STATES}${among}`,
+            WHERE thread_id = ? AND state IN ${LISTED_QUEUE_STATES}${among}`,
         ).run(Date.now(), ...args);
         for (const row of active) {
           // Only 'queued'/'failed' rows provably never started; a 'promoting'
