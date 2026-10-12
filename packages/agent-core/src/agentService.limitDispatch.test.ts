@@ -243,10 +243,15 @@ describe("P3 usage-limit dispatch", () => {
       payloadJson: JSON.stringify({ prompt: "continue after restart", recordedAt }),
     });
     const release = claimRestoreDir("/tmp");
+    // Restore deferrals double from 250 ms, so the retry the fifth sweep leaves
+    // sits further out than any fixed pause can span. A clock the test owns
+    // steps past each retry instead of waiting it out in real time.
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
     try {
       for (let sweep = 0; sweep < 5; sweep += 1) {
         await dispatcher.dispatchDueContinuations();
-        await pause(270);
+        now += 60_000;
       }
       expect(adapter.sent).toEqual([]);
       expect(store.listContinuationsForThread(id)).toHaveLength(1);
@@ -254,7 +259,10 @@ describe("P3 usage-limit dispatch", () => {
     } finally {
       release();
     }
-    await pause(400);
+    // Past the fifth deferral's retry: drive the sweep now instead of hoping
+    // its own timer fires within a pause.
+    await dispatcher.dispatchDueContinuations();
+    clock.mockRestore();
     expect(adapter.sent).toEqual(["continue after restart"]);
     expect(store.listContinuationsForThread(id)).toEqual([]);
     await svc.stopAll();
@@ -283,6 +291,8 @@ describe("P3 usage-limit dispatch", () => {
     const releaseRestore = claimRestoreDir("/tmp");
     adapter.startError = new Error("session admission refused by active restore");
     releaseStart();
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
     try {
       await sweep;
       expect(adapter.sent).toEqual([]);
@@ -291,8 +301,11 @@ describe("P3 usage-limit dispatch", () => {
       releaseRestore();
     }
     adapter.startError = null;
-    await pause(300);
+    // The refusal left a restore deferral holding the row; step past its retry
+    // and drive the sweep rather than waiting the deferral out.
+    now += 60_000;
     await dispatcher.dispatchDueContinuations();
+    clock.mockRestore();
     expect(adapter.sent).toEqual(["continue after adoption"]);
     expect(store.listContinuationsForThread(id)).toEqual([]);
     await svc.stopAll();
