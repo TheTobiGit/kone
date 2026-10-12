@@ -1363,6 +1363,7 @@ export class AgentService {
       this.isBusy(threadId) ||
       this.startingSessions.has(threadId) ||
       this.steersInFlight.has(threadId) ||
+      this.isCompacting(threadId) ||
       this.restoreHolds(threadId)
     );
   }

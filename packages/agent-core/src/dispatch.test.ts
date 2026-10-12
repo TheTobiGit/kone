@@ -2331,6 +2331,35 @@ describe("moving a thread into a worktree", () => {
     }
   });
 
+  test("an already-running native compaction blocks move admission", async () => {
+    const { dispatcher, service, adapter } = await harness();
+    provisioned.length = 0;
+    adapter.capabilities.compaction = { kind: "native" };
+    let releaseCompact = (): void => {};
+    let enteredCompact = false;
+    const gate = new Promise<void>((resolve) => {
+      releaseCompact = resolve;
+    });
+    adapter.compactThread = async () => {
+      enteredCompact = true;
+      await gate;
+      throw new Error("compaction cancelled by teardown");
+    };
+    const compaction = service.compactThread(THREAD);
+    const rejected = compaction.catch((error: Error): string => error.message);
+    try {
+      await waitFor(() => enteredCompact);
+      expect(service.isCompacting(THREAD)).toBe(true);
+      // The running compaction owns the session: the move refuses rather than
+      // stopping the session out from under it.
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toEqual({ ok: false, reason: "busy" });
+      expect(provisioned).toHaveLength(0);
+    } finally {
+      releaseCompact();
+    }
+    expect(await rejected).toBe("compaction cancelled by teardown");
+  });
+
   test("builds a worktree, rebinds the session and resumes the conversation", async () => {
     const { store, dispatcher } = await harness();
     store.captureConversationId(THREAD, "conv-move");
