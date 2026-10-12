@@ -174,6 +174,24 @@ export class ContinuationRepo {
     }
   }
 
+  /** Put a claimed continuation back without burning an attempt, moved to a
+   *  later due time. A workspace handoff owns the thread in between, so the
+   *  row is held rather than consumed: it stays eligible and runs once the
+   *  move lets go instead of being enqueued and then cancelled with the queue. */
+  defer(continuationId: string, nextDueAt: number): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      this.dbh.durably(db, () => {
+        db.prepare(
+          `UPDATE continuations SET claimed_at = NULL, due_at = ? WHERE continuation_id = ?`,
+        ).run(nextDueAt, continuationId);
+      });
+    } catch (err) {
+      console.error("[conversation-store] deferContinuation failed:", err);
+    }
+  }
+
   /** Consume a continuation that was dispatched. */
   deleteContinuation(continuationId: string): void {
     const db = this.dbh.handle();

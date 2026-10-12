@@ -1822,13 +1822,397 @@ describe("moving a thread into a worktree", () => {
 
       releaseProvisioning();
       expect(await moving).toMatchObject({ ok: true });
-      expect(FakeAdapter.sent).toEqual([]);
       expect(FakeAdapter.startedCwds).toEqual([
         "/tmp/kone-worktrees/kone-deadbeef",
       ]);
       expect(store.threadWorkspace(THREAD)?.worktreePath).toBe("/tmp/kone-worktrees/kone-deadbeef");
+      // The send accepted during the build survives the handoff and is
+      // delivered exactly once, into the replacement session — never cancelled
+      // by the stop the move performs.
+      await waitFor(() => FakeAdapter.sent.length === 1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(FakeAdapter.sent).toEqual(["during move"]);
+      expect(store.listQueuedTurns(THREAD)).toHaveLength(0);
     } finally {
       releaseProvisioning();
+    }
+  });
+
+  test("a due continuation is deferred by the move, kept, and runs after it", async () => {
+    const { store, dispatcher } = await harness();
+    provisioned.length = 0;
+    FakeAdapter.sent.length = 0;
+    const row = store.scheduleContinuation({
+      threadId: THREAD,
+      kind: "limit-reset",
+      dueAt: Date.now() - 1_000,
+      payloadJson: JSON.stringify({ prompt: "continue after reset", recordedAt: Date.now() - 1_000 }),
+    });
+    expect(row).not.toBeNull();
+    holdProvisioning();
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => provisioned.length === 1);
+
+      const sweep = await dispatcher.dispatchDueContinuations();
+      // Deferred, not consumed: nothing was queued, the row survives, and no
+      // attempt was burned — so it is not enqueued and then cancelled.
+      expect(sweep.resumed).toEqual([]);
+      expect(store.listQueuedTurns(THREAD)).toHaveLength(0);
+      const kept = store.getContinuation(row!.continuationId);
+      expect(kept).not.toBeNull();
+      expect(kept?.attempts).toBe(0);
+
+      releaseProvisioning();
+      expect(await moving).toMatchObject({ ok: true });
+      await waitFor(() => store.getContinuation(row!.continuationId) === null);
+      expect(FakeAdapter.sent).toContain("continue after reset");
+    } finally {
+      releaseProvisioning();
+    }
+  });
+
+  test("Send now during the move is refused and the row replays after it", async () => {
+    const { store, dispatcher, service } = await harness();
+    provisioned.length = 0;
+    FakeAdapter.sent.length = 0;
+    holdProvisioning();
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => provisioned.length === 1);
+      const queued = await service.sendTurn({ threadId: THREAD, input: "send during move" });
+      expect(queued.queued).toBe(true);
+
+      // Send now must not claim the row and dispatch it into a session the move
+      // is tearing down: it refuses, and the row stays where it was.
+      await expect(service.sendQueuedTurnNow(THREAD, queued.turnId)).rejects.toThrow(/worktree move/);
+      expect(FakeAdapter.sent).toEqual([]);
+      expect(store.listQueuedTurns(THREAD)).toHaveLength(1);
+
+      releaseProvisioning();
+      expect(await moving).toMatchObject({ ok: true });
+      await waitFor(() => FakeAdapter.sent.length === 1);
+      expect(FakeAdapter.sent).toEqual(["send during move"]);
+    } finally {
+      releaseProvisioning();
+    }
+  });
+
+  test("a queue write failure during a move refuses instead of dispatching", async () => {
+    const { store, dispatcher, service } = await harness();
+    provisioned.length = 0;
+    FakeAdapter.sent.length = 0;
+    holdProvisioning();
+    const saved = store.enqueueQueuedTurn;
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => provisioned.length === 1);
+      store.enqueueQueuedTurn = () => {
+        throw new Error("disk write failure");
+      };
+      await expect(
+        service.sendTurn({ threadId: THREAD, input: "send during failed queue write" }),
+      ).rejects.toThrow(/disk write failure/);
+      // The fallback must not start a turn in a session the move owns.
+      expect(FakeAdapter.sent).toEqual([]);
+      store.enqueueQueuedTurn = saved;
+      releaseProvisioning();
+      await moving;
+    } finally {
+      store.enqueueQueuedTurn = saved;
+      releaseProvisioning();
+    }
+  });
+
+  test("Send now during the stop window is refused and the send survives the move", async () => {
+    const { dispatcher, service } = await harness();
+    provisioned.length = 0;
+    FakeAdapter.sent.length = 0;
+    let releaseStop = (): void => {};
+    let stopping = false;
+    const original = FakeAdapter.prototype.stopSession;
+    FakeAdapter.prototype.stopSession = async () => {
+      stopping = true;
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+    };
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => stopping);
+      const queued = await service.sendTurn({ threadId: THREAD, input: "after final busy check" });
+      expect(queued.queued).toBe(true);
+
+      // The stop-window gap: Send now must not reach the old adapter here.
+      await expect(service.sendQueuedTurnNow(THREAD, queued.turnId)).rejects.toThrow(/worktree move/);
+      expect(FakeAdapter.sent).toEqual([]);
+
+      releaseStop();
+      expect(await moving).toMatchObject({ ok: true });
+      await waitFor(() => FakeAdapter.sent.length === 1);
+      expect(FakeAdapter.sent).toEqual(["after final busy check"]);
+    } finally {
+      FakeAdapter.prototype.stopSession = original;
+      releaseStop();
+    }
+  });
+
+  test("manual compaction is refused while the thread is being moved", async () => {
+    const { dispatcher, service } = await harness();
+    provisioned.length = 0;
+    holdProvisioning();
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => provisioned.length === 1);
+      await expect(service.compactThread(THREAD)).rejects.toThrow(/being moved into a worktree/);
+      releaseProvisioning();
+      await moving;
+    } finally {
+      releaseProvisioning();
+    }
+  });
+
+  test("sends during the stop and the replacement startup both survive the move", async () => {
+    const { store, dispatcher, emit } = await harness();
+    provisioned.length = 0;
+    FakeAdapter.sent.length = 0;
+    let releaseStop = (): void => {};
+    let stopping = false;
+    const original = FakeAdapter.prototype.stopSession;
+    FakeAdapter.prototype.stopSession = async () => {
+      stopping = true;
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+    };
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => stopping);
+      expect(
+        await dispatcher.sendThreadTurn({ threadId: THREAD, input: "during stop" }),
+      ).toMatchObject({ queued: true });
+
+      holdSessionStart();
+      releaseStop();
+      await waitFor(() => FakeAdapter.startedCwds.length >= 2);
+      // The replacement session has no routing yet; the reservation is what
+      // accepts this send rather than refusing it.
+      expect(
+        await dispatcher.sendThreadTurn({ threadId: THREAD, input: "during restart" }),
+      ).toMatchObject({ queued: true });
+
+      releaseSessionStart();
+      await moving;
+      await waitFor(() => FakeAdapter.sent.length === 1);
+      expect(FakeAdapter.sent).toEqual(["during stop"]);
+      expect(store.listQueuedTurns(THREAD).map((row) => row.input)).toEqual(["during restart"]);
+
+      // SAFETY: a complete turn.completed literal, the shape an adapter emits.
+      emit({
+        type: "turn.completed",
+        threadId: THREAD,
+        provider: "codex",
+        turnId: "turn-x",
+        at: Date.now(),
+        source: "codex.app-server",
+      } as RuntimeEvent);
+      await waitFor(() => FakeAdapter.sent.length === 2);
+      expect(FakeAdapter.sent).toEqual(["during stop", "during restart"]);
+    } finally {
+      FakeAdapter.prototype.stopSession = original;
+      releaseStop();
+      releaseSessionStart();
+    }
+  });
+
+  test("a stop-unconfirmed refusal reclaims the built worktree; a retry builds afresh", async () => {
+    const { store, dispatcher } = await harness();
+    provisioned.length = 0;
+    released.length = 0;
+    FakeAdapter.stopError = new Error("stop refused");
+    try {
+      const result = await dispatcher.moveThreadToWorktree(THREAD);
+      expect(result).toMatchObject({ ok: false, reason: "stop-unconfirmed" });
+      expect(store.threadWorkspace(THREAD)?.worktreePath ?? null).toBeNull();
+      // The generated-branch worktree is given back, so nothing is orphaned.
+      expect(released.map((r) => r.worktreePath)).toEqual(["/tmp/kone-worktrees/kone-deadbeef"]);
+      expect(released[0]?.reclaimGeneratedBranch).toBe(true);
+
+      FakeAdapter.stopError = null;
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toMatchObject({ ok: true });
+    } finally {
+      FakeAdapter.stopError = null;
+    }
+  });
+
+  test("a named branch's worktree is released without reclaiming the branch", async () => {
+    const { dispatcher } = await harness();
+    provisioned.length = 0;
+    released.length = 0;
+    FakeAdapter.stopError = new Error("stop refused");
+    try {
+      const first = await dispatcher.moveThreadToWorktree(THREAD, { branch: "feature/mine" });
+      expect(first).toMatchObject({ ok: false, reason: "stop-unconfirmed" });
+      expect(provisioned.map((r) => r.branch)).toEqual(["feature/mine"]);
+      // The directory this build created is given back, but a branch the user
+      // named is never deleted.
+      expect(released.map((r) => r.worktreePath)).toEqual(["/tmp/kone-worktrees/feature-mine"]);
+      expect(released[0]?.reclaimGeneratedBranch ?? false).toBe(false);
+
+      FakeAdapter.stopError = null;
+      provisionAttachedOverride = true;
+      expect(
+        await dispatcher.moveThreadToWorktree(THREAD, { branch: "feature/mine" }),
+      ).toMatchObject({ ok: true });
+    } finally {
+      FakeAdapter.stopError = null;
+      provisionAttachedOverride = undefined;
+    }
+  });
+
+  test("a pre-existing adopted worktree is never removed on refusal", async () => {
+    const { dispatcher } = await harness();
+    provisioned.length = 0;
+    released.length = 0;
+    FakeAdapter.stopError = new Error("stop refused");
+    provisionAttachedOverride = true;
+    try {
+      const first = await dispatcher.moveThreadToWorktree(THREAD, { branch: "feature/theirs" });
+      expect(first).toMatchObject({ ok: false, reason: "stop-unconfirmed" });
+      // It existed before this build; removing it would destroy work that is
+      // not kone's.
+      expect(released).toEqual([]);
+    } finally {
+      FakeAdapter.stopError = null;
+      provisionAttachedOverride = undefined;
+    }
+  });
+
+  test("the destination is not published until the stop is confirmed", async () => {
+    const { store, dispatcher } = await harness();
+    provisioned.length = 0;
+    let releaseStop = (): void => {};
+    let stopping = false;
+    const original = FakeAdapter.prototype.stopSession;
+    FakeAdapter.prototype.stopSession = async () => {
+      stopping = true;
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+    };
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => stopping);
+      // Mid-teardown the thread still reads local: the destination is a
+      // candidate, not yet its binding.
+      expect(store.threadWorkspace(THREAD)?.worktreePath ?? null).toBeNull();
+      releaseStop();
+      expect(await moving).toMatchObject({ ok: true });
+      expect(store.threadWorkspace(THREAD)?.worktreePath).toBe("/tmp/kone-worktrees/kone-deadbeef");
+    } finally {
+      FakeAdapter.prototype.stopSession = original;
+      releaseStop();
+    }
+  });
+
+  test("a repeated move never reports a false success; it runs the real path", async () => {
+    const { store, dispatcher } = await harness();
+    provisioned.length = 0;
+    released.length = 0;
+    let releaseStop = (): void => {};
+    let stopping = false;
+    const original = FakeAdapter.prototype.stopSession;
+    FakeAdapter.prototype.stopSession = async () => {
+      stopping = true;
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      throw new Error("stop unconfirmed");
+    };
+    try {
+      const first = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => stopping);
+
+      let settled = false;
+      const repeated = dispatcher.moveThreadToWorktree(THREAD).then((result) => {
+        settled = true;
+        return result;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      // The repeat joins the move in flight; it must not answer success while
+      // the first move is still unconfirmed.
+      expect(settled).toBe(false);
+
+      // The first stop is already parked inside the override; restore the
+      // prototype so the repeat's own stop works, then let the first fail.
+      FakeAdapter.prototype.stopSession = original;
+      releaseStop();
+      const outcome = await first;
+      const repeatedResult = await repeated;
+
+      expect(outcome).toMatchObject({ ok: false, reason: "stop-unconfirmed" });
+      expect(repeatedResult).toMatchObject({ ok: true });
+      expect(store.threadWorkspace(THREAD)?.worktreePath).toBe("/tmp/kone-worktrees/kone-deadbeef");
+    } finally {
+      FakeAdapter.prototype.stopSession = original;
+      releaseStop();
+    }
+  });
+
+  test("a failed restart restores the binding, reclaims the worktree, and a retry starts", async () => {
+    const { store, dispatcher, service } = await harness();
+    provisioned.length = 0;
+    released.length = 0;
+    FakeAdapter.startError = new Error("provider startup refused");
+    try {
+      const result = await dispatcher.moveThreadToWorktree(THREAD);
+      expect(result).toMatchObject({ ok: false, reason: "failed" });
+      expect(store.threadWorkspace(THREAD)?.worktreePath ?? null).toBeNull();
+      expect(service.hasLiveSession(THREAD)).toBe(false);
+      expect(released.map((r) => r.worktreePath)).toEqual(["/tmp/kone-worktrees/kone-deadbeef"]);
+
+      FakeAdapter.startError = null;
+      const startsBefore = FakeAdapter.startedCwds.length;
+      expect(await dispatcher.moveThreadToWorktree(THREAD)).toMatchObject({ ok: true });
+      // The retry ran the real path: it built and started a session, not a
+      // stored-path shortcut.
+      expect(FakeAdapter.startedCwds.length).toBeGreaterThan(startsBefore);
+      expect(service.hasLiveSession(THREAD)).toBe(true);
+      expect(store.threadWorkspace(THREAD)?.worktreePath).toBe("/tmp/kone-worktrees/kone-deadbeef");
+    } finally {
+      FakeAdapter.startError = null;
+    }
+  });
+
+  test("a restore claimed on the destination during teardown refuses and reclaims", async () => {
+    const { store, dispatcher } = await harness();
+    provisioned.length = 0;
+    released.length = 0;
+    let releaseStop = (): void => {};
+    let stopping = false;
+    const original = FakeAdapter.prototype.stopSession;
+    FakeAdapter.prototype.stopSession = async () => {
+      stopping = true;
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+    };
+    const releaseRestore = { fn: (): void => {} };
+    try {
+      const moving = dispatcher.moveThreadToWorktree(THREAD);
+      await waitFor(() => stopping);
+      // Claimed while the old session is stopping, on the destination the
+      // build already produced: the post-stop recheck must catch it.
+      releaseRestore.fn = claimRestoreDir("/tmp/kone-worktrees/kone-deadbeef");
+      releaseStop();
+      const result = await moving;
+      expect(result).toMatchObject({ ok: false, reason: "restoring" });
+      expect(store.threadWorkspace(THREAD)?.worktreePath ?? null).toBeNull();
+      expect(released.map((r) => r.worktreePath)).toEqual(["/tmp/kone-worktrees/kone-deadbeef"]);
+    } finally {
+      releaseRestore.fn();
+      FakeAdapter.prototype.stopSession = original;
+      releaseStop();
     }
   });
 
