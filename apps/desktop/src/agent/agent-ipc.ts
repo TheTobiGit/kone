@@ -395,6 +395,7 @@ export function registerAgentIpc(): void {
       // renderer's own composer takes.
       steerThreadTurn: (turn) => dispatcher.steerThreadTurn(turn),
       ensureThreadSession: (threadId, options) => dispatcher.ensureThreadSession(threadId, options),
+      moveThreadToWorktree: (threadId, options) => dispatcher.moveThreadToWorktree(threadId, options),
     },
     threadControls: {
       // Mark done through the service, so thread.done.updated fans out to every
@@ -1416,6 +1417,13 @@ export function registerAgentIpc(): void {
   // attaches mid-setup reads this, then follows thread.worktree.setup events.
   ipcMain.handle("agent:worktree-setup", (_event, threadId: string) =>
     dispatcher.worktreeSetupSnapshot(String(threadId)),
+  );
+  // Move a local thread into a worktree of its own, rebinding and restarting
+  // its session. Refused while a turn is running.
+  ipcMain.handle(
+    "agent:move-thread-to-worktree",
+    (_event, threadId: string, branch?: string) =>
+      dispatcher.moveThreadToWorktree(String(threadId), branch?.trim() ? { branch } : undefined),
   );
 }
 
