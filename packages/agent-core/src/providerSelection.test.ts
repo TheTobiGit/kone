@@ -190,4 +190,22 @@ describe("queued row selection", () => {
     // The claim skips the refused row and takes the one behind it.
     expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-2");
   });
+
+  test("a refused row can be cancelled, singly and in bulk", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex" });
+    const enqueue = (queueId: string, userBlockId: string): void => {
+      store.enqueueQueuedTurn({ queueId, threadId: "t-1", userBlockId, input: queueId, provider: "claudeAgent" });
+      store.refuseQueuedTurn(queueId, "unavailable");
+    };
+    enqueue("q-1", "ub-1");
+    expect(store.cancelQueuedTurn("q-1", "t-1")).toBe(true);
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual([]);
+
+    enqueue("q-2", "ub-2");
+    expect(store.cancelQueuedTurnsForThread("t-1")).toContain("q-2");
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual([]);
+    // Still never claimable work.
+    expect(store.claimNextQueuedTurn("t-1")).toBeNull();
+  });
 });
