@@ -170,6 +170,9 @@ export interface StartThreadOptions {
    *  broadcast choke point (ipc.ts), so consumers correlate the child's
    *  traffic to the parent turn without a store walk (F10). */
   parentTurnId?: string;
+  /** This start is a workspace handoff's own replacement session, the only
+   *  start the move reservation admits while it holds the thread. */
+  forWorktreeMove?: boolean;
 }
 
 export interface StartThreadTurnOptions {
@@ -241,7 +244,7 @@ export interface ThreadDispatcher {
    *  the session from them; a fork passes false so the new thread starts fresh
    *  instead of continuing the source's provider conversation. No-op when a
    *  session is already live. */
-  ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void>;
+  ensureThreadSession(threadId: string, options: { resume: boolean; forWorktreeMove?: boolean }): Promise<void>;
   /** Fresh snapshot of one thread for the quit-resume filter: liveness from the
    *  service, settled-state facts per assistant turn from the store. */
   readQuitResumeSnapshot(threadId: string): QuitResumeThreadSnapshot;
@@ -558,6 +561,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     try {
       session = await this.service.startSession(
         workingDir === input.cwd ? input : { ...input, cwd: workingDir },
+        options?.forWorktreeMove === true ? { forWorktreeMove: true } : undefined,
       );
     } catch (error) {
       // Closes the stepper's last step when one is open. A thread that never
@@ -672,7 +676,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return { ...input, agent: { name: threadAgentName(this.store, input.threadId), guest: true } };
   }
 
-  async ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void> {
+  async ensureThreadSession(
+    threadId: string,
+    options: { resume: boolean; forWorktreeMove?: boolean },
+  ): Promise<void> {
     if (this.service.hasLiveSession(threadId)) return;
     const meta = this.store.threadMeta(threadId);
     if (!meta) throw new Error(`Unknown thread ${threadId}`);
@@ -693,7 +700,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
     if (meta.selection?.mode) start.mode = meta.selection.mode;
     if (meta.selection?.effort) start.effort = meta.selection.effort;
-    await this.startThread(start);
+    await this.startThread(start, options.forWorktreeMove ? { forWorktreeMove: true } : undefined);
   }
 
   /** Move a local thread into a worktree of its own. */
@@ -781,15 +788,17 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         { publishBinding: false },
       );
       built = candidate;
-      // The reservation queues new sends; recheck the turn and restore state
-      // after provisioning, because either may have started while git built.
-      if (this.service.isThreadBusy(threadId)) {
-        await giveBack(candidate, "A turn started while the worktree was being prepared.");
-        return { ok: false, reason: "busy" };
-      }
+      // The reservation queues new sends; recheck the turn, restore and other
+      // ownership after provisioning, because a restore may have started, or
+      // an asynchronous owner the busy read misses may have been admitted,
+      // while git built.
       if (this.service.isThreadRestoreHeld(threadId) || this.service.isDirRestoreHeld(candidate.path)) {
         await giveBack(candidate, "A checkpoint restore started while the worktree was being prepared.");
         return { ok: false, reason: "restoring" };
+      }
+      if (this.service.isThreadMoveBlocked(threadId)) {
+        await giveBack(candidate, "The thread was still owned when the worktree was ready.");
+        return { ok: false, reason: "busy" };
       }
       // The old session was started in the project checkout. Stop it and start
       // a fresh one in the worktree, resuming the provider conversation so the
@@ -810,7 +819,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       }
       this.publishThreadWorkspace(threadId, candidate);
       published = true;
-      await this.ensureThreadSession(threadId, { resume: true });
+      // The replacement start is the one start the reservation admits.
+      await this.ensureThreadSession(threadId, { resume: true, forWorktreeMove: true });
       return { ok: true, worktreePath: candidate.path };
     } catch (error) {
       // A failure after the binding was published — the replacement session

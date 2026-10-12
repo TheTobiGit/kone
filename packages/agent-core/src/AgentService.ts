@@ -1159,7 +1159,17 @@ export class AgentService {
     return undefined;
   }
 
-  async startSession(input: SessionStartInput): Promise<Session> {
+  async startSession(
+    input: SessionStartInput,
+    options?: { forWorktreeMove?: boolean },
+  ): Promise<Session> {
+    // A workspace handoff owns the thread from reservation through rebind. A
+    // competing start would race its replacement and could publish a session in
+    // the old checkout after the move reported success; only the move's own
+    // replacement start (forWorktreeMove) passes here.
+    if (this.worktreeMoveHolds.has(input.threadId) && options?.forWorktreeMove !== true) {
+      throw new Error(`thread ${input.threadId} is being moved into a worktree; the session was not started`);
+    }
     this.startingSessions.add(input.threadId);
     const starting = this.startSessionNow(input);
     this.startingSessionPromises.set(input.threadId, starting);
@@ -1341,13 +1351,30 @@ export class AgentService {
     return null;
   }
 
+  /** Whether some owner other than a workspace handoff itself holds this
+   *  thread's one turn slot: a live or dispatching turn, a session still
+   *  connecting, a steer round trip already admitted, an in-flight compaction,
+   *  or a checkpoint restore. `isBusy` alone misses the asynchronous owners —
+   *  a connecting start, a preparing steer, a native compaction — which can
+   *  still publish or dispatch into the session after the busy marker clears,
+   *  so move admission and the move's final handoff both read this. */
+  private threadOwned(threadId: string): boolean {
+    return (
+      this.isBusy(threadId) ||
+      this.startingSessions.has(threadId) ||
+      this.restoreHolds(threadId)
+    );
+  }
+
   /** Atomically reserves an idle thread for a workspace handoff. Sends arriving
    *  during the reservation enter the normal durable queue until it is released;
    *  the provider is carried so a send during the stop-to-restart gap still
    *  finds somewhere to be enqueued against. */
   holdThreadForWorktreeMove(threadId: string, provider: ProviderKind): WorktreeMoveReservation {
     if (this.restoreHolds(threadId)) return { reason: "restoring", release: () => {} };
-    if (this.isBusy(threadId) || this.worktreeMoveHolds.has(threadId)) return { reason: "busy", release: () => {} };
+    if (this.threadOwned(threadId) || this.worktreeMoveHolds.has(threadId)) {
+      return { reason: "busy", release: () => {} };
+    }
     this.worktreeMoveHolds.set(threadId, provider);
     let released = false;
     return { release: () => {
@@ -1358,6 +1385,14 @@ export class AgentService {
       // Retry after its delivery slot has had a chance to clear.
       setTimeout(() => this.promoteQueuedTurns(threadId), 0).unref?.();
     } };
+  }
+
+  /** Whether a workspace handoff must not stop the session yet: some owner
+   *  other than the handoff itself still holds the thread. Read again at the
+   *  move's final handoff, after provisioning, so an owner admitted while the
+   *  worktree was being built cannot be walked past. */
+  isThreadMoveBlocked(threadId: string): boolean {
+    return this.threadOwned(threadId);
   }
 
   /** Whether a workspace handoff has reserved this thread. A turn must not
