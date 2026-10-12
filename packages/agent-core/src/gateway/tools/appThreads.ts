@@ -161,6 +161,8 @@ export interface AppThreadsStore {
    *  A miss reads as null, like the single-thread answer for a thread with
    *  no assistant history. */
   threadTurnSpans?(threadIds: readonly string[]): ReadonlyMap<string, TurnSpan>;
+  /** First-class child threads whose eventual reports return to this parent. */
+  spawnedChildren?(parentThreadId: string): StoredThreadMeta[];
   /** The agent a thread runs as, when it has one — what makes a list entry say
    *  whose thread it is. */
   getThreadAgent(threadId: string): { agentId: string | null } | null;
@@ -273,6 +275,8 @@ export interface AppThreadsToolOptions {
   /** Whether a thread has a live provider session, so a list can say which
    *  threads are running rather than only when they last spoke. */
   isThreadLive?: (threadId: string) => boolean;
+  /** Whether a spawned child's eventual settled turn can be sent to its parent. */
+  willReportChild?: (threadId: string) => boolean;
   /** What a thread is parked on, if anything — an approval the user must
    *  decide, or a question for the user. Outranks the turn readout when
    *  deriving `status`: a parked thread is the one state where nothing moves
@@ -490,6 +494,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
    *  page costs one batch span read plus one gate snapshot pass instead of
    *  one store aggregate per row. */
   interface ReadingFacts {
+    threadId: string;
     span: TurnSpan | null;
     gate: ThreadGateKind | null;
     live: boolean;
@@ -540,6 +545,14 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       .map(askLine)
       .filter((line): line is string => line !== null);
 
+  const hasLiveReportingChild = (threadId: string): boolean =>
+    (store.spawnedChildren?.(threadId) ?? []).some((child) => {
+      if (child.relationshipToParent === "side_chat") return false;
+      if (options.willReportChild?.(child.threadId) === false) return false;
+      const childSpan = store.threadTurnSpan?.(child.threadId) ?? null;
+      return (childSpan?.runningTurns ?? 0) > 0 && isLive(child.threadId);
+    });
+
   const statusFor = (facts: ReadingFacts): ThreadStatus =>
     projectThreadStatus({
       gate: facts.gate,
@@ -547,6 +560,8 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       lastState: facts.span?.lastState ?? null,
       hasLiveSession: facts.live,
       limited: facts.limited,
+      waitingForChildren:
+        facts.span?.lastState === "completed" && hasLiveReportingChild(facts.threadId),
     });
 
   // -- lifecycle plumbing (one place, not five handlers) ----------------------
@@ -740,6 +755,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     }
     const listed = listedMetas.map((meta) =>
       readingFor(meta, byPath, {
+        threadId: meta.threadId,
         span: spanMap ? (spanMap.get(meta.threadId) ?? null) : (store.threadTurnSpan?.(meta.threadId) ?? null),
         gate: gateSnapshot.get(meta.threadId) ?? null,
         live: isLive(meta.threadId),
@@ -879,6 +895,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
             model: thread.model ?? null,
             agent: agentNameFor(store, thread.threadId),
             status: statusFor({
+              threadId: thread.threadId,
               span: store.threadTurnSpan?.(thread.threadId) ?? null,
               gate: options.pendingGateFor?.(thread.threadId) ?? null,
               live: isLive(thread.threadId),
@@ -971,6 +988,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     const title = thread.title ?? params.threadId;
     const agent = agentNameFor(store, thread.threadId);
     const status = statusFor({
+      threadId: thread.threadId,
       span: store.threadTurnSpan?.(thread.threadId) ?? null,
       gate: options.pendingGateFor?.(thread.threadId) ?? null,
       live: isLive(thread.threadId),
@@ -1852,7 +1870,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_list_threads",
       description:
-        "List the conversations in a project - or across every project the app holds: title, thread id, the agent and model it runs on, its status (working, waiting-for-approval, waiting-for-user-input, idle, failed, interrupted, starting), whether it is unread or done, and when it was last active. The unread / done / archived flags are only present when they are true; status is always present. Pass archived: true to look in the archive instead, which is a separate place from the live list.",
+        "List the conversations in a project - or across every project the app holds: title, thread id, the agent and model it runs on, its status (working, waiting-for-approval, waiting-for-user-input, waiting-for-children, idle, failed, interrupted, starting), whether it is unread or done, and when it was last active. The unread / done / archived flags are only present when they are true; status is always present. Pass archived: true to look in the archive instead, which is a separate place from the live list.",
       inputSchema: ListAppThreadsInputSchema,
       jsonSchema: LIST_APP_THREADS_JSON_SCHEMA,
       permission: "allow",
@@ -1867,7 +1885,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_read_thread",
       description:
-        "Read what was said in one of the app's threads, newest messages last. Returns the user's prompts and the agent's replies as prose; tool calls and their payloads stay in the thread. Also reports the thread's status (working, waiting-for-approval, waiting-for-user-input, idle, failed, interrupted, starting). Use it to catch up on a conversation before answering about it or continuing it.",
+        "Read what was said in one of the app's threads, newest messages last. Returns the user's prompts and the agent's replies as prose; tool calls and their payloads stay in the thread. Also reports the thread's status (working, waiting-for-approval, waiting-for-user-input, waiting-for-children, idle, failed, interrupted, starting). Use it to catch up on a conversation before answering about it or continuing it.",
       inputSchema: ReadAppThreadInputSchema,
       jsonSchema: READ_APP_THREAD_JSON_SCHEMA,
       permission: "allow",

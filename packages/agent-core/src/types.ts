@@ -1481,6 +1481,7 @@ export type ThreadStatus =
   | "working"
   | "waiting-for-approval"
   | "waiting-for-user-input"
+  | "waiting-for-children"
   | "idle"
   | "failed"
   | "interrupted"
@@ -2250,10 +2251,11 @@ export type RuntimeEvent =
       type: "user-input.requested";
       requestId: string;
       turnId?: string;
+      subagentToolUseId?: string;
       questions: UserInputQuestion[];
     })
   // The parked question has been answered (or cancelled) — clear the prompt.
-  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
+  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers; subagentToolUseId?: string })
   // The provider is asking for the user's go-ahead before the agent runs
   // something (a shell command, a file change, a permission grant) and the
   // turn is parked until they decide (respondToRequest). `approval` carries
