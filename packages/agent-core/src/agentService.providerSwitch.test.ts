@@ -321,6 +321,32 @@ describe("self-switch", () => {
     expect(store.getProviderModelOptions("claudeAgent", "claude-x")?.knobs.effort).toBe("high");
   });
 
+  test("a switch on a fork before its first message retargets the placeholder", async () => {
+    const source = await openCodexThread();
+    const forkId = `fork-${++seq}`;
+    const { forkThreadAtTurn } = await import("./threadFork.js");
+    const result = forkThreadAtTurn({
+      requestId: `req-${seq}`,
+      threadId: forkId,
+      sourceThreadId: source,
+      turnId: "seed",
+      userBlockId: null,
+      target: { provider: "codex", model: "gpt-5" },
+    });
+    expect(result.status).toBe("created");
+    expect(store.threadForkContext(forkId)?.bootstrapStatus).toBe("pending");
+
+    const outcome = await service.switchOwnSelection(forkId, { provider: "claudeAgent", model: "claude-x" });
+    expect(outcome).toEqual({
+      applied: "direct",
+      selection: { provider: "claudeAgent", model: "claude-x" },
+    });
+    expect(store.threadMeta(forkId)?.provider).toBe("claudeAgent");
+    // Nothing was handed in: a placeholder has no session to replace.
+    expect(claude.starts).toBe(0);
+    expect(codex.stops).toBe(0);
+  });
+
   test("a busy self-switch becomes pending and never interrupts", async () => {
     const thread = await openCodexThread();
     liveTurn(thread, "live-1");
