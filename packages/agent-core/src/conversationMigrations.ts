@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1469,6 +1469,110 @@ function migration0041ThreadReferences(db: DatabaseSync): void {
   if (hasTable(db, "subagents")) addColumn(db, "subagents", "duration_ms", "INTEGER");
 }
 
+/**
+ * Provider selection memory and the same-provider change mark.
+ *
+ *  - `provider_model_options` remembers the knobs (effort, service tier,
+ *    context window, mode) that last ran with a provider+model, so returning
+ *    to that model restores what it ran with rather than the knobs of
+ *    whichever provider ran in between.
+ *  - `threads.pending_selection_json` holds a pick made while a turn runs with
+ *    nothing queued: it is applied at the next turn end without a turn of its
+ *    own.
+ *  - `queued_turns.provider` gives each durable follow-up the provider it was
+ *    queued on, so a row whose provider differs from the thread's owner is
+ *    handed in before it runs. NULL reads as the thread's current owner, which
+ *    is every row enqueued without a selection.
+ *  - `thread_model_changes` is the mark for a same-provider model/knob change
+ *    between turns — the counterpart to a hand-in's from→to provider mark,
+ *    which a provider switch already writes.
+ */
+function migration0042ProviderSelection(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE provider_model_options (
+      provider       TEXT NOT NULL,
+      model          TEXT NOT NULL,
+      effort         TEXT,
+      service_tier   TEXT,
+      context_window TEXT,
+      mode           TEXT,
+      updated_at     INTEGER NOT NULL,
+      PRIMARY KEY (provider, model)
+    );
+
+    CREATE TABLE thread_model_changes (
+      change_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id          TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      at                 INTEGER NOT NULL,
+      from_provider      TEXT,
+      from_model         TEXT,
+      to_provider        TEXT NOT NULL,
+      to_model           TEXT,
+      changed_knobs_json TEXT
+    );
+    CREATE INDEX idx_thread_model_changes_thread ON thread_model_changes (thread_id, at);
+  `);
+  addColumn(db, "threads", "pending_selection_json", "TEXT");
+  if (!hasTable(db, "queued_turns")) return;
+  // queued_turns gains two columns and a new terminal state, and SQLite cannot
+  // widen a CHECK in place (nor add a column to the middle of the table), so
+  // the table is rebuilt. rowid is carried across explicitly: it is the
+  // durable queue boundary (allocatedQueueBoundary reads sqlite_sequence), and
+  // a rebuild that let AUTOINCREMENT restart from the surviving max rowid would
+  // move that boundary backwards after rows were deleted.
+  // SAFETY: sqlite_sequence holds one integer seq per AUTOINCREMENT table.
+  const priorSeq = db
+    .prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'queued_turns'`)
+    .get() as { seq: number } | undefined;
+  db.exec(`
+    CREATE TABLE queued_turns__v42 (
+      rowid            INTEGER PRIMARY KEY AUTOINCREMENT,
+      queue_id         TEXT UNIQUE,
+      thread_id        TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      user_block_id    TEXT NOT NULL,
+      dispatch_mode    TEXT NOT NULL CHECK (dispatch_mode IN ('followup', 'steer', 'direct', 'queue')),
+      state            TEXT NOT NULL CHECK (state IN ('queued', 'promoting', 'promoted', 'failed', 'cancelled', 'refused')),
+      input            TEXT NOT NULL,
+      attachments_json TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json)),
+      provider         TEXT,
+      model            TEXT,
+      mode             TEXT,
+      effort           TEXT,
+      service_tier     TEXT,
+      context_window   TEXT,
+      refusal_reason   TEXT,
+      attempt_count    INTEGER NOT NULL DEFAULT 0,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      promoted_at      INTEGER,
+      sort_key         INTEGER,
+      skills_json      TEXT CHECK (skills_json IS NULL OR json_valid(skills_json))
+    );
+    INSERT INTO queued_turns__v42
+      (rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+       attachments_json, model, mode, effort, service_tier, context_window,
+       attempt_count, created_at, updated_at, promoted_at, sort_key, skills_json)
+      SELECT rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+             attachments_json, model, mode, effort, service_tier, context_window,
+             attempt_count, created_at, updated_at, promoted_at, sort_key, skills_json
+        FROM queued_turns ORDER BY rowid;
+    DROP TABLE queued_turns;
+    ALTER TABLE queued_turns__v42 RENAME TO queued_turns;
+    CREATE INDEX idx_queued_turns_pending ON queued_turns (thread_id, created_at);
+    CREATE INDEX idx_queued_turns_thread_state ON queued_turns (thread_id, state);
+    CREATE UNIQUE INDEX idx_queued_turns_active_user_block ON queued_turns (thread_id, user_block_id)
+      WHERE state IN ('queued', 'promoting', 'failed');
+  `);
+  if (priorSeq && Number.isFinite(priorSeq.seq)) {
+    const restored = db
+      .prepare(`UPDATE sqlite_sequence SET seq = ? WHERE name = 'queued_turns'`)
+      .run(priorSeq.seq);
+    if (Number(restored.changes) === 0) {
+      db.prepare(`INSERT INTO sqlite_sequence (name, seq) VALUES ('queued_turns', ?)`).run(priorSeq.seq);
+    }
+  }
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1511,6 +1615,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 39, name: "AgentGrants", run: migration0039AgentGrants },
   { id: 40, name: "CrewBoards", run: migration0040CrewBoards },
   { id: 41, name: "ThreadReferencesAndSubagentDuration", run: migration0041ThreadReferences },
+  { id: 42, name: "ProviderSelection", run: migration0042ProviderSelection },
 ];
 
 export interface MigrationOptions {

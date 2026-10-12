@@ -21,6 +21,9 @@ import type { AgentGrant } from "./agentAccess.js";
 import { TurnRollbackRepo } from "./store/turnRollbacks.js";
 import { LineageRepo, type ForkThreadAtBlockResult, type SpawnedChildrenPage, type SpawnedChildrenPageOptions } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
+import { ProviderModelOptionsRepo, type ProviderModelOptionsInput, type ProviderModelOptionsRecord } from "./store/providerModelOptions.js";
+import { ModelChangeRepo, type ModelChangeRecord } from "./store/modelChanges.js";
+import { resolveSelectionKnobs, selectionKnobs, type SelectionKnobs, type TurnSelection } from "./selection.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
@@ -69,6 +72,8 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   private readonly turnRollbacks: TurnRollbackRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
+  private readonly providerModelOptions: ProviderModelOptionsRepo;
+  private readonly modelChanges: ModelChangeRepo;
   private readonly transcript: TranscriptRepo;
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
@@ -88,6 +93,8 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     this.projectScripts = new ProjectScriptRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
     this.handIns = new HandInsRepo(this.dbh);
+    this.providerModelOptions = new ProviderModelOptionsRepo(this.dbh);
+    this.modelChanges = new ModelChangeRepo(this.dbh);
     this.events = new EventIngestRepo(this.dbh, {
       touch: (db, threadId, at) => this.threads.touch(db, threadId, at),
       completeSidechatBootstrap: (db, threadId) =>
@@ -326,7 +333,64 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
       mode?: InteractionMode | string;
     },
   ): void {
-    return this.threads.setThreadSelection(threadId, selection);
+    const before = this.threads.threadMeta(threadId);
+    this.threads.setThreadSelection(threadId, selection);
+    // A picker commit teaches the same memory a turn does: the effective knobs
+    // for the provider+model it chose, resolved the same way a returning pick
+    // reads them, and never replacing memory with an empty set.
+    const model = selection.model ?? before?.model;
+    if (!before || !model) return;
+    const explicit: SelectionKnobs = {};
+    if (selection.effort !== undefined) explicit.effort = selection.effort;
+    if (selection.serviceTier !== undefined) explicit.serviceTier = selection.serviceTier;
+    if (selection.contextWindow !== undefined) explicit.contextWindow = selection.contextWindow;
+    if (selection.mode === "ask" || selection.mode === "accept-edits" || selection.mode === "full-access") {
+      explicit.mode = selection.mode;
+    }
+    const remembered = this.providerModelOptions.get(before.provider, model)?.knobs ?? null;
+    const knobs = resolveSelectionKnobs({ explicit, remembered, current: selectionKnobs(before) });
+    if (Object.keys(knobs).length === 0) return;
+    this.providerModelOptions.upsert({ provider: before.provider, model, knobs });
+  }
+
+  /** The pick a thread holds for its next turn end. @see ThreadRepo */
+  setPendingSelection(threadId: string, selection: TurnSelection): void {
+    return this.threads.setPendingSelection(threadId, selection);
+  }
+
+  /** @see ThreadRepo */
+  pendingSelection(threadId: string): TurnSelection | null {
+    return this.threads.pendingSelection(threadId);
+  }
+
+  /** @see ThreadRepo */
+  clearPendingSelection(threadId: string): void {
+    return this.threads.clearPendingSelection(threadId);
+  }
+
+  /** Point a session-less placeholder at a selection without a hand-in. @see ThreadRepo */
+  retargetThreadSelection(threadId: string, selection: TurnSelection): boolean {
+    return this.threads.retargetThreadSelection(threadId, selection);
+  }
+
+  /** Remember the knobs that last ran with a provider+model. @see ProviderModelOptionsRepo */
+  upsertProviderModelOptions(input: ProviderModelOptionsInput): void {
+    return this.providerModelOptions.upsert(input);
+  }
+
+  /** What a provider+model last ran with. @see ProviderModelOptionsRepo */
+  getProviderModelOptions(provider: ProviderKind, model: string): ProviderModelOptionsRecord | null {
+    return this.providerModelOptions.get(provider, model);
+  }
+
+  /** Every remembered provider+model, newest first. @see ProviderModelOptionsRepo */
+  listProviderModelOptions(): ProviderModelOptionsRecord[] {
+    return this.providerModelOptions.list();
+  }
+
+  /** Every same-provider model/knob change on a thread, oldest first. @see ModelChangeRepo */
+  modelChangesForThread(threadId: string): ModelChangeRecord[] {
+    return this.modelChanges.forThread(threadId);
   }
 
   /** @see EventIngestRepo */
@@ -392,6 +456,11 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see QueuedTurnRepo */
   releaseQueuedTurn(queueId: string, to: "queued" | "failed" = "queued"): boolean | null {
     return this.queuedTurns.releaseQueuedTurn(queueId, to);
+  }
+
+  /** Refuse a row a provider switch could not honour. @see QueuedTurnRepo */
+  refuseQueuedTurn(queueId: string, reason: string): boolean {
+    return this.queuedTurns.refuseQueuedTurn(queueId, reason);
   }
 
   /** @see QueuedTurnRepo */

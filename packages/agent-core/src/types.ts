@@ -382,6 +382,11 @@ export type SendTurnInput = {
   sender?: MessageSender;
   /** Override the session model for this turn. */
   model?: string;
+  /** The provider this turn should run on, when it differs from the thread's
+   *  current owner. A busy thread queues it with that provider (the drain
+   *  hands the thread in first); an idle thread is handed in before the turn
+   *  is dispatched. Absent means the thread's current owner. */
+  provider?: ProviderKind;
   mode?: InteractionMode;
   /** Reasoning effort tier. Providers that bake effort into the model id
    *  ignore it; flag-based providers (Codex) map it to their own turn param. */
@@ -651,6 +656,11 @@ export type HandInInput = {
   /** Who the thread carries on with. Provider is required; model and effort
    *  fall back to the target provider's defaults when absent. */
   target: HandInTarget;
+  /** Keep the thread's durable follow-ups across the swap. Set by a switch the
+   *  queue drain delivers between two rows; the immediate, user-initiated
+   *  hand-in leaves it off, so its teardown still cancels queued follow-ups as
+   *  it always has. */
+  preserveQueue?: boolean;
 };
 
 export type HandInResult = {
@@ -1049,6 +1059,7 @@ export type QueuedTurnStore = Pick<
   | "isQueuedTurnClaimed"
   | "markQueuedTurnPromoted"
   | "releaseQueuedTurn"
+  | "refuseQueuedTurn"
   | "cancelQueuedTurn"
   | "cancelQueuedTurnsForThread"
   | "listQueuedTurns"
@@ -2163,7 +2174,7 @@ export type RuntimeEvent =
   | (BaseEvent & {
       type: "turn.queued-updated";
       queueId: string;
-      state: "queued" | "promoting" | "failed";
+      state: "queued" | "promoting" | "failed" | "refused";
       attemptCount: number;
       retryAt?: number;
       error?: string;

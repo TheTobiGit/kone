@@ -4,6 +4,8 @@ import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, SkillReference, StoredThreadMeta, TurnStamp } from "../types.js";
 import { encodeMessageSender, parseMessageSender } from "@kone/protocol/message-sender";
 import { DONE_CLEARED, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
+import { changedKnobNames } from "./modelChanges.js";
+import { parseTurnSelection, serializeTurnSelection, type SelectionKnobs, type TurnSelection } from "../selection.js";
 import { indexBlockRow } from "./search.js";
 import { moveBlockToTail, PENDING_QUEUE_STATES } from "./sql.js";
 
@@ -417,12 +419,15 @@ export class ThreadRepo {
     try {
       // Merge over the stored knobs: a partial update (the picker commits one
       // axis at a time) must never wipe the knobs it didn't touch.
-      // SAFETY: the projection names only model_selection_json, the nullable
-      // TEXT knob blob this class writes via JSON.stringify.
+      // SAFETY: the projection names the nullable model/model_selection_json
+      // columns plus the NOT NULL provider, all columns this class writes.
       const row = db
-        .prepare(`SELECT model_selection_json FROM threads WHERE thread_id = ?`)
-        .get(threadId) as { model_selection_json: string | null } | undefined;
-      const knobs: {
+        .prepare(`SELECT model, model_selection_json, provider FROM threads WHERE thread_id = ?`)
+        .get(threadId) as
+        | { model: string | null; model_selection_json: string | null; provider: string }
+        | undefined;
+      const currentModel = row?.model ?? undefined;
+      const currentKnobs: {
         effort?: string;
         serviceTier?: string;
         contextWindow?: string;
@@ -434,10 +439,12 @@ export class ThreadRepo {
           contextWindow?: string;
           mode?: string;
         }>(row?.model_selection_json ?? null) ?? {};
+      const knobs: typeof currentKnobs = { ...currentKnobs };
       if (selection.effort !== undefined) knobs.effort = selection.effort;
       if (selection.serviceTier !== undefined) knobs.serviceTier = selection.serviceTier;
       if (selection.contextWindow !== undefined) knobs.contextWindow = selection.contextWindow;
       if (selection.mode !== undefined) knobs.mode = selection.mode;
+      const newModel = selection.model !== undefined ? selection.model : currentModel;
       const json = Object.keys(knobs).length ? JSON.stringify(knobs) : null;
       db.prepare(
         `UPDATE threads
@@ -445,8 +452,111 @@ export class ThreadRepo {
                model_selection_json = COALESCE(?, model_selection_json)
          WHERE thread_id = ?`,
       ).run(selection.model ?? null, json, threadId);
+      // A same-provider model/knob change between turns gets its own mark; a
+      // provider change is a hand-in and writes its own from→to row instead.
+      // The first selection a thread ever takes is not a change, so a thread
+      // with no prior model records nothing.
+      if (row && currentModel !== undefined) {
+        const knobChanges = changedKnobNames(currentKnobs, knobs);
+        const modelChanged = selection.model !== undefined && (newModel ?? "") !== (currentModel ?? "");
+        if (modelChanged || knobChanges.length > 0) {
+          // SAFETY: provider is NOT NULL and only ever written from ProviderKind values.
+          const provider = row.provider as ProviderKind;
+          db.prepare(
+            `INSERT INTO thread_model_changes
+               (thread_id, at, from_provider, from_model, to_provider, to_model, changed_knobs_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            threadId,
+            Date.now(),
+            provider,
+            currentModel ?? null,
+            provider,
+            newModel ?? null,
+            knobChanges.length > 0 ? JSON.stringify(knobChanges) : null,
+          );
+        }
+      }
     } catch (err) {
       console.error("[conversation-store] setThreadSelection failed:", err);
+    }
+  }
+
+  /** Store a pick made while a turn runs with nothing queued: it applies at
+   *  the next turn end without a turn of its own. Replaces any earlier pending
+   *  pick — a later choice is the one the next turn should run on. */
+  setPendingSelection(threadId: string, selection: TurnSelection): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET pending_selection_json = ? WHERE thread_id = ?`).run(
+        serializeTurnSelection(selection),
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setPendingSelection failed:", err);
+    }
+  }
+
+  /** The selection a thread is holding for its next turn end, or null when
+   *  none is. */
+  pendingSelection(threadId: string): TurnSelection | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names only pending_selection_json, the nullable
+      // TEXT blob this class writes via serializeTurnSelection.
+      const row = db
+        .prepare(`SELECT pending_selection_json FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { pending_selection_json: string | null } | undefined;
+      return parseTurnSelection(row?.pending_selection_json ?? null);
+    } catch (err) {
+      console.error("[conversation-store] pendingSelection failed:", err);
+      return null;
+    }
+  }
+
+  /** Drop a thread's pending selection once it has been applied. */
+  clearPendingSelection(threadId: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET pending_selection_json = NULL WHERE thread_id = ?`).run(threadId);
+    } catch (err) {
+      console.error("[conversation-store] clearPendingSelection failed:", err);
+    }
+  }
+
+  /** Point a thread at a selection without a session hand-in: provider, model
+   *  and knobs written together. For a placeholder that has no provider
+   *  session and no transcript — a fork before its first message — and for a
+   *  self-switch on an idle thread. Returns false when there is no such
+   *  thread. The caller owns any fork-binding clear a provider move implies. */
+  retargetThreadSelection(threadId: string, selection: TurnSelection): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      const knobs: SelectionKnobs = {};
+      if (selection.effort !== undefined) knobs.effort = selection.effort;
+      if (selection.serviceTier !== undefined) knobs.serviceTier = selection.serviceTier;
+      if (selection.contextWindow !== undefined) knobs.contextWindow = selection.contextWindow;
+      if (selection.mode !== undefined) knobs.mode = selection.mode;
+      const result = db
+        .prepare(
+          `UPDATE threads
+             SET provider = ?, model = ?, model_selection_json = ?, pending_selection_json = NULL
+           WHERE thread_id = ?`,
+        )
+        .run(
+          selection.provider,
+          selection.model ?? null,
+          Object.keys(knobs).length ? JSON.stringify(knobs) : null,
+          threadId,
+        );
+      return Number(result.changes) > 0;
+    } catch (err) {
+      console.error("[conversation-store] retargetThreadSelection failed:", err);
+      return false;
     }
   }
 

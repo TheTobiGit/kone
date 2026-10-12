@@ -5,6 +5,12 @@ import type { DatabaseSync } from "../sqlite.js";
  *  ran out. Every "is something still queued here?" read uses this one set. */
 export const PENDING_QUEUE_STATES = `('queued', 'promoting', 'failed')`;
 
+/** The states a queue strip lists: everything the user still has waiting or
+ *  held, plus a row that was refused a provider switch. A refused row is
+ *  terminal but stays visible with its reason; it is not pending, so it pauses
+ *  nothing and a claim never returns it. */
+export const LISTED_QUEUE_STATES = `('queued', 'promoting', 'failed', 'refused')`;
+
 /** Transcript reads skip a user prompt its queued follow-up was journaled for
  *  while the queue row is still pending (PENDING_QUEUE_STATES — the same set
  *  listQueuedTurns reads). The prompt is already durable in `blocks`, but
