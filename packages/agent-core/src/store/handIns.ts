@@ -2,8 +2,9 @@ import { z } from "zod";
 
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
-import type { HandInRecord, ProviderKind } from "../types.js";
+import type { ForkContext, HandInRecord, ProviderKind } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
+import { parseJsonObject } from "../conversationStoreTypes.js";
 
 /** One stored hand-in row, as the table spells it. */
 export type HandInRow = {
@@ -106,6 +107,23 @@ export class HandInsRepo {
                     resume_session_at = NULL, last_activity_at = ?
               WHERE thread_id = ?`,
           ).run(input.toProvider, input.toModel ?? null, input.at, input.threadId);
+          // A native fork binding names a conversation inside the OLD
+          // provider. The hand-in has just dropped that provider's ids, so the
+          // binding is dead: left in place it would make a later session on the
+          // old provider try to fork a conversation this thread no longer has.
+          // SAFETY: the projection names the nullable fork_context_json blob
+          // this store serializes as a ForkContext.
+          const forkRow = db
+            .prepare(`SELECT fork_context_json FROM threads WHERE thread_id = ?`)
+            .get(input.threadId) as { fork_context_json: string | null } | undefined;
+          const forkContext = parseJsonObject<ForkContext>(forkRow?.fork_context_json ?? null);
+          if (forkContext?.nativeFork) {
+            delete forkContext.nativeFork;
+            db.prepare(`UPDATE threads SET fork_context_json = ? WHERE thread_id = ?`).run(
+              JSON.stringify(forkContext),
+              input.threadId,
+            );
+          }
         });
       });
       return handInRecordFromRow({
