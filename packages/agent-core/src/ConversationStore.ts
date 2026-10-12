@@ -23,7 +23,7 @@ import { LineageRepo, type ForkThreadAtBlockResult, type SpawnedChildrenPage, ty
 import { HandInsRepo } from "./store/handIns.js";
 import { ProviderModelOptionsRepo, type ProviderModelOptionsInput, type ProviderModelOptionsRecord } from "./store/providerModelOptions.js";
 import { ModelChangeRepo, type ModelChangeRecord } from "./store/modelChanges.js";
-import type { TurnSelection } from "./selection.js";
+import { resolveSelectionKnobs, selectionKnobs, type SelectionKnobs, type TurnSelection } from "./selection.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
@@ -333,7 +333,24 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
       mode?: InteractionMode | string;
     },
   ): void {
-    return this.threads.setThreadSelection(threadId, selection);
+    const before = this.threads.threadMeta(threadId);
+    this.threads.setThreadSelection(threadId, selection);
+    // A picker commit teaches the same memory a turn does: the effective knobs
+    // for the provider+model it chose, resolved the same way a returning pick
+    // reads them, and never replacing memory with an empty set.
+    const model = selection.model ?? before?.model;
+    if (!before || !model) return;
+    const explicit: SelectionKnobs = {};
+    if (selection.effort !== undefined) explicit.effort = selection.effort;
+    if (selection.serviceTier !== undefined) explicit.serviceTier = selection.serviceTier;
+    if (selection.contextWindow !== undefined) explicit.contextWindow = selection.contextWindow;
+    if (selection.mode === "ask" || selection.mode === "accept-edits" || selection.mode === "full-access") {
+      explicit.mode = selection.mode;
+    }
+    const remembered = this.providerModelOptions.get(before.provider, model)?.knobs ?? null;
+    const knobs = resolveSelectionKnobs({ explicit, remembered, current: selectionKnobs(before) });
+    if (Object.keys(knobs).length === 0) return;
+    this.providerModelOptions.upsert({ provider: before.provider, model, knobs });
   }
 
   /** The pick a thread holds for its next turn end. @see ThreadRepo */
