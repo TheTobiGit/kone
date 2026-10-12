@@ -1235,16 +1235,25 @@ export class AgentService {
     return Boolean(fork && fork.bootstrapStatus === "pending");
   }
 
+  /** Whether this session will actually perform the fork context's native
+   *  fork on this turn: the fork names this provider, the session has not yet
+   *  taken its own native conversation, and no hand-in is pending. A pending
+   *  hand-in owns the replay and has already invalidated the old provider's
+   *  ids, so the stored native binding must not suppress it. */
+  private nativeForkWillRun(threadId: string, provider: ProviderKind | undefined): boolean {
+    if (!provider) return false;
+    const fork = this.historyStore?.threadForkContext(threadId);
+    if (!fork?.nativeFork || fork.sourceProvider !== provider) return false;
+    if (this.selectionStore?.pendingHandIn(threadId)) return false;
+    return !this.historyStore?.threadMeta(threadId)?.conversationId;
+  }
+
   /** Put a pending hand-in's one-shot replay in front of a turn's prompt — the
    *  same bootstrap `sendTurn` applies, for a row the drain hands over after a
    *  hand-in it just made. */
   private applyHandInBootstrap(threadId: string, input: SendTurnInput): SendTurnInput {
     const provider = this.routing.get(threadId);
-    const forkContext = this.historyStore?.threadForkContext(threadId);
-    const nativeForkMatchesProvider = Boolean(
-      forkContext?.nativeFork && forkContext.sourceProvider === provider,
-    );
-    if (nativeForkMatchesProvider) return input;
+    if (this.nativeForkWillRun(threadId, provider)) return input;
     const bootstrap = sidechatBootstrapForTurn(
       threadId,
       input.input,

@@ -5,6 +5,7 @@ import type {
   BlockSource,
   ChatAttachment,
   ForkContext,
+  HandInRecord,
   SkillReference,
   InteractionMode,
   JobStatus,
@@ -543,6 +544,7 @@ export type CheckpointStore = {
 export type SelectionStore = {
   threadMeta(threadId: string): StoredThreadMeta | null;
   threadForkContext(threadId: string): ForkContext | null;
+  pendingHandIn(threadId: string): HandInRecord | null;
   loadThread(threadId: string): StoredThread | null;
   listQueuedTurns(threadId: string): QueuedTurnRow[];
   setThreadSelection(
