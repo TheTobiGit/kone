@@ -161,12 +161,12 @@ describe("migration 26: InboxUncertainAt", () => {
   });
 });
 
-// Migration 30 lets a sender watch a message and say what it is about. Every
+// Migration 38 lets a sender watch a message and say what it is about. Every
 // row stored before it was sent unwatched, about nothing in particular.
-describe("migration 30: InboxReceipts", () => {
+describe("migration 38: InboxReceipts", () => {
   test("rows stored before it are unwatched and about nothing; about must be JSON; senders are indexed", () => {
     const { db, file } = v21Database();
-    migrate(db, file, { toMigrationInclusive: 29 });
+    migrate(db, file, { toMigrationInclusive: 37 });
     insert(db, { inbox_id: "'msg_old'" });
     migrate(db, file);
     // SAFETY: the projection is one INTEGER and one nullable TEXT column.

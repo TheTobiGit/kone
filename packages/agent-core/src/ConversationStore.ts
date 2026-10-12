@@ -5,6 +5,7 @@ import { AttachmentRowRepo } from "./store/attachmentRows.js";
 import { WorkspaceRepo } from "./store/workspaces.js";
 import { ScratchpadRepo } from "./store/scratchpads.js";
 import { JobRepo, type ClaimedJob, type JobRunOutcome } from "./store/jobs.js";
+import { ScheduleRepo } from "./store/schedules.js";
 import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
 import { ModelPreferenceRepo } from "./store/modelPreferences.js";
@@ -17,17 +18,28 @@ import { AgentGrantRepo } from "./store/agentGrants.js";
 import { CrewBoardRepo } from "./store/crewBoards.js";
 import type { BoardMember, BoardRow, BoardRule, BoardWrite, CrewBoard, CrewBoardStore } from "./crewBoard.js";
 import type { AgentGrant } from "./agentAccess.js";
+import { TurnRollbackRepo } from "./store/turnRollbacks.js";
 import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";
 import { HandInsRepo } from "./store/handIns.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
+import { ThreadPullRequestRepo } from "./store/threadPullRequest.js";
+import { ProjectScriptRepo, type ProjectScriptKind } from "./store/projectScripts.js";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestLinkInput,
+} from "./threadPullRequest.js";
+import type { LinkedPullRequestThread } from "./store/threadPullRequest.js";
+import type { ThreadPullRequestCandidate } from "./store/threadPullRequest.js";
 import { EventIngestRepo } from "./store/events.js";
 import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ContinuationLink, ContractTerms, ForkContext, HandInRecord, InteractionMode, MessageSender, ProfileStats, ProviderKind, RuntimeEvent, SkillReference, StoredThread, StoredThreadMeta, ThreadLineage, TurnStamp } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding, type ThreadAgentRoute } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnEditPatch, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSeal, type TurnSpan, type TurnUsageRecord, type ConversationSearchHit, type ConversationSearchOptions, type CheckpointStore, type JobCreateInput, type JobPatch, type JobRow, type JobRunRow, type ScheduleCreateInput, type SchedulePatch, type ScheduleRow, type ScheduleFireResult } from "./conversationStoreTypes.js";
+import type { RestartCancelledBackgroundWork } from "./restartBackgroundNote.js";
+import { ContinuationRepo, type ContinuationRecord } from "./store/continuations.js";
 import { type IdleWorktree, type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 import type { ContractClosedReason } from "@kone/protocol/contract";
@@ -42,6 +54,7 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   private readonly workspaces: WorkspaceRepo;
   private readonly scratchpads: ScratchpadRepo;
   private readonly jobs: JobRepo;
+  private readonly schedules: ScheduleRepo;
   private readonly stats: StatsRepo;
   private readonly subagentPresets: SubagentPresetRepo;
   private readonly modelPreferences: ModelPreferenceRepo;
@@ -51,11 +64,15 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly agentGrants: AgentGrantRepo;
   private readonly crewBoards: CrewBoardRepo;
+  private readonly continuations: ContinuationRepo;
+  private readonly turnRollbacks: TurnRollbackRepo;
   private readonly lineage: LineageRepo;
   private readonly handIns: HandInsRepo;
   private readonly transcript: TranscriptRepo;
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
+  private readonly threadPullRequests: ThreadPullRequestRepo;
+  private readonly projectScripts: ProjectScriptRepo;
   private readonly events: EventIngestRepo;
   private readonly search: SearchRepo;
 
@@ -64,6 +81,8 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   constructor(userDataDir?: string) {
     this.dbh = new ConversationDb(userDataDir);
     this.threads = new ThreadRepo(this.dbh);
+    this.threadPullRequests = new ThreadPullRequestRepo(this.dbh);
+    this.projectScripts = new ProjectScriptRepo(this.dbh);
     this.lineage = new LineageRepo(this.dbh);
     this.handIns = new HandInsRepo(this.dbh);
     this.events = new EventIngestRepo(this.dbh, {
@@ -88,11 +107,14 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.agentGrants = new AgentGrantRepo(this.dbh);
     this.crewBoards = new CrewBoardRepo(this.dbh);
+    this.continuations = new ContinuationRepo(this.dbh);
+    this.turnRollbacks = new TurnRollbackRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.modelPreferences = new ModelPreferenceRepo(this.dbh);
     this.scratchpads = new ScratchpadRepo(this.dbh);
     this.jobs = new JobRepo(this.dbh);
+    this.schedules = new ScheduleRepo(this.dbh);
     this.gatewayOps = new GatewayOpRepo(this.dbh);
     this.studio = new StudioRepo(this.dbh);
     this.stats = new StatsRepo(this.dbh);
@@ -163,8 +185,89 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   }
 
   /** @see ThreadRepo */
+  setTitleIfAuto(threadId: string, expectedTitle: string | null, title: string): boolean {
+    return this.threads.setTitleIfAuto(threadId, expectedTitle, title);
+  }
+
+  /** @see ThreadRepo */
   renameThread(threadId: string, title: string): boolean {
     return this.threads.renameThread(threadId, title);
+  }
+
+  /** @see ThreadRepo */
+  titleOrigin(threadId: string): "auto" | "manual" {
+    return this.threads.titleOrigin(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  threadPullRequestLink(threadId: string): ThreadPullRequestLink | null {
+    return this.threadPullRequests.link(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  setThreadPullRequestLink(threadId: string, input: ThreadPullRequestLinkInput): boolean {
+    return this.threadPullRequests.setLink(threadId, input);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  clearThreadPullRequestLink(threadId: string): boolean {
+    return this.threadPullRequests.clearLink(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  recordThreadPullRequestChecked(
+    threadId: string,
+    input: { state: ThreadPullRequestLink["state"]; mergedAt: number | null; checkedAt: number },
+  ): void {
+    return this.threadPullRequests.recordChecked(threadId, input);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  recordThreadPullRequestAttempt(threadId: string, checkedAt: number): void {
+    return this.threadPullRequests.recordAttempt(threadId, checkedAt);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  threadIsSettleEligible(threadId: string): boolean {
+    return this.threadPullRequests.threadIsSettleEligible(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  threadPullRequestCandidate(threadId: string): ThreadPullRequestCandidate | null {
+    return this.threadPullRequests.threadPullRequestCandidate(threadId);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  linkedThreadPullRequests(limit: number): LinkedPullRequestThread[] {
+    return this.threadPullRequests.linkedThreads(limit);
+  }
+
+  /** @see ThreadPullRequestRepo */
+  settleThreadPullRequestCandidates(
+    limit: number,
+    notCheckedAfter: number,
+  ): ThreadPullRequestCandidate[] {
+    return this.threadPullRequests.settleCandidates(limit, notCheckedAfter);
+  }
+
+  /** @see ThreadLifecycleRepo */
+  threadIsBusy(threadId: string): boolean {
+    return this.threadLifecycle.threadIsBusy(threadId);
+  }
+
+  /** @see TranscriptRepo */
+  latestUserAuthoredAt(threadId: string): number | null {
+    return this.transcript.latestUserAuthoredAt(threadId);
+  }
+
+  /** @see ProjectScriptRepo */
+  projectScript(projectPath: string, kind: ProjectScriptKind): string | null {
+    return this.projectScripts.script(projectPath, kind);
+  }
+
+  /** @see ProjectScriptRepo */
+  setProjectScript(projectPath: string, kind: ProjectScriptKind, command: string | null): void {
+    return this.projectScripts.setScript(projectPath, kind, command);
   }
 
   /** @see ThreadRepo */
@@ -175,6 +278,21 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see ThreadRepo */
   setDone(threadId: string, done: boolean): void {
     return this.threads.setDone(threadId, done);
+  }
+
+  /** @see ThreadRepo */
+  setLimited(threadId: string, resetAt: number | null): void {
+    return this.threads.setLimited(threadId, resetAt);
+  }
+
+  /** @see ThreadRepo */
+  clearLimited(threadId: string): void {
+    return this.threads.clearLimited(threadId);
+  }
+
+  /** @see ThreadRepo */
+  setSnooze(threadId: string, until: number | null): void {
+    return this.threads.setSnooze(threadId, until);
   }
 
   /** @see ThreadRepo */
@@ -267,8 +385,13 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   }
 
   /** @see QueuedTurnRepo */
-  cancelQueuedTurn(queueId: string): boolean {
-    return this.queuedTurns.cancelQueuedTurn(queueId);
+  editQueuedTurn(threadId: string, queueId: string, patch: QueuedTurnEditPatch): QueuedTurnRow | null {
+    return this.queuedTurns.editQueuedTurn(threadId, queueId, patch);
+  }
+
+  /** @see QueuedTurnRepo */
+  cancelQueuedTurn(queueId: string, threadId?: string): boolean {
+    return this.queuedTurns.cancelQueuedTurn(queueId, threadId);
   }
 
   /** @see QueuedTurnRepo */
@@ -509,6 +632,21 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     return this.turnCheckpoints.recordTurnCheckpoint(input);
   }
 
+  /** @see TurnRollbackRepo */
+  markTurnsRolledBack(threadId: string, fromTurnId: string, at?: number): string[] {
+    return this.turnRollbacks.markTurnsRolledBack(threadId, fromTurnId, at);
+  }
+
+  /** @see TurnRollbackRepo */
+  rolledBackTurnIds(threadId: string): Set<string> {
+    return this.turnRollbacks.rolledBackTurnIds(threadId);
+  }
+
+  /** @see TurnRollbackRepo */
+  isTurnRolledBack(threadId: string, turnId: string): boolean {
+    return this.turnRollbacks.isTurnRolledBack(threadId, turnId);
+  }
+
   /** @see TurnCheckpointRepo */
   getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null {
     return this.turnCheckpoints.getTurnCheckpoint(threadId, turnId);
@@ -589,6 +727,73 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   }
 
   /** @see WorkspaceRepo */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }> {
+    return this.workspaces.allThreadWorkspaces();
+  }
+
+  /** The background work a restart cancelled, captured at the boot seal,
+   *  grouped by thread. Read-once. @see ConversationDb */
+  takeRestartCancelledBackgroundWork(): Map<string, RestartCancelledBackgroundWork[]> {
+    return this.dbh.takeRestartCancelledBackgroundWork();
+  }
+
+  /** @see ContinuationRepo */
+  scheduleContinuation(
+    input: Parameters<ContinuationRepo["schedule"]>[0],
+  ): ContinuationRecord | null {
+    return this.continuations.schedule(input);
+  }
+
+  /** @see ContinuationRepo */
+  claimDueContinuations(now: number, excludedContinuationIds: string[] = []): ContinuationRecord[] {
+    return this.continuations.claimDue(now, excludedContinuationIds);
+  }
+
+  /** @see ContinuationRepo */
+  getContinuation(continuationId: string): ContinuationRecord | null {
+    return this.continuations.getContinuation(continuationId);
+  }
+
+  /** @see ContinuationRepo */
+  failContinuation(continuationId: string, nextDueAt: number): number {
+    return this.continuations.fail(continuationId, nextDueAt);
+  }
+
+  /** @see ContinuationRepo */
+  releaseOrphanedContinuationClaims(): void {
+    this.continuations.releaseOrphanedClaims();
+  }
+
+  /** @see ContinuationRepo */
+  clearContinuationClaim(continuationId: string): void {
+    this.continuations.clearClaim(continuationId);
+  }
+
+  /** @see ContinuationRepo */
+  deleteContinuation(continuationId: string): void {
+    this.continuations.deleteContinuation(continuationId);
+  }
+
+  /** Drop a thread's unclaimed continuations. @see ContinuationRepo */
+  cancelContinuationsForThread(threadId: string): number {
+    return this.continuations.cancelForThread(threadId);
+  }
+
+  /** @see ContinuationRepo */
+  nextContinuationDueAt(excludedContinuationIds: string[] = []): number | null {
+    return this.continuations.nextDueAt(excludedContinuationIds);
+  }
+
+  /** @see ContinuationRepo */
+  listContinuationsForThread(threadId: string): ContinuationRecord[] {
+    return this.continuations.listForThread(threadId);
+  }
+
+  /** @see WorkspaceRepo */
   setThreadWorkspace(
     threadId: string,
     input: { envMode?: ThreadEnvMode; worktreePath?: string | null; requestedBranch?: string | null },
@@ -619,6 +824,11 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see WorkspaceRepo */
   detachWorktree(worktreePath: string, branch: string): void {
     this.workspaces.detachWorktree(worktreePath, branch);
+  }
+
+  /** @see WorkspaceRepo */
+  worktreeHasOtherLiveThreads(worktreePath: string, exceptThreadId: string): boolean {
+    return this.workspaces.worktreeHasOtherLiveThreads(worktreePath, exceptThreadId);
   }
 
   /** @see WorkspaceRepo */
@@ -656,9 +866,19 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     return this.threads.latestUserBlockId(threadId);
   }
 
+  /** @see ThreadRepo */
+  turnUserBlockId(threadId: string, turnId: string): string | null {
+    return this.threads.turnUserBlockId(threadId, turnId);
+  }
+
   /** @see TranscriptRepo */
   loadThread(threadId: string): StoredThread | null {
     return this.transcript.loadThread(threadId);
+  }
+
+  /** @see TranscriptRepo */
+  titleMessages(threadId: string): import("./threadTitleContext.js").ThreadTitleMessage[] {
+    return this.transcript.titleMessages(threadId);
   }
 
   /** @see TranscriptRepo */
@@ -749,6 +969,24 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     return this.handIns.pendingHandIn(threadId);
   }
 
+  /** Record the ids a hand-in's one-shot replay omitted. @see HandInsRepo */
+  recordHandInOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    this.handIns.recordHandInOmittedHistory(threadId, omittedBlockIds, omittedItemIds);
+  }
+
+  /** Record the ids a fork's one-shot replay omitted. @see LineageRepo */
+  recordForkOmittedHistory(
+    threadId: string,
+    omittedBlockIds: readonly string[],
+    omittedItemIds: readonly string[],
+  ): void {
+    this.lineage.recordForkOmittedHistory(threadId, omittedBlockIds, omittedItemIds);
+  }
+
   /** @see LineageRepo */
   writeForkThread(input: Parameters<LineageRepo["writeForkThread"]>[0]): boolean {
     return this.lineage.writeForkThread(input);
@@ -818,6 +1056,11 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see TranscriptRepo */
   turnAssistantText(threadId: string, turnId: string): string | null {
     return this.transcript.turnAssistantText(threadId, turnId);
+  }
+
+  /** @see TranscriptRepo */
+  turnAssistantUuid(threadId: string, turnId: string): string | null {
+    return this.transcript.turnAssistantUuid(threadId, turnId);
   }
 
   /** @see TranscriptRepo */
@@ -910,6 +1153,16 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   deleteJob(jobId: string): boolean {
     return this.jobs.deleteJob(jobId);
   }
+
+  createSchedule(input: ScheduleCreateInput): ScheduleRow | null { return this.schedules.createSchedule(input); }
+  getSchedule(id: string): ScheduleRow | null { return this.schedules.getSchedule(id); }
+  listSchedules(projectPath?: string): ScheduleRow[] { return this.schedules.listSchedules(projectPath); }
+  updateSchedule(id: string, patch: SchedulePatch, at?: number): ScheduleRow | null { return this.schedules.updateSchedule(id, patch, at); }
+  pauseSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.pauseSchedule(id, at); }
+  resumeSchedule(id: string, at?: number): ScheduleRow | null { return this.schedules.resumeSchedule(id, at); }
+  deleteSchedule(id: string): boolean { return this.schedules.deleteSchedule(id); }
+  runNow(id: string, at?: number): { job: JobRow | null; reason?: string } { return this.schedules.runNow(id, at); }
+  fireDueSchedules(now: number, graceMs?: number, deferredScheduleIds?: readonly string[]): ScheduleFireResult { return this.schedules.fireDue(now, graceMs, deferredScheduleIds); }
 
   /** @see JobRepo */
   claimNextJob(input: {

@@ -201,21 +201,49 @@ export class ThreadRepo {
   /** Persist a working title. Used for the first-turn word fallback and the
    *  subsequent agent-generated rename. Deliberately does NOT touch
    *  `updated_at` / `last_activity_at`: a rename is bookkeeping, not
-   *  conversation activity, and must not reshuffle the recents list. */
+   *  conversation activity, and must not reshuffle the recents list. Marks the
+   *  title `auto` — kone wrote it, so a later regeneration may replace it. */
   setTitle(threadId: string, title: string): void {
     const db = this.dbh.handle();
     if (!db) return;
     try {
-      db.prepare(`UPDATE threads SET title = ? WHERE thread_id = ?`).run(title, threadId);
+      db.prepare(`UPDATE threads SET title = ?, title_origin = 'auto' WHERE thread_id = ?`).run(
+        title,
+        threadId,
+      );
     } catch (err) {
       console.error("[conversation-store] setTitle failed:", err);
     }
   }
 
+  /** Persist a regenerated title only while the title it was generated from is
+   *  still in place and still auto-owned. Returns false when a rename — or any
+   *  other write — won the race while the title was being generated, so the
+   *  caller drops its result instead of clobbering the user. The comparison is
+   *  `expectedTitle` rather than "whatever is current", so a second window's
+   *  generated title cannot be overwritten by an older one either. */
+  setTitleIfAuto(threadId: string, expectedTitle: string | null, title: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return false;
+    try {
+      const result = db
+        .prepare(
+          `UPDATE threads SET title = ?, title_origin = 'auto'
+            WHERE thread_id = ? AND title_origin = 'auto' AND title IS ?`,
+        )
+        .run(title, threadId, expectedTitle);
+      return result.changes > 0;
+    } catch (err) {
+      console.error("[conversation-store] setTitleIfAuto failed:", err);
+      return false;
+    }
+  }
+
   /** User-initiated rename (agent:rename-thread). Same title-only semantics as
    *  setTitle — recency ordering is untouched, and an unchanged title is a
-   *  no-op. Returns whether the title actually changed, so the IPC layer only
-   *  broadcasts when something user-visible happened. */
+   *  no-op — but marks the title `manual`, so a later regeneration leaves the
+   *  user's words alone. Returns whether the title actually changed, so the
+   *  IPC layer only broadcasts when something user-visible happened. */
   renameThread(threadId: string, title: string): boolean {
     const db = this.dbh.handle();
     if (!db) return false;
@@ -226,11 +254,29 @@ export class ThreadRepo {
         .get(threadId) as { title: string | null } | undefined;
       if (!current) return false;
       if (current.title === title) return false;
-      db.prepare(`UPDATE threads SET title = ? WHERE thread_id = ?`).run(title, threadId);
+      db.prepare(`UPDATE threads SET title = ?, title_origin = 'manual' WHERE thread_id = ?`).run(
+        title,
+        threadId,
+      );
       return true;
     } catch (err) {
       console.error("[conversation-store] renameThread failed:", err);
       return false;
+    }
+  }
+
+  /** Who owns the current title: `manual` when the user typed it, else `auto`. */  titleOrigin(threadId: string): "auto" | "manual" {
+    const db = this.dbh.handle();
+    if (!db) return "auto";
+    try {
+      // SAFETY: the projection names only the NOT NULL TEXT title_origin column.
+      const row = db
+        .prepare(`SELECT title_origin FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { title_origin: string } | undefined;
+      return row?.title_origin === "manual" ? "manual" : "auto";
+    } catch (err) {
+      console.error("[conversation-store] titleOrigin failed:", err);
+      return "auto";
     }
   }
 
@@ -277,6 +323,51 @@ export class ThreadRepo {
       );
     } catch (err) {
       console.error("[conversation-store] setDone failed:", err);
+    }
+  }
+
+  /** Mark a thread limited by a provider usage limit (v30). `resetAt` is the
+   *  provider's own reset time, or null when it gave none — never guessed. */
+  setLimited(threadId: string, resetAt: number | null): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET limited_at = ?, limit_reset_at = ? WHERE thread_id = ?`).run(
+        Date.now(),
+        resetAt,
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setLimited failed:", err);
+    }
+  }
+
+  /** Clear a thread's limit mark (v30): real new work, or a manual resume. */
+  clearLimited(threadId: string): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE threads SET limited_at = NULL, limit_reset_at = NULL WHERE thread_id = ?`,
+      ).run(threadId);
+    } catch (err) {
+      console.error("[conversation-store] clearLimited failed:", err);
+    }
+  }
+
+  /** Set or clear a thread's snooze (v30). `until` null clears both stamps;
+   *  setting one records when it was set so a wake-early rule can compare. */
+  setSnooze(threadId: string, until: number | null): void {
+    const db = this.dbh.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET snoozed_until = ?, snoozed_at = ? WHERE thread_id = ?`).run(
+        until,
+        until === null ? null : Date.now(),
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setSnooze failed:", err);
     }
   }
 
@@ -481,6 +572,66 @@ export class ThreadRepo {
         `SELECT block_id FROM blocks WHERE thread_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1`,
       ).get(threadId) as { block_id: string } | undefined;
       return row?.block_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The user block that started a turn, or null when the turn has none (a
+   *  continuation or other turn no prompt led into). The checkpoint-restore
+   *  safety refusal names it so the caller can reach the existing
+   *  branch-at-block rewind from a turn id.
+   *
+   *  An ordinary prompt is journaled with no turn id (a queued one is moved
+   *  to the tail when it promotes), so the turn's prompt is the user block
+   *  right before the turn's assistant block. Only inbox deliveries link
+   *  their blocks to the turn they started; a steer is linked too, but lands
+   *  inside the turn, never before it. A block of another turn, or a steer
+   *  into one, between the two means this turn had no prompt of its own.
+   *  A prompt whose queue row still waits (or is held) has started nothing
+   *  yet: journaled while an earlier turn was being accepted, it can sit
+   *  before that turn's assistant block, so it is passed over. A claimed row's
+   *  prompt has already moved to the tail, right before its own turn. */
+  turnUserBlockId(threadId: string, turnId: string): string | null {
+    const db = this.dbh.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: the projection names only the nullable seq of the turn's
+      // first assistant block.
+      const start = this.dbh.prepare(
+        db,
+        `SELECT MIN(seq) AS seq FROM blocks
+          WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'`,
+      ).get(threadId, turnId) as { seq: number | null } | undefined;
+      if (start?.seq == null) return null;
+      // SAFETY: the projection names only the block_id of the first inbox
+      // block the delivery linked to this turn.
+      const linked = this.dbh.prepare(
+        db,
+        `SELECT block_id FROM blocks
+          WHERE thread_id = ? AND turn_id = ? AND role = 'user'
+            AND COALESCE(steered, 0) = 0 AND seq < ?
+          ORDER BY seq ASC LIMIT 1`,
+      ).get(threadId, turnId, start.seq) as { block_id: string } | undefined;
+      if (linked) return linked.block_id;
+      // SAFETY: the projection names block_id, role, turn_id and steered of
+      // the nearest earlier block that is a user block or another turn's.
+      const before = this.dbh.prepare(
+        db,
+        `SELECT block_id, role, turn_id, steered FROM blocks
+          WHERE thread_id = ? AND seq < ?
+            AND ((role = 'user'
+                  AND NOT EXISTS (SELECT 1 FROM queued_turns q
+                                   WHERE q.thread_id = blocks.thread_id
+                                     AND q.user_block_id = blocks.block_id
+                                     AND q.state IN ('queued', 'failed')))
+                 OR (turn_id IS NOT NULL AND turn_id <> ?))
+          ORDER BY seq DESC LIMIT 1`,
+      ).get(threadId, start.seq, turnId) as
+        | { block_id: string; role: string; turn_id: string | null; steered: number | null }
+        | undefined;
+      if (!before || before.role !== "user" || before.turn_id !== null || before.steered) return null;
+      return before.block_id;
     } catch {
       return null;
     }

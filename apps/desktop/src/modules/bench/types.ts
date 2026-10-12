@@ -4,7 +4,19 @@ import type {
   JobRow,
   JobRunRow,
   JobTarget,
+  ScheduleCreateInput as CoreScheduleCreateInput,
+  SchedulePatch,
 } from "@kone/agent-core/conversationStoreTypes.js";
+export type { ScheduleJobTemplate, ScheduleRow } from "@kone/agent-core/conversationStoreTypes.js";
+
+export type ScheduleListInput = { projectPath?: string };
+export type ScheduleIdInput = { scheduleId: string };
+export type ScheduleCreateInput = CoreScheduleCreateInput;
+export type ScheduleUpdateInput = {
+  scheduleId: string;
+  patch: SchedulePatch;
+};
+export type ScheduleRunNowResult = { job: JobRow | null; reason?: string };
 
 /** Which jobs to read. No project means every project's — the bench is one
  *  list across all of them, and a project's own list is the narrower case. */

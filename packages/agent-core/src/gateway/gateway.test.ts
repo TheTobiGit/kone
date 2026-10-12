@@ -548,11 +548,37 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_archive_thread",
       "app_delete_thread",
       "app_rename_thread",
+      // Phase 6 thread-state tools: pin, done/settle, mark-unread, search.
+      "app_set_thread_pinned",
+      "app_set_thread_done",
+      "app_mark_thread_unread",
+      "app_search_threads",
+      // Phase 6 queue controls.
+      "app_list_queued_turns",
+      "app_edit_queued_turn",
+      "app_reorder_queued_turns",
+      "app_cancel_queued_turn",
+      "app_promote_queued_turn",
+      // Phase 7 agent tools: link/unlink a thread's PR.
+      "app_link_thread_pr",
+      "app_unlink_thread_pr",
+      // Phase 4 fork tools: fork a finished run at a turn, and merge a fork's
+      // outcome back into its source.
+      "app_fork_thread",
+      "app_merge_back",
       "app_get_provider_status",
       "app_get_usage_report",
       "app_set_provider_enabled",
       "app_update_provider",
       "app_get_view",
+      // Phase 8 schedule tools belong to the assistant's bench controls.
+      "app_list_schedules",
+      "app_create_schedule",
+      "app_update_schedule",
+      "app_pause_schedule",
+      "app_resume_schedule",
+      "app_run_schedule_now",
+      "app_delete_schedule",
       "code_find_calls",
       "code_preview_rewrite",
       "ask_question",
@@ -1132,7 +1158,7 @@ describe("gateway integration (real store + HTTP)", () => {
       threadControls: {
         stopThread: async (threadId) => {
           stoppedId = threadId;
-          return { stopped: true, wasRunning: true };
+          return { stopped: true, wasRunning: true, interruptRequested: true, confirmedStopped: true };
         },
       },
     });

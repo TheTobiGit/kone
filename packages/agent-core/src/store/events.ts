@@ -312,10 +312,17 @@ export class EventIngestRepo {
               this.dbh.prepare(
                 db,
                 // A turn its session's end settled keeps that outcome; its
-                // late text still lands, through the items.
-                `UPDATE blocks SET state = 'completed', ended_at = ?
+                // late text still lands, through the items. The assistant
+                // uuid (Claude's per-turn fork anchor) is recorded when the
+                // event carries one, left alone otherwise.
+                `UPDATE blocks SET state = 'completed', ended_at = ?,
+                    assistant_uuid = COALESCE(?, assistant_uuid)
                  WHERE block_id = ? AND NOT EXISTS (SELECT 1 FROM turn_seals s WHERE s.thread_id = blocks.thread_id AND s.turn_id = blocks.turn_id)`,
-              ).run(event.at, assistantBlockId(event.threadId, event.turnId));
+              ).run(
+                event.at,
+                event.assistantUuid ?? null,
+                assistantBlockId(event.threadId, event.turnId),
+              );
               // A side chat's first turn settling consumes the one-shot
               // `<sidechat_context>` bootstrap — the imported transcript has
               // reached the model, so it is never injected again.

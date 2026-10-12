@@ -39,7 +39,7 @@ describe("migration 16: ThreadContract", () => {
   });
 });
 
-describe("migration 29: ContractClosed", () => {
+describe("migration 37: ContractClosed", () => {
   test("every contract on disk reads as open, and the reason takes only delivered or withdrawn", () => {
     const { db, file } = v14Database();
     migrate(db, file);

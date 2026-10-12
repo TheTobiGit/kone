@@ -50,6 +50,50 @@ export class WorkspaceRepo {
     }
   }
 
+  /** Every thread's directory claim, one entry per row (archived threads
+   *  included: a restore must not clobber a put-away thread's checkout, and a
+   *  thread with no worktree claims its project's shared checkout). The
+   *  checkpoint-restore isolation guard reads this to find overlaps.
+   *
+   *  Throws when the store cannot be read, matching `threadWorkspace`: an
+   *  unreadable store is not a license to restore into whatever happens to be
+   *  on disk, so callers fail closed. */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }> {
+    const db = this.dbh.handle();
+    if (!db) throw new Error("Thread workspaces are unavailable: the conversation store could not be opened.");
+    try {
+      // SAFETY: the projection names only the five nullable/required columns
+      // the workspace state is built from.
+      const rows = db
+        .prepare(
+          `SELECT thread_id, project_path, env_mode, worktree_path, requested_branch FROM threads`,
+        )
+        .all() as Array<{
+        thread_id: string;
+        project_path: string;
+        env_mode: string | null;
+        worktree_path: string | null;
+        requested_branch: string | null;
+      }>;
+      return rows.map((row) => ({
+        threadId: row.thread_id,
+        projectPath: row.project_path,
+        workspace: {
+          envMode: threadEnvMode(row.env_mode),
+          worktreePath: row.worktree_path ?? null,
+          requestedBranch: row.requested_branch?.trim() ? row.requested_branch : null,
+        },
+      }));
+    } catch (err) {
+      console.error("[conversation-store] allThreadWorkspaces failed:", err);
+      throw err instanceof Error ? err : new Error("Thread workspaces are unavailable.");
+    }
+  }
+
   /** Record what a thread asked for, and where it ended up.
    *
    *  Each field is written only when given, so materializing a worktree does not
@@ -131,6 +175,33 @@ export class WorkspaceRepo {
     } catch (err) {
       console.error("[conversation-store] subtreeWorkspaces failed:", err);
       return [];
+    }
+  }
+
+  /** Whether any thread besides `exceptThreadId` still uses this worktree and
+   *  is not settled. A shared worktree is not one thread's to clean up when it
+   *  settles: another live thread may be running a shell there. Archived
+   *  threads don't count, and a thread whose done mark is newer than its last
+   *  activity is settled. An unreadable store answers true — fail closed, so
+   *  an unknown never closes someone else's shell. */
+  worktreeHasOtherLiveThreads(worktreePath: string, exceptThreadId: string): boolean {
+    const db = this.dbh.handle();
+    if (!db) return true;
+    try {
+      // SAFETY: the projection is the constant 1 under the alias asked for.
+      const row = db
+        .prepare(
+          `SELECT 1 AS one FROM threads
+            WHERE worktree_path = ? AND thread_id <> ?
+              AND archived_at IS NULL
+              AND NOT (done_at IS NOT NULL AND done_at > 0 AND done_at >= last_activity_at)
+            LIMIT 1`,
+        )
+        .get(worktreePath, exceptThreadId) as { one: number } | undefined;
+      return row !== null && row !== undefined;
+    } catch (err) {
+      console.error("[conversation-store] worktreeHasOtherLiveThreads failed:", err);
+      return true;
     }
   }
 

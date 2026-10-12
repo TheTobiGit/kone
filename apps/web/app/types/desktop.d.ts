@@ -8,6 +8,48 @@ import type { ContractTerms } from "@kone/protocol/contract";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
 
+/** A pull request linked to a thread (mirrors agent-core ThreadPullRequestLink). */
+export type LinkedThreadPullRequest = {
+  repository: string;
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed" | "unknown";
+  checkedAt: number | null;
+  mergedAt: number | null;
+};
+
+/** The staged worktree-setup view (mirrors agent-core worktreeSetup). */
+export type WorktreeSetupStageId = "fetch" | "checkout" | "submodules" | "setup-script" | "agent";
+export type WorktreeSetupStageStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "skipped"
+  | "warning"
+  | "failed";
+export type WorktreeSetupStage = {
+  id: WorktreeSetupStageId;
+  status: WorktreeSetupStageStatus;
+  startedAt: number | null;
+  endedAt: number | null;
+  percent: number | null;
+  detail: string | null;
+  tail: string[];
+};
+export type WorktreeSetupSnapshot = {
+  threadId: string;
+  phase: "running" | "done" | "failed" | "cancelled";
+  startedAt: number;
+  endedAt: number | null;
+  branch: string | null;
+  baseRef: string | null;
+  worktreePath: string | null;
+  setupScript: { command: string } | null;
+  stages: WorktreeSetupStage[];
+  error: string | null;
+  sequence: number;
+};
+
 export type DirEntry = {
   name: string;
   path: string;
@@ -754,6 +796,9 @@ export type ProviderConfig = {
   binaryPath?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
+   *  this provider (default 16000; clamped 1024–64000). */
+  handoffTokenCap?: number;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
@@ -1350,6 +1395,37 @@ export type ForkThreadAtBlockResult = {
   status: "created" | "exists";
 };
 
+// ── conversation-only rewind (mirror packages/agent-core/src/types.ts) ─────
+// Continue a finished turn in a new thread without touching files: the
+// alternative a file-restore refusal offers. The input is exactly the rewind
+// target (source thread, turn, prompt block or null) plus the renderer-minted
+// creation ids. No session starts and nothing is sent — the new thread waits
+// for the user's first message.
+
+export type RewindConversationOnlyInput = {
+  /** Caller-chosen idempotency key. Same requestId replayed with the same
+   *  threadId resolves "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new thread. */
+  threadId: string;
+  /** The thread to rewind. */
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, or null when the turn has none. */
+  userBlockId: string | null;
+};
+
+export type RewindConversationOnlyResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** `"created"` = the rewind was written; `"exists"` = a thread with this id
+   *  was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
 
 // ── tool approvals (mirror packages/agent-core/src/types.ts) ──────────────────
@@ -1845,6 +1921,10 @@ export type RuntimeEvent =
       attemptCount: number;
       retryAt?: number;
       error?: string;
+      /** Present on an in-place edit: the row's new words. */
+      input?: string;
+      attachments?: ChatAttachment[];
+      skills?: SkillReference[];
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -2995,6 +3075,11 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** The provider's handoff history cap in tokens. */
+  getHandoffBudget: (provider: ProviderKind) => Promise<number>;
+  /** Set one provider's handoff history cap; merges and resolves to the
+   *  updated full map. */
+  setHandoffBudget: (provider: ProviderKind, cap: number) => Promise<ProviderSettingsMap>;
   /** How each provider's CLI is installed, and whether it's behind. Passing
    *  `checkLatest: false` keeps it entirely local (no registry call). */
   maintenance: (options?: {
@@ -3034,6 +3119,44 @@ export type KoneAgentApi = {
    *  Does not touch recency ordering; the title.updated event follows on the
    *  runtime stream. */
   renameThread: (threadId: string, title: string) => Promise<boolean>;
+  /** Regenerate a thread's title from its whole conversation. Refuses a
+   *  manually-named title: resolves `{ ok: false, reason: "manual_title" }`. */
+  regenerateThreadTitle: (
+    threadId: string,
+  ) => Promise<
+    | { ok: true; title: string; changed: boolean }
+    | {
+        ok: false;
+        reason: "unknown" | "manual_title" | "no-workdir" | "empty" | "generation_failed";
+      }
+  >;
+  /** A pull request linked to a thread. `repository` is "owner/repo" (may be
+   *  empty when unknown). Durable; the settle sweep reads it on merge. */
+  linkThreadPullRequest: (
+    threadId: string,
+    link: {
+      repository?: string | null;
+      number?: number | null;
+      url: string;
+      state?: "open" | "merged" | "closed" | "unknown" | null;
+      checkedAt?: number | null;
+      mergedAt?: number | null;
+    },
+  ) => Promise<
+    | { ok: true; link: LinkedThreadPullRequest }
+    | { ok: false; reason: "invalid" | "unknown" }
+  >;
+  unlinkThreadPullRequest: (threadId: string) => Promise<boolean>;
+  threadPullRequestLink: (threadId: string) => Promise<LinkedThreadPullRequest | null>;
+  /** Per-project setup / settle scripts, stored against the project path. */
+  getProjectScript: (projectPath: string, kind: "setup" | "settle") => Promise<string | null>;
+  setProjectScript: (
+    projectPath: string,
+    kind: "setup" | "settle",
+    command: string | null,
+  ) => Promise<string | null>;
+  /** The live worktree-setup snapshot for a thread (null when none). */
+  worktreeSetup: (threadId: string) => Promise<WorktreeSetupSnapshot | null>;
   /** Native save dialog for a thread export — the main process owns the
    *  dialog, the renderer only suggests a file name. A dismissal resolves
    *  `{ canceled: true }`, distinct from the file outcome below. */
@@ -3083,6 +3206,12 @@ export type KoneAgentApi = {
    *  resolves "exists". The fork's first turn is dispatched before this
    *  resolves, so the caller can open the fork onto a live turn. */
   forkThreadAtBlock: (input: ForkThreadAtBlockInput) => Promise<ForkThreadAtBlockResult>;
+  /** Conversation-only rewind: continue a finished turn in a new thread
+   *  without touching files. No session starts and nothing is sent — the new
+   *  thread waits for the user's first message. */
+  rewindConversationOnly: (
+    input: RewindConversationOnlyInput,
+  ) => Promise<RewindConversationOnlyResult>;
   interrupt: (threadId: string) => Promise<void>;
   /** The user's Stop: interrupt, then settle the work the thread handed off. */
   stop?: (threadId: string) => Promise<void>;
@@ -3122,6 +3251,22 @@ export type KoneAgentApi = {
    *  when no such row exists. */
   cancelQueuedTurn: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  /** Edit a waiting follow-up in place; its position is kept. The new words
+   *  arrive on turn.queued-updated. Resolves false for a promoting/settled row. */
+  editQueuedTurn: (
+    threadId: string,
+    queueId: string,
+    patch: {
+      input: string;
+      attachments?: QueuedTurnRow["attachments"];
+      skills?: QueuedTurnRow["skills"];
+      model?: string | null;
+      mode?: string | null;
+      effort?: string | null;
+      serviceTier?: string | null;
+      contextWindow?: string | null;
+    },
+  ) => Promise<boolean>;
   /** Deliver one queued row now, with the settings it was queued with: steered
    *  into the live turn, started when idle, or moved to the front of the queue
    *  when the provider can't steer. Rejects with the row back where it was;
@@ -3412,6 +3557,50 @@ export type KoneBenchApi = {
   requeue: (input: BenchJobIdInput) => Promise<JobRow | null>;
   reorder: (input: BenchReorderInput) => Promise<boolean>;
   delete: (input: BenchJobIdInput) => Promise<boolean>;
+};
+
+export type ScheduleJobTemplate = {
+  title: string;
+  body: string;
+  target: JobTarget;
+  attachments?: ChatAttachment[];
+};
+export type ScheduleRow = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+  paused: boolean;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastJobId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ScheduleListInput = { projectPath?: string };
+export type ScheduleIdInput = { scheduleId: string };
+export type ScheduleCreateInput = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+};
+export type ScheduleUpdateInput = {
+  scheduleId: string;
+  patch: { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
+};
+export type ScheduleRunNowResult = { job: JobRow | null; reason?: string };
+export type KoneSchedulesApi = {
+  list: (input: ScheduleListInput) => Promise<ScheduleRow[]>;
+  get: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  create: (input: ScheduleCreateInput) => Promise<ScheduleRow | null>;
+  update: (input: ScheduleUpdateInput) => Promise<ScheduleRow | null>;
+  pause: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  resume: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
+  runNow: (input: ScheduleIdInput) => Promise<ScheduleRunNowResult>;
+  delete: (input: ScheduleIdInput) => Promise<boolean>;
 };
 
 // ── jev, the router ─────────────────────────────────────────────────────────
@@ -3991,6 +4180,7 @@ export type KoneDesktopApi = {
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
   bench: KoneBenchApi;
+  schedules: KoneSchedulesApi;
   jev: KoneJevApi;
   studio: KoneStudioApi;
   roster: KoneRosterApi;

@@ -281,11 +281,27 @@ export async function addWorktree(
 
   await withRepoMutation(root, async () => {
     try {
-      await git(
-        root,
-        ["worktree", "add", "-b", branch, target, baseSha],
-        { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
-      );
+      if (input.onStderr) {
+        // `git worktree add` only prints checkout progress when stderr is a
+        // tty; piping it would hide the percentage. Create the worktree with
+        // no checkout, then materialize it with `checkout --progress`, which
+        // emits `Updating files: N%` even through a pipe.
+        await git(
+          root,
+          ["worktree", "add", "--no-checkout", "-b", branch, target, baseSha],
+          { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
+        );
+        await git(target, ["checkout", "--progress", branch], {
+          timeoutMs: WORKTREE_EXEC_TIMEOUT_MS,
+          onStderr: input.onStderr,
+        });
+      } else {
+        await git(
+          root,
+          ["worktree", "add", "-b", branch, target, baseSha],
+          { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
+        );
+      }
     } catch (error) {
       // `worktree add` can leave the branch behind when the checkout is what
       // failed. Nothing here existed before this call — the pre-checks proved
@@ -320,7 +336,7 @@ export async function addWorktree(
  */
 export async function attachWorktree(
   dir: string,
-  input: { path: string; branch: string },
+  input: { path: string; branch: string; onStderr?: (chunk: string) => void },
 ): Promise<GitWorktree> {
   const branch = input.branch.trim();
   if (!branch) {
@@ -355,11 +371,23 @@ export async function attachWorktree(
 
   await withRepoMutation(root, async () => {
     try {
-      await git(
-        root,
-        ["worktree", "add", target, branch],
-        { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
-      );
+      if (input.onStderr) {
+        await git(
+          root,
+          ["worktree", "add", "--no-checkout", target, branch],
+          { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
+        );
+        await git(target, ["checkout", "--progress", branch], {
+          timeoutMs: WORKTREE_EXEC_TIMEOUT_MS,
+          onStderr: input.onStderr,
+        });
+      } else {
+        await git(
+          root,
+          ["worktree", "add", target, branch],
+          { timeoutMs: WORKTREE_EXEC_TIMEOUT_MS },
+        );
+      }
     } catch (error) {
       if (error instanceof GitError) throw classifyWorktreeError(error);
       throw error;

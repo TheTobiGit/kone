@@ -66,6 +66,8 @@ import {
   type AppThreadsRunner,
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
+import { createAppSnoozeTools } from "./tools/snooze.js";
+import { createAppForkTools } from "./tools/appForks.js";
 import type { ThreadGateKind } from "../types.js";
 import type { PendingInteraction } from "../eventSubscriptions.js";
 import {
@@ -77,6 +79,7 @@ import {
   type AppViewToolOptions,
   type TerminalScreenReading,
 } from "./tools/appView.js";
+import { createAppScheduleTools } from "./tools/appSchedules.js";
 import { createPageTools, type PagePreviewer, type PageToolOptions } from "./tools/page.js";
 import { getAttachmentStore } from "../AttachmentStore.js";
 import { createViewPreamble } from "./viewPreamble.js";
@@ -99,11 +102,14 @@ export type { AppTypographyToolOptions, TypographyReading } from "./tools/appTyp
 export { createAppProjectTools } from "./tools/appProjects.js";
 export type { ProjectRosterEntry } from "./tools/appProjects.js";
 export { createAppThreadTools } from "./tools/appThreads.js";
+export { createAppForkTools } from "./tools/appForks.js";
 export type { AppThreadsRunner } from "./tools/appThreads.js";
 export { createAppProviderTools } from "./tools/appProviders.js";
 export type { AppProvidersToolOptions } from "./tools/appProviders.js";
 export { createAppViewTools } from "./tools/appView.js";
 export type { AppViewToolOptions, TerminalScreenReading } from "./tools/appView.js";
+export { createAppScheduleTools } from "./tools/appSchedules.js";
+export type { AppSchedulesStore, AppSchedulesToolOptions, ScheduleJobTemplate, ScheduleRow } from "./tools/appSchedules.js";
 export { createPageTools } from "./tools/page.js";
 export type { PageConsoleMessage, PagePreview, PagePreviewer } from "./tools/page.js";
 export const GATEWAY_SERVER_VERSION = "0.1.0";
@@ -157,6 +163,11 @@ export interface GatewayInput {
    *  agent_list reads to tell a sender what a message would do. */
   threadRuntime?: (threadId: string) => ThreadRuntime | null;
   providerSteers?: (provider: ProviderKind) => boolean;
+  /** Whether a provider can fork natively (its adapter's supportsFork) — what
+   *  app_fork_thread reads to choose the native fork or the portable import. */
+  supportsFork?: (provider: ProviderKind) => boolean;
+  /** Authoritative service busy state, including accepted sends before turn.started. */
+  isThreadBusy?: (threadId: string) => boolean;
   /** What a thread is parked on, if anything — what the thread list reads to
    *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
    *  from one that is merely idle. Absent, no thread reads as parked, which
@@ -197,6 +208,10 @@ export interface GatewayInput {
    *  git state behind each one is not mirrored: the tools read it at call time,
    *  because a branch and a diff go stale faster than a push can keep up. */
   readProjects?: () => readonly ProjectRosterEntry[] | null;
+  /** Re-arm scheduled work after a gateway tool changes a schedule. */
+  scheduleChanged?: () => void;
+  /** Wake the bench after a schedule tool files an immediate job. */
+  drainProject?: (projectPath: string) => void;
   /** Starts and drives threads — the same dispatcher the renderer's own "new
    *  thread" path forwards to, so a thread the assistant opens is an ordinary
    *  thread on the project's board. Absent, `app_start_thread` refuses rather
@@ -213,8 +228,25 @@ export interface GatewayInput {
    *  the store adapter in degraded form. */
   threadControls?: Pick<
     AppThreadsToolOptions,
-    "stopThread" | "archiveThread" | "deleteThread" | "renameThread"
+    | "stopThread"
+    | "archiveThread"
+    | "deleteThread"
+    | "renameThread"
+    | "setThreadDone"
+    | "listQueuedTurns"
+    | "editQueuedTurn"
+    | "reorderQueuedTurns"
+    | "cancelQueuedTurn"
+    | "promoteQueuedTurn"
   >;
+  /** Snooze and manual-resume controls for `app_snooze_thread` /
+   *  `app_resume_thread`. Service-backed in production; absent, those tools are
+   *  not registered. */
+  snoozeControls?: {
+    setSnooze(threadId: string, until: number | null): void;
+    snoozeUntilReset(threadId: string): number | null;
+    resumeLimited(threadId: string): Promise<void>;
+  };
   /** Provider status, quota, usage, and maintenance backing the app_* provider
    *  tools. Passed straight through to `createAppProviderTools` — the gateway
    *  adds no per-field mapping of its own, so the option names stay in one
@@ -272,6 +304,10 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const appProjectOptions: AppProjectsToolOptions = { store: input.store };
   if (input.readProjects) appProjectOptions.readProjects = input.readProjects;
   if (input.readAgents) appProjectOptions.readAgents = input.readAgents;
+  const appScheduleOptions = { store: input.store };
+  if (input.readProjects) Object.assign(appScheduleOptions, { readProjects: input.readProjects });
+  if (input.scheduleChanged) Object.assign(appScheduleOptions, { onScheduleChanged: input.scheduleChanged });
+  if (input.drainProject) Object.assign(appScheduleOptions, { drainProject: input.drainProject });
   // The threads module reads the same project mirror (a project is named the
   // same way everywhere) and, unlike the rest of the family, also writes: its
   // runner is the dispatcher, absent in a gateway built without one.
@@ -330,8 +366,13 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppTypographyTools(appTypographyOptions),
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
+    ...(input.snoozeControls
+      ? createAppSnoozeTools({ store: input.store, ...input.snoozeControls })
+      : []),
+    ...createAppForkTools({ emit: input.emit, supportsFork: input.supportsFork, isThreadBusy: input.isThreadBusy }),
     ...createAppProviderTools(appProviderOptions),
     ...createAppViewTools(appViewOptions),
+    ...createAppScheduleTools(appScheduleOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
 
   // The ast search stays target "all" (visible from worker and assistant
