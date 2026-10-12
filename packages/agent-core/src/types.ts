@@ -656,6 +656,11 @@ export type HandInInput = {
   /** Who the thread carries on with. Provider is required; model and effort
    *  fall back to the target provider's defaults when absent. */
   target: HandInTarget;
+  /** Keep the thread's durable follow-ups across the swap. Set by a switch the
+   *  queue drain delivers between two rows; the immediate, user-initiated
+   *  hand-in leaves it off, so its teardown still cancels queued follow-ups as
+   *  it always has. */
+  preserveQueue?: boolean;
 };
 
 export type HandInResult = {

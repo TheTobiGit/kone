@@ -115,9 +115,10 @@ export async function handInThread(
 
   // Dispose first. A stop that throws must not leave a retargeted thread
   // behind a still-running old session, so nothing is written until the old
-  // hands have let go. The queue survives: the hand-in replaces the session,
-  // not the follow-ups waiting on it.
-  await sessions.stopSession(input.threadId, { preserveQueue: true });
+  // hands have let go. The queue survives only when the caller asks: a switch
+  // the drain delivers must keep the rows waiting behind it, while the
+  // immediate user hand-in keeps the teardown it has always had.
+  await sessions.stopSession(input.threadId, { preserveQueue: input.preserveQueue === true });
 
   const write: Parameters<typeof store.writeHandIn>[0] = {
     threadId: input.threadId,
