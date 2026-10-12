@@ -166,6 +166,8 @@ type CodexSession = {
    *  id — the `threadId` every one of its notifications names. A settled run
    *  stays here so its late traffic is recognized and dropped. */
   subagentRuns: Map<string, CodexSubagentRun>;
+  /** Descendants reported by a known child remain owned by that nearest run. */
+  childAncestorRuns: Map<string, CodexSubagentRun>;
   /** The turn each child conversation is running right now, child or deeper.
    *  Stopping the parent has to reach these too. */
   childLiveTurns: Map<string, string>;
@@ -507,7 +509,8 @@ type CodexRequestScope = { turnId?: string; subagentToolUseId?: string };
 
 function requestScope(session: CodexSession, params: CodexJsonValue | null | undefined): CodexRequestScope {
   if (!isFromSubagent(session, params)) return { turnId: readString(params, "turnId") ?? session.activeTurnId };
-  const run = session.subagentRuns.get(readString(params, "threadId") ?? "");
+  const childThreadId = readString(params, "threadId") ?? "";
+  const run = session.subagentRuns.get(childThreadId) ?? session.childAncestorRuns.get(childThreadId);
   if (!run) return { turnId: session.activeTurnId };
   return { turnId: run.turnId, subagentToolUseId: run.snapshot.toolUseId };
 }
@@ -999,6 +1002,7 @@ export class CodexAdapter implements ProviderAdapter {
       pendingUserInputs: new Map(),
       pendingApprovals: new Map(),
       subagentRuns: new Map(),
+      childAncestorRuns: new Map(),
       childLiveTurns: new Map(),
     };
     this.wireNotifications(session);
@@ -1642,19 +1646,21 @@ export class CodexAdapter implements ProviderAdapter {
     if (questions.length === 0) return { answers: {} };
 
     const requestId = randomUUID();
-    const { turnId } = requestScope(session, params);
+    const { turnId, subagentToolUseId } = requestScope(session, params);
     const answers = await new Promise<UserInputAnswers>((resolve) => {
       session.pendingUserInputs.set(requestId, { questions, resolve });
-      this.emit({
+      const requested: Extract<RuntimeEvent, { type: "user-input.requested" }> = {
         ...this.base(session),
         type: "user-input.requested",
         requestId,
         turnId,
         questions,
-      });
+      };
+      if (subagentToolUseId) requested.subagentToolUseId = subagentToolUseId;
+      this.emit(requested);
     });
 
-    this.emit({ ...this.base(session), type: "user-input.resolved", requestId, answers });
+    this.emit({ ...this.base(session), type: "user-input.resolved", requestId, answers, subagentToolUseId });
 
     // Codex keys answers by question id, each a { answers: string[] }.
     const reply: Record<string, { answers: string[] }> = {};
@@ -1704,7 +1710,7 @@ export class CodexAdapter implements ProviderAdapter {
       session.childLiveTurns.delete(childThreadId);
       return;
     }
-    const run = session.subagentRuns.get(childThreadId);
+    const run = session.subagentRuns.get(childThreadId) ?? session.childAncestorRuns.get(childThreadId);
     if (!run || run.settled) return;
     if (method === "item/started") this.handleItemLifecycle(session, params, "started", run);
     else if (method === "item/completed") this.handleItemLifecycle(session, params, "completed", run);
@@ -1742,11 +1748,21 @@ export class CodexAdapter implements ProviderAdapter {
     // Spawn bookkeeping is only this session's own; a child's spawns (its own
     // children) are not nested, and its notes to the parent aren't transcript.
     if (itemType === "sub agent activity") {
-      if (!run && turnId) this.handleSubagentActivity(session, raw, itemId, turnId);
+      if (run) {
+        const descendantId = readString(raw, "agentThreadId");
+        if (descendantId) session.childAncestorRuns.set(descendantId, run);
+      } else if (turnId) this.handleSubagentActivity(session, raw, itemId, turnId);
       return;
     }
     if (!run && turnId && itemType === "collab agent tool call" && readString(raw, "tool") === "spawnAgent") {
       this.handleSpawnCall(session, raw, itemId, turnId, lifecycle);
+      return;
+    }
+    if (run && itemType === "collab agent tool call" && readString(raw, "tool") === "spawnAgent") {
+      const receivers = Array.isArray(raw.receiverThreadIds)
+        ? raw.receiverThreadIds.filter((id): id is string => Boolean(id) && !(id instanceof Object)).map(String)
+        : [];
+      for (const descendantId of receivers) session.childAncestorRuns.set(descendantId, run);
       return;
     }
 

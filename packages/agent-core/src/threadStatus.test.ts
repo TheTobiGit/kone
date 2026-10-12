@@ -54,6 +54,17 @@ describe("projectThreadStatus", () => {
     ).toBe("idle");
   });
 
+  it("a settled parent waits for a live child whose report will wake it", () => {
+    expect(
+      projectThreadStatus({
+        running: false,
+        lastState: "completed",
+        hasLiveSession: true,
+        waitingForChildren: true,
+      }),
+    ).toBe("waiting-for-children");
+  });
+
   it("no assistant history reads starting while live, idle otherwise", () => {
     expect(projectThreadStatus({ running: false, lastState: null, hasLiveSession: true })).toBe(
       "starting",

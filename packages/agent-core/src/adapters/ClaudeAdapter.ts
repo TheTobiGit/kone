@@ -512,6 +512,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       main: newScope(),
       subagentRuns: new Map(),
       settledSubagents: new Map(),
+      subagentToolUseOwners: new Map(),
+      nestedTaskOwners: new Map(),
+      retiredSubagentToolUseIds: new Set(),
       pendingSubagentSteers: new Map(),
       pendingSubagentStops: new Set(),
       pendingWake: [],
@@ -681,15 +684,20 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     const requestId = randomUUID();
+    const subagentToolUseId = options.agentID
+      ? this.runByTaskId(session, options.agentID)?.snapshot.toolUseId
+      : undefined;
     const answers = await new Promise<UserInputAnswers>((resolve) => {
       session.pendingUserInputs.set(requestId, { questions, resolve });
-      this.emit({
+      const requested: Extract<RuntimeEvent, { type: "user-input.requested" }> = {
         ...this.base(session),
         type: "user-input.requested",
         requestId,
         turnId: session.activeTurnId,
         questions,
-      });
+      };
+      if (subagentToolUseId) requested.subagentToolUseId = subagentToolUseId;
+      this.emit(requested);
       // Unblock if the turn aborts mid-question so the query can settle.
       const signal = options?.signal;
       if (signal) {
@@ -1088,6 +1096,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // A settled run's tail (messages already in flight when it stopped) is
       // dropped rather than reopening a run the UI has already closed out.
       if (session.settledSubagents.has(runToolUseId)) return;
+      if (session.retiredSubagentToolUseIds.has(runToolUseId)) return;
       const run = this.ensureSubagentRun(session, runToolUseId);
       switch (message.type) {
         case "stream_event":
@@ -1382,6 +1391,9 @@ export class ClaudeAdapter implements ProviderAdapter {
 
       if (blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use") {
         const toolUseId = readString(block, "id");
+        if (toolUseId && scope.subagentToolUseId) {
+          session.subagentToolUseOwners.set(toolUseId, scope.subagentToolUseId);
+        }
         // Dedupe on the tool-use id: the same message can be replayed.
         if (toolUseId && scope.toolItems.has(toolUseId)) return;
         const toolName = readString(block, "name");
@@ -1625,6 +1637,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       message.subtype === "success" && !message.is_error ? "completed" : "stopped",
       { keepBackground: true },
     );
+    this.pruneSettledSubagentAliases(session);
     session.activeTurnId = undefined;
     if (!turnId) {
       // A result with no local turn is never a turn this adapter started: the
@@ -1759,6 +1772,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       // Bash and workflow tasks through this channel, which kone doesn't nest.
       const toolUseId = readString(message, "tool_use_id");
       if (!toolUseId) return;
+      const ancestorToolUseId = session.subagentToolUseOwners.get(toolUseId);
+      if (ancestorToolUseId) {
+        const owner = session.subagentRuns.get(ancestorToolUseId);
+        if (owner) {
+          session.nestedTaskOwners.set(taskId, ancestorToolUseId);
+        }
+        return;
+      }
       const run = this.ensureSubagentRun(session, toolUseId);
       run.snapshot.taskId = taskId;
       run.snapshot.status = "running";
@@ -1781,6 +1802,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
       return;
     }
+
+    if (session.nestedTaskOwners.has(taskId)) return;
 
     const run = this.runByTaskId(session, taskId, readString(message, "tool_use_id"));
     if (!run) return;
@@ -1855,7 +1878,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (toolUseId) {
       const direct = session.subagentRuns.get(toolUseId);
       if (direct) return direct;
+      const ownerToolUseId = session.subagentToolUseOwners.get(toolUseId);
+      const owner = ownerToolUseId ? session.subagentRuns.get(ownerToolUseId) : undefined;
+      if (owner) return owner;
     }
+    const ownerToolUseId = session.nestedTaskOwners.get(taskId);
+    const nestedOwner = ownerToolUseId ? session.subagentRuns.get(ownerToolUseId) : undefined;
+    if (nestedOwner) return nestedOwner;
     for (const run of session.subagentRuns.values()) {
       if (run.snapshot.taskId === taskId) return run;
     }
@@ -1878,6 +1907,15 @@ export class ClaudeAdapter implements ProviderAdapter {
     run.snapshot.endedAt = endedAt;
     session.settledSubagents.set(toolUseId, status);
     session.subagentRuns.delete(toolUseId);
+    session.retiredSubagentToolUseIds.add(toolUseId);
+    for (const [alias, owner] of session.subagentToolUseOwners) {
+      if (owner !== toolUseId) continue;
+      session.retiredSubagentToolUseIds.add(alias);
+      session.subagentToolUseOwners.delete(alias);
+    }
+    for (const [taskId, owner] of session.nestedTaskOwners) {
+      if (owner === toolUseId) session.nestedTaskOwners.delete(taskId);
+    }
     session.pendingSubagentSteers.delete(toolUseId);
     session.pendingSubagentStops.delete(toolUseId);
     this.emitSubagent(session, run, "subagent.completed");
@@ -1959,12 +1997,27 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  map is emptied — a run in it is one whose events are all in the past. */
   private forgetSettledSubagents(session: ClaudeSession): void {
     const live = new Set(session.subagentRuns.keys());
+    this.pruneSettledSubagentAliases(session);
     session.settledSubagents.clear();
     for (const toolUseId of session.pendingSubagentSteers.keys()) {
       if (!live.has(toolUseId)) session.pendingSubagentSteers.delete(toolUseId);
     }
     for (const toolUseId of session.pendingSubagentStops) {
       if (!live.has(toolUseId)) session.pendingSubagentStops.delete(toolUseId);
+    }
+  }
+
+  /** Drop owner aliases for settled runs while retaining aliases belonging to
+   *  background runs that can still report after their parent turn ends. */
+  private pruneSettledSubagentAliases(session: ClaudeSession): void {
+    const live = new Set(session.subagentRuns.keys());
+    for (const [alias, owner] of session.subagentToolUseOwners) {
+      if (live.has(owner)) continue;
+      session.retiredSubagentToolUseIds.add(alias);
+      session.subagentToolUseOwners.delete(alias);
+    }
+    for (const [taskId, owner] of session.nestedTaskOwners) {
+      if (!live.has(owner)) session.nestedTaskOwners.delete(taskId);
     }
   }
 

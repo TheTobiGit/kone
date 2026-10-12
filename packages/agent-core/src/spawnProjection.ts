@@ -133,6 +133,8 @@ export interface ThreadStatusInput {
   /** Set while the thread is waiting out a provider usage limit. A real state
    *  distinct from a plain failure. */
   limited?: boolean;
+  /** A spawned child is still running and its eventual report will return here. */
+  waitingForChildren?: boolean;
 }
 
 /** The full status input: the shared facts plus what "settled and quiet"
@@ -180,6 +182,9 @@ export function projectThreadStatus(input: ThreadStatusInput): ThreadStatus {
   // or running, and above a plain failure.
   if (!input.gate && !input.running && input.lastState !== "running" && input.limited) {
     return "limited";
+  }
+  if (status === "idle" && input.lastState === "completed" && input.waitingForChildren) {
+    return "waiting-for-children";
   }
   // SAFETY: terminalKind "idle" answers "starting", "idle" or a shared rung —
   // never "completed" or "stillborn" — so narrowing to ThreadStatus holds.
