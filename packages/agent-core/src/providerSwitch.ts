@@ -1,7 +1,6 @@
-import { replayForTurn, handInFraming } from "./sidechat.js";
+import { replayForTurn, handInFraming, type HandoffBudgetOptions } from "./sidechat.js";
 import { sameProviderModel, type TurnSelection } from "./selection.js";
 import { resolveProviderSendAvailability } from "./providerHealth.js";
-import type { HandoffBudgetOptions } from "./contextBudget.js";
 import type { QueuedTurnRow } from "./conversationStoreTypes.js";
 import type { HandInTarget, InteractionMode, ProviderKind, ProviderStatus, StoredThread, StoredThreadMeta } from "./types.js";
 
