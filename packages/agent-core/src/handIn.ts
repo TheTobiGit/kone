@@ -71,7 +71,10 @@ function handInEligibilityForMeta(
  *  so the operation can be exercised without a live provider layer.
  *  AgentService satisfies it structurally. */
 export interface HandInSessions {
-  stopSession(threadId: string): Promise<void>;
+  /** `preserveQueue` keeps the thread's durable follow-ups across the swap:
+   *  a hand-in replaces the session, not the user's queued messages, and the
+   *  delivery path hands over between two of them. */
+  stopSession(threadId: string, options?: { preserveQueue?: boolean }): Promise<void>;
   startSession(input: SessionStartInput): Promise<Session>;
 }
 
@@ -112,8 +115,9 @@ export async function handInThread(
 
   // Dispose first. A stop that throws must not leave a retargeted thread
   // behind a still-running old session, so nothing is written until the old
-  // hands have let go.
-  await sessions.stopSession(input.threadId);
+  // hands have let go. The queue survives: the hand-in replaces the session,
+  // not the follow-ups waiting on it.
+  await sessions.stopSession(input.threadId, { preserveQueue: true });
 
   const write: Parameters<typeof store.writeHandIn>[0] = {
     threadId: input.threadId,
