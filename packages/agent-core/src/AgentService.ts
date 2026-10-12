@@ -361,6 +361,11 @@ export type AgentServiceOptions = {
   adapters?: (emit: EmitEvent) => ProviderAdapter[];
 };
 
+type WorktreeMoveReservation = {
+  reason?: "busy" | "restoring";
+  release: () => void;
+};
+
 /** Where the caller is sent for a conversation-only rewind when a file restore
  *  is refused: the existing branch-at-block path, named by the turn that was
  *  rolled back and the user block that started it. */
@@ -568,6 +573,11 @@ export class AgentService {
    *  without this a burst of sends walks straight past the busy-intercept and
    *  starts concurrent turns on one session. See `isBusy`. */
   private readonly dispatchingTurns = new Set<string>();
+  /** Threads reserved for a workspace handoff, mapped to the provider the move
+   *  is rebinding. The provider is carried here because the reservation spans
+   *  the stop and restart: between them `routing` is gone, and a send that
+   *  arrives must still be accepted durably against the right provider. */
+  private readonly worktreeMoveHolds = new Map<string, ProviderKind>();
   /** Steers in flight into a live turn, per thread. A steer can outlive the
    *  turn it aimed at and fall back to a fresh one, so a restore treats a
    *  thread mid-steer as busy (see `steering`). */
@@ -1175,7 +1185,17 @@ export class AgentService {
     return undefined;
   }
 
-  async startSession(input: SessionStartInput): Promise<Session> {
+  async startSession(
+    input: SessionStartInput,
+    options?: { forWorktreeMove?: boolean },
+  ): Promise<Session> {
+    // A workspace handoff owns the thread from reservation through rebind. A
+    // competing start would race its replacement and could publish a session in
+    // the old checkout after the move reported success; only the move's own
+    // replacement start (forWorktreeMove) passes here.
+    if (this.worktreeMoveHolds.has(input.threadId) && options?.forWorktreeMove !== true) {
+      throw new Error(`thread ${input.threadId} is being moved into a worktree; the session was not started`);
+    }
     this.startingSessions.add(input.threadId);
     const starting = this.startSessionNow(input);
     this.startingSessionPromises.set(input.threadId, starting);
@@ -1273,6 +1293,19 @@ export class AgentService {
     // anything reaches an adapter (adapters don't know the queue exists).
     const { dispatchMode, ...base } = input;
     const next = sidechatInput ? { ...base, input: sidechatInput } : base;
+    // A workspace handoff owns the thread from reservation through rebind, and
+    // spans the window where the session is down (between stop and restart).
+    // The reservation — not the live routing — is what accepts a send there:
+    // enqueue it durably and it promotes exactly once, after the new session is
+    // bound. This must come before the no-provider branch, which would
+    // otherwise refuse a send arriving while the replacement session starts.
+    const moveProvider = this.worktreeMoveHolds.get(input.threadId);
+    if (moveProvider !== undefined) {
+      if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
+      const model = this.validModelFor(moveProvider, next.model);
+      const effort = this.validEffortFor(moveProvider, model, next.effort);
+      return this.enqueueTurn({ ...next, model, effort }, dispatchMode ?? "queue", moveProvider);
+    }
     if (!provider) return this.adapterForThread(input.threadId).sendTurn(this.withViewBlock(next));
     const model = this.validModelFor(provider, next.model);
     const effort = this.validEffortFor(provider, model, next.effort);
@@ -1285,7 +1318,7 @@ export class AgentService {
     // A checkpoint restore rewriting this thread's checkout holds it the same
     // way: the row promotes when the restore lets go (runRevert kicks the
     // slot), against the restored tree.
-    if (this.isCompacting(input.threadId) || this.restoreHolds(input.threadId)) {
+    if (this.admissionRefusal(input.threadId) !== null) {
       if (options?.noQueue) return { threadId: input.threadId, turnId: "", held: true };
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
@@ -1356,6 +1389,77 @@ export class AgentService {
     } catch {
       return false;
     }
+  }
+
+  /** Why no turn may be admitted on this thread right now, or null when one
+   *  may. A compaction, a checkpoint restore and a workspace handoff each own
+   *  the thread's one turn slot; every admission path routes through this so a
+   *  turn can never start against a session that is being rewritten or torn
+   *  down. */
+  private admissionRefusal(threadId: string): "compacting" | "restoring" | "moving" | null {
+    if (this.isCompacting(threadId)) return "compacting";
+    if (this.restoreHolds(threadId)) return "restoring";
+    if (this.worktreeMoveHolds.has(threadId)) return "moving";
+    return null;
+  }
+
+  /** Whether some owner other than a workspace handoff itself holds this
+   *  thread's one turn slot: a live or dispatching turn, a session still
+   *  connecting, a steer round trip already admitted, an in-flight compaction,
+   *  or a checkpoint restore. `isBusy` alone misses the asynchronous owners —
+   *  a connecting start, a preparing steer, a native compaction — which can
+   *  still publish or dispatch into the session after the busy marker clears,
+   *  so move admission and the move's final handoff both read this. */
+  private threadOwned(threadId: string): boolean {
+    return (
+      this.isBusy(threadId) ||
+      this.startingSessions.has(threadId) ||
+      this.steersInFlight.has(threadId) ||
+      this.isCompacting(threadId) ||
+      this.restoreHolds(threadId)
+    );
+  }
+
+  /** Atomically reserves an idle thread for a workspace handoff. Sends arriving
+   *  during the reservation enter the normal durable queue until it is released;
+   *  the provider is carried so a send during the stop-to-restart gap still
+   *  finds somewhere to be enqueued against. */
+  holdThreadForWorktreeMove(threadId: string, provider: ProviderKind): WorktreeMoveReservation {
+    if (this.restoreHolds(threadId)) return { reason: "restoring", release: () => {} };
+    if (this.threadOwned(threadId) || this.worktreeMoveHolds.has(threadId)) {
+      return { reason: "busy", release: () => {} };
+    }
+    this.worktreeMoveHolds.set(threadId, provider);
+    let released = false;
+    return { release: () => {
+      if (released) return;
+      released = true;
+      this.worktreeMoveHolds.delete(threadId);
+      // An earlier drain may have observed the hold and be unwinding now.
+      // Retry after its delivery slot has had a chance to clear.
+      setTimeout(() => this.promoteQueuedTurns(threadId), 0).unref?.();
+    } };
+  }
+
+  /** Whether a workspace handoff must not stop the session yet: some owner
+   *  other than the handoff itself still holds the thread. Read again at the
+   *  move's final handoff, after provisioning, so an owner admitted while the
+   *  worktree was being built cannot be walked past. */
+  isThreadMoveBlocked(threadId: string): boolean {
+    return this.threadOwned(threadId);
+  }
+
+  /** Whether a workspace handoff has reserved this thread. A turn must not
+   *  start anywhere while it holds, and a continuation due during it waits. */
+  isThreadMoveHeld(threadId: string): boolean {
+    return this.worktreeMoveHolds.has(threadId);
+  }
+
+  /** Whether a destructive restore holds `dir` itself — used to catch a restore
+   *  claimed on a destination directory that is not yet the thread's stored
+   *  workspace (a move's freshly built worktree during teardown). */
+  isDirRestoreHeld(dir: string): boolean {
+    return isRestoreActive(dir);
   }
 
   /** Whether this thread has a live provider session — the only threads a wake
@@ -1668,6 +1772,12 @@ export class AgentService {
     // earlier; this catches any path that does not.
     if (this.restoreHolds(threadId)) {
       throw new Error(`a checkpoint restore is running in ${this.sessionInputs.get(threadId)?.cwd}; the turn was not sent`);
+    }
+    // The final gate before any adapter: a workspace handoff may have reserved
+    // the thread after this path's own check (Send now, a drain, an inbox
+    // turn), and no turn may start into the session it is tearing down.
+    if (this.worktreeMoveHolds.has(threadId)) {
+      throw new Error(`thread ${threadId} is being moved into a worktree; the turn was not sent`);
     }
     this.dispatchingTurns.add(threadId);
     try {
@@ -2112,7 +2222,7 @@ export class AgentService {
    *  Never throws: the whole stop — a start still in flight plus the teardown —
    *  is bounded by one deadline, an unresolved start counts as not confirmed,
    *  and a teardown failure is reported rather than escaping. */
-  async stopThread(threadId: string): Promise<ThreadStopResult> {
+  async stopThread(threadId: string, options?: { preserveQueue?: boolean }): Promise<ThreadStopResult> {
     const starting = this.startingSessionPromises.get(threadId);
     // A session still connecting counts as one that exists: the start is real,
     // and a caller reading this to narrate the stop must not call it idle.
@@ -2143,7 +2253,7 @@ export class AgentService {
     let detail: string | undefined;
     try {
       const remaining = Math.max(0, deadline - Date.now());
-      await withTimeout(this.stopSession(threadId), remaining, "session teardown");
+      await withTimeout(this.stopSession(threadId, options), remaining, "session teardown");
     } catch (err) {
       detail = err instanceof Error ? err.message : String(err);
       console.warn(`[agent] stop teardown for ${threadId} did not confirm:`, err);
@@ -2220,6 +2330,12 @@ export class AgentService {
       // A command compaction is a turn, and no turn starts under a restore.
       if (this.restoreHolds(threadId)) {
         throw new Error("Context compaction is unavailable while a checkpoint restore is running.");
+      }
+      // A workspace handoff owns the thread until its rebind lands: the
+      // session is being torn down and rebuilt, and a compaction run against
+      // it would enter a provider the move is about to replace.
+      if (this.worktreeMoveHolds.has(threadId)) {
+        throw new Error("Context compaction is unavailable while the thread is being moved into a worktree.");
       }
       const adapter = this.adapter(provider);
       const capability = adapter.capabilities.compaction;
@@ -2380,7 +2496,7 @@ export class AgentService {
     });
   }
 
-  async stopSession(threadId: string): Promise<void> {
+  async stopSession(threadId: string, options?: { preserveQueue?: boolean }): Promise<void> {
     this.userQuestions.cancel(threadId);
     // A session torn down before its first turn consumes any pending startup
     // interrupt with it.
@@ -2390,8 +2506,11 @@ export class AgentService {
     this.endAsked.add(threadId);
     // Cancel queued follow-ups BEFORE the teardown: a row must never promote
     // into a session that is being torn down (a drain racing the stop could
-    // otherwise claim one and hand it to a dead session).
-    this.cancelQueuedForStop(threadId, provider);
+    // otherwise claim one and hand it to a dead session). A workspace handoff
+    // is not a user Stop: the rows accepted during the move belong to the
+    // thread still and are replayed once, into the replacement session, so it
+    // preserves them.
+    if (options?.preserveQueue !== true) this.cancelQueuedForStop(threadId, provider);
     this.bumpSessionGeneration(threadId);
     await this.adapter(provider).stopSession(threadId);
     this.routing.delete(threadId);
@@ -2935,6 +3054,15 @@ export class AgentService {
     if (this.isCompacting(threadId)) {
       throw new Error("Wait for context compaction to finish before sending another message.");
     }
+    // A workspace handoff owns the thread: a nudge waits durably as a steer row
+    // rather than reaching a session that is being torn down or rebuilt. A
+    // liveOnly steer has no running turn to settle its words against, so it
+    // refuses instead.
+    const moveProvider = this.worktreeMoveHolds.get(threadId);
+    if (moveProvider !== undefined) {
+      if (options?.liveOnly) throw new Error(`No running turn on ${threadId} can take this steer yet.`);
+      return this.enqueueTurn(input, "steer", moveProvider);
+    }
     const liveTurnId = this.activeTurns.get(threadId);
     if (liveTurnId) {
       const adapter = this.adapterForThread(threadId);
@@ -3039,6 +3167,12 @@ export class AgentService {
     }
     if (this.restoreHolds(threadId)) {
       throw new Error("Wait for the checkpoint restore to finish before sending another message.");
+    }
+    // A workspace handoff owns the thread: Send now must not claim a row and
+    // dispatch it into a session the move is tearing down. The row is left
+    // where it was and promotes once the move rebinds the session.
+    if (this.worktreeMoveHolds.has(threadId)) {
+      throw new Error("Wait for the worktree move to finish before sending this message.");
     }
     if (!this.routing.has(threadId)) throw new Error(`No agent session for thread ${threadId}`);
     // Stopped already, though the store has yet to write it.
@@ -3775,8 +3909,11 @@ export class AgentService {
       }
     } catch (err) {
       console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
-      // Not under a restore: the turn would start on a tree being reset.
-      if (this.restoreHolds(input.threadId)) throw err;
+      // Not under a restore or a workspace handoff: either owns the session,
+      // and dispatching straight to the adapter would start a turn into a tree
+      // being reset or a session being torn down and rebuilt. Refuse instead;
+      // the caller keeps the words.
+      if (this.restoreHolds(input.threadId) || this.worktreeMoveHolds.has(input.threadId)) throw err;
       const adapter = this.adapterForThread(input.threadId);
       return this.steering(input.threadId, () => adapter.sendTurn(this.withViewBlock(input)));
     }
@@ -3883,7 +4020,7 @@ export class AgentService {
       // A compaction in flight owns the session until its boundary lands, and
       // so does the queue drain — a row must never promote into a session
       // mid-compaction and read a half-compacted context.
-      if (this.isBusy(threadId) || this.isCompacting(threadId) || !this.routing.has(threadId)) return;
+      if (this.isBusy(threadId) || this.isCompacting(threadId) || this.worktreeMoveHolds.has(threadId) || !this.routing.has(threadId)) return;
       // A restore holding the checkout: the drain runs again when it lets go.
       if (this.restoreHolds(threadId)) return;
       // Waiting out a provider usage limit: queued follow-ups hold here, and

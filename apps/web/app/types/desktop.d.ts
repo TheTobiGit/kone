@@ -3162,6 +3162,14 @@ export type KoneAgentApi = {
   ) => Promise<string | null>;
   /** The live worktree-setup snapshot for a thread (null when none). */
   worktreeSetup: (threadId: string) => Promise<WorktreeSetupSnapshot | null>;
+  /** Move a local thread into a worktree of its own. */
+  moveThreadToWorktree: (
+    threadId: string,
+    branch?: string,
+  ) => Promise<
+    | { ok: true; worktreePath: string }
+    | { ok: false; reason: "unknown" | "busy" | "restoring" | "stop-unconfirmed" | "failed"; detail?: string }
+  >;
   /** Native save dialog for a thread export — the main process owns the
    *  dialog, the renderer only suggests a file name. A dismissal resolves
    *  `{ canceled: true }`, distinct from the file outcome below. */

@@ -1433,6 +1433,26 @@ describe("app_start_thread", () => {
   });
 });
 
+describe("app_move_thread_to_worktree", () => {
+  it("returns a refusal as readable error text to the assistant", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    const runner: AppThreadsRunner = {
+      ...makeRunner(calls),
+      moveThreadToWorktree: async () => ({ ok: false, reason: "busy" }),
+    };
+    const result = await tools({ runner }).call(
+      makeCtx(),
+      "app_move_thread_to_worktree",
+      { threadId: "t-newest" },
+      "assistant",
+    );
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("busy");
+    expect(result.structuredContent).toBeUndefined();
+  });
+});
+
 describe("the thread tools as the gateway serves them", () => {
   it("reads turn-lessly and gates only the start and the send on a live turn", () => {
     const entries = createAppThreadTools({ store: makeStore() });
@@ -1456,7 +1476,7 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_cancel_queued_turn")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_promote_queued_turn")?.requiresActiveTurn).toBe(false);
 
-    expect(entries).toHaveLength(21);
+    expect(entries).toHaveLength(22);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");

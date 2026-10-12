@@ -98,7 +98,7 @@ export class ContinuationCancelled extends Error {
 
 /** The silent turn a usage-limit resume sends once the provider's reset lands
  *  (or a manual resume). App-authored, so it is never journaled. */
-const LIMIT_RESUME_PROMPT = "Continue where you left off — the usage limit has reset.";
+export const LIMIT_RESUME_PROMPT = "Continue where you left off — the usage limit has reset.";
 
 export class ThreadTurnHeldError extends Error {
   constructor(readonly threadId: string) {
@@ -110,6 +110,23 @@ export class ThreadTurnHeldError extends Error {
 /** Where a starting thread runs, and whether that place is its own worktree.
  *  `worktreePath` is null for a thread sharing the project's checkout. */
 type ThreadPlace = { dir: string; worktreePath: string | null };
+
+/** A worktree the dispatcher just built, with the ownership facts a caller
+ *  needs to adopt it or give it back: the branch it is on, and whether kone
+ *  invented that branch or merely attached one that already existed. */
+type BuiltThreadWorktree = {
+  path: string;
+  branch: string;
+  generatedBranch: boolean;
+  attachedExisting: boolean;
+};
+
+/** Outcome of moving a thread into its own worktree. `busy` refuses a thread
+ *  with a turn in flight; a thread already in a worktree answers `ok` with the
+ *  directory it has. */
+export type MoveThreadToWorktreeResult =
+  | { ok: true; worktreePath: string }
+  | { ok: false; reason: "unknown" | "busy" | "restoring" | "stop-unconfirmed" | "failed"; detail?: string };
 
 /** The sentence worth showing from a failure, or `fallback` when it carries
  *  none worth reading. */
@@ -165,6 +182,9 @@ export interface StartThreadOptions {
    *  broadcast choke point (ipc.ts), so consumers correlate the child's
    *  traffic to the parent turn without a store walk (F10). */
   parentTurnId?: string;
+  /** This start is a workspace handoff's own replacement session, the only
+   *  start the move reservation admits while it holds the thread. */
+  forWorktreeMove?: boolean;
 }
 
 export interface StartThreadTurnOptions {
@@ -238,7 +258,7 @@ export interface ThreadDispatcher {
    *  the session from them; a fork passes false so the new thread starts fresh
    *  instead of continuing the source's provider conversation. No-op when a
    *  session is already live. */
-  ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void>;
+  ensureThreadSession(threadId: string, options: { resume: boolean; forWorktreeMove?: boolean }): Promise<void>;
   /** Fresh snapshot of one thread for the quit-resume filter: liveness from the
    *  service, settled-state facts per assistant turn from the store. */
   readQuitResumeSnapshot(threadId: string): QuitResumeThreadSnapshot;
@@ -314,6 +334,14 @@ export interface ThreadDispatcher {
    *  tracked. A renderer attaching mid-setup reads this first, then follows the
    *  thread.worktree.setup events. */
   worktreeSetupSnapshot(threadId: string): WorktreeSetupSnapshot | null;
+  /** Move a thread that runs in the shared checkout into a worktree of its
+   *  own: build it, then rebind the thread's session to the new directory and
+   *  restart it, resuming the provider conversation. Refused while a turn is
+   *  running — the session cannot change directory mid-turn. */
+  moveThreadToWorktree(
+    threadId: string,
+    options?: { branch?: string },
+  ): Promise<MoveThreadToWorktreeResult>;
 }
 
 /** The transcript block an inbox message is written as. */
@@ -468,6 +496,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     { threadId: string; state: ContinuationDeferral }
   >();
 
+  // The move in flight per thread, so a repeated request joins it instead of
+  // building a second worktree or publishing a second binding.
+  private readonly worktreeMoves = new Map<string, Promise<MoveThreadToWorktreeResult>>();
+
   // Spawned children: threadId → the parent turn that spawned it, registered
   // at dispatch (startThread/sendThreadTurn parentTurnId). The IPC broadcast
   // choke point reads it to stamp every event the child emits with its
@@ -562,6 +594,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     try {
       session = await this.service.startSession(
         workingDir === input.cwd ? input : { ...input, cwd: workingDir },
+        options?.forWorktreeMove === true ? { forWorktreeMove: true } : undefined,
       );
     } catch (error) {
       // Closes the stepper's last step when one is open. A thread that never
@@ -676,7 +709,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     return { ...input, agent: { name: threadAgentName(this.store, input.threadId), guest: true } };
   }
 
-  async ensureThreadSession(threadId: string, options: { resume: boolean }): Promise<void> {
+  async ensureThreadSession(
+    threadId: string,
+    options: { resume: boolean; forWorktreeMove?: boolean },
+  ): Promise<void> {
     if (this.service.hasLiveSession(threadId)) return;
     const meta = this.store.threadMeta(threadId);
     if (!meta) throw new Error(`Unknown thread ${threadId}`);
@@ -704,7 +740,143 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
     if (meta.selection?.mode) start.mode = meta.selection.mode;
     if (meta.selection?.effort) start.effort = meta.selection.effort;
-    await this.startThread(start);
+    await this.startThread(start, options.forWorktreeMove ? { forWorktreeMove: true } : undefined);
+  }
+
+  /** Move a local thread into a worktree of its own. */
+  async moveThreadToWorktree(
+    threadId: string,
+    options?: { branch?: string },
+  ): Promise<MoveThreadToWorktreeResult> {
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) return { ok: false, reason: "unknown" };
+    // One move at a time per thread: a repeated request joins the one in
+    // flight rather than racing it, so two calls can never build two worktrees
+    // or publish two bindings. Once it settles, answer from what the thread
+    // actually is — a genuine repeat is then an idempotent success, and a
+    // failed move runs the real path again instead of reading a stored path as
+    // completion.
+    const joined = this.worktreeMoves.get(threadId);
+    if (joined) await joined.catch(() => undefined);
+    const recorded = this.store.threadWorkspace(threadId);
+    if (recorded && threadWorkspaceState(recorded) === "worktree-ready" && recorded.worktreePath) {
+      return { ok: true, worktreePath: recorded.worktreePath };
+    }
+    const move = this.runMoveThreadToWorktree(threadId, options);
+    this.worktreeMoves.set(threadId, move);
+    try {
+      return await move;
+    } finally {
+      if (this.worktreeMoves.get(threadId) === move) this.worktreeMoves.delete(threadId);
+    }
+  }
+
+  /** Publish a completed move: the thread's workspace becomes worktree-ready
+   *  at the built path. Only called after the old session's stop is confirmed,
+   *  so the binding never reads as moved before the move has really moved. */
+  private publishThreadWorkspace(threadId: string, built: BuiltThreadWorktree): void {
+    this.store.setThreadWorkspace(threadId, { worktreePath: built.path, requestedBranch: null });
+  }
+
+  /** The body of a move, after the repeat-join above. */
+  private async runMoveThreadToWorktree(
+    threadId: string,
+    options?: { branch?: string },
+  ): Promise<MoveThreadToWorktreeResult> {
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) return { ok: false, reason: "unknown" };
+    // A session cannot change directory mid-turn, and a half-built worktree
+    // under a running turn would be worse than a refusal.
+    const reservation = this.service.holdThreadForWorktreeMove(threadId, meta.provider);
+    if (reservation.reason) return { ok: false, reason: reservation.reason };
+
+    const previousWorkspace = this.store.threadWorkspace(threadId);
+    const input: SessionStartInput = {
+      threadId,
+      provider: meta.provider,
+      cwd: meta.projectPath,
+    };
+    if (meta.model) input.model = meta.model;
+    const restorePreviousBinding = (): void => this.store.setThreadWorkspace(threadId, {
+      envMode: previousWorkspace?.envMode ?? "local",
+      worktreePath: previousWorkspace?.worktreePath ?? null,
+      requestedBranch: previousWorkspace?.requestedBranch ?? null,
+    });
+    let built: BuiltThreadWorktree | null = null;
+    let published = false;
+    // A refusal after the build must not orphan the worktree. A worktree this
+    // build created is given back; one it only adopted (a branch that already
+    // had a worktree) is left in place — its history is not ours to discard,
+    // and a retry re-adopts it by branch. A branch kone named goes with the
+    // worktree it created; a branch the user named is kept.
+    const giveBack = async (candidate: BuiltThreadWorktree, detail: string): Promise<void> => {
+      if (!candidate.attachedExisting) {
+        await this.discardWorkspace(meta.projectPath, candidate.path, {
+          branch: candidate.branch,
+          reclaimGeneratedBranch: candidate.generatedBranch,
+        });
+      }
+      this.worktreeSetup.finish(threadId, "failed", detail);
+    };
+    try {
+      // Built without publishing the binding: the destination must not read as
+      // the thread's workspace until the stop is confirmed and the session is
+      // being rebound to it.
+      const candidate = await this.buildThreadWorktree(
+        input,
+        { branch: options?.branch },
+        { publishBinding: false },
+      );
+      built = candidate;
+      // The reservation queues new sends; recheck the turn, restore and other
+      // ownership after provisioning, because a restore may have started, or
+      // an asynchronous owner the busy read misses may have been admitted,
+      // while git built.
+      if (this.service.isRestoreHoldingThread(threadId) || this.service.isDirRestoreHeld(candidate.path)) {
+        await giveBack(candidate, "A checkpoint restore started while the worktree was being prepared.");
+        return { ok: false, reason: "restoring" };
+      }
+      if (this.service.isThreadMoveBlocked(threadId)) {
+        await giveBack(candidate, "The thread was still owned when the worktree was ready.");
+        return { ok: false, reason: "busy" };
+      }
+      // The old session was started in the project checkout. Stop it and start
+      // a fresh one in the worktree, resuming the provider conversation so the
+      // move keeps its context. The stop comes before the binding is published.
+      if (this.service.hasLiveSession(threadId)) {
+        const stopped = await this.service.stopThread(threadId, { preserveQueue: true });
+        if (!stopped.confirmedStopped) {
+          await giveBack(candidate, "The previous session could not be stopped.");
+          return { ok: false, reason: "stop-unconfirmed", detail: stopped.detail };
+        }
+        // A restore may have claimed the destination while the old session was
+        // stopping: refuse before publishing, so a restore never finds the
+        // thread pointing at a directory it is rewriting.
+        if (this.service.isDirRestoreHeld(candidate.path)) {
+          await giveBack(candidate, "A checkpoint restore started in the new worktree.");
+          return { ok: false, reason: "restoring" };
+        }
+      }
+      this.publishThreadWorkspace(threadId, candidate);
+      published = true;
+      // The replacement start is the one start the reservation admits.
+      await this.ensureThreadSession(threadId, { resume: true, forWorktreeMove: true });
+      return { ok: true, worktreePath: candidate.path };
+    } catch (error) {
+      // A failure after the binding was published — the replacement session
+      // refused to start — must put it back, then reclaim the worktree, so a
+      // stored path alone is never mistaken for a completed move.
+      if (published) restorePreviousBinding();
+      if (built) await giveBack(built, "The session could not be restarted in the worktree.");
+      const normalised = error instanceof Error ? error : new Error(String(error));
+      return {
+        ok: false,
+        reason: "failed",
+        detail: messageOf(normalised, "Could not move the thread into a worktree."),
+      };
+    } finally {
+      reservation.release();
+    }
   }
 
   readQuitResumeSnapshot(threadId: string): QuitResumeThreadSnapshot {
@@ -891,7 +1063,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       return { resumed, skipped };
     }
     for (const row of due) {
-      if (this.service.isRestoreHoldingThread(row.threadId)) {
+      // A checkpoint restore or a workspace handoff owns this thread: a
+      // continuation due meanwhile is held, not enqueued and then cancelled
+      // with the rest of the queue. The claim is cleared, no attempt is
+      // burned, and it runs once the hold lets go.
+      if (this.service.isRestoreHoldingThread(row.threadId) || this.service.isThreadMoveHeld(row.threadId)) {
         this.store.clearContinuationClaim(row.continuationId);
         this.deferContinuation(row);
         continue;
@@ -934,9 +1110,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         this.continuationDeferrals.delete(row.continuationId);
         resumed.push(row.threadId);
       } catch (err) {
-        // Session adoption can race a restore that begins after the preflight
-        // check. Its admission refusal is still a hold, not a failed attempt.
-        if (this.service.isRestoreHoldingThread(row.threadId)) {
+        // Session adoption can race a restore or a move that begins after the
+        // preflight check. Its admission refusal is still a hold, not a failed
+        // attempt.
+        if (this.service.isRestoreHoldingThread(row.threadId) || this.service.isThreadMoveHeld(row.threadId)) {
           this.store.clearContinuationClaim(row.continuationId);
           this.deferContinuation(row);
           continue;
@@ -1010,7 +1187,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     });
     if (update.shouldWarn) {
       console.warn(
-        `[agent] continuation for ${row.threadId} has remained restore-held for more than five minutes; keeping it scheduled`,
+        `[agent] continuation for ${row.threadId} has been held by a restore or a worktree move for more than five minutes; keeping it scheduled`,
       );
     }
   }
@@ -1635,25 +1812,31 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         branch: branch ?? undefined,
         base: wanted.base,
       });
-      return { dir: built, worktreePath: built };
+      return { dir: built.path, worktreePath: built.path };
     }
 
     if (state === "worktree-pending") {
       if (!this.provisionWorkspace) throw new Error("Worktrees aren't available here.");
       const storedBranch = recorded.requestedBranch?.trim() ? recorded.requestedBranch.trim() : undefined;
       const built = await this.buildThreadWorktree(input, { branch: storedBranch });
-      return { dir: built, worktreePath: built };
+      return { dir: built.path, worktreePath: built.path };
     }
     return { dir: workingDirFor(input.cwd), worktreePath: null };
   }
 
   /** Provision the worktree, wire its progress reports, and record the outcome.
    *  Shared by the explicit request and the stored-pending rebuild so the two
-   *  can never disagree about ordering, cancellation, or what the row says. */
+   *  can never disagree about ordering, cancellation, or what the row says.
+   *
+   *  The binding is published by default, so a thread that asked for a worktree
+   *  is recorded as owning it the moment git reports the path. A move passes
+   *  `publishBinding: false`: it owns that write itself, and must not make the
+   *  thread read as moved until its old session is stopped. */
   private async buildThreadWorktree(
     input: SessionStartInput,
     requestBranch: { branch?: string; base?: string },
-  ): Promise<string> {
+    options?: { publishBinding?: boolean },
+  ): Promise<BuiltThreadWorktree> {
     if (!this.provisionWorkspace) throw new Error("Worktrees aren't available here.");
     this.cancelledWorkspaces.delete(input.threadId);
     const step = (
@@ -1790,13 +1973,20 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
 
     step("link", "running");
-    this.store.setThreadWorkspace(input.threadId, { worktreePath: made.path, requestedBranch: null });
+    if (options?.publishBinding !== false) {
+      this.store.setThreadWorkspace(input.threadId, { worktreePath: made.path, requestedBranch: null });
+    }
     step("link", "done");
     step("start", "running");
     // The agent stage is completed in startThread, once the session has
     // actually started (or failed) — not here, where the provider has not been
     // asked yet.
-    return made.path;
+    return {
+      path: made.path,
+      branch: made.branch,
+      generatedBranch: made.generatedBranch === true,
+      attachedExisting: made.attachedExisting === true,
+    };
   }
 
   /** One step of building a thread's worktree, on its way to every renderer.
