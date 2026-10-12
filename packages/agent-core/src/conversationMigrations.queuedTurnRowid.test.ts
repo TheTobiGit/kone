@@ -24,11 +24,18 @@ test("migration 27 preserves queue rows, rowids and indexes, and never reuses a 
     INSERT INTO queued_turns (rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input, created_at, updated_at)
       VALUES (17, NULL, 't', 'ub-legacy', 'queue', 'cancelled', 'legacy prompt', 100, 200);
   `);
-  const before = db.prepare("SELECT rowid, * FROM queued_turns ORDER BY rowid").all();
+  // The columns that existed at this rung: a later migration may add columns
+  // legitimately, so this compares the rows a rebuild must carry across, not
+  // the whole projection.
+  const columns =
+    "rowid, queue_id, thread_id, user_block_id, dispatch_mode, state, input, attachments_json, " +
+    "skills_json, model, mode, effort, service_tier, context_window, attempt_count, created_at, " +
+    "updated_at, promoted_at, sort_key";
+  const before = db.prepare(`SELECT ${columns} FROM queued_turns ORDER BY rowid`).all();
   // SAFETY: the projection selects the TEXT index name and non-null SQL definition.
   const indexes = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queued_turns' AND sql IS NOT NULL ORDER BY name").all() as Array<{ name: string; sql: string }>;
   migrate(db, file);
-  expect(db.prepare("SELECT rowid, * FROM queued_turns ORDER BY rowid").all()).toEqual(before);
+  expect(db.prepare(`SELECT ${columns} FROM queued_turns ORDER BY rowid`).all()).toEqual(before);
   // SAFETY: the same index projection is read after rebuilding the table.
   const rebuiltIndexes = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'queued_turns' AND sql IS NOT NULL ORDER BY name").all() as Array<{ name: string; sql: string }>;
   const normalizeIndexes = (rows: Array<{ name: string; sql: string }>) => rows.map((row) => ({ name: row.name, sql: row.sql.replace(/\s+/g, " ") }));

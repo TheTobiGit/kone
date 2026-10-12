@@ -4,6 +4,8 @@ import { decodeChunkArray, decodeStoredText } from "./store/itemTextChunks.js";
 import type {
   BlockSource,
   ChatAttachment,
+  ForkContext,
+  HandInRecord,
   SkillReference,
   InteractionMode,
   JobStatus,
@@ -11,11 +13,13 @@ import type {
   RelationshipToParent,
   RuntimeItem,
   StoredBlock,
+  StoredThread,
   StoredThreadMeta,
   SubagentRun,
 } from "./types.js";
 import { copyTurnStamp } from "./types.js";
 import { ProviderKindSchema, SkillReferenceListSchema } from "./types.js";
+import type { SelectionKnobs, TurnSelection } from "./selection.js";
 import { parseMessageSender, type MessageSender } from "@kone/protocol/message-sender";
 import { parseContractTerms, type ContractClosedReason } from "@kone/protocol/contract";
 import { steerContinuationId } from "@kone/protocol/steer-split";
@@ -322,10 +326,13 @@ export type QueuedTurnDispatchMode = "queue" | "steer";
 /** Lifecycle of a queued turn: 'queued' → 'promoting' (claimed) → 'promoted'
  *  (ran), 'promoting' → 'queued' (released after a failed drain, to retry),
  *  'promoting' → 'failed' (held: its retries ran out, and it waits for the
- *  user), and any pending state → 'cancelled' (stop/delete). queued,
- *  promoting and failed are pending; promoted/cancelled rows are inert
- *  history. */
-export type QueuedTurnState = "queued" | "promoting" | "promoted" | "failed" | "cancelled";
+ *  user), any pending state → 'cancelled' (stop/delete), and 'queued' →
+ *  'refused' when a provider switch at delivery cannot be honoured (an
+ *  unreachable target, or a replay that no longer fits). queued, promoting and
+ *  failed are pending; promoted/cancelled/refused rows are inert history — a
+ *  refused row keeps its prompt and reason visible but pauses nothing, so the
+ *  queue runs on past it. */
+export type QueuedTurnState = "queued" | "promoting" | "promoted" | "failed" | "cancelled" | "refused";
 
 /** The enqueue payload the service layer hands the store. `userBlockId` is the
  *  journaled user-prompt block UUID (recordUserBlock mints it) — the replay
@@ -346,6 +353,10 @@ export type QueuedTurnEnqueueInput = {
   skills?: SkillReference[];
   /** Enqueue timestamp; defaults to now (callers pass it for ordering tests). */
   at?: number;
+  /** The provider this follow-up was queued on. A row whose provider differs
+   *  from the thread's owner when it is delivered is handed in first; a row
+   *  that names none runs on the thread's current owner. */
+  provider?: ProviderKind;
   model?: string;
   mode?: string;
   effort?: string;
@@ -361,6 +372,7 @@ export type QueuedTurnEditPatch = {
   input: string;
   attachments?: ChatAttachment[];
   skills?: SkillReference[];
+  provider?: ProviderKind | null;
   model?: string | null;
   mode?: string | null;
   effort?: string | null;
@@ -379,6 +391,8 @@ export type QueuedTurnRow = {
   input: string;
   attachments?: ChatAttachment[];
   skills?: SkillReference[];
+  /** The provider this row was queued on; absent runs on the thread's owner. */
+  provider?: ProviderKind;
   model?: string;
   mode?: string;
   effort?: string;
@@ -398,6 +412,9 @@ export type QueuedTurnRow = {
    *  otherwise. Absent when the row has no block on record, which a user's
    *  send always has — so absent is never the user's. */
   sender?: MessageSender;
+  /** Why a refused row could not run — the target was unreachable or the
+   *  replay no longer fit. Absent on every other state. */
+  refusalReason?: string;
 };
 
 export type QueuedTurnDbRow = {
@@ -410,11 +427,16 @@ export type QueuedTurnDbRow = {
   attachments_json: string | null;
   /** Absent on databases read before migration 17 ran in a test fixture. */
   skills_json?: string | null;
+  /** The provider the row was queued on (migration 42); NULL runs on the
+   *  thread's owner. */
+  provider?: string | null;
   model: string | null;
   mode: string | null;
   effort: string | null;
   service_tier: string | null;
   context_window: string | null;
+  /** Why a refused row could not run (migration 42). */
+  refusal_reason?: string | null;
   attempt_count: number;
   created_at: number;
   updated_at: number;
@@ -442,12 +464,15 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   if (attachments?.length) queued.attachments = attachments;
   const skills = parseSkillReferences(row.skills_json);
   if (skills) queued.skills = skills;
+  const provider = row.provider ? ProviderKindSchema.safeParse(row.provider) : null;
+  if (provider?.success) queued.provider = provider.data;
   if (row.model) queued.model = row.model;
   if (row.mode) queued.mode = row.mode;
   if (row.effort) queued.effort = row.effort;
   if (row.service_tier) queued.serviceTier = row.service_tier;
   if (row.context_window) queued.contextWindow = row.context_window;
   if (row.promoted_at !== null) queued.promotedAt = row.promoted_at;
+  if (row.refusal_reason) queued.refusalReason = row.refusal_reason;
   if (row.sort_key !== null && row.sort_key !== undefined) queued.sortKey = row.sort_key;
   if (row.has_block) queued.sender = parseMessageSender(row.sender_json ?? null) ?? { kind: "user" };
   return queued;
@@ -510,6 +535,42 @@ export type CheckpointStore = {
   getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null;
   listTurnCheckpoints(threadId: string): TurnCheckpointRecord[];
   pruneTurnCheckpoints(threadId: string, keep: number): TurnCheckpointRecord[];
+};
+
+/** The selection surface the provider-switch paths drive: the thread's current
+ *  and pending picks, the per-provider+model knob memory, and the same-provider
+ *  change marks. Narrow and structural so a test can inject a fake without a
+ *  database. */
+export type SelectionStore = {
+  threadMeta(threadId: string): StoredThreadMeta | null;
+  threadForkContext(threadId: string): ForkContext | null;
+  pendingHandIn(threadId: string): HandInRecord | null;
+  loadThread(threadId: string): StoredThread | null;
+  listQueuedTurns(threadId: string): QueuedTurnRow[];
+  setThreadSelection(
+    threadId: string,
+    selection: {
+      model?: string;
+      effort?: string;
+      serviceTier?: string;
+      contextWindow?: string;
+      mode?: InteractionMode | string;
+    },
+  ): void;
+  getProviderModelOptions(
+    provider: ProviderKind,
+    model: string,
+  ): { provider: ProviderKind; model: string; knobs: SelectionKnobs; updatedAt: number } | null;
+  upsertProviderModelOptions(input: {
+    provider: ProviderKind;
+    model: string;
+    knobs: SelectionKnobs;
+    at?: number;
+  }): void;
+  setPendingSelection(threadId: string, selection: TurnSelection): void;
+  pendingSelection(threadId: string): TurnSelection | null;
+  clearPendingSelection(threadId: string): void;
+  retargetThreadSelection(threadId: string, selection: TurnSelection): boolean;
 };
 
 /** The continuation surface the usage-limit path drives: schedule a resume at a

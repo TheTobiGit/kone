@@ -2948,8 +2948,63 @@ export const UPDATE_APP_PROVIDER_JSON_SCHEMA = {
   },
 } satisfies GatewayRecord;
 
+export const SwitchProviderInputSchema = z.object({
+  provider: z
+    .enum(PROVIDER_KINDS)
+    .optional()
+    .describe("The provider to run this thread's next turns on. Omit to keep the current one."),
+  model: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The provider model id to run on. Omit to keep the current model when the provider is unchanged."),
+  effort: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The reasoning-effort tier to run at, in the provider's own vocabulary."),
+  serviceTier: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The model's service tier id, where the provider has tiers."),
+  contextWindow: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The model's context-window id, where the provider offers a choice."),
+  mode: z
+    .enum(["ask", "accept-edits", "full-access"])
+    .optional()
+    .describe("The permission posture future turns run under."),
+});
+
+export const SWITCH_PROVIDER_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    provider: {
+      type: "string",
+      enum: [...PROVIDER_KINDS],
+      description: "The provider to run this thread's next turns on. Omit to keep the current one.",
+    },
+    model: {
+      type: "string",
+      description: "The provider model id to run on. Omit to keep the current model when the provider is unchanged.",
+    },
+    effort: { type: "string", description: "The reasoning-effort tier to run at, in the provider's own vocabulary." },
+    serviceTier: { type: "string", description: "The model's service tier id, where the provider has tiers." },
+    contextWindow: { type: "string", description: "The model's context-window id, where the provider offers a choice." },
+    mode: {
+      type: "string",
+      enum: ["ask", "accept-edits", "full-access"],
+      description: "The permission posture future turns run under.",
+    },
+  },
+} satisfies GatewayRecord;
+
 export type SetAppProviderEnabledInput = z.infer<typeof SetAppProviderEnabledInputSchema>;
 export type UpdateAppProviderInput = z.infer<typeof UpdateAppProviderInputSchema>;
+export type SwitchProviderInput = z.infer<typeof SwitchProviderInputSchema>;
 
 // ── language-server (lsp) tool inputs ────────────────────────────────────────
 // One tool, `code_lsp`, fronts the six read-only actions: the zod
