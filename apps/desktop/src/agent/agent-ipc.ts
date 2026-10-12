@@ -4,7 +4,9 @@ import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
+import { handoffTokenCapFor } from "@kone/agent-core/providerSettings.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
+import type { QueuedTurnEditPatch } from "@kone/agent-core/conversationStoreTypes.js";
 import {
   getConversationStore,
   projectRuntimeEventForIpc,
@@ -14,8 +16,16 @@ import {
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
 import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
+import { ScheduleRunner } from "@kone/agent-core/scheduleRunner.js";
 import { prepareQuitResume } from "@kone/agent-core/quitResume.js";
 import { provisionWorktree } from "../modules/git/worktreeProvision.js";
+import { branchPullRequest, pullRequestState } from "../modules/git/github.js";
+import { checkThreadPullRequest } from "../modules/git/threadPullRequestCheck.js";
+import {
+  runProjectScript,
+  SETTLE_SCRIPT_TIMEOUT_MS,
+  SETUP_SCRIPT_TIMEOUT_MS,
+} from "../modules/git/projectScripts.js";
 import { freshestBase } from "../modules/git/worktreeBase.js";
 import { renameGeneratedBranch } from "../modules/git/worktreeBranchName.js";
 import { startWorktreeSweeper, sweepIdleWorktrees } from "../modules/git/worktreeSweep.js";
@@ -90,6 +100,7 @@ import type {
   ForkThreadAtBlockInput,
   ProviderConfig,
   ProviderKind,
+  RewindConversationOnlyInput,
   RuntimeEvent,
   SendTurnInput,
   SessionStartInput,
@@ -125,6 +136,7 @@ let gateway: GatewayHandle | null = null;
  *  registerAgentIpc runs, so the event tap below tolerates its absence rather
  *  than assuming a boot order. */
 let jobRunner: JobRunner | null = null;
+let scheduleRunner: ScheduleRunner | null = null;
 
 /** Teardown for the IRC delivery subscription — dropped at quit so no armed
  *  delivery timer holds the process open. */
@@ -140,9 +152,76 @@ export function getJobRunner(): JobRunner | null {
   return jobRunner;
 }
 
+export function getScheduleRunner(): ScheduleRunner | null { return scheduleRunner; }
+
+/** Rename a thread's generated worktree branch after its title. Refuses when
+ *  the branch has an upstream or already heads a pull request: moving either
+ *  would break the link. The PR check lives here because gh/electron lives
+ *  here, not in the git branch-name module. */
+const renameWorktreeBranchAfterTitle = ({
+  worktreePath,
+  title,
+}: {
+  worktreePath: string;
+  title: string;
+}): Promise<string | null> =>
+  renameGeneratedBranch(worktreePath, title, {
+    hasPullRequest: (dir, branch) =>
+      branchPullRequest(dir, branch).then(
+        // A PR exists OR the lookup was unavailable — either way, do not move
+        // the branch. Only a known-empty answer allows the rename.
+        (outcome) => !outcome.available || outcome.pullRequest !== null,
+        () => true,
+      ),
+  });
+
 /** The single AgentService instance (lazily created). */
-export function getAgentService(): AgentService {
-  if (!service) service = new AgentService();
+export function getAgentService(): AgentService {  if (!service) {
+    service = new AgentService({
+      // Title regeneration may rename a generated worktree branch; git lives
+      // out here, so the service is handed the capability.
+      renameWorkspaceBranch: ({ worktreePath, title }) => renameWorktreeBranchAfterTitle({ worktreePath, title }),
+      // Settle-on-merge: the service owns the decision, these three do the
+      // out-of-process work it calls for. All are lazy — the sweep invokes
+      // them, not construction.
+      pullRequestChecker: async ({ projectPath, branch, worktreePath, link }) => {
+        const dir = worktreePath ?? projectPath;
+        const outcome = await checkThreadPullRequest(
+          { link, branch },
+          {
+            // Full identity only (URL or repository + number) — never a bare
+            // number in the local repo — so a foreign-repo link resolves to the
+            // right PR or to unknown.
+            fetchState: (ref) => pullRequestState(dir, ref),
+            fetchBranchPr: (head) => branchPullRequest(dir, head),          },
+        );
+        return outcome.link;
+      },
+      closeIdleShells: async ({ threadId, worktreePath }) => {
+        // Only a thread's OWN worktree is ever touched, never the project
+        // root (a shared checkout belongs to every thread). And if another
+        // live thread still shares the worktree, its shells are not ours.
+        if (!worktreePath) return;
+        const store = getConversationStore();
+        if (store.worktreeHasOtherLiveThreads(worktreePath, threadId)) return;
+        await getTerminalManager().closeIdleInDir(worktreePath);
+      },
+      runSettleScript: async ({ projectPath, cwd }) => {
+        const command = getConversationStore().projectScript(projectPath, "settle");
+        if (!command) return;
+        const result = await runProjectScript({
+          cwd,
+          command,
+          timeoutMs: SETTLE_SCRIPT_TIMEOUT_MS,
+        });
+        if (result.code !== 0) {
+          console.warn(
+            `[agent] settle script for ${projectPath} exited ${result.timedOut ? "on timeout" : result.code}`,
+          );
+        }
+      },
+    });
+  }
   return service;
 }
 
@@ -180,7 +259,7 @@ export function registerAgentIpc(): void {
     // copy is only behind, and from the user's copy whenever the latest would
     // drop commits or cannot be reached.
     freshenWorkspaceBase: ({ projectPath, base }) => freshestBase(projectPath, base),
-    renameWorkspaceBranch: ({ worktreePath, title }) => renameGeneratedBranch(worktreePath, title),
+    renameWorkspaceBranch: ({ worktreePath, title }) => renameWorktreeBranchAfterTitle({ worktreePath, title }),
     // Only ever a worktree this dispatcher just built and had to give back.
     // Not forced: a directory with work in it is never removed on a cancel, and
     // git refusing is the refusal to respect. A branch this build invented goes
@@ -191,6 +270,13 @@ export function registerAgentIpc(): void {
       }
       return removeWorktree(projectPath, { path: worktreePath });
     },
+    // The project's setup script, run between the worktree existing and the
+    // agent's first turn. Best effort: a failure is reported on the setup
+    // tracker and does not fail the start.
+    runSetupScript: ({ cwd, command, onOutput }) =>
+      runProjectScript({ cwd, command, timeoutMs: SETUP_SCRIPT_TIMEOUT_MS, onOutput }).then(
+        (result) => ({ code: result.code, output: result.output }),
+      ),
   });
   // Renderer event-stream subscriptions: who gets the live stream, plus the
   // reload-recovery replay of parked asks. One instance per process; broadcast
@@ -205,6 +291,11 @@ export function registerAgentIpc(): void {
   // behind (prepared from main's before-quit). Claimed and resumed inside the
   // dispatcher — before the window exists, so no client command can race the
   // consume. Best-effort: resuming never fails boot.
+  // Restart background notes: the boot seal captured the live subagents and
+  // task-tracker tasks the last process died with. Staged before quit-resume
+  // so a resumed continuation carries its thread's note; either way the note
+  // only ever rides a thread's next turn, never wakes one.
+  dispatcher.recoverRestartBackgroundNotesAtBoot();
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
 
   // The bench runner: queued jobs become threads through the same dispatcher
@@ -225,7 +316,14 @@ export function registerAgentIpc(): void {
   // After quit-resume, deliberately: a thread that was mid-turn when the app
   // died is work already in flight, and it should get its process back before
   // the queue starts handing out new ones. Best-effort, like the resume above.
-  void jobRunner.recoverAtBoot();
+  void jobRunner.recoverAtBoot().then(
+    () => scheduleRunner?.start(),
+    () => scheduleRunner?.start(),
+  );
+  scheduleRunner = new ScheduleRunner({
+    store,
+    drainProject: async (projectPath) => { await jobRunner?.drainProject(projectPath); },
+  });
 
   // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
   // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
@@ -234,12 +332,16 @@ export function registerAgentIpc(): void {
   // AgentService.startSession/stopSession.
   gateway = createGateway({
     store,
+    scheduleChanged: () => scheduleRunner?.rearm(),
+    drainProject: (projectPath) => { void jobRunner?.drainProject(projectPath); },
     askUser: (request) => svc.askUser(request),
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
+    isThreadBusy: (threadId) => svc.isThreadBusy(threadId),
     threadRuntime: (threadId) => svc.threadRuntime(threadId),
     providerSteers: (provider) => svc.providerSteers(provider),
+    supportsFork: (provider) => svc.supportsFork(provider),
     // What a thread is parked on, if anything — approvals and user-input
     // questions are live round-trips the store never journals, so the
     // service's parked snapshot is the only place the thread list can read
@@ -294,13 +396,27 @@ export function registerAgentIpc(): void {
       ensureThreadSession: (threadId, options) => dispatcher.ensureThreadSession(threadId, options),
     },
     threadControls: {
+      // Mark done through the service, so thread.done.updated fans out to every
+      // surface (the gateway tool's canonical path).
+      setThreadDone: (threadId: string, done: boolean) => svc.setThreadDone(threadId, done),
+      // Queue controls: list is a store read; the rest go through the service so
+      // mirrors and broadcasts stay in step (promote reuses "send now").
+      listQueuedTurns: (threadId: string) => store.listQueuedTurns(threadId),
+      editQueuedTurn: (threadId: string, queueId: string, input: string) =>
+        svc.editQueuedTurn(threadId, queueId, { input }),
+      reorderQueuedTurns: (threadId: string, queueIds: string[]) =>
+        svc.reorderQueuedTurns(threadId, queueIds),
+      cancelQueuedTurn: (threadId: string, queueId: string) =>
+        svc.cancelQueuedTurn(threadId, queueId),
+      promoteQueuedTurn: (threadId: string, queueId: string) =>
+        svc.sendQueuedTurnNow(threadId, queueId),
       stopThread: async (threadId) => {
-        const wasRunning = svc.hasLiveSession(threadId);
-        await svc.stopSession(threadId);
         // `stopped` is the idempotent guarantee, not a torn-something-down
-        // report: stopSession no-ops on an idle thread, which still leaves it
-        // with nothing running. `wasRunning` says whether a session existed.
-        return { stopped: true, wasRunning };
+        // report: stopThread no-ops on an idle thread, which still leaves it
+        // with nothing running. The service splits the request
+        // (interruptRequested) from its confirmation (confirmedStopped).
+        const result = await svc.stopThread(threadId);
+        return { ...result, stopped: result.confirmedStopped };
       },
       archiveThread: async (threadId, archived) => {
         const res = await svc.setThreadArchived(threadId, archived);
@@ -363,6 +479,13 @@ export function registerAgentIpc(): void {
         }
         return { ok: true, title: cleaned, previousTitle };
       },
+    },
+    // Snooze and manual resume for the app_snooze_thread / app_resume_thread
+    // gateway tools.
+    snoozeControls: {
+      setSnooze: (threadId, until) => svc.setThreadSnooze(threadId, until),
+      snoozeUntilReset: (threadId) => svc.snoozeUntilResetFor(threadId),
+      resumeLimited: (threadId) => dispatcher.resumeLimitedThread(threadId),
     },
     // And the provider surface the service already keeps warm, so a thread is
     // never started on a CLI this machine cannot run.
@@ -511,7 +634,7 @@ export function registerAgentIpc(): void {
       proposedTitle: event.title,
     });
     if (!accepted) return null;
-    store.renameThread(event.threadId, accepted);
+    store.setTitle(event.threadId, accepted);
     return { event: { ...event, title: accepted }, journal: false };
   }
 
@@ -614,6 +737,18 @@ export function registerAgentIpc(): void {
     "agent:set-settings",
     (_event, provider: ProviderKind, config: ProviderConfig) =>
       svc.setProviderSettings(provider, config),
+  );
+
+  // The handoff history cap is part of provider settings, but its own getter
+  // and setter so a settings surface can read/write just the number without
+  // round-tripping the whole provider config. The setter merges, preserving
+  // every other field.
+  ipcMain.handle("agent:get-handoff-budget", (_event, provider: ProviderKind) =>
+    handoffTokenCapFor(provider, svc.getProviderSettings()),
+  );
+  ipcMain.handle(
+    "agent:set-handoff-budget",
+    (_event, provider: ProviderKind, cap: number) => svc.setProviderHandoffTokenCap(provider, cap),
   );
 
   // Install maintenance: how each CLI was installed, and whether it's behind.
@@ -721,6 +856,16 @@ export function registerAgentIpc(): void {
     dispatcher.forkThreadTurn(input),
   );
 
+  // Conversation-only rewind (a file-restore refusal's alternative): fork at
+  // a finished turn without touching files. The renderer mints the new thread
+  // id + request id with the same exactly-once semantics as every other fork;
+  // a replay resolves "exists". Unlike the edit fork, no session starts and
+  // nothing is sent — the new thread waits for the user's first message, so
+  // this goes straight to the service rather than the dispatcher.
+  ipcMain.handle("agent:rewind-conversation-only", (_event, input: RewindConversationOnlyInput) =>
+    svc.rewindConversationOnly(input),
+  );
+
   // Whatever arrives here was typed by the user, so it is always the user's:
   // a sender is only ever set by the main process, for words an agent or kone
   // itself wrote, and one smuggled in over IPC is dropped. The user going over
@@ -793,6 +938,14 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
     svc.reorderQueuedTurns(threadId, queueIds),
   );
+  // Edit a waiting follow-up in place, keeping its position. The store rewrites
+  // the row and its hidden transcript block, and turn.queued-updated carries the
+  // new words so the queue strip restates the row where it sits.
+  ipcMain.handle(
+    "agent:queue-edit",
+    (_event, threadId: string, queueId: string, patch: QueuedTurnEditPatch) =>
+      svc.editQueuedTurn(threadId, queueId, patch),
+  );
   // "Send now" on a queued row: steered into the live turn, sent as a turn
   // when idle, or moved to the front when the provider can't steer. A failed
   // delivery rejects with the row back where it was.
@@ -845,11 +998,16 @@ export function registerAgentIpc(): void {
   // `history-thread` only if paging comes back empty), so a full-thread
   // reconstruction here would be built and thrown away on every project open.
   ipcMain.handle("agent:history-latest", (_event, projectPath: string) => {
-    return store.latestThreadMeta(projectPath);
+    const meta = store.latestThreadMeta(projectPath);
+    // The renderer's inbox list reads the computed snooze alongside the raw
+    // deadline from the same payload.
+    return meta ? { ...meta, ...dispatcher.threadSnoozeState(meta.threadId) } : null;
   });
   ipcMain.handle("agent:history-thread", (_event, threadId: string) => {
     const thread = store.loadThread(threadId);
-    return thread ? projectStoredThreadForIpc(thread) : null;
+    return thread
+      ? { ...projectStoredThreadForIpc(thread), ...dispatcher.threadSnoozeState(thread.threadId) }
+      : null;
   });
   // Settled compaction boundaries for a thread, oldest first — the timeline's
   // "when/where compacted" markers. Few rows ever (one per boundary event),
@@ -1104,6 +1262,22 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
     svc.setThreadDone(threadId, done),
   );
+  // Snooze: hold a thread out of the inbox until a time (or until its usage
+  // limit resets), and clear it. Wake-early rules live in limitState.
+  ipcMain.handle("agent:set-snooze", (_event, threadId: string, until: number | null) =>
+    svc.setThreadSnooze(threadId, until),
+  );
+  ipcMain.handle("agent:snooze-until-reset", (_event, threadId: string) => {
+    const until = svc.snoozeUntilResetFor(threadId);
+    if (until === null) return { ok: false, message: "No provider reset is known; use a timed snooze instead." };
+    svc.setThreadSnooze(threadId, until);
+    return { ok: true, until };
+  });
+  // Manual resume of a thread waiting out a usage limit: clear the mark and
+  // wake it now, cancelling its scheduled resume.
+  ipcMain.handle("agent:resume-limited", (_event, threadId: string) =>
+    dispatcher.resumeLimitedThread(threadId),
+  );
   // Run the thread-retention sweep now instead of waiting for its timer. The
   // inbox asks for one when it opens, so quiet threads settle while someone
   // is looking rather than minutes later in the middle of a thread.
@@ -1176,6 +1350,56 @@ export function registerAgentIpc(): void {
     }
     return changed;
   });
+  // Regenerate a thread's title from the whole conversation, on explicit
+  // request. The service refuses when the user typed the current title
+  // (manual_title) or when there is nothing to title from; a successful
+  // regeneration broadcasts on its own via thread.title.updated.
+  ipcMain.handle("agent:regenerate-thread-title", (_event, threadId: string) =>
+    svc.regenerateThreadTitle(String(threadId)),
+  );
+  // Link / unlink a pull request on a thread, and read the current link. The
+  // store carries the link across restarts; the settle sweep reads it to know
+  // when the thread is done. The handler validates and reports why it refused,
+  // rather than writing a link that names no PR.
+  ipcMain.handle(
+    "agent:link-thread-pr",
+    (
+      _event,
+      threadId: string,
+      link: {
+        repository?: string | null;
+        number?: number | null;
+        url: string;
+        state?: "open" | "merged" | "closed" | "unknown" | null;
+      },
+    ) => svc.linkThreadPullRequest(String(threadId), link),
+  );
+  ipcMain.handle("agent:unlink-thread-pr", (_event, threadId: string) =>
+    svc.unlinkThreadPullRequest(String(threadId)),
+  );
+  ipcMain.handle("agent:thread-pr", (_event, threadId: string) =>
+    svc.threadPullRequestLink(String(threadId)),
+  );
+  // Per-project setup and settle scripts. Stored in app_state keyed by the
+  // project path (kone has no per-project settings table); read by the
+  // worktree-setup path and the settle-on-merge sweep.
+  ipcMain.handle(
+    "agent:get-project-script",
+    (_event, projectPath: string, kind: "setup" | "settle") =>
+      store.projectScript(String(projectPath), kind),
+  );
+  ipcMain.handle(
+    "agent:set-project-script",
+    (_event, projectPath: string, kind: "setup" | "settle", command: string | null) => {
+      store.setProjectScript(String(projectPath), kind, command);
+      return store.projectScript(String(projectPath), kind);
+    },
+  );
+  // The live worktree-setup snapshot for a thread, or null. A renderer that
+  // attaches mid-setup reads this, then follows thread.worktree.setup events.
+  ipcMain.handle("agent:worktree-setup", (_event, threadId: string) =>
+    dispatcher.worktreeSetupSnapshot(String(threadId)),
+  );
 }
 
 /** Record in-flight turns for resume after quit, then interrupt them. Called
@@ -1201,6 +1425,8 @@ export async function prepareQuitResumeForQuit(): Promise<void> {
 
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
+  scheduleRunner?.stop();
+  scheduleRunner = null;
   if (stopWorktreeSweeper) {
     stopWorktreeSweeper();
     stopWorktreeSweeper = null;

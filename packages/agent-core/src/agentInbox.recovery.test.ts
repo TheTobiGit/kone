@@ -226,16 +226,26 @@ describe("recovery of a hand-over that was on its way", () => {
     expect(second.store.inboxMessage(sent)?.state).toBe("handing");
     expect(second.store.inboxMessage(unsent)?.state).toBe("handing");
     const told: string[] = [];
-    second.store.onInboxChanged((threadIds) => told.push(...threadIds));
+    let heardParent = (): void => {};
+    const recovered = new Promise<void>((resolve) => { heardParent = resolve; });
+    second.store.onInboxChanged((threadIds) => {
+      told.push(...threadIds);
+      if (threadIds.includes("parent")) heardParent();
+    });
     const claim = second.mailbox.claimJob("other");
     expect(claim?.messages.map((m) => m.id)).toEqual([live]);
     outage.exec("DROP TRIGGER notices_fail");
     outage.close();
 
-    const start = Date.now();
-    while (second.store.inboxMessage(sent)?.state === "handing" && Date.now() - start < 3_000) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    // The boot recovery retries on its own timer; wait on the ringer hearing
+    // the released rows rather than on a poll of the database.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("inbox recovery released the rows without telling the ringer about parent")),
+        5_000,
+      );
+      recovered.then(() => { clearTimeout(timer); resolve(); }, (err) => { clearTimeout(timer); reject(err); });
+    });
     expect(second.mailbox.jobTurn(sent)).toEqual({ recipient: "parent", handedOver: false, turnId: null, uncertain: true });
     expect(second.store.inboxMessage(unsent)?.state).toBe("unseen");
     expect(second.store.listUnseenInbox("lead").filter((r) => r.kind === "notice")).toHaveLength(1);
@@ -244,6 +254,28 @@ describe("recovery of a hand-over that was on its way", () => {
     // This process's own hand-over is still its own.
     expect(second.store.inboxMessage(live)?.state).toBe("handing");
     expect(second.store.inboxMessage(live)?.deliveryId).toBe(claim!.deliveryId);
+  });
+
+  test("a late inbox subscriber hears about recovery that already finished", async () => {
+    const dir = freshDir();
+    const first = processOn(dir);
+    const { id: sent } = jobOnItsWay(first, "Revert the migration.");
+    const outage = new Database(path.join(dir, "kone.sqlite"));
+    outage.exec(`CREATE TRIGGER notices_fail BEFORE INSERT ON agent_inbox WHEN NEW.kind = 'notice'
+                  BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+
+    const second = processOn(dir);
+    expect(second.store.inboxMessage(sent)?.state).toBe("handing");
+    outage.exec("DROP TRIGGER notices_fail");
+    outage.close();
+
+    const start = Date.now();
+    while (second.store.inboxMessage(sent)?.state === "handing" && Date.now() - start < 3_000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const told: string[] = [];
+    second.store.onInboxChanged((threadIds) => told.push(...threadIds));
+    expect(told).toContain("parent");
   });
 
   test("a hand-over never marked sent goes back to unseen and is handed over again", () => {

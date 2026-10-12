@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { getConversationStore } from "./ConversationStore.js";
+import { historicalBlockText } from "./contextBudget.js";
 import type {
   CreateHandoffInput,
   CreateHandoffResult,
@@ -8,7 +9,6 @@ import type {
   ForkImportedBlock,
   HandoffCut,
   ProviderKind,
-  StoredBlock,
   StoredThread,
   ThreadLineage,
 } from "./types.js";
@@ -55,66 +55,14 @@ export const BRANCH_BOUNDARY_INSTRUCTION =
 export const BRANCH_MESSAGE_TOO_LONG =
   "This message is too long to include the branched conversation's history. Shorten the message and retry.";
 
-/** The model-visible narrative of a block: the prompt for user blocks, the
- *  joined assistant_text items for assistant blocks. */
-function blockText(block: StoredBlock): string {
-  if (block.role === "user") return block.text;
-  return block.items
-    .filter((item) => item.kind === "assistant_text")
-    .map((item) => item.text)
-    .join(" ");
-}
-
-/** How many tool calls a tool-only turn's transfer note names before rolling
- *  the rest into a count. */
-const TRANSFER_NOTE_TOOLS = 6;
-/** Total cap for the note. It rides the same budget as real prose, so a
- *  tool-heavy turn collapses to one line rather than a tool-by-tool log. */
-const TRANSFER_NOTE_CHARS = 240;
-
-function condenseTransferText(text: string, cap: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > cap ? `${flat.slice(0, cap).trimEnd()}…` : flat;
-}
-
-/** The transferable text of one block: its narrative prose when it has any,
- *  else — for an assistant turn that ran tools and wrote nothing — a one-line
- *  note naming the tools it ran. That turn genuinely happened and changed the
- *  workspace, so it contributes the note rather than vanishing; a block with
- *  neither prose nor tool calls carried nothing worth importing and reads as
- *  null. The note is bracketed so it never reads as words anyone actually
- *  said — it is transfer metadata on an assistant row, never a user quote. */
-export function transferText(block: StoredBlock): string | null {
-  const prose = blockText(block).trim();
-  if (prose) return prose;
-  if (block.role !== "assistant") return null;
-  const calls = block.items.filter((item) => item.kind === "tool_call");
-  if (calls.length === 0) return null;
-  const shown = calls
-    .slice(0, TRANSFER_NOTE_TOOLS)
-    .map((call) => {
-      const target = condenseTransferText(call.text ?? "", 60);
-      const name = (call.name ?? "").trim() || "tool";
-      return target ? `${name}(${target})` : name;
-    })
-    .join(", ");
-  const rest = calls.length - Math.min(calls.length, TRANSFER_NOTE_TOOLS);
-  const tail = rest > 0 ? ` (+${rest} more)` : "";
-  // The overflow count is the load-bearing half of a tool-heavy note, so it
-  // is fitted first: the tool list gives way, never the count.
-  const head = "[No written summary — tools ran: ";
-  const room = Math.max(0, TRANSFER_NOTE_CHARS - head.length - tail.length - 1);
-  const fitted = shown.length > room ? `${shown.slice(0, Math.max(0, room - 1)).trimEnd()}…` : shown;
-  return `${head}${fitted}${tail}]`;
-}
-
 /** Every user + assistant block of the source, in arrival order — including
  *  earlier `fork-import` rows, so a handoff of a handoff keeps the whole
- *  chain. Assistant blocks contribute their narrative text, or — when a turn
- *  ran tools and wrote no prose — a one-line note naming those tools, so a
- *  silent work turn still leaves a trace; genuinely empty blocks are skipped.
- *  Tool items themselves are not imported. Ids are re-minted (randomUUID),
- *  `at` timestamps and attachments are kept.
+ *  chain. Assistant blocks contribute their whole narrative text plus the
+ *  commands they ran, their exit codes, and a failed or interrupted turn's
+ *  partial work (contextBudget.historicalBlockText) — never a mid-message
+ *  cut. User blocks keep their prompt and attachments. Genuinely empty blocks
+ *  are skipped. Ids are re-minted (randomUUID), `at` timestamps and
+ *  attachments are kept.
  *
  *  With a cut the copy stops after that block, so the import ends on the
  *  reply the user chose rather than on the source's newest turn. */
@@ -131,7 +79,7 @@ function buildHandoffImportedBlocks(
   const rows: ForkImportedBlock[] = [];
   for (const b of scoped) {
     if (b.role !== "user" && b.role !== "assistant") continue;
-    const text = transferText(b);
+    const text = b.role === "user" ? b.text : historicalBlockText(b);
     if (!text) continue;
     const row: ForkImportedBlock = { id: randomUUID(), role: b.role, text, at: b.at };
     if (b.role === "user") {

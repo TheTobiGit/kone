@@ -121,7 +121,7 @@ export type ThreadRow = {
   /** A contractor's terms, as JSON (migration 16); NULL for every other
    *  thread. Absent on rows read through a projection that doesn't name it. */
   contract_json?: string | null;
-  /** When and why a contractor's contract closed (migration 29); NULL while
+  /** When and why a contractor's contract closed (migration 37); NULL while
    *  it is open, and on every other thread. */
   contract_closed_at?: number | null;
   contract_closed_reason?: ContractClosedReason | null;
@@ -132,6 +132,13 @@ export type ThreadRow = {
   resume_session_at: string | null;
   done_at: number | null;
   last_visited_at: number | null;
+  /** Usage-limit state (v30): when a limit failure was recorded, and the
+   *  provider's reset time when it gave one. */
+  limited_at: number | null;
+  limit_reset_at: number | null;
+  /** Snooze state (v30): when it expires and when it was set. */
+  snoozed_until: number | null;
+  snoozed_at: number | null;
   /** Declared intent: "local" / "worktree". NULL on every row written before
    *  worktrees existed, which reads as local. */
   env_mode: string | null;
@@ -346,6 +353,21 @@ export type QueuedTurnEnqueueInput = {
   contextWindow?: string;
 };
 
+/** The fields an in-place edit may change on a waiting queued follow-up. The
+ *  content fields (input/attachments/skills) are always written; the picker
+ *  knobs only when present, so an edit can change the prompt without resetting
+ *  the model the message was queued with. */
+export type QueuedTurnEditPatch = {
+  input: string;
+  attachments?: ChatAttachment[];
+  skills?: SkillReference[];
+  model?: string | null;
+  mode?: string | null;
+  effort?: string | null;
+  serviceTier?: string | null;
+  contextWindow?: string | null;
+};
+
 /** A queued turn as read back from the store — the shape the service layer
  *  promotes (claim returns it) and the UI lists. */
 export type QueuedTurnRow = {
@@ -468,6 +490,16 @@ export function rowToTurnCheckpoint(row: TurnCheckpointDbRow): TurnCheckpointRec
 export type CheckpointStore = {
   threadProjectPath(threadId: string): string | null;
   threadWorkspace(threadId: string): ThreadWorkspace | null;
+  /** Every thread's directory claim, archived included — the restore-safety
+   *  guard's overlap candidates. Fails closed (throws) when unreadable. */
+  allThreadWorkspaces(): Array<{
+    threadId: string;
+    projectPath: string;
+    workspace: ThreadWorkspace;
+  }>;
+  /** The user block that started a turn, for naming the conversation-only
+   *  rewind target in a refusal. */
+  turnUserBlockId(threadId: string, turnId: string): string | null;
   recordTurnCheckpoint(input: {
     threadId: string;
     turnId: string;
@@ -478,6 +510,20 @@ export type CheckpointStore = {
   getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null;
   listTurnCheckpoints(threadId: string): TurnCheckpointRecord[];
   pruneTurnCheckpoints(threadId: string, keep: number): TurnCheckpointRecord[];
+};
+
+/** The continuation surface the usage-limit path drives: schedule a resume at a
+ *  provider reset, and cancel a thread's scheduled work when real new work
+ *  lands. Narrow so tests can inject a fake. */
+export type ContinuationStore = {
+  scheduleContinuation(input: {
+    threadId: string;
+    kind: string;
+    dueAt: number;
+    payloadJson?: string | null;
+    createdAt?: number;
+  }): { continuationId: string } | null;
+  cancelContinuationsForThread(threadId: string): number;
 };
 
 export type ItemRow = {
@@ -604,6 +650,10 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
      *  written before the column existed. Compared against `lastActivityAt`:
      *  the agent having spoken since is what makes a thread unread. */
     lastVisitedAt: row.last_visited_at ?? null,
+    limitedAt: row.limited_at ?? null,
+    limitResetAt: row.limit_reset_at ?? null,
+    snoozedUntil: row.snoozed_until ?? null,
+    snoozedAt: row.snoozed_at ?? null,
   };
   if (selection) meta.selection = selection;
   if (forkContext) meta.forkContext = forkContext;
@@ -859,11 +909,12 @@ function toStoredBlock(b: BlockRow, itemsByTurn: Map<string, RuntimeItem[]>): St
 export type ConversationSearchEntryKind = "block" | "item";
 
 /** Options for `searchConversations`. Omit `threadId` to search every thread;
- *  set it to scope the query to one. `limit` bounds the hits (default 20,
- *  capped at 100). */
+ *  set it to scope the query to one. `limit` bounds each page (default 20,
+ *  capped at 100); `offset` advances through the ranked results. */
 export type ConversationSearchOptions = {
   threadId?: string;
   limit?: number;
+  offset?: number;
 };
 
 /** One ranked search hit. `blockId` is the block itself for prompt hits and
@@ -874,6 +925,8 @@ export type ConversationSearchOptions = {
 export type ConversationSearchHit = {
   threadId: string;
   entryKind: ConversationSearchEntryKind;
+  /** False for imported assistant/system/agent messages represented as user-role blocks. */
+  isUserAuthored?: boolean;
   blockId: string | null;
   turnId: string | null;
   itemId: string | null;
@@ -1076,6 +1129,7 @@ export type JobRow = {
    *
    *  Populated by the list reads, which join the attempt and its thread. */
   branch?: string;
+  scheduleId?: string;
 };
 
 /** One attempt at a job, and the thread that carried it. `threadId` is absent
@@ -1107,7 +1161,53 @@ export type JobCreateInput = {
   status: Extract<JobStatus, "draft" | "queued">;
   target: JobTarget;
   attachments?: ChatAttachment[];
+  scheduleId?: string;
   at?: number;
+};
+
+export type ScheduleJobTemplate = Omit<JobCreateInput, "jobId" | "projectPath" | "status" | "at" | "scheduleId">;
+export const ScheduleJobTemplateSchema = z.object({
+  title: z.string().trim().min(1),
+  body: z.string(),
+  target: z.object({
+    provider: ProviderKindSchema,
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    mode: z.enum(["ask", "accept-edits", "full-access"]).optional(),
+    workspace: z.object({
+      mode: z.enum(["local", "worktree"]),
+      branch: z.string().optional(),
+      base: z.string().optional(),
+    }).optional(),
+    fallbacks: z.array(z.object({ provider: ProviderKindSchema, model: z.string().optional() })).min(1).optional(),
+  }),
+  attachments: z.array(z.object({
+    type: z.enum(["image", "file"]),
+    id: z.string().min(1),
+    name: z.string().min(1),
+    mimeType: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+  })).optional(),
+});
+export type ScheduleRow = {
+  scheduleId: string;
+  projectPath: string;
+  title: string;
+  cron: string;
+  jobTemplate: ScheduleJobTemplate;
+  paused: boolean;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastJobId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ScheduleCreateInput = { scheduleId: string; projectPath: string; title: string; cron: string; jobTemplate: ScheduleJobTemplate; at?: number };
+export type SchedulePatch = { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
+export type ScheduleFireResult = {
+  fired: Array<{ schedule: ScheduleRow; job: JobRow }>;
+  skipped: Array<{ scheduleId: string; reason: "outside-grace" | "job-active" }>;
+  failures: Array<{ scheduleId: string; occurrenceAt: number; error: string }>;
 };
 
 /** Fields an edit may change. Absent means "leave alone"; `null` clears.
@@ -1154,6 +1254,7 @@ export type JobDbRow = {
   updated_at: number;
   started_at: number | null;
   ended_at: number | null;
+  schedule_id?: string | null;
   /** Joined in by the list reads only — see `JobRow.branch`. Absent on the
    *  projections that read the jobs table alone. */
   ran_on_branch?: string | null;
@@ -1251,6 +1352,7 @@ export function rowToJob(row: JobDbRow): JobRow {
   if (row.sort_key !== null && row.sort_key !== JOB_SORT_UNSET) job.sortKey = row.sort_key;
   if (row.started_at !== null) job.startedAt = row.started_at;
   if (row.ended_at !== null) job.endedAt = row.ended_at;
+  if (row.schedule_id) job.scheduleId = row.schedule_id;
   return job;
 }
 

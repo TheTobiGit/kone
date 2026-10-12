@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 32 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 40 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(32);
+    expect(version.user_version).toBe(40);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -188,6 +188,10 @@ describe("v1 baseline migration and schema", () => {
       "resume_session_at",
       "parent_thread_id",
       "relationship_to_parent",
+      "limited_at",
+      "limit_reset_at",
+      "snoozed_until",
+      "snoozed_at",
     ]) {
       expect(threads).toContain(col);
     }
@@ -227,6 +231,9 @@ describe("v1 baseline migration and schema", () => {
       "job_runs",
       "thread_hand_ins",
       "agent_inbox",
+      "continuations",
+      "schedules",
+      "turn_rollbacks",
     ]) {
       expect(tables).toContain(table);
     }
@@ -264,10 +271,18 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 26, name: "InboxUncertainAt" },
       { migration_id: 27, name: "QueuedTurnDurableRowid" },
       { migration_id: 28, name: "TurnSeals" },
-      { migration_id: 29, name: "ContractClosed" },
-      { migration_id: 30, name: "InboxReceipts" },
-      { migration_id: 31, name: "AgentGrants" },
-      { migration_id: 32, name: "CrewBoards" },
+      { migration_id: 29, name: "HandInOmittedHistory" },
+      { migration_id: 30, name: "TitleOrigin" },
+      { migration_id: 31, name: "ThreadPullRequest" },
+      { migration_id: 32, name: "Continuations" },
+      { migration_id: 33, name: "Schedules" },
+      { migration_id: 34, name: "LimitAndSnooze" },
+      { migration_id: 35, name: "TurnRollbacks" },
+      { migration_id: 36, name: "TurnAssistantUuid" },
+      { migration_id: 37, name: "ContractClosed" },
+      { migration_id: 38, name: "InboxReceipts" },
+      { migration_id: 39, name: "AgentGrants" },
+      { migration_id: 40, name: "CrewBoards" },
     ]);
 
     const idx = raw
@@ -544,6 +559,8 @@ describe("pins, selection and rename", () => {
     expect(store.listThreads("/p").map((t) => t.threadId)).toEqual(["b", "a"]);
     expect(store.threadMeta("a")?.title).toBe("Renamed at 300");
     expect(store.threadMeta("a")?.lastActivityAt).toBe(100);
+    // The user's rename is recorded as manual, so regeneration leaves it alone.
+    expect(store.titleOrigin("a")).toBe("manual");
 
     // Real activity does move it.
     store.recordUserBlock({ threadId: "a", text: "third", at: 400 });
@@ -551,6 +568,42 @@ describe("pins, selection and rename", () => {
 
     // Unchanged title is a no-op (false = nothing broadcast).
     expect(store.renameThread("a", "Renamed at 300")).toBe(false);
+  });
+
+  test("setTitle marks a title auto, renameThread marks it manual", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    // Every fresh thread is auto-owned; there is no legacy null.
+    expect(store.titleOrigin("a")).toBe("auto");
+
+    store.setTitle("a", "Generated title");
+    expect(store.titleOrigin("a")).toBe("auto");
+
+    store.renameThread("a", "My own title");
+    expect(store.titleOrigin("a")).toBe("manual");
+
+    // A later automatic write flips ownership back to kone.
+    store.setTitle("a", "Regenerated title");
+    expect(store.titleOrigin("a")).toBe("auto");
+  });
+
+  test("setTitleIfAuto commits only while the title is auto and unchanged", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    store.setTitle("a", "Generated");
+
+    // Commits when the expectation matches and ownership is auto.
+    expect(store.setTitleIfAuto("a", "Generated", "Regenerated")).toBe(true);
+    expect(store.getTitle("a")).toBe("Regenerated");
+
+    // A stale expectation is refused.
+    expect(store.setTitleIfAuto("a", "Generated", "Stale")).toBe(false);
+    expect(store.getTitle("a")).toBe("Regenerated");
+
+    // A manual rename blocks it.
+    store.renameThread("a", "Mine");
+    expect(store.setTitleIfAuto("a", "Mine", "Clobbered")).toBe(false);
+    expect(store.getTitle("a")).toBe("Mine");
   });
 });
 
@@ -2916,5 +2969,192 @@ describe("turn checkpoints (v6)", () => {
     });
     expect(store.deleteThread("cp-6")).toEqual({ ok: true });
     expect(store.listTurnCheckpoints("cp-6")).toEqual([]);
+  });
+});
+
+describe("thread pull request link", () => {
+  test("link, read and clear round-trip through the thread row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "pr-1", projectPath: "/p", provider: "opencode" });
+    expect(store.threadPullRequestLink("pr-1")).toBeNull();
+
+    expect(
+      store.setThreadPullRequestLink("pr-1", {
+        repository: "acme/site",
+        number: 42,
+        url: "https://github.com/acme/site/pull/42",
+        state: "open",
+        checkedAt: 100,
+      }),
+    ).toBe(true);
+    expect(store.threadPullRequestLink("pr-1")).toEqual({
+      repository: "acme/site",
+      number: 42,
+      url: "https://github.com/acme/site/pull/42",
+      state: "open",
+      checkedAt: 100,
+      mergedAt: null,
+    });
+
+    // An input that names no PR is refused, and so is an unknown thread.
+    expect(store.setThreadPullRequestLink("pr-1", { url: "" })).toBe(false);
+    expect(store.setThreadPullRequestLink("ghost", { url: "u", number: 1 })).toBe(false);
+
+    expect(store.clearThreadPullRequestLink("pr-1")).toBe(true);
+    expect(store.threadPullRequestLink("pr-1")).toBeNull();
+  });
+
+  test("linkedThreadPullRequests lists only linked threads, oldest check first", () => {
+    const store = freshStore();
+    for (const id of ["a", "b", "c"]) {
+      store.ensureThread({ threadId: id, projectPath: "/p", provider: "opencode" });
+    }
+    store.setThreadPullRequestLink("a", {
+      url: "https://x/pull/1",
+      number: 1,
+      state: "open",
+      checkedAt: 200,
+    });
+    store.setThreadPullRequestLink("b", {
+      url: "https://x/pull/2",
+      number: 2,
+      state: "merged",
+      checkedAt: 100,
+    });
+    const rows = store.linkedThreadPullRequests(10);
+    expect(rows.map((r) => r.threadId)).toEqual(["b", "a"]);
+    expect(rows[0]?.link.state).toBe("merged");
+    expect(rows[0]?.projectPath).toBe("/p");
+  });
+});
+
+describe("project scripts and settle candidates", () => {
+  test("project scripts round-trip per path and kind, and clear", () => {
+    const store = freshStore();
+    expect(store.projectScript("/p", "setup")).toBeNull();
+    store.setProjectScript("/p", "setup", "bun install");
+    store.setProjectScript("/q", "settle", "docker compose down");
+    expect(store.projectScript("/p", "setup")).toBe("bun install");
+    expect(store.projectScript("/q", "settle")).toBe("docker compose down");
+    // A different kind or path is a different script.
+    expect(store.projectScript("/p", "settle")).toBeNull();
+    expect(store.projectScript("/q", "setup")).toBeNull();
+    store.setProjectScript("/p", "setup", null);
+    expect(store.projectScript("/p", "setup")).toBeNull();
+  });
+
+  test("settle candidates include linked and worktree threads, not local or archived", () => {
+    const store = freshStore();
+    for (const id of ["linked", "wt", "local", "archived"]) {
+      store.ensureThread({ threadId: id, projectPath: "/p", provider: "opencode" });
+    }
+    store.setThreadWorkspace("wt", {
+      envMode: "worktree",
+      worktreePath: "/p/.worktrees/wt",
+      requestedBranch: "feature",
+    });
+    store.setThreadWorkspace("local", { envMode: "local" });
+    store.setThreadPullRequestLink("linked", {
+      url: "https://x/pull/1",
+      number: 1,
+      state: "open",
+      checkedAt: 1,
+    });
+    store.setThreadPullRequestLink("archived", {
+      url: "https://x/pull/9",
+      number: 9,
+      state: "open",
+      checkedAt: 1,
+    });
+    store.setArchived("archived", true);
+
+    const ids = store
+      .settleThreadPullRequestCandidates(10, Number.MAX_SAFE_INTEGER)
+      .map((candidate) => candidate.threadId)
+      .sort();
+    expect(ids).toEqual(["linked", "wt"]);
+  });
+
+  test("latestUserAuthoredAt reads the newest prompt, not assistant activity or agent messages", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    expect(store.latestUserAuthoredAt("t")).toBeNull();
+    store.recordUserBlock({ threadId: "t", text: "first", at: 100 });
+    store.applyEvent(turnStarted("t", "turn-1", 200));
+    expect(store.latestUserAuthoredAt("t")).toBe(100);
+    // A message from an agent or kone lands in the same block table but is not
+    // the user, so it does not count as the user having written.
+    store.recordUserBlock({ threadId: "t", text: "note from an agent", at: 250, sender: { kind: "system" } });
+    expect(store.latestUserAuthoredAt("t")).toBe(100);
+    store.recordUserBlock({ threadId: "t", text: "second", at: 300 });
+    expect(store.latestUserAuthoredAt("t")).toBe(300);
+  });
+
+  test("worktreeHasOtherLiveThreads is true only for another non-settled sharer", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "opencode" });
+    store.ensureThread({ threadId: "b", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("a", { envMode: "worktree", worktreePath: "/p/.wt", requestedBranch: "x" });
+    // b is not on the worktree yet.
+    expect(store.worktreeHasOtherLiveThreads("/p/.wt", "a")).toBe(false);
+    store.setThreadWorkspace("b", { envMode: "worktree", worktreePath: "/p/.wt" });
+    expect(store.worktreeHasOtherLiveThreads("/p/.wt", "a")).toBe(true);
+    // A settled sharer no longer counts.
+    store.applyEvent(turnStarted("b", "turn-1", 10));
+    store.applyEvent(turnCompleted("b", "turn-1", 20));
+    store.setDone("b", true);
+    expect(store.worktreeHasOtherLiveThreads("/p/.wt", "a")).toBe(false);
+  });
+
+  test("threadIsBusy is true while a turn runs and false once it ends", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    expect(store.threadIsBusy("t")).toBe(false);
+    store.applyEvent(turnStarted("t", "turn-1", 10));
+    expect(store.threadIsBusy("t")).toBe(true);
+    store.applyEvent(turnCompleted("t", "turn-1", 20));
+    expect(store.threadIsBusy("t")).toBe(false);
+  });
+
+  test("a queued-but-not-promoted follow-up keeps threadIsBusy true on an idle thread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ blockId: "ub-1", threadId: "t", text: "later", at: 100 });
+    store.enqueueQueuedTurn({
+      queueId: "q1",
+      threadId: "t",
+      userBlockId: "ub-1",
+      input: "later",
+      at: 100,
+    });
+    expect(store.threadIsBusy("t")).toBe(true);
+    store.cancelQueuedTurn("q1");
+    expect(store.threadIsBusy("t")).toBe(false);
+  });
+
+  test("checked_at backoff advances a bounded candidate list past attempted threads", () => {
+    const store = freshStore();
+    for (let i = 0; i < 25; i++) {
+      store.ensureThread({ threadId: `w${i}`, projectPath: "/p", provider: "opencode" });
+      store.setThreadWorkspace(`w${i}`, {
+        envMode: "worktree",
+        worktreePath: `/p/.wt/${i}`,
+      });
+    }
+    const first = store.settleThreadPullRequestCandidates(20, Number.MAX_SAFE_INTEGER);
+    expect(first).toHaveLength(20);
+
+    // Every attempt advances the check time, even when there was no PR to see.
+    const now = Date.now();
+    for (const candidate of first) store.recordThreadPullRequestAttempt(candidate.threadId, now);
+
+    const next = store.settleThreadPullRequestCandidates(20, now - 1_000);
+    expect(next.map((c) => c.threadId).sort()).toEqual([
+      "w20",
+      "w21",
+      "w22",
+      "w23",
+      "w24",
+    ]);
   });
 });

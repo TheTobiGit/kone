@@ -122,7 +122,7 @@ describe("agent grants", () => {
   });
 });
 
-describe("migration 31: AgentGrants", () => {
+describe("migration 39: AgentGrants", () => {
   test("the table refuses an unknown access and goes with either thread", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-migration-grants-"));
     const file = path.join(dir, "kone.sqlite");
@@ -142,7 +142,7 @@ describe("migration 31: AgentGrants", () => {
   });
 });
 
-describe("migration 32: CrewBoards", () => {
+describe("migration 40: CrewBoards", () => {
   test("a board goes with its owner, and everything on it with the board; states and access are checked", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-migration-boards-"));
     const file = path.join(dir, "kone.sqlite");

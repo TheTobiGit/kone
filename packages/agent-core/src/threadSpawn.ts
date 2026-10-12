@@ -272,6 +272,7 @@ export type SpawnErrorCode =
   | "invalid_input"
   | "capability_denied"
   | "provider_unavailable"
+  | "cancelled"
   | "not_found"
   | "permission_denied"
   | "idempotency_conflict"

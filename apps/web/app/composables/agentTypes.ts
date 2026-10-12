@@ -321,6 +321,21 @@ export type QueueBridge = {
   queuedTurns?: (threadId: string) => Promise<QueuedTurnRow[]>;
   cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
   reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
+  /** Edit a waiting row in place; position is kept. */
+  editQueuedTurn?: (
+    threadId: string,
+    queueId: string,
+    patch: {
+      input: string;
+      attachments?: QueuedTurnRow["attachments"];
+      skills?: QueuedTurnRow["skills"];
+      model?: string | null;
+      mode?: string | null;
+      effort?: string | null;
+      serviceTier?: string | null;
+      contextWindow?: string | null;
+    },
+  ) => Promise<boolean>;
   sendQueuedTurnNow?: (threadId: string, queueId: string) => Promise<boolean>;
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
   interruptStepWaitNow?: (threadId: string, waitId: string) => Promise<boolean>;

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { WorktreeSetupSnapshot } from "./worktreeSetup.js";
+
 // ── Agent provider data model ───────────────────────────────────────────────
 // The load-bearing contract for kone's multi-provider agent layer. Everything
 // here is flat and serializable — it all crosses the IPC boundary to the
@@ -160,6 +162,19 @@ export type AgentPersona = {
   instructions?: string;
 };
 
+/** A provider-native fork to perform when a fork thread's session first starts:
+ *  the source conversation and the turn to fork at. Codex forks via
+ *  `thread/fork` (`beforeTurnId` → `lastTurnId`); Claude via the SDK
+ *  `forkSession` (`assistantUuid` → `upToMessageId`). */
+export type NativeForkTarget = {
+  /** The source thread's native conversation id (StoredThreadMeta.conversationId). */
+  conversationId: string;
+  /** Codex: continue after this provider turn id. */
+  beforeTurnId?: string;
+  /** Claude: the assistant message uuid to fork up to. */
+  assistantUuid?: string;
+};
+
 export type SessionStartInput = {
   /** Caller-chosen thread id — kone owns this; the CLI's native id is mapped
    *  onto it via ProviderRefs. */
@@ -209,6 +224,11 @@ export type SessionStartInput = {
    *  at the last assistant message instead. Absent for every other provider and
    *  for Claude conversations that never produced an assistant message. */
   resumeSessionAt?: string;
+  /** A native fork to perform when this session starts (see NativeForkTarget):
+   *  the provider forks the source conversation at the turn and this session
+   *  continues the fork. Present only for a native fork thread's first start;
+   *  absent resumes or starts fresh as usual. */
+  forkFrom?: NativeForkTarget;
   /** MCP gateway connection for this session, filled main-side by
    *  AgentService.startSession when the gateway is live. The adapter injects
    *  it into the provider session's mcpServers config so the agent can call
@@ -388,6 +408,8 @@ export type TurnStartResult = {
   /** The thread was busy, so the turn waits in the queue: no provider has it
    *  yet, and `turnId` will never name a turn. */
   queued?: true;
+  /** A noQueue send was held by restore, compaction, or a live turn. */
+  held?: true;
   /** A steer its provider cannot take mid-turn, waiting for the tool call
    *  the turn is in to finish before kone ends the turn and it goes next
    *  (kone steer): the call, and when the wait began. */
@@ -409,6 +431,31 @@ export type StepWait = {
   since: number;
 };
 
+/** Outcome of a stop, split into the request and its confirmation so a caller
+ *  can say which it has. `interruptRequested` is why the stop was worth
+ *  issuing — a live session, a turn in flight, or a session still connecting;
+ *  `confirmedStopped` is the state read after the teardown, false while a
+ *  provider is still coming down (or still coming up) and could yet deliver a
+ *  turn. `wasRunning` is the narrow "a session existed when we looked". */
+export type ThreadStopResult = {
+  interruptRequested: boolean;
+  confirmedStopped: boolean;
+  wasRunning: boolean;
+  /** Why a stop could not be confirmed (a start or teardown that did not
+   *  finish in time), when there is one. */
+  detail?: string;
+};
+
+/** Thrown by `startSession` when an interrupt or stop cancelled the session
+ *  start before it could run its first turn. Callers must treat it as
+ *  "cancelled", not "failed", and keep the prompt rather than discarding it. */
+export class StartCancelled extends Error {
+  constructor(readonly threadId: string) {
+    super(`Session start for ${threadId} was cancelled.`);
+    this.name = "StartCancelled";
+  }
+}
+
 /** What a caller of sendTurn or steerTurn asks of the hand-off. */
 export type TurnSendOptions = {
   /** Runs once, the moment the provider takes the turn — before the
@@ -422,6 +469,8 @@ export type TurnSendOptions = {
   /** A steer that must land in a turn the provider is running, or not at all:
    *  refused rather than queued when no announced turn can take it. */
   liveOnly?: boolean;
+  /** Return held instead of persisting this turn when the service would queue it. */
+  noQueue?: boolean;
 };
 
 /** The naming source for a turn: prose first, then the invoked skill, then
@@ -628,6 +677,12 @@ export type HandInRecord = {
   toModel?: string;
   /** Epoch millis when the thread changed hands. */
   at: number;
+  /** Block ids the one-shot replay omitted for lack of budget, recorded when
+   *  the bootstrap was built so the agent can read the rest back and the
+   *  timeline can say what was left out. Absent when nothing was omitted. */
+  omittedBlockIds?: string[];
+  /** Item ids inside the omitted blocks, for the same read-back. */
+  omittedItemIds?: string[];
 };
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
@@ -797,6 +852,17 @@ export type StoredThreadMeta = {
    *
    *  Never read it alone — go through isThreadUnread. */
   lastVisitedAt?: number | null;
+  /** When a turn last failed on a provider usage limit (v30), or null. A real
+   *  state distinct from a plain failure: the thread is waiting out a provider
+   *  limit, not broken. `limitResetAt` is the provider's own reset time when it
+   *  gave one — null means unknown, never guessed. */
+  limitedAt?: number | null;
+  limitResetAt?: number | null;
+  /** When a snooze expires (v30), or null. A future value means the thread is
+   *  snoozed unless a wake-early rule clears it; `snoozedAt` is when it was
+   *  set, so a failure or completion after it can wake the thread early. */
+  snoozedUntil?: number | null;
+  snoozedAt?: number | null;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -989,6 +1055,7 @@ export type QueuedTurnStore = Pick<
   | "pendingQueueIds"
   | "queueBoundary"
   | "reorderQueuedTurns"
+  | "editQueuedTurn"
   | "latestUserBlockId"
   | "loadThread"
   | "recoverStaleClaims"
@@ -1067,6 +1134,17 @@ export type ForkContext = {
    *  what the timeline's "Handed from" marker names. Only written for
    *  `"handoff"` forks. */
   sourceModel?: string;
+  /** A native fork to perform when this thread's session first starts: the
+   *  provider conversation to fork and the turn to fork at. Present only on a
+   *  native fork thread, whose import is empty — the first start asks the
+   *  provider to fork instead of replaying history. */
+  nativeFork?: NativeForkTarget;
+  /** Block ids the one-shot replay omitted for lack of budget, recorded when
+   *  the bootstrap was built so the agent can read the rest back and the
+   *  timeline can say what was left out. Absent when nothing was omitted. */
+  omittedBlockIds?: string[];
+  /** Item ids inside the omitted blocks, for the same read-back. */
+  omittedItemIds?: string[];
 };
 
 /** The user-initiated fork kinds. `"side_chat"` borrows the transcript as
@@ -1166,6 +1244,94 @@ export type ForkThreadAtBlockResult = {
    *  `"exists"` = a thread with this id was already there (idempotent replay
    *  of the same creation — the turn is not dispatched twice). */
   status: "created" | "exists";
+};
+
+/** Fork a thread from any finished run at a chosen turn — the conversation
+ *  taken from that run's end. Accepts exactly the shape a conversation-only
+ *  rewind names (`{ sourceThreadId, turnId, userBlockId }`), so a revert that
+ *  refuses a file restore can offer this fork as its alternative. Reuses the
+ *  branch continuation: the import is the source's history through the chosen
+ *  turn's last block. No provider session is started — the first send chooses
+ *  provider/model, falling back to the source's own as a placeholder. */
+export type ForkThreadAtTurnInput = {
+  /** Caller-chosen idempotency key, as create-handoff/create-side-chat use. */
+  requestId: string;
+  /** Renderer-minted id for the new fork thread. */
+  threadId: string;
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, when the caller has it. A turn whose assistant
+   *  block exists cuts at that block (the run's end); a turn that produced no
+   *  answer block falls back to the prompt block. */
+  userBlockId: string | null;
+  /** The provider/model the fork continues on. Omitted leaves the source's
+   *  provider/model as a placeholder — the first send may choose differently
+   *  while the fork has no session or conversation yet. */
+  target?: {
+    provider: ProviderKind;
+    model?: string;
+    effort?: string;
+    mode?: InteractionMode;
+  };
+  title?: string;
+  /** Whether the target provider can fork natively (the caller resolves this
+   *  from the adapter's supportsFork capability). When true and the source has
+   *  a native conversation id, the fork is native; otherwise it is the
+   *  portable branch import. */
+  supportsFork?: boolean;
+};
+
+export type ForkThreadAtTurnResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  provider: ProviderKind;
+  model?: string;
+  /** `"created"` = the fork was written; `"exists"` = a thread with this id
+   *  was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
+/** A conversation-only rewind: the source keeps its files and its turns, and
+ *  the conversation continues from a finished turn's end in a new thread. This
+ *  is exactly the rewind target a file-restore refusal hands over
+ *  (`{ sourceThreadId, turnId, userBlockId }`), plus the caller-minted
+ *  creation ids every fork path takes. No session starts and nothing is sent:
+ *  the fork waits for the user's first message like any lazy fork. */
+export type RewindConversationOnlyInput = {
+  /** Caller-chosen idempotency key, as create-handoff/create-side-chat use. */
+  requestId: string;
+  /** Renderer-minted id for the new thread. */
+  threadId: string;
+  /** The thread to rewind. */
+  sourceThreadId: string;
+  /** The finished turn to continue from. */
+  turnId: string;
+  /** The turn's prompt block, or null when the turn has none (a steer, or a
+   *  prompt that was never journaled). Null cuts at the turn's last assistant
+   *  block instead. */
+  userBlockId: string | null;
+};
+
+export type RewindConversationOnlyResult = ForkThreadAtTurnResult;
+
+/** Deliver a fork's or side chat's outcome back into its source thread as an
+ *  attributed summary block. Data only — the caller emits the timeline event. */
+export type MergeBackInput = {
+  sourceThreadId: string;
+  forkThreadId: string;
+  /** The summary to deliver. When omitted, the fork's latest assistant reply
+   *  is used. */
+  summaryText?: string;
+  at?: number;
+};
+
+export type MergeBackResult = {
+  sourceThreadId: string;
+  forkThreadId: string;
+  /** The attributed (system-sender) block written into the source. */
+  block: Extract<StoredBlock, { role: "user" }>;
 };
 
 /** Where a stored block came from: a live conversation row (`"native"`) or a
@@ -1317,7 +1483,8 @@ export type ThreadStatus =
   | "waiting-for-user-input"
   | "idle"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  | "limited";
 
 /** What can park a thread: an approval the user must decide, or a question
  *  for the user. One vocabulary for the top-level and spawned-child status
@@ -1697,6 +1864,14 @@ export type RuntimeEvent =
        *  step that finished. */
       note?: string;
     })
+  // The richer, staged view of the same window as thread.workspace.progress:
+  // fetch → checkout (with git's own percentage) → submodules → setup script →
+  // agent, each with logs and errors, as a whole snapshot on every change.
+  // Transient and never journaled, like the coarse steps above.
+  | (BaseEvent & {
+      type: "thread.worktree.setup";
+      snapshot: WorktreeSetupSnapshot;
+    })
   // The provider compacted the thread's context window — natively (Codex
   // `thread/compacted`, OpenCode `session.compacted`, Claude's
   // `compact_boundary`) or synthesized after a manual `/compact` turn settled
@@ -1728,6 +1903,19 @@ export type RuntimeEvent =
   // lists; `doneAt` is the stamp the store wrote (the cleared sentinel when
   // un-marked), so consumers agree with the row on when the mark landed.
   | (BaseEvent & { type: "thread.done.updated"; done: boolean; doneAt: number })
+  // A thread's usage-limit state changed: a turn failed on a provider limit
+  // (limited true) with the provider's reset when it gave one, or the mark was
+  // cleared by real new work or a manual resume (limited false). `limitResetAt`
+  // is null when the provider gave no reset — never guessed.
+  | (BaseEvent & {
+      type: "thread.limit.updated";
+      limited: boolean;
+      limitedAt: number | null;
+      limitResetAt: number | null;
+    })
+  // A thread's snooze changed: `snoozedUntil` is the deadline (null clears).
+  // Lists move the row out of / back into the inbox without a reload.
+  | (BaseEvent & { type: "thread.snooze.updated"; snoozedUntil: number | null })
   // The provider rerouted the request to a different model mid-session (Codex
   // `model/rerouted`, Claude safeguard refusals falling back to another model).
   // Consumers update the session's model label; `reason` is the provider's own
@@ -1975,6 +2163,12 @@ export type RuntimeEvent =
       attemptCount: number;
       retryAt?: number;
       error?: string;
+      /** Present when this update is an in-place EDIT rather than a lifecycle
+       *  move: the row's new words, so the queue strip restates it where it
+       *  sits. Absent for ordinary state changes. */
+      input?: string;
+      attachments?: ChatAttachment[];
+      skills?: SkillReference[];
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -1997,8 +2191,16 @@ export type RuntimeEvent =
       type: "turn.queued-reordered";
       queueIds: string[];
     })
-  | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
-  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string })
+  | (BaseEvent & {
+      type: "turn.completed";
+      turnId: string;
+      conversationId?: string;
+      /** Claude only: the last assistant message uuid this turn produced — the
+       *  anchor a native fork at this turn resumes from. Absent on providers
+       *  that name no per-turn message. */
+      assistantUuid?: string;
+    })
+  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string; /** The provider's own reset time (epoch millis) when the failure is a usage limit that carried one. */ limitResetAt?: number })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
   // turn itself: it belongs in that run's `items`, not the assistant block's.
   | (BaseEvent & {
@@ -2122,6 +2324,10 @@ export type AdapterCapabilities = {
   supportsToolEvents: boolean;
   /** Can resume a prior conversation. */
   supportsResume: boolean;
+  /** Can fork a prior conversation natively at a chosen turn (Codex
+   *  `thread/fork`, Claude `forkSession`). Absent reads as false; the portable
+   *  branch import is the fallback. */
+  supportsFork?: boolean;
   supportsModelList: boolean;
   /** Spawns provider-native subagents inside a turn and reports their nested
    *  transcripts (`subagent.*` events + items tagged with a run). */
@@ -2246,6 +2452,11 @@ export type ProviderConfig = {
   antigravityGcpLocation?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays into
+   *  a session on this provider. The budget is still sized down from the target
+   *  model's window, native usage, the new prompt and headroom; this only caps
+   *  it. Absent uses the built-in default (see contextHandoff.ts). */
+  handoffTokenCap?: number;
 };
 
 /** Persisted install settings for every provider, keyed by provider. */

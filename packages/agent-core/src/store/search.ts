@@ -4,6 +4,7 @@ import type {
   ConversationSearchHit,
   ConversationSearchOptions,
 } from "../conversationStoreTypes.js";
+import { parseMessageSender } from "@kone/protocol/message-sender";
 import { decodeStoredText } from "./itemTextChunks.js";
 
 /** Full-text search over stored conversation text, plus the writers that keep
@@ -318,6 +319,7 @@ export class SearchRepo {
       const ftsQuery = toFtsQuery(query);
       if (!ftsQuery || !ftsReady(db)) return [];
       const limit = clampLimit(options?.limit);
+      const offset = clampOffset(options?.offset);
       const scoped = options?.threadId;
       type FtsHitRow = {
         thread_id: string;
@@ -328,28 +330,39 @@ export class SearchRepo {
         at: number;
         snippet: string;
         rank: number;
+        sender_json: string | null;
       };
+      // A row whose block is gone is an orphan (a block removed without its
+      // index row): skipped, never offered as a jump to nothing.
       // Column 6 of the FTS table is the indexed text — the only column the
       // excerpt is ever drawn from. bm25 orders best-first (most negative).
       const sql = scoped
-        ? `SELECT thread_id, entry_kind, block_id, turn_id, item_id, at,
+        ? `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
+                  conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
+                  blocks.sender_json AS sender_json,
                   snippet(conversation_fts, 6, '<mark>', '</mark>', '…', 24) AS snippet,
                   bm25(conversation_fts) AS rank
              FROM conversation_fts
-            WHERE conversation_fts MATCH ? AND thread_id = ?
-            ORDER BY rank LIMIT ?`
-        : `SELECT thread_id, entry_kind, block_id, turn_id, item_id, at,
+             LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
+            WHERE conversation_fts MATCH ? AND conversation_fts.thread_id = ?
+              AND (conversation_fts.block_id IS NULL OR blocks.block_id IS NOT NULL)
+            ORDER BY rank LIMIT ? OFFSET ?`
+        : `SELECT conversation_fts.thread_id, conversation_fts.entry_kind, conversation_fts.block_id,
+                  conversation_fts.turn_id, conversation_fts.item_id, conversation_fts.at,
+                  blocks.sender_json AS sender_json,
                   snippet(conversation_fts, 6, '<mark>', '</mark>', '…', 24) AS snippet,
                   bm25(conversation_fts) AS rank
              FROM conversation_fts
+             LEFT JOIN blocks ON blocks.block_id = conversation_fts.block_id AND blocks.thread_id = conversation_fts.thread_id
             WHERE conversation_fts MATCH ?
-            ORDER BY rank LIMIT ?`;
+              AND (conversation_fts.block_id IS NULL OR blocks.block_id IS NOT NULL)
+            ORDER BY rank LIMIT ? OFFSET ?`;
       // SAFETY: the projection names exactly the FTS columns plus the two
       // aliased FTS5 auxiliary outputs read below.
       const rows = (
         scoped
-          ? db.prepare(sql).all(ftsQuery, scoped, limit)
-          : db.prepare(sql).all(ftsQuery, limit)
+          ? db.prepare(sql).all(ftsQuery, scoped, limit, offset)
+          : db.prepare(sql).all(ftsQuery, limit, offset)
       ) as FtsHitRow[];
       const hits: ConversationSearchHit[] = [];
       for (const row of rows) {
@@ -359,6 +372,7 @@ export class SearchRepo {
         hits.push({
           threadId: row.thread_id,
           entryKind,
+          isUserAuthored: entryKind === "block" && !parseMessageSender(row.sender_json),
           blockId: row.block_id,
           turnId: row.turn_id,
           itemId: row.item_id,
@@ -383,4 +397,9 @@ function clampLimit(limit: number | undefined): number {
     return SEARCH_DEFAULT_LIMIT;
   }
   return Math.max(1, Math.min(SEARCH_MAX_LIMIT, Math.floor(limit)));
+}
+
+function clampOffset(offset: number | undefined): number {
+  if (offset === undefined || offset === null || !Number.isFinite(offset)) return 0;
+  return Math.max(0, Math.floor(offset));
 }
