@@ -624,6 +624,11 @@ export class ConversationStore implements CheckpointStore, AgentInboxStore {
   }
 
   /** @see ContinuationRepo */
+  deferContinuation(continuationId: string, nextDueAt: number): void {
+    this.continuations.defer(continuationId, nextDueAt);
+  }
+
+  /** @see ContinuationRepo */
   deleteContinuation(continuationId: string): void {
     this.continuations.deleteContinuation(continuationId);
   }
