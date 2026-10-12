@@ -348,3 +348,42 @@ test("does not signal a pid reused while the final marker inspection awaits", as
   await ledger.reap();
   expect(signals).toEqual([]);
 }, 10_000));
+
+test("resets the unverifiable count for a marked leaderless group that survives both signals", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 42100, pgid: 42100, marker: entryMarker, unverifiableAttempts: 9 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const signals: NodeJS.Signals[] = [];
+  const ledger = new OpenCodeServerLedger(
+    file,
+    async (pid) => pid === entry.pid ? { state: "gone" } : { state: "alive", startTime: originalMember.startTime, command: originalMember.command },
+    () => { throw new Error("unexpected group signal"); },
+    async () => [originalMember],
+    () => "alive",
+    async () => "marked",
+    (_pid, signal) => { signals.push(signal); },
+  );
+  await ledger.reap();
+  expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  expect(ledger.snapshot()).toEqual([{ ...entry, unverifiableAttempts: 0 }]);
+}, 10_000));
+
+test("an ownership exclusion in a leaderless reap leaves the retry count untouched", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 42200, pgid: 42200, marker: entryMarker, unverifiableAttempts: 9 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const owned = new Set<number>();
+  let memberRead = false;
+  const ledger = new OpenCodeServerLedger(
+    file,
+    async (pid) => pid === entry.pid ? { state: "gone" } : { state: "alive", startTime: originalMember.startTime, command: originalMember.command },
+    () => { throw new Error("unexpected group signal"); },
+    async () => {
+      if (!memberRead) { memberRead = true; owned.add(entry.pid); }
+      return [originalMember];
+    },
+    () => "alive",
+    async () => "marked",
+    () => { throw new Error("unexpected member signal"); },
+  );
+  await ledger.reap(undefined, owned);
+  expect(ledger.snapshot()).toEqual([entry]);
+}, 10_000));
