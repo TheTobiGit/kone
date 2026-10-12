@@ -441,6 +441,11 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     return this.queuedTurns.releaseQueuedTurn(queueId, to);
   }
 
+  /** Refuse a row a provider switch could not honour. @see QueuedTurnRepo */
+  refuseQueuedTurn(queueId: string, reason: string): boolean {
+    return this.queuedTurns.refuseQueuedTurn(queueId, reason);
+  }
+
   /** @see QueuedTurnRepo */
   reorderQueuedTurns(threadId: string, queueIds: string[]): boolean {
     return this.queuedTurns.reorderQueuedTurns(threadId, queueIds);
