@@ -1289,7 +1289,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // gives an unreadable thread — no completion state and no existence clue.
     // It counts as settled so one revocation cannot park the whole wait.
     const pollTargets = (): GatewayRecord[] =>
-      targets.map(({ threadId, turnId }) => {
+      targets.map(({ threadId, turnId }): GatewayRecord => {
         if (!canReadNow(threadId)) {
           return { threadId, refused: true, terminal: true, refusal: `capability_denied: ${outOfScope(threadId)}` };
         }
@@ -1320,7 +1320,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     // once more so a just-revoked target cannot ride out on the result it last
     // saw. Progress already read for still-readable targets is kept as-is.
     const withCurrentAuthority = (observed: GatewayRecord[]): GatewayRecord[] =>
-      observed.map((entry) => {
+      observed.map((entry): GatewayRecord => {
         const threadId = String(entry.threadId);
         if (entry.refused === true || canReadNow(threadId)) return entry;
         return { threadId, refused: true, terminal: true, refusal: `capability_denied: ${outOfScope(threadId)}` };
