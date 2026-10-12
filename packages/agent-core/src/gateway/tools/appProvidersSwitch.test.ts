@@ -157,4 +157,49 @@ describe("app_switch_provider", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text ?? "").toContain("Cannot switch providers");
   });
+
+  it("resolves a provider-only fallback request to the allowed model", async () => {
+    const controls = recordingControls({ applied: "pending", selection: { provider: "claudeAgent", model: "claude-x" } });
+    const result = await call(
+      {
+        store: makeStore({
+          getThreadAgent: () => ({ agentId: "a" }),
+          getAgent: () => ({
+            model: { provider: "codex", model: "gpt-5" },
+            modelFallbacks: [{ provider: "claudeAgent", model: "claude-x" }],
+          }),
+        }),
+        controls,
+        availability: async () => AVAILABILITY,
+      },
+      { provider: "claudeAgent" },
+    );
+    expect(result.isError).toBeFalsy();
+    // The provider-only request takes the one model the chain allows there.
+    expect(controls.calls[0]?.model).toBe("claude-x");
+  });
+
+  it("refuses a provider-only request with several rungs on that provider", async () => {
+    const controls = recordingControls({ applied: "pending", selection: { provider: "claudeAgent" } });
+    const result = await call(
+      {
+        store: makeStore({
+          getThreadAgent: () => ({ agentId: "a" }),
+          getAgent: () => ({
+            model: { provider: "codex", model: "gpt-5" },
+            modelFallbacks: [
+              { provider: "claudeAgent", model: "claude-x" },
+              { provider: "claudeAgent", model: "claude-y" },
+            ],
+          }),
+        }),
+        controls,
+        availability: async () => AVAILABILITY,
+      },
+      { provider: "claudeAgent" },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text ?? "").toMatch(/several models|Name the model/);
+    expect(controls.calls).toHaveLength(0);
+  });
 });
