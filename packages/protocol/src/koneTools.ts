@@ -13,6 +13,9 @@
 export const KONE_WORKER_TOOL_NAMES = [
   "scratchpad_read",
   "scratchpad_write",
+  "tasks_write",
+  "tasks_update",
+  "tasks_read",
   "agent_directory",
   "worker_start",
   "worker_start_batch",

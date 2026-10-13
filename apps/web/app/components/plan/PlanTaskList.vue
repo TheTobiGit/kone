@@ -3,16 +3,20 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { CheckmarkCircle01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
-import TurnOrb from "~/components/turn/TurnOrb.vue";
 import DockSection from "~/components/thread/DockSection.vue";
+import PlanTaskRow from "~/components/plan/PlanTaskRow.vue";
 import { useDockSection } from "~/composables/useDockSections";
-import { formatPlanTasks, planTaskCounts, type PlanTask } from "~/utils/planTasks";
+import { formatPlanTasks, labelForTask, planTaskCounts, type PlanTask } from "~/utils/planTasks";
 
 // The Tasks section of the thread dock — the agent's plan, ticking itself off.
+// A task that splits shows its subtasks under it until it is done; a checklist
+// the provider kept beside kone's own folds into one quiet line at the foot.
 
 const props = defineProps<{
   tasks: PlanTask[];
   streaming?: boolean;
+  /** The provider's own checklist, when kone's list leads. */
+  providerTasks?: PlanTask[];
 }>();
 
 const { cue } = useSound();
@@ -26,19 +30,16 @@ useDockSection("tasks", expanded);
 
 const counts = computed(() => planTaskCounts(props.tasks));
 
-function taskLabel(task: PlanTask): string {
-  return task.status === "in-progress" && task.activeForm ? task.activeForm : task.content;
-}
-
 const meta = computed(() => {
   const { total, completed } = counts.value;
   if (!total) return props.streaming ? "…" : "0";
   return `${completed}/${total}`;
 });
 
-// Copy the plan out as markdown checkboxes — the same serialization
-// formatPlanTasks uses to rebuild a plan, so pasting it into a thread (or an
-// issue) round-trips. A brief ✓ swap on the button confirms the copy.
+// Copy the plan out as markdown checkboxes — the serialization formatPlanTasks
+// writes plan bodies in, with subtasks nested under their task — so it pastes
+// into a thread or an issue as a checklist. A brief ✓ swap on the button
+// confirms the copy.
 const copied = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
 async function copyPlan() {
@@ -55,7 +56,32 @@ async function copyPlan() {
   }
 }
 
-const liveTask = computed(() => props.tasks.find((t) => t.status === "in-progress"));
+/** The row the agent is on, for the folded head: inside a task that splits,
+ *  the subtask under way. */
+const liveTask = computed(() => {
+  const task = props.tasks.find((t) => t.status === "in-progress");
+  return task?.subtasks?.find((s) => s.status === "in-progress") ?? task;
+});
+
+function subtaskCount(task: PlanTask): string {
+  const subs = task.subtasks ?? [];
+  return `${subs.filter((s) => s.status === "completed").length}/${subs.length}`;
+}
+
+/** A finished task folds its subtasks away; the tick on the task says it. */
+function openSubtasks(task: PlanTask): PlanTask[] {
+  return task.status === "completed" ? [] : (task.subtasks ?? []);
+}
+
+const providerOpen = ref(false);
+const providerCount = computed(() => {
+  const { total, completed } = planTaskCounts(props.providerTasks ?? []);
+  return `${completed}/${total}`;
+});
+function toggleProvider(): void {
+  providerOpen.value = !providerOpen.value;
+  cue(providerOpen.value ? "expand" : "collapse");
+}
 
 function toggle(): void {
   expanded.value = !expanded.value;
@@ -89,7 +115,6 @@ onBeforeUnmount(() => {
 
 const rowSpring = { type: "spring", stiffness: 460, damping: 24, mass: 0.65 } as const;
 const fadeEase = [0.22, 1, 0.36, 1] as const;
-const checkFade = { duration: 0.16, ease: fadeEase } as const;
 
 function rowDelay(index: number): number {
   return Math.min(index * 0.045, 0.28);
@@ -104,13 +129,13 @@ function rowDelay(index: number): number {
           v-if="!expanded && liveTask"
           :key="liveTask.id"
           class="dock-peek"
-          :title="taskLabel(liveTask)"
+          :title="labelForTask(liveTask)"
           :initial="{ opacity: 0, x: 8 }"
           :animate="{ opacity: 1, x: 0 }"
           :exit="{ opacity: 0, x: -6 }"
           :transition="{ duration: 0.22, ease: fadeEase }"
         >
-          {{ taskLabel(liveTask) }}
+          {{ labelForTask(liveTask) }}
         </motion.span>
       </AnimatePresence>
       <!-- Copy the plan as markdown checkboxes. A span (not a button): the head
@@ -169,64 +194,50 @@ function rowDelay(index: number): number {
         <motion.div
           v-for="(task, index) in props.tasks"
           :key="task.id"
-          class="plan-row"
-          :class="{
-            'plan-row--done': task.status === 'completed',
-            'plan-row--live': task.status === 'in-progress',
-          }"
+          class="plan-item"
           layout
           :initial="{ opacity: 0, y: 8, scale: 0.98 }"
           :animate="{ opacity: 1, y: 0, scale: 1 }"
           :exit="{ opacity: 0, y: -6, scale: 0.98 }"
           :transition="{ ...rowSpring, delay: rowDelay(index) }"
         >
-          <span
-            class="plan-check"
-            :class="{
-              'plan-check--pending': task.status === 'pending',
-              'plan-check--live': task.status === 'in-progress',
-              'plan-check--done': task.status === 'completed',
-            }"
-            aria-hidden="true"
-          >
-            <span class="plan-check-stack">
-              <motion.span
-                class="plan-check-orb"
-                :animate="{
-                  opacity: task.status === 'in-progress' ? 1 : 0,
-                  scale: task.status === 'in-progress' ? 1 : 0.9,
-                }"
-                :transition="checkFade"
-              >
-                <TurnOrb
-                  v-if="task.status !== 'pending'"
-                  state="working"
-                  :size="14"
-                  aria-label="In progress"
-                />
-              </motion.span>
-              <motion.span
-                class="plan-check-mark"
-                :animate="{
-                  opacity: task.status === 'completed' ? 1 : 0,
-                  scale: task.status === 'completed' ? 1 : 0.88,
-                }"
-                :transition="checkFade"
-              >
-                <span class="plan-check-on">✓</span>
-              </motion.span>
-            </span>
-          </span>
-          <motion.span
-            class="plan-label"
-            :title="taskLabel(task)"
-            layout
-            :transition="{ type: 'spring', stiffness: 380, damping: 32, mass: 0.7 }"
-          >
-            {{ taskLabel(task) }}
-          </motion.span>
+          <PlanTaskRow :task="task">
+            <template v-if="task.subtasks?.length" #trail>
+              <span class="plan-sub-count">{{ subtaskCount(task) }}</span>
+            </template>
+          </PlanTaskRow>
+          <AnimatePresence :initial="false">
+            <motion.div
+              v-for="sub in openSubtasks(task)"
+              :key="sub.id"
+              layout
+              :initial="{ opacity: 0, y: 4 }"
+              :animate="{ opacity: 1, y: 0 }"
+              :exit="{ opacity: 0, y: -3 }"
+              :transition="{ duration: 0.18, ease: fadeEase }"
+            >
+              <PlanTaskRow :task="sub" nested />
+            </motion.div>
+          </AnimatePresence>
         </motion.div>
       </AnimatePresence>
+
+      <!-- The provider's own checklist, kept beside kone's: folded to one line,
+           open on a click. -->
+      <div v-if="props.providerTasks?.length" class="plan-provider">
+        <button
+          type="button"
+          class="plan-provider__head"
+          :aria-expanded="providerOpen"
+          @click="toggleProvider"
+        >
+          <span>Also on the provider's own checklist</span>
+          <span class="plan-sub-count">{{ providerCount }}</span>
+        </button>
+        <div v-if="providerOpen" class="plan-provider__rows">
+          <PlanTaskRow v-for="task in props.providerTasks" :key="task.id" :task="task" nested />
+        </div>
+      </div>
     </div>
   </DockSection>
 </template>
@@ -269,92 +280,42 @@ function rowDelay(index: number): number {
   color: var(--accent);
 }
 
-.plan-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.55rem;
-  padding: 0.35rem 0.55rem;
-  border-radius: 10px;
-}
-
-.plan-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* The done count on a task that splits, and on the provider's line. */
+.plan-sub-count {
   flex: none;
-  width: 15px;
-  height: 15px;
-  margin-top: 1px;
-  border-radius: 4px;
-  background: var(--hover);
-  overflow: hidden;
-  transition: background-color 0.16s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.plan-check--live,
-.plan-check--done {
-  background: transparent;
-}
-
-.plan-check-stack {
-  position: relative;
-  width: 15px;
-  height: 15px;
-}
-
-.plan-check-orb,
-.plan-check-mark {
-  position: absolute;
-  inset: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.plan-check-on {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  font-size: 10px;
-  line-height: 1;
-  color: #fff;
-  background: color-mix(in oklab, var(--accent) 88%, transparent);
-  border-radius: inherit;
-}
-
-.plan-label {
-  min-width: 0;
-  flex: 1;
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  line-height: 1.4;
-  color: var(--ink-soft);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  transition:
-    color 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    text-decoration-color 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.plan-row--live .plan-label {
-  color: var(--ink);
-}
-
-.plan-row--done .plan-label {
+  margin-top: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
-  text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--muted) 70%, transparent);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .plan-label {
-    transition: none;
-  }
+.plan-provider {
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+.plan-provider__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.3rem 0.55rem;
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.plan-provider__head:hover,
+.plan-provider__head:focus-visible {
+  background: var(--hover);
+  color: var(--ink-soft);
+}
+
+.plan-provider__rows {
+  opacity: 0.8;
 }
 </style>

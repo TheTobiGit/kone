@@ -203,7 +203,7 @@ const meta = computed(() => {
               />
             </AnimatePresence>
             <AnimatePresence :initial="false">
-              <PlanTaskList v-if="plan" key="plan" :tasks="plan.tasks" :streaming="plan.streaming" />
+              <PlanTaskList v-if="plan" key="plan" :tasks="plan.tasks" :streaming="plan.streaming" :provider-tasks="plan.provider" />
             </AnimatePresence>
             <AnimatePresence :initial="false">
               <AgentSubagentDock
@@ -243,7 +243,7 @@ const meta = computed(() => {
           />
         </AnimatePresence>
         <AnimatePresence :initial="false">
-          <PlanTaskList v-if="plan" key="plan" :tasks="plan.tasks" :streaming="plan.streaming" />
+          <PlanTaskList v-if="plan" key="plan" :tasks="plan.tasks" :streaming="plan.streaming" :provider-tasks="plan.provider" />
         </AnimatePresence>
         <AnimatePresence :initial="false">
           <AgentSubagentDock

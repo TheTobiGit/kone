@@ -26,6 +26,7 @@ import { useAgentProviders } from "~/composables/useAgentProviders";
 import { agentPersonaForThread, carryThreadIdentity } from "~/utils/agents";
 import { isWorkspaceCancel, peelIpcError } from "~/utils/ipcError";
 import { activePlanTask } from "~/utils/planTasks";
+import { koneTaskListFor } from "~/composables/useKoneTasks";
 
 import {
   type UserBlock,
@@ -1787,7 +1788,7 @@ export function useAgent(options: UseAgentOptions) {
         // A side chat's pill reads its own timeline — the fork-imported history
         // is reference context, not something to surface as a "replied" state.
         block: latestAssistant(s.timelineBlocks.value),
-        task: activePlanTask(s.timelineBlocks.value),
+        task: activePlanTask(s.timelineBlocks.value, koneTaskListFor(s.threadId.value)?.tasks),
         busy: s.busy.value,
         attention: s.attention.value,
         everRan: s.everRan.value,

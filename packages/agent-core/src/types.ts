@@ -1589,6 +1589,7 @@ export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
  *  Canonical definition lives in @kone/protocol (shared with the renderer). */
 export type { PlanTask, PlanTaskStatus } from "@kone/protocol/plan-tasks";
 import type { PlanTask } from "@kone/protocol/plan-tasks";
+import type { KoneTask } from "@kone/protocol/kone-tasks";
 
 export type { ThreadEnvMode } from "./threadWorkspace.js";
 import type { ThreadEnvMode } from "./threadWorkspace.js";
@@ -2122,6 +2123,16 @@ export type RuntimeEvent =
   // claimed, handed over, put back, read, or taken back. It carries no rows;
   // a panel that shows the inbox reads it again.
   | (BaseEvent & { type: "thread.inbox-changed" })
+  // The thread's kone task list changed (tasks_write, tasks_update). Carries
+  // the whole list, so the dock applies it without reading back; a reader
+  // keeps the highest `revision` it has seen. Never journaled: the
+  // thread_tasks row is the record.
+  | (BaseEvent & {
+      type: "thread.tasks-updated";
+      tasks: KoneTask[];
+      revision: number;
+      updatedAt: number;
+    })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.

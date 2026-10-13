@@ -24,6 +24,9 @@ export type PlanTask = {
    *  sends no equivalent. */
   activeForm?: string;
   status: PlanTaskStatus;
+  /** The rows a task splits into — kone's own task lists only; a provider's
+   *  checklist is flat. One level: a subtask has none of its own. */
+  subtasks?: PlanTask[];
 };
 
 const MD_LINE = /^[-*+]\s+\[( |x|X|\/|-)\]\s+(.+)$/;
@@ -117,9 +120,16 @@ export function parsePlanTasks(
   return out;
 }
 
-/** Serialize tasks to markdown checkbox lines for `plan_text` item bodies. */
+/** Serialize tasks to markdown checkbox lines for `plan_text` item bodies.
+ *  Subtasks nest two spaces in, under their task. parsePlanTasks reads a
+ *  provider's flat checklist, so it reads nested lines back flat. */
 export function formatPlanTasks(tasks: readonly PlanTask[]): string {
-  return tasks.map((t) => `- ${markerForStatus(t.status)} ${labelForTask(t)}`).join("\n");
+  const lines: string[] = [];
+  for (const t of tasks) {
+    lines.push(`- ${markerForStatus(t.status)} ${labelForTask(t)}`);
+    for (const s of t.subtasks ?? []) lines.push(`  - ${markerForStatus(s.status)} ${labelForTask(s)}`);
+  }
+  return lines.join("\n");
 }
 
 export type PlanTaskCounts = {

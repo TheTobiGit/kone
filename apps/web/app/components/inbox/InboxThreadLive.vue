@@ -242,6 +242,7 @@ const {
 } = useDockSnapshot(
   blocks,
   computed(() => session.value?.spawnedChildren.value ?? []),
+  computed(() => ({ threadId: props.row.threadId, live: session.value?.busy.value ?? false })),
 );
 
 // While an ask owns the centre-bottom the composer steps aside for it — the

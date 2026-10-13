@@ -41,6 +41,7 @@ import type {
 import type { WorktreeSetupSnapshot } from "@kone/agent-core/worktreeSetup.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type { BoardView } from "@kone/agent-core/boardView.js";
+import type { KoneTaskList } from "@kone/protocol/kone-tasks";
 import type {
   ThreadExportDialogResult,
   ThreadExportFormat,
@@ -598,6 +599,8 @@ const api = {
     // A project's crew boards (brief, members, live rules, status rows).
     // board.updated on the event stream says when to re-read.
     boardsList: (projectPath: string): Promise<BoardView[]> => ipcRenderer.invoke("agent:boards:list", projectPath),
+    // A thread's kone task list. thread.tasks-updated carries later changes.
+    taskList: (threadId: string): Promise<KoneTaskList | null> => ipcRenderer.invoke("agent:tasks:get", threadId),
     queuedTurns: (threadId: string): Promise<QueuedTurnRow[]> =>
       ipcRenderer.invoke("agent:queued-turns", threadId),
     cancelQueuedTurn: (threadId: string, queueId: string): Promise<boolean> =>

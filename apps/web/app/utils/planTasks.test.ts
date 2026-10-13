@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 
 import type { PlanTask } from "~/types/desktop";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
+import type { KoneTask, KoneTaskList } from "@kone/protocol/kone-tasks";
 import {
   activePlanTask,
   deriveActivePlan,
   formatPlanTasks,
   parsePlanTasks,
   reconcilePlanTasks,
+  resolveDockPlan,
 } from "./planTasks";
 
 function task(content: string, status: PlanTask["status"] = "pending", id?: string): PlanTask {
@@ -213,17 +215,18 @@ describe("deriveActivePlan", () => {
   });
 });
 
+function planBlock(tasks: PlanTask[]): ThreadBlock {
+  return {
+    id: "b1",
+    role: "assistant",
+    turnId: "t1",
+    items: [{ itemId: "p1", kind: "plan_text", status: "in-progress", text: "", tasks }],
+    state: "running",
+    at: 1,
+  };
+}
+
 describe("activePlanTask", () => {
-  function planBlock(tasks: PlanTask[]): ThreadBlock {
-    return {
-      id: "b1",
-      role: "assistant",
-      turnId: "t1",
-      items: [{ itemId: "p1", kind: "plan_text", status: "in-progress", text: "", tasks }],
-      state: "running",
-      at: 1,
-    };
-  }
 
   test("names the in-progress task and its position", () => {
     const blocks = [
@@ -257,5 +260,70 @@ describe("activePlanTask", () => {
 
   test("is null with no plan at all", () => {
     expect(activePlanTask([])).toBeNull();
+  });
+});
+
+function koneTask(id: string, content: string, status: KoneTask["status"], subtasks: KoneTask["subtasks"] = []): KoneTask {
+  return { id, content, status, subtasks };
+}
+
+function koneList(tasks: KoneTask[]): KoneTaskList {
+  return { threadId: "t", tasks, revision: 1, updatedAt: 0 };
+}
+
+describe("kone task lists", () => {
+  const native = { tasks: [task("Native step", "in-progress", "n1")], streaming: true, source: "native" as const };
+
+  test("the dock leads with kone's list and folds the provider's under it", () => {
+    const plan = resolveDockPlan(
+      koneList([
+        koneTask("t1", "Wire", "pending", [
+          { id: "t2", content: "One", status: "completed" },
+          { id: "t3", content: "Two", status: "pending" },
+        ]),
+      ]),
+      native,
+      true,
+    );
+    expect(plan?.source).toBe("kone");
+    expect(plan?.streaming).toBe(true);
+    // The parent's status is read off its subtasks, whatever was stored.
+    expect(plan?.tasks[0]?.status).toBe("in-progress");
+    expect(plan?.tasks[0]?.subtasks?.map((s) => s.id)).toEqual(["t2", "t3"]);
+    expect(plan?.provider?.map((t) => t.id)).toEqual(["n1"]);
+  });
+
+  test("with no kone list, or an emptied one, the provider's checklist stands", () => {
+    expect(resolveDockPlan(null, native, false)).toBe(native);
+    expect(resolveDockPlan(koneList([]), native, false)).toBe(native);
+    expect(resolveDockPlan(null, null, false)).toBeNull();
+  });
+
+  test("the pill names the subtask under way with its task, counted among its siblings", () => {
+    const kone = [
+      koneTask("t1", "Store", "completed"),
+      koneTask("t2", "Wire the tool", "in-progress", [
+        { id: "t3", content: "Schema", status: "completed" },
+        { id: "t4", content: "Add tasks_update", status: "in-progress" },
+        { id: "t5", content: "Tests", status: "pending" },
+      ]),
+    ];
+    expect(activePlanTask([], kone)).toEqual({ label: "Wire the tool · Add tasks_update", index: 2, total: 3 });
+  });
+
+  test("the pill counts a task without subtasks among the tasks, and kone's list wins over the provider's", () => {
+    const blocks = [planBlock([task("Native", "in-progress")])];
+    const kone = [koneTask("t1", "A", "completed"), koneTask("t2", "B", "pending")];
+    expect(activePlanTask(blocks, kone)).toEqual({ label: "B", index: 2, total: 2 });
+    expect(activePlanTask(blocks, [])).toEqual({ label: "Native", index: 1, total: 1 });
+  });
+
+  test("copying the plan nests subtasks under their task", () => {
+    const rows = resolveDockPlan(
+      koneList([koneTask("t1", "Wire", "pending", [{ id: "t2", content: "One", status: "completed" }])]),
+      null,
+      false,
+    )!.tasks;
+    expect(formatPlanTasks(rows)).toBe("- [x] Wire\n  - [x] One");
   });
 });

@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 43;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1573,6 +1573,23 @@ function migration0042ProviderSelection(db: DatabaseSync): void {
   }
 }
 
+/**
+ * A thread's kone task list: the checklist an agent keeps through the gateway
+ * (tasks_write, tasks_update) instead of its provider's own. One row per
+ * thread, the list whole as JSON; it goes with the thread.
+ */
+function migration0043ThreadTasks(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS thread_tasks (
+      thread_id  TEXT PRIMARY KEY REFERENCES threads(thread_id) ON DELETE CASCADE,
+      tasks_json TEXT NOT NULL CHECK (json_valid(tasks_json)),
+      next_id    INTEGER NOT NULL DEFAULT 1,
+      revision   INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1616,6 +1633,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 40, name: "CrewBoards", run: migration0040CrewBoards },
   { id: 41, name: "ThreadReferencesAndSubagentDuration", run: migration0041ThreadReferences },
   { id: 42, name: "ProviderSelection", run: migration0042ProviderSelection },
+  { id: 43, name: "ThreadTasks", run: migration0043ThreadTasks },
 ];
 
 export interface MigrationOptions {

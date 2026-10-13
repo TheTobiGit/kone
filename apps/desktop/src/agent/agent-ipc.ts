@@ -146,6 +146,30 @@ let scheduleRunner: ScheduleRunner | null = null;
 let stopDelivery: (() => void) | null = null;
 let stopWorktreeSweeper: (() => void) | null = null;
 
+/** Event types that stream to renderers but never journal: ephemeral live
+ *  round-trips, derived projections, and meta stamps the store already
+ *  wrote directly. */
+const STREAM_ONLY_EVENT_TYPES: ReadonlySet<RuntimeEvent["type"]> = new Set<RuntimeEvent["type"]>([
+  "user-input.requested",
+  "user-input.resolved",
+  "approval.requested",
+  "approval.resolved",
+  "thread.spawned",
+  "thread.spawn-updated",
+  "thread.agent-bound",
+  "thread.archived",
+  "thread.unarchived",
+  "thread.done.updated",
+  "app.theme_mutation",
+  "app.agent_mutation",
+  "app.subagent_presets_changed",
+  "app.strip_mutation",
+  "app.typography_mutation",
+  "bench.job-changed",
+  "thread.inbox-changed",
+  "thread.tasks-updated",
+]);
+
 /** The bench runner, once registerAgentIpc has built it. Resolved lazily by
  *  the bench IPC handlers rather than handed to them at registration: the two
  *  modules are registered independently and neither should have to know which
@@ -617,7 +641,8 @@ export function registerAgentIpc(): void {
         stamped.parentTurnId = dispatcher.spawnParentTurnId(event.threadId);
       }
     }
-    if (journal) store.applyEvent(stamped);
+    // A stream-only type never journals, whichever path broadcast it.
+    if (journal && !STREAM_ONLY_EVENT_TYPES.has(stamped.type)) store.applyEvent(stamped);
     // Slim before the wire: the journal keeps the FULL payload; the renderer
     // copy gets bounded tool-call bodies (see projectRuntimeEventForIpc).
     const wire = projectRuntimeEventForIpc(stamped);
@@ -648,29 +673,6 @@ export function registerAgentIpc(): void {
     store.setTitle(event.threadId, accepted);
     return { event: { ...event, title: accepted }, journal: false };
   }
-
-  /** Event types that stream to renderers but never journal: ephemeral live
-   *  round-trips, derived projections, and meta stamps the store already
-   *  wrote directly. */
-  const STREAM_ONLY_EVENT_TYPES: ReadonlySet<RuntimeEvent["type"]> = new Set<RuntimeEvent["type"]>([
-    "user-input.requested",
-    "user-input.resolved",
-    "approval.requested",
-    "approval.resolved",
-    "thread.spawned",
-    "thread.spawn-updated",
-    "thread.agent-bound",
-    "thread.archived",
-    "thread.unarchived",
-    "thread.done.updated",
-    "app.theme_mutation",
-    "app.agent_mutation",
-    "app.subagent_presets_changed",
-    "app.strip_mutation",
-    "app.typography_mutation",
-    "bench.job-changed",
-    "thread.inbox-changed",
-  ]);
 
   // Fan the merged event stream out to every subscribed renderer, and journal
   // it to the conversation store on the way through (best-effort — the store
@@ -943,6 +945,9 @@ export function registerAgentIpc(): void {
   // A project's crew boards, whole: who is on each, its live rules and its
   // status rows. board.updated on the event stream says when to re-read.
   ipcMain.handle("agent:boards:list", (_event, projectPath: string) => boardsView(store, projectPath));
+  // A thread's kone task list, or null when it has never written one.
+  // thread.tasks-updated on the event stream carries every later change whole.
+  ipcMain.handle("agent:tasks:get", (_event, threadId: string) => store.threadTaskList(threadId));
   ipcMain.handle("agent:queue-cancel", (_event, threadId: string, queueId: string) =>
     svc.cancelQueuedTurn(threadId, queueId),
   );
