@@ -51,6 +51,7 @@ import {
 } from "~/composables/useAgent";
 import { useThreadEscapeHost } from "~/composables/useThreadEscape";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
+import ThreadBrandMark from "~/components/thread/ThreadBrandMark.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import {
   useDockClearance,
@@ -325,6 +326,9 @@ function setPaneZen(id: string, zen: boolean): void {
 const focusedThread = computed(() =>
   focusedPane.value?.kind === "thread" ? focusedPane.value.session : null,
 );
+/** The name the thread dock's header wears — the thread's own title, or the
+ *  same "New thread" placeholder its column header shows before it is named. */
+const dockTitle = computed(() => focusedThread.value?.title.value || "New thread");
 const focusedPendingUserInput = computed(
   () => focusedThread.value?.pendingUserInput.value ?? null,
 );
@@ -1809,6 +1813,44 @@ useStudioRowView(registryPath, () =>
             @decide="onRespondApproval"
           />
         </template>
+
+        <!-- The focused column's Changes / Tasks / Subagents docks, rendered
+             inside that column (see ThreadStrip's focused-dock slot) so their
+             corner stack and rail are bounded by the pane rather than floating
+             at the board's edge, which reads as a neighbouring column's. They
+             stay available while the parent waits for a response. -->
+        <template #focused-dock>
+          <Transition
+            enter-active-class="transition-opacity duration-150 ease-out"
+            enter-from-class="opacity-0"
+            leave-active-class="transition-opacity duration-150 ease-in"
+            leave-to-class="opacity-0"
+          >
+            <ThreadDockStack
+              v-if="visible && !blocked && activePaneIsThread && !showChooser && !isOverview && focusedThread"
+              ref="threadDock"
+              :composer-open="composerOpen"
+              :composer-top="composerHeight + STRIP_DOCK_FLOAT"
+              :changes="activeChanges"
+              :plan="activePlan"
+              :delegates="activeDelegates"
+              :project-path="project.path"
+              :thread-key="focusedKey"
+              @open-file="(path, rect) => emit('openFile', path, rect)"
+              @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
+            >
+              <!-- The dock header names the thread with the same brand marks the
+                   column header shows, so a handoff or hand-in reads the same in
+                   both. The host fills it because only the row knows the pane. -->
+              <template #title>
+                <span class="dock-head">
+                  <ThreadBrandMark v-if="focusedPane" :pane="focusedPane" />
+                  <span class="dock-head__name">{{ dockTitle }}</span>
+                </span>
+              </template>
+            </ThreadDockStack>
+          </Transition>
+        </template>
       </ThreadStrip>
     </div>
     <ConversationSelectionActions
@@ -1817,28 +1859,6 @@ useStudioRowView(registryPath, () =>
       @dispatch="studio.dispatch"
     />
 
-    <!-- Thread controls remain available while the parent waits for a response. -->
-    <Transition
-      enter-active-class="transition-opacity duration-150 ease-out"
-      enter-from-class="opacity-0"
-      leave-active-class="transition-opacity duration-150 ease-in"
-      leave-to-class="opacity-0"
-    >
-      <ThreadDockStack
-        v-if="visible && !blocked && activePaneIsThread && !showChooser && !isOverview && focusedThread"
-        ref="threadDock"
-        :composer-open="composerOpen"
-        :composer-top="composerHeight + STRIP_DOCK_FLOAT"
-        :changes="activeChanges"
-        :plan="activePlan"
-        :delegates="activeDelegates"
-        :project-path="project.path"
-        :thread-key="focusedKey"
-        position-mode="fixed"
-        @open-file="(path, rect) => emit('openFile', path, rect)"
-        @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
-      />
-    </Transition>
     <!-- The agent composer docks dead-centre at the bottom of the BOARD, under
          a focused thread pane — dormant until you wake it, then it stretches
          into the input. It stays docked to the viewport while the column behind
@@ -1972,6 +1992,22 @@ useStudioRowView(registryPath, () =>
 
 .composer-dock--open {
   z-index: 46;
+}
+
+/* The thread dock's header identity: the thread's brand marks, then its name,
+   tight so they read as one label; the name ellipsises within the band rather
+   than pushing it out. */
+.dock-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.dock-head__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Each layer holds the viewport and centres its content, exactly as the old

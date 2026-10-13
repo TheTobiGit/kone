@@ -453,9 +453,10 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :delegates="activeDelegates"
       :project-path="projectPath"
       :thread-key="row.threadId"
-      position-mode="absolute-pane"
       @stop-subagent="onStopSubagent"
-    />
+    >
+      <template #title>{{ threadTitle }}</template>
+    </ThreadDockStack>
 
     <!-- Laid over the transcript rather than under it, the way it is on the
          board: the composer keeps its own footprint and the conversation

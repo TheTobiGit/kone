@@ -725,10 +725,9 @@ defineExpose({
   width: 100%;
   /* Load-bearing no-op. A `position: fixed` descendant resolves against its
      nearest transformed ancestor, and the camera above is transformed — so
-     without this every fixed dock inside a row (the composer, the Changes/Tasks
-     stack, the Subagents corner, the attention beacon, the archive notice)
-     anchors to the camera and is dragged off-screen with it the moment the
-     camera leaves the first row. Giving each slot its own containing block
+     without this every fixed piece of row chrome (the composer, the archive
+     notice) anchors to the camera and is dragged off-screen with it the moment
+     the camera leaves the first row. Giving each slot its own containing block
      re-anchors that chrome to its own row, which is exactly the viewport
      whenever that row is the one on camera. */
   transform: translate(0);

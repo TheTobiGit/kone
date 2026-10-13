@@ -22,7 +22,6 @@ const props = withDefaults(
     delegates?: DelegatesState | null;
     projectPath?: string;
     threadKey?: string | null;
-    positionMode?: "absolute-pane" | "fixed";
     /** Where the open composer's top edge sits, in px off the surface's
      *  bottom — the rail rests just above it. */
     composerTop?: number;
@@ -34,7 +33,6 @@ const props = withDefaults(
     delegates: null,
     projectPath: undefined,
     threadKey: "dock",
-    positionMode: "absolute-pane",
     composerTop: 0,
   },
 );
@@ -149,7 +147,7 @@ const meta = computed(() => {
   <div
     v-show="hasContent"
     class="thread-dock-stack"
-    :class="railed ? `docks-rail docks-rail--${positionMode}` : `docks-corner docks-corner--${positionMode}`"
+    :class="railed ? 'docks-rail' : 'docks-corner'"
     :style="railed ? { '--rail-lift': `${composerTop + 10}px` } : undefined"
   >
     <!-- The rail: a tile per section, the shell popping out beside it. -->
@@ -184,11 +182,14 @@ const meta = computed(() => {
           <DockShell
             :key="`agent-dock-pop-${threadKey}`"
             bands
-            :title="live ? 'Working' : 'This thread'"
             :live="live"
             :meta="meta"
             :focus="popped"
           >
+            <!-- The host names the thread — whoever knows it, supplies it. -->
+            <template #title>
+              <slot name="title">{{ live ? "Working" : "This thread" }}</slot>
+            </template>
             <AnimatePresence :initial="false">
               <GitSpaceChangedFilesList
                 v-if="hasChanges && changes"
@@ -223,10 +224,12 @@ const meta = computed(() => {
       <DockShell
         :key="`agent-dock-${threadKey}`"
         bands
-        :title="live ? 'Working' : 'This thread'"
         :live="live"
         :meta="meta"
       >
+        <template #title>
+          <slot name="title">{{ live ? "Working" : "This thread" }}</slot>
+        </template>
         <AnimatePresence :initial="false">
           <GitSpaceChangedFilesList
             v-if="hasChanges && changes"
@@ -266,36 +269,26 @@ const meta = computed(() => {
   pointer-events: auto;
 }
 
-/* ── corner ── the shell sits bottom-right, every section in it. */
+/* ── corner ── the shell sits bottom-right of the pane it belongs to, every
+   section in it. Anchored to that pane rather than the board, so a row with
+   several columns tiled does not wear another column's dock. */
 .docks-corner {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   --dock-tray-max: min(36rem, calc(100vh - 10rem));
 }
-.docks-corner--absolute-pane {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-}
-.docks-corner--fixed {
-  position: fixed;
-  right: 2rem;
-  bottom: 2rem;
-}
 
-/* ── rail ── tiles on the right edge, resting just above the open composer. */
+/* ── rail ── tiles on the pane's right edge, resting just above the open
+   composer. */
 .docks-rail {
-  bottom: var(--rail-lift, 12px);
-  --dock-tray-max: min(30rem, calc(100vh - var(--rail-lift, 12px) - 8rem));
-}
-.docks-rail--absolute-pane {
   position: absolute;
   right: 10px;
-}
-.docks-rail--fixed {
-  position: fixed;
-  right: 1.25rem;
+  bottom: var(--rail-lift, 12px);
+  --dock-tray-max: min(30rem, calc(100vh - var(--rail-lift, 12px) - 8rem));
 }
 
 .dock-rail {
