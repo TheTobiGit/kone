@@ -81,17 +81,18 @@ import { freezeSubagentDuration } from "../subagentDuration.js";
 //     (resolveAntigravityCliModelLabel).
 //  3. The capture plugin's hooks fire for EVERY agy session (global install).
 //     Outside kone-managed sessions (no KONE_ANTIGRAVITY_EVENTS) the hook
-//     wrapper must carry explicit decisions where the CLI expects them:
-//     `{"decision":"ask"}` on PreToolUse and `{"decision":"allow"}` on
-//     PreInvocation — an empty object is treated as a denial with an empty
-//     reason, which blocks every tool call on PreToolUse and refuses the
-//     subagent launch PreInvocation gates (the parent then exits 1).
-//     Stop hooks stay `{}`: `{"decision":"stop"}` is not a valid stop
-//     decision and can hang the print process after the reply.
-//  4. The mcp_config.json in the plugin is secret-free: it references
-//     `$KONE_GATEWAY_URL` / `$KONE_GATEWAY_BOOTSTRAP_TOKEN` env placeholders
-//     the CLI process env supplies per turn, and the spawned stdio proxy
-//     exchanges the single-use bootstrap at POST /bootstrap for the real
+//     wrapper must carry `{"decision":"ask"}` on PreToolUse — an empty
+//     object is treated as a denial with an empty reason, which blocks every
+//     tool call. PreInvocation's result has no `decision` field (only
+//     `injectSteps`), so it answers `{}`; anything else fails to unmarshal and
+//     the CLI logs an error on every turn. Stop hooks stay `{}` too:
+//     `{"decision":"stop"}` is not a valid stop decision and can hang the
+//     print process after the reply.
+//  4. The mcp_config.json in the plugin is secret-free: it names no gateway
+//     variables. The CLI does not expand `$VAR` in that file, but the MCP
+//     server it spawns inherits the CLI's own env, where kone puts
+//     `KONE_GATEWAY_URL` / `KONE_GATEWAY_BOOTSTRAP_TOKEN` per turn; the
+//     spawned stdio proxy exchanges the single-use bootstrap at POST /bootstrap for the real
 //     session token — which never enters the CLI process env, so exec-tool
 //     descendants can't inherit it (see gateway/stdioProxy.mjs).
 //  5. Windows: the prompt rides `-p` as a command-line argument, so it is
@@ -305,17 +306,11 @@ export function antigravityTurnOutcome(input: {
  *  call because the hook is installed globally with `matcher: "*"`. "ask"
  *  preserves the permission flow the user would have without the hook.
  *
- *  PreInvocation is a veto point with the same decision semantics over the
- *  model call it precedes: an empty object denies that call. The CLI raises it
- *  for a native subagent's first model call, so `{}` there refuses the
- *  subagent launch and the parent CLI exits 1 — "allow" keeps sessions outside
- *  kone behaving as if the hook were absent.
- *
- *  `{}` stays correct for the other hook points, including Stop, where an
- *  inactive hook must not force a decision over Antigravity's default. */
+ *  `{}` is correct for every other hook point. PreInvocation's result only
+ *  knows `injectSteps`, so `{}` is its no-op (a `decision` there fails to
+ *  unmarshal); Stop must not force a decision over Antigravity's default. */
 function inactiveHookOutput(event: string): string {
   if (event === "pre-tool") return '{"decision":"ask"}';
-  if (event === "pre-invocation") return '{"decision":"allow"}';
   return "{}";
 }
 
@@ -675,10 +670,8 @@ process.stdin.on("end", () => {
   const target = process.env.${HOOK_EVENTS_ENV};
   if (!target) {
     // Mirrors the shell wrapper's inactive fallback: PreToolUse must carry a
-    // decision or the tool call is denied with an empty reason, PreInvocation
-    // must carry "allow" or the model call it gates (a subagent launch) is
-    // denied and the parent CLI exits 1.
-    process.stdout.write((event === "pre-tool" ? '{"decision":"ask"}' : event === "pre-invocation" ? '{"decision":"allow"}' : "{}") + "\\n");
+    // decision or the tool call is denied with an empty reason.
+    process.stdout.write((event === "pre-tool" ? '{"decision":"ask"}' : "{}") + "\\n");
     return;
   }
   let capturedPayload = payload.trim();
@@ -738,11 +731,6 @@ process.stdin.on("end", () => {
       }
     }
     process.stdout.write(JSON.stringify(reason ? { decision, reason } : { decision }) + "\\n");
-  } else if (event === "pre-invocation") {
-    // PreInvocation vetoes the model call that follows; kone-managed sessions
-    // spawn native subagents deliberately, so the launch it gates must never
-    // be blocked — an empty object denies it and the parent CLI exits 1.
-    process.stdout.write('{"decision":"allow"}\\n');
   } else {
     process.stdout.write("{}\\n");
   }
@@ -883,9 +871,11 @@ export async function ensureCapturePlugin(
     path.join(pluginDir, "hooks.json"),
     `${JSON.stringify(buildKoneHookConfig(command), null, 2)}\n`,
   );
-  // The plugin's MCP config is GLOBAL on disk, so it must be secret-free: the
-  // env block references variables the CLI process env supplies per turn, and
-  // the stdio proxy exchanges the one-shot bootstrap for the session token.
+  // The plugin's MCP config is GLOBAL on disk, so it must be secret-free. It
+  // names no gateway variables: the CLI passes env values through literally
+  // (no `$VAR` expansion), and a literal entry would shadow the real URL and
+  // bootstrap the proxy otherwise inherits from the CLI's per-turn env. The
+  // stdio proxy exchanges the one-shot bootstrap for the session token.
   const mcpConfigPath = path.join(pluginDir, "mcp_config.json");
   if (stdioProxy) {
     await fs.writeFile(
@@ -896,11 +886,7 @@ export async function ensureCapturePlugin(
             kone: {
               command: stdioProxy.command,
               args: [...stdioProxy.args],
-              env: {
-                [KONE_AGENT_GATEWAY_URL_ENV]: `$${KONE_AGENT_GATEWAY_URL_ENV}`,
-                [KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV]: `$${KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV}`,
-                ELECTRON_RUN_AS_NODE: "1",
-              },
+              env: { ELECTRON_RUN_AS_NODE: "1" },
               disabled: false,
               disabledTools: [],
             },
@@ -2035,7 +2021,7 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
 
 /** The turn child's environment: the agent env plus the per-turn hook stream,
  *  and — when a gateway connection exists — the URL + one-shot bootstrap the
- *  plugin's MCP config expands (see ensureCapturePlugin + stdioProxy.mjs). */
+ *  stdio proxy the plugin spawns inherits (see ensureCapturePlugin + stdioProxy.mjs). */
 async function buildAntigravityTurnEnvironment(
   session: AntigravitySession,
   eventFile: string,
