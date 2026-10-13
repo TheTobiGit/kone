@@ -190,6 +190,25 @@ export const PAGE_LAYOUT_GUIDE = [
   "Let content set the page's height: avoid 100vh and height:100% on html or body, since the frame grows to fit the page and a page sized by its frame never stops growing.",
 ].join(" ");
 
+/** What the agent is told about choosing a form, in the tool descriptions: a
+ *  named vocabulary, grouped by the shape it suits, so a page is a choice
+ *  rather than the bar chart or row of buttons an agent reaches for unasked. */
+export const PAGE_FORMS_GUIDE = [
+  "Choose the form; don't default to one. Name the shape of what you show (flow, hierarchy, part-to-whole, distribution, change over time, ranking, correlation, place, process, a single value) and pick the form below that fits it best. Plain bar, line and pie charts and rows of rectangle buttons are for when they truly fit best, never the fallback.",
+  "The vocabulary is for everything you show, not only data: an explainer can be an exploded view or step-by-step illustration, a flow a swimlane or transit map, a status a bullet graph or target diagram, a comparison a dumbbell, slope or butterfly chart.",
+  "Mash forms up when it helps: a beeswarm on a timeline, a sankey feeding a treemap, a radial heat map ringed with sparklines. Be inventive in form, never in fact: marks stay to scale, labelled and readable at the narrowest width.",
+  "Forms by shape.",
+  "Flow and connection: Sankey Diagram, Alluvial Diagram, Parallel Sets, Chord Diagram, Non-ribbon Chord Diagram, Arc Diagram, Hive Plot, Network Visualisation, Sociogram, Clustered Force Layout, Radial Convergences, Matrix Diagram (plain, Roof Shaped, Y-Shaped).",
+  "Hierarchy and part-to-whole: Treemap, Convex Treemap, Sunburst Diagram, Icicle Diagram, Dendrogram, Hyperbolic Tree, Organisational Chart, Fan Chart (Genealogy), Packed Circle Chart, Nested Proportional Area Chart, Proportional Area Chart (Square, Circle, Half Circle, Icon), Marimekko Chart, Waffle Chart, Stacked Bar Chart, Donut Chart, Semi Circle Donut Chart, Multi-level Donut Chart, Pie Chart, Multi-level Pie Chart, Compound Bubble and Pie Chart, Polar Area Chart, Venn Diagram, Euler Diagram, Funnel Chart, Pyramid Chart, Waterfall Chart.",
+  "Distribution: Histogram, Radial Histogram, Spiral Histogram, Boxplot, Bagplot, Violin Plot, Beeswarm Plot, Strip Plot, Jitter Plot, Dot Plot, Counts Plot, Hanging Rootogram, Population Pyramid, Hexagonal Binning, Contour Plot, Ternary Contour Plot, Error Bars, Control Chart, Tally Chart.",
+  "Change over time: Line Graph, Spline Graph, Stepped Line Graph, Trendline, Area Chart, Stacked Area Chart, Stacked Ordered Area Chart, Layered Area Chart, Range Area Chart, Stream Graph, Sorted Stream Graph, 3D Stream Graph, Radial Line Graph, Radial Area Chart, Timeline, Scaled Timeline, Bubble Timeline, Gantt Chart, Candlestick Chart, Kagi Chart, Renko Chart, Fan Chart (Time Series), Bump Chart, Slope Chart, Connected Scatter Plot, Circular Heat Map, Spiral Heat Map, Sparkline, Column Sparkline, Win-loss Sparkline, Waterfall Plot.",
+  "Comparison and ranking: Bar Chart (Vertical, Horizontal), Grouped Bar Chart, Radial Bar Chart, Curved Bar Chart, Triangle Bar Chart, Multiple Series 3D Bar Chart, Lollipop Chart, Dot Chart, Dumbbell Plot, Column Range, Span Chart, Butterfly Chart, Opposite Diagram, Pareto Chart, Bullet Graph, Radar Diagram, Polar Chart, Parallel Coordinates, Comparison Chart, Table Chart, Heat Map, Bubble-based Heat Map, Chernoff Faces.",
+  "Correlation: Scatter Plot, 3D Scatter Plot, Bubble Chart, Circular Bubble Chart, Cluster Analysis, Ternary Plot, Taylor Diagram, Phase Diagram, Nomogram.",
+  "Place: Choropleth Map, Cartogram, Dot Density Map, Bubble Map, Pin Map, Bar Chart on a Map, Pie Chart on a Map, Flow Map, Connection Map, Route Map, Transit Map, Isoline Map, Topographic Map, Profile Map.",
+  "Process and concept: Flow Chart, Swimlane Flow Chart, Process Diagram, Linear Process Diagram, Cycle Diagram, Mind Map, Fishbone Diagram, Development and Causes, SWOT Analysis, Pyramid Diagram, Target Diagram, Exploded View Drawing, Illustration Diagram, Step by Step Illustration, Word Cloud.",
+  "Single values: Scaled-up Number, Icon and Number, Icon Count, Progress Bar, Angular Gauge, Solid Gauge Chart, Pictorial Percentage Chart, Pictorial Fraction Chart, Pictorial Unit Chart, Pictorial Stacked Chart, Pictorial Bar Chart.",
+].join(" ");
+
 // ── the frame's protocol ─────────────────────────────────────────────────────
 
 const HOST_CONTEXT_CHANGED = "ui/notifications/host-context-changed";

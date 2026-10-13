@@ -19,6 +19,7 @@ import path from "node:path";
 import {
   formatPageShown,
   PAGE_COLUMN_WIDTH,
+  PAGE_FORMS_GUIDE,
   PAGE_LAYOUT_GUIDE,
   PAGE_MAX_IMAGE_BYTES,
   PAGE_MAX_STORED_BYTES,
@@ -291,7 +292,7 @@ export function createPageTools(options: PageToolOptions): ToolEntry[] {
   return [
     {
       name: PAGE_PREVIEW_TOOL_NAME,
-      description: `Render an HTML page off screen and get back a PNG screenshot, contentHeight (the height the page needs at this width), and what it logged to the console, uncaught errors included; console.log is a fine way to report your own checks. Use it to check and fix a page before page_show. The page gets the theme variables and layout described on page_show.`,
+      description: `Render an HTML page off screen and get back a PNG screenshot, contentHeight (the height the page needs at this width), and what it logged to the console, uncaught errors included; console.log is a fine way to report your own checks. Use it to check and fix a page before page_show. The page gets the theme variables and layout described on page_show; choose its form from the vocabulary there.`,
       inputSchema: PagePreviewInputSchema,
       jsonSchema: PAGE_PREVIEW_JSON_SCHEMA,
       permission: "allow",
@@ -301,7 +302,7 @@ export function createPageTools(options: PageToolOptions): ToolEntry[] {
     },
     {
       name: PAGE_SHOW_TOOL_NAME,
-      description: `Show the user anything they should see rather than read about (a UI component, a screen or layout, design options side by side, a chart, table, diagram or flow, an interactive explainer) as a finished HTML page, inline in this thread, above your final reply; call it before writing that reply. The reader already sees the page, so the reply should not announce it, say where it is or restate it: add only what the page doesn't say. Check it with page_preview first. Scripts run inside the page, sandboxed away from kone; links the reader clicks open in their browser. ${PAGE_LAYOUT_GUIDE} ${PAGE_THEME_GUIDE}`,
+      description: `Show the user anything they should see rather than read about (a UI component, a screen or layout, design options side by side, a chart, table, diagram or flow, an interactive explainer) as a finished HTML page, inline in this thread, above your final reply; call it before writing that reply. The reader already sees the page, so the reply should not announce it, say where it is or restate it: add only what the page doesn't say. Check it with page_preview first. Scripts run inside the page, sandboxed away from kone; links the reader clicks open in their browser. ${PAGE_FORMS_GUIDE} ${PAGE_LAYOUT_GUIDE} ${PAGE_THEME_GUIDE}`,
       inputSchema: PageShowInputSchema,
       jsonSchema: PAGE_SHOW_JSON_SCHEMA,
       permission: "allow",
@@ -312,6 +313,7 @@ export function createPageTools(options: PageToolOptions): ToolEntry[] {
         "Show the user something inside your reply (a component, a screen, a chart, a diagram): the only way a visual reaches them.",
       promptGuidelines: [
         "Whenever there is something to show — the user asks you to show, visualize, preview, mock up, chart or draw it, or seeing it would say more than prose — the answer is a page: a UI component, a screen or layout, design options side by side, a palette or type scale, an animation, an interactive explainer, a chart, table, diagram or flow. Build it as one self-contained HTML page, check it with page_preview, then show it with page_show before your final reply.",
+        "Choose each page's form for the shape of the data or idea from the vocabulary on page_show, for explainers, flows, states and comparisons as much as for data. Plain bar, line or pie charts and rectangle-button layouts only when they truly fit best; mash forms up and be inventive, never at the cost of accuracy or readability.",
         "To show a component or screen from the user's project, rebuild it in the page with plain HTML, CSS and JS in the project's own colours, type, spacing and copy, so it looks like theirs rather than like kone; put its states or variants side by side when that is the question.",
         "Never answer with matplotlib, an image file or a markdown image instead: the thread cannot display a file from disk, so the user gets a broken image. Draw in the page with HTML, inline SVG, a canvas or a library from a CDN; an image that already exists on disk, a screenshot included, goes into a page by its absolute path.",
         "The user sees the page above your reply, so don't announce or restate it; add only what it doesn't say.",
