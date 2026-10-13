@@ -1,9 +1,12 @@
 // Debounced dock snapshot: derives active plan, changed files, subagents, and delegates
 // from thread timeline blocks, refreshed at ~10×/s rather than on every streamed token.
+// The plan is the thread's kone task list when it keeps one, else the
+// checklist its provider sent.
 
 import { computed, shallowRef, type ComputedRef, type ShallowRef } from "vue";
 import { watchDebounced } from "@vueuse/core";
-import { deriveActivePlan, type ActivePlanState } from "~/utils/planTasks";
+import { deriveActivePlan, resolveDockPlan, type ActivePlanState } from "~/utils/planTasks";
+import { koneTaskListFor } from "~/composables/useKoneTasks";
 import { deriveChangedFiles, type ChangedFilesState } from "~/utils/changedFiles";
 import {
   deriveActiveSubagents,
@@ -25,11 +28,25 @@ export interface UseDockSnapshotReturn {
   sync: () => void;
 }
 
+/** The thread the dock shows, for its kone task list: its id, and whether a
+ *  turn is running on it. */
+export interface DockThread {
+  threadId: string | null | undefined;
+  live: boolean;
+}
+
 export function useDockSnapshot(
   blocks: ComputedRef<ThreadBlock[]>,
   spawnedChildren?: ComputedRef<SpawnedThread[]>,
+  thread?: ComputedRef<DockThread>,
 ): UseDockSnapshotReturn {
-  const planRaw = computed(() => deriveActivePlan(blocks.value));
+  const planRaw = computed(() =>
+    resolveDockPlan(
+      koneTaskListFor(thread?.value.threadId),
+      deriveActivePlan(blocks.value),
+      thread?.value.live ?? false,
+    ),
+  );
   const changesRaw = computed(() => deriveChangedFiles(blocks.value));
   const subagentsRaw = computed(() => deriveActiveSubagents(blocks.value));
   const delegatesRaw = computed(() =>

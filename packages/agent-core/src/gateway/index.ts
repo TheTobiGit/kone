@@ -15,6 +15,7 @@
 
 import { createGrantTools } from "./tools/grants.js";
 import { createBoardTools } from "./tools/board.js";
+import { createTaskTools } from "./tools/tasks.js";
 import type { ConversationStore } from "../ConversationStore.js";
 import type { EmitEvent, GatewayConnection, ProviderKind, RuntimeEvent } from "../types.js";
 import { GatewayCredentials } from "./credentials.js";
@@ -404,9 +405,12 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   };
   if (input.previewPage) pageOptions.preview = input.previewPage;
   const pageTools = createPageTools(pageOptions);
+  // A task list is for any thread with work to lay out, the assistant's too,
+  // so the task tools are target "all" and join after the stamped sets.
   const tools = [
     ...workerTools,
     ...assistantTools,
+    ...createTaskTools({ store: input.store, emit: input.emit }),
     ...createAstTools(),
     ...createQuestionTools(input.askUser),
     ...pageTools,

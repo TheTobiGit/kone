@@ -5,6 +5,7 @@ export {};
 import type { StudioLayout } from "~/types/studio";
 import type { AgentSender, CourierSender, MessageSender } from "@kone/protocol/message-sender";
 import type { ContractTerms } from "@kone/protocol/contract";
+import type { KoneTask, KoneTaskList } from "@kone/protocol/kone-tasks";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
 
@@ -1759,6 +1760,14 @@ export type RuntimeEvent =
       savedAt: number;
       writer: ScratchpadWriter | null;
     })
+  // The thread's kone task list changed; it carries the whole list. Keep the
+  // highest revision seen.
+  | (AgentBaseEvent & {
+      type: "thread.tasks-updated";
+      tasks: KoneTask[];
+      revision: number;
+      updatedAt: number;
+    })
   // A crew board changed; `part` says what. Re-read with boardsList.
   | (AgentBaseEvent & {
       type: "board.updated";
@@ -3257,6 +3266,9 @@ export type KoneAgentApi = {
   /** A project's crew boards, newest first: brief, members, live rules and
    *  status rows. board.updated on the event stream says when to re-read. */
   boardsList: (projectPath: string) => Promise<BoardView[]>;
+  /** A thread's kone task list, or null when it has never written one.
+   *  thread.tasks-updated on the event stream carries every later change. */
+  taskList: (threadId: string) => Promise<KoneTaskList | null>;
   /** The thread's durably enqueued follow-ups, in execution order (steers
    *  first, then FIFO) — the queue UI reads this to render its chips. */
   queuedTurns: (threadId: string) => Promise<QueuedTurnRow[]>;

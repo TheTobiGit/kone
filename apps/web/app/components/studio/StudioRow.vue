@@ -653,6 +653,10 @@ const {
 } = useDockSnapshot(
   computed(() => focusedThread.value?.blocks.value ?? []),
   computed(() => focusedThread.value?.spawnedChildren.value ?? []),
+  computed(() => ({
+    threadId: focusedThread.value?.threadId.value,
+    live: focusedThread.value?.busy.value ?? false,
+  })),
 );
 
 // Switching threads used to morph one thread's docks into another's *in place* —

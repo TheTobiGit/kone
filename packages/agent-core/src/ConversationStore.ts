@@ -16,6 +16,8 @@ import { AgentInboxRepo, type AgentInboxStore, type InboxChangeListener, type In
 import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { AgentGrantRepo } from "./store/agentGrants.js";
 import { CrewBoardRepo } from "./store/crewBoards.js";
+import { ThreadTaskRepo, type ThreadTasksDraft } from "./store/threadTasks.js";
+import type { KoneTaskList } from "@kone/protocol/kone-tasks";
 import type { BoardMember, BoardRow, BoardRule, BoardWrite, CrewBoard, CrewBoardStore } from "./crewBoard.js";
 import type { AgentGrant } from "./agentAccess.js";
 import { TurnRollbackRepo } from "./store/turnRollbacks.js";
@@ -68,6 +70,7 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly agentGrants: AgentGrantRepo;
   private readonly crewBoards: CrewBoardRepo;
+  private readonly threadTasks: ThreadTaskRepo;
   private readonly continuations: ContinuationRepo;
   private readonly turnRollbacks: TurnRollbackRepo;
   private readonly lineage: LineageRepo;
@@ -117,6 +120,7 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.agentGrants = new AgentGrantRepo(this.dbh);
     this.crewBoards = new CrewBoardRepo(this.dbh);
+    this.threadTasks = new ThreadTaskRepo(this.dbh);
     this.continuations = new ContinuationRepo(this.dbh);
     this.turnRollbacks = new TurnRollbackRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
@@ -630,6 +634,16 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
   /** @see AgentGrantRepo */
   agentGrantsHeldBy(granteeThreadId: string): AgentGrant[] {
     return this.agentGrants.agentGrantsHeldBy(granteeThreadId);
+  }
+
+  /** @see ThreadTaskRepo */
+  threadTaskList(threadId: string): KoneTaskList | null {
+    return this.threadTasks.threadTaskList(threadId);
+  }
+
+  /** @see ThreadTaskRepo */
+  writeThreadTasks(threadId: string, change: (current: ThreadTasksDraft) => ThreadTasksDraft): KoneTaskList | null {
+    return this.threadTasks.writeThreadTasks(threadId, change);
   }
 
   /** @see CrewBoardRepo */

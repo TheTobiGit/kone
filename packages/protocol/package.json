@@ -36,6 +36,10 @@
       "types": "./src/pageRender.ts",
       "default": "./src/pageRender.ts"
     },
+    "./kone-tasks": {
+      "types": "./src/koneTasks.ts",
+      "default": "./src/koneTasks.ts"
+    },
     "./plan-tasks": {
       "types": "./src/planTasks.ts",
       "default": "./src/planTasks.ts"

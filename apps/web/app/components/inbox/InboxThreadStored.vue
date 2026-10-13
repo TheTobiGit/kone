@@ -22,7 +22,8 @@ import { useDockClearance } from "~/composables/useDockClearance";
 import { useStudioIntake } from "~/composables/useStudioIntake";
 import { adoptStoredBlocks } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
-import { deriveActivePlan } from "~/utils/planTasks";
+import { deriveActivePlan, resolveDockPlan } from "~/utils/planTasks";
+import { koneTaskListFor } from "~/composables/useKoneTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
 import { deriveDelegates } from "~/utils/subagentRuns";
 import type { ThreadBlock } from "~/composables/agentTypes";
@@ -74,7 +75,9 @@ const now = ref(Date.now());
 // debounced snapshot. No project root is named on this pane, so the changes
 // rows stay inert (there is nothing to read a diff from); the list itself
 // still reads.
-const storedPlan = computed(() => deriveActivePlan(blocks.value));
+const storedPlan = computed(() =>
+  resolveDockPlan(koneTaskListFor(props.row.threadId), deriveActivePlan(blocks.value), false),
+);
 const storedChanges = computed(() => deriveChangedFiles(blocks.value));
 const storedDelegates = computed(() => deriveDelegates(blocks.value, []));
 

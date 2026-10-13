@@ -9,6 +9,7 @@
 
 import {
   BubbleChatIcon,
+  CheckListIcon,
   Cancel01Icon,
   ChartLineData01Icon,
   ComputerTerminal01Icon,
@@ -67,6 +68,23 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Updating the scratchpad",
     "Updated the scratchpad",
     "Couldn't update the scratchpad",
+  ]),
+
+  // tasks
+  tasks_write: kone(CheckListIcon, "Tasks", "write", [
+    "Laying out tasks",
+    "Laid out tasks",
+    "Couldn't lay out tasks",
+  ]),
+  tasks_update: kone(CheckListIcon, "Tasks", "write", [
+    "Updating tasks",
+    "Updated tasks",
+    "Couldn't update tasks",
+  ]),
+  tasks_read: kone(CheckListIcon, "Tasks", "read", [
+    "Reading tasks",
+    "Read tasks",
+    "Couldn't read tasks",
   ]),
 
   // agents
