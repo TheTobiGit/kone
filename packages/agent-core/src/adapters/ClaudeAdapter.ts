@@ -70,7 +70,7 @@ import {
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
-import { errorText, isResumeRefusalError, limitResetFromError } from "./errors.js";
+import { errorText, isResumeAnchorRefusalError, isResumeRefusalError, limitResetFromError } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
 import { joinAnswerValues } from "../postTurnAnswers.js";
 import { buildSkillPrompt } from "../skillInvocation.js";
@@ -387,21 +387,36 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
 
     if (!input.resume) return this.startFreshSession(input);
+    let failure: unknown;
     try {
       return await this.startFreshSession(input);
     } catch (error) {
-      // Only a refusal-class failure (the stored conversation was pruned or is
-      // foreign) deserves the fresh-start fallback; a transport, auth or
-      // protocol failure must surface, or the thread reopens blank and the
-      // user never learns why. Same gate Codex/Cursor/Droid apply.
-      if (!isResumeRefusalError(error)) throw error;
-      console.warn(
-        `[claude] resume "${input.resume}" failed (${
-          error instanceof Error ? error.message : String(error)
-        }) — starting a fresh conversation`,
-      );
-      return this.startFreshSession({ ...input, resume: undefined });
+      failure = error;
     }
+    // The conversation exists but the anchor isn't on its live chain (it
+    // predates a compaction kone never heard about, or the transcript was
+    // rewritten outside kone). Resume the same conversation from its tail
+    // rather than dropping its context for a fresh start; the anchorless
+    // session.started clears the stored anchor.
+    if (input.resumeSessionAt && isResumeAnchorRefusalError(failure)) {
+      console.warn(
+        `[claude] resume anchor "${input.resumeSessionAt}" refused (${errorText(failure)}) — resuming from the conversation's tail`,
+      );
+      try {
+        return await this.startFreshSession({ ...input, resumeSessionAt: undefined });
+      } catch (error) {
+        failure = error;
+      }
+    }
+    // Only a refusal-class failure (the stored conversation was pruned or is
+    // foreign) deserves the fresh-start fallback; a transport, auth or
+    // protocol failure must surface, or the thread reopens blank and the
+    // user never learns why. Same gate Codex/Cursor/Droid apply.
+    if (!isResumeRefusalError(failure)) throw failure;
+    console.warn(`[claude] resume "${input.resume}" failed (${errorText(failure)}) — starting a fresh conversation`);
+    // The anchor belongs to the refused conversation; carried into the fresh
+    // one it would ride the session.started envelope and be persisted again.
+    return this.startFreshSession({ ...input, resume: undefined, resumeSessionAt: undefined });
   }
 
   private async startFreshSession(input: SessionStartInput): Promise<Session> {
@@ -1208,6 +1223,12 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  clobbering that turn's real numbers), and the boundary already restarts
    *  the meter — the extra event is redundant. */
   private handleCompactBoundary(session: ClaudeSession, message: SDKMessage): void {
+    // The compaction starts a new message chain; the last assistant uuid
+    // belongs to the old one and no longer anchors a resume. Dropped before
+    // the boundary is emitted so its envelope carries no anchor, which is the
+    // store's cue to clear the persisted one. The next assistant message on
+    // the new chain re-anchors.
+    session.lastAssistantUuid = undefined;
     const metadata = asRecord(asRecord(message)?.compact_metadata);
     emitCompacted(this.emit, this.base(session), {
       beforeTokens: metadata ? readNumber(metadata, "pre_tokens") : undefined,

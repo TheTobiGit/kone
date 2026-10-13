@@ -1303,6 +1303,36 @@ describe("live capture contracts", () => {
     expect(store.threadMeta("t-1")?.conversationId).toBe("conv-2");
   });
 
+  test("a compaction boundary without an anchor clears the stored one", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent" });
+    store.applyEvent(
+      sessionStarted("t-1", 1, { conversationId: "conv-1", resumeSessionAt: "msg-uuid-1" }),
+    );
+    // SAFETY: the literal is the compacted boundary shape under test.
+    store.applyEvent({
+      type: "thread.state.changed",
+      threadId: "t-1",
+      provider: "claudeAgent",
+      at: 2,
+      source: "kone.store",
+      refs: { conversationId: "conv-1" },
+      state: "compacted",
+      beforeTokens: null,
+      afterTokens: null,
+    } as RuntimeEvent);
+    // The pre-compaction anchor would make the next resume fail; the
+    // conversation itself still resumes.
+    expect(store.threadMeta("t-1")?.resumeSessionAt).toBeUndefined();
+    expect(store.threadMeta("t-1")?.conversationId).toBe("conv-1");
+
+    // The next assistant message on the new chain re-anchors.
+    store.applyEvent(
+      sessionStarted("t-1", 3, { conversationId: "conv-1", resumeSessionAt: "msg-uuid-2" }),
+    );
+    expect(store.threadMeta("t-1")?.resumeSessionAt).toBe("msg-uuid-2");
+  });
+
   test("token-usage folds the rollup, context snapshot and per-turn audit row", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent" });

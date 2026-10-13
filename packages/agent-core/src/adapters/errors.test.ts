@@ -6,6 +6,7 @@ import {
   isNonFatalCodexError,
   isQuotaOrRateLimitError,
   isRecoverableCodexResumeError,
+  isResumeAnchorRefusalError,
   isResumeRefusalError,
   limitResetFromError,
 } from "./errors.js";
@@ -69,6 +70,21 @@ describe("isResumeRefusalError", () => {
     expect(isResumeRefusalError(new Error("session/load timed out waiting for server"))).toBe(false);
     expect(isResumeRefusalError(new Error("session/resume failed: permission denied"))).toBe(false);
     expect(isResumeRefusalError(new Error("connection refused"))).toBe(false);
+  });
+});
+
+describe("isResumeAnchorRefusalError", () => {
+  test("a resume anchor missing from the conversation is an anchor refusal", () => {
+    const error = new Error(
+      "Claude Code returned an error result: No message found with message.uuid of: 13d8fd83-f942-4643-9f38-591706e329c6",
+    );
+    expect(isResumeAnchorRefusalError(error)).toBe(true);
+    // Not a dead conversation: dropping the resume would throw away context.
+    expect(isResumeRefusalError(error)).toBe(false);
+  });
+
+  test("a missing conversation is not an anchor refusal", () => {
+    expect(isResumeAnchorRefusalError(new Error("No conversation found with session ID: abc"))).toBe(false);
   });
 });
 

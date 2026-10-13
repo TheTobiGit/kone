@@ -121,7 +121,7 @@ const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage>; options
   };
 });
 
-mock.module("@anthropic-ai/claude-agent-sdk", () => ({ query: stubQuery }));
+mock.module("@anthropic-ai/claude-agent-sdk", () => ({ query: stubQuery, forkSession: async () => ({ sessionId: "fork-session" }) }));
 
 // The `claude --version` probe, under the test's control. Discovery reads its
 // outcome to tell a CLI that is missing from one that is merely slow, so leaving
@@ -333,6 +333,28 @@ describe("Claude result handler", () => {
     expect(compacted[0].state).toBe("compacted");
     expect(compacted[0].beforeTokens).toBe(180000);
     expect(compacted[0].afterTokens).toBe(20000);
+  });
+
+  test("compact_boundary drops the resume anchor: the old chain's uuid no longer resumes", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    state.feed!.push({
+      type: "assistant",
+      uuid: "pre-compaction-uuid",
+      parent_tool_use_id: null,
+      message: { role: "assistant", content: [] },
+    });
+    await flush();
+    // Before the boundary, envelopes carry the anchor.
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    expect(ofType(events, "turn.started")[0].refs?.resumeSessionAt).toBe("pre-compaction-uuid");
+
+    state.feed!.push({ type: "system", subtype: "compact_boundary" });
+    await flush();
+
+    const compacted = ofType(events, "thread.state.changed");
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0].refs?.resumeSessionAt).toBeUndefined();
   });
 
   test("compact_boundary without metadata still announces the boundary", async () => {
@@ -916,6 +938,60 @@ describe("Claude startSession resume fallback", () => {
 
     expect(session.resumedFrom).toBeUndefined();
     expect(state.initializationResult).toHaveBeenCalledTimes(2);
+  });
+
+  test("a refused resume anchor resumes the same conversation from its tail", async () => {
+    const { adapter, events } = setup();
+    let calls = 0;
+    state.initializationResult = mock(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("Claude Code returned an error result: No message found with message.uuid of: stale-uuid");
+      }
+      return {};
+    });
+    stubQuery.mockClear();
+
+    const session = await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      resume: "conv-1",
+      resumeSessionAt: "stale-uuid",
+    });
+
+    expect(session.resumedFrom).toBe("conv-1");
+    expect(stubQuery).toHaveBeenCalledTimes(2);
+    expect(stubQuery.mock.calls[0][0].options?.resumeSessionAt).toBe("stale-uuid");
+    const retried = stubQuery.mock.calls[1][0].options;
+    expect(retried?.resume).toBe("conv-1");
+    expect(retried?.resumeSessionAt).toBeUndefined();
+    // Anchorless session.started: the store's cue to clear the stale anchor.
+    const started = ofType(events, "session.started");
+    expect(started).toHaveLength(1);
+    expect(started[0].refs?.resumeSessionAt).toBeUndefined();
+  });
+
+  test("a fresh start after a refused conversation does not carry its anchor", async () => {
+    const { adapter, events } = setup();
+    let calls = 0;
+    state.initializationResult = mock(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("No conversation found with session ID: conv-gone");
+      return {};
+    });
+
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      resume: "conv-gone",
+      resumeSessionAt: "old-uuid",
+    });
+
+    const started = ofType(events, "session.started");
+    expect(started).toHaveLength(1);
+    expect(started[0].refs?.resumeSessionAt).toBeUndefined();
   });
 });
 

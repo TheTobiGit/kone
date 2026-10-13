@@ -139,6 +139,14 @@ export function isResumeRefusalError(cause: unknown): boolean {
   ].some((snippet) => message.includes(snippet));
 }
 
+/** Did Claude refuse the resume anchor (`resumeSessionAt`) rather than the
+ *  conversation itself? The CLI reports an anchor missing from the
+ *  conversation's live chain as "No message found with message.uuid of: …";
+ *  the conversation is still there and resumes from its tail without one. */
+export function isResumeAnchorRefusalError(cause: unknown): boolean {
+  return errorText(cause).toLowerCase().includes("no message found with message.uuid");
+}
+
 /** Known-benign Codex error-notification messages — the session continues, only
  *  a warning is owed. (`write_stdin failed: stdin is closed for this session`
  *  is Codex complaining it lost its own stdin while tearing down — noise, not
