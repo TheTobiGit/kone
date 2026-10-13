@@ -32,6 +32,7 @@ import {
   antigravityPromptCommandLineIssue,
   buildKoneCaptureCommand,
   buildKoneHookConfig,
+  ensureCapturePlugin,
   hookScriptSource,
   readCompleteAntigravityLines,
 } from "./adapters/AntigravityPrintAdapter.js";
@@ -62,9 +63,8 @@ function runCaptureCommand(command: string, input: string, env: NodeJS.ProcessEn
 describe("Antigravity capture plugin", () => {
   test("keeps the globally installed hook neutral outside kone sessions", () => {
     // PreToolUse must carry a `decision` — an empty object is treated as a
-    // denial with an empty reason that blocks every tool call. PreInvocation
-    // is the same kind of veto point over the model call it precedes, so an
-    // empty object there refuses a subagent launch and exits the parent.
+    // denial with an empty reason that blocks every tool call. PreInvocation's
+    // result has no `decision` field, so `{}` is its only valid neutral answer.
     const preToolResult = runCaptureCommand(
       buildKoneCaptureCommand("__kone_gui_must_not_launch__", "__capture_script_must_not_run__", "pre-tool"),
       JSON.stringify({ payload: "x".repeat(32 * 1024) }),
@@ -81,7 +81,7 @@ describe("Antigravity capture plugin", () => {
     );
     expect(preInvocationResult.error).toBeUndefined();
     expect(preInvocationResult.status).toBe(0);
-    expect(preInvocationResult.stdout.trim()).toBe('{"decision":"allow"}');
+    expect(preInvocationResult.stdout.trim()).toBe("{}");
 
     const postToolResult = runCaptureCommand(
       buildKoneCaptureCommand("__kone_gui_must_not_launch__", "__capture_script_must_not_run__", "post-tool"),
@@ -112,7 +112,7 @@ describe("Antigravity capture plugin", () => {
     }
   });
 
-  test("answers pre-invocation allow from the capture script when capture is inactive", () => {
+  test("answers pre-invocation with an empty result from the capture script when capture is inactive", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "kone-antigravity-hook-test-"));
     try {
       const scriptPath = path.join(directory, "capture.cjs");
@@ -125,7 +125,7 @@ describe("Antigravity capture plugin", () => {
       });
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(0);
-      expect(result.stdout.trim()).toBe('{"decision":"allow"}');
+      expect(result.stdout.trim()).toBe("{}");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -160,7 +160,7 @@ describe("Antigravity capture plugin", () => {
     }
   });
 
-  test("answers pre-invocation allow for kone-managed sessions so subagent launches survive", () => {
+  test("answers pre-invocation with an empty result for kone-managed sessions", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "kone-antigravity-hook-test-"));
     const scriptPath = path.join(directory, "capture.cjs");
     const eventPath = path.join(directory, "events.ndjson");
@@ -173,7 +173,7 @@ describe("Antigravity capture plugin", () => {
       );
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(0);
-      expect(result.stdout.trim()).toBe('{"decision":"allow"}');
+      expect(result.stdout.trim()).toBe("{}");
       const captured = readFileSync(eventPath, "utf8");
       expect(captured).toBe('pre-invocation\t{"stepIdx":3,"conversationId":"conversation-1"}\n');
     } finally {
@@ -185,13 +185,32 @@ describe("Antigravity capture plugin", () => {
     // The CLI passes hook commands to cmd.exe with serialization escapes
     // undecoded, so any `"` around paths derails quote parsing and the hook
     // never runs; the fallback JSON itself is the only quoted content allowed.
-    const command = buildKoneCaptureCommand("C:\\electron.exe", "C:\\capture.cjs", "pre-invocation", "win32");
-    expect(command).toContain("(set ELECTRON_RUN_AS_NODE=1&& C:\\electron.exe C:\\capture.cjs pre-invocation)");
-    expect(command).toContain('echo {"decision":"allow"}');
+    const command = buildKoneCaptureCommand("C:\\electron.exe", "C:\\capture.cjs", "pre-tool", "win32");
+    expect(command).toContain("(set ELECTRON_RUN_AS_NODE=1&& C:\\electron.exe C:\\capture.cjs pre-tool)");
+    expect(command).toContain('echo {"decision":"ask"}');
     expect(command).not.toContain('"C:\\');
 
-    const posix = buildKoneCaptureCommand("/opt/electron", "/opt/capture.cjs", "pre-invocation", "darwin");
-    expect(posix).toContain("printf '%s\\n' '{\"decision\":\"allow\"}'");
+    const posix = buildKoneCaptureCommand("/opt/electron", "/opt/capture.cjs", "pre-tool", "darwin");
+    expect(posix).toContain("printf '%s\\n' '{\"decision\":\"ask\"}'");
+  });
+
+  test("leaves the gateway env out of the plugin MCP config so the proxy inherits it", async () => {
+    // The CLI hands mcp_config.json env values over literally, so a
+    // "$KONE_GATEWAY_URL" entry would shadow the real value the proxy inherits.
+    const home = mkdtempSync(path.join(tmpdir(), "kone-antigravity-plugin-"));
+    try {
+      await ensureCapturePlugin("agy", { command: "/opt/electron", args: ["/opt/stdioProxy.mjs"] }, {
+        homeDir: home,
+        runHelper: async () => ({ stdout: "", stderr: "", code: 0 }),
+      });
+      const config = JSON.parse(
+        readFileSync(path.join(home, ".gemini", "antigravity-cli", "plugins", "kone-capture", "mcp_config.json"), "utf8"),
+      );
+      expect(config.mcpServers.kone.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+      expect(config.mcpServers.kone.args).toEqual(["/opt/stdioProxy.mjs"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("marks every generated hook as a command hook", () => {
