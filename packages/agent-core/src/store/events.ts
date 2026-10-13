@@ -148,14 +148,21 @@ export class EventIngestRepo {
    *  memoized per thread, written durably, never off an item.updated delta.
    *  Cleared on `session.started` when the anchor is absent — a fresh session,
    *  or a resume the provider refused (the adapter stops carrying the anchor,
-   *  so the stored one is stale). */
+   *  so the stored one is stale) — and on a compaction boundary that arrives
+   *  without one, for the same reason. */
   private readonly knownResumeAnchors = new Map<string, string | null>();
 
   private captureResumeSessionAtFromEvent(db: DatabaseSync, event: RuntimeEvent): void {
     const anchor = event.refs?.resumeSessionAt ?? null;
     if (event.type === "item.updated") return;
-    if (event.type === "session.started" && !anchor) {
-      // Fresh session (or a refused resume): the stored anchor is stale.
+    // A settled compaction rewrites the transcript the anchor points into:
+    // the provider resumes from the post-compaction chain, which doesn't
+    // contain any message from before the boundary, so a pre-compaction
+    // anchor makes the next resume fail outright. The boundary invalidates
+    // it whichever provider compacted.
+    const compacted = event.type === "thread.state.changed" && event.state === "compacted";
+    if ((event.type === "session.started" || compacted) && !anchor) {
+      // Fresh session, a refused resume, or a compaction: the stored anchor is stale.
       if (this.knownResumeAnchors.get(event.threadId) === null) return;
       this.dbh.durably(db, () => {
         db.prepare(`UPDATE threads SET resume_session_at = NULL WHERE thread_id = ?`).run(
