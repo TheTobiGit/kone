@@ -36,10 +36,11 @@ import {
   LADDER_PX,
   padEndFor,
 } from "~/utils/stripScroll";
-import { brandOf, buildCompactBySession, columnLabel, handoffSourceBrand, hasScratchpadPane, isHandoff, readCompactProps, threadHands } from "~/utils/stripColumnLabels";
+import { brandOf, buildCompactBySession, columnLabel, hasScratchpadPane, readCompactProps } from "~/utils/stripColumnLabels";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import ThreadWorkspaceMark from "~/components/thread/ThreadWorkspaceMark.vue";
+import ThreadBrandMark from "~/components/thread/ThreadBrandMark.vue";
 import { type ThreadSession } from "~/composables/useAgent";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import type { MeterCompactProps } from "~/utils/compactAvailability";
@@ -550,35 +551,10 @@ const { isUnread } = useStripUnread({
                 </div>
                 <div class="col__title-wrap">
                   <template v-if="c.kind === 'thread' && c.session">
-                    <!-- A handoff wears where it came from: old mark → live
-                         mark as one tight unit, then the title. The source
-                         reads dimmer — history, not the engine running this
-                         column. -->
-                    <span v-if="isHandoff(c)" class="col__handoff">
-                      <ProviderLogo :brand="handoffSourceBrand(c)" :size="15" class="col__handoff-from" />
-                      <span class="col__handoff-arrow" aria-hidden="true">→</span>
-                      <ProviderLogo :brand="brandOf(c)" :size="15" />
-                    </span>
-                    <!-- Changed hands in place: the hands it has been through,
-                         earlier ones dimmer. No arrow — nothing moved, so
-                         nothing points anywhere. -->
-                    <span v-else-if="threadHands(c).length > 0" class="col__hands">
-                      <ProviderLogo
-                        v-for="(brand, hi) in threadHands(c)"
-                        :key="`${brand}-${hi}`"
-                        :brand="brand"
-                        :size="15"
-                        :class="{ 'col__hands-past': hi < threadHands(c).length - 1 }"
-                      />
-                    </span>
-                    <ProviderLogo v-else :brand="brandOf(c)" :size="15" />
-                    <span
-                      v-if="c.session.isSideChat.value"
-                      class="col__sidechat"
-                      :title="'Side chat — forked from a conversation'"
-                    >
-                      <HugeiconsIcon :icon="SolarChatRoundLineBrokenIcon" :size="11" :stroke-width="2" aria-hidden="true" />
-                    </span>
+                    <!-- Who is answering: the vendor mark, a handoff, or the
+                         chain of hands, then the side-chat flag. Shared with the
+                         thread dock so both name the same engine. -->
+                    <ThreadBrandMark :pane="c" />
                     <!-- Works in a folder of its own rather than the project's
                          checkout. The icon is the whole signal; which folder is
                          the tooltip, and the info panel opens it. -->
@@ -745,6 +721,17 @@ const { isUnread } = useStripUnread({
               <slot
                 v-if="c.id === focusedId && !overview"
                 name="focused-overlay"
+                :pane="c"
+              />
+
+              <!-- The focused column's thread docks. They live inside the
+                   column, not the board, so their corner and rail are bounded
+                   by the pane the thread owns: with several columns tiled, a
+                   dock pinned to the board's right edge would float over the
+                   neighbour the thread does not own. -->
+              <slot
+                v-if="c.id === focusedId && !overview"
+                name="focused-dock"
                 :pane="c"
               />
 
@@ -1334,12 +1321,6 @@ const { isUnread } = useStripUnread({
    borders — the icon carries the signal. Deliberately distinct from a main
    thread column — the user should never wonder whether this column is a real
    conversation. */
-.col__sidechat {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  color: color-mix(in srgb, var(--accent) 72%, var(--ink-soft));
-}
 /* Muted like the title beside it: a worktree is where a thread lives, not a
    state to be alarmed by. */
 .col__worktree {
@@ -1350,37 +1331,6 @@ const { isUnread } = useStripUnread({
      the provider logo on its other side. */
   margin-inline-end: -4px;
   color: var(--muted);
-}
-/* Handoff provenance in the header: the source mark, a quiet arrow and the
-   live mark as one tight, vertically-centred unit ahead of the title. */
-.col__handoff {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-}
-.col__handoff-from {
-  flex: none;
-  opacity: 0.55;
-}
-.col__hands {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-/* The hands it passed through read quieter than the ones holding it now —
-   the live engine is what the eye should land on. */
-.col__hands-past {
-  opacity: 0.45;
-}
-.col__handoff-arrow {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  line-height: 1;
-  font-size: 10px;
-  color: var(--muted);
-  opacity: 0.8;
 }
 .col.is-sidechat .col__title {
   color: color-mix(in srgb, var(--accent) 58%, var(--muted));

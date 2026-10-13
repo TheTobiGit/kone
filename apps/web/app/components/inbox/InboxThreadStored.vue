@@ -230,8 +230,9 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
       :plan="storedPlan"
       :delegates="storedDelegates"
       :thread-key="row.threadId"
-      position-mode="absolute-pane"
-    />
+    >
+      <template #title>{{ row.title }}</template>
+    </ThreadDockStack>
   </div>
 </template>
 

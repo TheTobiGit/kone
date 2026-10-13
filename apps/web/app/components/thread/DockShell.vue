@@ -18,7 +18,6 @@ const props = withDefaults(
   defineProps<{
     /** Show the header and footer strips. */
     bands?: boolean;
-    title?: string;
     /** Something in the dock is still in flight — the header's orb pulses. */
     live?: boolean;
     /** The footer's one-line summary of what the sections hold. */
@@ -31,7 +30,6 @@ const props = withDefaults(
   }>(),
   {
     bands: false,
-    title: "",
     live: false,
     meta: "",
     origin: "100% 100%",
@@ -70,7 +68,9 @@ function toggleAll(): void {
     <div v-if="props.bands" class="dock-band dock-band--head">
       <span class="dock-title">
         <span v-if="props.live" class="dock-orb" aria-hidden="true" />
-        {{ props.title }}
+        <!-- The header's name — the host supplies it, since only the host knows
+             which thread this dock belongs to. -->
+        <slot name="title" />
       </span>
     </div>
 
