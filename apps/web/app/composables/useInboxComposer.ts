@@ -70,6 +70,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     routePending,
     prefetchRoute,
     settleAgentFor,
+    settleThreadAgent,
     selectAgent,
     agentById,
   } = useAgentRoster(() => toValue(o.projectPath));
@@ -506,6 +507,9 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     agents,
     agentId,
     settleAndPin,
+    // For a thread whose agent is inherited rather than chosen — a side chat
+    // takes its source's — so the binding is written without asking anyone.
+    settleThreadAgent,
     prefetchRoute,
     routing,
     lastRouted,

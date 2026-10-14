@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef } from "vue";
+import { computed, ref, type ComputedRef, type Ref } from "vue";
 import { LOCAL_WORKSPACE, workspaceRequest, type WorkspaceChoice } from "~/utils/threadWorkspace";
 
 // Where a new conversation will work, held as draft state until its first send.
@@ -73,14 +73,19 @@ export function useWorkspaceChoice(options: WorkspaceChoiceOptions) {
  *
  *  `key` names the draft on screen. Outside `drafting` — no draft focused, or
  *  one that has already started and works somewhere — the choice reads as the
- *  checkout: nothing to request, and the fallback branch shown. */
+ *  checkout: nothing to request, and the fallback branch shown.
+ *
+ *  `held` is where the choices live, when they have to outlast the caller: a
+ *  component that comes and goes while its draft waits hands in a record its
+ *  host keeps, so a pick survives the remount. */
 export function useKeyedWorkspaceChoice(
   options: WorkspaceChoiceOptions & {
     key: () => string | null | undefined;
     drafting: () => boolean;
+    held?: Ref<Record<string, WorkspaceChoice>>;
   },
 ): WorkspaceChoiceState {
-  const held = ref<Record<string, WorkspaceChoice>>({});
+  const held = options.held ?? ref<Record<string, WorkspaceChoice>>({});
   return choiceState(
     () => {
       const key = options.key();

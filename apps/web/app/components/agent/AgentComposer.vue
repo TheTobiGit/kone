@@ -157,6 +157,15 @@ const props = defineProps<{
    *  An open card covers the orb, so this suppresses it along with the
    *  click-outside and Escape collapses. */
   alwaysOpen?: boolean;
+  /** Another composer on the same surface has the user's attention — a board
+   *  with one composer per column, say. This one still opens on a click, but
+   *  leaves a stray keystroke and Escape to that one, so a single key never
+   *  wakes or closes every composer on screen at once. */
+  background?: boolean;
+  /** Narrows where the unsent draft is kept, for a surface holding several
+   *  composers over one project: without it they would share one draft, and
+   *  text typed into one would come back in all of them. */
+  draftScope?: string;
   /** Who you can hand the turn to. Guest is never in here — it is the absence of
    *  a choice, so the menu adds it itself and an empty roster still offers it. */
   agents?: Agent[];
@@ -662,6 +671,7 @@ const {
   clearDraft,
 } = useComposerDraft({
   getProjectPath: () => props.projectPath,
+  getScope: () => props.draftScope,
   getText: () => text.value,
   getSkills: () => skills.currentDraftSkills(),
   setEditorFromText: (val, saved) => skills.restoreEditorFromText(val, saved),
@@ -940,7 +950,7 @@ registerEscape("picker", () => Boolean(props.picking), null);
 registerEscape("picker", () => agentPickerOpen.value, () => {
   agentPickerOpen.value = false;
 });
-registerEscape("composer", () => open.value && !props.alwaysOpen, close);
+registerEscape("composer", () => open.value && !props.alwaysOpen && !props.background, close);
 
 /** The agent picker's Escape, taken in the capture phase so one press closes
  *  one layer: without this the surface behind the composer — a portal that
@@ -965,7 +975,7 @@ function onSurfaceClick() {
 // a key pressed while another field is focused, or one hit while a file detail
 // is up (the composer is inert then).
 async function onGlobalKey(e: KeyboardEvent) {
-  if (!composerPrefs.value.typeToWake) return;
+  if (!composerPrefs.value.typeToWake || props.background) return;
   if (open.value || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
   // Single printable char only — "a", "1", "?" pass; "Enter"/"Tab"/arrows don't.
   if (e.key.length !== 1) return;
