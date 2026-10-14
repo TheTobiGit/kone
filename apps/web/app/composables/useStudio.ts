@@ -98,8 +98,10 @@ export interface UseStudioOptions {
     /** Flash the target pad's index dash after a capture — today's pulsePadColumn. */
     pulsePad?: (padPaneId: PaneId) => void;
     /** Pre-fill the composer under the freshly-opened draft thread. The text is
-     *  already quoted by the caller (the `> ` prefix lives at the call site). */
-    setDraft?: (text: string) => void | Promise<void>;
+     *  already quoted by the caller (the `> ` prefix lives at the call site).
+     *  Carries the pane it was opened in, since every thread column has a
+     *  composer of its own and only that one should take the draft. */
+    setDraft?: (text: string, paneId: PaneId) => void | Promise<void>;
   };
 }
 
@@ -679,7 +681,7 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
         // pane (and thus the composer) has landed. Quoting is the caller's job.
         const id = await open("thread", { near: intent.from });
         await nextTick();
-        await opts.hooks?.setDraft?.(intent.draft);
+        await opts.hooks?.setDraft?.(intent.draft, id);
         focus(id);
         return;
       }

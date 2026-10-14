@@ -56,6 +56,7 @@ import { useStripSeams } from "~/composables/useStripSeams";
 import StripProjectSwitch from "~/components/thread/StripProjectSwitch.vue";
 import StripChooserHead from "~/components/thread/StripChooserHead.vue";
 import { useStripUnread } from "~/composables/useStripUnread";
+import { STRIP_DOCK_FLOAT } from "~/composables/useDockClearance";
 import type { GitRemote } from "~/types/desktop";
 
 const props = defineProps<{
@@ -95,6 +96,12 @@ const props = defineProps<{
    *  order — handed straight to the project switcher, which drops this row's
    *  own project from it. */
   destinations?: StudioDestination[];
+  /** How much floor each column's transcript must leave for what floats over
+   *  its bottom edge — its own composer, and in the focused column the corner
+   *  docks too — keyed by pane id. Each column clears its own stack, so an
+   *  open card in one never pads its neighbours. A column missing here keeps
+   *  the resting floor. */
+  dockClear?: Record<string, number>;
 }>();
 
 const emit = defineEmits<{
@@ -401,6 +408,16 @@ const { isUnread } = useStripUnread({
   focusedId: () => props.focusedId,
   visible: () => props.visible,
 });
+
+// ── per-column dock clearance ─────────────────────────────────────────────────
+// Published on the column itself so its body — a sibling of the composer that
+// floats over it — reads them. The smoke-fade starts where the dock does, so
+// the last turns fade out behind the card rather than under it.
+function dockVars(id: string): Record<string, string> {
+  const clear = props.dockClear?.[id];
+  if (clear === undefined) return {};
+  return { "--dock-clear": `${clear}px`, "--dock-fade": `${clear - STRIP_DOCK_FLOAT}px` };
+}
 </script>
 
 <template>
@@ -489,7 +506,7 @@ const { isUnread } = useStripUnread({
                 'is-width-anim': widthAnim[c.id],
                 'is-sidechat': c.kind === 'thread' && !!c.session?.isSideChat.value,
               }"
-              :style="{ '--col-w': presetFor(c.id).width }"
+              :style="{ '--col-w': presetFor(c.id).width, ...dockVars(c.id) }"
               :role="overview ? 'button' : undefined"
               :tabindex="overview ? 0 : undefined"
               :aria-label="overview ? columnLabel(c) : undefined"
@@ -733,6 +750,19 @@ const { isUnread } = useStripUnread({
                 v-if="c.id === focusedId && !overview"
                 name="focused-dock"
                 :pane="c"
+              />
+
+              <!-- Every thread column's own composer, resting bottom-centre of
+                   that column — each conversation answers in its own column
+                   rather than through one composer that follows focus. Only
+                   threads speak: terminal and scratchpad columns have none,
+                   and in overview a column is a map card, not a document. -->
+              <slot
+                v-if="c.kind === 'thread' && c.session && !overview"
+                name="column-composer"
+                :pane-id="c.id"
+                :session="c.session"
+                :focused="c.id === focusedId"
               />
 
               <!-- The card's true-size caption. Card content scaled to k is illegible
@@ -1530,9 +1560,9 @@ const { isUnread } = useStripUnread({
   max-width: none;
   overflow-x: hidden;
   overflow-y: auto;
-  /* The floor and the smoke-fade ride --dock-clear / --dock-fade, published by
-     the row measuring its floating composer dock — so the open card and the
-     pills above it never cover the last turns. The fallbacks are the resting
+  /* The floor and the smoke-fade ride --dock-clear / --dock-fade, published on
+     each column from what floats over it (see dockVars) — so an open card and
+     the pills above it never cover the last turns. The fallbacks are the resting
      floor, for a strip mounted without a row to publish them: they mirror
      STRIP_DOCK_RESTING (208) and STRIP_DOCK_RESTING − STRIP_DOCK_FLOAT (176)
      in composables/useDockClearance.ts — change them together. */

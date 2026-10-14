@@ -88,16 +88,23 @@ function decodeDraft(saved: string): PersistedComposerDraft | null {
 
 export function useComposerDraft(deps: {
   getProjectPath: () => string;
+  /** Narrows the key below the project, for composers that share one. */
+  getScope?: () => string | undefined;
   getText: () => string;
   getSkills: () => readonly SkillReference[];
   setEditorFromText: (val: string, skills?: readonly SkillReference[]) => void;
 }) {
-  const { getProjectPath, getText, getSkills, setEditorFromText } = deps;
+  const { getProjectPath, getScope, getText, getSkills, setEditorFromText } = deps;
   // Read live, so turning drafts off in settings stops the next save without
   // remounting the composer. The prefs store already cleared what was on disk.
   const { prefs } = useComposerPrefs();
 
-  const draftKey = computed(() => `${DRAFT_KEY_PREFIX}${getProjectPath()}`);
+  // The scope rides after the path, under the same prefix, so turning drafts
+  // off in settings still sweeps the scoped ones with the rest.
+  const draftKey = computed(() => {
+    const scope = getScope?.();
+    return `${DRAFT_KEY_PREFIX}${getProjectPath()}${scope ? `#${scope}` : ""}`;
+  });
   let draftSaveTimer: number | null = null;
 
   function scheduleDraftSave(): void {

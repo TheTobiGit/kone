@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import HandOffChainBar from "~/components/thread/HandOffChainBar.vue";
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComponentPublicInstance } from "vue";
 import { useStudioRowView } from "~/composables/useViewContext";
 import { describePane } from "~/utils/viewPanes";
 import { claimDelegateColumn } from "~/utils/delegateColumns";
@@ -11,16 +10,14 @@ import { InformationSquareIcon } from "@hugeicons/core-free-icons";
 import type {
   AgentModelRef,
   ApprovalDecision,
-  ChatAttachment,
   InteractionMode,
   ProviderKind,
-  ThreadEnvMode,
   UserInputAnswers,
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
-import { useKeyedWorkspaceChoice } from "~/composables/useWorkspaceChoice";
+import type { WorkspaceChoice } from "~/utils/threadWorkspace";
 import type { StudioDestination } from "~/types/studio";
-import type { GitRemote, SkillReference } from "~/types/desktop";
+import type { GitRemote } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
@@ -43,14 +40,10 @@ import {
   setLastUsedModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
-import {
-  normalizeComposerDraft,
-  setInlineThread,
-  type ComposerDraft,
-  type QueuedTurnEntry,
-} from "~/composables/useAgent";
+import { setInlineThread } from "~/composables/useAgent";
 import { useThreadEscapeHost } from "~/composables/useThreadEscape";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
+import ThreadColumnComposer, { type ColumnComposerDock } from "~/components/thread/ThreadColumnComposer.vue";
 import ThreadBrandMark from "~/components/thread/ThreadBrandMark.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import {
@@ -61,10 +54,8 @@ import {
 } from "~/composables/useDockClearance";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
-import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
+import { createOrJoinSidechat } from "~/composables/sideChats";
 import { createHandoff, type HandoffOptions } from "~/composables/useThreadHandoff";
-import { agentForThread } from "~/utils/agents";
-import { JEV_ROUTER_ID, routingReceipt } from "~/utils/agentRouting";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { usePendingThread } from "~/composables/useProject";
 import {
@@ -74,8 +65,8 @@ import {
   type StudioRowThreadOp,
 } from "~/composables/useStudioRowRegistry";
 
-// One project's row of the studio: its panes side by side, the composer docked
-// under the focused one, and every corner dock, modal and pill that belongs to a
+// One project's row of the studio: its panes side by side, a composer resting
+// in each thread column, and every corner dock, modal and pill that belongs to a
 // conversation rather than to a repository.
 //
 // The row owns the whole agent stack for its project — the session registry, the
@@ -155,11 +146,8 @@ const pendingThread = usePendingThread();
 const {
   blocks,
   busy,
-  queuedTurns,
   model,
-  mode,
   reasoning,
-  serviceTier,
   contextWindow,
   now: agentNow,
   // The active thread's title / error aren't projected here any more: each strip
@@ -177,34 +165,67 @@ const scratchpad = useScratchpad({ projectPath: () => props.project.path });
 // (dormancy lands later); adoption folds in the boot thread and any thread a
 // pill later opens. `focusedId` is the single focus truth (no more mirroring
 // agent.activeKey — focus pushes DOWN to the agent instead).
-// The composer, ref'd here (ahead of its template mount) so studio.dispatch can
-// pre-fill it for the draft-thread intent. Its wake watcher lives further down.
-const composerRef = ref<{ wake: () => Promise<void>; setDraft: (text: string) => Promise<void> } | null>(null);
-const composerOpen = ref(false);
+// Every thread column hosts a composer of its own (ThreadColumnComposer, in the
+// strip's column-composer slot). The row keeps a handle on each, by pane id, so
+// whatever it starts — a new thread, a side chat, a drafted quote — wakes or
+// pre-fills the composer of the column it landed in, not whichever has focus.
+// A plain map rather than reactive state: the handles are set from template
+// refs during render, and nothing renders off them.
+type ColumnComposerHandle = {
+  wake: () => Promise<void>;
+  setDraft: (text: string) => Promise<void>;
+};
+/** What a template ref hands back: the composer's exposed handle once it has
+ *  mounted, null as it leaves. */
+type ComposerRefValue = Element | ComponentPublicInstance | null;
+function isComposerHandle(el: ComposerRefValue): el is ComponentPublicInstance & ColumnComposerHandle {
+  return el instanceof Object && "wake" in el && "setDraft" in el;
+}
+const columnComposers = new Map<string, ColumnComposerHandle>();
+const composerWaiters = new Map<string, ((handle: ColumnComposerHandle | null) => void)[]>();
+function setColumnComposer(paneId: string, el: ComposerRefValue): void {
+  if (!isComposerHandle(el)) {
+    columnComposers.delete(paneId);
+    return;
+  }
+  columnComposers.set(paneId, el);
+  const waiting = composerWaiters.get(paneId);
+  composerWaiters.delete(paneId);
+  for (const resolve of waiting ?? []) resolve(el);
+}
+/** How long a just-opened column gets to mount its composer. A pane lands a
+ *  render or two after it is opened (later still when the row is being brought
+ *  forward at the same moment); past this it is not coming, and the wake is
+ *  dropped rather than held. */
+const COMPOSER_WAIT_MS = 2000;
+function composerFor(paneId: string | null | undefined): Promise<ColumnComposerHandle | null> {
+  if (!paneId) return Promise.resolve(null);
+  const ready = columnComposers.get(paneId);
+  if (ready) return Promise.resolve(ready);
+  return new Promise((resolve) => {
+    const settle = (handle: ColumnComposerHandle | null): void => {
+      window.clearTimeout(timer);
+      const rest = (composerWaiters.get(paneId) ?? []).filter((w) => w !== settle);
+      if (rest.length) composerWaiters.set(paneId, rest);
+      else composerWaiters.delete(paneId);
+      resolve(handle);
+    };
+    const timer = window.setTimeout(() => settle(null), COMPOSER_WAIT_MS);
+    composerWaiters.set(paneId, [...(composerWaiters.get(paneId) ?? []), settle]);
+  });
+}
+/** Wake the composer under a column — by default the focused one, which is
+ *  where every open-and-focus path has just landed. */
+function wakeComposer(paneId: string | null | undefined = focusedId.value): void {
+  void composerFor(paneId).then((handle) => handle?.wake());
+}
 
-// The composer dock floats over the thread columns, so each column's scroll
-// floor has to clear whatever the dock currently stacks: the resting bar, or
-// the open card plus the pills row above it. Measured and published as CSS
-// vars the strip's columns consume (see col__body).
-const composerDockEl = ref<HTMLElement>();
-const { clear: composerClear, height: composerHeight } = useDockClearance(composerDockEl, {
-  resting: STRIP_DOCK_RESTING,
-  float: STRIP_DOCK_FLOAT,
-  air: STRIP_DOCK_AIR,
-});
-const threadDock = ref<InstanceType<typeof ThreadDockStack> | null>(null);
-const cornerDock = computed(() => composerOpen.value ? null : threadDock.value);
-const { clear: cornerClear } = useDockClearance(cornerDock, {
-  resting: STRIP_DOCK_RESTING,
-  float: STRIP_DOCK_FLOAT,
-  air: STRIP_DOCK_AIR,
-});
-const dockClear = computed(() => Math.max(composerClear.value, cornerClear.value));
+// Where each blank column will work, until its first send. Kept here rather
+// than in the column's composer, which leaves the page whenever the row does —
+// a worktree picked before a trip to the overview must still be picked after.
+const workspaceChoices = ref<Record<string, WorkspaceChoice>>({});
 const threadEscape = useThreadEscapeHost(() => props.visible && !props.blocked && !isOverview.value);
 threadEscape.register("picker", () => Boolean(focusedPendingApproval.value || focusedPendingUserInput.value), null);
-// The column's smoke-fade starts where the dock does, so the last turns fade
-// out behind the card rather than under it.
-const dockFade = computed(() => dockClear.value - STRIP_DOCK_FLOAT);
 
 // A pad pane briefly pulses its index dash after a thread → pad append.
 const pulseScratchpadKey = ref<string | null>(null);
@@ -217,13 +238,51 @@ const studio = useStudio({
   scratchpad,
   projectPath: () => props.project.path,
   // The two UI-only tails of a cross-pane action: flash the pad's index dash
-  // after a capture, and pre-fill the composer for a draft thread.
+  // after a capture, and pre-fill the composer of the draft thread's column.
   hooks: {
     pulsePad: (id) => pulsePadPane(id),
-    setDraft: (text) => composerRef.value?.setDraft(text),
+    setDraft: async (text, paneId) => {
+      await (await composerFor(paneId))?.setDraft(text);
+    },
   },
 });
 const { panes, focusedId, focusedPane, blankThreadPane, attach } = studio;
+
+// Each column's composer reports how much floor its transcript must leave and
+// whether its card is open. The focused column's corner docks stack over the
+// same edge, so its floor clears whichever of the two is taller; every other
+// column clears only its own composer, and an open card in one never pads its
+// neighbours.
+const columnDocks = ref<Record<string, ColumnComposerDock>>({});
+function onColumnDock(paneId: string, state: ColumnComposerDock | null): void {
+  const next = { ...columnDocks.value };
+  if (state) next[paneId] = state;
+  else delete next[paneId];
+  columnDocks.value = next;
+}
+const focusedDock = computed(() =>
+  focusedId.value ? (columnDocks.value[focusedId.value] ?? null) : null,
+);
+// Open, the card is what is being typed into, so the corner docks leave their
+// corner for a rail above it.
+const composerOpen = computed(() => focusedDock.value?.open ?? false);
+const composerHeight = computed(() => focusedDock.value?.height ?? 0);
+const threadDock = ref<InstanceType<typeof ThreadDockStack> | null>(null);
+const cornerDock = computed(() => composerOpen.value ? null : threadDock.value);
+const { clear: cornerClear } = useDockClearance(cornerDock, {
+  resting: STRIP_DOCK_RESTING,
+  float: STRIP_DOCK_FLOAT,
+  air: STRIP_DOCK_AIR,
+});
+const columnClear = computed(() => {
+  const out: Record<string, number> = {};
+  for (const pane of panes.value) {
+    if (pane.kind !== "thread") continue;
+    const own = columnDocks.value[pane.id]?.clear ?? STRIP_DOCK_RESTING;
+    out[pane.id] = pane.id === focusedId.value ? Math.max(own, cornerClear.value) : own;
+  }
+  return out;
+});
 
 // ── studio persistence ──────────────────────────────────────────────────────
 // The layout (pane order, kinds, backend ids, widths, focus) is written to the
@@ -238,9 +297,10 @@ const studioStore = useStudioPersistence(() => props.project.path);
 const studioReady = ref(false);
 /** Resolves once the async mount (provider detection → catalogs → studio restore)
  *  has finished. Callers that must not act on the pre-mount boot session — the
- *  composer target sync and every send — await this instead of no-opping, which
- *  used to let a cold-start send run on the hardcoded `codex` default carrying a
- *  model restored from another provider. */
+ *  composer target sync — await this instead of no-opping, which used to let a
+ *  cold-start send run on the hardcoded `codex` default carrying a model
+ *  restored from another provider. The column composers go further and do not
+ *  render until it has resolved, so no send can start before it. */
 function whenStudioReady(): Promise<void> {
   if (studioReady.value) return Promise.resolve();
   return new Promise((resolve) => {
@@ -317,12 +377,12 @@ function setPaneZen(id: string, zen: boolean): void {
   studio.setZen(id, zen);
 }
 
-// The composer only docks under a focused thread pane ON the studio — never on
-// the working-tree overview. Model/mode/reasoning must ride the session that
-// will actually receive the next turn: the focused thread column. agent.activeKey
-// can still point at a background thread while a terminal column is focused, so
-// we re-project before any composer edit and keep activeKey aligned with that
-// target.
+// Each column's composer commits to its own session. What the row still does
+// against the focused thread — seeding a blank one's defaults, snapping it onto
+// a newly picked agent's pin — rides the registry's active thread, so that is
+// kept aligned with the focused thread column. agent.activeKey can still point
+// at a background thread while a terminal column is focused, so we re-project
+// before acting.
 const focusedThread = computed(() =>
   focusedPane.value?.kind === "thread" ? focusedPane.value.session : null,
 );
@@ -336,57 +396,9 @@ const focusedPendingApproval = computed(
   () => focusedThread.value?.pendingApproval.value ?? null,
 );
 const activePaneIsThread = computed(() => focusedThread.value !== null);
-/** Nothing has been asked of this thread yet, so the choices that fix its shape
- *  for good — which branch it works on, which agent works it — are still open.
- *  The first block is the point of no return for both. */
+/** Nothing has been asked of the focused thread yet, so the choices that fix
+ *  its shape for good are still open — the seeders below only touch it then. */
 const threadIsBlank = computed(() => (focusedThread.value?.blocks.value.length ?? 0) === 0);
-// Why the focused thread's provider can't take a turn, or null. Drives both the
-// composer's top strip and its send refusal, so the two can never disagree.
-const sendBlockedReason = computed(() => focusedThread.value?.sendBlockedReason.value ?? null);
-const sendBlockedStatus = computed(() => {
-  const provider = focusedThread.value?.provider.value;
-  return provider ? (providers.byProvider(provider).value ?? null) : null;
-});
-const recheckingProviders = ref(false);
-async function recheckProviders(): Promise<void> {
-  if (recheckingProviders.value) return;
-  recheckingProviders.value = true;
-  try {
-    await providers.refresh();
-  } finally {
-    recheckingProviders.value = false;
-  }
-}
-
-// The composer's `/compact` row — the strip columns' shared rule, read off the
-// focused thread. A blank thread has no user turn worth compacting, so the row
-// stays hidden until the conversation starts.
-const focusedCompact = computed(() =>
-  compactPropsForSession(focusedThread.value, providers.statuses.value),
-);
-const focusedCompactable = computed(
-  () =>
-    !threadIsBlank.value &&
-    Boolean(focusedCompact.value.onCompact) &&
-    focusedCompact.value.compactState === "available",
-);
-
-// The composer's `/compact` emit — the strip button's call, so the two agree.
-// Guards mirror the button: a busy or already-compacting thread consumes
-// silently, never calls.
-function onComposerCompact(_focus: string): void {
-  if (!focusedCompact.value.onCompact || focusedCompact.value.compactState !== "available") return;
-  focusedCompact.value.onCompact();
-}
-
-// The composer's `/new` row — the same call the shortcut and the registry
-// publish, so every way of starting over lands in the same place: open (or
-// reveal the singleton blank) and wake the composer under it. No busy guard —
-// a running turn keeps its column while the fresh one focuses, the way the
-// shortcut behaves mid-turn.
-function onComposerNewThread(): void {
-  void newThreadPane();
-}
 
 // ── empty-row chooser ────────────────────────────────────────────────────────
 // A row's panes are its windows: closing the last one empties the row (zero
@@ -416,8 +428,8 @@ async function onChoosePane(kind: "thread" | "terminal" | "scratchpad"): Promise
   // Only ever reached from a bare desktop, so nothing is waiting to be revealed
   // — every kind opens a fresh pane.
   chooserDismissed.value = true;
-  await studio.open(kind);
-  if (kind === "thread") void composerRef.value?.wake();
+  const id = await studio.open(kind);
+  if (kind === "thread") wakeComposer(id);
 }
 
 function focusPane(id: string): void {
@@ -469,7 +481,7 @@ function openSideChat(paneId: string): void {
         near: sourcePaneId,
         sideChatSource: sourceThreadId,
       });
-      if (id) void composerRef.value?.wake();
+      if (id) wakeComposer(id);
     } catch (err) {
       // Creation is best-effort: a missing source thread or an idempotency
       // conflict surfaces as a silent no-op — the column simply doesn't open.
@@ -498,7 +510,7 @@ function openEditFork(paneId: string, blockId: string, text: string): void {
       near: sourcePaneId,
       sideChatSource: sourceThreadId,
     });
-    if (id) void composerRef.value?.wake();
+    if (id) wakeComposer(id);
   })();
 }
 // Thread handoff: the column's "hand off" creator. Opens the model picker in
@@ -521,7 +533,6 @@ function openHandoffPicker(paneId: string): void {
     );
     return;
   }
-  modelPickerOpen.value = false;
   pendingContinuation.value = { paneId, kind: "handoff" };
 }
 function openBranchPicker(paneId: string, blockId: string): void {
@@ -533,7 +544,6 @@ function openBranchPicker(paneId: string, blockId: string): void {
     );
     return;
   }
-  modelPickerOpen.value = false;
   pendingContinuation.value = { paneId, kind: "branch", blockId };
 }
 const handoffSource = computed(() => {
@@ -551,19 +561,13 @@ const handoffSource = computed(() => {
   };
 });
 function closePicker(): void {
-  modelPickerOpen.value = false;
   pendingContinuation.value = null;
 }
+// The row's picker only ever picks where a source thread continues — each
+// column's composer hosts its own for retuning that column. Effort rides along
+// with the pick: the settings bar stages it and nothing applies live.
 function onPickerSelect(picked: ModelPick): void {
-  // One picker, two commits: a handoff pick moves the source thread's
-  // conversation onto the target (effort rides along — the settings bar
-  // stages it and nothing applied live), while the ordinary path retunes
-  // the row's own session.
-  if (handoffSource.value) {
-    void confirmHandoff(picked);
-    return;
-  }
-  onModelSelect(picked);
+  void confirmHandoff(picked);
 }
 async function confirmHandoff(picked: ModelPick): Promise<void> {
   const source = handoffSource.value;
@@ -581,7 +585,7 @@ async function confirmHandoff(picked: ModelPick): Promise<void> {
         : { ...base, kind: "handoff" };
     const { threadId } = await createHandoff(options);
     const id = await studio.open("thread", { threadId, near: source.paneId });
-    if (id) void composerRef.value?.wake();
+    if (id) wakeComposer(id);
   } catch (err) {
     // Creation is best-effort: an ineligible source or an idempotency
     // conflict surfaces here — the column simply doesn't open, and the row
@@ -825,19 +829,7 @@ async function adoptThreadPane(threadId: string): Promise<void> {
 //
 // null all the way through means a guest: no agent named, so the thread keeps the
 // name and face rolled from its own id.
-const {
-  team: agents,
-  pickedForProject,
-  routing,
-  lastRouted,
-  routePending,
-  prefetchRoute,
-  settleAgentFor,
-  agentById,
-  pendingThreadAgent,
-  selectAgent,
-  settleThreadAgent,
-} = useAgentRoster(() => props.project.path);
+const { pickedForProject, pendingThreadAgent } = useAgentRoster(() => props.project.path);
 
 // When an outside surface (such as the agent detail page in settings) requests
 // a new conversation with a specific agent, bring the studio forward, spawn a
@@ -855,59 +847,10 @@ watch(
       await studio.open("thread");
     }
     await nextTick();
-    void composerRef.value?.wake();
+    wakeComposer();
   },
   { immediate: true },
 );
-
-const focusedIsSideChat = computed(() => {
-  const currentId = focusedThread.value?.threadId.value;
-  return Boolean(focusedThread.value?.isSideChat?.value || (currentId && getSideChatSource(currentId)));
-});
-
-const composerAgentId = computed(() => {
-  const currentId = focusedThread.value?.threadId.value;
-  // A side chat inherits its source's owner, so the router never gets a say
-  // there — the question of who works it was answered by the thread it came
-  // from.
-  if (currentId && focusedIsSideChat.value) return agentForThread(currentId)?.id ?? null;
-  if (routing.value) return JEV_ROUTER_ID;
-  return pickedForProject.value?.id ?? null;
-});
-
-// One composer serves whichever thread has focus here, so a receipt left
-// standing would follow the focus onto a thread it was never about. It
-// describes one send on one thread; moving off that thread ends it.
-watch(
-  () => focusedThread.value?.threadId.value,
-  () => {
-    lastRouted.value = null;
-  },
-);
-
-/** The receipt for the last routed send — see the composer's `routingNote`. */
-const routingNote = computed<string | null>(() => {
-  // In flight first — see the same rule in useInboxComposer.
-  if (routePending.value) return "Choosing who takes this…";
-
-  const result = lastRouted.value;
-  if (!result) return null;
-  const name = result.agentId ? agentById(result.agentId)?.name : undefined;
-  return routingReceipt(result, name);
-});
-
-function onAgentPick(id: string | null) {
-  selectAgent(id);
-}
-
-/** Warm Jev off the draft while it is still being typed. Blank threads only:
- *  a settled thread never routes again, and a side chat inherits its source's
- *  owner — warming for either would spend a call whose answer can never land. */
-function onComposerDraft(text: string): void {
-  if (!threadIsBlank.value || focusedIsSideChat.value) return;
-  if (!routing.value) return;
-  prefetchRoute(text);
-}
 
 // The selected agent's pinned model gates what the pickers may offer. No model
 // is unrestricted — every provider and every model stays open. A pinned model
@@ -925,12 +868,13 @@ function modelAllowed(provider: ProviderKind, key: string): boolean {
 }
 
 // The catalog for each installed provider — its flat model list grouped into
-// families with real efforts. The composer + picker drive everything off these;
-// the raw id (which carries the effort) is what we send to the session.
+// families with real efforts. Default seeding, the self-heal and the handoff
+// picker drive everything off these; the raw id (which carries the effort) is
+// what we send to the session.
 const catalogs = ref<Partial<Record<ProviderKind, ModelOption[]>>>({});
 
-// The active provider's catalog feeds the composer's own model name + effort
-// dial, narrowed to the models the selected agent may run. A disallowed current
+// The active provider's catalog, narrowed to the models the selected agent may
+// run — what the row's own seeding and pin-snapping choose from. A disallowed current
 // model is moved off by the self-heal watcher above, which reads this list.
 // Null provider (none active) yields no options — no model.
 const modelOptions = computed(() => {
@@ -983,7 +927,7 @@ const enabledReady = computed(() =>
   providers.ready.value.filter((s) => providerSettings.isEnabled(s.provider)),
 );
 
-// The provider rail the model picker shows — one ready, enabled provider per
+// The provider rail the handoff picker shows — one ready, enabled provider per
 // catalog. Each catalog is filtered through the same model-visibility rule the
 // providers pane's per-model toggles write, so hiding a model there drops it here.
 const pickerProviders = computed<PickerProvider[]>(() => {
@@ -1005,15 +949,8 @@ const pickerProviders = computed<PickerProvider[]>(() => {
     });
 });
 
-// Is there anything to pick? A pinned agent narrows the picker to its one model,
-// and per-model visibility toggles can do the same, and a picker holding a single
-// row is a dead end — so the composer's model slot becomes a label instead.
-const modelSwitchable = computed(
-  () => pickerProviders.value.reduce((n, p) => n + p.models.length, 0) > 1,
-);
-
-/** Point agent.activeKey at the thread the composer is editing so setModel and
- *  friends land on the session the next send will use. No-ops until the row has
+/** Point agent.activeKey at the focused thread so the row's own setModel and
+ *  friends — default seeding, an agent's pin — land on that column's session. No-ops until the row has
  *  restored — the immediate pre-mount sync used to miss the blank thread slot and
  *  sometimes left no live session at all after restore evicted the boot thread. */
 let syncingComposerTarget: Promise<void> | null = null;
@@ -1363,89 +1300,15 @@ watch(reasoning, (tier) => {
   }
 });
 
-// The full providers→models→effort picker (opened from the composer's model
-// name). It applies a raw model id, exactly like the composer's inline paths.
-const modelPickerOpen = ref(false);
-watch(modelPickerOpen, (open) => {
-  if (open) void syncComposerTarget();
-});
-// Clear transient thread chrome when focus leaves — model picker today, any future
-// overlay someone adds should land here too so it can't strand over a terminal.
-watch(
-  () => studio.focusedId,
-  () => {
-    modelPickerOpen.value = false;
-    workspacePickerOpen.value = false;
-  },
-);
-
-// ── where a new thread works ─────────────────────────────────────────────────
-// The composer's branch chip asks where a blank thread will work: the project's
-// own checkout, or a worktree of its own. The answer is draft state, held per
-// pane until that pane's first send hands it to the session. Nothing is built
-// while it sits here, so a pane closed after picking leaves no directory behind.
-const workspacePickerOpen = ref(false);
-const workspace = useKeyedWorkspaceChoice({
-  key: () => focusedId.value,
-  drafting: () => threadIsBlank.value,
-  fallbackBranch: () => props.branch,
-});
-const { choice: focusedWorkspaceChoice, branch: composerBranch } = workspace;
-
-// A blank thread shows what it will do; a started one shows what it did.
-const composerEnvMode = computed<ThreadEnvMode | null>(() =>
-  threadIsBlank.value
-    ? focusedWorkspaceChoice.value.mode
-    : (focusedThread.value?.envMode.value ?? null),
-);
-
-// A picker left standing over a row that went off screen would be waiting there,
-// stale, when it comes back.
-watch(
-  () => props.visible,
-  (visible) => {
-    if (!visible) workspacePickerOpen.value = false;
-  },
-);
-
-// ── committing a model pick ──────────────────────────────────────────────────
-// One path for "which model runs the next turn", whether the answer came from
-// the full picker, the composer's inline slots, or the fast-mode toggle. The
-// picker modal's own open/closed state stays here — it's UI, not policy.
-const {
-  persistThreadSelection,
-  applyModelEffort,
-  applyAgentPin,
-  fastActive,
-  onUpdateFastMode,
-  onComposerModelId,
-  onComposerReasoning,
-  onComposerContextWindow,
-  onComposerMode: commitComposerMode,
-} = useModelCommit({
+// ── recording a selection ────────────────────────────────────────────────────
+// The columns' composers commit their own picks. The row only needs the
+// persist half, for when it snaps a blank thread onto a newly picked agent.
+const { persistThreadSelection } = useModelCommit({
   agent,
   catalogs,
   modelOptions,
   syncTarget: syncComposerTarget,
 });
-
-// A mode change from the composer is the one thing that establishes this
-// project's own permission mode. Persisting it here — rather than off a reactive
-// watch on `mode` — is what keeps MODE_KEY a record of the user's deliberate
-// choice: the reactive watch also fired for the construction-default and for
-// every cross-thread mode switch, writing a value the boot seed then read back
-// as if the project already had a mode, which shadowed the app-wide default.
-function onComposerMode(next: InteractionMode): void {
-  commitComposerMode(next);
-  if (import.meta.client) localStorage.setItem(MODE_KEY, next);
-}
-
-function onModelSelect(picked: ModelPick) {
-  void applyModelEffort(picked);
-  modelPickerOpen.value = false;
-  cue("select");
-}
-
 
 // Make a pin actually hold for the next send, not just narrow the picker. When
 // the selection moves to an agent whose allowlist rules out the provider or
@@ -1497,72 +1360,6 @@ watch(pickedForProject, async (nextAgent, prevAgent) => {
   persistThreadSelection();
 });
 
-async function onSend(draft: ComposerDraft): Promise<void>;
-async function onSend(text: string, files?: File[], skills?: SkillReference[]): Promise<void>;
-async function onSend(
-  textOrDraft: string | ComposerDraft,
-  files?: File[],
-  skills?: SkillReference[],
-): Promise<void> {
-  const draft = normalizeComposerDraft(textOrDraft, files, skills);
-  // The composer only docks under a focused thread pane on the studio, so the
-  // send target is that focused thread. Settle it first: never send on top of
-  // the pre-mount boot session — it carries the hardcoded `codex` default and
-  // rehydrates the project's LAST stored thread on its first start(), which
-  // silently replaces the composer's provider/model and resumes a foreign
-  // conversation id. Settling the target first is what makes the model shown
-  // in the composer the model that actually runs.
-  await syncComposerTarget();
-  // Where the work lands, read off the pane the send is going to and staged on
-  // its session before the turn: the session consumes it on its one start. Only
-  // a blank thread takes it — after the first block the thread already works
-  // somewhere, and a retried failed start still holds the earlier request.
-  const target = focusedThread.value;
-  const request = workspace.request();
-  if (target && request) target.stageWorkspace(request);
-  // Now that the target is settled it has a durable id, so who is working it can
-  // be recorded against it — this is the moment the thread acquires a face. Every
-  // send runs this and only the first one lands: the record is write-once, so a
-  // second message can't hand the thread to whoever is selected by then.
-  const currentId = focusedThread.value?.threadId.value;
-  if (focusedIsSideChat.value && currentId) {
-    const sourceId = focusedThread.value?.sideChatSource?.value ?? getSideChatSource(currentId);
-    const sourceAgent = sourceId ? agentForThread(sourceId) : undefined;
-    settleThreadAgent(currentId, sourceAgent?.id ?? null);
-  } else {
-    // With the router selected, who works the thread is read out of the
-    // request rather than off the picker — awaited before the send below, since
-    // the session reads the persona off this binding as it spawns.
-    //
-    // And whoever it named runs on their own model when they have one. The
-    // composer never showed that pick — nobody was on the thread to pin it
-    // until this line — so it is applied here, before the send carries the
-    // turn out on it.
-    await applyAgentPin(await settleAgentFor(draft.text, currentId));
-  }
-  // Persist any picked files first — now that the thread is settled, uploads are
-  // scoped to the right one. Each resolves to bytes-free metadata the turn
-  // carries; a failed upload is dropped rather than sinking the whole send.
-  let attachments: ChatAttachment[] | undefined;
-  if (draft.files?.length) {
-    const results = await Promise.allSettled(draft.files.map((f) => agent.uploadAttachment(f)));
-    const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
-    if (ok.length) attachments = ok;
-  }
-  void agent.send({ text: draft.text, attachments, skills: draft.skills, steer: draft.steer });
-}
-/** Drop one durably queued follow-up (the composer strip's ✕). The backend
- *  emits turn.queued-cancelled; the strip clears on that event. */
-function onRemoveQueued(queueId: string) {
-  void agent.cancelQueuedTurn(queueId);
-}
-async function onSendNow(entry: QueuedTurnEntry) {
-  await agent.sendQueuedEntryNow(entry);
-}
-function onInterrupt() {
-  void agent.stop();
-}
-
 // Answer the agent's live question — hands the picked/typed answers back to the
 // adapter, which resolves the parked tool call and lets the turn continue.
 function onAnswerUserInput(requestId: string, answers: UserInputAnswers) {
@@ -1596,11 +1393,6 @@ useEventListener(document, "visibilitychange", () => {
   if (document.visibilityState === "hidden") flushStudio();
 });
 
-// Wake the composer when a blank thread becomes active in chat — new thread,
-// seam insert, or closing the last column all land here. Watching activeKey (not
-// a bare empty-blocks check) so closing the orb on an empty thread stays closed.
-// (composerRef itself is declared up by the studio so studio.dispatch can pre-fill
-// so they are decided in one place.
 // ── on-screen thread reporting ─────────────────────────────────────────────
 // The global bots skip whatever is already in front of the user: this row's
 // focused thread answers its ask inline in its column. Report it while this
@@ -1636,9 +1428,9 @@ function onOpenThread(threadId: string) {
 // ref, and published to the registry for everything that can't — the project
 // page's conversation list is under the plane now, not inside the row's parent.
 async function newThreadPane(): Promise<void> {
-  await studio.open("thread");
+  const id = await studio.open("thread");
   await nextTick();
-  void composerRef.value?.wake();
+  wakeComposer(id);
   emit("summon");
 }
 
@@ -1760,7 +1552,6 @@ useStudioRowView(registryPath, () =>
     <div
       class="surface-layer surface-layer--studio"
       :class="{ 'surface-layer--hidden': !visible && !overview }"
-      :style="{ '--dock-clear': `${dockClear}px`, '--dock-fade': `${dockFade}px` }"
       :inert="(!visible && !overview) || blocked"
       :aria-hidden="(!visible && !overview) ? 'true' : undefined"
     >
@@ -1778,6 +1569,7 @@ useStudioRowView(registryPath, () =>
         :origin="origin"
         :overview="overview"
         :destinations="destinations"
+        :dock-clear="columnClear"
         @choose="onChoosePane"
         @focus="focusPane"
         @shift="shiftPaneFocus"
@@ -1855,6 +1647,31 @@ useStudioRowView(registryPath, () =>
             </ThreadDockStack>
           </Transition>
         </template>
+
+        <!-- Every thread column's own composer, resting bottom-centre of that
+             column: dormant until you wake it, then it stretches into the
+             input. Each commits to its own column's thread, whichever column
+             has focus by then. It stays off the working-tree home — that page
+             is the project's dashboard, and conversation starts on the studio
+             (mod+b, mod+n, or opening a session) — and waits for the restore,
+             so nothing can be sent on the boot session it is about to evict. -->
+        <template #column-composer="{ paneId, session, focused }">
+          <ThreadColumnComposer
+            v-if="visible && studioReady"
+            :ref="(el) => setColumnComposer(paneId, el)"
+            v-model:workspace-choices="workspaceChoices"
+            :pane-id="paneId"
+            :session="session"
+            :agent="agent"
+            :project-path="project.path"
+            :project-name="project.name"
+            :branch="branch"
+            :focused="focused"
+            :creatable="blankThreadPane === null"
+            @new-thread="newThreadPane"
+            @dock="(state) => onColumnDock(paneId, state)"
+          />
+        </template>
       </ThreadStrip>
     </div>
     <ConversationSelectionActions
@@ -1863,141 +1680,22 @@ useStudioRowView(registryPath, () =>
       @dispatch="studio.dispatch"
     />
 
-    <!-- The agent composer docks dead-centre at the bottom of the BOARD, under
-         a focused thread pane — dormant until you wake it, then it stretches
-         into the input. It stays docked to the viewport while the column behind
-         scrolls. It no longer appears on the working-tree home: that page is the
-         project's dashboard, and conversation starts on the studio (mod+b, mod+n,
-         or opening a session). Entering the strip's overview takes it away; fade
-         rather than cut, so it doesn't blink out from under the cursor while the
-         studio behind it is still gliding back. -->
-    <Transition
-      enter-active-class="transition-opacity duration-200 ease-out"
-      enter-from-class="opacity-0"
-      leave-active-class="transition-opacity duration-150 ease-in"
-      leave-to-class="opacity-0"
-      @after-leave="composerOpen = false"
-    >
-      <div
-        v-if="!focusedPendingUserInput && !focusedPendingApproval && visible && activePaneIsThread && !showChooser && !isOverview"
-        ref="composerDockEl"
-        class="composer-dock pointer-events-none fixed inset-x-0 bottom-8 flex flex-col items-center"
-        :class="{ 'composer-dock--open': composerOpen }"
-        :inert="blocked"
-      >
-        <HandOffChainBar
-          :thread-id="focusedThread?.threadId.value"
-          :spawned="focusedThread?.spawnedChildren.value ?? []"
-        />
-        <AgentComposer
-          ref="composerRef"
-          class="pointer-events-auto"
-          :project-path="project.path"
-          :provider="focusedThread?.provider.value ?? agent.provider.value"
-          :send-rejection="focusedThread?.sendRejection.value"
-          :queue-return="focusedThread?.queueReturn.value"
-          :steer-wait="focusedThread?.steerWait.value"
-          :project-name="project.name"
-          :branch="composerBranch"
-          :branch-switchable="threadIsBlank && !focusedIsSideChat"
-          :env-mode="composerEnvMode"
-          :worktree-path="threadIsBlank ? null : focusedThread?.worktreePath.value"
-          :thread-name="focusedThread?.title.value"
-          :thread-id="focusedThread?.threadId.value"
-          :busy="busy"
-          :queued="queuedTurns"
-          :picking="modelPickerOpen || workspacePickerOpen"
-          :agents="agents"
-          :agent-id="composerAgentId"
-          :routing-note="routingNote"
-          :agent-switchable="threadIsBlank && !focusedIsSideChat"
-          :models="modelOptions"
-          :model-switchable="modelSwitchable"
-          :model-id="model"
-          :reasoning="reasoning"
-          :mode="mode"
-          :fast-mode="fastActive"
-          :context-window="contextWindow"
-          :blocked-reason="sendBlockedReason"
-          :health-status="sendBlockedStatus"
-          :health-checking="recheckingProviders"
-          :workspace-steps="focusedThread?.workspaceSteps.value ?? []"
-          :compactable="focusedCompactable"
-          :creatable="blankThreadPane === null"
-          @send="onSend"
-          @remove-queued="onRemoveQueued"
-          @reorder-queued="agent.reorderQueuedTurns($event)"
-          @send-now="onSendNow"
-          @interrupt-now="void focusedThread?.interruptStepWaitNow()"
-          @interrupt="onInterrupt"
-          @update:agent-id="onAgentPick"
-          @update:model-id="onComposerModelId"
-          @update:reasoning="onComposerReasoning"
-          @update:mode="onComposerMode"
-          @update:fast-mode="onUpdateFastMode"
-          @update:context-window="onComposerContextWindow"
-          @open-models="modelSwitchable && (modelPickerOpen = true)"
-          @open-branch="workspacePickerOpen = true"
-          @compact="onComposerCompact"
-          @new-thread="onComposerNewThread"
-          @update:open="composerOpen = $event"
-          @update:draft="onComposerDraft"
-          @recheck="recheckProviders"
-          @cancel-workspace="focusedThread?.cancelWorkspace()"
-          @dismiss-workspace="focusedThread?.dismissWorkspaceSteps()"
-        />
-      </div>
-    </Transition>
-
-    <!-- The full providers → models → effort picker, in the folder-picker shell.
-         In handoff mode it picks where the source thread continues instead of
-         retuning this row's session (see onPickerSelect). -->
+    <!-- The providers → models → effort picker in handoff mode, in the
+         folder-picker shell: it picks where a source thread continues. Each
+         column's composer hosts its own for retuning that column. -->
     <ModelPickerModal
-      v-if="(modelPickerOpen || handoffSource) && !isOverview"
+      v-if="handoffSource && !isOverview"
       :providers="pickerProviders"
-      :active-provider="handoffSource ? handoffSource.provider : agent.provider.value"
-      :model-id="handoffSource ? handoffSource.model : model"
-      :reasoning="handoffSource ? handoffSource.reasoning : reasoning"
-      :fast-mode="handoffSource ? undefined : fastActive"
-      :context-window="handoffSource ? undefined : contextWindow"
-      :handoff="handoffSource ? { title: handoffSource.title } : null"
+      :active-provider="handoffSource.provider"
+      :model-id="handoffSource.model"
+      :reasoning="handoffSource.reasoning"
+      :handoff="{ title: handoffSource.title }"
       @select="onPickerSelect"
-      @apply="applyModelEffort"
       @cancel="closePicker"
-    />
-
-    <!-- Where a blank thread works: its project's checkout or its own worktree.
-         Nothing is built by picking; the first send does that. -->
-    <ConversationBranchPickerModal
-      v-if="workspacePickerOpen && !isOverview"
-      :project-path="project.path"
-      mode="select"
-      :chosen="focusedWorkspaceChoice"
-      @picked="(choice) => { workspacePickerOpen = false; workspace.pick(choice); }"
-      @cancel="workspacePickerOpen = false"
     />
 </template>
 
 <style scoped>
-/* ── Composer dock ────────────────────────────────────────────────────────── */
-/* Centred at the bottom of the studio. At rest it sits below the corner docks (46
-   > 40/45 only once it opens): the resting orb is small and out of their way, and
-   the docks are what you're reading. Open, the card is the thing being typed
-   into, so it takes the higher layer and the docks pass underneath — the two
-   stop competing for the same strip once the window is too narrow to hold both
-   side by side. Stays under a file detail (50), which covers the studio whole. */
-.composer-dock {
-  z-index: 40;
-}
-
-.composer-dock > * {
-  pointer-events: auto;
-}
-
-.composer-dock--open {
-  z-index: 46;
-}
-
 /* The thread dock's header identity: the thread's brand marks, then its name,
    tight so they read as one label; the name ellipsises within the band rather
    than pushing it out. */
