@@ -70,6 +70,8 @@ import {
   type EffortTier,
   type ModelOption,
 } from "~/utils/modelCatalog";
+import { PROVIDER_BRAND } from "~/utils/modelPicker";
+import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
 
 // "Agent input — states" board. One object walks four states:
 //   dormant  · a calm orb at rest, breathing
@@ -312,10 +314,12 @@ const { cue } = useSound();
 // How the composer behaves under your hands — the Composer settings page.
 const { prefs: composerPrefs } = useComposerPrefs();
 
-// No active provider: the model slot wears every provider's mark greyed rather
-// than a single live one, so the empty state reads as "nothing to run on".
+// No active provider: the model slot wears every offered provider's mark greyed
+// rather than a single live one, so the empty state reads as "nothing to run on".
+// Derived from the offered list, so the empty state can never show a provider
+// kone no longer offers or miss one it does.
 const noProvider = computed(() => !props.healthStatus);
-const providerMarks = ["codex", "claude", "cursor", "opencode", "droid", "antigravity", "cline"] as const;
+const providerMarks = OFFERED_PROVIDERS.map((provider) => PROVIDER_BRAND[provider]);
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 

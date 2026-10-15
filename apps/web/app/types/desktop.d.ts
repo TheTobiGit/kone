@@ -2622,6 +2622,13 @@ export type KoneAgentUsageApi = {
     range: UsageRange;
     projectPath?: string | null;
     forceRefresh?: boolean;
+    /** The provider population the report is built over. When set, totals,
+     *  days, by-provider and model rows all cover exactly these providers —
+     *  a provider left out is filtered from the scan before aggregation, not
+     *  dropped from some rows and left in the sums. Omit for every provider
+     *  kone recorded. The app's own surfaces pass the offered list so the
+     *  numbers describe one population. */
+    providers?: readonly string[];
   }) => Promise<AgentUsageReport>;
 };
 

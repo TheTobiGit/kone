@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { SettingsPane } from "~/composables/useSettingsSurface";
+import { isProviderOffered } from "~/utils/providerOffer";
 import type { SettingsGlyphKind } from "./SettingsGlyph.vue";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
@@ -35,7 +36,10 @@ const upkeep = useProviderMaintenance();
 const readyEnabledCount = computed(
   () =>
     providers.statuses.value.filter(
-      (s) => s.readiness === "ready" && providerSettings.isEnabled(s.provider),
+      (s) =>
+        s.readiness === "ready" &&
+        isProviderOffered(s.provider) &&
+        providerSettings.isEnabled(s.provider),
     ).length,
 );
 

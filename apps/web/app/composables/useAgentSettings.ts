@@ -6,6 +6,8 @@ import type {
   QuotaProviderReport,
   UsageRange,
 } from "~/types/desktop";
+import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
+import { isConsentFreeQuotaProvider, isQuotaCapable } from "~/utils/providerCapability";
 import { USAGE_RANGE_IDS } from "~/utils/usageRanges";
 
 // The Agents space reads three independent sources, each behind its own bridge
@@ -16,14 +18,13 @@ import { USAGE_RANGE_IDS } from "~/utils/usageRanges";
 
 /** Providers whose own usage kone knows how to read. Everything else in the
  *  picker is a CLI with nothing to ask, and the Limits section says so rather
- *  than inventing a meter. Deliberately narrower than ProviderKind — the bridge
- *  accepts exactly these, so the narrowing belongs in the type. OpenCode leads
- *  because it is the only one that is useful with no network and no consent;
- *  Antigravity needs no consent either — its "credential" is the language
- *  server the app/CLI already runs, never a stored token. Droid reads through
- *  Factory's billing/usage APIs with the user's own Factory API key. */
+ *  than inventing a meter. The type is the quota bridge's own accepted set, and
+ *  the value is derived from the offered list (see providerOffer.ts) filtered
+ *  by capability (providerCapability.ts) — so a provider kone stops offering is
+ *  never probed or metered without this file being touched, and the two facts
+ *  cannot drift apart. */
 export type QuotaProvider = QuotaProviderReport["provider"];
-const QUOTA_CAPABLE: QuotaProvider[] = ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
+const QUOTA_CAPABLE: QuotaProvider[] = OFFERED_PROVIDERS.filter(isQuotaCapable);
 
 /** How tight a quota window is running — the one place the thresholds live, so
  *  every surface that colours a window agrees on where "tight" starts. Past
@@ -37,26 +38,24 @@ export function quotaTone(percent: number | null): QuotaTone {
   return "ok";
 }
 
-/** Installed providers the Limits section still shows a card for, even though
+/** Offered providers the Limits section still shows a card for, even though
  *  kone cannot read a single number from them. A card with the honest "nothing
  *  to read" note beats no card at all — the absence of a meter should be
- *  explained, not silent. Never added to QUOTA_CAPABLE: the quota bridge
- *  accepts exactly that list, and these must not reach it. (Cline only — every
- *  other provider kone offers has a quota path.) */
-const UNREADABLE: ProviderKind[] = ["cline"];
+ *  explained, not silent. Derived as the offered providers with no quota read
+ *  path, so it cannot list a provider kone doesn't offer or omit one it does.
+ *  Never added to QUOTA_CAPABLE: the quota bridge accepts exactly that list,
+ *  and these must not reach it. Currently empty — every provider kone offers
+ *  has a quota path — but the state below stays wired for a future one. */
+const UNREADABLE: ProviderKind[] = OFFERED_PROVIDERS.filter((p) => !isQuotaCapable(p));
 const READABLE: ReadonlySet<string> = new Set(QUOTA_CAPABLE);
 
 /** Every provider the Limits section can render a card for. */
 const LIMITS_PROVIDERS: ProviderKind[] = [...QUOTA_CAPABLE, ...UNREADABLE];
 
-/** Providers that need no opt-in, because the question the toggle asks —
- *  "may kone spend your stored credential on a call to this provider?" — simply
- *  does not apply to them. OpenCode touches no credential and makes no network
- *  call; it reads a cost figure OpenCode itself already wrote to a local file.
- *  Antigravity likewise: its "credential" is the language server the app/CLI
- *  already runs, and the quota read is loopback-only. Gating either behind
- *  consent would be ceremony without a decision behind it. */
-const NO_CONSENT_NEEDED: QuotaProvider[] = ["opencode", "antigravity"];
+/** The offered providers that need no opt-in — the capability filtered to what
+ *  kone actually offers. OpenCode (and, when offered, Antigravity) touch no
+ *  stored credential, so a consent gate would be ceremony without a decision. */
+const NO_CONSENT_NEEDED: QuotaProvider[] = QUOTA_CAPABLE.filter(isConsentFreeQuotaProvider);
 
 /** The per-provider opt-in for everyone else. Reading a provider's local CLI
  *  token and calling its usage API on the user's behalf is a thing they turn on
@@ -159,6 +158,10 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
         range: range.value,
         projectPath: usageScope.value === "project" ? firstPath() : null,
         forceRefresh: options?.forceRefresh,
+        // The report is built over the offered population, so totals, days,
+        // provider and model rows all describe the same providers (see
+        // OFFERED_PROVIDERS). Every usage surface reads this one report.
+        providers: OFFERED_PROVIDERS,
       });
       // Guard against a slow response for a key the user has since navigated
       // away from — only commit if this read is still the one on screen.
@@ -210,6 +213,7 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
         const report = await api.report({
           range: next,
           projectPath: usageScope.value === "project" ? firstPath() : null,
+          providers: OFFERED_PROVIDERS,
         });
         usageReportCache.set(key, report);
       } catch {
@@ -257,8 +261,8 @@ export function useAgentSettings(projectPath: () => string | string[] | null) {
   const credentialPresent = ref<Partial<Record<QuotaProvider, boolean>>>({ ...credentialProbeCache });
   const quotas = ref<Partial<Record<QuotaProvider, QuotaProviderReport>>>({ ...quotaReportCache });
   const quotaLoading = ref<Partial<Record<QuotaProvider, boolean>>>({});
-  /** The card list: quota-capable providers plus the "nothing to read" ones
-   *  (cline) the Limits section still explains. */
+  /** The card list: offered, quota-capable providers plus any offered provider
+   *  with no read path that the Limits section still explains. */
   const limitsProviders = computed(() => LIMITS_PROVIDERS);
   /** True when the quota bridge actually answers for this provider — gates
    *  every quota call and the card states that depend on them. */

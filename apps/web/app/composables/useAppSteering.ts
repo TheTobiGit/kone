@@ -21,7 +21,8 @@ import { usePaneWidthPrefs } from "./usePaneWidthPrefs";
 import { useTypography } from "./useTypography";
 import type { TypographyPrefs } from "~/theme/typography";
 import { CENTER_MODES } from "~/utils/stripScroll";
-import type { AgentModelRef, AgentBaseEvent, ProviderKind, RuntimeEvent } from "~/types/desktop";
+import type { AgentModelRef, AgentBaseEvent, RuntimeEvent } from "~/types/desktop";
+import { isProviderOffered } from "~/utils/providerOffer";
 import type { PaneKind } from "~/types/studio";
 
 // The receiving end of the app gateway's steering tools. An agent's tool call
@@ -38,30 +39,20 @@ import type { PaneKind } from "~/types/studio";
 let isListening = false;
 let unsubscribe: (() => void) | null = null;
 
-const PROVIDERS = new Set<ProviderKind>([
-  "codex",
-  "claudeAgent",
-  "cursor",
-  "opencode",
-  "droid",
-  "antigravity",
-  "cline",
-]);
-
-/** A model ref off the wire, or null if it names no model this build can run.
- *  The gateway validates the provider against the same list, so this is the
- *  guard for a shell of a different vintage than the window it is talking to. */
+/** A model ref off the wire, or null if it names no model this build offers.
+ *  The gateway validates the provider against its own list, so this is the guard
+ *  for a shell of a different vintage than the window it is talking to — and for
+ *  a provider kone has since taken off offer. */
 function readModelRef(
   value: { provider: string; model: string; label?: string } | undefined,
 ): AgentModelRef | null {
   if (!value) return null;
   const provider = value.provider.trim();
   const model = value.model.trim();
-  // SAFETY: `has` only reads the set; the value is a ProviderKind exactly when
-  // this returns true, which is what the branch below relies on.
-  if (!model || !PROVIDERS.has(provider as ProviderKind)) return null;
-  // SAFETY: guarded by the membership check immediately above.
-  const ref: AgentModelRef = { provider: provider as ProviderKind, model };
+  // SAFETY: `isProviderOffered` narrows the trimmed string to the offered
+  // provider union, which is what the branch below relies on.
+  if (!model || !isProviderOffered(provider)) return null;
+  const ref: AgentModelRef = { provider, model };
   const label = value.label?.trim();
   if (label) ref.label = label;
   return ref;

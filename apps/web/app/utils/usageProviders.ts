@@ -2,17 +2,12 @@ import type { ProviderKind } from "~/types/desktop";
 import { SESSION_BRAND } from "~/types/session";
 import type { ThemeScheme } from "~/theme/roles";
 import type { BrandKey } from "~/utils/modelCatalog";
+import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
 
-/** Series and table order — matches how the chart layers providers. */
-export const PROVIDER_ORDER: readonly ProviderKind[] = [
-  "codex",
-  "claudeAgent",
-  "opencode",
-  "cursor",
-  "droid",
-  "antigravity",
-  "cline",
-];
+/** Series and table order — the offered providers, in the order the chart layers
+ *  them. A report row for a provider kone no longer offers is dropped by
+ *  `asProviderKind` below, so every usage surface agrees on the same set. */
+export const PROVIDER_ORDER: readonly ProviderKind[] = OFFERED_PROVIDERS;
 
 export const PROVIDER_LABEL = {
   codex: "Codex",

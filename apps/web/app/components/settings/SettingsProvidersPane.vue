@@ -21,6 +21,7 @@ import { useEdgeFade } from "~/composables/useEdgeFade";
 import ProviderDeckLimits, { deckReadout, pctLabel, type DeckReadout } from "~/components/provider/ProviderDeckLimits.vue";
 import ProviderModelMeta from "~/components/provider/ProviderModelMeta.vue";
 import { buildModelCatalog, type BrandKey, type ModelOption } from "~/utils/modelCatalog";
+import { OFFERED_PROVIDERS, isProviderOffered } from "~/utils/providerOffer";
 import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/desktop";
 
 // The agent-provider surface, as a place rather than a drawer pane.
@@ -156,7 +157,7 @@ const PROVIDER_META = {
   },
 } satisfies Record<ProviderKind, ProviderMeta>;
 
-const ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity", "cline"];
+const ORDER: readonly ProviderKind[] = OFFERED_PROVIDERS;
 
 // ── the deck ────────────────────────────────────────────────────────────────
 
@@ -199,8 +200,8 @@ const rows = computed<Row[]>(() =>
   }),
 );
 
-// SAFETY: ORDER above is a fixed seven-entry literal, so rows always has a
-// first element for the ?? fallback to land on.
+// SAFETY: ORDER is never empty — OFFERED_PROVIDERS always lists at least one
+// provider — so rows always has a first element for the ?? fallback to land on.
 const current = computed<Row>(
   () => rows.value.find((r) => r.provider === selected.value) ?? (rows.value[0] as Row),
 );
@@ -224,7 +225,9 @@ function select(provider: ProviderKind) {
 // ── the masthead ──────────────────────────────────────────────────────────────
 
 const readyCount = computed(
-  () => providers.statuses.value.filter((s) => s.readiness === "ready").length,
+  () =>
+    providers.statuses.value.filter((s) => s.readiness === "ready" && isProviderOffered(s.provider))
+      .length,
 );
 
 /** Providers kone can honestly call out of date (see useProviderMaintenance). */

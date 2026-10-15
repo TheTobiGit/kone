@@ -118,9 +118,17 @@ export function usageReportFromStore(
       providerFilter += ` AND t.provider NOT IN (${exclude.map(() => "?").join(",")})`;
       providerArgs.push(...exclude);
     }
-    if (only && only.length > 0) {
-      providerFilter += ` AND t.provider IN (${only.map(() => "?").join(",")})`;
-      providerArgs.push(...only);
+    if (only !== undefined) {
+      // An explicit empty list means "no provider qualifies" — distinct from
+      // omitting the list, which means "no inclusion constraint". Callers use
+      // it to narrow the store to a population that excludes what its own
+      // filter would otherwise contribute.
+      if (only.length === 0) {
+        providerFilter += ` AND 0 = 1`;
+      } else {
+        providerFilter += ` AND t.provider IN (${only.map(() => "?").join(",")})`;
+        providerArgs.push(...only);
+      }
     }
 
     const promptsArgs = [...projectArgs, ...providerArgs, ...(startMs !== null ? [startMs] : [])];

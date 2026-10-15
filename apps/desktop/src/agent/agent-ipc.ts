@@ -1139,7 +1139,12 @@ export function registerAgentIpc(): void {
     "agent:usage-report",
     async (
       _event,
-      options: { range: UsageRange; projectPath?: string | null; forceRefresh?: boolean },
+      options: {
+        range: UsageRange;
+        projectPath?: string | null;
+        forceRefresh?: boolean;
+        providers?: readonly string[];
+      },
     ) => buildAgentUsageReport(store, options),
   );
   // Offline presence check only — this decides whether the row offers to

@@ -22,7 +22,7 @@ import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
 import ProjectPickerModal from "~/components/project/ProjectPickerModal.vue";
 import { useBench } from "~/composables/useBench";
-import { bootProvider } from "~/utils/modelPicker";
+import { bootSelection } from "~/utils/modelPicker";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import type { ChatAttachment, JobTarget } from "~/types/desktop";
 import { useWorkspaceChoice } from "~/composables/useWorkspaceChoice";
@@ -61,7 +61,7 @@ function onPickProject(picked: RecentProject): void {
 // starting one. It is here because the model catalog and the send gate are read
 // through it.
 const agent = useAgent({
-  provider: bootProvider(),
+  provider: bootSelection()?.provider ?? null,
   cwd: () => projectPath.value,
   rehydrate: false,
 });

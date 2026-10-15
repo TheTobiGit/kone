@@ -22,8 +22,7 @@ import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCata
 import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
   bootMode,
-  bootModel,
-  bootProvider,
+  bootSelection,
   DEFAULT_MODE_KEY,
   DEFAULT_MODEL_KEY,
   DEFAULT_PROVIDER_KEY,
@@ -135,7 +134,7 @@ const providerSettings = useProviderSettings();
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
 const agent = useAgent({
-  provider: bootProvider(),
+  provider: bootSelection()?.provider ?? null,
   cwd: () => props.project.path,
   mode: bootMode(props.project.path) ?? undefined,
 });
@@ -1320,6 +1319,9 @@ const { persistThreadSelection } = useModelCommit({
 watch(pickedForProject, async (nextAgent, prevAgent) => {
   if (!studioReady.value || busy.value || !threadIsBlank.value) return;
   await syncComposerTarget();
+  // The general last-used selection as one candidate, so the provider and the
+  // model restored below always belong together.
+  const boot = bootSelection();
   let providerChanged = false;
   const pinned = capModel.value;
   if (pinned) {
@@ -1329,7 +1331,7 @@ watch(pickedForProject, async (nextAgent, prevAgent) => {
     }
   } else if (prevAgent?.capabilities?.model) {
     // Switched from a pinned agent back to an unpinned agent on a blank thread — restore general last-used
-    const bootP = bootProvider();
+    const bootP = boot?.provider ?? null;
     if (agent.provider.value !== bootP) {
       agent.setProvider(bootP);
       providerChanged = true;
@@ -1346,7 +1348,7 @@ watch(pickedForProject, async (nextAgent, prevAgent) => {
   const current = agent.model.value;
   const owned = Boolean(current) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === current));
   if (!owned) {
-    const desired = pinned?.model ?? bootModel();
+    const desired = pinned?.model ?? boot?.model;
     const desiredOwned = Boolean(desired) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === desired));
     if (desiredOwned) {
       agent.setModel(desired!);

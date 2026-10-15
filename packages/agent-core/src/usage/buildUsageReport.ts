@@ -49,16 +49,45 @@ type ReportCacheEntry = { report: AgentUsageReport; at: number };
 const reportCache = new Map<string, ReportCacheEntry>();
 const reportInFlight = new Map<string, Promise<AgentUsageReport>>();
 
-function reportCacheKey(range: UsageRange, projectPath: string | null): string {
-  return `${projectPath ? "project" : "global"}:${range}:${projectPath ?? ""}`;
+function reportCacheKey(
+  range: UsageRange,
+  projectPath: string | null,
+  providers: readonly string[] | undefined,
+): string {
+  // The provider population is part of the request's identity: an
+  // offered-only report and a full one over the same range and scope are
+  // different numbers, and must not share a cache entry.
+  const population = providers ? providers.join(",") : "*";
+  return `${projectPath ? "project" : "global"}:${range}:${projectPath ?? ""}:${population}`;
 }
 
+/** The slice of ConversationStore the report actually depends on. Naming it
+ *  documents the real dependency and lets a caller (a test, or a store stand-in)
+ *  satisfy it with a plain object, no assertion; a concrete ConversationStore
+ *  is assignable because it has both members. */
+export type UsageReportStore = Pick<
+  ConversationStore,
+  "readStoreUsageReport" | "conversationIdsForProject"
+>;
+
+export type UsageReportOptions = {
+  range: UsageRange;
+  projectPath?: string | null;
+  forceRefresh?: boolean;
+  /** When set, every figure in the report covers exactly these providers: the
+   *  scan, the Cursor dashboard and the store are all narrowed to the list
+   *  before aggregation, so totals, days, by-provider and model rows share one
+   *  population (see restrictTranscript / restrictStoreFilter). Omit for every
+   *  provider kone recorded. */
+  providers?: readonly string[];
+};
+
 export async function buildAgentUsageReport(
-  store: ConversationStore,
-  options: { range: UsageRange; projectPath?: string | null; forceRefresh?: boolean },
+  store: UsageReportStore,
+  options: UsageReportOptions,
 ): Promise<AgentUsageReport> {
   const projectPath = options.projectPath ?? null;
-  const key = reportCacheKey(options.range, projectPath);
+  const key = reportCacheKey(options.range, projectPath, options.providers);
 
   if (options.forceRefresh) {
     reportCache.delete(key);
@@ -86,8 +115,8 @@ export async function buildAgentUsageReport(
 }
 
 async function buildFreshReport(
-  store: ConversationStore,
-  options: { range: UsageRange; projectPath?: string | null; forceRefresh?: boolean },
+  store: UsageReportStore,
+  options: UsageReportOptions,
   projectPath: string | null,
 ): Promise<AgentUsageReport> {
   if (options.forceRefresh) {
@@ -96,15 +125,20 @@ async function buildFreshReport(
   }
 
   const scope: "project" | "global" = projectPath ? "project" : "global";
+  const providers = options.providers;
 
-  const transcript = await scanTranscriptUsage({
+  const scanned = await scanTranscriptUsage({
     range: options.range,
     projectPath,
     projectSessionIds: projectPath === null ? null : store.conversationIdsForProject(projectPath),
   });
+  const transcript = providers ? restrictTranscript(scanned, providers) : scanned;
 
+  // The dashboard is Cursor's, so it only contributes when Cursor is in the
+  // population; otherwise its buckets would reintroduce a provider the rest of
+  // the report has dropped.
   const cursorDashboard =
-    projectPath === null
+    projectPath === null && (!providers || providers.includes("cursor"))
       ? await scanCursorDashboardUsage({
           range: options.range,
           forceRefresh: options.forceRefresh,
@@ -116,7 +150,7 @@ async function buildFreshReport(
     cursorDashboard.status === "no-credential" ||
     cursorDashboard.status === "fetch-failed";
 
-  const filter = resolveStoreProviderFilter(useCursorStore);
+  const filter = restrictStoreFilter(resolveStoreProviderFilter(useCursorStore), providers);
 
   const sql = store.readStoreUsageReport({
     range: options.range,
@@ -133,6 +167,39 @@ async function buildFreshReport(
     cursorDashboard,
     sql,
   });
+}
+
+/** Narrow a transcript scan to the requested population before aggregation.
+ *  Buckets feed every token/cost total, models, providers and day splits;
+ *  sources feed the thread/session count. Dropping only the buckets would
+ *  leave the thread count describing providers the totals no longer include,
+ *  so both are filtered together. */
+function restrictTranscript(
+  scan: TranscriptScanResult,
+  providers: readonly string[],
+): TranscriptScanResult {
+  const includes = (provider: TranscriptProviderKind) =>
+    providers.includes(TRANSCRIPT_PROVIDERS[provider]);
+  return {
+    ...scan,
+    buckets: scan.buckets.filter((bucket) => includes(bucket.provider)),
+    sources: scan.sources.filter((source) => includes(source.provider)),
+  };
+}
+
+/** Narrow the store's provider filter to the requested population. The store
+ *  only ever contributes providers its base filter allows; this intersects that
+ *  allowance with the population so a provider outside it can never slip in
+ *  through the store alone. */
+function restrictStoreFilter(
+  base: StoreProviderFilter,
+  providers: readonly string[] | undefined,
+): StoreProviderFilter {
+  if (!providers) return base;
+  const allowed = base.onlyProviders
+    ? base.onlyProviders.filter((provider) => providers.includes(provider))
+    : providers;
+  return { excludeProviders: base.excludeProviders, onlyProviders: [...allowed] };
 }
 
 function emptyCursorScan(): CursorDashboardScanResult {

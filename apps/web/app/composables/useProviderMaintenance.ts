@@ -6,6 +6,7 @@ import type {
   ProviderStatus,
 } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
+import { isProviderOffered } from "~/utils/providerOffer";
 import { desktopBridge, needsDesktop } from "~/utils/desktopBridge";
 
 // The install side of the provider surface: which channel each agent CLI came
@@ -60,11 +61,17 @@ export function useProviderMaintenance() {
 
   /** Providers kone can honestly say are out of date: behind a version it
    *  actually looked up, with a command that would fix it. A self-updating CLI
-   *  is excluded by `latestKnowable` — see the composable header. */
+   *  is excluded by `latestKnowable` — see the composable header. A provider
+   *  kone no longer offers is excluded too, so the count never names an update
+   *  the deck has no card to show. */
   const outdated = computed(() =>
     Object.values(maintenance.value).filter(
       (m): m is ProviderMaintenance =>
-        Boolean(m) && m.standing === "behind" && m.latestKnowable && m.canUpdate,
+        Boolean(m) &&
+        isProviderOffered(m.provider) &&
+        m.standing === "behind" &&
+        m.latestKnowable &&
+        m.canUpdate,
     ),
   );
 
