@@ -413,6 +413,9 @@ function onAbort() {
             v-if="visited.includes('about')"
             v-show="section === 'about'"
             :space="space"
+            @go="go"
+            @open-commit="openCommit"
+            @open-pr="openPr"
           />
           <GitSpaceChanges
             v-if="visited.includes('changes')"
