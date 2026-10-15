@@ -313,14 +313,14 @@ const branchPath = computed(() => {
 });
 
 // ── the section row ───────────────────────────────────────────────────────────
-// One ink underline that slides to the section you picked. Its place is measured
-// rather than computed, because the labels and their counts have their own widths.
+// The ink car that rides the line to the section you picked. Its place is
+// measured rather than computed, so it can't drift from the stops on a resize.
 const tabEls = ref<HTMLElement[]>([]);
 const mark = ref({ x: 0, w: 0 });
 function measureMark() {
   const i = SECTIONS.findIndex((s) => s.id === section.value);
   const el = tabEls.value[i];
-  if (el) mark.value = { x: el.offsetLeft + 2, w: el.offsetWidth - 4 };
+  if (el) mark.value = { x: el.offsetLeft + el.offsetWidth / 2, w: el.offsetWidth };
 }
 watch([section, () => props.visible], () => void nextTick(measureMark));
 // Counts arrive after the row is drawn and widen the tabs they land in.
@@ -474,21 +474,26 @@ function onAbort() {
 
         <!-- ── the section row ────────────────────────────────────────────── -->
         <div ref="barEl" class="gs__bar">
-          <nav class="gs__tabs" aria-label="Repository sections">
+          <!-- The sections as stops on a line — the same line the branch
+               track above is drawn with. A small ink car rides it to the stop
+               you pick, and each stop carries its count above it. -->
+          <nav class="gs__metro" aria-label="Repository sections">
+            <i class="gs__metro-rail" aria-hidden="true" />
+            <i class="gs__metro-car" :style="{ transform: `translateX(${mark.x}px)` }" aria-hidden="true" />
             <button
               v-for="s in SECTIONS"
               :key="s.id"
               ref="tabEls"
               type="button"
-              class="gs__tab"
-              :class="{ 'gs__tab--on': section === s.id }"
+              class="gs__stop"
+              :class="{ 'gs__stop--on': section === s.id }"
               :aria-current="section === s.id ? 'page' : undefined"
               @click="go(s.id)"
             >
-              {{ s.label }}
-              <span v-if="countFor(s.id)" class="gs__count">{{ countFor(s.id) }}</span>
+              <span class="gs__stop-count">{{ countFor(s.id) ?? "" }}</span>
+              <span class="gs__stop-dot" aria-hidden="true" />
+              <span class="gs__stop-label">{{ s.label }}</span>
             </button>
-            <i class="gs__mark" :style="{ transform: `translateX(${mark.x}px)`, width: `${mark.w}px` }" aria-hidden="true" />
           </nav>
 
           <div class="gs__actions">
@@ -920,11 +925,10 @@ function onAbort() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  margin-top: 44px;
-  padding-top: 10px;
+  gap: 32px;
+  margin-top: 48px;
+  padding-top: 14px;
   background-color: var(--ground);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 8%, transparent);
   animation: gs-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: var(--gs-enter-nav);
 }
@@ -937,57 +941,108 @@ function onAbort() {
   background-color: var(--ground);
   pointer-events: none;
 }
-.gs__tabs {
+/* The line: equal-width stops, a rail from the first dot to the last, and the
+   car parked over the current stop. */
+.gs__metro {
   position: relative;
   display: flex;
-  align-items: stretch;
-  gap: 4px;
+  flex: 0 1 600px;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  padding-bottom: 12px;
 }
-.gs__tab {
-  display: inline-flex;
-  align-items: baseline;
+.gs__metro-rail {
+  position: absolute;
+  top: 27px;
+  inset-inline: calc(100% / 12);
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--ink) 12%, transparent);
+  pointer-events: none;
+}
+.gs__metro-car {
+  position: absolute;
+  top: 27px;
+  left: 0;
+  z-index: 1;
+  width: 34px;
+  height: 14px;
+  margin: -7px 0 0 -17px;
+  border-radius: 999px;
+  background-color: var(--ink);
+  box-shadow:
+    0 0 0 4px var(--ground),
+    0 4px 10px -2px color-mix(in srgb, var(--ink) 40%, transparent);
+  transition: transform 520ms cubic-bezier(0.5, 0, 0.2, 1.25);
+  pointer-events: none;
+}
+/* Headlights: a short bright stripe inside the car, so it reads as a thing
+   that travels rather than a highlight. */
+.gs__metro-car::after {
+  content: "";
+  position: absolute;
+  inset: 5px 9px;
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--ground) 55%, transparent);
+}
+.gs__stop {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
   gap: 6px;
-  height: 40px;
-  padding: 12px 10px 0;
-  font-size: 13.5px;
-  font-weight: 500;
-  letter-spacing: -0.1px;
-  white-space: nowrap;
-  color: var(--muted);
+  min-width: 0;
+  padding: 0 2px;
   cursor: pointer;
-  transition: color var(--gs-t-micro) ease;
 }
-.gs__tab:hover,
-.gs__tab--on {
-  color: var(--ink);
-}
-.gs__tab:focus-visible {
+.gs__stop:focus-visible {
   outline: none;
-  border-radius: 8px;
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ink) 26%, transparent);
 }
-.gs__count {
+.gs__stop:focus-visible .gs__stop-label {
+  border-radius: 6px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 26%, transparent);
+}
+.gs__stop-count {
+  height: 14px;
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 400;
+  line-height: 14px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+  transition: color var(--gs-t-micro) ease;
 }
-/* One underline that slides to the section you picked. */
-.gs__mark {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 2px;
-  border-radius: 2px;
-  background-color: var(--ink);
+.gs__stop-dot {
+  position: relative;
+  z-index: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background-color: var(--ground);
+  box-shadow: inset 0 0 0 2.5px color-mix(in srgb, var(--ink) 28%, transparent);
   transition:
-    transform var(--gs-t-small) var(--gs-ease-move),
-    width var(--gs-t-small) var(--gs-ease-move);
-  pointer-events: none;
+    transform var(--gs-t-small) var(--gs-ease),
+    box-shadow var(--gs-t-micro) ease;
+}
+.gs__stop:hover .gs__stop-dot {
+  transform: scale(1.3);
+  box-shadow: inset 0 0 0 2.5px var(--ink);
+}
+.gs__stop-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.1px;
+  color: var(--muted);
+  transition: color var(--gs-t-micro) ease;
+}
+.gs__stop:hover .gs__stop-label,
+.gs__stop--on .gs__stop-label,
+.gs__stop--on .gs__stop-count {
+  color: var(--ink);
 }
 
 .gs__actions {
@@ -1127,8 +1182,8 @@ function onAbort() {
     stroke-dashoffset: 0;
   }
   .gs__btn,
-  .gs__tab,
-  .gs__mark,
+  .gs__metro-car,
+  .gs__stop-dot,
   .gs__progress {
     transition: none;
   }
