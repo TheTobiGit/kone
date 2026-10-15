@@ -1,33 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import {
-  ArrowRight01Icon,
-  Copy01Icon,
-  GitBranchIcon,
-  GitForkIcon,
-  GitPullRequestIcon,
-  Link01Icon,
-  StarIcon,
-  Tick02Icon,
-  UserGroupIcon,
-} from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon, ArrowUpRight01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import type { useGitSpace } from "~/composables/useGitSpace";
 import type { GitCommit, GitContributor, GitHubPullRequest } from "~/types/desktop";
 
 // The repository's front page: the reason to open a project here rather than
-// on GitHub. It answers "what is this, is it alive, what's happening, who's on
-// it" at a glance, and every part of it is a way in: the stat tiles, the latest
-// commits and the open pull requests each open their own section or detail.
+// on GitHub. It's written the way the Overview is — sentences with the facts
+// set inline, quiet labels with counts, mono numbers, drawings instead of
+// boxes — and nothing on it sits in a card.
 //
-// Top to bottom: a hero (identity, the one or two outward actions, stat tiles),
-// a pulse (commits per day across the last 30 days, from the log already read
-// for History), what's happening (the latest commits beside the open pull
-// requests), the people (who has written how much, as bars), and the README in
-// a card that opens up on demand. The GitHub-fed parts (facts, stars, avatars,
-// pull requests) sit on top of what git alone knows: a missing or logged-out
-// `gh` costs the page nothing it can't do without, and the reason appears once.
+// Top to bottom: what the repository is, told as two sentences; its rhythm,
+// every commit of the last eight weeks as a dot you can open; what's moving
+// right now, the latest commits as a timeline beside the open pull requests and
+// the people who build it; and the README, laid out as a page. The GitHub-fed
+// parts (facts, stars, avatars, pull requests) sit on top of what git alone
+// knows: a missing or logged-out `gh` costs the page nothing it can't do
+// without, and the reason appears once.
 
 type Section = "about" | "changes" | "history" | "branches" | "prs" | "stashes";
 
@@ -39,10 +29,8 @@ const emit = defineEmits<{
   openPr: [number: number];
 }>();
 
-// The shell reads About on entry (the rail footer needs it too), but this
-// section is also the one that can be reached without the shell having asked —
-// so it asks as well, and each load de-dupes against the shell's. The log and
-// the pull requests feed the pulse and "what's happening"; both are the same
+// The shell reads About on entry, but this section asks as well and each load
+// de-dupes against the shell's. The log and the pull requests are the same
 // reads History and Pull requests make, so visiting those later costs nothing.
 // The pull requests wait for the repo-wide read, which is what says whether
 // `gh` can answer at all.
@@ -58,141 +46,141 @@ onMounted(() => {
 const ready = computed(() => props.space.ready("about"));
 
 const readme = computed(() => props.space.readme.value);
-const logo = computed(() => props.space.logo.value);
 const repoInfo = computed(() => props.space.repoInfo.value);
 const gh = computed(() => props.space.gh.value);
 const origin = computed(() => props.space.origin.value);
 const contributors = computed(() => props.space.contributors.value);
 const commits = computed(() => props.space.commits.value);
 const openPrs = computed(() => props.space.prs.value.filter((pr) => pr.state === "open"));
-const localBranches = computed(() => props.space.branches.value.filter((b) => !b.remote));
+const myEmail = computed(() => props.space.identity.value.email?.toLowerCase() ?? null);
 
-/** The repo's name — GitHub's `owner/repo` when reachable, the folder otherwise. */
-const repoName = computed(() => repoInfo.value?.nameWithOwner ?? props.space.name.value);
-const owner = computed(() => (repoName.value.includes("/") ? repoName.value.split("/")[0] : null));
-const shortName = computed(() => repoName.value.split("/").at(-1) ?? repoName.value);
-const description = computed(() => repoInfo.value?.description);
+// ── the story ─────────────────────────────────────────────────────────────────
+const description = computed(() => repoInfo.value?.description ?? null);
 const topics = computed(() => repoInfo.value?.topics ?? []);
 const homepage = computed(() => repoInfo.value?.homepageUrl || null);
 /** The homepage without its scheme — nobody reads `https://` twice. */
 const homepageLabel = computed(
   () => homepage.value?.replace(/^https?:\/\//, "").replace(/\/$/, "") ?? "",
 );
-
-// Small facts that describe the code and where it stands, as chips under the
-// description. Nulls are dropped, never printed as "unknown".
-const chips = computed<string[]>(() => {
+/** "A Vue project under MIT, started in Jun 2026." — each part only if known. */
+const madeOf = computed(() => {
   const r = repoInfo.value;
-  if (!r) return [];
-  const out: string[] = [];
-  if (r.language) out.push(r.language);
-  if (r.license) out.push(r.license);
-  if (r.visibility) out.push(r.visibility.toLowerCase());
-  if (r.isFork) out.push("fork");
-  if (r.defaultBranch) out.push(`default ${r.defaultBranch}`);
-  if (r.createdAt) out.push(`since ${month(r.createdAt)}`);
-  return out;
+  if (!r) return null;
+  const kind = [r.visibility === "public" ? null : r.visibility, r.isFork ? "fork" : null].filter(Boolean).join(" ");
+  return {
+    language: r.language,
+    kind: kind || "project",
+    license: r.license,
+    since: r.createdAt ? month(r.createdAt) : null,
+    pushed: r.pushedAt ? relativeIso(r.pushedAt) : null,
+  };
 });
 
-// ── stat tiles ────────────────────────────────────────────────────────────────
-// Big numbers, each a door: the ones that have a section here open it, the ones
-// that only exist on GitHub open GitHub.
-type Tile = { key: string; label: string; value: number; icon: typeof StarIcon; go?: Section; url?: string };
-const tiles = computed<Tile[]>(() => {
-  const r = repoInfo.value;
-  const out: Tile[] = [];
-  if (r) out.push({ key: "stars", label: plural(r.stars, "star", false), value: r.stars, icon: StarIcon, url: `${r.url}/stargazers` });
-  if (contributors.value?.total)
-    out.push({ key: "people", label: plural(contributors.value.total, "contributor", false), value: contributors.value.total, icon: UserGroupIcon, url: r ? `${r.url}/graphs/contributors` : undefined });
-  if (gh.value?.authenticated)
-    out.push({ key: "prs", label: `open pull request${openPrs.value.length === 1 ? "" : "s"}`, value: openPrs.value.length, icon: GitPullRequestIcon, go: "prs" });
-  out.push({ key: "branches", label: plural(localBranches.value.length, "branch", false, "es"), value: localBranches.value.length, icon: GitBranchIcon, go: "branches" });
-  if (r) out.push({ key: "forks", label: plural(r.forks, "fork", false), value: r.forks, icon: GitForkIcon, url: `${r.url}/forks` });
-  return out;
-});
-function openTile(tile: Tile) {
-  if (tile.go) emit("go", tile.go);
-  else open(tile.url);
-}
-
-// ── pulse ─────────────────────────────────────────────────────────────────────
-// Commits per day across 30 days, from the first page of the log. One series,
-// so one hue: the bar's height is the count, and an empty day is a short stub
-// so the strip still reads as a calendar. The window ends today; a repository
-// that's gone quiet for longer than that shows its last active month instead
-// of thirty empty days, and says so.
-const DAYS = 30;
+// ── rhythm ────────────────────────────────────────────────────────────────────
+// Eight weeks, a column a day, a dot a commit — from the first page of the log
+// History already reads. Each dot is the commit itself: hover says which, click
+// opens it. Yours are green, everyone else's ink, so "how much of this was me"
+// is a glance. The window ends today; a repository that's been quiet for longer
+// shows its last active eight weeks instead, and says so.
+const DAYS = 56;
+const STACK = 7;
 const DAY_MS = 86_400_000;
-type Day = { key: string; label: string; count: number };
+type Day = { key: string; at: number; label: string; commits: GitCommit[]; month: string | null };
 const lastCommitAt = computed(() => {
   const t = Date.parse(commits.value[0]?.date ?? "");
   return Number.isNaN(t) ? null : t;
 });
-const pulseEnd = computed(() => {
+const rhythmEnd = computed(() => {
   const today = startOfDay(Date.now());
   const last = lastCommitAt.value;
   if (last === null || today - startOfDay(last) < DAYS * DAY_MS) return today;
   return startOfDay(last);
 });
-const pulseIsRecent = computed(() => pulseEnd.value === startOfDay(Date.now()));
-const pulseTitle = computed(() =>
-  pulseIsRecent.value ? "Pulse · last 30 days" : `Pulse · the 30 days to ${dayLabel(pulseEnd.value)}`,
-);
-const pulse = computed<Day[]>(() => {
-  const end = pulseEnd.value;
+const rhythmIsRecent = computed(() => rhythmEnd.value === startOfDay(Date.now()));
+const rhythm = computed<Day[]>(() => {
+  const end = rhythmEnd.value;
   const days: Day[] = [];
+  let lastMonth = -1;
   for (let i = DAYS - 1; i >= 0; i -= 1) {
     const at = end - i * DAY_MS;
-    days.push({ key: String(at), label: dayLabel(at), count: 0 });
+    const m = new Date(at).getMonth();
+    const month = m === lastMonth ? null : new Date(at).toLocaleDateString(undefined, { month: "short" });
+    lastMonth = m;
+    days.push({ key: String(at), at, label: dayLabel(at), commits: [], month });
   }
   for (const c of commits.value) {
     const t = Date.parse(c.date);
     if (Number.isNaN(t)) continue;
     const index = DAYS - 1 - Math.round((end - startOfDay(t)) / DAY_MS);
-    if (index >= 0 && index < DAYS) days[index]!.count += 1;
+    if (index >= 0 && index < DAYS) days[index]!.commits.push(c);
   }
+  // Oldest at the bottom of each column, so a column grows the way the day did.
+  for (const d of days) d.commits.reverse();
   return days;
 });
-const pulseTotal = computed(() => pulse.value.reduce((n, d) => n + d.count, 0));
-const pulsePeak = computed(() => Math.max(1, ...pulse.value.map((d) => d.count)));
+const rhythmTotal = computed(() => rhythm.value.reduce((n, d) => n + d.commits.length, 0));
+const rhythmMine = computed(
+  () => rhythm.value.reduce((n, d) => n + d.commits.filter(isMine).length, 0),
+);
+/** As tall as the busiest day needs, so a quiet stretch isn't a tall empty band. */
+const rhythmRows = computed(() =>
+  Math.min(STACK, Math.max(3, ...rhythm.value.map((d) => d.commits.length))),
+);
+function isMine(c: GitCommit): boolean {
+  return Boolean(myEmail.value) && c.email.toLowerCase() === myEmail.value;
+}
+/** The column's dots, capped; the last one stands in for the rest. */
+function stack(day: Day): GitCommit[] {
+  return day.commits.slice(0, STACK);
+}
+function overflow(day: Day): number {
+  return Math.max(0, day.commits.length - STACK);
+}
 /** One sentence that says whether the repository is alive. */
 const pulseLine = computed(() => {
   const last = lastCommitAt.value;
-  if (last === null) return "No commits yet.";
-  const when = relative(last);
+  if (last === null) return null;
   const since = Date.now() - 7 * DAY_MS;
   const week = commits.value.filter((c) => Date.parse(c.date) >= since);
-  if (!week.length) {
-    const stretch = pulseTotal.value ? ` ${plural(pulseTotal.value, "commit")} in the month before that.` : "";
-    return `Quiet lately. The last commit landed ${when}.${stretch}`;
-  }
+  if (!week.length) return { quiet: true, when: relative(last), count: 0, people: 0 };
   const people = new Set(week.map((c) => c.email || c.author)).size;
-  return `${plural(week.length, "commit")} this week from ${plural(people, "person", true, "", "people")}. The last one landed ${when}.`;
+  return { quiet: false, when: relative(last), count: week.length, people };
 });
-function barHeight(count: number): string {
-  if (!count) return "3px";
-  return `${Math.max(10, (count / pulsePeak.value) * 100)}%`;
-}
 
-// ── what's happening ──────────────────────────────────────────────────────────
-const latest = computed<GitCommit[]>(() => commits.value.slice(0, 4));
+// ── lately ────────────────────────────────────────────────────────────────────
+const latest = computed<GitCommit[]>(() => commits.value.slice(0, 5));
 const latestPrs = computed<GitHubPullRequest[]>(() => openPrs.value.slice(0, 4));
 function face(c: GitCommit): string | null {
   return props.space.faceFor(c.email)?.avatarDataUrl ?? null;
 }
 function prState(pr: GitHubPullRequest) {
-  if (pr.isDraft) return { label: "draft", tone: "muted" };
-  if (pr.reviewDecision === "approved") return { label: "approved", tone: "ok" };
-  if (pr.reviewDecision === "changes-requested") return { label: "changes requested", tone: "bad" };
-  if (pr.checks === "failing") return { label: "checks failing", tone: "bad" };
-  return { label: "needs review", tone: "warn" };
+  if (pr.isDraft) return { label: "Draft", tone: "muted" };
+  if (pr.reviewDecision === "approved") return { label: "Approved", tone: "ok" };
+  if (pr.reviewDecision === "changes-requested") return { label: "Changes requested", tone: "bad" };
+  if (pr.checks === "failing") return { label: "Checks failing", tone: "bad" };
+  return { label: "Needs review", tone: "warn" };
 }
 
 // ── people ────────────────────────────────────────────────────────────────────
-const PEOPLE_SHOWN = 6;
+// A crowd, not a leaderboard: everyone's face, sized by how much they've
+// written, overlapping like people standing together. The sentence under it
+// names whoever wrote the most, because that's the one fact a list of faces
+// can't say on its own.
+const PEOPLE_SHOWN = 10;
 const people = computed(() => contributors.value?.people.slice(0, PEOPLE_SHOWN) ?? []);
 const peoplePeak = computed(() => Math.max(1, ...people.value.map((p) => p.commits)));
 const peopleMore = computed(() => (contributors.value?.total ?? 0) - people.value.length);
+const peopleTotalCommits = computed(() =>
+  (contributors.value?.people ?? []).reduce((n, p) => n + p.commits, 0),
+);
+const lead = computed(() => {
+  const top = people.value[0];
+  if (!top || people.value.length < 2 || !peopleTotalCommits.value) return null;
+  return { person: top, share: Math.round((top.commits / peopleTotalCommits.value) * 100) };
+});
+function faceSize(person: GitContributor): number {
+  return Math.round(30 + Math.sqrt(person.commits / peoplePeak.value) * 26);
+}
 
 // ── readme ────────────────────────────────────────────────────────────────────
 // Folded to a preview with a fade until asked for; a long README shouldn't push
@@ -210,7 +198,7 @@ async function copyClone() {
     window.setTimeout(() => (copied.value = false), 1600);
   } catch {
     // The clipboard can refuse (no focus, no permission); the URL is still on
-    // screen in the button's title, so there's nothing more to say.
+    // screen in the link's title, so there's nothing more to say.
   }
 }
 function open(url: string | null | undefined) {
@@ -293,167 +281,175 @@ function dayLabel(t: number): string {
   <GitSpaceSkeleton v-if="!ready" variant="prose" />
 
   <section v-else class="gsa">
-    <!-- ── hero ─────────────────────────────────────────────────────────── -->
-    <div class="gsa__block gsa__hero" :style="{ '--i': 0 }">
-      <div class="gsa__identity">
-        <img v-if="logo" :src="logo.dataUrl" alt="" class="gsa__logo" />
-        <span v-else class="gsa__logo gsa__logo--letter" aria-hidden="true">{{ shortName[0]?.toUpperCase() }}</span>
-        <div class="gsa__identity-body">
-          <h2 class="gsa__name">
-            <span v-if="owner" class="gsa__owner">{{ owner }} /</span>
-            {{ shortName }}
-          </h2>
-          <p v-if="description" class="gsa__description">{{ description }}</p>
-          <p v-if="chips.length || topics.length" class="gsa__chips">
-            <span v-for="chip in chips" :key="chip" class="gsa__chip">{{ chip }}</span>
-            <span v-for="topic in topics" :key="`t:${topic}`" class="gsa__chip gsa__chip--topic">#{{ topic }}</span>
-          </p>
-        </div>
-        <div class="gsa__actions">
-          <button v-if="repoInfo" type="button" class="gsa__action gsa__action--primary" @click="open(repoInfo.url)">
-            Open on GitHub
-            <HugeiconsIcon :icon="ArrowRight01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
-          </button>
-          <button v-if="cloneUrl" type="button" class="gsa__action" :title="cloneUrl" @click="copyClone">
-            <HugeiconsIcon :icon="copied ? Tick02Icon : Copy01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-            {{ copied ? "Copied" : "Copy clone URL" }}
-          </button>
-          <button v-if="homepage" type="button" class="gsa__action gsa__action--quiet" @click="open(homepage)">
-            <HugeiconsIcon :icon="Link01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-            {{ homepageLabel }}
-          </button>
-        </div>
-      </div>
-
-      <div class="gsa__tiles">
-        <button
-          v-for="tile in tiles"
-          :key="tile.key"
-          type="button"
-          class="gsa__tile"
-          :class="{ 'gsa__tile--inside': tile.go }"
-          :title="tile.go ? 'Open in kone' : 'Open on GitHub'"
-          @click="openTile(tile)"
-        >
-          <span class="gsa__tile-top">
-            <HugeiconsIcon :icon="tile.icon" :size="15" :stroke-width="1.8" aria-hidden="true" />
-            <HugeiconsIcon class="gsa__tile-go" :icon="ArrowRight01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
-          </span>
-          <span class="gsa__tile-value">{{ compact(tile.value) }}</span>
-          <span class="gsa__tile-label">{{ tile.label }}</span>
-        </button>
-      </div>
-
-      <!-- Why the GitHub-fed half of this page is missing. It sits under the
-           facts it explains, not in a banner: it's a setup detail, not a fault,
-           and the rest of the page is still true without it. -->
+    <!-- ── the story ────────────────────────────────────────────────────── -->
+    <div class="gsa__block gsa__story" :style="{ '--i': 0 }">
+      <p v-if="description" class="gsa__lede">{{ description }}</p>
+      <p v-if="madeOf" class="gsa__facts">
+        A <b v-if="madeOf.language">{{ madeOf.language }}</b> {{ madeOf.kind }}<template v-if="madeOf.license">
+        under <b>{{ madeOf.license }}</b></template><template v-if="madeOf.since">, started in <b>{{ madeOf.since }}</b></template>.
+        <template v-if="repoInfo"><button type="button" class="gsa__inline" @click="open(`${repoInfo.url}/stargazers`)"><b class="gsa__mono">{{ compact(repoInfo.stars) }}</b> {{ plural(repoInfo.stars, "star", false) }}</button> and <button type="button" class="gsa__inline" @click="open(`${repoInfo.url}/forks`)"><b class="gsa__mono">{{ compact(repoInfo.forks) }}</b> {{ plural(repoInfo.forks, "fork", false) }}</button><template v-if="madeOf.pushed">, last pushed <b>{{ madeOf.pushed }}</b></template>.</template>
+      </p>
       <p v-if="blocked" class="gsa__blocked">{{ blocked }}</p>
+
+      <div class="gsa__links">
+        <button v-if="repoInfo" type="button" class="gsa__link gsa__link--ink" @click="open(repoInfo.url)">
+          Open on GitHub
+          <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
+        </button>
+        <button v-if="homepage" type="button" class="gsa__link" @click="open(homepage)">
+          {{ homepageLabel }}
+          <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
+        </button>
+        <button v-if="cloneUrl" type="button" class="gsa__link" :title="cloneUrl" @click="copyClone">
+          <HugeiconsIcon :icon="copied ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          {{ copied ? "Copied" : "Copy clone URL" }}
+        </button>
+        <span v-if="topics.length" class="gsa__topics">
+          <span v-for="topic in topics" :key="topic">#{{ topic }}</span>
+        </span>
+      </div>
     </div>
 
-    <!-- ── pulse ────────────────────────────────────────────────────────── -->
-    <div v-if="commits.length" class="gsa__block gsa__card" :style="{ '--i': 1 }">
-      <div class="gsa__card-head">
-        <p class="gsa__eyebrow">{{ pulseTitle }}</p>
-        <button type="button" class="gsa__more" @click="emit('go', 'history')">
+    <!-- ── rhythm ───────────────────────────────────────────────────────── -->
+    <div v-if="commits.length" class="gsa__block" :style="{ '--i': 1 }">
+      <div class="gsa__label">
+        <span class="gsa__label-name">Rhythm</span>
+        <span class="gsa__label-count">{{ rhythmTotal }}</span>
+        <span class="gsa__label-note">{{ rhythmIsRecent ? "last 8 weeks" : `8 weeks to ${dayLabel(rhythmEnd)}` }}</span>
+        <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
           History <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
         </button>
       </div>
-      <p class="gsa__pulse-line">{{ pulseLine }}</p>
-      <div class="gsa__pulse" role="img" :aria-label="`Commits per day over the last ${DAYS} days`">
-        <span
-          v-for="day in pulse"
+
+      <p v-if="pulseLine" class="gsa__pulse">
+        <template v-if="pulseLine.quiet">Quiet lately. The last commit landed <b>{{ pulseLine.when }}</b>.</template>
+        <template v-else>
+          <b class="gsa__mono">{{ pulseLine.count }}</b> {{ plural(pulseLine.count, "commit", false) }} this week from
+          <b class="gsa__mono">{{ pulseLine.people }}</b> {{ plural(pulseLine.people, "person", false, "", "people") }}. The last one landed <b>{{ pulseLine.when }}</b>.
+        </template>
+        <template v-if="rhythmMine"> <span class="gsa__mine-key" aria-hidden="true" /> <b class="gsa__mono">{{ rhythmMine }}</b> of these are yours.</template>
+      </p>
+
+      <div class="gsa__rhythm" role="list" :aria-label="`Commits per day, ${DAYS} days`">
+        <div
+          v-for="day in rhythm"
           :key="day.key"
-          class="gsa__bar-hit"
-          :title="`${day.label}: ${plural(day.count, 'commit')}`"
+          class="gsa__day"
+          role="listitem"
+          :title="day.commits.length ? undefined : `${day.label}: no commits`"
         >
-          <span class="gsa__bar" :class="{ 'gsa__bar--empty': !day.count }" :style="{ height: barHeight(day.count) }" />
-        </span>
-      </div>
-      <div class="gsa__pulse-axis">
-        <span>{{ pulse[0]?.label }}</span>
-        <span>{{ pulseIsRecent ? "today" : pulse.at(-1)?.label }}</span>
+          <span class="gsa__day-stack" :style="{ '--rows': rhythmRows }">
+            <button
+              v-for="(c, n) in stack(day)"
+              :key="c.hash"
+              type="button"
+              class="gsa__dot"
+              :class="{ 'gsa__dot--mine': isMine(c), 'gsa__dot--more': n === STACK - 1 && overflow(day) }"
+              :style="{ '--n': n }"
+              :title="`${c.subject}\n${c.author} · ${day.label} · ${c.short}`"
+              :aria-label="`${c.subject}, ${c.author}, ${day.label}`"
+              @click="emit('openCommit', c.hash)"
+            >
+              <template v-if="n === STACK - 1 && overflow(day)">+</template>
+            </button>
+            <span v-if="!day.commits.length" class="gsa__dot gsa__dot--none" />
+          </span>
+          <span class="gsa__day-month">{{ day.month }}</span>
+        </div>
       </div>
     </div>
 
-    <!-- ── what's happening ─────────────────────────────────────────────── -->
-    <div v-if="latest.length || latestPrs.length" class="gsa__block gsa__now" :style="{ '--i': 2 }">
-      <div v-if="latest.length" class="gsa__card">
-        <div class="gsa__card-head">
-          <p class="gsa__eyebrow">Latest commits</p>
-          <button type="button" class="gsa__more" @click="emit('go', 'history')">
+    <!-- ── lately ───────────────────────────────────────────────────────── -->
+    <div v-if="latest.length || latestPrs.length || people.length" class="gsa__block gsa__lately" :style="{ '--i': 2 }">
+      <div v-if="latest.length" class="gsa__col">
+        <div class="gsa__label">
+          <span class="gsa__label-name">Latest commits</span>
+          <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
             All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
           </button>
         </div>
-        <button v-for="c in latest" :key="c.hash" type="button" class="gsa__row" @click="emit('openCommit', c.hash)">
-          <span class="gsa__avatar gsa__row-avatar" aria-hidden="true">
-            <img v-if="face(c)" :src="face(c)!" alt="" />
-            <span v-else class="gsa__avatar-fallback">{{ c.author[0]?.toUpperCase() }}</span>
-          </span>
-          <span class="gsa__row-body">
-            <span class="gsa__row-title">{{ c.subject }}</span>
-            <span class="gsa__row-meta">{{ c.author }} · {{ relativeIso(c.date) || c.relative }}</span>
-          </span>
-          <span class="gsa__row-tail">{{ c.short }}</span>
-        </button>
+        <ol class="gsa__timeline">
+          <li v-for="c in latest" :key="c.hash">
+            <button type="button" class="gsa__event" @click="emit('openCommit', c.hash)">
+              <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
+              <span class="gsa__event-title">{{ c.subject }}</span>
+              <span class="gsa__event-meta">
+                <span class="gsa__avatar" aria-hidden="true">
+                  <img v-if="face(c)" :src="face(c)!" alt="" />
+                  <template v-else>{{ c.author[0]?.toUpperCase() }}</template>
+                </span>
+                {{ c.author }}
+                <span class="gsa__sep">·</span>
+                {{ c.relative || relativeIso(c.date) }}
+                <span class="gsa__hash">{{ c.short }}</span>
+              </span>
+            </button>
+          </li>
+        </ol>
       </div>
-      <div v-if="latestPrs.length" class="gsa__card">
-        <div class="gsa__card-head">
-          <p class="gsa__eyebrow">Open pull requests</p>
-          <button type="button" class="gsa__more" @click="emit('go', 'prs')">
-            All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
-          </button>
-        </div>
-        <button v-for="pr in latestPrs" :key="pr.number" type="button" class="gsa__row" @click="emit('openPr', pr.number)">
-          <span class="gsa__row-num">#{{ pr.number }}</span>
-          <span class="gsa__row-body">
-            <span class="gsa__row-title">{{ pr.title }}</span>
-            <span class="gsa__row-meta">
-              {{ pr.author }} · {{ pr.relative }} ·
+
+      <div class="gsa__col gsa__col--side">
+        <div v-if="latestPrs.length">
+          <div class="gsa__label">
+            <span class="gsa__label-name">Open pull requests</span>
+            <span class="gsa__label-count">{{ openPrs.length }}</span>
+            <button type="button" class="gsa__label-go" @click="emit('go', 'prs')">
+              All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+            </button>
+          </div>
+          <button v-for="pr in latestPrs" :key="pr.number" type="button" class="gsa__pr" @click="emit('openPr', pr.number)">
+            <span class="gsa__pr-title"><span class="gsa__pr-num">#{{ pr.number }}</span> {{ pr.title }}</span>
+            <span class="gsa__pr-meta">
+              <span class="gsa__state" :class="`gsa__state--${prState(pr).tone}`">{{ prState(pr).label }}</span>
+              <span class="gsa__sep">·</span>
+              {{ pr.author }}
+              <span class="gsa__sep">·</span>
               <span class="gsa__add">+{{ pr.additions.toLocaleString() }}</span>
               <span class="gsa__del">−{{ pr.deletions.toLocaleString() }}</span>
             </span>
-          </span>
-          <span class="gsa__state" :class="`gsa__state--${prState(pr).tone}`">{{ prState(pr).label }}</span>
-        </button>
-      </div>
-    </div>
+          </button>
+        </div>
 
-    <!-- ── people ───────────────────────────────────────────────────────── -->
-    <div v-if="people.length" class="gsa__block gsa__card" :style="{ '--i': 3 }">
-      <div class="gsa__card-head">
-        <p class="gsa__eyebrow">Who builds it</p>
-        <span class="gsa__card-note">commits</span>
-      </div>
-      <div class="gsa__people">
-        <div v-for="person in people" :key="person.name" class="gsa__person" :title="`${credit(person)}: ${plural(person.commits, 'commit')}`">
-          <span class="gsa__avatar gsa__person-avatar" aria-hidden="true">
-            <img v-if="person.avatarDataUrl" :src="person.avatarDataUrl" alt="" />
-            <span v-else class="gsa__avatar-fallback">{{ person.name[0]?.toUpperCase() }}</span>
-          </span>
-          <span class="gsa__person-name">{{ credit(person) }}</span>
-          <span class="gsa__person-track">
-            <span class="gsa__person-bar" :style="{ width: `${(person.commits / peoplePeak) * 100}%` }" />
-          </span>
-          <span class="gsa__person-count">{{ person.commits.toLocaleString() }}</span>
+        <div v-if="people.length">
+          <div class="gsa__label">
+            <span class="gsa__label-name">People</span>
+            <span class="gsa__label-count">{{ contributors?.total ?? people.length }}</span>
+          </div>
+          <div class="gsa__crowd">
+            <span
+              v-for="(person, n) in people"
+              :key="person.name"
+              class="gsa__crowd-face"
+              :style="{ '--s': `${faceSize(person)}px`, '--n': n, zIndex: PEOPLE_SHOWN - n }"
+              :title="`${credit(person)} · ${plural(person.commits, 'commit')}`"
+            >
+              <img v-if="person.avatarDataUrl" :src="person.avatarDataUrl" alt="" />
+              <template v-else>{{ person.name[0]?.toUpperCase() }}</template>
+            </span>
+            <span v-if="peopleMore > 0" class="gsa__crowd-more">+{{ peopleMore }}</span>
+          </div>
+          <p v-if="lead" class="gsa__crowd-line">
+            <b>{{ credit(lead.person) }}</b> wrote <b class="gsa__mono">{{ lead.share }}%</b> of it, then
+            <b>{{ credit(people[1]!) }}</b> with <b class="gsa__mono">{{ people[1]!.commits.toLocaleString() }}</b> commits.
+          </p>
         </div>
       </div>
-      <p v-if="peopleMore > 0" class="gsa__people-more">and {{ plural(peopleMore, "other", true) }}</p>
     </div>
 
     <!-- ── readme ───────────────────────────────────────────────────────── -->
-    <div class="gsa__block gsa__card gsa__readme-card" :style="{ '--i': 4 }">
+    <div class="gsa__block gsa__doc" :style="{ '--i': 3 }">
+      <div class="gsa__label">
+        <span class="gsa__label-name gsa__label-name--file">{{ readme?.path ?? "README" }}</span>
+      </div>
       <template v-if="readme">
-        <div class="gsa__card-head">
-          <p class="gsa__eyebrow gsa__eyebrow--file">{{ readme.path }}</p>
-        </div>
         <div class="gsa__readme selectable" :class="{ 'gsa__readme--folded': !readmeOpen }">
           <MarkdownMessage :source="readme.markdown" historical />
         </div>
         <button type="button" class="gsa__unfold" @click="readmeOpen = !readmeOpen">
-          {{ readmeOpen ? "Show less" : "Read the whole README" }}
+          {{ readmeOpen ? "Show less" : "Keep reading" }}
         </button>
       </template>
-      <p v-else class="gsa__noreadme">No README in this repository.</p>
+      <p v-else class="gsa__blocked">No README in this repository.</p>
     </div>
   </section>
 </template>
@@ -462,8 +458,8 @@ function dayLabel(t: number): string {
 .gsa {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding-bottom: 24px;
+  gap: 56px;
+  padding-bottom: 32px;
 }
 
 /* ── entrance ─────────────────────────────────────────────────────────────── */
@@ -471,7 +467,7 @@ function dayLabel(t: number): string {
    longer page never waits out a slow chain. */
 .gsa__block {
   animation: gsa-in var(--gs-t-enter) var(--gs-ease) backwards;
-  animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 2);
+  animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3);
 }
 @keyframes gsa-in {
   from {
@@ -484,493 +480,485 @@ function dayLabel(t: number): string {
   }
 }
 
-/* ── cards ────────────────────────────────────────────────────────────────── */
-/* The same raised white cards the Overview's change cards sit on, so the two
-   surfaces read as one app. */
-.gsa__card {
-  padding: 18px 20px;
-  border-radius: 16px;
-  background-color: var(--raised-high);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
+b {
+  font-weight: 600;
+  color: var(--ink);
 }
-.gsa__card-head {
+.gsa__mono {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* ── labels ───────────────────────────────────────────────────────────────── */
+/* The Overview's section label: a quiet name, its count in mono, and a way
+   onward at the far end. */
+.gsa__label {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 14px;
 }
-.gsa__eyebrow {
-  margin: 0;
-  font-size: 12.5px;
+.gsa__label-name {
+  font-size: 13px;
   font-weight: 500;
-  line-height: 1.3;
   color: var(--ink-soft);
 }
-/* A filename keeps its own case and its mono face. */
-.gsa__eyebrow--file {
+.gsa__label-name--file {
   font-family: var(--font-mono);
   font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+}
+.gsa__label-count,
+.gsa__label-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.gsa__label-note::before {
+  content: "· ";
+}
+.gsa__label-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding: 3px 6px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--gs-t-micro) ease,
+    background-color var(--gs-t-micro) ease;
+}
+.gsa__label-go:hover {
+  color: var(--ink);
+  background-color: var(--hover);
+}
+
+/* ── the story ────────────────────────────────────────────────────────────── */
+.gsa__story {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 680px;
+}
+.gsa__lede {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.gsa__facts {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+/* A fact that's also a door — stars and forks open their GitHub pages. Reads
+   as prose until hovered. */
+.gsa__inline {
+  display: inline;
+  margin: 0 -3px;
+  padding: 1px 3px;
+  border-radius: 6px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color var(--gs-t-micro) ease;
+}
+.gsa__inline:hover {
+  background-color: var(--hover);
+}
+.gsa__blocked {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.gsa__links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 6px;
+}
+.gsa__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--gs-t-micro) ease;
+}
+.gsa__link:hover,
+.gsa__link--ink {
+  color: var(--ink);
+}
+.gsa__link--ink {
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--ink) 25%, transparent);
+  text-underline-offset: 4px;
+}
+.gsa__topics {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--muted);
 }
-.gsa__card-note {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
+
+/* ── rhythm ───────────────────────────────────────────────────────────────── */
+.gsa__pulse {
+  margin: 0 0 22px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-soft);
 }
-.gsa__more {
-  display: inline-flex;
+.gsa__mine-key {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin: 0 2px 0 6px;
+  border-radius: 50%;
+  background-color: var(--diff-add);
+  vertical-align: 1px;
+}
+.gsa__rhythm {
+  display: flex;
+  gap: 0;
+}
+.gsa__day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* Every seventh day starts a new week, marked by a hairline the dots stand on. */
+.gsa__day-stack {
+  display: flex;
+  flex-direction: column-reverse;
   align-items: center;
   gap: 3px;
-  padding: 3px 8px;
-  margin-right: -8px;
-  border-radius: 999px;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  transition: color var(--gs-t-micro) ease, background-color var(--gs-t-micro) ease;
-}
-.gsa__more:hover {
-  color: var(--ink);
-  background-color: var(--hover);
-}
-
-/* ── hero ─────────────────────────────────────────────────────────────────── */
-.gsa__hero {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-  padding: 26px 26px 22px;
-  border-radius: 20px;
-  background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in oklab, var(--accent) 9%, transparent), transparent 60%),
-    var(--raised-high);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
-}
-.gsa__identity {
-  display: flex;
-  align-items: flex-start;
-  gap: 18px;
-}
-.gsa__logo {
-  flex-shrink: 0;
-  width: 56px;
-  height: 56px;
-  border-radius: 14px;
-  object-fit: cover;
-  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--ink) 45%, transparent);
-}
-.gsa__logo--letter {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--ground);
-  background-color: var(--ink);
-}
-.gsa__identity-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-.gsa__name {
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.6px;
-  line-height: 1.1;
-  color: var(--ink);
-  overflow-wrap: anywhere;
-}
-.gsa__owner {
-  font-weight: 400;
-  color: var(--muted);
-}
-.gsa__description {
-  margin: 0;
-  max-width: 60ch;
-  font-size: 14.5px;
-  line-height: 1.55;
-  color: var(--ink-soft);
-  text-wrap: pretty;
-}
-.gsa__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
-}
-.gsa__chip {
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.4;
-  color: var(--ink-soft);
-  background-color: var(--hover);
-}
-.gsa__chip--topic {
-  color: var(--accent);
-  background-color: color-mix(in oklab, var(--accent) 10%, transparent);
-}
-
-.gsa__actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.gsa__action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 8px 14px;
-  border-radius: 10px;
-  font-size: 12.5px;
-  line-height: 1.2;
-  color: var(--ink);
-  background-color: var(--hover);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color var(--gs-t-micro) ease, transform var(--gs-t-micro) ease;
-}
-.gsa__action:hover {
-  background-color: color-mix(in srgb, var(--ink) 10%, transparent);
-}
-.gsa__action:active {
-  transform: scale(0.98);
-}
-.gsa__action--primary {
-  color: var(--ground);
-  background-color: var(--ink);
-}
-.gsa__action--primary:hover {
-  background-color: color-mix(in srgb, var(--ink) 86%, transparent);
-}
-.gsa__action--quiet {
-  background: none;
-  color: var(--muted);
-}
-.gsa__action:focus-visible,
-.gsa__tile:focus-visible,
-.gsa__row:focus-visible,
-.gsa__more:focus-visible,
-.gsa__unfold:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-/* Stat tiles: big numbers that are also doors. The arrow shows on hover, and a
-   tile that opens a section here leans the accent; one that leaves for GitHub
-   stays neutral. */
-.gsa__tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-  gap: 10px;
-}
-.gsa__tile {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 12px 14px 12px;
-  border-radius: 14px;
-  text-align: left;
-  color: var(--muted);
-  background-color: color-mix(in srgb, var(--ground) 70%, transparent);
-  cursor: pointer;
-  transition: background-color var(--gs-t-micro) ease, transform var(--gs-t-small) var(--gs-ease);
-}
-.gsa__tile:hover {
-  transform: translateY(-2px);
-  background-color: var(--ground);
-}
-.gsa__tile-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  height: calc(var(--rows, 7) * 13px);
+  padding-bottom: 6px;
+  box-sizing: content-box;
   width: 100%;
-  margin-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
 }
-.gsa__tile-go {
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: opacity var(--gs-t-micro) ease, transform var(--gs-t-small) var(--gs-ease);
+.gsa__dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--ink) 72%, transparent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1;
+  color: var(--ground);
+  cursor: pointer;
+  transform-origin: center bottom;
+  transition:
+    transform var(--gs-t-micro) var(--gs-ease),
+    background-color var(--gs-t-micro) ease;
+  animation: gsa-pop 380ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  animation-delay: calc(120ms + var(--n, 0) * 45ms);
 }
-.gsa__tile:hover .gsa__tile-go {
-  opacity: 1;
+.gsa__dot:hover {
+  transform: scale(1.45);
+  background-color: var(--ink);
+}
+.gsa__dot--mine {
+  background-color: var(--diff-add);
+}
+.gsa__dot--mine:hover {
+  background-color: var(--diff-add);
+}
+.gsa__dot--more {
+  width: 12px;
+  height: 12px;
+}
+.gsa__dot--none {
+  width: 4px;
+  height: 4px;
+  background-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  cursor: default;
+  animation: none;
+}
+.gsa__dot--none:hover {
   transform: none;
 }
-.gsa__tile--inside .gsa__tile-top {
-  color: var(--accent);
+.gsa__dot:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 40%, transparent);
+  outline-offset: 2px;
 }
-.gsa__tile-value {
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.5px;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-}
-.gsa__tile-label {
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-
-.gsa__blocked {
-  margin: 0;
-  max-width: 58ch;
-  font-size: 12.5px;
-  line-height: 1.6;
-  text-wrap: pretty;
-  color: var(--muted);
-}
-
-/* ── pulse ────────────────────────────────────────────────────────────────── */
-.gsa__pulse-line {
-  margin: -4px 0 16px;
-  font-size: 15px;
-  line-height: 1.45;
-  color: var(--ink);
-  text-wrap: pretty;
-}
-/* One series, one hue: the accent. Bars are thin with a rounded top anchored
-   to the baseline; an empty day keeps a short stub so the strip reads as a
-   calendar, and each day's hit area is the full column. */
-.gsa__pulse {
-  display: grid;
-  grid-template-columns: repeat(30, 1fr);
-  align-items: end;
-  gap: 2px;
-  height: 72px;
-}
-.gsa__bar-hit {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  height: 100%;
-}
-.gsa__bar {
-  width: min(100%, 12px);
-  border-radius: 4px 4px 1px 1px;
-  background-color: var(--accent);
-  transform-origin: bottom;
-  animation: gsa-grow 520ms var(--gs-ease) backwards;
-  transition: opacity var(--gs-t-micro) ease;
-}
-.gsa__bar--empty {
-  background-color: var(--hover);
-}
-.gsa__pulse:hover .gsa__bar:not(.gsa__bar--empty) {
-  opacity: 0.45;
-}
-.gsa__pulse .gsa__bar-hit:hover .gsa__bar {
-  opacity: 1;
-}
-@keyframes gsa-grow {
+@keyframes gsa-pop {
   from {
-    transform: scaleY(0);
+    opacity: 0;
+    transform: scale(0.2);
   }
 }
-.gsa__pulse-axis {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 8px;
+.gsa__day-month {
+  align-self: flex-start;
+  height: 14px;
+  margin-top: 7px;
   font-family: var(--font-mono);
   font-size: 10.5px;
+  line-height: 14px;
+  white-space: nowrap;
   color: var(--muted);
 }
 
-/* ── what's happening ─────────────────────────────────────────────────────── */
-.gsa__now {
+/* ── lately ───────────────────────────────────────────────────────────────── */
+.gsa__lately {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 64px;
 }
-.gsa__row {
+.gsa__col--side {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 44px;
+}
+
+/* The latest commits as a timeline: one hairline, a dot per commit on it. */
+.gsa__timeline {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gsa__timeline::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 10px;
+  bottom: 14px;
+  width: 1.5px;
+  border-radius: 1px;
+  background-color: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.gsa__event {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
   width: 100%;
-  padding: 9px 10px;
-  margin: 0 -10px;
-  width: calc(100% + 20px);
+  margin-left: -8px;
+  padding: 9px 8px 11px 30px;
   border-radius: 10px;
   text-align: left;
   cursor: pointer;
   transition: background-color var(--gs-t-micro) ease;
 }
-.gsa__row:hover {
+.gsa__event:hover {
   background-color: var(--hover);
 }
-.gsa__row-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
+.gsa__event-dot {
+  position: absolute;
+  left: 7px;
+  top: 14px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background-color: var(--ground);
+  box-shadow: inset 0 0 0 2.5px color-mix(in srgb, var(--ink) 45%, transparent);
 }
-.gsa__row-title {
+.gsa__event-dot--mine {
+  box-shadow: inset 0 0 0 2.5px var(--diff-add);
+}
+.gsa__event-title {
   overflow: hidden;
-  font-size: 13px;
-  line-height: 1.35;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.4;
   color: var(--ink);
 }
-.gsa__row-meta {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 11.5px;
-  line-height: 1.35;
-  color: var(--muted);
-}
-.gsa__row-tail,
-.gsa__row-num {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.gsa__row-num {
-  width: 34px;
-}
-.gsa__add {
-  font-family: var(--font-mono);
-  color: var(--diff-add);
-}
-.gsa__del {
-  margin-left: 4px;
-  font-family: var(--font-mono);
-  color: var(--diff-del);
-}
-/* A state is a word with a dot, never colour alone. */
-.gsa__state {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--ink-soft);
-}
-.gsa__state::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--muted);
-}
-.gsa__state--ok::before {
-  background-color: var(--diff-add);
-}
-.gsa__state--bad::before {
-  background-color: var(--diff-del);
-}
-.gsa__state--warn::before {
-  background-color: var(--accent);
-}
-
-/* ── avatars ──────────────────────────────────────────────────────────────── */
-.gsa__avatar {
-  flex-shrink: 0;
+.gsa__event-meta,
+.gsa__pr-meta {
   display: flex;
   align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.gsa__avatar {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
   border-radius: 50%;
   overflow: hidden;
   background-color: var(--hover);
+  font-size: 9px;
+  color: var(--muted);
 }
 .gsa__avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-.gsa__avatar-fallback {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--muted);
+.gsa__sep {
+  opacity: 0.6;
 }
-.gsa__row-avatar {
-  width: 26px;
-  height: 26px;
-}
-
-/* ── people ───────────────────────────────────────────────────────────────── */
-.gsa__people {
-  display: grid;
-  grid-template-columns: auto minmax(90px, max-content) 1fr auto;
-  align-items: center;
-  column-gap: 12px;
-  row-gap: 10px;
-}
-.gsa__person {
-  display: contents;
-}
-.gsa__person-avatar {
-  width: 24px;
-  height: 24px;
-}
-.gsa__person-name {
-  font-size: 13px;
-  color: var(--ink);
-}
-.gsa__person-track {
-  height: 8px;
-  border-radius: 4px;
-  background-color: var(--hover);
-  overflow: hidden;
-}
-.gsa__person-bar {
-  display: block;
-  height: 100%;
-  border-radius: 4px;
-  background-color: var(--accent);
-  transform-origin: left;
-  animation: gsa-fill 620ms var(--gs-ease) backwards;
-}
-@keyframes gsa-fill {
-  from {
-    transform: scaleX(0);
-  }
-}
-.gsa__person-count {
-  min-width: 32px;
+.gsa__hash {
+  margin-left: auto;
+  padding-left: 10px;
   font-family: var(--font-mono);
   font-size: 11px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
+}
+
+/* Open pull requests: two lines each, the state leading the second. */
+.gsa__pr {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: calc(100% + 16px);
+  margin-left: -8px;
+  padding: 9px 8px 11px;
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--gs-t-micro) ease;
+}
+.gsa__pr:hover {
+  background-color: var(--hover);
+}
+.gsa__pr-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.gsa__pr-num {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
   color: var(--muted);
 }
-.gsa__people-more {
-  margin: 12px 0 0;
+.gsa__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.gsa__state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+.gsa__state--ok {
+  color: var(--diff-add);
+}
+.gsa__state--bad {
+  color: var(--diff-del);
+}
+.gsa__state--warn {
+  color: color-mix(in srgb, #c98a16 85%, var(--ink));
+}
+.gsa__state--muted {
+  color: var(--muted);
+}
+.gsa__add,
+.gsa__del {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.gsa__add {
+  color: var(--diff-add);
+}
+.gsa__del {
+  color: var(--diff-del);
+}
+
+/* People as a crowd: overlapping faces, bigger for more commits, each lifting
+   a little when pointed at. */
+.gsa__crowd {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding-left: 8px;
+}
+.gsa__crowd-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: var(--s);
+  height: var(--s);
+  margin-left: -8px;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: var(--hover);
+  box-shadow: 0 0 0 3px var(--ground);
+  font-size: 13px;
+  color: var(--muted);
+  transition: transform var(--gs-t-small) var(--gs-ease);
+  animation: gsa-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  animation-delay: calc(200ms + var(--n, 0) * 50ms);
+}
+.gsa__crowd-face:hover {
+  transform: translateY(-4px);
+}
+.gsa__crowd-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.gsa__crowd-more {
+  margin-left: 10px;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
 }
+.gsa__crowd-line {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
 
 /* ── readme ───────────────────────────────────────────────────────────────── */
+/* The README as a page of the app, not a file in a box: the document's own
+   type at a reading measure, straight on the ground. */
 .gsa__readme {
   max-width: 72ch;
 }
-/* Folded to a preview that fades out, until it's asked for in full. */
 .gsa__readme--folded {
-  max-height: 320px;
+  max-height: 420px;
   overflow: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
-  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 .gsa__unfold {
-  margin-top: 10px;
+  margin-top: 8px;
   padding: 7px 14px;
   border-radius: 10px;
   font-size: 12.5px;
+  font-weight: 500;
   color: var(--ink);
   background-color: var(--hover);
   cursor: pointer;
@@ -979,31 +967,22 @@ function dayLabel(t: number): string {
 .gsa__unfold:hover {
   background-color: color-mix(in srgb, var(--ink) 10%, transparent);
 }
-.gsa__noreadme {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--muted);
-}
 
 @media (max-width: 760px) {
-  .gsa__identity {
-    flex-wrap: wrap;
-  }
-  .gsa__actions {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .gsa__lately {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 44px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .gsa__block,
-  .gsa__bar,
-  .gsa__person-bar {
+  .gsa__dot,
+  .gsa__crowd-face {
     animation: none;
   }
-  .gsa__tile,
-  .gsa__tile-go {
+  .gsa__dot,
+  .gsa__crowd-face {
     transition: none;
   }
 }
