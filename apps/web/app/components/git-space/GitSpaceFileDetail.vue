@@ -135,16 +135,20 @@ watch(scheme, async () => {
 });
 
 // How far the card stands in from the window's edges, in px — the rim of the
-// page left showing around it. The card's own CSS reads it too.
+// page left showing around it — and the widest it gets: as wide as its content
+// (the frame's max width), centred, so a wide window doesn't stretch it into
+// empty margins. The card's own CSS reads both.
 const INSET = 20;
+const MAX_WIDTH = 1080;
 
-// Grow from the clicked card's centre, in the card's own coordinates (it sits
-// INSET in from the window's top-left).
+// Grow from the clicked card's centre, in the card's own coordinates: it sits
+// INSET down from the window's top, centred across it.
 const originStyle = computed(() => {
-  const vars: Record<string, string> = { "--fd-inset": `${INSET}px` };
+  const vars: Record<string, string> = { "--fd-inset": `${INSET}px`, "--fd-max": `${MAX_WIDTH}px` };
   const r = props.origin;
   if (!r) return vars;
-  vars["--ox"] = `${r.left + r.width / 2 - INSET}px`;
+  const left = Math.max(INSET, (window.innerWidth - MAX_WIDTH) / 2);
+  vars["--ox"] = `${r.left + r.width / 2 - left}px`;
   vars["--oy"] = `${r.top + r.height / 2 - INSET}px`;
   return vars;
 });
@@ -533,11 +537,14 @@ function onTrapKeydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
-/* A big rounded card that stops just short of the window's edges, so the page
-   it was opened from still shows as a thin rim under the scrim. */
+/* A big rounded card that stops just short of the window's top and bottom, as
+   wide as its content and centred, so the page it was opened from still shows
+   around it under the scrim. */
 .fd {
   position: absolute;
-  inset: var(--fd-inset, 20px);
+  inset: var(--fd-inset, 20px) 0;
+  width: min(var(--fd-max, 1080px), calc(100% - 2 * var(--fd-inset, 20px)));
+  margin-inline: auto;
   z-index: 1;
   display: flex;
   justify-content: center;
