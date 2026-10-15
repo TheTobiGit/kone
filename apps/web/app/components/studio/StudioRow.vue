@@ -55,6 +55,7 @@ import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat } from "~/composables/sideChats";
 import { createHandoff, type HandoffOptions } from "~/composables/useThreadHandoff";
+import { handOffCaret } from "~/utils/caretHandoff";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { usePendingThread } from "~/composables/useProject";
 import {
@@ -173,6 +174,10 @@ const scratchpad = useScratchpad({ projectPath: () => props.project.path });
 type ColumnComposerHandle = {
   wake: () => Promise<void>;
   setDraft: (text: string) => Promise<void>;
+  /** Offer the caret this column holds, answering whether it held it. */
+  releaseCaret: () => boolean;
+  /** Take the caret into this column, if its card is open. */
+  takeCaret: () => void;
 };
 /** What a template ref hands back: the composer's exposed handle once it has
  *  mounted, null as it leaves. */
@@ -246,6 +251,21 @@ const studio = useStudio({
   },
 });
 const { panes, focusedId, focusedPane, blankThreadPane, attach } = studio;
+
+// Hand the caret along when focus moves between columns. The column losing
+// focus still holds the caret only when the move was a keyboard step — a click
+// has already put focus where the user aimed — so it is the side that answers
+// whether anything moves; the gaining column only takes the caret into an
+// already-open card, leaving a resting orb to wake on the next keystroke by
+// itself. This is the row's job because focus across the columns is the row's,
+// and one watcher here replaces the two per-composer watchers (and the shared
+// flag between them) that had to race to agree on the same fact.
+watch(focusedId, (id, previous) => {
+  if (id === previous) return;
+  const losing = previous ? columnComposers.get(previous) ?? null : null;
+  const gaining = id ? columnComposers.get(id) ?? null : null;
+  handOffCaret(losing, gaining);
+});
 
 // Each column's composer reports how much floor its transcript must leave and
 // whether its card is open. The focused column's corner docks stack over the
