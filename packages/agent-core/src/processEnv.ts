@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 // Environment for spawned agent CLIs. The rule (kone's "bring your own
@@ -94,4 +96,55 @@ export async function buildAgentEnv(
     env.PATH = merged.join(":");
   }
   return env;
+}
+
+// ── PATH lookup ──────────────────────────────────────────────────────────────
+
+/** Candidate filenames for one PATH entry: the bare name, plus the extensions
+ *  a Windows shell would try. A name that already carries one of those
+ *  extensions is used as-is. */
+function candidateNames(binary: string, platform: NodeJS.Platform): string[] {
+  if (platform !== "win32") return [binary];
+  if (/\.(exe|cmd|bat)$/i.test(binary)) return [binary];
+  return [binary, `${binary}.exe`, `${binary}.cmd`, `${binary}.bat`];
+}
+
+/** A PATH hit: the entry as it sits on PATH, what it resolves to, and the
+ *  directory it was found in. The three differ for a shim symlinked into a
+ *  versioned install (`found` is the shim, `real` its target, `dir` where the
+ *  shell picks it up), and callers that identify the install channel need all
+ *  three. */
+export type PathHit = { found: string; real: string; dir: string };
+
+/** Find a bare binary name across PATH, keeping both the entry and its target.
+ *  Returns null when nothing on PATH matches. */
+export function findOnPathEntry(
+  binary: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): PathHit | null {
+  const separator = platform === "win32" ? ";" : ":";
+  for (const dir of (env.PATH ?? "").split(separator).filter(Boolean)) {
+    for (const name of candidateNames(binary, platform)) {
+      const candidate = path.join(dir, name);
+      if (!fs.existsSync(candidate)) continue;
+      try {
+        return { found: candidate, real: fs.realpathSync(candidate), dir };
+      } catch {
+        // A dangling symlink still tells us where the install was meant to be.
+        return { found: candidate, real: candidate, dir };
+      }
+    }
+  }
+  return null;
+}
+
+/** Find a bare binary name across PATH, resolving symlinks to the real file.
+ *  Returns null when nothing on PATH matches. */
+export function findOnPath(
+  binary: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  return findOnPathEntry(binary, env, platform)?.real ?? null;
 }

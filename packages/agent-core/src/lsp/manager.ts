@@ -1,7 +1,7 @@
 import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { findOnPath } from "../antigravityAcpBinary.js";
+import { findOnPath } from "../processEnv.js";
 import { userDataPath } from "../userDataDir.js";
 import { LspAbortError, LspClient } from "./client.js";
 import type { LspSpawnFn } from "./client.js";
