@@ -72,8 +72,12 @@ describe("knownProviderRows", () => {
   });
 
   test("leaves out a row no kone provider owns, or one with no provider", () => {
-    const rows = [{ provider: "gemini" }, { provider: undefined }, {}, { provider: "droid" }];
-    expect(knownProviderRows(rows, colors).map(({ identity }) => identity.provider)).toEqual(["droid"]);
+    const rows = [{ provider: "gemini" }, { provider: undefined }, {}, { provider: "cursor" }];
+    expect(knownProviderRows(rows, colors).map(({ identity }) => identity.provider)).toEqual(["cursor"]);
+  });
+
+  test("leaves out a provider kone no longer offers", () => {
+    expect(knownProviderRows([{ provider: "droid" }], colors)).toEqual([]);
   });
 
   test("keeps the row's own label apart from the provider's", () => {

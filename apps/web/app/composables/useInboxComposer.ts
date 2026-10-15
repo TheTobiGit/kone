@@ -23,12 +23,8 @@ import {
   type PickerProvider,
 } from "~/utils/modelCatalog";
 import {
-  bootAssistantModel,
-  bootAssistantProvider,
-  bootAssistantReasoning,
-  bootModel,
-  bootProvider,
-  bootReasoning,
+  bootAssistantSelection,
+  bootSelection,
   modeKey,
   PROVIDER_BRAND,
   PROVIDER_VENDOR,
@@ -372,15 +368,10 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     if (nextAgent?.capabilities?.model) {
       void landAgentPin(nextAgent);
     } else if (prevAgent?.capabilities?.model) {
-      if (isAssistant.value) {
-        draft.provider.value = bootAssistantProvider();
-        draft.model.value = bootAssistantModel();
-        draft.reasoning.value = bootAssistantReasoning();
-      } else {
-        draft.provider.value = bootProvider();
-        draft.model.value = bootModel();
-        draft.reasoning.value = bootReasoning();
-      }
+      const boot = isAssistant.value ? bootAssistantSelection() : bootSelection();
+      draft.provider.value = boot?.provider ?? null;
+      draft.model.value = boot?.model;
+      draft.reasoning.value = boot?.reasoning;
     }
   });
 

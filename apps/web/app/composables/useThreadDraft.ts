@@ -15,25 +15,24 @@
 // is submitted.
 
 import { ref, toValue, type MaybeRefOrGetter } from "vue";
-import {
-  bootMode,
-  bootModel,
-  bootProvider,
-  bootReasoning,
-} from "~/utils/modelPicker";
+import { bootMode, bootSelection } from "~/utils/modelPicker";
 import type { EffortTier } from "~/utils/modelCatalog";
 import type { InteractionMode, ProviderKind } from "~/types/desktop";
 
 export function useThreadDraft(projectPath: MaybeRefOrGetter<string>) {
   const path = toValue(projectPath);
 
-  // Seeded from the same keys the studio's boot restore reads, in the same
-  // order — last used model choice wins for subsequent sessions, falling back to
-  // the user's configured default in Settings. Null when no provider is active,
-  // so there is no model either (filled in once a ready provider reports).
-  const provider = ref<ProviderKind | null>(bootProvider());
-  const model = ref<string | undefined>(bootModel());
-  const reasoning = ref<EffortTier | undefined>(bootReasoning());
+  // Seeded from the same selection the studio's boot restore reads: last used
+  // model choice wins for subsequent sessions, falling back to the user's
+  // configured default in Settings. Provider, model and effort come from that
+  // one candidate, so a stored preference for a provider kone no longer offers
+  // is skipped whole rather than leaving its model behind. Null when no provider
+  // is active, so there is no model either (filled in once a ready provider
+  // reports).
+  const boot = bootSelection();
+  const provider = ref<ProviderKind | null>(boot?.provider ?? null);
+  const model = ref<string | undefined>(boot?.model);
+  const reasoning = ref<EffortTier | undefined>(boot?.reasoning);
   const mode = ref<InteractionMode>(bootMode(path) ?? "accept-edits");
 
   /** The model's "fast" tier when fast mode is on, mirroring what a session

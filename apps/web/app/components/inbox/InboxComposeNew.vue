@@ -27,7 +27,7 @@
 
 import { computed, onBeforeUnmount, ref } from "vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
-import { bootProvider } from "~/utils/modelPicker";
+import { bootSelection } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
 import type { ChatAttachment, SkillReference } from "~/types/desktop";
@@ -63,7 +63,7 @@ const emit = defineEmits<{
 // whichever blank the registry has lying around: a blank spawned by a studio
 // row still owes its maker that reload, and firing it under a first send is
 // what appended a brand-new message to the end of an old conversation.
-const agent = useAgent({ provider: bootProvider(), cwd: props.projectPath, rehydrate: false });
+const agent = useAgent({ provider: bootSelection()?.provider ?? null, cwd: props.projectPath, rehydrate: false });
 
 // Everything you settle before the thread exists, held here rather than in a
 // session there is no reason to have yet.

@@ -732,6 +732,7 @@ const api = {
         range: UsageRange;
         projectPath?: string | null;
         forceRefresh?: boolean;
+        providers?: readonly string[];
       }): Promise<AgentUsageReport> => ipcRenderer.invoke("agent:usage-report", options),
     },
     quota: {

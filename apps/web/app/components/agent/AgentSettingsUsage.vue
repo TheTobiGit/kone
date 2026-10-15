@@ -459,8 +459,8 @@ const SKELETON_METRICS = [
 
       <p v-if="foot" class="usage__note">
         Cost is an estimate from published per-model rates, not a bill. Claude, Codex,
-        OpenCode, Droid, and Antigravity come from each CLI's own logs on this machine;
-        Cursor from its signed-in dashboard export when available.
+        and OpenCode come from each CLI's own logs on this machine; Cursor from its
+        signed-in dashboard export when available.
       </p>
     </template>
   </section>

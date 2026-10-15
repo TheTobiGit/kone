@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { buildModelCatalog, type ModelOption } from "~/utils/modelCatalog";
 import {
+  ASSISTANT_MODEL_KEY,
+  ASSISTANT_PROVIDER_KEY,
+  ASSISTANT_REASONING_KEY,
+  bootAssistantSelection,
   bootMode,
-  bootModel,
-  bootProvider,
-  bootReasoning,
+  bootSelection,
   DEFAULT_MODE_KEY,
   DEFAULT_MODEL_KEY,
   DEFAULT_PROVIDER_KEY,
@@ -183,17 +185,19 @@ describe("boot helpers & local storage persistence", () => {
     globalThis.localStorage = mockStorage;
   });
 
-  test("bootProvider, bootModel, bootReasoning read default when last used is empty", () => {
+  test("bootSelection reads the whole default triple when last used is empty", () => {
     localStorage.setItem(DEFAULT_PROVIDER_KEY, "claudeAgent");
     localStorage.setItem(DEFAULT_MODEL_KEY, "claude-sonnet-4-6");
     localStorage.setItem(DEFAULT_REASONING_KEY, "high");
 
-    expect(bootProvider()).toBe("claudeAgent");
-    expect(bootModel()).toBe("claude-sonnet-4-6");
-    expect(bootReasoning()).toBe("high");
+    expect(bootSelection()).toEqual({
+      provider: "claudeAgent",
+      model: "claude-sonnet-4-6",
+      reasoning: "high",
+    });
   });
 
-  test("last-used model takes priority over initial default in subsequent reads", () => {
+  test("last-used selection takes priority over the initial default", () => {
     localStorage.setItem(DEFAULT_PROVIDER_KEY, "codex");
     localStorage.setItem(DEFAULT_MODEL_KEY, "gpt-5.6-terra");
     localStorage.setItem(DEFAULT_REASONING_KEY, "low");
@@ -204,9 +208,59 @@ describe("boot helpers & local storage persistence", () => {
       tier: "high",
     });
 
-    expect(bootProvider()).toBe("claudeAgent");
-    expect(bootModel()).toBe("claude-sonnet-4-6");
-    expect(bootReasoning()).toBe("high");
+    expect(bootSelection()).toEqual({
+      provider: "claudeAgent",
+      model: "claude-sonnet-4-6",
+      reasoning: "high",
+    });
+  });
+
+  test("a stale last-used provider kone no longer offers is skipped whole for an offered default", () => {
+    // Last used was Droid before kone retired it; the default is Codex. The
+    // retired provider, its model and its effort must all fall through
+    // together — the model and effort must not ride onto Codex.
+    localStorage.setItem(PROVIDER_KEY, "droid");
+    localStorage.setItem(MODEL_KEY, "droid-model");
+    localStorage.setItem(REASONING_KEY, "high");
+    localStorage.setItem(DEFAULT_PROVIDER_KEY, "codex");
+    localStorage.setItem(DEFAULT_MODEL_KEY, "gpt-5.6-terra");
+    localStorage.setItem(DEFAULT_REASONING_KEY, "low");
+
+    expect(bootSelection()).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-terra",
+      reasoning: "low",
+    });
+  });
+
+  test("a stale Antigravity default falls through to null when nothing offered remains", () => {
+    // Both stored tiers name Antigravity; there is no offered candidate left,
+    // so there is no model or effort either.
+    localStorage.setItem(PROVIDER_KEY, "antigravity");
+    localStorage.setItem(MODEL_KEY, "gemini-3.8-flash");
+    localStorage.setItem(REASONING_KEY, "high");
+    localStorage.setItem(DEFAULT_PROVIDER_KEY, "antigravity");
+    localStorage.setItem(DEFAULT_MODEL_KEY, "gemini-3.8-flash");
+    localStorage.setItem(DEFAULT_REASONING_KEY, "medium");
+
+    expect(bootSelection()).toBeNull();
+  });
+
+  test("bootAssistantSelection skips a stale assistant provider to the board's offered last used", () => {
+    localStorage.setItem(ASSISTANT_PROVIDER_KEY, "droid");
+    localStorage.setItem(ASSISTANT_MODEL_KEY, "droid-model");
+    localStorage.setItem(ASSISTANT_REASONING_KEY, "high");
+    localStorage.setItem(PROVIDER_KEY, "claudeAgent");
+    localStorage.setItem(MODEL_KEY, "claude-sonnet-4-6");
+    localStorage.setItem(REASONING_KEY, "high");
+    localStorage.setItem(DEFAULT_PROVIDER_KEY, "codex");
+    localStorage.setItem(DEFAULT_MODEL_KEY, "gpt-5.6-terra");
+
+    expect(bootAssistantSelection()).toEqual({
+      provider: "claudeAgent",
+      model: "claude-sonnet-4-6",
+      reasoning: "high",
+    });
   });
 
   test("setDefaultModel writes default keys AND primes last-used keys", () => {
@@ -241,13 +295,13 @@ describe("boot helpers & local storage persistence", () => {
     expect(bootMode("/path/to/project")).toBeNull();
   });
 
-  test("bootProvider returns null on fresh install with nothing stored", () => {
-    expect(bootProvider()).toBeNull();
+  test("bootSelection returns null on fresh install with nothing stored", () => {
+    expect(bootSelection()).toBeNull();
   });
 
-  test("bootProvider returns what was stored; readiness is validated by the resolver", () => {
+  test("bootSelection returns what was stored; readiness is validated by the resolver", () => {
     localStorage.setItem(PROVIDER_KEY, "codex");
-    expect(bootProvider()).toBe("codex");
+    expect(bootSelection()?.provider).toBe("codex");
     const res = resolveSessionModelSelection({
       lastUsed: { provider: "codex" },
       availableProviders: ["claudeAgent"],

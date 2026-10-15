@@ -1,10 +1,6 @@
 import { ref, computed, shallowRef } from "vue";
 import type { StoredThreadMeta } from "~/types/desktop";
-import {
-  bootAssistantModel,
-  bootAssistantProvider,
-  bootAssistantReasoning,
-} from "~/utils/modelPicker";
+import { bootAssistantSelection } from "~/utils/modelPicker";
 import { useAgent } from "./useAgent";
 
 export const GLOBAL_ASSISTANT_PROJECT_PATH = "__kone_assistant__";
@@ -28,10 +24,11 @@ export function useGlobalAssistant() {
   // and pull the last chat in underneath it, so the message would land in a
   // conversation nobody chose. The assistant opens on a new chat; History is
   // how you get back to an old one.
+  const boot = bootAssistantSelection();
   const agent = useAgent({
-    provider: bootAssistantProvider(),
-    model: bootAssistantModel(),
-    reasoning: bootAssistantReasoning(),
+    provider: boot?.provider ?? null,
+    model: boot?.model,
+    reasoning: boot?.reasoning,
     cwd: GLOBAL_ASSISTANT_PROJECT_PATH,
     rehydrate: false,
   });

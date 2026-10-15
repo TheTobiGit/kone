@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "~/types/desktop";
 import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
+import { isProviderOffered } from "~/utils/providerOffer";
 import { peelIpcError } from "~/utils/ipcError";
 import { desktopBridge } from "~/utils/desktopBridge";
 
@@ -71,7 +72,12 @@ function watch(refreshNow: () => Promise<void>): void {
 }
 
 export function useAgentProviders() {
-  const ready = computed(() => statuses.value.filter((s) => s.readiness === "ready"));
+  // The installed, ready providers the app may actually offer. `statuses` below
+  // stays raw so an existing thread on a provider kone no longer offers can
+  // still report its health; every picker and boot path reads `ready`.
+  const ready = computed(() =>
+    statuses.value.filter((s) => s.readiness === "ready" && isProviderOffered(s.provider)),
+  );
   const byProvider = (provider: ProviderKind) =>
     computed(() => statuses.value.find((s) => s.provider === provider) ?? null);
 

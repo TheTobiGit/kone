@@ -29,7 +29,7 @@ mock.module("./cursorDashboardUsage.js", () => ({
   clearCursorDashboardCache: () => {},
 }));
 
-import type { ConversationStore } from "../ConversationStore.js";
+import type { UsageReportStore } from "./buildUsageReport.js";
 import type { StoreUsageReport } from "./storeUsage.js";
 
 const EMPTY: StoreUsageReport = {
@@ -39,14 +39,14 @@ const EMPTY: StoreUsageReport = {
   promptsByDayRows: [],
 };
 
-type CapturedFilter = { excludeProviders: string[]; onlyProviders?: readonly string[] };
+type CapturedFilter = { excludeProviders?: string[]; onlyProviders?: readonly string[] };
 
+/** A store stand-in typed to exactly what the report reads, so every filter
+ *  decision it asks for is captured and asserted with no assertion. */
 function stubStore(
   readStoreUsageReport: (options: CapturedFilter) => StoreUsageReport,
-): ConversationStore {
-  // SAFETY: buildAgentUsageReport's store surface reduces to this one method
-  // for these tests; every filter decision it makes is captured and asserted.
-  return { readStoreUsageReport, conversationIdsForProject: () => new Set<string>() } as never;
+): UsageReportStore {
+  return { readStoreUsageReport, conversationIdsForProject: () => new Set<string>() };
 }
 
 describe("buildAgentUsageReport store-provider filter", () => {

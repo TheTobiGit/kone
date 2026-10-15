@@ -13,6 +13,7 @@ import {
   type EffortTier,
   type ModelOption,
 } from "~/utils/modelCatalog";
+import { isProviderOffered } from "~/utils/providerOffer";
 
 /** The provider + model + reasoning effort are remembered GLOBALLY — one
  *  app-wide "last used" choice that subsequent sessions open with. */
@@ -63,52 +64,6 @@ function getStorage(): Storage | null {
 }
 
 /**
- * Which provider a brand-new session opens on.
- *
- * The last used provider wins (so subsequent sessions stay on whatever ran last),
- * falling back to the user's configured default in settings. Readiness is
- * validated by the caller (the session resolver and the row check the ready
- * list) — this only reads what was stored. Null means nothing was stored, so
- * there is no model either.
- */
-export function bootProvider(): ProviderKind | null {
-  const storage = getStorage();
-  if (!storage) return null;
-  const stored = storage.getItem(PROVIDER_KEY) ?? storage.getItem(DEFAULT_PROVIDER_KEY);
-  if (stored === null || !(stored in PROVIDER_VENDOR)) return null;
-  return toProviderKind(stored);
-}
-
-/**
- * Which model a brand-new session opens on.
- *
- * Reads the last used model first (so subsequent sessions stay on whatever ran last),
- * falling back to the configured default in settings.
- */
-export function bootModel(): string | undefined {
-  const storage = getStorage();
-  if (!storage) return undefined;
-  return (
-    storage.getItem(MODEL_KEY) ??
-    storage.getItem(DEFAULT_MODEL_KEY) ??
-    undefined
-  );
-}
-
-/**
- * Which reasoning effort tier a brand-new session opens on.
- *
- * Reads the last used reasoning effort first, falling back to the configured default.
- */
-export function bootReasoning(): EffortTier | undefined {
-  const storage = getStorage();
-  if (!storage) return undefined;
-  const stored =
-    storage.getItem(REASONING_KEY) ?? storage.getItem(DEFAULT_REASONING_KEY);
-  return isEffortTier(stored) ? stored : undefined;
-}
-
-/**
  * Record the user's active/last-used model selection so subsequent sessions
  * default to it.
  */
@@ -134,10 +89,8 @@ export function readLastUsed(): SessionModelSelectionRef | null {
   const storage = getStorage();
   if (!storage) return null;
   const provider = storage.getItem(PROVIDER_KEY);
-  if (provider === null || !(provider in PROVIDER_VENDOR)) return null;
-  const out: SessionModelSelectionRef = {
-    provider: toProviderKind(provider),
-  };
+  if (provider === null || !isProviderOffered(provider)) return null;
+  const out: SessionModelSelectionRef = { provider };
   const model = storage.getItem(MODEL_KEY);
   if (model !== null) out.model = model;
   const reasoning = storage.getItem(REASONING_KEY);
@@ -151,10 +104,8 @@ export function readUserDefault(): SessionModelSelectionRef | null {
   const storage = getStorage();
   if (!storage) return null;
   const provider = storage.getItem(DEFAULT_PROVIDER_KEY);
-  if (provider === null || !(provider in PROVIDER_VENDOR)) return null;
-  const out: SessionModelSelectionRef = {
-    provider: toProviderKind(provider),
-  };
+  if (provider === null || !isProviderOffered(provider)) return null;
+  const out: SessionModelSelectionRef = { provider };
   const model = storage.getItem(DEFAULT_MODEL_KEY);
   if (model !== null) out.model = model;
   const reasoning = storage.getItem(DEFAULT_REASONING_KEY);
@@ -162,54 +113,46 @@ export function readUserDefault(): SessionModelSelectionRef | null {
   return out;
 }
 
-/**
- * Which provider the assistant's next fresh chat opens on.
- *
- * The assistant's own last used wins, falling back to the user's configured
- * default — same order the board uses, but scoped to the assistant so the
- * two surfaces don't step on each other's sticky choice. Null when nothing
- * is stored.
- */
-export function bootAssistantProvider(): ProviderKind | null {
+/** The assistant's own last-used selection, without falling back to the board's
+ *  or the user's defaults. Null when the assistant has never picked — or when
+ *  its stored provider is one kone no longer offers. */
+export function readAssistantLastUsed(): SessionModelSelectionRef | null {
   const storage = getStorage();
   if (!storage) return null;
-  const stored =
-    storage.getItem(ASSISTANT_PROVIDER_KEY) ??
-    storage.getItem(PROVIDER_KEY) ??
-    storage.getItem(DEFAULT_PROVIDER_KEY);
-  if (stored === null || !(stored in PROVIDER_VENDOR)) return null;
-  return toProviderKind(stored);
+  const provider = storage.getItem(ASSISTANT_PROVIDER_KEY);
+  if (provider === null || !isProviderOffered(provider)) return null;
+  const out: SessionModelSelectionRef = { provider };
+  const model = storage.getItem(ASSISTANT_MODEL_KEY);
+  if (model !== null) out.model = model;
+  const reasoning = storage.getItem(ASSISTANT_REASONING_KEY);
+  if (isEffortTier(reasoning)) out.reasoning = reasoning;
+  return out;
 }
 
 /**
- * Which model the assistant's next fresh chat opens on.
+ * The complete selection a brand-new session opens on — the last used choice,
+ * falling back to the user's configured default. Null when nothing usable is
+ * stored, so there is no model or effort either.
  *
- * Reads the assistant's last used first, falling back to the configured default.
+ * Candidates are resolved in precedence order and skipped as whole triples: a
+ * candidate naming a provider kone no longer offers is dropped with its model
+ * and effort, never leaving them to ride onto the next provider. Readiness is
+ * still the caller's to validate; this only refuses what kone doesn't offer.
  */
-export function bootAssistantModel(): string | undefined {
-  const storage = getStorage();
-  if (!storage) return undefined;
-  return (
-    storage.getItem(ASSISTANT_MODEL_KEY) ??
-    storage.getItem(MODEL_KEY) ??
-    storage.getItem(DEFAULT_MODEL_KEY) ??
-    undefined
-  );
+export function bootSelection(): SessionModelSelectionRef | null {
+  return readLastUsed() ?? readUserDefault();
 }
 
 /**
- * Which reasoning effort the assistant's next fresh chat opens on.
- *
- * Reads the assistant's last used first, falling back to the configured default.
+ * The complete selection the assistant's next fresh chat opens on. The
+ * assistant's own last used wins, then the board's last used, then the user's
+ * configured default — the same order the board uses, scoped to the assistant
+ * so the two surfaces don't step on each other's sticky choice. Every
+ * candidate is a whole provider+model+effort triple, so a rejected provider
+ * takes its model and effort with it.
  */
-export function bootAssistantReasoning(): EffortTier | undefined {
-  const storage = getStorage();
-  if (!storage) return undefined;
-  const stored =
-    storage.getItem(ASSISTANT_REASONING_KEY) ??
-    storage.getItem(REASONING_KEY) ??
-    storage.getItem(DEFAULT_REASONING_KEY);
-  return isEffortTier(stored) ? stored : undefined;
+export function bootAssistantSelection(): SessionModelSelectionRef | null {
+  return readAssistantLastUsed() ?? readLastUsed() ?? readUserDefault();
 }
 
 /**
@@ -507,14 +450,6 @@ export function bootMode(projectPath: string): InteractionMode | null {
   // SAFETY: the check above passes only for an exact member of MODES, which is
   // exactly InteractionMode.
   return stored as InteractionMode;
-}
-
-/** The `in PROVIDER_VENDOR` check above is the parse; this only carries the
- *  result across, and every caller is that check. */
-function toProviderKind(checked: string): ProviderKind {
-  // SAFETY: reached only when `checked in PROVIDER_VENDOR`, and that object's
-  // keys are exactly ProviderKind.
-  return checked as ProviderKind;
 }
 
 export const PROVIDER_BRAND = {
