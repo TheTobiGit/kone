@@ -27,6 +27,11 @@ export const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhi
 export const STOP_TASK_TIMEOUT_MS = 3_000;
 export const INTERRUPT_TIMEOUT_MS = 5_000;
 
+/** How long a successful init probe (account + model catalog) is reused. A CLI
+ *  updated via `claude update` should surface its new models without a restart,
+ *  so the cache is bounded rather than held for the process lifetime. */
+export const INIT_CACHE_TTL_MS = 10 * 60_000;
+
 /** How long a late-settling background run waits for its siblings before the
  *  thread is woken. Long enough that agents launched in one message — which
  *  finish within moments of each other — are handed over as one batch, short

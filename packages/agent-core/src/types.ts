@@ -2460,6 +2460,15 @@ export interface ProviderAdapter {
    *  (Claude runs the SDK's embedded CLI) omit it. Takes effect on the next
    *  discover / session; running sessions keep the binary they spawned with. */
   setConfig?(config: ProviderConfig): void;
+
+  /** Drop any discovery state this adapter caches (a probe handshake, a model
+   *  catalog) so the next discover/listModels re-reads the CLI. Called by the
+   *  service after an explicit provider update, when the cached catalog is the
+   *  one thing known to be stale — without it an updated CLI's new models
+   *  would not surface until the cache's own TTL lapsed. Running sessions are
+   *  untouched: they keep the binary they spawned with. Optional — adapters
+   *  with nothing cached omit it. */
+  invalidateDiscoveryCaches?(): void;
 }
 
 /** The user's persisted install settings for one provider. "Bring your own

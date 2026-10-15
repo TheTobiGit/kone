@@ -20,6 +20,14 @@ import {
  *  rather than an inline anonymous object. */
 type ForkSessionArgs = { dir: string; upToMessageId?: string };
 
+/** A Claude init handshake: the signed-in account (for discover) and the CLI's
+ *  model catalog (for listModels), read from a throwaway session. */
+type ClaudeInit = { account?: AccountInfo; models: ModelInfo[] };
+
+/** One cached init handshake with when it was taken, so a stale catalog can be
+ *  re-probed without an app restart. */
+type InitProbeCacheEntry = { at: number; promise: Promise<ClaudeInit | null> };
+
 import {
   buildClaudeEnv,
   parseClaudeCliVersion,
@@ -139,6 +147,7 @@ import {
   CURATED_CLAUDE_MODELS,
   DEFAULT_CLAUDE_CONTEXT_WINDOW,
   FAST_SERVICE_TIER,
+  INIT_CACHE_TTL_MS,
   INTERRUPT_TIMEOUT_MS,
   STOP_TASK_TIMEOUT_MS,
   WAKE_DEBOUNCE_MS,
@@ -204,10 +213,12 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   private readonly emit: EmitEvent;
   private readonly sessions = new Map<string, ClaudeSession>();
-  /** One throwaway `initializationResult()` probe, cached — it returns both the
-   *  account (for discover) and the model list (for listModels). Only successes
-   *  are cached; a failed probe is retried next call (auth may have changed). */
-  private initCache: Promise<{ account?: AccountInfo; models: ModelInfo[] } | null> | null = null;
+  /** One throwaway `initializationResult()` probe, cached with a TTL — it
+   *  returns both the account (for discover) and the model list (for
+   *  listModels). The TTL is what lets a user's `claude update` surface new
+   *  models without restarting the app. Only successes are cached; a failed
+   *  probe retries next call (auth may have changed). */
+  private initCache: InitProbeCacheEntry | null = null;
   /** Why the last init probe threw, when it did. A probe that could not be run
    *  produced no verdict about sign-in, and discover needs to say that rather
    *  than guess "logged out". Cleared by a probe that completes. */
@@ -303,6 +314,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     return mergeClaudeModels(CURATED_CLAUDE_MODELS, discovered);
   }
 
+  /** ProviderAdapter.invalidateDiscoveryCaches. Drops the cached handshake so
+   *  the next discover/listModels re-probes the CLI — the one moment the cache
+   *  is known stale, since the binary on disk has just been replaced. Live
+   *  sessions keep the CLI they spawned with and are left alone. */
+  invalidateDiscoveryCaches(): void {
+    this.initCache = null;
+  }
+
   /** The installed CLI's version, and the raw probe behind it.
    *
    *  The outcome is carried out with the string because the two answer different
@@ -311,7 +330,10 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  here is what left a missing `claude` indistinguishable from a slow one. */
   private async probeVersion(): Promise<{ version?: string; result: ProbeResult }> {
     const env = await buildAgentEnv();
-    const result = await probeResult("claude", ["--version"], env, 5_000);
+    // Ask the same binary sessions spawn, so the status row's version is the
+    // one whose model catalog the picker shows.
+    const executable = resolveClaudeExecutable({ env }) ?? "claude";
+    const result = await probeResult(executable, ["--version"], env, 5_000);
     const version =
       result.outcome === "ok"
         ? parseClaudeCliVersion(`${result.stdout}\n${result.stderr}`)
@@ -319,24 +341,31 @@ export class ClaudeAdapter implements ProviderAdapter {
     return { version, result };
   }
 
-  private probeInit(): Promise<{ account?: AccountInfo; models: ModelInfo[] } | null> {
-    if (!this.initCache) {
-      this.initCache = this.runInitProbe().then((result) => {
-        if (!result) this.initCache = null; // don't cache a failure
-        return result;
-      });
-    }
-    return this.initCache;
+  private probeInit(): Promise<ClaudeInit | null> {
+    const cached = this.initCache;
+    if (cached && Date.now() - cached.at < INIT_CACHE_TTL_MS) return cached.promise;
+    const entry: InitProbeCacheEntry = {
+      at: Date.now(),
+      promise: this.runInitProbe(),
+    };
+    // Don't cache a failure — auth may have changed by the next call. The
+    // identity guard keeps an expired entry's late failure from clearing a
+    // newer one.
+    void entry.promise.then((result) => {
+      if (!result && this.initCache === entry) this.initCache = null;
+    });
+    this.initCache = entry;
+    return entry.promise;
   }
 
   /** Spawn a throwaway session that never runs a turn, read its init handshake
    *  (account + model list), then abort it. This is the Claude analogue of
    *  CodexAdapter's short-lived app-server spawn for model/list. */
-  private async runInitProbe(): Promise<{ account?: AccountInfo; models: ModelInfo[] } | null> {
+  private async runInitProbe(): Promise<ClaudeInit | null> {
     const controller = new AbortController();
     try {
       const env = await buildClaudeEnv();
-      const executable = resolveClaudeExecutable();
+      const executable = resolveClaudeExecutable({ env });
       // SAFETY: buildClaudeEnv returns the process-env shape the SDK widens to a string record.
       const probeOptions: ClaudeQueryOptions = {
         cwd: homedir(),
@@ -421,7 +450,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   private async startFreshSession(input: SessionStartInput): Promise<Session> {
     const env = await buildClaudeEnv();
-    const executable = resolveClaudeExecutable();
+    const executable = resolveClaudeExecutable({ env });
     const mode: InteractionMode = input.mode ?? "accept-edits";
     const effort = normalizeEffort(input.effort);
     const abort = new AbortController();

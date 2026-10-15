@@ -211,17 +211,68 @@ describe("resolveProviderMaintenance", () => {
     expect(m.installSource).toBe("unknown");
   });
 
-  test("Claude is bundled: no install to inspect, nothing to update", async () => {
+  test("a native-installed Claude Code updates through its own updater", async () => {
+    const real = file("claudehome/.local/share/claude/versions/2.1.0/claude");
+    link(real, "claudehome/.local/bin/claude");
+
     const m = await resolveProviderMaintenance({
       provider: "claudeAgent",
       currentVersion: "2.1.0",
-      env: envWith("/nonexistent"),
-      checkLatest: true,
+      env: envWith(path.join(root, "claudehome/.local/bin")),
+      checkLatest: true, // allowed — there's nowhere kone can read "latest"
     });
 
-    expect(m.installSource).toBe("bundled");
-    expect(m.binary).toBeNull();
-    expect(m.canUpdate).toBe(false);
+    expect(m.installSource).toBe("native");
+    expect(m.updateCommand).toBe("claude update");
+    expect(m.canUpdate).toBe(true);
+    // No registry to read, so the row can never nag — same as cursor-agent.
     expect(m.latestKnowable).toBe(false);
+    expect(m.standing).toBe("unknown");
+  });
+
+  test("an npm-installed Claude Code updates through npm, not `claude update`", async () => {
+    const real = file("claude-npm/lib/node_modules/@anthropic-ai/claude-code/cli.js");
+    link(real, "claude-npm/bin/claude");
+
+    const m = await resolveProviderMaintenance({
+      provider: "claudeAgent",
+      env: envWith(path.join(root, "claude-npm/bin")),
+      checkLatest: false,
+    });
+
+    expect(m.installSource).toBe("npm");
+    expect(m.updateCommand).toBe(
+      `npm install -g --prefix ${path.join(root, "claude-npm")} @anthropic-ai/claude-code@latest`,
+    );
+  });
+
+  test("a Claude install at ~/.local/bin is found even when PATH omits it", async () => {
+    const home = path.join(root, "claude-home");
+    const real = file("claude-home/.local/share/claude/versions/2.1.0/claude");
+    link(real, "claude-home/.local/bin/claude");
+
+    const m = await resolveProviderMaintenance({
+      provider: "claudeAgent",
+      // The runtime recovers this home off the login shell's PATH and falls
+      // back to ~/.local/bin directly; maintenance has to see the same copy.
+      env: { PATH: "/nonexistent", HOME: home },
+      checkLatest: false,
+    });
+
+    expect(m.installSource).toBe("native");
+    expect(m.resolvedPath).toBe(path.join(home, ".local", "bin", "claude"));
+    expect(m.updateCommand).toBe("claude update");
+  });
+
+  test("no Claude install resolves to nothing to update", async () => {
+    const m = await resolveProviderMaintenance({
+      provider: "claudeAgent",
+      env: { PATH: "/nonexistent", HOME: path.join(root, "no-claude-home") },
+      checkLatest: false,
+    });
+
+    expect(m.resolvedPath).toBeNull();
+    expect(m.canUpdate).toBe(false);
+    expect(m.updateCommand).toBeNull();
   });
 });

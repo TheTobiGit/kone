@@ -28,7 +28,7 @@ setUserDataDir(testUserDataDir);
 
 import type { ProbeResult } from "./spawn.js";
 import type { RuntimeEvent } from "./types.js";
-import { WAKE_DEBOUNCE_MS } from "./adapters/claudeAdapterTypes.js";
+import { INIT_CACHE_TTL_MS, WAKE_DEBOUNCE_MS } from "./adapters/claudeAdapterTypes.js";
 
 /** The events of exactly one type.
  *  SAFETY: the predicate compares e.type to the requested literal, so each
@@ -1066,6 +1066,45 @@ describe("Claude discovery", () => {
     // keep serving a stale ready row to someone who has signed out.
     expect(status.readiness).toBe("needs-login");
     expect(status.transient).toBeUndefined();
+  });
+});
+
+describe("Claude init probe cache", () => {
+  test("reuses a fresh probe and re-probes once its TTL lapses, so `claude update` surfaces new models", async () => {
+    const { adapter } = setup();
+    const probes = mock(async () => ({ models: [] }));
+    state.initializationResult = probes;
+
+    const realNow = Date.now;
+    let clock = realNow();
+    Date.now = () => clock;
+    try {
+      await adapter.listModels();
+      await adapter.listModels();
+      expect(probes).toHaveBeenCalledTimes(1);
+
+      // Past the TTL the CLI is consulted again — the whole point of the bound.
+      clock += INIT_CACHE_TTL_MS;
+      await adapter.listModels();
+      expect(probes).toHaveBeenCalledTimes(2);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("an explicit invalidation re-probes at once, so an update refreshes models before the TTL", async () => {
+    const { adapter } = setup();
+    const probes = mock(async () => ({ models: [] }));
+    state.initializationResult = probes;
+
+    await adapter.listModels();
+    expect(probes).toHaveBeenCalledTimes(1);
+
+    // The service drops the cache after a provider update; the next read must
+    // consult the freshly installed CLI, not wait out the TTL.
+    adapter.invalidateDiscoveryCaches();
+    await adapter.listModels();
+    expect(probes).toHaveBeenCalledTimes(2);
   });
 });
 

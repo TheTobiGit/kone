@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { resolveClaudeInstallation } from "./claudeHome.js";
 import { runStreaming } from "./spawn.js";
 import type {
   ProviderInstallSource,
@@ -51,9 +52,17 @@ type LatestSource =
   | { kind: "npm"; name: string }
   | { kind: "homebrew"; name: string; cask: boolean };
 
+/** A located install: the PATH entry, what it points at, and its directory (see
+ *  processEnv's PathHit). Null when the binary isn't on disk. */
+type LocatedInstall = { found: string; real: string; dir: string } | null;
+
+/** What `inspect` derives about an install before it builds the update command:
+ *  where the CLI is, and which channel owns it. */
+type ResolvedInstall = { located: LocatedInstall; source: ProviderInstallSource };
+
 /** Everything kone knows about how one provider's CLI is installed and updated.
- *  `binary: null` marks a provider whose runtime ships inside kone (Claude), so
- *  there is no user install to inspect or upgrade. */
+ *  `binary: null` marks a provider whose runtime ships inside kone, so there is
+ *  no user install to inspect or upgrade. */
 type MaintenanceDefinition = {
   provider: ProviderKind;
   /** Default executable name, before the user's binary-path override. */
@@ -75,12 +84,13 @@ type MaintenanceDefinition = {
     /** Recognises the CLI's own install layout on disk. */
     ownsPath?: (commandPath: string) => boolean;
   } | null;
+  /** Override the generic PATH locate + channel detection for a provider whose
+   *  binary is resolved by a shared contract (see claudeHome's
+   *  resolveClaudeInstallation), so this module and the adapter agree on which
+   *  copy is installed — including a Windows npm launcher the adapter follows
+   *  to its real package entry. */
+  resolveInstall?: (binary: string, env: NodeJS.ProcessEnv) => ResolvedInstall;
 };
-
-function claudeOwnsPath(commandPath: string): boolean {
-  const p = normalizePath(commandPath);
-  return p.endsWith("/.local/bin/claude") || p.includes("/.local/share/claude/");
-}
 
 function opencodeOwnsPath(commandPath: string): boolean {
   return normalizePath(commandPath).includes("/.opencode/bin/opencode");
@@ -100,20 +110,27 @@ const DEFINITIONS = {
     // `codex` has no self-update subcommand — it's whatever installed it.
     native: null,
   },
-  // kone drives Claude through the Agent SDK's own bundled CLI (see
-  // claudeHome.ts' resolveClaudeExecutable), not a `claude` on the user's PATH.
-  // So there's nothing here for the user to repoint or upgrade: that CLI's
-  // version follows kone's own releases.
+  // kone prefers the user's own installed Claude Code CLI at spawn (see
+  // claudeHome.ts' resolveClaudeInstallation), falling back to the SDK's
+  // bundled CLI only when Claude Code isn't installed. The install is resolved
+  // by that same contract — not the generic PATH walk below — so maintenance
+  // and the adapter can never disagree about which copy runs or where it came
+  // from.
   claudeAgent: {
     provider: "claudeAgent",
-    binary: null,
+    binary: "claude",
     npmPackage: "@anthropic-ai/claude-code",
     homebrew: null,
     latestSource: null,
     native: {
       args: () => ["update"],
+      // Only the native installer's copy updates itself; an npm-installed
+      // Claude Code is updated through npm below.
       strategy: "matching-path",
-      ownsPath: claudeOwnsPath,
+    },
+    resolveInstall: (binary, env) => {
+      const install = resolveClaudeInstallation({ binary, env });
+      return { located: install.located, source: install.source };
     },
   },
   cursor: {
@@ -498,7 +515,7 @@ function standingFor(current: string | null, latest: string | null): VersionStan
  *  probe path passes `checkLatest: false` and the settings pane asks for the
  *  real answer when the user is actually looking at it. */
 type InspectedInstall = {
-  located: ReturnType<typeof locate>;
+  located: LocatedInstall;
   source: ProviderInstallSource;
   command: UpdateCommand | null;
 };
@@ -510,21 +527,31 @@ function inspect(
   binary: string,
   env: NodeJS.ProcessEnv,
 ): InspectedInstall {
-  const located = locate(binary, env);
-  // Detection reads the real path first (a versioned install directory names
-  // its channel), then the PATH entry that pointed at it (a `~/.bun/bin` shim
-  // names its channel while its target doesn't), then the bare name.
-  const candidates = [located?.real, located?.found, hasSeparator(binary) ? null : binary].filter(
-    (value): value is string => Boolean(value),
-  );
-  let source: ProviderInstallSource = "unknown";
-  let matched: string | null = null;
-  for (const candidate of candidates) {
-    const detected = detectSource(definition, candidate);
-    if (detected !== "unknown") {
-      source = detected;
-      matched = candidate;
-      break;
+  const resolved = definition.resolveInstall?.(binary, env);
+  const located = resolved ? resolved.located : locate(binary, env);
+  let source: ProviderInstallSource;
+  let matched: string | null;
+  if (resolved) {
+    // The provider's own resolver already named the channel — trust it over the
+    // generic path heuristics, which would misread a followed npm entry.
+    source = resolved.source;
+    matched = located?.real ?? null;
+  } else {
+    // Detection reads the real path first (a versioned install directory names
+    // its channel), then the PATH entry that pointed at it (a `~/.bun/bin` shim
+    // names its channel while its target doesn't), then the bare name.
+    const candidates = [located?.real, located?.found, hasSeparator(binary) ? null : binary].filter(
+      (value): value is string => Boolean(value),
+    );
+    source = "unknown";
+    matched = null;
+    for (const candidate of candidates) {
+      const detected = detectSource(definition, candidate);
+      if (detected !== "unknown") {
+        source = detected;
+        matched = candidate;
+        break;
+      }
     }
   }
 
@@ -625,7 +652,14 @@ export async function runProviderUpdate(input: {
   }
 
   const binary = input.binaryOverride?.trim() || definition.binary;
-  const { command } = inspect(definition, binary, input.env);
+  const { command, source } = inspect(definition, binary, input.env);
+  if (source === "bundled") {
+    return {
+      outcome: "unsupported",
+      message: "kone bundles this provider's runtime — it updates with the app.",
+      output: null,
+    };
+  }
   if (!command) {
     return {
       outcome: "unsupported",

@@ -1403,7 +1403,11 @@ export class AgentService {
 
     // The install moved (or tried to), so everything downstream of it is stale:
     // re-probe every provider and refresh the model catalog, since a new CLI can
-    // ship new models.
+    // ship new models. The adapter is told to drop its cached probe first — an
+    // adapter that cached a handshake would otherwise serve the pre-update
+    // catalog to the discover and listModels below, and the new models would not
+    // surface until its cache TTL lapsed.
+    this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
     const statuses = await this.discover();
     const after = statuses.find((s) => s.provider === provider)?.version ?? null;
     void this.listModels(provider).catch(() => []);
