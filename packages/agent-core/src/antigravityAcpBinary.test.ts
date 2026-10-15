@@ -5,7 +5,6 @@ import path from "node:path";
 
 import {
   antigravityHarnessFileName,
-  findOnPath,
   readAntigravityAcpActiveRecord,
   resolveAntigravityAcpBinary,
   resolveAntigravityAcpManagedDir,
@@ -126,17 +125,5 @@ describe("resolveAntigravityAcpBinary", () => {
     });
     expect(resolved?.source).toBe("override");
     expect(resolved?.executablePath).toBe(fs.realpathSync(exe));
-  });
-});
-
-describe("findOnPath", () => {
-  test("finds an executable in PATH order", () => {
-    const first = tempDir();
-    const second = tempDir();
-    makeExecutable(second, "some-tool");
-    expect(findOnPath("some-tool", { PATH: `${first}:${second}` }, "darwin")).toBe(
-      fs.realpathSync(path.join(second, "some-tool")),
-    );
-    expect(findOnPath("missing-tool", { PATH: first }, "darwin")).toBeNull();
   });
 });

@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { findOnPath } from "./processEnv.js";
+
 // Locates the Antigravity ACP server executable + its harness helper.
 //
 // Resolution order: an explicit binary path the user configured wins, then the
@@ -87,33 +89,6 @@ export function readAntigravityAcpActiveRecord(managedDir: string): ActiveRecord
 
 function hasSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
-}
-
-function candidateNames(binary: string, platform: NodeJS.Platform): string[] {
-  if (platform !== "win32") return [binary];
-  if (/\.(exe|cmd|bat)$/i.test(binary)) return [binary];
-  return [binary, `${binary}.exe`, `${binary}.cmd`, `${binary}.bat`];
-}
-
-/** Find a bare binary name across PATH, resolving symlinks to the real file. */
-export function findOnPath(
-  binary: string,
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): string | null {
-  const separator = platform === "win32" ? ";" : ":";
-  for (const dir of (env.PATH ?? "").split(separator).filter(Boolean)) {
-    for (const name of candidateNames(binary, platform)) {
-      const candidate = path.join(dir, name);
-      if (!fs.existsSync(candidate)) continue;
-      try {
-        return fs.realpathSync(candidate);
-      } catch {
-        return candidate;
-      }
-    }
-  }
-  return null;
 }
 
 /** Default executable names to probe on PATH when nothing else resolved. The

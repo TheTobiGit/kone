@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { mergeWindowsPath, windowsCliDirs } from "./processEnv.js";
+import { findOnPath, mergeWindowsPath, windowsCliDirs } from "./processEnv.js";
+
+function tempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "kone-process-env-"));
+}
+
+function makeExecutable(dir: string, name: string): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, "#!/bin/sh\n");
+  fs.chmodSync(file, 0o755);
+  return file;
+}
 
 describe("windowsCliDirs", () => {
   test("lists the known install dirs under USERPROFILE", () => {
@@ -42,5 +56,17 @@ describe("mergeWindowsPath", () => {
     expect(base.PATH).toBeUndefined();
     expect(env).not.toBe(base);
     expect(env.PATH).toContain(".local\\bin");
+  });
+});
+
+describe("findOnPath", () => {
+  test("finds an executable in PATH order", () => {
+    const first = tempDir();
+    const second = tempDir();
+    makeExecutable(second, "some-tool");
+    expect(findOnPath("some-tool", { PATH: `${first}:${second}` }, "darwin")).toBe(
+      fs.realpathSync(path.join(second, "some-tool")),
+    );
+    expect(findOnPath("missing-tool", { PATH: first }, "darwin")).toBeNull();
   });
 });
