@@ -223,12 +223,27 @@ watch(
 );
 onBeforeUnmount(() => emit("dock", null));
 
+// The caret hand-off lives in the row, which owns focus across every column
+// (see utils/caretHandoff). A column only offers these two ends of it: which
+// column is losing or gaining focus is not something a composer can see.
 defineExpose({
   wake: async (): Promise<void> => {
     await composerRef.value?.wake();
   },
   setDraft: async (text: string): Promise<void> => {
     await composerRef.value?.setDraft(text);
+  },
+  /** Blur the caret if it is in this column, answering whether it was. */
+  releaseCaret: (): boolean => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !dockEl.value?.contains(active)) return false;
+    active.blur();
+    return true;
+  },
+  /** Take the caret, but only into an already-open card — a resting orb stays
+   *  resting and wakes on the next keystroke by itself. */
+  takeCaret: (): void => {
+    if (composerOpen.value) composerRef.value?.focus();
   },
 });
 </script>

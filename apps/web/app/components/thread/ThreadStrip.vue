@@ -1244,6 +1244,13 @@ function dockVars(id: string): Record<string, string> {
 .col:not(.is-focused):hover {
   opacity: 0.52;
 }
+/* A page the agent showed is an iframe, a document of its own: a click on it
+   lands inside that document and never reaches the column, so a neighbour
+   whose last reply is a page could only be focused from the margin around it.
+   Until its column is focused, the page is something to look at, not use. */
+.col:not(.is-focused) :deep(.pagef) {
+  pointer-events: none;
+}
 
 /* Seam trigger — fixed footprint; the insert menu floats above the rail. */
 .col-joint {
