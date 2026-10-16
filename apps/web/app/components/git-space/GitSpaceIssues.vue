@@ -46,6 +46,9 @@ const blocked = computed<string | null>(() => {
   if (!gh.value) return null;
   if (!gh.value.installed) return "The GitHub CLI isn't installed. Install `gh` and this section fills itself in.";
   if (!gh.value.authenticated) return gh.value.message ?? "Run `gh auth login` in a terminal to connect your GitHub account.";
+  if (!props.space.issuesEnabled.value) {
+    return "Issues are turned off for this repository. Turn them on in its settings on GitHub and they'll show here.";
+  }
   return null;
 });
 

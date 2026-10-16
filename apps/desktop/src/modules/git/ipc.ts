@@ -371,6 +371,7 @@ export function registerGitIpc(): void {
     "github:issues",
     (_event, dir: string, opts?: { state?: "open" | "all"; limit?: number }) => github.issues(dir, opts),
   );
+  ipcMain.handle("github:issues-enabled", (_event, dir: string) => github.issuesEnabled(dir));
   ipcMain.handle("github:issue-detail", (_event, dir: string, number: number) =>
     github.issueDetail(dir, number),
   );

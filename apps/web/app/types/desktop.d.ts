@@ -856,6 +856,8 @@ export type KoneGithubApi = {
   /** Comment on a pull request as the signed-in user. */
   prComment: (dir: string, number: number, body: string) => Promise<void>;
   issues: (dir: string, opts?: { state?: "open" | "all"; limit?: number }) => Promise<GitHubIssue[]>;
+  /** False when the repository has its issue tracker turned off. */
+  issuesEnabled: (dir: string) => Promise<boolean>;
   issueDetail: (dir: string, number: number) => Promise<GitHubIssueDetail | null>;
   /** Close an issue (as done, or as not planned), or reopen it. */
   issueAction: (dir: string, number: number, action: "close" | "reopen", reason?: GitHubIssueCloseReason) => Promise<void>;
