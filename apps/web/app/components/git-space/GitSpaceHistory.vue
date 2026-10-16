@@ -838,7 +838,7 @@ function plural(n: number, word: string): string {
 .gsh__bar:focus-visible {
   outline: none;
   border-radius: 3px;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 /* ── days ─────────────────────────────────────────────────────────────────── */
@@ -901,7 +901,7 @@ function plural(n: number, word: string): string {
 .gsh__link:focus-visible {
   outline: none;
   border-radius: 6px;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 /* The spine: a hairline the full height of the row so consecutive rows join up,
    with the commit's dot on it in the colour of its kind. */

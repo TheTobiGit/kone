@@ -492,6 +492,12 @@ function plural(n: number, word: string): string {
   }
 }
 
+.prv__label-go:focus-visible,
+.prv__attn-row:focus-visible,
+.prv__size:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
 @media (prefers-reduced-motion: reduce) {
   .prv__block,
   .prv__bar-add,

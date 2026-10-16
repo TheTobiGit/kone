@@ -330,7 +330,7 @@ function discardUnstaged() {
 .ch__btn:hover { background-color: var(--hover); }
 .ch__btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .ch__btn--primary {
   background-color: var(--ink);

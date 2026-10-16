@@ -422,7 +422,13 @@ function plural(n: number, word: string): string {
               >
                 Check out
               </button>
-              <button type="button" class="gsp__act gsp__act--go" :title="`Open #${pr.number} on GitHub`" @click="open(pr.url)">
+              <button
+                type="button"
+                class="gsp__act gsp__act--go"
+                :title="`Open #${pr.number} on GitHub`"
+                :aria-label="`Open #${pr.number} on GitHub`"
+                @click="open(pr.url)"
+              >
                 <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
               </button>
             </div>
@@ -534,6 +540,11 @@ function plural(n: number, word: string): string {
   background-color: var(--raised-high);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 }
+.gsp__filter:focus-visible,
+.gsp__clear:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
 .gsp__clear {
   padding: 3px 8px;
   border-radius: 7px;
@@ -595,7 +606,7 @@ function plural(n: number, word: string): string {
 .gsp__main-btn:focus-visible {
   outline: none;
   border-radius: 10px;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 /* The checks ring leads, with a red notch on it when the branch conflicts. */
@@ -782,7 +793,7 @@ function plural(n: number, word: string): string {
 }
 .gsp__sweep:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 /* ── composer ─────────────────────────────────────────────────────────────── */
@@ -882,7 +893,7 @@ function plural(n: number, word: string): string {
 }
 .gsp__create:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 .gsp__created {
@@ -904,7 +915,7 @@ function plural(n: number, word: string): string {
 }
 .gsp__link:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
   border-radius: 5px;
 }
 .gsp__act {
@@ -937,7 +948,7 @@ function plural(n: number, word: string): string {
 }
 .gsp__act:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .gsp__blocked,
 .gsp__empty {

@@ -332,14 +332,25 @@ const backEl = ref<HTMLButtonElement | null>(null);
 // The row that opened the card, so focus goes back to it on close.
 let opener: HTMLElement | null = null;
 
+// Tab stays inside the card: the app behind it goes inert while it's open, the
+// way a native modal dialog would, and a commit card opened on top does the
+// same to this one (the template's :inert). Whatever inert the root already had
+// (a file detail open behind) is put back as it was.
+let appRoot: HTMLElement | null = null;
+let rootWasInert = false;
+
 onMounted(() => {
   opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  appRoot = document.getElementById("__nuxt");
+  rootWasInert = appRoot?.inert ?? false;
+  if (appRoot) appRoot.inert = true;
   window.addEventListener("keydown", onEscape, { capture: true });
   requestAnimationFrame(() => (shown.value = true));
   backEl.value?.focus({ preventScroll: true });
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onEscape, { capture: true });
+  if (appRoot) appRoot.inert = rootWasInert;
   opener?.focus({ preventScroll: true });
 });
 </script>
@@ -354,6 +365,7 @@ onBeforeUnmount(() => {
         role="dialog"
         aria-modal="true"
         :aria-label="pr?.title ?? `Pull request #${number}`"
+        :inert="opened !== null"
       >
         <div class="prm__frame">
   <article class="prv">
@@ -695,6 +707,10 @@ onBeforeUnmount(() => {
   opacity: 1;
   color: var(--ink);
 }
+.prv__back:focus-visible {
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
 .prv__back-glyph {
   transform: rotate(180deg) scaleX(-1);
 }
@@ -800,7 +816,7 @@ onBeforeUnmount(() => {
 }
 .prv__btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .prv__btn--spin .prv__refresh {
   animation: prv-spin 900ms linear infinite;
@@ -818,7 +834,10 @@ onBeforeUnmount(() => {
   min-height: 0;
   margin-top: 34px;
   padding-left: 34px;
-  padding-right: 4px;
+  /* Room for the side column's rows, which reach 6px past it, and their focus
+     ring; the negative margin keeps the column's edge where it was. */
+  padding-right: 8px;
+  margin-right: -4px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -896,7 +915,7 @@ onBeforeUnmount(() => {
 }
 .prv__tab:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .prv__count {
   font-family: var(--font-mono);
@@ -1027,7 +1046,7 @@ onBeforeUnmount(() => {
 .prv__commit:focus-visible,
 .prv__go:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .prv__path {
   flex: 1 1 auto;
@@ -1156,15 +1175,15 @@ onBeforeUnmount(() => {
     animation-duration: 0.01s;
   }
   .prv__head,
-.prv__scroll,
-.prv__pane,
-.prv__event,
-.prv__file,
-.prv__check,
-.prv__bar-add,
-.prv__bar-del,
-.prv__checkdot--pending,
-.prv__btn--spin .prv__refresh {
+  .prv__scroll,
+  .prv__pane,
+  .prv__event,
+  .prv__file,
+  .prv__check,
+  .prv__bar-add,
+  .prv__bar-del,
+  .prv__checkdot--pending,
+  .prv__btn--spin .prv__refresh {
     animation: none;
   }
 }
