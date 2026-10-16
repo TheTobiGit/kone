@@ -161,6 +161,13 @@ function createDevGit(): KoneGitApi {
       // and the card has to see a new object to notice.
       prDetail: (_dir, number) => later(structuredClone(world.mockPrDetail(number))),
       prDiff: (_dir, number) => later(world.mockPrDiff(number)),
+      issues: (dir, opts) => later(world.mockIssues(dir, opts?.state ?? "open")),
+      issuesEnabled: () => later(true),
+      issueDetail: (_dir, number) => later(structuredClone(world.mockIssueDetail(number))),
+      issueAction: (_dir, number, action, reason) =>
+        later(undefined, 450).then(() => world.mockIssueAction(number, action, reason)),
+      issueComment: (_dir, number, body) => later(undefined, 500).then(() => world.mockIssueComment(number, body)),
+      createIssue: (_dir, opts) => later(undefined, 600).then(() => world.mockCreateIssue(opts.title, opts.body ?? "")),
       // The next number, so the composer's success line reads like the real one.
       createPr: (dir) => {
         const next = (world.mockPrs(dir, "all")[0]?.number ?? 0) + 1;

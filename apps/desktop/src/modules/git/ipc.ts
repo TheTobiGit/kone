@@ -33,6 +33,8 @@ import type {
   CommitMessageGenerationInput,
   CreateProjectOptions,
   GitCommitOptions,
+  GitHubIssueCloseReason,
+  GitHubIssueCreateOptions,
   GitHubMergeMethod,
   GitHubPrAction,
   GitHubPrCreateOptions,
@@ -364,6 +366,25 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle("github:pr-comment", (_event, dir: string, number: number, body: string) =>
     github.prComment(dir, number, body),
+  );
+  ipcMain.handle(
+    "github:issues",
+    (_event, dir: string, opts?: { state?: "open" | "all"; limit?: number }) => github.issues(dir, opts),
+  );
+  ipcMain.handle("github:issues-enabled", (_event, dir: string) => github.issuesEnabled(dir));
+  ipcMain.handle("github:issue-detail", (_event, dir: string, number: number) =>
+    github.issueDetail(dir, number),
+  );
+  ipcMain.handle(
+    "github:issue-action",
+    (_event, dir: string, number: number, action: "close" | "reopen", reason?: GitHubIssueCloseReason) =>
+      github.issueAction(dir, number, action, reason),
+  );
+  ipcMain.handle("github:issue-comment", (_event, dir: string, number: number, body: string) =>
+    github.issueComment(dir, number, body),
+  );
+  ipcMain.handle("github:create-issue", (_event, dir: string, opts: GitHubIssueCreateOptions) =>
+    github.createIssue(dir, opts),
   );
   ipcMain.handle(
     "github:pr-detail",

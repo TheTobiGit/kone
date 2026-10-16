@@ -26,6 +26,12 @@ import type {
   GitLogo,
   GitHubPullRequest,
   GitHubPrAction,
+  GitHubComment,
+  GitHubIssue,
+  GitHubIssueCloseReason,
+  GitHubIssueCreateResult,
+  GitHubIssueDetail,
+  GitHubLabel,
   GitHubPullRequestDetail,
   GitHubPerson,
   GitHubCheck,
@@ -1722,4 +1728,260 @@ export function mockCommitAuthors(): GitCommitAuthors {
     "stephen.seirh@amalitech.com": GIDEON,
     "ama@kone.dev": AMA,
   };
+}
+
+// ── issues ──────────────────────────────────────────────────────────────────
+// A small tracker for the same repository: bugs and asks spread over a few
+// weeks, some assigned, a pinned roadmap, and a handful closed both ways (done,
+// and not planned), so every part of the Issues section has something to draw.
+
+const ADA = prPerson("adalovelace", "Ada Lovelace", MOCK_CONTRIBUTOR_AVATARS[0]!);
+
+const LABEL = {
+  bug: { name: "bug", description: "Something isn't working", color: "d73a4a" },
+  enhancement: { name: "enhancement", description: "New feature or request", color: "a2eeef" },
+  git: { name: "git space", description: null, color: "bfdadc" },
+  terminal: { name: "terminal", description: null, color: "c5def5" },
+  linux: { name: "linux", description: null, color: "fbca04" },
+  good: { name: "good first issue", description: "Good for newcomers", color: "7057ff" },
+  question: { name: "question", description: "Further information is requested", color: "d876e3" },
+  design: { name: "design", description: null, color: "f9a8d4" },
+} satisfies Record<string, GitHubLabel>;
+
+function issueComment(author: GitHubPerson, body: string, hoursAgo: number, n: number): GitHubComment {
+  const at = MOCK_NOW - hoursAgo * 3600_000;
+  return {
+    author,
+    body,
+    createdAt: new Date(at).toISOString(),
+    relative: relativeAt(at),
+    url: `https://github.com/kone-dev/kone/issues/${n}#issuecomment-${seedOf(body)}`,
+  };
+}
+
+function mockIssue(
+  i: Omit<GitHubIssueDetail, "url" | "createdAt" | "relative" | "updatedAt" | "updated" | "closedAt" | "commentCount" | "canTriage"> & {
+    openedHoursAgo: number;
+    closedHoursAgo?: number;
+  },
+): GitHubIssueDetail {
+  const { openedHoursAgo, closedHoursAgo, ...rest } = i;
+  const opened = MOCK_NOW - openedHoursAgo * 3600_000;
+  const closed = closedHoursAgo === undefined ? null : MOCK_NOW - closedHoursAgo * 3600_000;
+  const last = Math.max(opened, closed ?? 0, ...rest.comments.map((c) => Date.parse(c.createdAt)));
+  return {
+    ...rest,
+    url: `https://github.com/kone-dev/kone/issues/${rest.number}`,
+    createdAt: new Date(opened).toISOString(),
+    relative: relativeAt(opened),
+    updatedAt: new Date(last).toISOString(),
+    updated: relativeAt(last),
+    closedAt: closed === null ? null : new Date(closed).toISOString(),
+    commentCount: rest.comments.length,
+    canTriage: true,
+  };
+}
+
+const MOCK_ISSUES: Record<number, GitHubIssueDetail> = Object.fromEntries(
+  [
+    mockIssue({
+      number: 152,
+      title: "Roadmap: the Git Space through v1",
+      state: "open",
+      stateReason: null,
+      author: GIDEON,
+      labels: [LABEL.git, LABEL.enhancement],
+      assignees: [GIDEON],
+      milestone: "Git Space v1",
+      isPinned: true,
+      openedHoursAgo: 24 * 21,
+      body: `What's left before the Git Space is called done.
+
+- [x] About, History and Pull requests
+- [ ] Issues
+- [ ] Changes, Branches and Stashes in the new layout
+- [ ] Keyboard pass over every section`,
+      comments: [issueComment(AMA, "Issues next makes sense: half our tracker is links back to PRs anyway.", 30, 152)],
+    }),
+    mockIssue({
+      number: 151,
+      title: "Terminal loses its scrollback after the window is hidden",
+      state: "open",
+      stateReason: null,
+      author: AMA,
+      labels: [LABEL.bug, LABEL.terminal],
+      assignees: [KWESI],
+      milestone: null,
+      isPinned: false,
+      openedHoursAgo: 5,
+      body: `Hide the window with the shortcut, bring it back, and the terminal starts from an empty screen.
+
+**Expected:** the scrollback is still there.
+**Seen on:** macOS 15 and Ubuntu 24.04.`,
+      comments: [
+        issueComment(KWESI, "I can reproduce it. The pty survives, the renderer's buffer doesn't.", 3, 151),
+        issueComment(AMA, "That matches what I saw: typing still reaches the shell.", 2, 151),
+      ],
+    }),
+    mockIssue({
+      number: 150,
+      title: "Show who a pull request is waiting on in the project overview",
+      state: "open",
+      stateReason: null,
+      author: KWESI,
+      labels: [LABEL.enhancement, LABEL.design],
+      assignees: [],
+      milestone: null,
+      isPinned: false,
+      openedHoursAgo: 30,
+      body: "The Git Space knows whose review a pull request needs. The overview could say it in one line, so you don't have to open the space to find out it's you.",
+      comments: [],
+    }),
+    mockIssue({
+      number: 144,
+      title: "AppImage won't start on Fedora without libfuse2",
+      state: "open",
+      stateReason: null,
+      author: ADA,
+      labels: [LABEL.bug, LABEL.linux],
+      assignees: [GIDEON, KWESI],
+      milestone: "Linux beta",
+      isPinned: false,
+      openedHoursAgo: 24 * 6,
+      body: "Fedora 41 ships fuse3 only, so the AppImage exits straight away with `dlopen(): error loading libfuse.so.2`.",
+      comments: [
+        issueComment(GIDEON, "We could ship the extracted build as a tarball alongside it.", 24 * 5, 144),
+        issueComment(ADA, "A tarball works for me. A `.rpm` would be nicer still.", 24 * 4, 144),
+        issueComment(KWESI, "Let's do the tarball for the beta and look at packaging after.", 24 * 2, 144),
+      ],
+    }),
+    mockIssue({
+      number: 139,
+      title: "Commit message suggestions ignore the repository's own style",
+      state: "open",
+      stateReason: null,
+      author: GIDEON,
+      labels: [LABEL.enhancement, LABEL.good],
+      assignees: [],
+      milestone: null,
+      isPinned: false,
+      openedHoursAgo: 24 * 12,
+      body: "This repo uses conventional commits, but the suggestion box writes free-form sentences. Reading the last few subjects first would fix most of it.",
+      comments: [issueComment(ADA, "Happy to pick this up.", 24 * 10, 139)],
+    }),
+    mockIssue({
+      number: 133,
+      title: "How do I point kone at a second GitHub account?",
+      state: "open",
+      stateReason: null,
+      author: prPerson("yawdarko", "Yaw Darko", null),
+      labels: [LABEL.question],
+      assignees: [],
+      milestone: null,
+      isPinned: false,
+      openedHoursAgo: 24 * 18,
+      body: "I use one account for work and one for side projects. Is there a way to choose per project?",
+      comments: [],
+    }),
+    mockIssue({
+      number: 131,
+      title: "Branch picker flickers while a fetch is running",
+      state: "closed",
+      stateReason: "completed",
+      author: KWESI,
+      labels: [LABEL.bug, LABEL.git],
+      assignees: [GIDEON],
+      milestone: "Git Space v1",
+      isPinned: false,
+      openedHoursAgo: 24 * 15,
+      closedHoursAgo: 24 * 9,
+      body: "Every progress tick re-renders the whole list, so the highlighted row jumps.",
+      comments: [issueComment(GIDEON, "Fixed in #146: the list now keys rows by ref name.", 24 * 9, 131)],
+    }),
+    mockIssue({
+      number: 127,
+      title: "Add a light grey theme",
+      state: "closed",
+      stateReason: "not-planned",
+      author: prPerson("efuaasante", "Efua Asante", null),
+      labels: [LABEL.design],
+      assignees: [],
+      milestone: null,
+      isPinned: false,
+      openedHoursAgo: 24 * 26,
+      closedHoursAgo: 24 * 20,
+      body: "Something between the light and dark themes, for long sessions.",
+      comments: [issueComment(AMA, "We'd rather tune the two themes we have than maintain a third. Closing for now.", 24 * 20, 127)],
+    }),
+  ].map((issue) => [issue.number, issue]),
+);
+
+function issueRowOf(d: GitHubIssueDetail): GitHubIssue {
+  const { body: _body, comments: _comments, canTriage: _canTriage, ...row } = d;
+  return row;
+}
+
+export function mockIssues(_dir: string, state: "open" | "all" = "open"): GitHubIssue[] {
+  return Object.values(MOCK_ISSUES)
+    .filter((d) => state === "all" || d.state === "open")
+    .sort((a, b) => b.number - a.number)
+    .map(issueRowOf);
+}
+
+export function mockIssueDetail(number: number): GitHubIssueDetail | null {
+  return MOCK_ISSUES[number] ?? null;
+}
+
+export function mockIssueAction(number: number, action: "close" | "reopen", reason: GitHubIssueCloseReason = "completed"): void {
+  const d = MOCK_ISSUES[number];
+  if (!d) throw new Error(`No issue #${number}.`);
+  const now = new Date().toISOString();
+  d.updatedAt = now;
+  d.updated = "just now";
+  if (action === "close") {
+    d.state = "closed";
+    d.stateReason = reason;
+    d.closedAt = now;
+  } else {
+    d.state = "open";
+    d.stateReason = null;
+    d.closedAt = null;
+  }
+}
+
+export function mockIssueComment(number: number, body: string): void {
+  const d = MOCK_ISSUES[number];
+  if (!d) throw new Error(`No issue #${number}.`);
+  const now = new Date().toISOString();
+  d.comments.push({ author: GIDEON, body, createdAt: now, relative: "just now", url: `${d.url}#issuecomment-${Date.now()}` });
+  d.commentCount = d.comments.length;
+  d.updatedAt = now;
+  d.updated = "just now";
+}
+
+export function mockCreateIssue(title: string, body: string): GitHubIssueCreateResult {
+  const number = Math.max(...Object.keys(MOCK_ISSUES).map(Number), 152) + 1;
+  const now = new Date().toISOString();
+  MOCK_ISSUES[number] = {
+    number,
+    title,
+    url: `https://github.com/kone-dev/kone/issues/${number}`,
+    state: "open",
+    stateReason: null,
+    author: GIDEON,
+    createdAt: now,
+    relative: "just now",
+    updatedAt: now,
+    updated: "just now",
+    closedAt: null,
+    labels: [],
+    assignees: [],
+    commentCount: 0,
+    milestone: null,
+    isPinned: false,
+    body,
+    comments: [],
+    canTriage: true,
+  };
+  return { number, url: MOCK_ISSUES[number]!.url };
 }
