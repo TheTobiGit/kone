@@ -436,11 +436,14 @@ describe("pull request actions", () => {
     expect(prActionArgs(7, "draft")).toEqual(["pr", "ready", "7", "--undo"]);
     expect(prActionArgs(7, "close")).toEqual(["pr", "close", "7"]);
     expect(prActionArgs(7, "reopen")).toEqual(["pr", "reopen", "7"]);
+    const oid = "a".repeat(40);
+    expect(prActionArgs(7, "merge", "rebase", oid)).toEqual(["pr", "merge", "7", "--rebase", "--match-head-commit", oid]);
   });
 
   test("a bad number is refused before gh runs", () => {
     expect(() => prActionArgs(0, "close")).toThrow();
     expect(() => prActionArgs(1.5, "merge")).toThrow();
+    expect(() => prActionArgs(7, "merge", "merge", "--admin")).toThrow();
   });
 
   test("merge settings keep only allowed methods and read write access", () => {

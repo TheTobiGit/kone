@@ -795,7 +795,15 @@ export type KoneGithubApi = {
   createPr: (dir: string, opts: GitHubPrCreateOptions) => Promise<GitHubPrCreateResult>;
   checkoutPr: (dir: string, number: number) => Promise<void>;
   /** Merge (by the given method), mark ready, return to draft, close or reopen. */
-  prAction: (dir: string, number: number, action: GitHubPrAction, method?: GitHubMergeMethod) => Promise<void>;
+  /** `headOid`, on a merge, is the commit the person reviewed; GitHub refuses
+   *  the merge if the branch has moved past it. */
+  prAction: (
+    dir: string,
+    number: number,
+    action: GitHubPrAction,
+    method?: GitHubMergeMethod,
+    headOid?: string,
+  ) => Promise<void>;
   /** Comment on a pull request as the signed-in user. */
   prComment: (dir: string, number: number, body: string) => Promise<void>;
   prDetail: (dir: string, number: number) => Promise<GitHubPullRequestDetail | null>;

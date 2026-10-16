@@ -308,7 +308,9 @@ async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
   pending.value = action;
   actError.value = null;
   const number = props.number;
-  const ok = await props.space.prAction(number, action, method);
+  // A merge names the commit the card showed, so a push since then can't land unseen.
+  const head = action === "merge" ? (pr.value?.headOid ?? undefined) : undefined;
+  const ok = await props.space.prAction(number, action, method, head);
   pending.value = null;
   if (props.number !== number) return;
   if (!ok) {
@@ -341,6 +343,12 @@ watch(
     commentError.value = null;
   },
 );
+
+/** Its author can change its stage, close and reopen it without write access. */
+const isMine = computed(() => {
+  const me = props.space.me.value?.login ?? props.space.gh.value?.user ?? null;
+  return Boolean(me && pr.value?.author?.login === me);
+});
 
 function openOnGitHub() {
   if (pr.value) void props.space.openExternal(pr.value.url);
@@ -641,7 +649,14 @@ onBeforeUnmount(() => {
           @open-url="(url) => space.openExternal(url)"
         >
           <template #act>
-            <GitSpacePullRequestMerge :pr="pr" :busy="busy" :pending="pending" :error="actError" @act="act" />
+            <GitSpacePullRequestMerge
+              :pr="pr"
+              :mine="isMine"
+              :busy="busy"
+              :pending="pending"
+              :error="actError"
+              @act="act"
+            />
           </template>
         </GitSpacePullRequestSide>
       </div>
