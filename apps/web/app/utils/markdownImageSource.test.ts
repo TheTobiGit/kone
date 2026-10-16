@@ -11,7 +11,7 @@ describe("classifyImageSource", () => {
       "data:image/png;base64,AAAA",
       "blob:app://kone/1234",
       "attachment://att_123/shot.png",
-      "kone-page://abc/thumb.png",
+      "kone-visual://abc/thumb.png",
       "HTTPS://EXAMPLE.COM/A.PNG",
     ]) {
       expect(classifyImageSource(src, "/proj")).toEqual({ kind: "direct", src });

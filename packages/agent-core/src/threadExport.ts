@@ -18,6 +18,7 @@ import path from "node:path";
 
 import { senderLabel } from "@kone/protocol/message-sender";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
+import { stripVisualEmbeds } from "@kone/protocol/visual-render";
 import {
   THREAD_EXPORT_JSON_VERSION,
   parseThreadExportFormat,
@@ -246,7 +247,9 @@ function renderExportItems(items: RuntimeItem[], level: number): string {
   for (const item of items) {
     if (item.kind === "assistant_text") {
       flushReasoning();
-      if (item.text) narrative.push(item.text);
+      // The blocks that place visuals read as noise outside the app.
+      const text = stripVisualEmbeds(item.text);
+      if (text) narrative.push(text);
       continue;
     }
     if (item.kind === "reasoning_text") {

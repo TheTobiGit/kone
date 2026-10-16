@@ -8,7 +8,7 @@
 // board renders, and open, follow and read kone threads — and with the
 // app-steering tools: the theme, the agent roster, the reusable sub-agent
 // definitions, the thread strip, the projects the app holds, and the threads
-// inside them. Any agent can also show the user a page — a component, a
+// inside them. Any agent can also show the user a dynamic visual — a component, a
 // screen, a chart — inside its reply. Every one of those is a pure registry
 // entry on the same server, which is what makes the next surface an agent can
 // steer a new tools/ module rather than a new transport.
@@ -85,7 +85,7 @@ import {
   type TerminalScreenReading,
 } from "./tools/appView.js";
 import { createAppScheduleTools } from "./tools/appSchedules.js";
-import { createPageTools, type PagePreviewer, type PageToolOptions } from "./tools/page.js";
+import { createVisualTools, type VisualMeasurer, type VisualPreviewer, type VisualToolOptions } from "./tools/visual.js";
 import { getAttachmentStore } from "../AttachmentStore.js";
 import { createViewPreamble } from "./viewPreamble.js";
 import { hostContextModelPreferences } from "./appContext.js";
@@ -115,8 +115,8 @@ export { createAppViewTools } from "./tools/appView.js";
 export type { AppViewToolOptions, TerminalScreenReading } from "./tools/appView.js";
 export { createAppScheduleTools } from "./tools/appSchedules.js";
 export type { AppSchedulesStore, AppSchedulesToolOptions, ScheduleJobTemplate, ScheduleRow } from "./tools/appSchedules.js";
-export { createPageTools } from "./tools/page.js";
-export type { PageConsoleMessage, PagePreview, PagePreviewer } from "./tools/page.js";
+export { createVisualTools } from "./tools/visual.js";
+export type { VisualConsoleMessage, VisualMeasurer, VisualPreview, VisualPreviewer } from "./tools/visual.js";
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 
 /** The live-turn ledger the gateway learns by listening to the existing
@@ -268,9 +268,12 @@ export interface GatewayInput {
   readView?: () => ViewSnapshot | null;
   /** Reads what a terminal is showing, for `app_get_view`'s terminal look. */
   readTerminalScreen?: (terminalId: string, maxLines: number) => Promise<TerminalScreenReading | null>;
-  /** Renders a page off screen for `page_preview`. The browser is the host's;
-   *  absent, previews are refused and pages can still be shown. */
-  previewPage?: PagePreviewer;
+  /** Renders a visual off screen for `visual_preview`. The browser is the host's;
+   *  absent, previews are refused and visuals can still be shown. */
+  previewVisual?: VisualPreviewer;
+  /** Measures a visual's height at the widths it is drawn at, when it is
+   *  shown. Absent, a visual is reserved at the height the agent gave. */
+  measureVisual?: VisualMeasurer;
 }
 
 /** What the messaging tools read about other agents. The spawn engine is
@@ -397,14 +400,15 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // The ast search stays target "all" (visible from worker and assistant
   // scopes alike), so it joins after the two maps that stamp their own
   // target onto every entry they hold.
-  // Pages are for anyone with something to show, so they are target "all"
+  // Visuals are for anyone with something to show, so they are target "all"
   // like the ast search, and join after the stamped sets for the same reason.
-  const pageOptions: PageToolOptions = {
+  const visualOptions: VisualToolOptions = {
     saveAttachment: (upload) => getAttachmentStore().save(upload),
     emit: input.emit,
   };
-  if (input.previewPage) pageOptions.preview = input.previewPage;
-  const pageTools = createPageTools(pageOptions);
+  if (input.previewVisual) visualOptions.preview = input.previewVisual;
+  if (input.measureVisual) visualOptions.measure = input.measureVisual;
+  const visualTools = createVisualTools(visualOptions);
   // A task list is for any thread with work to lay out, the assistant's too,
   // so the task tools are target "all" and join after the stamped sets.
   const tools = [
@@ -413,7 +417,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createTaskTools({ store: input.store, emit: input.emit }),
     ...createAstTools(),
     ...createQuestionTools(input.askUser),
-    ...pageTools,
+    ...visualTools,
   ];
   const registry = createRegistry(tools, { approve: input.approve });
   const transport = makeMcpTransport({
@@ -428,7 +432,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
       "and read kone agents (real conversations the user can see and open, " +
       "which outlive the turn that started them); read the project " +
       "scratchpad, and edit it when the user asks (the user's own notes, not " +
-      "a place for agents' plans); show the user a page (a component, a " +
+      "a place for agents' plans); show the user a dynamic visual (a component, a " +
       "screen, a chart, a diagram) inside a reply; report the projects kone holds with their " +
       "live git state and the conversations inside them; and steer the app's " +
       "appearance and settings. The app-steering tools act on the window the " +

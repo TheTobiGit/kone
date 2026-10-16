@@ -4,7 +4,7 @@ import { initAppSteering } from "~/composables/useAppSteering";
 import { isCustom, isImported } from "~/theme/library";
 import { colorsFor, type ThemeDefinition, type ThemeScheme } from "~/theme/roles";
 import type { KoneThemeRosterEntry } from "~/types/desktop";
-import { readRootPageTheme } from "~/utils/pageTheme";
+import { readRootVisualTheme } from "~/utils/visualTheme";
 
 /** A theme's two defining colours, flattened for the shell.
  *
@@ -68,7 +68,7 @@ export default defineNuxtPlugin(() => {
       scheme: scheme.value,
       locked: modeLocked.value,
       themes: themes.value.map(rosterEntry),
-      pageTheme: readRootPageTheme(),
+      visualTheme: readRootVisualTheme(),
     });
   };
   const push = () => {

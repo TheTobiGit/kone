@@ -32,9 +32,9 @@
       "types": "./src/modelPreferences.ts",
       "default": "./src/modelPreferences.ts"
     },
-    "./page-render": {
-      "types": "./src/pageRender.ts",
-      "default": "./src/pageRender.ts"
+    "./visual-render": {
+      "types": "./src/visualRender.ts",
+      "default": "./src/visualRender.ts"
     },
     "./kone-tasks": {
       "types": "./src/koneTasks.ts",

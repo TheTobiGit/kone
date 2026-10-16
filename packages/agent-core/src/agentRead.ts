@@ -1,4 +1,5 @@
 import type { MessageSender } from "@kone/protocol/message-sender";
+import { stripVisualEmbeds } from "@kone/protocol/visual-render";
 
 import type { RuntimeItem, StoredBlock } from "./types.js";
 
@@ -112,7 +113,7 @@ export function finalReplyOf(turn: AgentReadTurn): string | null {
     }
     if (item.kind === "assistant_text" && item.text.trim().length > 0) run.unshift(item.text);
   }
-  const text = run.join("").trim();
+  const text = stripVisualEmbeds(run.join("")).trim();
   return text || null;
 }
 
@@ -180,7 +181,7 @@ export function renderResponse(turn: AgentReadTurn | null, name: string, cap = A
     }
     const text = block.items
       .filter((item) => item.kind === "assistant_text")
-      .map((item) => item.text)
+      .map((item) => stripVisualEmbeds(item.text))
       .join("\n")
       .trim();
     if (text) body.push(text);

@@ -3215,6 +3215,9 @@ export type KoneAgentApi = {
   getAttachmentPath: (attachmentId: string) => Promise<string | null>;
   /** Reveal an attachment in the host's file manager (Finder / Explorer). */
   showAttachmentInFolder: (attachmentId: string) => Promise<boolean>;
+  /** A shown visual's HTML as the agent wrote it, or null when the id names
+   *  no stored visual. */
+  readVisualSource: (attachmentId: string) => Promise<string | null>;
   /** Send a turn; resolves when accepted — output flows through onEvent. */
   sendTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
   /** Trigger context compaction for a thread; resolves once the provider has
@@ -4193,9 +4196,9 @@ export type KoneDesktopApi = {
       scheme: "light" | "dark";
       locked: boolean;
       themes?: KoneThemeRosterEntry[];
-      /** The theme on screen as an agent's page receives it, so a page is
+      /** The theme on screen as an agent's visual receives it, so a visual is
        *  previewed in the colours the user will see it in. */
-      pageTheme?: { appearance: "light" | "dark"; variables: Record<string, string> };
+      visualTheme?: { appearance: "light" | "dark"; variables: Record<string, string> };
     },
   ) => Promise<void>;
   /** Mirrors what the renderer knows about itself and the shell cannot derive:

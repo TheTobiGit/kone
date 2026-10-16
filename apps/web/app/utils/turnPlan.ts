@@ -2,7 +2,7 @@
 //
 // A turn is an ordered list of parts (renderGroups): batches of steps (thinking
 // and tool calls), text, and the things the agent said it did — spawn lines,
-// decisions, pages. The reader's ResponseDisplay decides which of those show,
+// decisions, visuals. The reader's ResponseDisplay decides which of those show,
 // and when — this turns the two into a plan the thread renders as-is. Kept pure
 // and apart from the component so every combination of choices can be pinned
 // down in tests, and so the real thread and the settings page's preview can't
@@ -16,7 +16,7 @@
 //     It's the text after the turn's last batch of work.
 //   · Otherwise the turn reads in arrival order: its steps unless tool calls
 //     are hidden, the updates between them unless those are hidden, and what
-//     it *said* (spawn lines, decisions, pages) always.
+//     it *said* (spawn lines, decisions, visuals) always.
 //   · While it runs, the live batch carries the working orb — or, with tool
 //     calls hidden, one status line says what the agent is doing.
 //   · Done with its work and updates both hidden, the turn folds down to its

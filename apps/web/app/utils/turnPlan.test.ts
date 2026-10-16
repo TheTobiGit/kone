@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatSpawnResult } from "@kone/protocol/spawn-record";
-import { formatPageShown } from "@kone/protocol/page-render";
+import { formatVisualShown } from "@kone/protocol/visual-render";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 import { DEFAULT_DISPLAYS, RESPONSE_OPTIONS, type ResponseDisplay } from "./responseDisplay";
@@ -35,13 +35,13 @@ const spawn = (id: string): RuntimeItem => ({
   }),
 });
 
-const page = (id: string): RuntimeItem => ({
+const visual = (id: string): RuntimeItem => ({
   itemId: id,
   kind: "tool_call",
   status: "completed",
-  name: "page_show",
+  name: "visual_show",
   text: "",
-  detail: formatPageShown({ attachmentId: `att_${id}`, title: "t", height: 200 }),
+  detail: formatVisualShown({ attachmentId: `att_${id}`, title: "t", height: 200 }),
 });
 
 /** A group as a short tag: steps list their items, text its item, spawns their child. */
@@ -49,7 +49,7 @@ function tag(g: RenderGroup): string {
   if (g.kind === "steps") return `steps:${g.segments.flatMap((s) => s.items.map((i) => i.itemId)).join(",")}`;
   if (g.kind === "text") return `text:${g.seg.items.map((i) => i.itemId).join(",")}`;
   if (g.kind === "decision") return `decision:${g.item.itemId}`;
-  if (g.kind === "page") return `page:${g.page.attachmentId}`;
+  if (g.kind === "visual") return `visual:${g.visual.attachmentId}`;
   return `spawn:${g.record.threadId}`;
 }
 const tags = (groups: RenderGroup[] | null) => (groups ?? []).map(tag);
@@ -140,9 +140,9 @@ describe("planTurn when it's done", () => {
     expect(plan.toggle).toEqual({ open: false });
   });
 
-  test("a turn whose answer is a page folds its work away, the page standing as the reply", () => {
-    const plan = planTurn(block([tool("p0"), page("01"), tool("r1")], "completed"), STUDIO);
-    expect(tags(plan.inline)).toEqual(["page:att_01"]);
+  test("a turn whose answer is a visual folds its work away, the visual standing as the reply", () => {
+    const plan = planTurn(block([tool("p0"), visual("01"), tool("r1")], "completed"), STUDIO);
+    expect(tags(plan.inline)).toEqual(["visual:att_01"]);
     expect(tags(plan.fold)).toEqual(["steps:p0,r1"]);
     expect(plan.foldOpen).toBe(false);
   });

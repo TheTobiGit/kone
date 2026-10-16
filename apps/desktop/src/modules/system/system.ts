@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ipcMain, nativeTheme, shell } from "electron";
-import { PAGE_THEME_VARIABLES, type PageTheme } from "@kone/protocol/page-render";
+import { VISUAL_THEME_VARIABLES, type VisualTheme } from "@kone/protocol/visual-render";
 
 // Host facts for the sandboxed renderer. Mirror changes in apps/web/app/types/desktop.d.ts.
 
@@ -46,10 +46,10 @@ export type ThemeRosterEntry = {
  *  standing rather than emptying the library on an ordinary mode toggle. */
 export type AppearancePush = Partial<AppearanceState> & {
   themes?: ThemeRosterEntry[];
-  /** The theme on screen as an agent's page receives it: the computed values
-   *  of the variables a page is given. Only the renderer can resolve them —
+  /** The theme on screen as an agent's visual receives it: the computed values
+   *  of the variables a visual is given. Only the renderer can resolve them —
    *  a role may be relational, and a theme being edited exists nowhere else. */
-  pageTheme?: PageTheme;
+  visualTheme?: VisualTheme;
 };
 
 const THEME_MODES = new Set<ThemeMode>(["light", "dark", "system"]);
@@ -71,7 +71,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 // renderer has booted — better than naming a default that may not be on screen.
 let appearance: AppearanceState | null = null;
 let themeRoster: ThemeRosterEntry[] | null = null;
-let pageTheme: PageTheme | null = null;
+let visualTheme: VisualTheme | null = null;
 
 /** The appearance the renderer last reported, or null if it has yet to report
  *  one. Read by the agent gateway so `app_get_theme_state` describes the window
@@ -87,24 +87,24 @@ export function currentThemeRoster(): readonly ThemeRosterEntry[] | null {
   return themeRoster;
 }
 
-/** The theme on screen as a page receives it, or null before the renderer has
- *  reported one. Read by the page previewer so an agent checks its page in the
+/** The theme on screen as a visual receives it, or null before the renderer has
+ *  reported one. Read by the visual previewer so an agent checks its visual in the
  *  colours the user will see it in. */
-export function currentPageTheme(): PageTheme | null {
-  return pageTheme;
+export function currentVisualTheme(): VisualTheme | null {
+  return visualTheme;
 }
 
-const PAGE_THEME_NAMES = new Set<string>(PAGE_THEME_VARIABLES);
+const VISUAL_THEME_NAMES = new Set<string>(VISUAL_THEME_VARIABLES);
 
-/** A page theme, or null if the payload isn't one. Only the variables a page
+/** A visual theme, or null if the payload isn't one. Only the variables a visual
  *  is promised are kept, each as a non-blank string. */
-function readPageTheme(value: Partial<PageTheme> | null | undefined): PageTheme | null {
+function readVisualTheme(value: Partial<VisualTheme> | null | undefined): VisualTheme | null {
   if (!value || !(value instanceof Object)) return null;
   if (value.appearance !== "light" && value.appearance !== "dark") return null;
   if (!value.variables || !(value.variables instanceof Object)) return null;
   const variables: Record<string, string> = {};
   for (const [name, raw] of Object.entries(value.variables)) {
-    if (!PAGE_THEME_NAMES.has(name)) continue;
+    if (!VISUAL_THEME_NAMES.has(name)) continue;
     const cleaned = nonEmpty(String(raw));
     if (cleaned) variables[name] = cleaned;
   }
@@ -194,8 +194,8 @@ export function setTheme(mode: ThemeMode | string, state?: AppearancePush): void
     // library away from the agent until the next push.
     if (entries.length > 0) themeRoster = entries;
   }
-  const reported = readPageTheme(state.pageTheme);
-  if (reported) pageTheme = reported;
+  const reported = readVisualTheme(state.visualTheme);
+  if (reported) visualTheme = reported;
   const themeId = nonEmpty(state.themeId);
   if (!themeId) return;
   appearance = {

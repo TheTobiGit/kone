@@ -30,7 +30,7 @@ export const IMAGE_THREAD_KEY: InjectionKey<() => string | null> = Symbol("markd
 export type MarkdownImageResolver = (src: string) => Promise<string | null>;
 export const IMAGE_RESOLVER_KEY: InjectionKey<MarkdownImageResolver> = Symbol("markdown-image-resolver");
 
-const DIRECT_SCHEMES = new Set(["https", "data", "blob", "attachment", "kone-page"]);
+const DIRECT_SCHEMES = new Set(["https", "data", "blob", "attachment", "kone-visual"]);
 const SCHEME = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
 const WINDOWS_DRIVE = /^[a-zA-Z]:[\\/]/;
 

@@ -13,7 +13,7 @@ import { resolveAppProtocolPath } from "./appProtocol.js";
 import { installMainLog } from "./mainLog.js";
 import { resolveAttachmentProtocolPath } from "./attachmentProtocol.js";
 import { createLocalImageGrants } from "./localImageProtocol.js";
-import { servePage } from "./pageProtocol.js";
+import { serveVisual } from "./visualProtocol.js";
 import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./modules/fs/fs.js";
@@ -131,8 +131,8 @@ const PROD_CSP = [
   "object-src 'none'",
   "base-uri 'self' app:",
   "form-action 'none'",
-  // Agents' pages, and nothing else: each runs sandboxed on its own scheme.
-  "frame-src kone-page:",
+  // Agents' visuals, and nothing else: each runs sandboxed on its own scheme.
+  "frame-src kone-visual:",
 ].join("; ");
 
 let mainWindow: BrowserWindow | null = null;
@@ -167,10 +167,10 @@ protocol.registerSchemesAsPrivileged([
     },
   },
   {
-    // Standard and secure so a page gets a real URL to resolve against and a
+    // Standard and secure so a visual gets a real URL to resolve against and a
     // secure context for the APIs that need one; no fetch or CORS privileges,
-    // since nothing is ever meant to read a page but the frame showing it.
-    scheme: "kone-page",
+    // since nothing is ever meant to read a visual but the frame showing it.
+    scheme: "kone-visual",
     privileges: {
       secure: true,
       standard: true,
@@ -270,8 +270,8 @@ function registerLocalImageProtocol() {
   });
 }
 
-function registerPageProtocol() {
-  protocol.handle("kone-page", (request) => servePage(request.url));
+function registerVisualProtocol() {
+  protocol.handle("kone-visual", (request) => serveVisual(request.url));
 }
 
 // One kone at a time. A second launch must not open a fresh process: every
@@ -463,13 +463,13 @@ async function createWindow() {
     if (externalUrl) void shell.openExternal(externalUrl);
   });
 
-  // An agent's page stays the page it was shown as: a frame on the page
+  // An agent's visual stays the visual it was shown as: a frame on the visual
   // scheme that tries to go anywhere else is stopped, whatever the CSP in
   // force (dev has none). Links the reader clicks reach the browser through
   // the frame's own message, not by navigating.
   mainWindow.webContents.on("will-frame-navigate", (event) => {
     if (event.isMainFrame) return;
-    if (event.frame?.url.startsWith("kone-page:") && !event.url.startsWith("kone-page:")) event.preventDefault();
+    if (event.frame?.url.startsWith("kone-visual:") && !event.url.startsWith("kone-visual:")) event.preventDefault();
   });
 
   if (isDev) {
@@ -520,7 +520,7 @@ if (gotSingleInstanceLock) {
     }
     registerAttachmentProtocol();
     registerLocalImageProtocol();
-    registerPageProtocol();
+    registerVisualProtocol();
 
     const devIcon = getDevIconPath();
     if (devIcon) {
