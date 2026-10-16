@@ -199,7 +199,7 @@ async function submitCreate() {
   cue("press");
   let ok = await props.space.createBranch(name, { checkout: true });
   if (ok && hasRemote.value && publishNew.value) {
-    ok = await props.space.push({ branch: name, setUpstream: true });
+    ok = await props.space.push({ branch: name, setUpstream: true, remote: props.space.origin.value?.name });
   }
   cue(ok ? "success" : "error");
   if (ok) cancelCreate();

@@ -88,14 +88,22 @@ async function defaultBranch(
   all: GitBranch[],
 ): Promise<{ local: string; ref: string } | null> {
   const names = new Set(all.map((b) => b.name));
-  const head = (
-    await git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).catch(
-      () => "",
-    )
-  ).trim();
-  if (head && names.has(head)) return { local: head.slice(head.indexOf("/") + 1), ref: head };
+  // origin first, then any other remote: a clone renamed to "upstream" still
+  // knows its HEAD there.
+  const remotes = (await git(root, ["remote"]).catch(() => "")).split("\n").filter(Boolean);
+  remotes.sort((a, b) => Number(b === "origin") - Number(a === "origin"));
+  for (const remote of remotes) {
+    const head = (
+      await git(root, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`]).catch(
+        () => "",
+      )
+    ).trim();
+    if (head && names.has(head)) return { local: head.slice(remote.length + 1), ref: head };
+  }
   for (const local of ["main", "master"]) {
-    if (names.has(`origin/${local}`)) return { local, ref: `origin/${local}` };
+    for (const remote of remotes) {
+      if (names.has(`${remote}/${local}`)) return { local, ref: `${remote}/${local}` };
+    }
     if (names.has(local)) return { local, ref: local };
   }
   return null;
