@@ -379,7 +379,9 @@ export function useGitSpace(
     Promise.all([git.refresh(), loadCommits(true), loadBranches()]);
 
   function fetchRemote(): Promise<boolean> {
-    return act("fetch", () => bridge.fetch(dir()), afterHistoryMoved);
+    // The repo's own remote: origin, else the first one, so a repo whose only
+    // remote has another name still fetches.
+    return act("fetch", () => bridge.fetch(dir(), origin.value?.name), afterHistoryMoved);
   }
   function pull(opts?: GitPullOptions): Promise<boolean> {
     return act("pull", () => bridge.pull(dir(), opts), afterHistoryMoved);
