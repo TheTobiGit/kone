@@ -77,12 +77,12 @@ const stats = computed<Stat[]>(() => {
 });
 
 // ── rhythm ────────────────────────────────────────────────────────────────────
-// Eight weeks, a column a day, a dot a commit — from the first page of the log
+// Four weeks, a column a day, a dot a commit — from the first page of the log
 // History already reads. Each dot is the commit itself: hover says which, click
 // opens it. Yours are green, everyone else's ink, so "how much of this was me"
 // is a glance. The window ends today; a repository that's been quiet for longer
-// shows its last active eight weeks instead, and says so.
-const DAYS = 56;
+// shows its last active four weeks instead, and says so.
+const DAYS = 28;
 const STACK = 7;
 const DAY_MS = 86_400_000;
 type Day = { key: string; at: number; label: string; commits: GitCommit[]; month: string | null };
@@ -121,6 +121,12 @@ const rhythmTotal = computed(() => rhythm.value.reduce((n, d) => n + d.commits.l
 const rhythmMine = computed(
   () => rhythm.value.reduce((n, d) => n + d.commits.filter(isMine).length, 0),
 );
+const rhythmIsRecent = computed(() => rhythmEnd.value === startOfDay(Date.now()));
+/** Commits in the window's last seven days, and from how many people. */
+const lastWeek = computed(() => {
+  const days = rhythm.value.slice(-7).flatMap((d) => d.commits);
+  return { count: days.length, people: new Set(days.map((c) => c.email || c.author)).size };
+});
 /** As tall as the busiest day needs, so a quiet stretch isn't a tall empty band. */
 const rhythmRows = computed(() =>
   Math.min(STACK, Math.max(3, ...rhythm.value.map((d) => d.commits.length))),
@@ -136,7 +142,7 @@ function overflow(day: Day): number {
   return Math.max(0, day.commits.length - STACK);
 }
 // ── lately ────────────────────────────────────────────────────────────────────
-const latest = computed<GitCommit[]>(() => commits.value.slice(0, 5));
+const latest = computed<GitCommit[]>(() => commits.value.slice(0, 3));
 const latestPrs = computed<GitHubPullRequest[]>(() => openPrs.value.slice(0, 4));
 function face(c: GitCommit): string | null {
   return props.space.faceFor(c.email)?.avatarDataUrl ?? null;
@@ -161,25 +167,26 @@ function prWidth(pr: GitHubPullRequest, lines: number): string {
   const bar = (Math.sqrt(all) / prPeak.value) * 100;
   return `${Math.max(1.5, (bar * lines) / all)}%`;
 }
-/** "2 months ago" → "2mo": the timeline's right edge has room for a glance. */
-function short(phrase: string): string {
-  const m = /^(\d+)\s+(min|minute|hour|day|week|month|year)s?\s+ago$/.exec(phrase.trim());
-  if (!m) return phrase.replace(/ ago$/, "");
-  const unit = { min: "m", minute: "m", hour: "h", day: "d", week: "w", month: "mo", year: "y" }[m[2]!];
-  return `${m[1]}${unit}`;
-}
-
 // ── people ────────────────────────────────────────────────────────────────────
 // A crowd, not a leaderboard: everyone's face, sized by how much they've
 // written, overlapping like people standing together. The sentence under it
 // names whoever wrote the most, because that's the one fact a list of faces
 // can't say on its own.
-const PEOPLE_SHOWN = 10;
+const PEOPLE_SHOWN = 7;
 const people = computed(() => contributors.value?.people.slice(0, PEOPLE_SHOWN) ?? []);
 const peoplePeak = computed(() => Math.max(1, ...people.value.map((p) => p.commits)));
 const peopleMore = computed(() => (contributors.value?.total ?? 0) - people.value.length);
+const peopleTotalCommits = computed(() =>
+  (contributors.value?.people ?? []).reduce((n, p) => n + p.commits, 0),
+);
+/** Whoever wrote the most, and how much of it — the one fact faces can't say. */
+const lead = computed(() => {
+  const top = people.value[0];
+  if (!top || people.value.length < 2 || !peopleTotalCommits.value) return null;
+  return { person: top, share: Math.round((top.commits / peopleTotalCommits.value) * 100) };
+});
 function faceSize(person: GitContributor): number {
-  return Math.round(40 + Math.sqrt(person.commits / peoplePeak.value) * 40);
+  return Math.round(30 + Math.sqrt(person.commits / peoplePeak.value) * 26);
 }
 
 // ── readme ────────────────────────────────────────────────────────────────────
@@ -281,9 +288,10 @@ function dayLabel(t: number): string {
   <GitSpaceSkeleton v-if="!ready" variant="prose" />
 
   <section v-else class="gsa">
-    <!-- ── the story ────────────────────────────────────────────────────── -->
-    <div class="gsa__block gsa__story" :style="{ '--i': 0 }">
-      <div class="gsa__story-text">
+    <!-- ══ the main column: what it is, what just happened, how to read it ══ -->
+    <div class="gsa__main">
+      <!-- ── the story ──────────────────────────────────────────────────── -->
+      <div class="gsa__block gsa__story" :style="{ '--i': 0 }">
         <p v-if="description" class="gsa__lede">{{ description }}</p>
         <p v-if="blocked" class="gsa__blocked">{{ blocked }}</p>
         <div class="gsa__links">
@@ -302,9 +310,56 @@ function dayLabel(t: number): string {
         </div>
       </div>
 
+      <!-- ── latest ─────────────────────────────────────────────────────── -->
+      <div v-if="latest.length" class="gsa__block" :style="{ '--i': 1 }">
+        <div class="gsa__label">
+          <span class="gsa__label-name">Latest commits</span>
+          <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
+            All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+          </button>
+        </div>
+        <ol class="gsa__timeline">
+          <li v-for="c in latest" :key="c.hash">
+            <button type="button" class="gsa__event" @click="emit('openCommit', c.hash)">
+              <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
+              <span class="gsa__event-title">{{ c.subject }}</span>
+              <span class="gsa__event-meta">
+                <span class="gsa__avatar" aria-hidden="true">
+                  <img v-if="face(c)" :src="face(c)!" alt="" />
+                  <template v-else>{{ c.author[0]?.toUpperCase() }}</template>
+                </span>
+                {{ c.author }}
+                <span class="gsa__sep">·</span>
+                {{ c.relative || relativeIso(c.date) }}
+                <span class="gsa__hash">{{ c.short }}</span>
+              </span>
+            </button>
+          </li>
+        </ol>
+      </div>
+
+      <!-- ── readme ─────────────────────────────────────────────────────── -->
+      <div class="gsa__block gsa__doc" :style="{ '--i': 2 }">
+        <div class="gsa__label">
+          <span class="gsa__label-name gsa__label-name--file">{{ readme?.path ?? "README" }}</span>
+        </div>
+        <template v-if="readme">
+          <div class="gsa__readme selectable" :class="{ 'gsa__readme--folded': !readmeOpen }">
+            <MarkdownMessage :source="readme.markdown" historical />
+          </div>
+          <button type="button" class="gsa__unfold" @click="readmeOpen = !readmeOpen">
+            {{ readmeOpen ? "Show less" : "Keep reading" }}
+          </button>
+        </template>
+        <p v-else class="gsa__blocked">No README in this repository.</p>
+      </div>
+    </div>
+
+    <!-- ══ the side column: the repository, drawn ═══════════════════════ -->
+    <aside class="gsa__side">
       <!-- The numbers, big and bare. Each is a door: the ones with a section
            here open it, the rest open GitHub. -->
-      <div v-if="stats.length" class="gsa__stats">
+      <div v-if="stats.length" class="gsa__block gsa__stats" :style="{ '--i': 1 }">
         <button
           v-for="(stat, n) in stats"
           :key="stat.key"
@@ -317,73 +372,47 @@ function dayLabel(t: number): string {
           <span class="gsa__stat-label">{{ stat.label }}</span>
         </button>
       </div>
-    </div>
 
-    <!-- ── rhythm ───────────────────────────────────────────────────────── -->
-    <div v-if="commits.length" class="gsa__block" :style="{ '--i': 1 }">
-      <div class="gsa__label">
-        <span class="gsa__label-name">Rhythm</span>
-        <span class="gsa__label-count">{{ rhythmTotal }}</span>
-        <span v-if="rhythmMine" class="gsa__label-key"><i class="gsa__mine-key" aria-hidden="true" />yours</span>
-        <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
-          History <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
-        </button>
-      </div>
-
-      <div class="gsa__rhythm" role="list" :aria-label="`Commits per day, ${DAYS} days`">
-        <div
-          v-for="day in rhythm"
-          :key="day.key"
-          class="gsa__day"
-          role="listitem"
-          :title="day.commits.length ? undefined : `${day.label}: no commits`"
-        >
-          <span class="gsa__day-stack" :style="{ '--rows': rhythmRows }">
-            <button
-              v-for="(c, n) in stack(day)"
-              :key="c.hash"
-              type="button"
-              class="gsa__dot"
-              :class="{ 'gsa__dot--mine': isMine(c), 'gsa__dot--more': n === STACK - 1 && overflow(day) }"
-              :style="{ '--n': n }"
-              :title="`${c.subject}\n${c.author} · ${day.label} · ${c.short}`"
-              :aria-label="`${c.subject}, ${c.author}, ${day.label}`"
-              @click="emit('openCommit', c.hash)"
-            >
-              <template v-if="n === STACK - 1 && overflow(day)">+</template>
-            </button>
-            <span v-if="!day.commits.length" class="gsa__dot gsa__dot--none" />
-          </span>
-          <span class="gsa__day-month">{{ day.month }}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── lately ───────────────────────────────────────────────────────── -->
-    <div v-if="latest.length || latestPrs.length" class="gsa__block gsa__lately" :style="{ '--i': 2 }">
-      <div v-if="latest.length">
+      <!-- ── rhythm ─────────────────────────────────────────────────────── -->
+      <div v-if="commits.length" class="gsa__block" :style="{ '--i': 2 }">
         <div class="gsa__label">
-          <span class="gsa__label-name">Latest</span>
-          <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
-            All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
-          </button>
+          <span class="gsa__label-name">Rhythm</span>
+          <span class="gsa__label-count">{{ rhythmTotal }}</span>
+          <span class="gsa__label-note">{{ rhythmIsRecent ? "last 4 weeks" : `4 weeks to ${month(new Date(rhythmEnd).toISOString())}` }}</span>
         </div>
-        <ol class="gsa__timeline">
-          <li v-for="c in latest" :key="c.hash">
-            <button type="button" class="gsa__event" :title="`${c.author} · ${c.short}`" @click="emit('openCommit', c.hash)">
-              <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
-              <span class="gsa__avatar" aria-hidden="true">
-                <img v-if="face(c)" :src="face(c)!" alt="" />
-                <template v-else>{{ c.author[0]?.toUpperCase() }}</template>
-              </span>
-              <span class="gsa__event-title">{{ c.subject }}</span>
-              <span class="gsa__event-when">{{ short(c.relative || relativeIso(c.date)) }}</span>
-            </button>
-          </li>
-        </ol>
+        <div class="gsa__rhythm" role="list" :aria-label="`Commits per day, ${DAYS} days`">
+          <div
+            v-for="day in rhythm"
+            :key="day.key"
+            class="gsa__day"
+            role="listitem"
+            :title="day.commits.length ? undefined : `${day.label}: no commits`"
+          >
+            <span class="gsa__day-stack" :style="{ '--rows': rhythmRows }">
+              <button
+                v-for="(c, n) in stack(day)"
+                :key="c.hash"
+                type="button"
+                class="gsa__dot"
+                :class="{ 'gsa__dot--mine': isMine(c), 'gsa__dot--more': n === STACK - 1 && overflow(day) }"
+                :style="{ '--n': n }"
+                :title="`${c.subject}\n${c.author} · ${day.label} · ${c.short}`"
+                :aria-label="`${c.subject}, ${c.author}, ${day.label}`"
+                @click="emit('openCommit', c.hash)"
+              >
+                <template v-if="n === STACK - 1 && overflow(day)">+</template>
+              </button>
+              <span v-if="!day.commits.length" class="gsa__dot gsa__dot--none" />
+            </span>
+          </div>
+        </div>
+        <p class="gsa__sub">
+          <b>{{ lastWeek.count }}</b> in the last week from <b>{{ lastWeek.people }}</b> {{ lastWeek.people === 1 ? "person" : "people" }}<template v-if="rhythmMine"> · <i class="gsa__mine-key" aria-hidden="true" /> <b>{{ rhythmMine }}</b> yours</template>
+        </p>
       </div>
 
-      <div v-if="latestPrs.length">
+      <!-- ── pull requests ──────────────────────────────────────────────── -->
+      <div v-if="latestPrs.length" class="gsa__block" :style="{ '--i': 3 }">
         <div class="gsa__label">
           <span class="gsa__label-name">Pull requests</span>
           <span class="gsa__label-count">{{ openPrs.length }}</span>
@@ -391,75 +420,78 @@ function dayLabel(t: number): string {
             All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
           </button>
         </div>
-        <!-- Each pull request with its size drawn: green for what it adds, red
-             for what it removes, on one scale so a big one looks big. -->
+        <!-- Each with its size drawn: green for what it adds, red for what it
+             removes, on one scale so a big one looks big. -->
         <button
           v-for="(pr, n) in latestPrs"
           :key="pr.number"
           type="button"
           class="gsa__pr"
-          :title="`${prState(pr).label} · ${pr.author} · +${pr.additions} −${pr.deletions}`"
           @click="emit('openPr', pr.number)"
         >
-          <span class="gsa__pr-title">
-            <i class="gsa__pr-state" :class="`gsa__pr-state--${prState(pr).tone}`" aria-hidden="true" />
-            <span class="gsa__pr-text">{{ pr.title }}</span>
-          </span>
+          <span class="gsa__pr-title">{{ pr.title }}</span>
           <span class="gsa__pr-size" :style="{ '--n': n }">
             <i class="gsa__pr-add" :style="{ width: prWidth(pr, pr.additions) }" />
             <i class="gsa__pr-del" :style="{ width: prWidth(pr, pr.deletions) }" />
           </span>
-        </button>
-      </div>
-    </div>
-
-    <!-- ── people ───────────────────────────────────────────────────────── -->
-    <div v-if="people.length" class="gsa__block" :style="{ '--i': 3 }">
-      <div class="gsa__label">
-        <span class="gsa__label-name">People</span>
-        <span class="gsa__label-count">{{ contributors?.total ?? people.length }}</span>
-      </div>
-      <div class="gsa__crowd">
-        <span
-          v-for="(person, n) in people"
-          :key="person.name"
-          class="gsa__crowd-person"
-          :style="{ '--s': `${faceSize(person)}px`, '--n': n, zIndex: PEOPLE_SHOWN - n }"
-          :title="`${credit(person)} · ${plural(person.commits, 'commit')}`"
-        >
-          <span class="gsa__crowd-face">
-            <img v-if="person.avatarDataUrl" :src="person.avatarDataUrl" alt="" />
-            <template v-else>{{ person.name[0]?.toUpperCase() }}</template>
+          <span class="gsa__pr-meta">
+            <span class="gsa__state" :class="`gsa__state--${prState(pr).tone}`">{{ prState(pr).label }}</span>
+            <span class="gsa__sep">·</span>
+            {{ pr.author }}
           </span>
-        </span>
-        <span v-if="peopleMore > 0" class="gsa__crowd-more">+{{ peopleMore }}</span>
-      </div>
-    </div>
-
-    <!-- ── readme ───────────────────────────────────────────────────────── -->
-    <div class="gsa__block gsa__doc" :style="{ '--i': 4 }">
-      <div class="gsa__label">
-        <span class="gsa__label-name gsa__label-name--file">{{ readme?.path ?? "README" }}</span>
-      </div>
-      <template v-if="readme">
-        <div class="gsa__readme selectable" :class="{ 'gsa__readme--folded': !readmeOpen }">
-          <MarkdownMessage :source="readme.markdown" historical />
-        </div>
-        <button type="button" class="gsa__unfold" @click="readmeOpen = !readmeOpen">
-          {{ readmeOpen ? "Show less" : "Keep reading" }}
         </button>
-      </template>
-      <p v-else class="gsa__blocked">No README in this repository.</p>
-    </div>
+      </div>
+
+      <!-- ── people ─────────────────────────────────────────────────────── -->
+      <div v-if="people.length" class="gsa__block" :style="{ '--i': 4 }">
+        <div class="gsa__label">
+          <span class="gsa__label-name">People</span>
+          <span class="gsa__label-count">{{ contributors?.total ?? people.length }}</span>
+        </div>
+        <div class="gsa__crowd">
+          <span
+            v-for="(person, n) in people"
+            :key="person.name"
+            class="gsa__crowd-person"
+            :style="{ '--s': `${faceSize(person)}px`, '--n': n, zIndex: PEOPLE_SHOWN - n }"
+            :title="`${credit(person)} · ${plural(person.commits, 'commit')}`"
+          >
+            <span class="gsa__crowd-face">
+              <img v-if="person.avatarDataUrl" :src="person.avatarDataUrl" alt="" />
+              <template v-else>{{ person.name[0]?.toUpperCase() }}</template>
+            </span>
+          </span>
+          <span v-if="peopleMore > 0" class="gsa__crowd-more">+{{ peopleMore }}</span>
+        </div>
+        <p v-if="lead" class="gsa__sub">
+          <b>{{ credit(lead.person) }}</b> wrote <b>{{ lead.share }}%</b> of it, then <b>{{ credit(people[1]!) }}</b> with <b>{{ people[1]!.commits.toLocaleString() }}</b> commits.
+        </p>
+      </div>
+    </aside>
   </section>
 </template>
 
 <style scoped>
+/* Two columns: the main one reads (what it is, what just happened, the
+   README), the side one draws (numbers, rhythm, pull requests, people). */
 .gsa {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  align-items: start;
+  gap: 72px;
+  padding-bottom: 40px;
+}
+.gsa__main,
+.gsa__side {
   display: flex;
   flex-direction: column;
-  gap: 76px;
-  padding-bottom: 40px;
+  min-width: 0;
+}
+.gsa__main {
+  gap: 52px;
+}
+.gsa__side {
+  gap: 48px;
 }
 
 /* ── entrance ─────────────────────────────────────────────────────────────── */
@@ -507,19 +539,17 @@ function dayLabel(t: number): string {
   color: var(--muted);
 }
 .gsa__label-count,
-.gsa__label-key {
+.gsa__label-note {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
 }
-.gsa__label-key {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-left: 8px;
+.gsa__label-note::before {
+  content: "· ";
 }
 .gsa__mine-key {
   display: inline-block;
+  vertical-align: 0;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -547,16 +577,9 @@ function dayLabel(t: number): string {
 /* ── the story ────────────────────────────────────────────────────────────── */
 .gsa__story {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 48px;
-}
-.gsa__story-text {
-  display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 460px;
-  min-width: 0;
+  max-width: 560px;
 }
 .gsa__lede {
   margin: 0;
@@ -599,9 +622,10 @@ function dayLabel(t: number): string {
 
 /* The numbers: big mono figures over a one-word label, nothing around them. */
 .gsa__stats {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: -8px -12px 0;
 }
 .gsa__stat {
   display: flex;
@@ -646,8 +670,8 @@ function dayLabel(t: number): string {
   display: flex;
   flex-direction: column-reverse;
   align-items: center;
-  gap: 4px;
-  height: calc(var(--rows, 7) * 15px);
+  gap: 3px;
+  height: calc(var(--rows, 7) * 11px);
   padding-bottom: 8px;
   box-sizing: content-box;
   width: 100%;
@@ -657,8 +681,8 @@ function dayLabel(t: number): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
   flex-shrink: 0;
   border-radius: 50%;
   background-color: color-mix(in srgb, var(--ink) 72%, transparent);
@@ -682,8 +706,8 @@ function dayLabel(t: number): string {
   background-color: var(--diff-add);
 }
 .gsa__dot--more {
-  width: 13px;
-  height: 13px;
+  width: 10px;
+  height: 10px;
 }
 .gsa__dot--none {
   width: 4px;
@@ -700,26 +724,22 @@ function dayLabel(t: number): string {
   outline: 2px solid color-mix(in srgb, var(--ink) 40%, transparent);
   outline-offset: 2px;
 }
-.gsa__day-month {
-  align-self: flex-start;
-  height: 14px;
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 14px;
-  white-space: nowrap;
+/* A sublabel under a drawing: one quiet line, its numbers in ink. */
+.gsa__sub {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
   color: var(--muted);
+}
+.gsa__sub b {
+  font-weight: 500;
+  color: var(--ink-soft);
 }
 
 /* ── lately ───────────────────────────────────────────────────────────────── */
-.gsa__lately {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 72px;
-}
 
-/* The latest commits as a timeline: one hairline, a dot per commit, a face
-   and a subject. Who and which hash live in the hover. */
+/* The latest commits as a timeline: one hairline, a dot per commit, its
+   subject, and who and when underneath. */
 .gsa__timeline {
   position: relative;
   margin: 0;
@@ -739,11 +759,11 @@ function dayLabel(t: number): string {
 .gsa__event {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 5px;
   width: calc(100% + 8px);
   margin-left: -8px;
-  padding: 9px 8px 9px 30px;
+  padding: 10px 8px 11px 30px;
   border-radius: 10px;
   text-align: left;
   cursor: pointer;
@@ -755,10 +775,9 @@ function dayLabel(t: number): string {
 .gsa__event-dot {
   position: absolute;
   left: 7px;
-  top: 50%;
+  top: 15px;
   width: 11px;
   height: 11px;
-  margin-top: -5.5px;
   border-radius: 50%;
   background-color: var(--ground);
   box-shadow: inset 0 0 0 2.5px color-mix(in srgb, var(--ink) 40%, transparent);
@@ -770,8 +789,8 @@ function dayLabel(t: number): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
   border-radius: 50%;
   overflow: hidden;
@@ -785,8 +804,6 @@ function dayLabel(t: number): string {
   object-fit: cover;
 }
 .gsa__event-title {
-  flex: 1 1 auto;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -794,18 +811,32 @@ function dayLabel(t: number): string {
   line-height: 1.4;
   color: var(--ink);
 }
-.gsa__event-when {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
+.gsa__event-meta,
+.gsa__pr-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
   color: var(--muted);
 }
+.gsa__sep {
+  opacity: 0.6;
+}
+.gsa__hash {
+  margin-left: auto;
+  padding-left: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
 
-/* Pull requests: a state dot, the title, and the change drawn under it. */
+/* Pull requests: the title, the change drawn under it, then its state. */
 .gsa__pr {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
   width: calc(100% + 16px);
   margin-left: -8px;
   padding: 10px 8px 12px;
@@ -818,10 +849,6 @@ function dayLabel(t: number): string {
   background-color: var(--hover);
 }
 .gsa__pr-title {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -829,31 +856,34 @@ function dayLabel(t: number): string {
   line-height: 1.4;
   color: var(--ink);
 }
-.gsa__pr-state {
-  width: 8px;
-  height: 8px;
-  flex-shrink: 0;
+.gsa__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.gsa__state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background-color: var(--muted);
+  background-color: currentColor;
 }
-.gsa__pr-state--ok {
-  background-color: var(--diff-add);
+.gsa__state--ok {
+  color: var(--diff-add);
 }
-.gsa__pr-state--bad {
-  background-color: var(--diff-del);
+.gsa__state--bad {
+  color: var(--diff-del);
 }
-.gsa__pr-state--warn {
-  background-color: color-mix(in srgb, #c98a16 85%, var(--ink));
+.gsa__state--warn {
+  color: color-mix(in srgb, #c98a16 85%, var(--ink));
 }
-.gsa__pr-state--muted {
-  background-color: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--muted);
+.gsa__state--muted {
+  color: var(--muted);
 }
 .gsa__pr-size {
   display: flex;
   gap: 2px;
   height: 6px;
-  margin-left: 17px;
 }
 .gsa__pr-add,
 .gsa__pr-del {
@@ -912,11 +942,6 @@ function dayLabel(t: number): string {
   height: 100%;
   object-fit: cover;
 }
-.gsa__pr-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .gsa__crowd-more {
   align-self: center;
   margin-left: 14px;
@@ -952,12 +977,9 @@ function dayLabel(t: number): string {
   background-color: color-mix(in srgb, var(--ink) 10%, transparent);
 }
 
-@media (max-width: 860px) {
-  .gsa__story {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .gsa__lately {
+/* Narrow windows: the side column drops under the main one. */
+@media (max-width: 900px) {
+  .gsa {
     grid-template-columns: minmax(0, 1fr);
     gap: 56px;
   }
