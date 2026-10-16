@@ -52,8 +52,8 @@ const props = defineProps<{
    *  target the thread continues on. `title` is the source thread's name, shown
    *  so the pick reads as "where does this conversation go next". Live-apply
    *  is off in this mode (there is no running session to tune — the source
-   *  keeps running untouched), and picking the source's own provider/model
-   *  refuses with a hint instead of confirming. */
+   *  keeps running untouched). Picking the source's own provider/model is
+   *  allowed: it starts a fresh continuation, not a resume. */
   handoff?: { title: string } | null;
 }>();
 
@@ -403,12 +403,6 @@ function modelReady(m: MModel): boolean {
 // selected. In handoff mode the click only stages the target (the bottom bar
 // reads source → staged and confirms) — except nothing is staged until the
 // user picks; the open seeds the source provider's tab but no target.
-const handoffHint = ref("");
-function isSameAsHandoffSource(providerId: ProviderKind, modelId: string, tier: EffortTier): boolean {
-  return (
-    providerId === props.activeProvider && modelId === props.modelId && tier === props.reasoning
-  );
-}
 function selectModel(m: MModel) {
   if (!modelReady(m)) return;
   const isPendingModel = pending.value?.model.key === m.key;
@@ -418,28 +412,19 @@ function selectModel(m: MModel) {
   if (!provider.value || !e) return;
   if (props.handoff) {
     // Stage, don't confirm: the bottom bar shows what this pick moves where,
-    // and its button commits. Staging the source's own spot explains why the
-    // button stays off rather than silently doing nothing.
+    // and its button commits. The source's own provider/model stages like any
+    // other — it starts a fresh continuation rather than resuming.
     focus(m, e, fastMode, contextWindow);
-    handoffHint.value = isSameAsHandoffSource(m.providerId, e.modelId, e.tier)
-      ? "Already here — pick another provider or model to hand off to."
-      : "";
     return;
   }
   recordRecent(m.key);
   close(() => emit("select", { provider: m.providerId, modelId: e.modelId, tier: e.tier, fastMode, contextWindow }));
 }
-// The bottom bar's commit: the staged target, confirmed. Enabled only for a
-// staged, ready target that differs from the source.
+// The bottom bar's commit: the staged target, confirmed. Enabled for any
+// staged, ready target — including the source's own provider/model, which is a
+// fresh continuation rather than a resume.
 const canConfirmHandoff = computed(
-  () =>
-    pending.value !== null &&
-    modelReady(pending.value.model) &&
-    !isSameAsHandoffSource(
-      pending.value.model.providerId,
-      pending.value.effort.modelId,
-      pending.value.effort.tier,
-    ),
+  () => pending.value !== null && modelReady(pending.value.model),
 );
 function confirmHandoff() {
   const p = pending.value;
@@ -775,7 +760,7 @@ onBeforeUnmount(() => {
         :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
         role="dialog"
         aria-modal="true"
-        :aria-label="props.handoff ? 'Hand off thread to another provider' : 'Choose a model'"
+        :aria-label="props.handoff ? 'Hand off thread to a provider and model' : 'Choose a model'"
       >
       <div
         ref="contentEl"
@@ -1036,9 +1021,6 @@ onBeforeUnmount(() => {
               <span class="mp-handoff-arrow" aria-hidden="true">→</span>
             </button>
           </div>
-          <p v-if="props.handoff && handoffHint" class="mp-handoff-hint" role="status">
-            {{ handoffHint }}
-          </p>
         </div>
         </div>
       </div>
@@ -1357,10 +1339,6 @@ onBeforeUnmount(() => {
   flex: none;
   color: var(--muted);
   font-size: 12px;
-}
-.mp-handoff-hint {
-  font-size: 11.5px;
-  color: var(--muted);
 }
 .mp-handoff-confirm {
   flex: none;
