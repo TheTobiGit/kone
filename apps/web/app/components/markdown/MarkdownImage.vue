@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { inject, ref, watch } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Image02Icon } from "@hugeicons/core-free-icons";
-import { classifyImageSource, IMAGE_CWD_KEY, IMAGE_THREAD_KEY, type ImageSource } from "~/utils/markdownImageSource";
+import {
+  classifyImageSource,
+  IMAGE_CWD_KEY,
+  IMAGE_RESOLVER_KEY,
+  IMAGE_THREAD_KEY,
+  type ImageSource,
+} from "~/utils/markdownImageSource";
 
 // An image (or illustration) in an agent reply. It settles into a rounded,
 // width-capped frame with a soft tonal placeholder while it loads and an inline
@@ -16,12 +22,22 @@ import { classifyImageSource, IMAGE_CWD_KEY, IMAGE_THREAD_KEY, type ImageSource 
 // A file on disk can't be loaded by path. The desktop shell is asked for a URL
 // that serves it, and the placeholder holds while it answers. That URL expires,
 // so an image that fails after one was granted asks once more before giving up:
-// a reply scrolled back to later has outlived its first one.
+// a reply scrolled back to later has outlived its first one. A context that can
+// serve its own files — a repository checkout reading a README — provides a
+// resolver instead, and that is asked for the URL; the thread's grant path is
+// only the fallback when nothing above knows how to reach the file.
 
-const props = defineProps<{ src: string; alt?: string }>();
+const props = defineProps<{ src: string; alt?: string; width?: string }>();
 
 const cwd = inject(IMAGE_CWD_KEY, () => null);
 const threadId = inject(IMAGE_THREAD_KEY, () => null);
+const resolver = inject(IMAGE_RESOLVER_KEY, null);
+
+// A width the source asked for (a README's `width="200"` logo) becomes the
+// frame's own width, still capped to the column by max-width.
+const frameStyle = computed<Record<string, string> | undefined>(() =>
+  props.width ? { width: `${props.width}px` } : undefined,
+);
 
 const state = ref<"loading" | "ok" | "error">("loading");
 const shown = ref<string | null>(null);
@@ -42,15 +58,29 @@ async function grant(path: string): Promise<void> {
   shown.value = granted.url;
 }
 
+/** Ask the surrounding context (a repo checkout) for a URL it can serve `src`
+ *  from; it answers null when it can't reach the file. */
+async function resolve(src: string): Promise<void> {
+  const mine = ++seq;
+  const url = resolver ? await resolver(src).catch(() => null) : null;
+  if (mine !== seq) return;
+  if (url === null) {
+    state.value = "error";
+    return;
+  }
+  shown.value = url;
+}
+
 watch(
-  [() => props.src, cwd],
-  ([src, dir]) => {
+  () => props.src,
+  (src) => {
     seq++;
     regranted = false;
     state.value = "loading";
     shown.value = null;
-    source = classifyImageSource(src, dir);
+    source = classifyImageSource(src, cwd());
     if (source.kind === "direct") shown.value = source.src;
+    else if (resolver) void resolve(src);
     else if (source.kind === "local") void grant(source.path);
     else state.value = "error";
   },
@@ -58,6 +88,10 @@ watch(
 );
 
 function onError(): void {
+  if (source.kind === "local" && resolver) {
+    void resolve(props.src);
+    return;
+  }
   if (source.kind === "local" && !regranted) {
     regranted = true;
     shown.value = null;
@@ -71,7 +105,7 @@ function onError(): void {
 
 <template>
   <figure class="mdimg">
-    <div class="mdimg__frame" :class="`mdimg__frame--${state}`">
+    <div class="mdimg__frame" :class="`mdimg__frame--${state}`" :style="frameStyle">
       <img
         v-if="shown"
         v-show="state !== 'error'"
@@ -96,6 +130,11 @@ function onError(): void {
 
 <style scoped>
 .mdimg {
+  /* Inline-block so a row of badges sits in a line and a hero can be centred by
+     its parent's text-align; a lone image still reads as its own block. */
+  display: inline-block;
+  vertical-align: top;
+  max-width: 100%;
   margin: 4px 0 8px;
 }
 .mdimg__frame {

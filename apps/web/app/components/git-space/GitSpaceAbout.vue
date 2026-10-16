@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, provide, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon, ArrowUpRight01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
+import { useGit } from "~/composables/useGit";
 import type { useGitSpace } from "~/composables/useGitSpace";
+import { IMAGE_RESOLVER_KEY, repoImagePath } from "~/utils/markdownImageSource";
 import type { GitCommit, GitContributor, GitHubPullRequest } from "~/types/desktop";
 
 // The repository's front page: the reason to open a project here rather than
@@ -22,13 +24,23 @@ import type { GitCommit, GitContributor, GitHubPullRequest } from "~/types/deskt
 
 type Section = "about" | "changes" | "history" | "branches" | "prs" | "stashes";
 
-const props = defineProps<{ space: ReturnType<typeof useGitSpace> }>();
+const props = defineProps<{ space: ReturnType<typeof useGitSpace>; dir: string }>();
 const emit = defineEmits<{
   /** Step to another section of the space. */
   go: [section: Section];
   openCommit: [hash: string];
   openPr: [number: number];
 }>();
+
+// The README's own images ride the git module, not the thread's local-image
+// grant: the section knows the checkout and the README's folder, so it can hand
+// a repo-relative path to the bridge and get the bytes back as a data URL. This
+// is provided to every Markdown image under here — the README above all.
+const bridge = useGit();
+provide(IMAGE_RESOLVER_KEY, (src: string) => {
+  const rel = repoImagePath(readmeDir.value, src);
+  return rel ? bridge.image(props.dir, rel) : Promise.resolve(null);
+});
 
 // The shell reads About on entry, but this section asks as well and each load
 // de-dupes against the shell's. The log and the pull requests are the same
@@ -191,9 +203,14 @@ function faceSize(person: GitContributor): number {
 }
 
 // ── readme ────────────────────────────────────────────────────────────────────
-// Folded to a preview with a fade until asked for; a long README shouldn't push
-// everything above it out of mind.
-const readmeOpen = ref(false);
+// The README reads as the repository's front page, whole — no fold. Its images
+// resolve against its own folder, so a README in `docs/` naming `./img/x.png`
+// reads the right file.
+const readmeDir = computed(() => {
+  const p = readme.value?.path ?? "";
+  const cut = p.lastIndexOf("/");
+  return cut === -1 ? "" : p.slice(0, cut);
+});
 
 // ── outward actions ───────────────────────────────────────────────────────────
 const cloneUrl = computed(() => origin.value?.fetchUrl ?? null);
@@ -293,7 +310,7 @@ function dayLabel(t: number): string {
     <div class="gsa__main">
       <!-- ── the story ──────────────────────────────────────────────────── -->
       <div class="gsa__block gsa__story" :style="{ '--i': 0 }">
-        <p v-if="description" class="gsa__lede">{{ description }}</p>
+        <p v-if="description" class="gsa__lede selectable">{{ description }}</p>
         <p v-if="blocked" class="gsa__blocked">{{ blocked }}</p>
         <div class="gsa__links">
           <button v-if="repoInfo" type="button" class="gsa__link gsa__link--ink" @click="open(repoInfo.url)">
@@ -317,12 +334,9 @@ function dayLabel(t: number): string {
           <span class="gsa__label-name gsa__label-name--file">{{ readme?.path ?? "README" }}</span>
         </div>
         <template v-if="readme">
-          <div class="gsa__readme selectable" :class="{ 'gsa__readme--folded': !readmeOpen }">
+          <div class="gsa__readme selectable">
             <MarkdownMessage :source="readme.markdown" historical />
           </div>
-          <button type="button" class="gsa__unfold" @click="readmeOpen = !readmeOpen">
-            {{ readmeOpen ? "Show less" : "Keep reading" }}
-          </button>
         </template>
         <p v-else class="gsa__blocked">No README in this repository.</p>
       </div>
@@ -356,7 +370,7 @@ function dayLabel(t: number): string {
         </div>
         <ol class="gsa__timeline">
           <li v-for="c in latest" :key="c.hash">
-            <button type="button" class="gsa__event" :title="c.short" @click="emit('openCommit', c.hash)">
+            <button type="button" class="gsa__event" :title="`${c.subject}\n${c.short}`" @click="emit('openCommit', c.hash)">
               <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
               <span class="gsa__event-title">{{ c.subject }}</span>
               <span class="gsa__event-meta">
@@ -427,6 +441,7 @@ function dayLabel(t: number): string {
           :key="pr.number"
           type="button"
           class="gsa__pr"
+          :title="pr.title"
           @click="emit('openPr', pr.number)"
         >
           <span class="gsa__pr-title">{{ pr.title }}</span>
@@ -477,9 +492,9 @@ function dayLabel(t: number): string {
    people). */
 .gsa {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 26cqi, 360px);
   align-items: start;
-  gap: 72px;
+  gap: clamp(48px, 6cqi, 88px);
   padding-bottom: 40px;
 }
 .gsa__main,
@@ -652,7 +667,7 @@ function dayLabel(t: number): string {
   color: var(--ink);
 }
 .gsa__stat-label {
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
   color: var(--muted);
 }
@@ -729,7 +744,7 @@ function dayLabel(t: number): string {
 /* A sublabel under a drawing: one quiet line, its numbers in ink. */
 .gsa__sub {
   margin: 14px 0 0;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.55;
   color: var(--muted);
 }
@@ -953,37 +968,84 @@ function dayLabel(t: number): string {
 }
 
 /* ── readme ───────────────────────────────────────────────────────────────── */
-/* The README as a page of the app, not a file in a box: the document's own
-   type at a reading measure, straight on the ground. */
+/* The README as a page of the app, not a file in a box: the whole document at
+   the column's width, straight on the ground. Headings open up past their
+   in-reply size — a README is read as a page, so its title should read like
+   one — and media takes the full column. Running text keeps the reading
+   measure, though: at the column's full width a paragraph runs past 120
+   characters a line. */
 .gsa__readme {
-  max-width: 72ch;
+  max-width: 100%;
 }
-.gsa__readme--folded {
-  max-height: 420px;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
-  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+.gsa__readme :deep(:is(p, ul, ol, blockquote, h3, h4)) {
+  max-width: var(--measure);
 }
-.gsa__unfold {
-  margin-top: 8px;
-  padding: 7px 14px;
-  border-radius: 10px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink);
-  background-color: var(--hover);
-  cursor: pointer;
-  transition: background-color var(--gs-t-micro) ease;
+.gsa__readme :deep(h1) {
+  margin: 30px 0 12px;
+  font-size: 27px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
-.gsa__unfold:hover {
-  background-color: color-mix(in srgb, var(--ink) 10%, transparent);
+.gsa__readme :deep(h2) {
+  margin: 28px 0 10px;
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+}
+.gsa__readme :deep(h3) {
+  margin: 22px 0 8px;
+  font-size: 16px;
+}
+.gsa__readme :deep(h4) {
+  font-size: 14.5px;
+}
+.gsa__readme :deep(h1:first-child),
+.gsa__readme :deep(h2:first-child),
+.gsa__readme :deep(h3:first-child) {
+  margin-top: 0;
+}
+/* A hairline under the top-level sections, the way a README page breaks up. */
+.gsa__readme :deep(h1:not(:first-child)),
+.gsa__readme :deep(h2) {
+  padding-bottom: 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 9%, transparent);
 }
 
-/* Narrow windows: the side column drops under the main one. */
-@media (max-width: 900px) {
+/* Narrow: no room for the side column beside the README, and stacked whole
+   under it the activity would sit a README's length away. So the two columns
+   dissolve into one grid: what it is, the numbers, the activity two by two,
+   then the README. */
+@container (max-width: 820px) {
+  .gsa {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 48px 40px;
+  }
+  .gsa__main,
+  .gsa__side {
+    display: contents;
+  }
+  .gsa__block {
+    order: 2;
+  }
+  .gsa__story,
+  .gsa__stats,
+  .gsa__doc {
+    grid-column: 1 / -1;
+  }
+  .gsa__story {
+    order: 0;
+  }
+  .gsa__stats {
+    order: 1;
+  }
+  .gsa__doc {
+    order: 3;
+  }
+}
+@container (max-width: 520px) {
   .gsa {
     grid-template-columns: minmax(0, 1fr);
-    gap: 56px;
+    gap: 44px;
   }
 }
 

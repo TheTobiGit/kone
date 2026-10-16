@@ -34,6 +34,7 @@ const NO_GIT: KoneGitApi = {
   worktreePrune: empty,
   readme: none,
   logo: none,
+  image: none,
   identity: () => Promise.resolve({ name: null, email: null }),
   contributors: () => Promise.resolve({ source: "git", people: [], total: 0 }),
 

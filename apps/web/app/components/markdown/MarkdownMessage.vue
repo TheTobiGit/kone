@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, defineComponent, Fragment, h, onBeforeUnmount, ref, watch } from "vue";
+import { defineComponent, Fragment, h, onBeforeUnmount, ref, watch } from "vue";
 import type { VNode } from "vue";
-import type Token from "markdown-it/lib/token.mjs";
 import { createStreamGate } from "~/composables/streamGate";
 import { stabilizeStreamingMarkdown } from "~/utils/streamingMarkdown";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -16,7 +15,8 @@ import CodeBlock from "~/components/markdown/CodeBlock.vue";
 import MarkdownLink from "~/components/markdown/MarkdownLink.vue";
 import MarkdownImage from "~/components/markdown/MarkdownImage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
-import { expandHtmlTables, validatedSpans, type MdNode } from "~/utils/safeHtmlTable";
+import { validatedSpans, type MdNode } from "~/utils/safeHtmlTable";
+import { isMediaOnlyLink } from "~/utils/safeHtmlMedia";
 
 // The agent's settled reply, rendered as a real component tree rather than a
 // v-html string. We parse the Markdown to markdown-it's token stream, fold it
@@ -39,9 +39,9 @@ const props = defineProps<{
   revealDelay?: number;
 }>();
 
-const { parse } = useMarkdown();
+const { parseNodes } = useMarkdown();
 
-const tokens = ref<Token[] | null>(null);
+const nodes = ref<MdNode[] | null>(null);
 let seq = 0;
 
 // Live replies reparse at most once per gate window while chunks stream in;
@@ -54,14 +54,15 @@ const gate = createStreamGate(45);
 // the reader chunk by chunk. History is already finished and parses as-is.
 async function updateTokens(src: string): Promise<void> {
   const mine = ++seq;
-  const t = await parse(props.historical ? src : stabilizeStreamingMarkdown(src));
-  if (mine === seq) tokens.value = t;
+  const parsed = await parseNodes(props.historical ? src : stabilizeStreamingMarkdown(src));
+  if (mine !== seq) return;
+  nodes.value = parsed;
 }
 
 watch(
   () => props.source,
   (src) => {
-    if (props.historical || !tokens.value || !import.meta.client) {
+    if (props.historical || !nodes.value || !import.meta.client) {
       gate.cancel();
       void updateTokens(src);
       return;
@@ -90,49 +91,6 @@ onBeforeUnmount(() => {
 // the moment `**bo` closed into `**bold**`, or a `|` row snapped into a table,
 // the whole rest of the reply was torn down, remounted, and re-revealed. Words
 // keyed by path only churn inside the subtree that actually changed.
-
-// ── token stream → node tree ────────────────────────────────────────────────
-// markdown-it hands a flat list with nesting encoded as open/close pairs. Fold
-// it into a tree; inline tokens carry their own child list, so recurse in. The
-// node shape itself lives in safeHtmlTable — that module builds nodes too, and
-// a table lifted out of raw text has to be the same thing to the renderer.
-function mkNode(tok: Token): MdNode {
-  const attrs: Record<string, string> = {};
-  for (const [k, v] of tok.attrs ?? []) attrs[k] = v;
-  return {
-    type: tok.type.replace(/_open$/, ""),
-    tag: tok.tag,
-    attrs,
-    children: [],
-    content: tok.content,
-    info: tok.info,
-  };
-}
-function treeify(list: Token[]): MdNode[] {
-  const root: MdNode = { type: "root", tag: "", attrs: {}, children: [], content: "", info: "" };
-  const stack: MdNode[] = [root];
-  for (const tok of list) {
-    const top = stack[stack.length - 1]!;
-    if (tok.type === "inline") {
-      top.children.push(...treeify(tok.children ?? []));
-      continue;
-    }
-    if (tok.nesting === 1) {
-      const node = mkNode(tok);
-      top.children.push(node);
-      stack.push(node);
-    } else if (tok.nesting === -1) {
-      stack.pop();
-    } else {
-      top.children.push(mkNode(tok));
-    }
-  }
-  return root.children;
-}
-
-const nodes = computed<MdNode[]>(() =>
-  tokens.value ? expandHtmlTables(treeify(tokens.value)) : [],
-);
 
 // ── heuristics ────────────────────────────────────────────────────────────────
 // Inline code that names a file → render as a file chip. Needs an extension on
@@ -191,6 +149,10 @@ function textOf(node: MdNode): string {
 }
 function styleOf(node: MdNode): Record<string, string> | undefined {
   return node.attrs.style ? { textAlign: /right/.test(node.attrs.style) ? "right" : /center/.test(node.attrs.style) ? "center" : "left" } : undefined;
+}
+/** A paragraph or heading a raw-HTML block centred; CSS centres its media too. */
+function alignClass(node: MdNode): string | undefined {
+  return node.attrs.align === "center" ? "md-center" : undefined;
 }
 // Only colspan/rowspan survive the table parse, and cells read them back
 // through the very validator that wrote them (`validatedSpans`) — anything else
@@ -299,7 +261,7 @@ function renderNode(node: MdNode, key: number, path: string): VNode | string {
         key,
       );
     case "image":
-      return h(MarkdownImage, { key, src: node.attrs.src ?? "", alt: node.content || node.attrs.alt });
+      return h(MarkdownImage, { key, src: node.attrs.src ?? "", alt: node.content || node.attrs.alt, width: node.attrs.width });
     case "link": {
       const href = node.attrs.href ?? "#";
       // A local file link (`[README.md](file:///…)`) becomes an inert file chip
@@ -310,12 +272,12 @@ function renderNode(node: MdNode, key: number, path: string): VNode | string {
         const label = textOf(node).trim();
         return wrapAtom(h(FileChip, { key, path: label || full.split("/").pop() || full, title: full }), key);
       }
-      return h(MarkdownLink, { key, href }, { default: () => renderChildren(node, path) });
+      return h(MarkdownLink, { key, href, bare: isMediaOnlyLink(node) }, { default: () => renderChildren(node, path) });
     }
     case "heading":
-      return h(node.tag, { key }, renderChildren(node, path));
+      return h(node.tag, { key, class: alignClass(node) }, renderChildren(node, path));
     case "paragraph":
-      return h("p", { key }, renderChildren(node, path));
+      return h("p", { key, class: alignClass(node) }, renderChildren(node, path));
     case "blockquote":
       return renderQuote(node, key, path);
     case "bullet_list":
@@ -398,7 +360,7 @@ const Rendered = defineComponent({
   render: () => {
     burst = [];
     walked = 0;
-    const tree = nodes.value.map((n, i) => renderNode(n, i, String(i)));
+    const tree = (nodes.value ?? []).map((n, i) => renderNode(n, i, String(i)));
     settleBurst();
     revealedTo = Math.max(revealedTo, walked);
     return tree;
@@ -408,7 +370,7 @@ const Rendered = defineComponent({
 
 <template>
   <div class="md">
-    <Rendered v-if="tokens" />
+    <Rendered v-if="nodes" />
     <p v-else class="md__raw">{{ source }}</p>
   </div>
 </template>
@@ -486,6 +448,11 @@ const Rendered = defineComponent({
 .md :deep(strong) { font-weight: 640; color: var(--ink); }
 .md :deep(em) { font-style: italic; }
 .md :deep(s) { color: var(--muted); }
+
+/* A raw-HTML block that asked to be centred — a README's hero logo, a badge
+   row. The text centres, and because a framed image is inline-block it steps
+   to the middle of the column rather than hugging its left edge. */
+.md :deep(.md-center) { text-align: center; }
 
 /* ── lists ──────────────────────────────────────────────────────────────────── */
 /* The app reset strips list-style; re-assert markers explicitly. */

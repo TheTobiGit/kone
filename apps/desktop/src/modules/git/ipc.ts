@@ -3,7 +3,7 @@ import { ipcMain } from "electron";
 import { withTimeout } from "../../lib/ipcTimeout.js";
 import { clone } from "@kone/git-core/clone.js";
 import { createProject } from "./create.js";
-import { contributors, identity, logo, readme } from "./about.js";
+import { contributors, identity, logo, readImage, readme } from "./about.js";
 import { content, diff } from "./diff.js";
 import { files } from "./files.js";
 import * as github from "./github.js";
@@ -317,6 +317,12 @@ export function registerGitIpc(): void {
   ipcMain.handle("git:logo", (_event, dir: string) =>
     withTimeout((signal) => logo(dir, signal), {
       channel: "git:logo",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("git:image", (_event, dir: string, path: string) =>
+    withTimeout((signal) => readImage(dir, path, signal), {
+      channel: "git:image",
       timeoutMs: GIT_READ_TIMEOUT_MS,
     }),
   );

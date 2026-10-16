@@ -327,6 +327,9 @@ const api = {
     /** Repo logo as a data URL, or null when nothing qualifies. */
     logo: (dir: string): Promise<GitLogo | null> =>
       ipcRenderer.invoke("git:logo", dir),
+    /** One repo-relative image as a data URL, or null when it can't be read. */
+    image: (dir: string, path: string): Promise<string | null> =>
+      ipcRenderer.invoke("git:image", dir, path),
     /** The repo's contributors, from git — always available, no network. */
     contributors: (dir: string): Promise<GitContributors> =>
       ipcRenderer.invoke("git:contributors", dir),

@@ -38,7 +38,7 @@ export {
 export { provisionWorktree } from "./worktreeProvision.js";
 export { isInsideWorktreesRoot, worktreesRoot } from "./worktreePaths.js";
 export { remoteExists, remotes, repoState } from "./state.js";
-export { contributors, identity, logo, readme } from "./about.js";
+export { contributors, identity, logo, readImage, readme } from "./about.js";
 export * as github from "./github.js";
 export { cancelAllClones, cancelClone, clone } from "@kone/git-core/clone.js";
 export { createProject } from "./create.js";

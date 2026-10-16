@@ -7,8 +7,13 @@ import { Link01Icon } from "@hugeicons/core-free-icons";
 // — the little signal that says "this goes to Stripe / GitHub / MDN" before you
 // read a word — with a globe glyph as the graceful fallback when the icon 404s
 // or hasn't loaded. Anchor/relative links stay plain (no favicon, no new tab).
+//
+// `bare` is for a link whose content is itself an image — a README badge or a
+// logo wrapped in an anchor. There the image is the whole point, so no favicon
+// is prefixed and the label gets no underline; the picture just sits there,
+// clickable.
 
-const props = defineProps<{ href: string }>();
+const props = defineProps<{ href: string; bare?: boolean }>();
 
 const url = computed<URL | null>(() => {
   try {
@@ -23,7 +28,7 @@ const host = computed(() => url.value?.hostname.replace(/^www\./, "") ?? "");
 // Google's favicon service resolves almost any host and ships a real 64px icon;
 // on failure (or before it paints) we drop to the globe glyph below.
 const faviconSrc = computed(() =>
-  external.value && host.value
+  external.value && host.value && !props.bare
     ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host.value)}&sz=64`
     : "",
 );
@@ -33,12 +38,12 @@ const iconOk = ref(true);
 <template>
   <a
     class="mdlink"
-    :class="{ 'mdlink--ext': external }"
+    :class="{ 'mdlink--ext': external && !bare, 'mdlink--bare': bare }"
     :href="href"
     :target="external ? '_blank' : undefined"
     :rel="external ? 'noopener noreferrer' : undefined"
   >
-    <span v-if="external" class="mdlink__ico" aria-hidden="true">
+    <span v-if="external && !bare" class="mdlink__ico" aria-hidden="true">
       <img
         v-if="faviconSrc && iconOk"
         class="mdlink__fav"
@@ -93,5 +98,13 @@ const iconOk = ref(true);
   height: 14px;
   border-radius: 3px;
   object-fit: contain;
+}
+/* An image link carries its own visual weight; the label is just a box. */
+.mdlink--bare .mdlink__text {
+  text-decoration: none;
+}
+.mdlink--bare {
+  display: inline-block;
+  vertical-align: top;
 }
 </style>

@@ -1,8 +1,9 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { GitError, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
 import { GIT_CONTRIBUTOR_CAP } from "@kone/git-core/types.js";
+import { isPathInside } from "../../localImageProtocol.js";
 import type { GitContributor, GitContributors, GitIdentity, GitLogo, GitReadme } from "@kone/git-core/types.js";
 
 // The About section of the git space — the repository's presentation surface:
@@ -13,6 +14,7 @@ import type { GitContributor, GitContributors, GitIdentity, GitLogo, GitReadme }
 
 const README_CAP = 512 * 1024;
 const LOGO_CAP = 512 * 1024;
+const IMAGE_CAP = 6 * 1024 * 1024;
 
 // README candidates, best first. The root candidates match the root listing
 // case-insensitively (a repo that ships `readme.md` still counts); the nested
@@ -50,6 +52,9 @@ const LOGO_MIME: Record<string, string> = {
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
 };
 
 /** Case-insensitive lookup of `wanted` among `dir`'s entries, returning the
@@ -162,27 +167,65 @@ function firstLocalImageSrc(markdown: string): string | null {
   return null;
 }
 
+/** Read a repo-relative image file's bytes, or null when the path leaves the
+ *  repo, is unreadable, is not a regular file, or exceeds `cap`. `safeRepoPath`
+ *  only rejects a lexical `..`: it cannot see a symlink whose target lives
+ *  outside the repo, so the resolved root and target are compared here. The
+ *  root itself is canonicalised too, because `repoRoot` can hand back a path
+ *  through a symlinked ancestor. */
+async function readRepoImage(
+  root: string,
+  relPath: string,
+  cap: number,
+  signal?: AbortSignal,
+): Promise<Buffer | null> {
+  const abs = safeRepoPath(root, relPath);
+  if (abs === null) return null;
+  let realRoot: string;
+  let realAbs: string;
+  try {
+    [realRoot, realAbs] = await Promise.all([realpath(root), realpath(abs)]);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    // Missing or unreadable (a broken symlink, permissions…) — nothing here.
+    return null;
+  }
+  // Canonical containment: a symlink out of the repo resolves outside `realRoot`.
+  if (!isPathInside(realRoot, realAbs)) return null;
+  let info;
+  try {
+    info = await stat(realAbs);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+  // A directory, FIFO or device named `*.png` is not an image to inline.
+  if (!info.isFile()) return null;
+  let buf: Buffer;
+  try {
+    buf = await readFile(realAbs, signal ? { signal } : undefined);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+  if (buf.length === 0 || buf.length > cap) return null;
+  return buf;
+}
+
 /** Read a repo-relative logo into a base64 data URL, or null when it is
- *  missing, unreadable, has an unmapped extension, or exceeds the 512 KB cap
- *  (a truncated image is broken — oversize means "doesn't qualify"). */
+ *  missing, unreadable, escapes the repo through a symlink, has an unmapped
+ *  extension, or exceeds the 512 KB cap (a truncated image is broken — oversize
+ *  means "doesn't qualify"). */
 async function readLogoDataUrl(
   root: string,
   relPath: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const abs = safeRepoPath(root, relPath);
-  if (abs === null) return null;
   const ext = path.extname(relPath).slice(1).toLowerCase();
   const mime = LOGO_MIME[ext];
   if (!mime) return null;
-  let buf: Buffer;
-  try {
-    buf = await readFile(abs, signal ? { signal } : undefined);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return null;
-  }
-  if (buf.length === 0 || buf.length > LOGO_CAP) return null;
+  const buf = await readRepoImage(root, relPath, LOGO_CAP, signal);
+  if (buf === null) return null;
   return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
@@ -204,6 +247,27 @@ export async function logo(dir: string, signal?: AbortSignal): Promise<GitLogo |
   const rel = path.posix.normalize(path.posix.join(path.posix.dirname(repoReadme.path), src));
   const dataUrl = await readLogoDataUrl(root, rel, signal);
   return dataUrl ? { path: rel, dataUrl } : null;
+}
+
+/** Read one repo-relative image into a data URL, or null when it escapes the
+ *  repo (lexically or through a symlink), is not a regular file, is unreadable,
+ *  has an unmapped extension, or exceeds the 6 MB cap. This is what lets a
+ *  README's own screenshots and logos show: the renderer has no way to read a
+ *  path, so the git module — which already reads the repo's files — answers with
+ *  the bytes inlined. The same trust boundary as `content` and `logo`: the hero
+ *  image of a README is a repo file, not a private one. */
+export async function readImage(
+  dir: string,
+  relPath: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  const mime = LOGO_MIME[path.extname(relPath).slice(1).toLowerCase()];
+  if (!mime) return null;
+  const buf = await readRepoImage(root, relPath, IMAGE_CAP, signal);
+  if (buf === null) return null;
+  return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
 /** The repository's contributors, from `git shortlog`. The git source is
