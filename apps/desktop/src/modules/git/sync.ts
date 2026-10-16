@@ -179,3 +179,32 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
     }
   });
 }
+
+/** Bring a branch you're not on up to its upstream without switching to it.
+ *  A refspec fetch onto refs/heads only moves the branch forward: git refuses
+ *  when the two have diverged, and when another worktree has it out. */
+export async function fastForward(dir: string, name: string): Promise<void> {
+  return withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root || !name.trim()) return;
+    const branch = name.trim();
+    const upstream = (
+      await git(root, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`]).catch(() => "")
+    ).trim();
+    const slash = upstream.indexOf("/");
+    if (slash <= 0) throw new GitError(`${branch} doesn't track a remote branch.`, null);
+    const remote = upstream.slice(0, slash);
+    try {
+      await git(
+        root,
+        ["fetch", remote, `refs/heads/${upstream.slice(slash + 1)}:refs/heads/${branch}`],
+        NON_INTERACTIVE_NETWORK_ENV,
+      );
+    } catch (error) {
+      if (error instanceof GitError && /non-fast-forward|rejected/i.test(error.message)) {
+        throw new GitError(`${branch} and ${upstream} have both moved. Switch to it to pull.`, error.code);
+      }
+      throw rewordNetworkError(error, remote);
+    }
+  });
+}

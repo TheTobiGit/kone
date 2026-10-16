@@ -42,23 +42,74 @@ export async function checkout(dir: string, branch: string): Promise<void> {
   return withRepoMutation(dir, async () => {
     const root = await repoRoot(dir);
     if (!root || !branch.trim()) return;
-    const name = branch.trim();
-    if (await refExists(root, `refs/heads/${name}`)) {
-      await git(root, ["switch", "--no-guess", "--", name]);
-      return;
-    }
-    const remoteRef = `refs/remotes/${name}`;
-    if (!(await refExists(root, remoteRef))) {
-      throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
-    }
-    const localName = name.slice(name.indexOf("/") + 1);
-    if (await refExists(root, `refs/heads/${localName}`)) {
-      await git(root, ["switch", "--no-guess", "--", localName]);
-    } else {
-      // switch -c is atomic: a failed checkout leaves no new branch behind.
-      await git(root, ["switch", "--track", "-c", localName, remoteRef]);
-    }
+    await switchIn(root, branch.trim());
   });
+}
+
+/** Switch branches and bring the uncommitted work along: stash it (untracked
+ *  files too), switch, and put it back. A switch that fails puts the work back
+ *  where it was. Work that clashes with the new branch is left in the stash,
+ *  and the tree clean, rather than half-applied with conflict markers. */
+export async function checkoutCarrying(dir: string, branch: string): Promise<void> {
+  return withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root || !branch.trim()) return;
+    const name = branch.trim();
+    const top = () => git(root, ["rev-parse", "-q", "--verify", "refs/stash"]).then((s) => s.trim(), () => "");
+    const before = await top();
+    await git(root, ["stash", "push", "-u", "-m", `kone: carried to ${name}`]);
+    // Nothing to carry: git said so and made no stash.
+    if ((await top()) === before) return switchIn(root, name);
+
+    try {
+      await switchIn(root, name);
+    } catch (error) {
+      await git(root, ["stash", "pop", "--index"]).catch(() => {});
+      throw error;
+    }
+    try {
+      await git(root, ["stash", "apply", "--index", "stash@{0}"]);
+    } catch {
+      // The stash still holds every change; only the half-applied copy goes.
+      await git(root, ["reset", "--hard", "-q"]);
+      await git(root, ["clean", "-fdq"]);
+      throw new GitError(
+        `Switched to ${name}, but your changes clash with it. They're safe in the stash; apply them from Stashes when you're ready.`,
+        null,
+      );
+    }
+    await git(root, ["stash", "drop", "-q", "stash@{0}"]);
+  });
+}
+
+/** Point a local branch at an upstream, e.g. one pushed from elsewhere. */
+export async function setUpstream(dir: string, name: string, upstream: string): Promise<void> {
+  return withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root || !name.trim() || !upstream.trim()) return;
+    if (!(await refExists(root, `refs/remotes/${upstream.trim()}`))) {
+      throw new GitError(`${upstream} isn't on the remote — fetch first.`, null);
+    }
+    await git(root, ["branch", `--set-upstream-to=refs/remotes/${upstream.trim()}`, "--", name.trim()]);
+  });
+}
+
+async function switchIn(root: string, name: string): Promise<void> {
+  if (await refExists(root, `refs/heads/${name}`)) {
+    await git(root, ["switch", "--no-guess", "--", name]);
+    return;
+  }
+  const remoteRef = `refs/remotes/${name}`;
+  if (!(await refExists(root, remoteRef))) {
+    throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
+  }
+  const localName = name.slice(name.indexOf("/") + 1);
+  if (await refExists(root, `refs/heads/${localName}`)) {
+    await git(root, ["switch", "--no-guess", "--", localName]);
+  } else {
+    // switch -c is atomic: a failed checkout leaves no new branch behind.
+    await git(root, ["switch", "--track", "-c", localName, remoteRef]);
+  }
 }
 
 async function refExists(root: string, ref: string): Promise<boolean> {

@@ -7,6 +7,7 @@ import type {
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
   GitBranch,
+  GitBranchCompare,
   GitCommit,
   GitCommitAuthors,
   GitCommitDetail,
@@ -423,6 +424,22 @@ export function useGitSpace(
   ): Promise<boolean> {
     return act("branch", () => bridge.deleteBranch(dir(), name, opts), loadBranches);
   }
+  /** Delete several local branches in one go, the merged ones a cleanup
+   *  offers. Plain `-d` each, so git still refuses one with unmerged work. */
+  function deleteBranches(names: string[]): Promise<boolean> {
+    return act(
+      "branch",
+      async () => {
+        for (const name of names) await bridge.deleteBranch(dir(), name);
+      },
+      loadBranches,
+    );
+  }
+  /** A branch against the default branch. Not cached: it is read when its
+   *  card opens, and the card is the only reader. */
+  function branchCompare(name: string, remote: boolean): Promise<GitBranchCompare | null> {
+    return bridge.branchCompare(dir(), name, remote).catch(() => null);
+  }
   function renameBranch(from: string, to: string): Promise<boolean> {
     return act("branch", () => bridge.renameBranch(dir(), from, to), loadBranches);
   }
@@ -434,6 +451,19 @@ export function useGitSpace(
   /** Moving HEAD changes every list in the space, history included. */
   function switchBranch(name: string): Promise<boolean> {
     return act("checkout", () => bridge.checkout(dir(), name), afterHistoryMoved);
+  }
+  /** Switch and bring the uncommitted work along. A clash leaves it in the
+   *  stash, so the stash list moves too. */
+  function switchCarrying(name: string): Promise<boolean> {
+    return act("checkout", () => bridge.checkoutCarrying(dir(), name), () =>
+      Promise.all([afterHistoryMoved(), loadStashes()]),
+    );
+  }
+  function fastForward(name: string): Promise<boolean> {
+    return act("pull", () => bridge.fastForward(dir(), name), afterHistoryMoved);
+  }
+  function setUpstream(name: string, upstream: string): Promise<boolean> {
+    return act("branch", () => bridge.setUpstream(dir(), name, upstream), loadBranches);
   }
 
   function loadState(): Promise<void> {
@@ -662,9 +692,14 @@ export function useGitSpace(
 
     createBranch,
     deleteBranch,
+    deleteBranches,
+    branchCompare,
     renameBranch,
     mergeBranch,
     switchBranch,
+    switchCarrying,
+    fastForward,
+    setUpstream,
     continueOperation,
     abortOperation,
     stash,
