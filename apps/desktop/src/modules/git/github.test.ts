@@ -248,6 +248,46 @@ describe("prs (record parsing)", () => {
     });
   });
 
+  test("folds reviews, requests, checks and mergeability into the row", async () => {
+    installFakeGh(`[{
+      number: 102,
+      title: "Review me",
+      state: "OPEN",
+      author: { login: "alice", name: "Alice" },
+      updatedAt: "2026-08-25T10:00:00Z",
+      changedFiles: 4,
+      mergeable: "CONFLICTING",
+      labels: [{ name: "bug", color: "D73A4A" }],
+      latestReviews: [
+        { author: { login: "bob" }, state: "APPROVED", commit: { oid: "abc" } },
+        { author: { login: "bob" }, state: "COMMENTED" }
+      ],
+      reviewRequests: [{ login: "bob" }, { login: "carol" }],
+      statusCheckRollup: [
+        { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+        { name: "test", status: "COMPLETED", conclusion: "FAILURE" },
+        { name: "e2e", status: "IN_PROGRESS", conclusion: "" },
+        { name: "docs", status: "COMPLETED", conclusion: "SKIPPED" }
+      ]
+    }]`);
+    const [pr] = await prs(process.cwd());
+    expect(pr).toMatchObject({
+      author: "alice",
+      authorPerson: { login: "alice", name: "Alice" },
+      updatedAt: "2026-08-25T10:00:00Z",
+      changedFiles: 4,
+      mergeable: "conflicting",
+      labels: [{ name: "bug", color: "d73a4a" }],
+      checks: "failing",
+      checkCounts: { passing: 1, failing: 1, pending: 1, skipped: 1 },
+    });
+    // One verdict per person: Bob's latest review wins over his open request.
+    expect(pr?.reviewers.map((r) => [r.person.login, r.state])).toEqual([
+      ["bob", "approved"],
+      ["carol", "pending"],
+    ]);
+  });
+
   test("empty stdout returns empty list", async () => {
     installFakeGhRaw("");
     expect(await prs(process.cwd())).toEqual([]);

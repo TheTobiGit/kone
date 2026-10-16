@@ -5,23 +5,33 @@ import { ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeico
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import type {
   GitFileDiff,
+  GitHubCheck,
+  GitHubCheckCounts,
   GitHubMergeability,
   GitHubPerson,
+  GitHubPrCommit,
+  GitHubPrFile,
   GitHubPullRequestDetail,
+  GitHubReview,
+  GitHubReviewer,
 } from "~/types/desktop";
 import type { useGitSpace } from "~/composables/useGitSpace";
 
 // One pull request, in full.
 //
-// The list this opens from answers "how is my work doing" — green or not, looked
-// at or not — and it stops there, because everything else used to mean a browser.
-// This is the everything else: the description as its author wrote it, who said
-// what, which checks ran, what changed, and the commits that got it there.
+// Two columns. The main one is the pull request as a story: the description,
+// then everything that happened to it on one rail — commits, reviews and
+// comments in the order they happened, runs of commits folded together — and
+// the files, commits and checks a tab away. The side column answers the one
+// question you open a pull request to ask, "can this merge, and if not, what's
+// in the way": a verdict, the checks as a ring with whatever isn't green
+// listed under it, the reviewers as faces ringed in their verdict (faded when
+// they judged an older commit), and the size of the change drawn file by file.
 //
-// What it deliberately doesn't have is buttons for merging, closing, approving or
-// commenting. There is no backing call for any of them, and a button that opens
-// GitHub in a new window while pretending to be a merge button is worse than the
-// honest link at the top of the page. So this view reads, and reads completely.
+// What it deliberately doesn't have is buttons for merging, closing, approving
+// or commenting. There is no backing call for any of them, and a button that
+// opens GitHub while pretending to be a merge button is worse than the honest
+// link at the top of the page.
 
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
@@ -103,84 +113,238 @@ const busy = computed(() => props.space.op.value !== null);
 const status = computed(() => {
   const p = pr.value;
   if (!p) return null;
-  if (p.state === "merged") return { word: "merged", tone: "merged" as const };
-  if (p.state === "closed") return { word: "closed", tone: "bad" as const };
-  if (p.isDraft) return { word: "draft", tone: "flat" as const };
-  return { word: "open", tone: "ok" as const };
+  if (p.state === "merged") return { word: "Merged", tone: "merged" as const };
+  if (p.state === "closed") return { word: "Closed", tone: "bad" as const };
+  if (p.isDraft) return { word: "Draft", tone: "flat" as const };
+  return { word: "Open", tone: "ok" as const };
 });
 
-const REVIEW: Record<string, string> = {
-  approved: "approved",
-  "changes-requested": "changes requested",
-  "review-required": "review needed",
-};
+// ── the verdict ──────────────────────────────────────────────────────────────
+// The side column's headline: can this merge, and if not, the one thing in the
+// way. Picked in the order it would have to be dealt with.
 
-/** Why it can't merge, in the words GitHub means rather than its enum. Only
- *  said for an open pull request: a merged one's mergeability is history. */
-// Partial on purpose: `clean`, `draft` and `unknown` aren't obstacles, so they
-// have nothing to say and fall through to null below.
+interface Verdict {
+  word: string;
+  why: string | null;
+  tone: "ok" | "bad" | "warn" | "flat";
+}
+
 const MERGEABILITY = new Map<GitHubMergeability, string>([
-  ["conflicting", "conflicts with the base branch"],
-  ["blocked", "blocked — a required check or review is missing"],
-  ["behind", "behind the base branch"],
-  ["unstable", "merges, but a check is failing"],
+  ["conflicting", "It conflicts with the base branch."],
+  ["blocked", "A required check or review is missing."],
+  ["behind", "It's behind the base branch."],
+  ["unstable", "It merges, but a check is failing."],
 ]);
-const obstacle = computed(() => {
+
+const verdict = computed<Verdict | null>(() => {
   const p = pr.value;
-  if (!p || p.state !== "open" || p.isDraft) return null;
-  return MERGEABILITY.get(p.mergeability) ?? null;
+  if (!p) return null;
+  if (p.state === "merged") {
+    const when = p.mergedAt ? ` on ${dateOf(p.mergedAt)}` : "";
+    return { word: "Merged", why: p.mergedBy ? `${p.mergedBy.login} merged it${when}.` : null, tone: "flat" };
+  }
+  if (p.state === "closed") return { word: "Closed", why: "Closed without merging.", tone: "flat" };
+  if (p.isDraft) return { word: "Draft", why: "Not asking for review yet.", tone: "flat" };
+  if (p.mergeability === "conflicting") return { word: "Has conflicts", why: `It conflicts with ${p.base}.`, tone: "bad" };
+  if (checkCounts.value.failing) {
+    return { word: "Checks failing", why: `${plural(checkCounts.value.failing, "check")} failed.`, tone: "bad" };
+  }
+  if (p.reviewDecision === "changes-requested") return { word: "Changes requested", why: reviewSentence.value, tone: "bad" };
+  if (checkCounts.value.pending) {
+    return { word: "Checks running", why: `${plural(checkCounts.value.pending, "check")} still running.`, tone: "warn" };
+  }
+  if (p.reviewDecision === "review-required" || pendingReviewers.value.length) {
+    return { word: "Needs review", why: reviewSentence.value, tone: "warn" };
+  }
+  return { word: "Ready to merge", why: MERGEABILITY.get(p.mergeability) ?? "Green, and nothing is in the way.", tone: "ok" };
+});
+
+// ── checks ───────────────────────────────────────────────────────────────────
+
+const checkCounts = computed<GitHubCheckCounts>(() => {
+  const counts = { passing: 0, failing: 0, pending: 0, skipped: 0 };
+  for (const c of pr.value?.checkRuns ?? []) if (c.state !== "none") counts[c.state] += 1;
+  return counts;
+});
+const checkBrief = computed(() => {
+  const c = checkCounts.value;
+  const parts: string[] = [];
+  if (c.failing) parts.push(`${c.failing} failing`);
+  if (c.pending) parts.push(`${c.pending} running`);
+  if (c.passing) parts.push(`${c.passing} passing`);
+  if (c.skipped) parts.push(`${c.skipped} skipped`);
+  return parts.join(" · ");
+});
+
+/** Checks grouped the way you'd deal with them: what broke, what's still
+ *  going, then what's fine. */
+const CHECK_GROUPS = [
+  { id: "failing", label: "Needs attention" },
+  { id: "pending", label: "Running" },
+  { id: "passing", label: "Passed" },
+  { id: "skipped", label: "Skipped" },
+] as const;
+const checkGroups = computed(() => {
+  const runs = pr.value?.checkRuns ?? [];
+  const out: { id: string; label: string; checks: GitHubCheck[] }[] = [];
+  for (const g of CHECK_GROUPS) {
+    const checks = runs.filter((c) => c.state === g.id || (g.id === "skipped" && c.state === "none"));
+    if (checks.length) out.push({ id: g.id, label: g.label, checks });
+  }
+  return out;
+});
+/** The checks the side column lists: anything not green, a few at most. */
+const attention = computed(() => {
+  const runs = pr.value?.checkRuns ?? [];
+  const failing = runs.filter((c) => c.state === "failing");
+  const pending = runs.filter((c) => c.state === "pending");
+  return [...failing, ...pending].slice(0, 4);
+});
+
+function duration(c: GitHubCheck): string {
+  if (!c.startedAt) return "";
+  const start = Date.parse(c.startedAt);
+  if (Number.isNaN(start)) return "";
+  if (!c.completedAt) return c.state === "pending" ? "running" : "";
+  const secs = Math.max(0, Math.round((Date.parse(c.completedAt) - start) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+// ── reviews ──────────────────────────────────────────────────────────────────
+
+/** The newest commit on the branch, by date: a review left on anything else
+ *  judged code that has since moved. */
+const headOid = computed(() => {
+  const commits = pr.value?.commits ?? [];
+  let head: GitHubPrCommit | null = null;
+  for (const c of commits) if (!head || c.date > head.date) head = c;
+  return head?.oid ?? null;
+});
+function isStale(r: GitHubReview): boolean {
+  return Boolean(r.commit && headOid.value && r.commit !== headOid.value && r.state !== "pending");
+}
+
+const reviewers = computed<(GitHubReviewer & { stale: boolean })[]>(() => {
+  const out: (GitHubReviewer & { stale: boolean })[] = [];
+  for (const r of pr.value?.reviews ?? []) {
+    if (r.author) out.push({ person: r.author, state: r.state, stale: isStale(r) });
+  }
+  return out;
+});
+const pendingReviewers = computed(() => reviewers.value.filter((r) => r.state === "pending"));
+
+/** Who said what, as one sentence: "Approved by kwesi on an earlier commit ·
+ *  waiting on ama". */
+const reviewSentence = computed(() => {
+  const parts: string[] = [];
+  const approved = reviewers.value.filter((r) => r.state === "approved");
+  const changes = reviewers.value.filter((r) => r.state === "changes-requested");
+  if (approved.length) {
+    const stale = approved.every((r) => r.stale);
+    parts.push(`Approved by ${names(approved)}${stale ? " on an earlier commit" : ""}`);
+  }
+  if (changes.length) parts.push(`${names(changes)} asked for changes`);
+  if (pendingReviewers.value.length) parts.push(`waiting on ${names(pendingReviewers.value)}`);
+  if (!parts.length) return "Nobody has been asked to review yet.";
+  const s = parts.join(" · ");
+  return `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
+});
+function names(list: GitHubReviewer[]): string {
+  return list.map((r) => r.person.login).join(", ");
+}
+
+// ── the rail ─────────────────────────────────────────────────────────────────
+// Everything that happened to the pull request, oldest first, on one line.
+// Consecutive commits fold into one event — a push of five commits is one
+// thing that happened, not five.
+
+type Event =
+  | { kind: "opened"; at: string; person: GitHubPerson | null }
+  | { kind: "commits"; at: string; commits: GitHubPrCommit[] }
+  | { kind: "review"; at: string; review: GitHubReview }
+  | { kind: "comment"; at: string; person: GitHubPerson | null; body: string; relative: string }
+  | { kind: "merged"; at: string; person: GitHubPerson | null }
+  | { kind: "closed"; at: string };
+
+const events = computed<Event[]>(() => {
+  const p = pr.value;
+  if (!p) return [];
+  const raw: Event[] = [{ kind: "opened", at: p.createdAt, person: p.author }];
+  for (const c of p.commits) raw.push({ kind: "commits", at: c.date, commits: [c] });
+  for (const r of p.reviews) if (r.submittedAt) raw.push({ kind: "review", at: r.submittedAt, review: r });
+  for (const c of p.comments) {
+    raw.push({ kind: "comment", at: c.createdAt, person: c.author, body: c.body, relative: c.relative });
+  }
+  if (p.mergedAt) raw.push({ kind: "merged", at: p.mergedAt, person: p.mergedBy });
+  else if (p.closedAt) raw.push({ kind: "closed", at: p.closedAt });
+  // Opening is where the story starts, even when a commit on the branch is
+  // older than the pull request itself.
+  raw.sort((a, b) => (a.kind === "opened" ? -1 : b.kind === "opened" ? 1 : a.at.localeCompare(b.at)));
+  const out: Event[] = [];
+  for (const e of raw) {
+    const last = out[out.length - 1];
+    if (e.kind === "commits" && last?.kind === "commits") last.commits.push(...e.commits);
+    else out.push(e);
+  }
+  return out;
 });
 
 const REVIEW_STATE: Record<string, string> = {
   approved: "approved",
   "changes-requested": "requested changes",
-  commented: "commented",
+  commented: "reviewed",
   dismissed: "review dismissed",
   pending: "review pending",
 };
 
-/** Reviews and comments in one column, oldest first — because that's the
- *  conversation, and splitting it into two lists makes it unreadable. */
-const conversation = computed(() => {
-  const p = pr.value;
-  if (!p) return [];
-  const entries = [
-    ...p.reviews.map((r) => ({
-      kind: "review" as const,
-      person: r.author,
-      body: r.body,
-      at: r.submittedAt,
-      relative: r.relative,
-      state: r.state,
-      // SAFETY: pure type widening — reviews have no url, and the literal null
-      // is widened to string|null so both entry kinds share one shape.
-      url: null as string | null,
-    })),
-    ...p.comments.map((c) => ({
-      kind: "comment" as const,
-      person: c.author,
-      body: c.body,
-      at: c.createdAt,
-      relative: c.relative,
-      // SAFETY: pure type widening — the literal null is widened to string|null
-      // so both entry kinds share one shape; no runtime value is involved.
-      state: null as string | null,
-      url: c.url,
-    })),
-  ];
-  // A pending review has no timestamp — it hasn't happened. It belongs at the
-  // end, with the things still being waited on.
-  return entries.sort((a, b) => {
-    if (!a.at) return 1;
-    if (!b.at) return -1;
-    return a.at.localeCompare(b.at);
-  });
+// ── files ────────────────────────────────────────────────────────────────────
+// Sorted the way they're worth reading: the code itself, then its tests, then
+// what was generated or only configures the build.
+
+type FileKind = "source" | "tests" | "generated";
+const FILE_GROUPS: { id: FileKind; label: string }[] = [
+  { id: "source", label: "Source" },
+  { id: "tests", label: "Tests" },
+  { id: "generated", label: "Lockfiles and generated" },
+];
+function fileKind(path: string): FileKind {
+  const name = nameOf(path);
+  if (/(^|\/)(dist|build|vendor|__snapshots__)\//.test(path) || /\.(lock|snap)$|lock\.(json|yaml)$|^bun\.lockb?$/.test(name)) {
+    return "generated";
+  }
+  if (/(^|\/)(tests?|__tests__|e2e)\//.test(path) || /\.(test|spec)\.[a-z]+$/.test(name)) return "tests";
+  return "source";
+}
+const fileGroups = computed(() => {
+  const all = pr.value?.files ?? [];
+  const out: { id: FileKind; label: string; files: GitHubPrFile[] }[] = [];
+  for (const g of FILE_GROUPS) {
+    const list = all.filter((f) => fileKind(f.path) === g.id);
+    if (list.length) out.push({ ...g, files: list });
+  }
+  return out;
 });
+const filePeak = computed(() => Math.max(1, ...(pr.value?.files ?? []).map((f) => f.additions + f.deletions)));
+/** A file's share of the change as a bar width, square-root scaled so the one
+ *  enormous file doesn't flatten the rest. */
+function fileBar(f: GitHubPrFile, max: number) {
+  const total = f.additions + f.deletions;
+  if (!total) return { add: 0, del: 0 };
+  const w = Math.max(2, Math.sqrt(total / filePeak.value) * max);
+  return { add: (f.additions / total) * w, del: (f.deletions / total) * w };
+}
+/** The side column's files: the biggest few. */
+const biggest = computed(() =>
+  [...(pr.value?.files ?? [])].sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions)).slice(0, 5),
+);
 
 const counts = computed(() => {
   const p = pr.value;
   return {
-    conversation: conversation.value.length,
+    conversation: (p?.comments.length ?? 0) + (p?.reviews.filter((r) => r.submittedAt).length ?? 0),
     files: p?.changedFiles ?? 0,
     commits: p?.commits.length ?? 0,
     checks: p?.checkRuns.length ?? 0,
@@ -200,6 +364,10 @@ function setTab(next: Tab) {
   tab.value = next;
   openPath.value = null;
 }
+function showFile(path: string) {
+  setTab("files");
+  openPath.value = path;
+}
 
 function toggleFile(path: string) {
   if (openPath.value === path) {
@@ -213,6 +381,8 @@ function toggleFile(path: string) {
 
 const openDiff = computed(() => files.value?.find((f) => f.path === openPath.value) ?? null);
 
+// ── words ────────────────────────────────────────────────────────────────────
+
 function initial(p: GitHubPerson | null, fallback = "") {
   return (p?.name || p?.login || fallback)[0]?.toUpperCase() ?? "";
 }
@@ -224,11 +394,12 @@ function dirOf(path: string) {
   const i = path.lastIndexOf("/");
   return i === -1 ? "" : path.slice(0, i + 1);
 }
-
-/** A label's own colour, used at the weight this space uses colour: a dot and a
- *  tinted word, never a filled chip. GitHub gives six hex digits, no '#'. */
-function labelTint(hex: string) {
-  return `#${hex}`;
+function dateOf(iso: string) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 function checkout() {
@@ -267,13 +438,13 @@ function goBack() {
       </button>
 
       <div class="prv__identity">
-        <p class="prv__eyebrow">#{{ number }}</p>
+        <p class="prv__eyebrow">
+          <span v-if="status" class="prv__state" :class="`prv__state--${status.tone}`">{{ status.word }}</span>
+          <span>#{{ number }}</span>
+        </p>
         <h1 class="prv__title">{{ pr?.title ?? "Pull request" }}</h1>
 
         <p v-if="pr" class="prv__note">
-          <span v-if="status" class="prv__state" :class="`prv__state--${status.tone}`">
-            {{ status.word }}
-          </span>
           <span class="prv__author">
             <span class="prv__face" aria-hidden="true">
               <img v-if="pr.author?.avatarDataUrl" :src="pr.author.avatarDataUrl" alt="" />
@@ -287,7 +458,7 @@ function goBack() {
             <span class="prv__arrow">→</span>
             <span class="prv__ref">{{ pr.base }}</span>
           </span>
-          <span>{{ pr.relative }}</span>
+          <span>opened {{ pr.relative }}</span>
         </p>
       </div>
 
@@ -300,21 +471,9 @@ function goBack() {
           aria-label="Re-read this pull request"
           @click="refresh"
         >
-          <HugeiconsIcon
-            class="prv__refresh"
-            :icon="RefreshIcon"
-            :size="12"
-            :stroke-width="2"
-            aria-hidden="true"
-          />
+          <HugeiconsIcon class="prv__refresh" :icon="RefreshIcon" :size="12" :stroke-width="2" aria-hidden="true" />
         </button>
-        <button
-          v-if="pr?.state === 'open'"
-          type="button"
-          class="prv__btn"
-          :disabled="busy"
-          @click="checkout"
-        >
+        <button v-if="pr?.state === 'open'" type="button" class="prv__btn" :disabled="busy" @click="checkout">
           Check out
         </button>
         <button v-if="pr" type="button" class="prv__btn" @click="openOnGitHub">
@@ -332,181 +491,331 @@ function goBack() {
         This pull request couldn't be read. The GitHub CLI may not be signed in.
       </p>
 
-      <template v-else>
-        <!-- The two things worth knowing before you read anything: what's in the
-             way, and what it's tagged as. Both are one line or absent. -->
-        <p v-if="obstacle" class="prv__obstacle">{{ obstacle }}</p>
-
-        <p v-if="pr.labels.length || pr.milestone || pr.assignees.length" class="prv__tags">
-          <span v-for="l in pr.labels" :key="l.name" class="prv__label" :title="l.description ?? l.name">
-            <i class="prv__dot" :style="{ backgroundColor: labelTint(l.color) }" />
-            {{ l.name }}
-          </span>
-          <span v-if="pr.milestone" class="prv__dim">{{ pr.milestone }}</span>
-          <span v-if="pr.assignees.length" class="prv__dim">
-            assigned to {{ pr.assignees.map((a) => a.login).join(", ") }}
-          </span>
-        </p>
-
-        <nav class="prv__tabs" aria-label="Pull request sections">
-          <button
-            v-for="t in TABS"
-            :key="t.id"
-            type="button"
-            class="prv__tab"
-            :class="{ 'prv__tab--on': tab === t.id }"
-            :aria-current="tab === t.id ? 'true' : undefined"
-            @click="setTab(t.id)"
-          >
-            {{ t.label }}
-            <span v-if="counts[t.id]" class="prv__count">{{ counts[t.id] }}</span>
-          </button>
-        </nav>
-
-        <!-- ── conversation ───────────────────────────────────────────────── -->
-        <section v-if="tab === 'conversation'" :key="tab" class="prv__pane">
-          <div v-if="pr.body" class="prv__description selectable">
-            <MarkdownMessage :source="pr.body" historical />
-          </div>
-          <p v-else class="prv__nodesc">No description.</p>
-
-          <div v-if="conversation.length" class="prv__thread">
-            <div
-              v-for="(entry, i) in conversation"
-              :key="`${entry.kind}:${i}`"
-              class="prv__entry"
-              :style="{ '--i': i }"
+      <div v-else class="prv__cols">
+        <!-- ══ the main column ══════════════════════════════════════════════ -->
+        <div class="prv__main">
+          <nav class="prv__tabs" aria-label="Pull request sections">
+            <button
+              v-for="t in TABS"
+              :key="t.id"
+              type="button"
+              class="prv__tab"
+              :class="{ 'prv__tab--on': tab === t.id }"
+              :aria-current="tab === t.id ? 'true' : undefined"
+              @click="setTab(t.id)"
             >
-              <span class="prv__face prv__face--lg" aria-hidden="true">
-                <img v-if="entry.person?.avatarDataUrl" :src="entry.person.avatarDataUrl" alt="" />
-                <span v-else>{{ initial(entry.person) }}</span>
-              </span>
-              <div class="prv__said">
-                <p class="prv__saidhead">
-                  <span class="prv__who">{{ entry.person?.login ?? "someone" }}</span>
+              {{ t.label }}
+              <span v-if="counts[t.id]" class="prv__count">{{ counts[t.id] }}</span>
+            </button>
+          </nav>
+
+          <!-- ── conversation ─────────────────────────────────────────────── -->
+          <section v-if="tab === 'conversation'" :key="tab" class="prv__pane">
+            <div v-if="pr.body" class="prv__description selectable">
+              <MarkdownMessage :source="pr.body" historical />
+            </div>
+            <p v-else class="prv__nodesc">No description.</p>
+
+            <ol class="prv__rail">
+              <li
+                v-for="(e, i) in events"
+                :key="`${e.kind}:${e.at}:${i}`"
+                class="prv__event"
+                :class="`prv__event--${e.kind}`"
+                :style="{ '--i': i }"
+              >
+                <!-- opened -->
+                <template v-if="e.kind === 'opened'">
+                  <i class="prv__node" />
+                  <p class="prv__line">
+                    <b>{{ e.person?.login ?? "someone" }}</b>{{ " " }}opened this
+                    <span class="prv__when">{{ pr.relative }}</span>
+                  </p>
+                </template>
+
+                <!-- a run of commits -->
+                <template v-else-if="e.kind === 'commits'">
+                  <i class="prv__node prv__node--commit" />
+                  <div class="prv__pushed">
+                    <p class="prv__line">
+                      Pushed {{ plural(e.commits.length, "commit") }}
+                      <span class="prv__when">{{ e.commits[e.commits.length - 1]?.relative }}</span>
+                    </p>
+                    <button
+                      v-for="c in e.commits"
+                      :key="c.oid"
+                      type="button"
+                      class="prv__pushed-row"
+                      :title="c.headline"
+                      aria-haspopup="dialog"
+                      @click="openCommit($event, c.oid)"
+                    >
+                      <span class="prv__hash">{{ c.short }}</span>
+                      <span class="prv__headline">{{ c.headline }}</span>
+                    </button>
+                  </div>
+                </template>
+
+                <!-- a review -->
+                <template v-else-if="e.kind === 'review'">
                   <span
-                    v-if="entry.state"
-                    class="prv__verdict"
-                    :class="{
-                      'prv__verdict--ok': entry.state === 'approved',
-                      'prv__verdict--bad': entry.state === 'changes-requested',
-                    }"
+                    class="prv__face prv__face--lg prv__face--ringed"
+                    :class="`prv__face--${e.review.state}`"
+                    aria-hidden="true"
                   >
-                    {{ REVIEW_STATE[entry.state] }}
+                    <img v-if="e.review.author?.avatarDataUrl" :src="e.review.author.avatarDataUrl" alt="" />
+                    <span v-else>{{ initial(e.review.author) }}</span>
                   </span>
-                  <span v-else class="prv__dim">commented</span>
-                  <span class="prv__dim">{{ entry.relative }}</span>
+                  <div class="prv__said">
+                    <p class="prv__line">
+                      <b>{{ e.review.author?.login ?? "someone" }}</b>{{ " " }}
+                      <span class="prv__verdict" :class="`prv__verdict--${e.review.state}`">
+                        {{ REVIEW_STATE[e.review.state] }}
+                      </span>
+                      <span class="prv__when">{{ e.review.relative }}</span>
+                      <span v-if="isStale(e.review)" class="prv__stale">on an earlier commit</span>
+                    </p>
+                    <div v-if="e.review.body" class="prv__saidbody selectable">
+                      <MarkdownMessage :source="e.review.body" historical />
+                    </div>
+                  </div>
+                </template>
+
+                <!-- a comment -->
+                <template v-else-if="e.kind === 'comment'">
+                  <span class="prv__face prv__face--lg" aria-hidden="true">
+                    <img v-if="e.person?.avatarDataUrl" :src="e.person.avatarDataUrl" alt="" />
+                    <span v-else>{{ initial(e.person) }}</span>
+                  </span>
+                  <div class="prv__said">
+                    <p class="prv__line">
+                      <b>{{ e.person?.login ?? "someone" }}</b>
+                      <span class="prv__when">{{ e.relative }}</span>
+                    </p>
+                    <div v-if="e.body" class="prv__saidbody selectable">
+                      <MarkdownMessage :source="e.body" historical />
+                    </div>
+                  </div>
+                </template>
+
+                <!-- the end -->
+                <template v-else-if="e.kind === 'merged'">
+                  <i class="prv__node prv__node--merged" />
+                  <p class="prv__line">
+                    <b>{{ e.person?.login ?? "someone" }}</b>{{ " " }}merged it
+                    <span class="prv__when">{{ dateOf(e.at) }}</span>
+                  </p>
+                </template>
+                <template v-else>
+                  <i class="prv__node prv__node--closed" />
+                  <p class="prv__line">
+                    Closed <span class="prv__when">{{ dateOf(e.at) }}</span>
+                  </p>
+                </template>
+              </li>
+            </ol>
+          </section>
+
+          <!-- ── files ────────────────────────────────────────────────────── -->
+          <section v-else-if="tab === 'files'" :key="tab" class="prv__pane">
+            <GitSpaceSkeleton v-if="filesLoading" :rows="6" />
+
+            <template v-else>
+              <div v-for="g in fileGroups" :key="g.id" class="prv__group">
+                <p class="prv__glabel">
+                  {{ g.label }} <span class="prv__count">{{ g.files.length }}</span>
                 </p>
-                <!-- An approval with nothing written is the normal case, and it
-                     already said everything in the line above. -->
-                <div v-if="entry.body" class="prv__saidbody selectable">
-                  <MarkdownMessage :source="entry.body" historical />
+                <div v-for="(f, i) in g.files" :key="f.path" class="prv__file" :style="{ '--i': i }">
+                  <button
+                    type="button"
+                    class="prv__row"
+                    :class="{ 'prv__row--on': openPath === f.path }"
+                    :title="f.path"
+                    @click="toggleFile(f.path)"
+                  >
+                    <FileIcon :path="f.path" :size="14" />
+                    <span class="prv__path">
+                      <span class="prv__dir">{{ dirOf(f.path) }}</span>{{ nameOf(f.path) }}
+                    </span>
+                    <span v-if="f.change !== 'modified'" class="prv__dim">{{ f.change }}</span>
+                    <span class="prv__nums">
+                      <span v-if="f.additions" class="prv__add">+{{ f.additions }}</span>
+                      <span v-if="f.deletions" class="prv__del">−{{ f.deletions }}</span>
+                    </span>
+                    <span class="prv__bar">
+                      <i class="prv__bar-add" :style="{ width: `${fileBar(f, 64).add}px` }" />
+                      <i class="prv__bar-del" :style="{ width: `${fileBar(f, 64).del}px` }" />
+                    </span>
+                  </button>
+
+                  <!-- The whole patch arrived in one read, so unfolding a file is a
+                       lookup, not a fetch — there's nothing to wait for. -->
+                  <template v-if="openPath === f.path">
+                    <GitSpaceInlineDiff v-if="openDiff" :diff="openDiff" :loading="false" />
+                    <p v-else class="prv__nodiff">
+                      This file isn't in the patch — it's probably binary, or too large for GitHub
+                      to have sent.
+                    </p>
+                  </template>
                 </div>
               </div>
+            </template>
+          </section>
+
+          <!-- ── commits ──────────────────────────────────────────────────── -->
+          <section v-else-if="tab === 'commits'" :key="tab" class="prv__pane">
+            <ol class="prv__rail prv__rail--tight">
+              <li v-for="(c, i) in pr.commits" :key="c.oid" class="prv__event" :style="{ '--i': i }">
+                <i class="prv__node prv__node--commit" />
+                <button
+                  type="button"
+                  class="prv__commit"
+                  :title="c.headline"
+                  aria-haspopup="dialog"
+                  @click="openCommit($event, c.oid)"
+                >
+                  <span class="prv__headline">{{ c.headline }}</span>
+                  <span class="prv__meta">
+                    <span class="prv__hash">{{ c.short }}</span>
+                    <span>{{ c.author }}</span>
+                    <span>{{ c.relative }}</span>
+                    <span v-if="c.oid === headOid" class="prv__headtag">head</span>
+                  </span>
+                </button>
+              </li>
+            </ol>
+            <!-- Only true of a pull request whose branch was pushed from elsewhere;
+                 said plainly rather than silently showing nothing. -->
+            <p v-if="!pr.commits.length" class="prv__nodesc">GitHub didn't return any commits for this branch.</p>
+          </section>
+
+          <!-- ── checks ───────────────────────────────────────────────────── -->
+          <section v-else :key="tab" class="prv__pane">
+            <div v-for="g in checkGroups" :key="g.id" class="prv__group">
+              <p class="prv__glabel">
+                {{ g.label }} <span class="prv__count">{{ g.checks.length }}</span>
+              </p>
+              <div
+                v-for="(c, i) in g.checks"
+                :key="`${c.workflow}/${c.name}`"
+                class="prv__check"
+                :style="{ '--i': i }"
+              >
+                <i class="prv__checkdot" :class="`prv__checkdot--${c.state}`" />
+                <span class="prv__checkname">
+                  <span v-if="c.workflow" class="prv__dir">{{ c.workflow }} / </span>{{ c.name }}
+                </span>
+                <span class="prv__dim">{{ duration(c) }}</span>
+                <button
+                  v-if="c.url"
+                  type="button"
+                  class="prv__go"
+                  title="Open this check on GitHub"
+                  @click="space.openExternal(c.url!)"
+                >
+                  Logs
+                </button>
+              </div>
+            </div>
+            <p v-if="!pr.checkRuns.length" class="prv__nodesc">No checks ran on this pull request.</p>
+          </section>
+        </div>
+
+        <!-- ══ the side column: can it merge ════════════════════════════════ -->
+        <aside class="prv__side">
+          <div v-if="verdict" class="prv__block prv__verdictblock" style="--i: 0">
+            <p class="prv__big" :class="`prv__big--${verdict.tone}`">
+              <i class="prv__big-dot" />
+              {{ verdict.word }}
+            </p>
+            <p v-if="verdict.why" class="prv__sub">{{ verdict.why }}</p>
+          </div>
+
+          <div v-if="pr.checkRuns.length" class="prv__block" style="--i: 1">
+            <div class="prv__label">
+              <span class="prv__label-name">Checks</span>
+              <button type="button" class="prv__label-go" @click="setTab('checks')">All</button>
+            </div>
+            <div class="prv__ringrow">
+              <GitSpaceChecksRing :counts="checkCounts" :size="52" :stroke="5" />
+              <p class="prv__ringbrief">{{ checkBrief }}</p>
+            </div>
+            <div v-if="attention.length" class="prv__attn">
+              <button
+                v-for="c in attention"
+                :key="`${c.workflow}/${c.name}`"
+                type="button"
+                class="prv__attn-row"
+                :disabled="!c.url"
+                :title="c.url ? 'Open this check on GitHub' : c.name"
+                @click="c.url && space.openExternal(c.url)"
+              >
+                <i class="prv__checkdot" :class="`prv__checkdot--${c.state}`" />
+                <span class="prv__attn-name">{{ c.name }}</span>
+                <span class="prv__dim">{{ duration(c) }}</span>
+              </button>
             </div>
           </div>
 
-          <p v-if="pr.mergedAt && pr.mergedBy" class="prv__merged">
-            Merged by {{ pr.mergedBy.login }} · {{ new Date(pr.mergedAt).toLocaleDateString() }}
-          </p>
-        </section>
+          <div class="prv__block" style="--i: 2">
+            <div class="prv__label">
+              <span class="prv__label-name">Reviews</span>
+            </div>
+            <GitSpaceReviewers v-if="reviewers.length" :reviewers="reviewers" :size="30" />
+            <p class="prv__sub">{{ reviewSentence }}</p>
+          </div>
 
-        <!-- ── files ──────────────────────────────────────────────────────── -->
-        <section v-else-if="tab === 'files'" :key="tab" class="prv__pane">
-          <p class="prv__stat">
-            <span>{{ pr.changedFiles }} file{{ pr.changedFiles === 1 ? "" : "s" }}</span>
-            <span v-if="pr.additions" class="prv__add">+{{ pr.additions }}</span>
-            <span v-if="pr.deletions" class="prv__del">−{{ pr.deletions }}</span>
-          </p>
-
-          <GitSpaceSkeleton v-if="filesLoading" :rows="6" />
-
-          <div v-else class="prv__list">
-            <div v-for="(f, i) in pr.files" :key="f.path" class="prv__file" :style="{ '--i': i }">
+          <div class="prv__block" style="--i: 3">
+            <div class="prv__label">
+              <span class="prv__label-name">Changes</span>
+              <button type="button" class="prv__label-go" @click="setTab('files')">Files</button>
+            </div>
+            <p class="prv__changes">
+              <span class="prv__add">+{{ pr.additions }}</span>
+              <span class="prv__del">−{{ pr.deletions }}</span>
+              <span class="prv__dim">{{ plural(pr.changedFiles, "file") }} · {{ plural(pr.commits.length, "commit") }}</span>
+            </p>
+            <div class="prv__sizes">
               <button
+                v-for="(f, n) in biggest"
+                :key="f.path"
                 type="button"
-                class="prv__row"
-                :class="{ 'prv__row--on': openPath === f.path }"
+                class="prv__size"
                 :title="f.path"
-                @click="toggleFile(f.path)"
+                @click="showFile(f.path)"
               >
-                <FileIcon :path="f.path" :size="14" />
-                <span class="prv__path">
-                  <span class="prv__dir">{{ dirOf(f.path) }}</span>{{ nameOf(f.path) }}
-                </span>
-                <span v-if="f.change !== 'modified'" class="prv__dim">{{ f.change }}</span>
-                <span class="prv__nums">
-                  <span v-if="f.additions" class="prv__add">+{{ f.additions }}</span>
-                  <span v-if="f.deletions" class="prv__del">−{{ f.deletions }}</span>
+                <span class="prv__size-name">{{ nameOf(f.path) }}</span>
+                <span class="prv__size-track">
+                  <i class="prv__bar-add" :style="{ width: `${fileBar(f, 96).add}px`, '--n': n }" />
+                  <i class="prv__bar-del" :style="{ width: `${fileBar(f, 96).del}px`, '--n': n }" />
                 </span>
               </button>
+            </div>
+          </div>
 
-              <!-- The whole patch arrived in one read, so unfolding a file is a
-                   lookup, not a fetch — there's nothing to wait for. -->
-              <template v-if="openPath === f.path">
-                <GitSpaceInlineDiff v-if="openDiff" :diff="openDiff" :loading="false" />
-                <p v-else class="prv__nodiff">
-                  This file isn't in the patch — it's probably binary, or too large for GitHub
-                  to have sent.
-                </p>
+          <div v-if="pr.labels.length || pr.milestone || pr.assignees.length" class="prv__block" style="--i: 4">
+            <div v-if="pr.labels.length" class="prv__tags">
+              <span v-for="l in pr.labels" :key="l.name" class="prv__tag" :title="l.description ?? l.name">
+                <i class="prv__dot" :style="{ backgroundColor: `#${l.color}` }" />{{ l.name }}
+              </span>
+            </div>
+            <dl class="prv__facts">
+              <template v-if="pr.assignees.length">
+                <dt>Assigned</dt>
+                <dd>{{ pr.assignees.map((a) => a.login).join(", ") }}</dd>
               </template>
-            </div>
+              <template v-if="pr.milestone">
+                <dt>Milestone</dt>
+                <dd>{{ pr.milestone }}</dd>
+              </template>
+              <template v-if="pr.updatedAt">
+                <dt>Updated</dt>
+                <dd>{{ dateOf(pr.updatedAt) }}</dd>
+              </template>
+            </dl>
           </div>
-        </section>
-
-        <!-- ── commits ────────────────────────────────────────────────────── -->
-        <section v-else-if="tab === 'commits'" :key="tab" class="prv__pane">
-          <div class="prv__list">
-            <button
-              v-for="(c, i) in pr.commits"
-              :key="c.oid"
-              type="button"
-              class="prv__commit"
-              :style="{ '--i': i }"
-              :title="c.headline"
-              aria-haspopup="dialog"
-              @click="openCommit($event, c.oid)"
-            >
-              <span class="prv__body">
-                <span class="prv__headline">{{ c.headline }}</span>
-                <span class="prv__meta">
-                  <span class="prv__hash">{{ c.short }}</span>
-                  <span class="prv__dim">{{ c.author }}</span>
-                  <span class="prv__dim">{{ c.relative }}</span>
-                </span>
-              </span>
-            </button>
-          </div>
-          <!-- Only true of a pull request whose branch was pushed from elsewhere;
-               said plainly rather than silently showing nothing. -->
-          <p v-if="!pr.commits.length" class="prv__nodesc">
-            GitHub didn't return any commits for this branch.
-          </p>
-        </section>
-
-        <!-- ── checks ─────────────────────────────────────────────────────── -->
-        <section v-else :key="tab" class="prv__pane">
-          <div v-if="pr.checkRuns.length" class="prv__list">
-            <div v-for="(c, i) in pr.checkRuns" :key="`${c.workflow}/${c.name}`" class="prv__check" :style="{ '--i': i }">
-              <i class="prv__checkdot" :class="`prv__checkdot--${c.state}`" :title="c.state" />
-              <span class="prv__checkname">
-                <span v-if="c.workflow" class="prv__dir">{{ c.workflow }} / </span>{{ c.name }}
-              </span>
-              <span class="prv__dim">{{ c.state }}</span>
-              <button
-                v-if="c.url"
-                type="button"
-                class="prv__go"
-                title="Open this check on GitHub"
-                @click="space.openExternal(c.url!)"
-              >
-                Logs
-              </button>
-            </div>
-          </div>
-          <p v-else class="prv__nodesc">No checks ran on this pull request.</p>
-        </section>
-      </template>
+        </aside>
+      </div>
     </div>
 
     <GitSpaceCommitCard
@@ -524,19 +833,10 @@ function goBack() {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 1040px;
+  max-width: 1240px;
   min-height: 0;
   /* Clears the project's corner back arrow, as the shell's inner does. */
   padding: 5rem 2.5rem 2.5rem;
-}
-
-/* ── head ─────────────────────────────────────────────────────────────────── */
-.prv__head {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  flex-shrink: 0;
-  animation: prv-in var(--gs-t-enter) var(--gs-ease) backwards;
 }
 @keyframes prv-in {
   from {
@@ -548,7 +848,20 @@ function goBack() {
     transform: none;
   }
 }
+@keyframes prv-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
 
+/* ── head ─────────────────────────────────────────────────────────────────── */
+.prv__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-shrink: 0;
+  animation: prv-in var(--gs-t-enter) var(--gs-ease) backwards;
+}
 .prv__back {
   display: inline-flex;
   align-items: center;
@@ -571,25 +884,44 @@ function goBack() {
 .prv__back-glyph {
   transform: rotate(180deg) scaleX(-1);
 }
-
 .prv__identity {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 9px;
   min-width: 0;
   flex: 1 1 auto;
 }
 .prv__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.2px;
   line-height: 1;
   color: var(--muted);
 }
+.prv__state {
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  background-color: var(--hover);
+  color: var(--ink-soft);
+}
+.prv__state--ok {
+  color: var(--ok);
+  background-color: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.prv__state--bad {
+  color: var(--danger);
+  background-color: color-mix(in srgb, var(--danger) 9%, transparent);
+}
 .prv__title {
-  font-size: 22px;
-  letter-spacing: -0.4px;
-  line-height: 1.25;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.6px;
+  line-height: 1.2;
   color: var(--ink);
   overflow-wrap: anywhere;
 }
@@ -597,125 +929,69 @@ function goBack() {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-/* Four facts in a row need parsing marks, or they read as one long string. The
-   route's own inner spans are left alone — that arrow is already the separator. */
-.prv__note > span + span::before {
-  content: "·";
-  margin-right: 10px;
-  opacity: 0.5;
-}
-/* The state is a category, so it takes the space's category treatment. */
-.prv__state {
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  font-size: 10.5px;
-}
-.prv__state--ok {
-  color: var(--diff-add);
-}
-.prv__state--bad {
-  color: var(--diff-del);
-}
-.prv__state--merged {
-  color: var(--ink-soft);
-}
-.prv__state--flat {
+  gap: 14px;
+  font-size: 12.5px;
   color: var(--muted);
 }
 .prv__author {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  color: var(--ink-soft);
 }
 .prv__route {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
 }
 .prv__ref {
+  max-width: 34ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 22ch;
+  color: var(--ink-soft);
 }
 .prv__arrow {
-  opacity: 0.55;
-}
-
-/* The circle the rail's face draws, one size down. */
-.prv__face {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  overflow: hidden;
-  background-color: var(--hover);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  line-height: 1;
   color: var(--muted);
 }
-.prv__face--lg {
-  width: 22px;
-  height: 22px;
-  font-size: 10px;
-}
-.prv__face img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 .prv__actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
-  padding-top: 4px;
 }
 .prv__btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 27px;
-  padding-inline: 11px;
+  gap: 5px;
+  height: 28px;
+  padding-inline: 10px;
   border-radius: 8px;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
   color: var(--ink-soft);
   cursor: pointer;
-  white-space: nowrap;
-  transition: background-color var(--gs-t-micro) ease;
+  transition:
+    background-color var(--gs-t-micro) var(--gs-ease),
+    color var(--gs-t-micro) var(--gs-ease);
 }
-.prv__btn:hover {
+.prv__btn:hover:not(:disabled) {
   background-color: var(--hover);
+  color: var(--ink);
+}
+.prv__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .prv__btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
-.prv__btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-/* One turn of the glyph per re-read: the whole point is that something might
-   have changed, so the confirmation is that it moved at all. */
 .prv__btn--spin .prv__refresh {
-  animation: prv-turn var(--gs-t-large) var(--gs-ease-move);
+  animation: prv-spin 900ms linear infinite;
 }
-@keyframes prv-turn {
+@keyframes prv-spin {
   to {
     transform: rotate(360deg);
   }
@@ -726,7 +1002,7 @@ function goBack() {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  margin-top: 30px;
+  margin-top: 34px;
   padding-left: 34px;
   padding-right: 4px;
   overflow-y: auto;
@@ -735,128 +1011,413 @@ function goBack() {
   scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
   animation: prv-in var(--gs-t-enter) var(--gs-ease) var(--gs-enter-panel) backwards;
 }
-
+.prv__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 64px;
+  align-items: start;
+}
+.prv__main {
+  min-width: 0;
+}
+.prv__side {
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+  min-width: 0;
+  padding-bottom: 24px;
+}
+.prv__block {
+  animation: prv-in var(--gs-t-enter) var(--gs-ease) backwards;
+  animation-delay: calc(var(--i, 0) * var(--gs-stagger) * 3);
+}
 .prv__empty,
-.prv__nodesc,
-.prv__nodiff {
+.prv__nodesc {
   font-size: 13px;
-  line-height: 1.6;
   color: var(--muted);
 }
-.prv__nodiff {
-  max-width: 66ch;
-  padding: 8px 0 12px;
+
+/* ── side ─────────────────────────────────────────────────────────────────── */
+.prv__label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.prv__label-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+.prv__label-go {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 6px;
   font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.prv__label-go:hover {
+  color: var(--ink);
+  background-color: var(--hover);
+}
+.prv__sub {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.prv__big {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+  color: var(--ink);
+}
+.prv__big-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--muted);
+}
+.prv__big--ok .prv__big-dot {
+  background-color: var(--ok);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 18%, transparent);
+}
+.prv__big--bad .prv__big-dot {
+  background-color: var(--danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 16%, transparent);
+}
+.prv__big--warn .prv__big-dot {
+  background-color: var(--warn);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent);
+}
+.prv__verdictblock .prv__sub {
+  margin-top: 8px;
 }
 
-/* Whatever stands between this and being merged, said once, in the one colour
-   this space uses for a thing that needs attention. */
-.prv__obstacle {
-  margin-bottom: 16px;
+.prv__ringrow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.prv__ringbrief {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.prv__attn {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+}
+.prv__attn-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 28px;
+  padding: 0 6px;
+  margin-inline: -6px;
+  border-radius: 7px;
+  text-align: left;
+  cursor: pointer;
+}
+.prv__attn-row:hover:not(:disabled) {
+  background-color: var(--hover);
+}
+.prv__attn-row:disabled {
+  cursor: default;
+}
+.prv__attn-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--diff-del);
+  color: var(--ink-soft);
+}
+
+.prv__changes {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.prv__changes .prv__dim {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+.prv__sizes {
+  display: flex;
+  flex-direction: column;
+}
+.prv__size {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px;
+  align-items: center;
+  gap: 10px;
+  height: 26px;
+  padding: 0 6px;
+  margin-inline: -6px;
+  border-radius: 7px;
+  text-align: left;
+  cursor: pointer;
+}
+.prv__size:hover {
+  background-color: var(--hover);
+}
+.prv__size-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.prv__size-track {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+}
+.prv__bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  width: 64px;
+  height: 6px;
+  flex-shrink: 0;
+}
+.prv__bar-add,
+.prv__bar-del {
+  height: 100%;
+  border-radius: 3px;
+  transform-origin: left center;
+  animation: prv-grow 600ms var(--gs-ease) backwards;
+  animation-delay: calc(240ms + min(var(--n, 0), 7) * 60ms);
+}
+.prv__bar-add {
+  background-color: var(--diff-add);
+}
+.prv__bar-del {
+  background-color: var(--diff-del);
 }
 
 .prv__tags {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
   gap: 6px 14px;
-  margin-bottom: 26px;
-  font-size: 11.5px;
-  line-height: 1;
-  color: var(--ink-soft);
+  margin-bottom: 14px;
 }
-/* A label's colour as a dot beside its name — the tint is the identity, and a
-   filled chip would be the loudest thing on the page. */
-.prv__label {
+.prv__tag {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
 }
 .prv__dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  flex-shrink: 0;
 }
-.prv__dim {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
+.prv__facts {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 8px 10px;
+  font-size: 12.5px;
+}
+.prv__facts dt {
   color: var(--muted);
+}
+.prv__facts dd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-soft);
 }
 
 /* ── tabs ─────────────────────────────────────────────────────────────────── */
-/* The same idiom as the section list's filters: the current one is simply the
-   one in full ink. No underline, no pill, nothing boxed. */
 .prv__tabs {
   display: flex;
-  align-items: center;
-  gap: 18px;
-  margin-bottom: 22px;
-  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 28px;
 }
 .prv__tab {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 12px;
-  line-height: 1;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 13px;
   color: var(--muted);
   cursor: pointer;
-  transition: color var(--gs-t-micro) var(--gs-ease);
+  transition:
+    background-color var(--gs-t-micro) var(--gs-ease),
+    color var(--gs-t-micro) var(--gs-ease);
+  line-height: 28px;
+}
+.prv__tab:first-child {
+  margin-left: -10px;
 }
 .prv__tab:hover {
   color: var(--ink-soft);
 }
 .prv__tab--on {
   color: var(--ink);
+  background-color: var(--hover);
 }
 .prv__tab:focus-visible {
   outline: none;
-  border-radius: 5px;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
 .prv__count {
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
   color: var(--muted);
 }
-
-/* Keyed on the tab, so switching is a fresh arrival rather than a swap of
-   contents inside a frame that stays put. */
 .prv__pane {
-  display: flex;
-  flex-direction: column;
-  padding-bottom: 20px;
   animation: prv-in var(--gs-t-small) var(--gs-ease);
 }
 
 /* ── conversation ─────────────────────────────────────────────────────────── */
 .prv__description {
   max-width: 74ch;
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.7;
   color: var(--ink-soft);
 }
-/* Further from the description than the entries are from each other: the
-   description is the pull request, and everything below it is the response to it.
-   There's no rule to draw between them, so the gap has to carry it. */
-.prv__thread {
+
+/* The rail: one hairline down the gutter, a node or a face at every event. */
+.prv__rail {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  margin-top: 48px;
+  gap: 22px;
+  margin-top: 44px;
+  padding: 0;
+  list-style: none;
 }
-.prv__entry {
+.prv__rail::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background-color: color-mix(in srgb, var(--ink) 11%, transparent);
+}
+.prv__rail--tight {
+  gap: 4px;
+  margin-top: 0;
+}
+.prv__event {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 14px;
+  min-width: 0;
   animation: prv-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger));
+}
+.prv__node {
+  position: relative;
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  margin: 4px 9.5px 0;
+  border-radius: 50%;
+  background-color: var(--muted);
+  box-shadow: 0 0 0 4px var(--ground);
+}
+.prv__node--commit {
+  background-color: var(--ground);
+  box-shadow:
+    inset 0 0 0 1.5px var(--muted),
+    0 0 0 4px var(--ground);
+}
+.prv__rail--tight .prv__node {
+  margin-top: 10px;
+}
+.prv__node--merged {
+  background-color: var(--ink-soft);
+}
+.prv__node--closed {
+  background-color: var(--danger);
+}
+.prv__line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.prv__line b {
+  font-weight: 500;
+  color: var(--ink);
+}
+.prv__when {
+  font-size: 12px;
+  color: var(--muted);
+}
+.prv__stale {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+}
+.prv__verdict {
+  color: var(--ink-soft);
+}
+.prv__verdict--approved {
+  color: var(--ok);
+}
+.prv__verdict--changes-requested {
+  color: var(--danger);
+}
+.prv__pushed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.prv__pushed .prv__line {
+  margin-bottom: 4px;
+}
+.prv__pushed-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 3px 8px;
+  margin-left: -8px;
+  border-radius: 7px;
+  text-align: left;
+  cursor: pointer;
+}
+.prv__pushed-row:hover {
+  background-color: var(--hover);
+}
+.prv__hash {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.prv__headline {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ink-soft);
 }
 .prv__said {
   display: flex;
@@ -865,83 +1426,72 @@ function goBack() {
   min-width: 0;
   flex: 1 1 auto;
 }
-.prv__saidhead {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  line-height: 1;
-}
-.prv__who {
-  font-size: 12px;
-  color: var(--ink);
-}
-.prv__verdict {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: var(--muted);
-}
-.prv__verdict--ok {
-  color: var(--diff-add);
-}
-.prv__verdict--bad {
-  color: var(--diff-del);
-}
 .prv__saidbody {
   max-width: 70ch;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.65;
   color: var(--ink-soft);
 }
-.prv__merged {
-  margin-top: 26px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  color: var(--muted);
-}
 
-/* ── lists ────────────────────────────────────────────────────────────────── */
-.prv__stat {
-  display: flex;
+.prv__face {
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: var(--hover);
+  font-size: 10px;
   color: var(--muted);
 }
-.prv__add {
-  color: var(--diff-add);
+.prv__face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
-.prv__del {
-  color: var(--diff-del);
+.prv__face--lg {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+  box-shadow: 0 0 0 4px var(--ground);
+}
+.prv__face--ringed.prv__face--approved {
+  box-shadow:
+    0 0 0 2px var(--ground),
+    0 0 0 4px var(--ok);
+}
+.prv__face--ringed.prv__face--changes-requested {
+  box-shadow:
+    0 0 0 2px var(--ground),
+    0 0 0 4px var(--danger);
 }
 
-.prv__list {
-  display: flex;
-  flex-direction: column;
+/* ── lists (files, commits, checks) ───────────────────────────────────────── */
+.prv__group + .prv__group {
+  margin-top: 26px;
+}
+.prv__glabel {
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-soft);
 }
 .prv__file,
-.prv__check,
-.prv__commit {
+.prv__check {
   animation: prv-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger));
 }
-
 .prv__row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  height: 30px;
-  padding-inline: 8px;
+  height: 32px;
+  padding: 0 8px;
   margin-inline: -8px;
-  border-radius: 7px;
+  border-radius: 8px;
   text-align: left;
   cursor: pointer;
   transition: background-color var(--gs-t-micro) var(--gs-ease);
@@ -963,95 +1513,96 @@ function goBack() {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
+  font-size: 12px;
   color: var(--ink);
 }
 .prv__dir {
   color: var(--muted);
 }
 .prv__nums {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex-shrink: 0;
+  display: inline-flex;
+  gap: 8px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.prv__add {
+  color: var(--diff-add);
+}
+.prv__del {
+  color: var(--diff-del);
+}
+.prv__dim {
+  font-size: 12px;
+  color: var(--muted);
+}
+.prv__nodiff {
+  padding: 8px 0 12px 32px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
-/* A commit row is taller than a file row: it carries a sentence and a line of
-   facts, the same two-line shape the history uses. */
 .prv__commit {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 9px 8px;
-  margin-inline: -8px;
-  border-radius: 7px;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  margin-left: -10px;
+  border-radius: 8px;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--gs-t-micro) var(--gs-ease);
 }
 .prv__commit:hover {
   background-color: var(--hover);
 }
-.prv__body {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.prv__headline {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  line-height: 1.2;
+.prv__commit .prv__headline {
+  font-size: 13px;
   color: var(--ink);
 }
 .prv__meta {
   display: flex;
   align-items: center;
-  gap: 12px;
-  line-height: 1;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
 }
-.prv__hash {
+.prv__headtag {
+  padding: 1px 6px;
+  border-radius: 5px;
   font-family: var(--font-mono);
   font-size: 10.5px;
-  line-height: 1;
-  color: var(--muted);
+  background-color: var(--hover);
+  color: var(--ink-soft);
 }
 
 .prv__check {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 30px;
+  height: 32px;
 }
-/* Checks are a dot everywhere in this space: colour is the whole message. */
 .prv__checkdot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
   flex-shrink: 0;
-  background-color: var(--muted);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--ink) 22%, transparent);
 }
 .prv__checkdot--passing {
-  background-color: var(--diff-add);
+  background-color: var(--ok);
 }
 .prv__checkdot--failing {
-  background-color: var(--diff-del);
+  background-color: var(--danger);
 }
 .prv__checkdot--pending {
-  background-color: color-mix(in srgb, var(--ink) 34%, transparent);
+  background-color: var(--warn);
+  animation: prv-pulse 1.4s ease-in-out infinite;
 }
-.prv__checkdot--skipped,
-.prv__checkdot--none {
-  background-color: color-mix(in srgb, var(--ink) 16%, transparent);
+@keyframes prv-pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 .prv__checkname {
   flex: 1 1 auto;
@@ -1059,49 +1610,44 @@ function goBack() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  line-height: 1;
+  font-size: 13px;
   color: var(--ink);
 }
 .prv__go {
-  flex-shrink: 0;
-  font-size: 11px;
-  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 7px;
+  font-size: 11.5px;
   color: var(--muted);
   cursor: pointer;
-  opacity: 0;
-  border-radius: 5px;
-  transition:
-    opacity var(--gs-t-micro) var(--gs-ease),
-    color var(--gs-t-micro) var(--gs-ease);
-}
-.prv__check:hover .prv__go,
-.prv__check:focus-within .prv__go {
-  opacity: 1;
 }
 .prv__go:hover {
   color: var(--ink);
+  background-color: var(--hover);
+}
+
+/* Narrow panes put the verdict column above the story. */
+@media (max-width: 1180px) {
+  .prv__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .prv__side {
+    order: -1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .prv__head,
   .prv__scroll,
+  .prv__block,
   .prv__pane,
-  .prv__entry,
+  .prv__event,
   .prv__file,
   .prv__check,
-  .prv__commit {
+  .prv__bar-add,
+  .prv__bar-del,
+  .prv__checkdot--pending,
+  .prv__btn--spin .prv__refresh {
     animation: none;
-  }
-  .prv__back,
-  .prv__btn,
-  .prv__btn--spin .prv__refresh,
-  .prv__tab,
-  .prv__row,
-  .prv__commit,
-  .prv__go {
-    animation: none;
-    transition: none;
   }
 }
 </style>
