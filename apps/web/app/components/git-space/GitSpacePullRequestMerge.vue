@@ -24,6 +24,8 @@ const props = defineProps<{
   pending: GitHubPrAction | null;
   /** Why the last action failed, in GitHub's words. */
   error: string | null;
+  /** What GitHub did instead of what was asked, such as queueing a merge. */
+  notice?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -160,6 +162,7 @@ const mergeLabel = computed(() => {
     </div>
 
     <p v-if="error" class="gpm__error" role="alert">{{ error }}</p>
+    <p v-else-if="notice" class="gpm__notice" role="status">{{ notice }}</p>
   </div>
 </template>
 
@@ -267,6 +270,12 @@ const mergeLabel = computed(() => {
 .gpm__quiet:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
+.gpm__notice {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
 }
 .gpm__error {
   margin: 0;
