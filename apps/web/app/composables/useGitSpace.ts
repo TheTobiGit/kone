@@ -229,6 +229,8 @@ export function useGitSpace(
   function loadIssues(next?: "open" | "all"): Promise<void> {
     if (next) issueState.value = next;
     return once(`issues:${issueState.value}`, async () => {
+      // As with pull requests: the remotes and the CLI's status come first.
+      if (!loaded.value) await load();
       if (!gh.value?.authenticated || !origin.value?.slug) {
         issues.value = [];
         return;
