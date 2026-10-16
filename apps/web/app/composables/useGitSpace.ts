@@ -424,13 +424,14 @@ export function useGitSpace(
   ): Promise<boolean> {
     return act("branch", () => bridge.deleteBranch(dir(), name, opts), loadBranches);
   }
-  /** Delete several local branches in one go, the merged ones a cleanup
-   *  offers. Plain `-d` each, so git still refuses one with unmerged work. */
+  /** Delete the merged branches a cleanup offers, in one go. Forced, since
+   *  `-d` measures against HEAD rather than the default branch they are in;
+   *  only names the list read as merged reach here. */
   function deleteBranches(names: string[]): Promise<boolean> {
     return act(
       "branch",
       async () => {
-        for (const name of names) await bridge.deleteBranch(dir(), name);
+        for (const name of names) await bridge.deleteBranch(dir(), name, { force: true });
       },
       loadBranches,
     );

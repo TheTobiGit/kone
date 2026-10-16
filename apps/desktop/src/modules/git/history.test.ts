@@ -83,6 +83,21 @@ describe("branch details", () => {
   });
 });
 
+describe("default branch", () => {
+  test("is read from a remote that isn't called origin", async () => {
+    const dir = await makeRepo();
+    const g = (args: string[]) => git(dir, args);
+    await g(["remote", "rename", "origin", "upstream"]);
+    await g(["branch", "-m", "main", "trunk"]);
+    await g(["push", "-u", "upstream", "trunk"]);
+    await g(["symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk"]);
+    const byName = new Map((await branches(dir)).map((b) => [b.name, b]));
+    expect(byName.get("trunk")?.default).toBe(true);
+    expect(byName.get("upstream/trunk")?.default).toBe(true);
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
 describe("commitDetail files", () => {
   test("pairs statuses with line counts across awkward paths", async () => {
     // The per-file rows merge two commands: --name-status for the letter and

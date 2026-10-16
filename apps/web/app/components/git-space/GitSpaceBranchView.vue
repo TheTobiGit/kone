@@ -89,7 +89,7 @@ const standSentence = computed(() => {
     case "unpushed":
       return trackable.value
         ? `Not tracking anything, though ${trackable.value} exists. Tracking it keeps the two in step.`
-        : "Only on this machine. Publishing puts it on origin and keeps the two in step.";
+        : `Only on this machine. Publishing puts it on ${remote.value} and keeps the two in step.`;
     case "gone":
       return x.merged
         ? `${x.upstream} was deleted on the remote, and its work is in ${defaultName.value}. It can go.`
@@ -106,8 +106,12 @@ const standSentence = computed(() => {
       return "";
   }
 });
-/** origin/<same name>: the push and publish below can name it plainly. */
-const sameNamedUpstream = computed(() => !b.value.upstream || b.value.upstream === `origin/${b.value.name}`);
+/** The remote a publish goes to: origin, or the only one there is. */
+const remote = computed(() => props.space.origin.value?.name ?? "origin");
+/** <remote>/<same name>: the push and publish below can name it plainly. */
+const sameNamedUpstream = computed(
+  () => !b.value.upstream || b.value.upstream === `${b.value.upstream.split("/")[0]}/${b.value.name}`,
+);
 
 async function run(task: () => Promise<boolean>) {
   if (busy.value) return cue("refuse");
@@ -115,7 +119,7 @@ async function run(task: () => Promise<boolean>) {
   cue((await task()) ? "success" : "error");
 }
 function publish() {
-  void run(() => props.space.push({ branch: b.value.name, setUpstream: true }));
+  void run(() => props.space.push({ branch: b.value.name, setUpstream: true, remote: remote.value }));
 }
 function pushIt() {
   void run(() =>
@@ -130,7 +134,7 @@ function pull() {
  *  being published over it. */
 const trackable = computed(() => {
   if (b.value.remote || b.value.upstream) return null;
-  const ref = `origin/${b.value.name}`;
+  const ref = `${remote.value}/${b.value.name}`;
   return props.space.branches.value.some((x) => x.remote && x.name === ref) ? ref : null;
 });
 function track() {
@@ -213,9 +217,11 @@ const canDelete = computed(() => !b.value.remote && !b.value.current && !b.value
 const unmerged = computed(() => (!b.value.merged && drift.value ? drift.value.ahead : 0));
 function removeLocal() {
   cue("discard");
-  // Unmerged work is what plain -d refuses; the hold, with the count of what
-  // goes, is the consent to force it.
-  void props.space.deleteBranch(b.value.name, unmerged.value ? { force: true } : undefined);
+  // Plain -d measures against HEAD and the upstream, not the default branch,
+  // so it can refuse a branch that is in main. Forced when it is known to be
+  // in main, or when the hold, with the count of what goes, is the consent.
+  const force = !!b.value.merged || unmerged.value > 0;
+  void props.space.deleteBranch(b.value.name, force ? { force: true } : undefined);
 }
 /** The branch on the remote, for a local one that tracks it or a remote ref. */
 const remoteName = computed(() => {
