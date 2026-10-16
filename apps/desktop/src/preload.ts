@@ -182,6 +182,8 @@ import type {
   GitStatus,
   GitWorktree,
   CreateWorktreeOptions,
+  GitHubMergeMethod,
+  GitHubPrAction,
   GitHubPrCreateOptions,
   GitHubPrCreateResult,
   GitHubPullRequest,
@@ -351,6 +353,15 @@ const api = {
         ipcRenderer.invoke("github:create-pr", dir, opts),
       checkoutPr: (dir: string, number: number): Promise<void> =>
         ipcRenderer.invoke("github:checkout-pr", dir, number),
+      prAction: (
+        dir: string,
+        number: number,
+        action: GitHubPrAction,
+        method?: GitHubMergeMethod,
+        headOid?: string,
+      ): Promise<void> => ipcRenderer.invoke("github:pr-action", dir, number, action, method, headOid),
+      prComment: (dir: string, number: number, body: string): Promise<void> =>
+        ipcRenderer.invoke("github:pr-comment", dir, number, body),
       prDetail: (dir: string, number: number): Promise<GitHubPullRequestDetail | null> =>
         ipcRenderer.invoke("github:pr-detail", dir, number),
       prDiff: (dir: string, number: number): Promise<GitFileDiff[]> =>

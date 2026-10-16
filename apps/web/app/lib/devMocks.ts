@@ -25,6 +25,7 @@ import type {
   GitIdentity,
   GitLogo,
   GitHubPullRequest,
+  GitHubPrAction,
   GitHubPullRequestDetail,
   GitHubPerson,
   GitHubCheck,
@@ -1158,6 +1159,9 @@ borders-out, elevation-out rationale.`,
     author: GIDEON,
     branch: "feat/git-space",
     headOid: null,
+    mergeMethods: ["merge", "squash", "rebase"],
+    canWrite: true,
+    canTriage: true,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 5 * 3600_000).toISOString(),
@@ -1248,6 +1252,9 @@ borders-out, elevation-out rationale.`,
     author: AMA,
     branch: "feat/droid-provider",
     headOid: null,
+    mergeMethods: ["merge", "squash", "rebase"],
+    canWrite: true,
+    canTriage: true,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 2 * 86400_000).toISOString(),
@@ -1310,6 +1317,9 @@ borders-out, elevation-out rationale.`,
     author: KWESI,
     branch: "fix/pty-term",
     headOid: null,
+    mergeMethods: ["merge", "squash", "rebase"],
+    canWrite: true,
+    canTriage: true,
     base: "dev",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 4 * 86400_000).toISOString(),
@@ -1361,6 +1371,9 @@ borders-out, elevation-out rationale.`,
     author: GIDEON,
     branch: "feat/archive-threads",
     headOid: null,
+    mergeMethods: ["merge", "squash", "rebase"],
+    canWrite: true,
+    canTriage: true,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 9 * 86400_000).toISOString(),
@@ -1425,6 +1438,9 @@ borders-out, elevation-out rationale.`,
     author: AMA,
     branch: "feat/branch-sparklines",
     headOid: null,
+    mergeMethods: ["merge", "squash", "rebase"],
+    canWrite: true,
+    canTriage: true,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 26 * 3600_000).toISOString(),
@@ -1480,6 +1496,9 @@ borders-out, elevation-out rationale.`,
     author: prPerson("dependabot", "Dependabot", null),
     branch: "dependabot/npm_and_yarn/electron-33.0.2",
     headOid: null,
+    mergeMethods: ["merge", "squash", "rebase"],
+    canWrite: true,
+    canTriage: true,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 3 * 86400_000).toISOString(),
@@ -1559,6 +1578,48 @@ function prRowOf(d: GitHubPullRequestDetail): GitHubPullRequest {
 /** One PR's full detail, or null when the number isn't one the demo world has. */
 export function mockPrDetail(number: number): GitHubPullRequestDetail | null {
   return MOCK_PR_DETAILS[number] ?? null;
+}
+
+/** A pull request action played against the demo world, so the card and the
+ *  list move the way they would after the real gh call. */
+export function mockPrAction(number: number, action: GitHubPrAction): void {
+  const d = MOCK_PR_DETAILS[number];
+  if (!d) throw new Error(`No pull request #${number}.`);
+  const now = new Date().toISOString();
+  d.updatedAt = now;
+  switch (action) {
+    case "merge":
+      if (d.mergeability === "conflicting") throw new Error("Pull request is not mergeable: the merge commit cannot be cleanly created.");
+      d.state = "merged";
+      d.mergedAt = now;
+      d.mergedBy = GIDEON;
+      d.mergeability = "unknown";
+      break;
+    case "ready":
+      d.isDraft = false;
+      if (d.mergeability === "draft") d.mergeability = "clean";
+      break;
+    case "draft":
+      d.isDraft = true;
+      break;
+    case "close":
+      d.state = "closed";
+      d.closedAt = now;
+      break;
+    case "reopen":
+      d.state = "open";
+      d.closedAt = null;
+      break;
+  }
+}
+
+/** A comment left from the card, as yours, at the end of the conversation. */
+export function mockPrComment(number: number, body: string): void {
+  const d = MOCK_PR_DETAILS[number];
+  if (!d) throw new Error(`No pull request #${number}.`);
+  const now = new Date().toISOString();
+  d.comments.push({ author: GIDEON, body, createdAt: now, relative: "just now", url: `${d.url}#issuecomment-${Date.now()}` });
+  d.updatedAt = now;
 }
 
 /** The diff for a PR, one file in the same order as the detail's `files` list,

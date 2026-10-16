@@ -79,6 +79,8 @@ const NO_GIT: KoneGitApi = {
     prDiff: empty,
     createPr: refuse("Creating a pull request"),
     checkoutPr: done,
+    prAction: refuse("Changing a pull request"),
+    prComment: refuse("Commenting"),
     open: (url) => {
       window.open(url, "_blank", "noopener");
       return Promise.resolve();

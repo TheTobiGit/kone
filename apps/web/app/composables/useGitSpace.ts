@@ -14,7 +14,9 @@ import type {
 
   GitContributors,
   GitFileDiff,
+  GitHubMergeMethod,
   GitHubPerson,
+  GitHubPrAction,
   GitHubPrCreateOptions,
   GitHubPrCreateResult,
   GitHubPullRequest,
@@ -65,7 +67,9 @@ export type GitSpaceOp =
   | "stash"
   | "pr"
   | "checkout"
-  | "worktree";
+  | "worktree"
+  | "pr-action"
+  | "comment";
 
 /** How many commits one page of history holds. */
 const PAGE = 50;
@@ -198,6 +202,9 @@ export function useGitSpace(
   function loadPrs(next?: "open" | "all"): Promise<void> {
     if (next) prState.value = next;
     return once(`prs:${prState.value}`, async () => {
+      // Whether there's anything to ask is known only once the remotes and the
+      // CLI's status are in, and the space may still be reading them.
+      if (!loaded.value) await load();
       // Nothing to ask `gh` for without a working CLI or a GitHub remote — the
       // section renders its own explanation from `gh` / `origin` instead.
       if (!gh.value?.authenticated || !origin.value?.slug) {
@@ -481,6 +488,31 @@ export function useGitSpace(
     return act("checkout", () => bridge.github.checkoutPr(dir(), number), afterHistoryMoved);
   }
 
+  /** Act on a pull request, then re-read it and the list, so the card and its
+   *  row both show where it stands now. A merge also moves the base branch,
+   *  which a later pull or fetch brings home; nothing local changes here. */
+  function prAction(
+    number: number,
+    action: GitHubPrAction,
+    method?: GitHubMergeMethod,
+    headOid?: string,
+  ): Promise<boolean> {
+    return act(
+      "pr-action",
+      () => bridge.github.prAction(dir(), number, action, method, headOid),
+      () => Promise.all([prDetail(number, true), loadPrs()]),
+    );
+  }
+
+  function commentOnPr(number: number, body: string): Promise<boolean> {
+    return act(
+      "comment",
+      () => bridge.github.prComment(dir(), number, body),
+      // The list's row carries a comment count, so it's read again too.
+      () => Promise.all([prDetail(number, true), loadPrs()]),
+    );
+  }
+
   function openExternal(url: string): Promise<void> {
     return bridge.github.open(url).catch(() => undefined);
   }
@@ -550,6 +582,8 @@ export function useGitSpace(
     pruneWorktrees,
     createPr,
     checkoutPr,
+    prAction,
+    commentOnPr,
     openExternal,
   };
 }

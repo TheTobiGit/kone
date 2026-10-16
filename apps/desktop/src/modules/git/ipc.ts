@@ -33,6 +33,8 @@ import type {
   CommitMessageGenerationInput,
   CreateProjectOptions,
   GitCommitOptions,
+  GitHubMergeMethod,
+  GitHubPrAction,
   GitHubPrCreateOptions,
   GitPullOptions,
   GitPushOptions,
@@ -348,6 +350,20 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle("github:checkout-pr", (_event, dir: string, number: number) =>
     github.checkoutPr(dir, number),
+  );
+  ipcMain.handle(
+    "github:pr-action",
+    (
+      _event,
+      dir: string,
+      number: number,
+      action: GitHubPrAction,
+      method?: GitHubMergeMethod,
+      headOid?: string,
+    ) => github.prAction(dir, number, action, method, headOid),
+  );
+  ipcMain.handle("github:pr-comment", (_event, dir: string, number: number, body: string) =>
+    github.prComment(dir, number, body),
   );
   ipcMain.handle(
     "github:pr-detail",

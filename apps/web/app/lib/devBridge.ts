@@ -157,7 +157,9 @@ function createDevGit(): KoneGitApi {
       commitAuthors: () => later(world.mockCommitAuthors()),
       me: () => later(world.mockGhMe()),
       prs: (dir, opts) => later(world.mockPrs(dir, opts?.state ?? "open")),
-      prDetail: (_dir, number) => later(world.mockPrDetail(number)),
+      // A copy, as IPC hands over: the demo's actions change the world in place,
+      // and the card has to see a new object to notice.
+      prDetail: (_dir, number) => later(structuredClone(world.mockPrDetail(number))),
       prDiff: (_dir, number) => later(world.mockPrDiff(number)),
       // The next number, so the composer's success line reads like the real one.
       createPr: (dir) => {
@@ -165,6 +167,10 @@ function createDevGit(): KoneGitApi {
         return later({ number: next, url: `https://github.com/kone-dev/kone/pull/${next}` });
       },
       checkoutPr: beat,
+      // A merge takes GitHub a beat longer than a label change does.
+      prAction: (_dir, number, action) =>
+        later(undefined, action === "merge" ? 900 : 400).then(() => world.mockPrAction(number, action)),
+      prComment: (_dir, number, body) => later(undefined, 500).then(() => world.mockPrComment(number, body)),
       open: (url) => {
         window.open(url, "_blank", "noopener");
         return Promise.resolve();
