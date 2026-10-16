@@ -182,6 +182,11 @@ import type {
   GitStatus,
   GitWorktree,
   CreateWorktreeOptions,
+  GitHubIssue,
+  GitHubIssueCloseReason,
+  GitHubIssueCreateOptions,
+  GitHubIssueCreateResult,
+  GitHubIssueDetail,
   GitHubMergeMethod,
   GitHubPrAction,
   GitHubPrCreateOptions,
@@ -361,6 +366,20 @@ const api = {
       ): Promise<void> => ipcRenderer.invoke("github:pr-action", dir, number, action, method),
       prComment: (dir: string, number: number, body: string): Promise<void> =>
         ipcRenderer.invoke("github:pr-comment", dir, number, body),
+      issues: (dir: string, opts?: { state?: "open" | "all"; limit?: number }): Promise<GitHubIssue[]> =>
+        ipcRenderer.invoke("github:issues", dir, opts),
+      issueDetail: (dir: string, number: number): Promise<GitHubIssueDetail | null> =>
+        ipcRenderer.invoke("github:issue-detail", dir, number),
+      issueAction: (
+        dir: string,
+        number: number,
+        action: "close" | "reopen",
+        reason?: GitHubIssueCloseReason,
+      ): Promise<void> => ipcRenderer.invoke("github:issue-action", dir, number, action, reason),
+      issueComment: (dir: string, number: number, body: string): Promise<void> =>
+        ipcRenderer.invoke("github:issue-comment", dir, number, body),
+      createIssue: (dir: string, opts: GitHubIssueCreateOptions): Promise<GitHubIssueCreateResult> =>
+        ipcRenderer.invoke("github:create-issue", dir, opts),
       prDetail: (dir: string, number: number): Promise<GitHubPullRequestDetail | null> =>
         ipcRenderer.invoke("github:pr-detail", dir, number),
       prDiff: (dir: string, number: number): Promise<GitFileDiff[]> =>

@@ -12,6 +12,7 @@ import {
   GitBranchIcon,
   GitPullRequestIcon,
   InformationCircleIcon,
+  RecordIcon,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import type { Project } from "~/composables/useProject";
@@ -42,7 +43,7 @@ const emit = defineEmits<{
 
 const { cue } = useSound();
 
-type Section = "about" | "changes" | "history" | "branches" | "prs" | "stashes";
+type Section = "about" | "changes" | "history" | "branches" | "prs" | "issues" | "stashes";
 // You land on About. Opening a repository should first answer "what is this",
 // and only then "what am I doing to it" — the working tree is one click away
 // and, unlike the README, it's already summarised on the screen you came from.
@@ -57,6 +58,7 @@ const SECTIONS: { id: Section; label: string; icon: typeof GitBranchIcon }[] = [
   { id: "history", label: "History", icon: Clock01Icon },
   { id: "branches", label: "Branches", icon: GitBranchIcon },
   { id: "prs", label: "Pull requests", icon: GitPullRequestIcon },
+  { id: "issues", label: "Issues", icon: RecordIcon },
   { id: "stashes", label: "Stashes", icon: Archive01Icon },
 ];
 
@@ -64,6 +66,7 @@ function countFor(id: Section): number | null {
   if (id === "changes") return props.git.fileCount.value;
   if (id === "branches") return props.space.branches.value.length || null;
   if (id === "prs") return props.space.prs.value.length || null;
+  if (id === "issues") return props.space.issues.value.length || null;
   if (id === "stashes") return props.space.stashes.value.length || null;
   // History pages forever, so a count there would only ever mean "loaded so
   // far"; About isn't a list and has nothing to count.
@@ -111,6 +114,7 @@ function load(which: Section) {
     void s.loadCommitAuthors();
   } else if (which === "branches") void s.loadBranches();
   else if (which === "prs") void s.loadPrs();
+  else if (which === "issues") void s.loadIssues();
   else if (which === "stashes") void s.loadStashes();
 }
 
@@ -141,6 +145,14 @@ const pr = ref<{ number: number; origin: DOMRect | null } | null>(null);
 function openPr(number: number, origin: DOMRect | null) {
   cue("open");
   pr.value = { number, origin };
+}
+
+// An issue opens the same way, from its row.
+const issue = ref<{ number: number; origin: DOMRect | null } | null>(null);
+
+function openIssue(number: number, origin: DOMRect | null) {
+  cue("open");
+  issue.value = { number, origin };
 }
 
 // ── what the masthead says ────────────────────────────────────────────────────
@@ -427,6 +439,12 @@ function onAbort() {
               :space="space"
               @open="openPr"
             />
+            <GitSpaceIssues
+              v-if="visited.includes('issues')"
+              v-show="section === 'issues'"
+              :space="space"
+              @open="openIssue"
+            />
             <GitSpaceStashes
               v-if="visited.includes('stashes')"
               v-show="section === 'stashes'"
@@ -445,6 +463,15 @@ function onAbort() {
       :number="pr.number"
       :origin="pr.origin"
       @close="pr = null"
+    />
+
+    <!-- ── the open issue ────────────────────────────────────────────────── -->
+    <GitSpaceIssueView
+      v-if="issue !== null"
+      :space="space"
+      :number="issue.number"
+      :origin="issue.origin"
+      @close="issue = null"
     />
   </div>
 </template>

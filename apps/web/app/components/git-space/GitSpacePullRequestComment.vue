@@ -6,14 +6,19 @@ import { computed, nextTick, ref } from "vue";
 // it does in the composer. What was written stays put until GitHub has it, so
 // a failed send loses nothing.
 
-const props = defineProps<{
-  /** Something else in the space is running. */
-  busy: boolean;
-  /** Resolves true once GitHub has the comment. */
-  send: (body: string) => Promise<boolean>;
-  /** Why the last send failed, in GitHub's words. */
-  error: string | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** Something else in the space is running. */
+    busy: boolean;
+    /** Resolves true once GitHub has the comment. */
+    send: (body: string) => Promise<boolean>;
+    /** Why the last send failed, in GitHub's words. */
+    error: string | null;
+    /** The field's name for a screen reader: what it comments on. */
+    label?: string;
+  }>(),
+  { label: "Comment on this pull request" },
+);
 
 const sendKeys = `${useShortcuts().isMacPlatform() ? "⌘" : "Ctrl"}+Enter`;
 
@@ -56,7 +61,7 @@ function onKey(e: KeyboardEvent) {
       class="gpc__field selectable"
       rows="2"
       placeholder="Leave a comment"
-      aria-label="Comment on this pull request"
+      :aria-label="label"
       :disabled="sending"
       @input="grow"
       @keydown="onKey"

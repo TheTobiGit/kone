@@ -19,6 +19,12 @@ import type {
   GitHubCheck,
   GitHubCheckCounts,
   GitHubComment,
+  GitHubIssue,
+  GitHubIssueCloseReason,
+  GitHubIssueCreateOptions,
+  GitHubIssueCreateResult,
+  GitHubIssueDetail,
+  GitHubIssueStateReason,
   GitHubLabel,
   GitHubMergeMethod,
   GitHubPerson,
@@ -1422,6 +1428,234 @@ export async function prComment(dir: string, number: number, body: string): Prom
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+// ── issues ────────────────────────────────────────────────────────────────────
+// The same `gh --json` road as pull requests: one field list for the list and
+// one for the card, decoded tolerantly, faces filled from the shared cache.
+
+const ISSUE_JSON_FIELDS =
+  "number,title,url,state,stateReason,author,createdAt,updatedAt,closedAt,labels,assignees,comments,milestone,isPinned";
+
+const ISSUE_DETAIL_JSON_FIELDS = `${ISSUE_JSON_FIELDS},body`;
+
+const IssueStateReasonWire = z
+  .string()
+  .catch("")
+  .transform((raw): GitHubIssueStateReason | null => {
+    const r = raw.toUpperCase();
+    if (r === "COMPLETED") return "completed";
+    if (r === "NOT_PLANNED") return "not-planned";
+    if (r === "DUPLICATE") return "duplicate";
+    return null;
+  });
+
+const IssueWire = z.object({
+  number: z.number().int().positive(),
+  title: z.string().catch(""),
+  url: z.string().catch(""),
+  state: z.string().catch(""),
+  stateReason: IssueStateReasonWire,
+  author: ActorWire.catch(null),
+  createdAt: z.string().catch(""),
+  updatedAt: WireText,
+  closedAt: WireText,
+  labels: rows(LabelWire).catch([]),
+  assignees: PeopleListWire,
+  comments: CommentCountWire,
+  milestone: MilestoneWire.nullish().catch(null),
+  isPinned: z.boolean().catch(false),
+});
+
+const IssueDetailWire = IssueWire.extend({
+  body: z.string().catch(""),
+  comments: rows(CommentWire)
+    .catch([])
+    .transform((list) => list.filter((comment) => !comment.isMinimized)),
+});
+
+type DecodedIssue = z.output<typeof IssueWire>;
+
+function issueOf(wire: Omit<DecodedIssue, "comments">, commentCount: number): GitHubIssue {
+  const state = wire.state.toUpperCase() === "CLOSED" ? "closed" : "open";
+  return {
+    number: wire.number,
+    title: wire.title,
+    url: wire.url,
+    state,
+    // "Reopened" and friends say nothing once it's open again.
+    stateReason: state === "closed" ? wire.stateReason : null,
+    author: wire.author,
+    createdAt: wire.createdAt,
+    relative: wire.createdAt ? relativeTime(wire.createdAt) : "",
+    updatedAt: wire.updatedAt,
+    updated: wire.updatedAt ? relativeTime(wire.updatedAt) : "",
+    closedAt: wire.closedAt,
+    labels: wire.labels,
+    assignees: wire.assignees,
+    commentCount,
+    milestone: wire.milestone?.title || null,
+    isPinned: wire.isPinned,
+  };
+}
+
+/** List issues for the repo `dir` sits in. */
+export async function issues(
+  dir: string,
+  opts?: { state?: "open" | "all"; limit?: number },
+): Promise<GitHubIssue[]> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  const state = opts?.state ?? "open";
+  const limit = Number.isFinite(opts?.limit) ? Math.max(1, Math.floor(opts?.limit ?? 100)) : 100;
+  const out = await gh(root, [
+    "issue",
+    "list",
+    "--state",
+    state,
+    "--limit",
+    String(limit),
+    "--json",
+    ISSUE_JSON_FIELDS,
+  ]);
+  const trimmed = out.trim();
+  if (!trimmed) return [];
+  const decoded = decodeOrThrow(
+    trimmed,
+    rows(IssueWire).nullable().catch(null),
+    "The GitHub CLI returned unparseable issue data.",
+  );
+  if (decoded === null) throw new GitError("The GitHub CLI returned unexpected issue data.", null);
+  const list = decoded.map((wire) => issueOf(wire, wire.comments));
+  await fillAvatars(list.flatMap((issue) => [issue.author, ...issue.assignees]));
+  return list;
+}
+
+/** Triage (and anything above it) can close and reopen; read access can't.
+ *  An unknown answer is treated as allowed, and GitHub has the last word. */
+export function canTriageWith(permission: string): boolean {
+  return permission.toUpperCase() !== "READ";
+}
+
+async function viewerPermission(root: string): Promise<string> {
+  try {
+    const out = await gh(root, ["repo", "view", "--json", "viewerPermission"]);
+    const wire = decodeOrThrow(
+      out,
+      z.object({ viewerPermission: z.string().catch("") }),
+      "The GitHub CLI returned unparseable repository data.",
+    );
+    return wire?.viewerPermission ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** One issue in full. Null when there's no such issue, or when gh is missing /
+ *  logged out / the remote isn't GitHub — the empty states. */
+export async function issueDetail(dir: string, number: number): Promise<GitHubIssueDetail | null> {
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  const ref = issueNumberArg(number);
+  const permission = viewerPermission(root);
+  let out: string;
+  try {
+    out = await gh(root, ["issue", "view", ref, "--json", ISSUE_DETAIL_JSON_FIELDS]);
+  } catch (error) {
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
+    if (error instanceof GitError && error.kind === "NOT_FOUND") return null;
+    throw error;
+  }
+  const trimmed = out.trim();
+  if (!trimmed) return null;
+  const wire = decodeOrThrow(
+    trimmed,
+    IssueDetailWire.nullable().catch(null),
+    "The GitHub CLI returned unparseable issue data.",
+  );
+  if (wire === null) return null;
+  const comments: GitHubComment[] = wire.comments.map((row) => ({
+    author: row.author,
+    body: row.body,
+    createdAt: row.createdAt,
+    relative: row.createdAt ? relativeTime(row.createdAt) : "",
+    url: row.url,
+  }));
+  const detail: GitHubIssueDetail = {
+    ...issueOf(wire, comments.length),
+    body: wire.body,
+    comments,
+    canTriage: canTriageWith(await permission),
+  };
+  await fillAvatars([detail.author, ...detail.assignees, ...comments.map((c) => c.author)]);
+  return detail;
+}
+
+function issueNumberArg(number: number): string {
+  if (!Number.isInteger(number) || number <= 0) {
+    throw GitError.classified("INVALID_INPUT", `Invalid issue number: ${number}`, null);
+  }
+  return String(number);
+}
+
+/** The gh arguments to close an issue (as done, or as not planned) or reopen it. */
+export function issueActionArgs(
+  number: number,
+  action: "close" | "reopen",
+  reason: GitHubIssueCloseReason = "completed",
+): string[] {
+  const ref = issueNumberArg(number);
+  if (action === "reopen") return ["issue", "reopen", ref];
+  return ["issue", "close", ref, "--reason", reason === "not-planned" ? "not planned" : "completed"];
+}
+
+/** Close an issue, or reopen it. */
+export async function issueAction(
+  dir: string,
+  number: number,
+  action: "close" | "reopen",
+  reason?: GitHubIssueCloseReason,
+): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  await gh(root, issueActionArgs(number, action, reason));
+}
+
+/** Run gh with a markdown body handed over by file, never argv: argv is visible
+ *  in process listings and gets echoed into error text. */
+async function ghWithBodyFile(root: string, args: string[], body: string): Promise<string> {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "kone-gh-"));
+  try {
+    const bodyFile = path.join(tmp, "body.md");
+    await writeFile(bodyFile, body, "utf8");
+    return await gh(root, [...args, "--body-file", bodyFile]);
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Comment on an issue as the signed-in user. */
+export async function issueComment(dir: string, number: number, body: string): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  const ref = issueNumberArg(number);
+  if (!body.trim()) throw GitError.classified("INVALID_INPUT", "The comment is empty.", null);
+  await ghWithBodyFile(root, ["issue", "comment", ref], body);
+}
+
+/** Open a new issue. */
+export async function createIssue(
+  dir: string,
+  opts: GitHubIssueCreateOptions,
+): Promise<GitHubIssueCreateResult> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  const title = opts.title.trim();
+  if (!title) throw GitError.classified("INVALID_INPUT", "Issue title is empty.", null);
+  const out = await ghWithBodyFile(root, ["issue", "create", "--title", title], opts.body ?? "");
+  const url = out.trim().split("\n").pop()?.trim() ?? "";
+  const m = /\/issues\/(\d+)/.exec(url);
+  return { number: m ? Number(m[1]) : null, url };
 }
 
 /** Open a URL in the user's real browser. Refuses anything but http(s). */
