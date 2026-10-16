@@ -3,7 +3,10 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
-import { checkout, createBranch, stage } from "./mutations.js";
+import { checkout, checkoutCarrying, createBranch, setUpstream, stage } from "./mutations.js";
+import { fastForward } from "./sync.js";
+import os from "node:os";
+import { mkdtemp } from "node:fs/promises";
 import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 // repos' worktree setup: the branch is created before the (risky) checkout and
@@ -161,5 +164,67 @@ describe("stage", () => {
     const staged = await stagedNames(dir);
     expect(staged).toHaveLength(8);
     for (const name of names) expect(staged).toContain(name);
+  });
+});
+
+describe("checkoutCarrying", () => {
+  test("brings uncommitted work along to the other branch", async () => {
+    const dir = await makeRepo();
+    await git(dir, ["branch", "other"]);
+    await writeFile(path.join(dir, "a.txt"), "edited\n", "utf8");
+    await writeFile(path.join(dir, "new.txt"), "fresh\n", "utf8");
+    await checkoutCarrying(dir, "other");
+    expect(await currentBranch(dir)).toBe("other");
+    expect(await readFile(path.join(dir, "a.txt"), "utf8")).toBe("edited\n");
+    expect(await readFile(path.join(dir, "new.txt"), "utf8")).toBe("fresh\n");
+    expect((await git(dir, ["stash", "list"])).trim()).toBe("");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("keeps clashing work in the stash and leaves the tree clean", async () => {
+    const dir = await makeRepo();
+    // `old` holds a.txt at "one"; editing it on main to "mine" can't be
+    // carried onto a branch where a.txt was changed differently.
+    await git(dir, ["checkout", "-b", "old", "HEAD~1"]);
+    await writeFile(path.join(dir, "a.txt"), "theirs\n", "utf8");
+    await git(dir, ["commit", "-am", "theirs"]);
+    await git(dir, ["checkout", "main"]);
+    await writeFile(path.join(dir, "a.txt"), "mine\n", "utf8");
+    await expect(checkoutCarrying(dir, "old")).rejects.toThrow("safe in the stash");
+    expect(await currentBranch(dir)).toBe("old");
+    expect((await git(dir, ["status", "--porcelain"])).trim()).toBe("");
+    expect((await git(dir, ["stash", "list"])).trim()).toContain("kone: carried to old");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("with nothing to carry, just switches", async () => {
+    const dir = await makeRepo();
+    await git(dir, ["branch", "other"]);
+    await checkoutCarrying(dir, "other");
+    expect(await currentBranch(dir)).toBe("other");
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("upstreams", () => {
+  test("tracks a remote branch, and fast-forwards a branch you're not on", async () => {
+    const dir = await makeRepo();
+    const bare = await mkdtemp(path.join(os.tmpdir(), "kone-git-bare-"));
+    await git(bare, ["init", "--bare"]);
+    await git(dir, ["remote", "add", "origin", bare]);
+    await git(dir, ["push", "origin", "main", "main:side"]);
+    await git(dir, ["fetch", "origin"]);
+    await git(dir, ["branch", "side", "HEAD~1"]);
+
+    await setUpstream(dir, "side", "origin/side");
+    expect((await git(dir, ["rev-parse", "--abbrev-ref", "side@{upstream}"])).trim()).toBe("origin/side");
+
+    await fastForward(dir, "side");
+    expect((await git(dir, ["rev-parse", "side"])).trim()).toBe((await git(dir, ["rev-parse", "main"])).trim());
+    expect(await currentBranch(dir)).toBe("main");
+
+    await expect(setUpstream(dir, "side", "origin/nope")).rejects.toThrow("isn't on the remote");
+    await rm(dir, { recursive: true, force: true });
+    await rm(bare, { recursive: true, force: true });
   });
 });

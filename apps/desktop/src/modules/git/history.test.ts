@@ -48,6 +48,41 @@ describe("branches", () => {
   });
 });
 
+describe("branch details", () => {
+  test("reports tip details, the default branch, merged work and gone upstreams", async () => {
+    const dir = await makeRepo();
+    const g = (args: string[]) => git(dir, args);
+    // A branch with its own commit, merged into main and pushed.
+    await g(["checkout", "-b", "done"]);
+    await writeFile(path.join(dir, "b.txt"), "two\n");
+    await g(["add", "-A"]);
+    await g(["commit", "-m", "finish the thing"]);
+    await g(["push", "-u", "origin", "done"]);
+    await g(["checkout", "main"]);
+    await g(["merge", "--no-ff", "--no-edit", "done"]);
+    await g(["push", "origin", "main"]);
+    // Delete it on the remote so the local upstream is gone.
+    await g(["push", "origin", "--delete", "done"]);
+    await g(["fetch", "--prune", "origin"]);
+
+    const byName = new Map((await branches(dir)).map((b) => [b.name, b]));
+    const done = byName.get("done");
+    expect(done?.subject).toBe("finish the thing");
+    expect(done?.author).toBe("Kone Test");
+    expect(done?.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(Number.isNaN(Date.parse(done?.date ?? ""))).toBe(false);
+    expect(done?.merged).toBe(true);
+    expect(done?.gone).toBe(true);
+
+    expect(byName.get("main")?.default).toBe(true);
+    expect(byName.get("main")?.merged).toBeUndefined();
+    // Everything on it is already in main, so it counts as merged too.
+    expect(byName.get("local-plain")?.merged).toBe(true);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
 describe("commitDetail files", () => {
   test("pairs statuses with line counts across awkward paths", async () => {
     // The per-file rows merge two commands: --name-status for the letter and

@@ -3,6 +3,7 @@ import { parseFileDiff } from "./diff.js";
 import { numstat } from "@kone/git-core/numstat.js";
 import type {
   GitBranch,
+  GitBranchCompare,
   GitCommit,
   GitCommitDetail,
   GitCommitFile,
@@ -18,7 +19,7 @@ export async function branches(dir: string): Promise<GitBranch[]> {
     // The full refname tells apart refs/remotes/* from refs/heads/* — the short
     // name alone can't, because a local branch like feature/login looks just
     // like origin/feature (both slash-bearing, both often upstream-less).
-    "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(refname)",
+    "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(refname)%00%(objectname)%00%(committerdate:iso-strict)%00%(authorname)%00%(worktreepath)%00%(contents:subject)",
     "refs/heads",
     "refs/remotes",
   ]);
@@ -26,7 +27,8 @@ export async function branches(dir: string): Promise<GitBranch[]> {
   const result: GitBranch[] = [];
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
-    const [name, head, upstream, track, full] = line.split("\0");
+    const [name, head, upstream, track, full, sha, date, author, worktree, subject] =
+      line.split("\0");
     if (!name) continue;
     // Skip the symbolic "origin/HEAD -> origin/main" pointer.
     if (name.endsWith("/HEAD")) continue;
@@ -42,43 +44,74 @@ export async function branches(dir: string): Promise<GitBranch[]> {
     const behind = track?.match(/behind (\d+)/);
     if (ahead) branch.ahead = Number(ahead[1]);
     if (behind) branch.behind = Number(behind[1]);
+    // "[gone]": the upstream was deleted on the remote, usually after a merge.
+    if (track?.includes("gone")) branch.gone = true;
+    if (sha) branch.sha = sha;
+    if (date) branch.date = date;
+    if (author) branch.author = author;
+    if (subject) branch.subject = subject;
+    // Checked out in another worktree: git refuses to switch to it here.
+    if (worktree && head !== "*") branch.worktree = worktree;
     result.push(branch);
+  }
+
+  const base = await defaultBranch(root, result);
+  if (base) {
+    for (const branch of result) {
+      if (branch.name === base.local || branch.name === base.ref) branch.default = true;
+    }
+    const merged = await git(root, [
+      "for-each-ref",
+      `--merged=${base.ref}`,
+      "--format=%(refname:short)",
+      "refs/heads",
+      "refs/remotes",
+    ]).catch(() => "");
+    const names = new Set(merged.split("\n").filter(Boolean));
+    // A branch still sitting on the default's tip has nothing of its own yet,
+    // so calling it merged would invite deleting work that hasn't started.
+    const tip = result.find((b) => b.name === base.ref)?.sha;
+    for (const branch of result) {
+      if (!branch.default && names.has(branch.name) && branch.sha !== tip) branch.merged = true;
+    }
   }
   return result;
 }
 
-export async function log(dir: string, limit = 50, skip = 0): Promise<GitCommit[]> {
-  const root = await repoRoot(dir);
-  if (!root) return [];
-  const sep = "\x1f"; // field separator (unit sep)
-  const rec = "\x1e"; // record separator
-  const format = ["%H", "%h", "%s", "%an", "%ae", "%aI", "%ar"].join(sep) + rec;
-
-  // Fall back to the default for NaN / Infinity / non-positive values rather
-  // than passing an invalid --max-count that git would reject.
-  const max = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
-  const offset = Number.isFinite(skip) ? Math.max(0, Math.floor(skip)) : 0;
-
-  let out: string;
-  try {
-    out = await git(root, [
-      "log",
-      `--max-count=${max}`,
-      `--skip=${offset}`,
-      `--pretty=format:${format}`,
-    ]);
-  } catch (error) {
-    // An unborn branch (no commits yet) has no log — treat as empty.
-    if (error instanceof GitError) return [];
-    throw error;
+/**
+ * The branch the others are measured against: the remote's HEAD when the
+ * clone recorded one, else a local main or master. `ref` is what merges are
+ * checked against, so a stale local main doesn't hide merged work.
+ */
+async function defaultBranch(
+  root: string,
+  all: GitBranch[],
+): Promise<{ local: string; ref: string } | null> {
+  const names = new Set(all.map((b) => b.name));
+  const head = (
+    await git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).catch(
+      () => "",
+    )
+  ).trim();
+  if (head && names.has(head)) return { local: head.slice(head.indexOf("/") + 1), ref: head };
+  for (const local of ["main", "master"]) {
+    if (names.has(`origin/${local}`)) return { local, ref: `origin/${local}` };
+    if (names.has(local)) return { local, ref: local };
   }
+  return null;
+}
 
+const LOG_SEP = "\x1f"; // field separator (unit sep)
+const LOG_REC = "\x1e"; // record separator
+const LOG_FORMAT = ["%H", "%h", "%s", "%an", "%ae", "%aI", "%ar"].join(LOG_SEP) + LOG_REC;
+
+function parseLog(out: string): GitCommit[] {
   const commits: GitCommit[] = [];
-  for (const chunk of out.split(rec)) {
+  for (const chunk of out.split(LOG_REC)) {
     const line = chunk.replace(/^\n/, "");
     if (!line.trim()) continue;
     const [hash, short, subject, author, email, date, relative] =
-      line.split(sep);
+      line.split(LOG_SEP);
     if (!hash) continue;
     commits.push({
       hash,
@@ -91,6 +124,85 @@ export async function log(dir: string, limit = 50, skip = 0): Promise<GitCommit[
     });
   }
   return commits;
+}
+
+export async function log(dir: string, limit = 50, skip = 0): Promise<GitCommit[]> {
+  const root = await repoRoot(dir);
+  if (!root) return [];
+
+  // Fall back to the default for NaN / Infinity / non-positive values rather
+  // than passing an invalid --max-count that git would reject.
+  const max = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
+  const offset = Number.isFinite(skip) ? Math.max(0, Math.floor(skip)) : 0;
+
+  let out: string;
+  try {
+    out = await git(root, [
+      "log",
+      `--max-count=${max}`,
+      `--skip=${offset}`,
+      `--pretty=format:${LOG_FORMAT}`,
+    ]);
+  } catch (error) {
+    // An unborn branch (no commits yet) has no log — treat as empty.
+    if (error instanceof GitError) return [];
+    throw error;
+  }
+  return parseLog(out);
+}
+
+const COMPARE_LIMIT = 30;
+
+/**
+ * One branch against the default branch: how far apart they are, and the
+ * branch's own commits (on it, not on the default), newest first. The default
+ * branch itself, or a repo without one, gets its latest commits instead.
+ * Refs are spelled out in full, so a name can be neither ambiguous nor an option.
+ */
+export async function branchCompare(
+  dir: string,
+  name: string,
+  remote: boolean,
+): Promise<GitBranchCompare | null> {
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  const ref = `${remote ? "refs/remotes" : "refs/heads"}/${name}`;
+  const exists = await git(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) return null;
+
+  const all = await branches(root);
+  const base = await defaultBranch(root, all);
+  const baseRef = base
+    ? `${all.find((b) => b.name === base.ref)?.remote ? "refs/remotes" : "refs/heads"}/${base.ref}`
+    : null;
+
+  if (!base || !baseRef || baseRef === ref || (!remote && name === base.local)) {
+    const out = await git(root, [
+      "log",
+      `--max-count=${COMPARE_LIMIT}`,
+      `--pretty=format:${LOG_FORMAT}`,
+      ref,
+    ]);
+    return { base: null, ahead: 0, behind: 0, commits: parseLog(out) };
+  }
+
+  const counts = (await git(root, ["rev-list", "--left-right", "--count", `${baseRef}...${ref}`])).trim();
+  const [behind, ahead] = counts.split(/\s+/).map(Number);
+  const out = await git(root, [
+    "log",
+    `--max-count=${COMPARE_LIMIT}`,
+    `--pretty=format:${LOG_FORMAT}`,
+    `${baseRef}..${ref}`,
+  ]);
+  return {
+    base: base.ref,
+    ahead: ahead || 0,
+    behind: behind || 0,
+    commits: parseLog(out),
+  };
 }
 
 // The empty tree object — diffing against it turns "the initial commit" into
