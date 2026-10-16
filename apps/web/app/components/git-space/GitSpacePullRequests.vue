@@ -20,7 +20,12 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 
 const props = defineProps<{ space: ReturnType<typeof useGitSpace> }>();
 
-const emit = defineEmits<{ open: [number: number] }>();
+const emit = defineEmits<{ open: [number: number, origin: DOMRect | null] }>();
+
+function openRow(e: MouseEvent, number: number) {
+  // SAFETY: bound on the row's own button, so currentTarget is that element.
+  emit("open", number, (e.currentTarget as HTMLElement).getBoundingClientRect());
+}
 
 const { cue } = useSound();
 
@@ -448,7 +453,7 @@ function plural(n: number, word: string): string {
               type="button"
               class="gsp__main-btn"
               :title="`Open #${pr.number}`"
-              @click="emit('open', pr.number)"
+              @click="openRow($event, pr.number)"
             >
               <span class="gsp__ring">
                 <GitSpaceChecksRing :counts="pr.checkCounts" :size="24" :stroke="3" />
@@ -618,7 +623,7 @@ function plural(n: number, word: string): string {
               type="button"
               class="gsp__age"
               :title="o.pr.title"
-              @click="emit('open', o.pr.number)"
+              @click="openRow($event, o.pr.number)"
             >
               <span class="gsp__age-num">#{{ o.pr.number }}</span>
               <span class="gsp__age-track">

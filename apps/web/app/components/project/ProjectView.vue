@@ -165,16 +165,13 @@ function onBack() {
   }
   toLauncher();
 }
-const backIsAway = computed(() => Boolean(activeFile.value) || gitDepth.value > 0);
+const backIsAway = computed(() => Boolean(activeFile.value));
 
 // ── the repository surface ────────────────────────────────────────────────────
 // Mounted on first entry and kept for the project's lifetime: its lists (history
 // pages, branches, pull requests) are worth holding on to across a step back to
 // the working tree, but none of it should cost anything on project open.
 const gitMounted = ref(false);
-/** How deep into a commit or pull request the space is; those views draw their
- *  own return glyph, so the corner arrow gets out of their way. */
-const gitDepth = ref(0);
 function openGitSpace() {
   if (!g.repo.value) return;
   gitMounted.value = true;
@@ -592,7 +589,7 @@ function onDiscardFile(path: string) {
           :inert="backIsAway"
           :aria-label="surface !== 'overview' ? 'Back to project' : 'Back to projects'"
           :initial="{ opacity: 0, x: -6 }"
-          :animate="gitDepth > 0 ? { opacity: 0, x: -6 } : { opacity: 1, x: 0 }"
+          :animate="{ opacity: 1, x: 0 }"
           :transition="{ duration: 0.3 }"
           @click="onBack"
         >
@@ -800,7 +797,6 @@ function onDiscardFile(path: string) {
         :git="g"
         :visible="surface === 'git'"
         @open-file="onOpenFileFromGit"
-        @detail-depth="gitDepth = $event"
       />
     </div>
 
