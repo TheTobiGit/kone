@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { initTestRepo } from "@kone/git-core/testRepo.js";
 import { git } from "@kone/git-core/core.js";
+import type { GitHubMergeMethod } from "@kone/git-core/types.js";
 
 import { classifyGhError } from "./ghError.js";
 
@@ -444,6 +445,8 @@ describe("pull request actions", () => {
     expect(() => prActionArgs(0, "close")).toThrow();
     expect(() => prActionArgs(1.5, "merge")).toThrow();
     expect(() => prActionArgs(7, "merge", "merge", "--admin")).toThrow();
+    // SAFETY: a value only IPC could deliver, which the type rules out.
+    expect(() => prActionArgs(7, "merge", "admin" as GitHubMergeMethod)).toThrow();
   });
 
   test("merge settings keep only allowed methods and read write access", () => {
