@@ -38,6 +38,7 @@ const { cue } = useSound();
 const busy = computed(() => props.space.op.value !== null);
 const all = computed(() => props.space.branches.value);
 const current = computed(() => all.value.find((b) => b.current) ?? null);
+const remoteNames = computed(() => props.space.remotes.value.map((r) => r.name));
 const defaultName = computed(() => all.value.find((b) => !b.remote && b.default)?.name ?? "main");
 const localCount = computed(() => all.value.filter((b) => !b.remote).length);
 const remoteCount = computed(() => all.value.length - localCount.value);
@@ -67,7 +68,7 @@ function clearFilters() {
 function shown(b: GitBranch): boolean {
   const q = query.value.trim().toLowerCase();
   if (q && !b.name.toLowerCase().includes(q) && !(b.subject ?? "").toLowerCase().includes(q)) return false;
-  if (kindFilter.value && kindOf(b.remote ? localNameOf(b.name) : b.name) !== kindFilter.value) return false;
+  if (kindFilter.value && kindOf(b.remote ? localNameOf(b.name, remoteNames.value) : b.name) !== kindFilter.value) return false;
   // How a branch stands with its remote is a local branch's fact.
   if (standingFilter.value && (b.remote || standing(b) !== standingFilter.value)) return false;
   return true;

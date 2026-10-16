@@ -3,7 +3,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
-import { checkout, checkoutCarrying, createBranch, setUpstream, stage } from "./mutations.js";
+import { checkout, checkoutCarrying, createBranch, deleteBranch, setUpstream, stage } from "./mutations.js";
 import { fastForward, push } from "./sync.js";
 import os from "node:os";
 import { mkdtemp } from "node:fs/promises";
@@ -226,6 +226,31 @@ describe("upstreams", () => {
     await expect(setUpstream(dir, "side", "origin/nope")).rejects.toThrow("isn't on the remote");
     await rm(dir, { recursive: true, force: true });
     await rm(bare, { recursive: true, force: true });
+  });
+});
+
+describe("a remote whose name has a slash", () => {
+  test("catches up, pushes and deletes against the whole remote name", async () => {
+    const dir = await makeRepo();
+    const bare = await mkdtemp(path.join(os.tmpdir(), "kone-git-bare-"));
+    await git(bare, ["init", "--bare"]);
+    await git(dir, ["remote", "add", "team/up", bare]);
+    await git(dir, ["push", "team/up", "main", "main:side"]);
+    await git(dir, ["fetch", "team/up"]);
+    await git(dir, ["branch", "side", "HEAD~1"]);
+    await setUpstream(dir, "side", "team/up/side");
+
+    await fastForward(dir, "side");
+    expect((await git(dir, ["rev-parse", "side"])).trim()).toBe((await git(dir, ["rev-parse", "main"])).trim());
+
+    await git(dir, ["branch", "extra"]);
+    await push(dir, { branch: "extra", setUpstream: true, remote: "team/up" });
+    expect((await git(bare, ["branch", "--list", "extra"])).trim()).toBe("extra");
+    await push(dir, { branch: "side" });
+
+    await deleteBranch(dir, "team/up/extra", { remote: true });
+    expect((await git(bare, ["branch", "--list", "extra"])).trim()).toBe("");
+    for (const d of [dir, bare]) await rm(d, { recursive: true, force: true });
   });
 });
 

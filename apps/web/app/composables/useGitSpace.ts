@@ -454,11 +454,13 @@ export function useGitSpace(
     return act("checkout", () => bridge.checkout(dir(), name), afterHistoryMoved);
   }
   /** Switch and bring the uncommitted work along. A clash leaves it in the
-   *  stash, so the stash list moves too. */
-  function switchCarrying(name: string): Promise<boolean> {
-    return act("checkout", () => bridge.checkoutCarrying(dir(), name), () =>
-      Promise.all([afterHistoryMoved(), loadStashes()]),
-    );
+   *  stash, so the stash list moves too. That clash still fails the call
+   *  after the switch went through, so the lists reload either way. */
+  async function switchCarrying(name: string): Promise<boolean> {
+    const reload = () => Promise.all([afterHistoryMoved(), loadStashes()]);
+    const ok = await act("checkout", () => bridge.checkoutCarrying(dir(), name), reload);
+    if (!ok) await reload();
+    return ok;
   }
   function fastForward(name: string): Promise<boolean> {
     return act("pull", () => bridge.fastForward(dir(), name), afterHistoryMoved);

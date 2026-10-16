@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 
 import { GitError, assertWithinRepo, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import { repoState } from "./state.js";
+import { repoState, splitRemoteRef } from "./state.js";
 import type { GitCommitOptions } from "@kone/git-core/types.js";
 
 // Write operations behind the changes UI. Each resolves the repo root and runs
@@ -103,7 +103,7 @@ async function switchIn(root: string, name: string): Promise<void> {
   if (!(await refExists(root, remoteRef))) {
     throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
   }
-  const localName = name.slice(name.indexOf("/") + 1);
+  const localName = (await splitRemoteRef(root, name))?.branch ?? name.slice(name.indexOf("/") + 1);
   if (await refExists(root, `refs/heads/${localName}`)) {
     await git(root, ["switch", "--no-guess", "--", localName]);
   } else {
@@ -297,9 +297,9 @@ export async function deleteBranch(
     if (opts?.remote) {
       // "origin/feature" → push origin --delete feature; a bare name deletes
       // on origin.
-      const slash = name.indexOf("/");
-      const remote = slash > 0 ? name.slice(0, slash) : "origin";
-      const branch = slash > 0 ? name.slice(slash + 1) : name;
+      const split = await splitRemoteRef(root, name.trim());
+      const remote = split?.remote ?? "origin";
+      const branch = split?.branch ?? name.trim();
       await git(root, ["push", remote, "--delete", branch]);
       return;
     }
