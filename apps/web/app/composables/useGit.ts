@@ -81,6 +81,12 @@ const NO_GIT: KoneGitApi = {
     checkoutPr: done,
     prAction: refuse("Changing a pull request"),
     prComment: refuse("Commenting"),
+    issues: empty,
+    issuesEnabled: () => Promise.resolve(true),
+    issueDetail: none,
+    issueAction: refuse("Changing an issue"),
+    issueComment: refuse("Commenting"),
+    createIssue: refuse("Opening an issue"),
     open: (url) => {
       window.open(url, "_blank", "noopener");
       return Promise.resolve();

@@ -16,8 +16,12 @@ mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 // SAFETY: the dynamically imported module is exactly ./github's own exports.
 const {
   branchPullRequest,
+  canTriageWith,
   commitAuthors,
   contributors,
+  issueActionArgs,
+  issueDetail,
+  issues,
   me,
   mergeSettingsOf,
   prActionArgs,
@@ -484,5 +488,67 @@ describe("pull request actions", () => {
         viewerPermission: "TRIAGE",
       }),
     ).toMatchObject({ canWrite: false, canTriage: true });
+  });
+});
+
+describe("issues", () => {
+  test("close and reopen map to gh, with the reason spelled as gh wants it", () => {
+    expect(issueActionArgs(12, "close")).toEqual(["issue", "close", "12", "--reason", "completed"]);
+    expect(issueActionArgs(12, "close", "not-planned")).toEqual(["issue", "close", "12", "--reason", "not planned"]);
+    expect(issueActionArgs(12, "reopen")).toEqual(["issue", "reopen", "12"]);
+    expect(() => issueActionArgs(-1, "reopen")).toThrow();
+  });
+
+  test("read access can't triage; anything else, or an unknown answer, can", () => {
+    expect(canTriageWith("READ")).toBe(false);
+    expect(canTriageWith("TRIAGE")).toBe(true);
+    expect(canTriageWith("WRITE")).toBe(true);
+    expect(canTriageWith("")).toBe(true);
+  });
+
+  test("a list row keeps its people, labels, comment count and close reason", async () => {
+    installFakeGh(`[{
+      number: 31,
+      title: "Crash on start",
+      state: "CLOSED",
+      stateReason: "NOT_PLANNED",
+      author: { login: "alice", name: "Alice" },
+      assignees: [{ login: "bob" }, { login: "" }],
+      labels: [{ name: "bug", color: "#D73A4A" }],
+      comments: [{}, {}, {}],
+      milestone: { title: "v1" },
+      createdAt: "2026-08-20T10:00:00Z",
+      closedAt: "2026-08-21T10:00:00Z"
+    }, { title: "no number" }]`);
+    const list = await issues(process.cwd(), { state: "all" });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      number: 31,
+      state: "closed",
+      stateReason: "not-planned",
+      author: { login: "alice", name: "Alice" },
+      assignees: [{ login: "bob" }],
+      labels: [{ name: "bug", color: "d73a4a" }],
+      commentCount: 3,
+      milestone: "v1",
+      isPinned: false,
+    });
+  });
+
+  test("an open issue drops a leftover reason; the detail keeps visible comments only", async () => {
+    installFakeGh(`{
+      number: 32,
+      title: "Reopened",
+      state: "OPEN",
+      stateReason: "REOPENED",
+      body: "Steps to reproduce",
+      comments: [
+        { author: { login: "carol" }, body: "Same here", createdAt: "2026-08-22T10:00:00Z", url: "u1" },
+        { author: { login: "spam" }, body: "buy now", createdAt: "2026-08-22T11:00:00Z", url: "u2", isMinimized: true }
+      ]
+    }`);
+    const detail = await issueDetail(process.cwd(), 32);
+    expect(detail).toMatchObject({ state: "open", stateReason: null, body: "Steps to reproduce", commentCount: 1 });
+    expect(detail?.comments.map((c) => c.author?.login)).toEqual(["carol"]);
   });
 });

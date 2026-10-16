@@ -14,6 +14,11 @@ import type {
 
   GitContributors,
   GitFileDiff,
+  GitHubIssue,
+  GitHubIssueCloseReason,
+  GitHubIssueCreateOptions,
+  GitHubIssueCreateResult,
+  GitHubIssueDetail,
   GitHubMergeMethod,
   GitHubPerson,
   GitHubPrAction,
@@ -69,7 +74,8 @@ export type GitSpaceOp =
   | "checkout"
   | "worktree"
   | "pr-action"
-  | "comment";
+  | "comment"
+  | "issue";
 
 /** How many commits one page of history holds. */
 const PAGE = 50;
@@ -96,6 +102,10 @@ export function useGitSpace(
   const prs = ref<GitHubPullRequest[]>([]);
   const gh = ref<GitHubStatus | null>(null);
   const prState = ref<"open" | "all">("open");
+  const issues = ref<GitHubIssue[]>([]);
+  const issueState = ref<"open" | "all">("open");
+  /** False once the repository says its issue tracker is turned off. */
+  const issuesEnabled = ref(true);
 
   // The About section's payloads. `identity` is never null — it resolves to the
   // empty shape when git has no user configured, so the section can tell "unset"
@@ -114,6 +124,7 @@ export function useGitSpace(
   const commitDetails = ref<Record<string, GitCommitDetail>>({});
   const prDetails = ref<Record<number, GitHubPullRequestDetail>>({});
   const prDiffs = ref<Record<number, GitFileDiff[]>>({});
+  const issueDetails = ref<Record<number, GitHubIssueDetail>>({});
   // Commit email → the GitHub account that owns it. One read serves the whole
   // history: git only records an address, and this is the only thing that turns
   // an address into a face.
@@ -214,6 +225,24 @@ export function useGitSpace(
       prs.value = await bridge.github
         .prs(dir(), { state: prState.value })
         .catch(() => []);
+    });
+  }
+
+  function loadIssues(next?: "open" | "all"): Promise<void> {
+    if (next) issueState.value = next;
+    return once(`issues:${issueState.value}`, async () => {
+      // As with pull requests: the remotes and the CLI's status come first.
+      if (!loaded.value) await load();
+      if (!gh.value?.authenticated || !origin.value?.slug) {
+        issues.value = [];
+        return;
+      }
+      const [enabled, list] = await Promise.all([
+        bridge.github.issuesEnabled(dir()).catch(() => true),
+        bridge.github.issues(dir(), { state: issueState.value }).catch(() => []),
+      ]);
+      issuesEnabled.value = enabled;
+      issues.value = enabled ? list : [];
     });
   }
 
@@ -513,6 +542,62 @@ export function useGitSpace(
     );
   }
 
+  /** One issue in full, kept once read like a pull request; `fresh` reads it
+   *  again, since comments and state move under you. */
+  function issueDetail(number: number, fresh = false): Promise<GitHubIssueDetail | null> {
+    const cached = issueDetails.value[number];
+    if (cached && !fresh) return Promise.resolve(cached);
+    return bridge.github
+      .issueDetail(dir(), number)
+      .then((detail) => {
+        if (detail) issueDetails.value[number] = detail;
+        return detail;
+      })
+      .catch(() => null);
+  }
+
+  /** Close (as done or not planned) or reopen, then re-read the issue and the
+   *  list so both show where it stands now. */
+  function issueAction(
+    number: number,
+    action: "close" | "reopen",
+    reason?: GitHubIssueCloseReason,
+  ): Promise<boolean> {
+    return act(
+      "issue",
+      () => bridge.github.issueAction(dir(), number, action, reason),
+      () => Promise.all([issueDetail(number, true), loadIssues()]),
+    );
+  }
+
+  function commentOnIssue(number: number, body: string): Promise<boolean> {
+    return act(
+      "comment",
+      () => bridge.github.issueComment(dir(), number, body),
+      () => Promise.all([issueDetail(number, true), loadIssues()]),
+    );
+  }
+
+  /** Resolves the new issue, or null on failure (the message is in `error`). */
+  async function createIssue(opts: GitHubIssueCreateOptions): Promise<GitHubIssueCreateResult | null> {
+    if (op.value !== null) return null;
+    op.value = "issue";
+    try {
+      const result = await bridge.github.createIssue(dir(), opts);
+      error.value = null;
+      errorKind.value = null;
+      await loadIssues();
+      return result;
+    } catch (e) {
+      const c = classifyIpcError(e, "Something went wrong");
+      errorKind.value = c.kind;
+      error.value = kindHint(c.kind) ?? c.message;
+      return null;
+    } finally {
+      op.value = null;
+    }
+  }
+
   function openExternal(url: string): Promise<void> {
     return bridge.github.open(url).catch(() => undefined);
   }
@@ -535,6 +620,9 @@ export function useGitSpace(
     prs,
     gh,
     prState,
+    issues,
+    issueState,
+    issuesEnabled,
 
     name,
     readme,
@@ -552,6 +640,11 @@ export function useGitSpace(
     loadStashes,
     loadWorktrees,
     loadPrs,
+    loadIssues,
+    issueDetail,
+    issueAction,
+    commentOnIssue,
+    createIssue,
     loadAbout,
     loadCommitAuthors,
     faceFor,

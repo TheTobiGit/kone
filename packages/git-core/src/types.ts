@@ -595,6 +595,53 @@ export type GitHubPullRequestDetail = {
   canTriage: boolean;
 };
 
+/** Why a closed issue was closed. */
+export type GitHubIssueStateReason = "completed" | "not-planned" | "duplicate";
+
+/** How to close an issue: it was done, or it won't be. */
+export type GitHubIssueCloseReason = "completed" | "not-planned";
+
+/** One issue, as the list draws it. */
+export type GitHubIssue = {
+  number: number;
+  title: string;
+  url: string;
+  state: "open" | "closed";
+  /** Why it was closed; null while open, or when GitHub didn't say. */
+  stateReason: GitHubIssueStateReason | null;
+  author: GitHubPerson | null;
+  createdAt: string;
+  relative: string;
+  updatedAt: string | null;
+  updated: string;
+  closedAt: string | null;
+  labels: GitHubLabel[];
+  assignees: GitHubPerson[];
+  commentCount: number;
+  milestone: string | null;
+  isPinned: boolean;
+};
+
+/** One issue in full: what the list knows, plus what the card reads. */
+export type GitHubIssueDetail = GitHubIssue & {
+  /** The description as GitHub markdown. */
+  body: string;
+  /** Comments, oldest first; GitHub's hidden ones are left out. */
+  comments: GitHubComment[];
+  /** Whether you can close or reopen it, which takes triage access or more. */
+  canTriage: boolean;
+};
+
+export type GitHubIssueCreateOptions = {
+  title: string;
+  body?: string;
+};
+
+export type GitHubIssueCreateResult = {
+  number: number | null;
+  url: string;
+};
+
 /** How a pull request lands on its base. */
 export type GitHubMergeMethod = "merge" | "squash" | "rebase";
 
