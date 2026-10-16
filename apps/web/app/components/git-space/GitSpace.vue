@@ -134,38 +134,31 @@ watch(
   { immediate: true },
 );
 
-// ── the detail stack ──────────────────────────────────────────────────────────
-// A commit and a pull request each get a whole view rather than a drawer inside
-// a list: they carry a body, a diff, a conversation and a person, and none of
-// that fits in a row that has to stay a row. It's a stack because a pull request
-// lists its own commits, and opening one from there should come back to the pull
-// request rather than to wherever you started.
+// ── the open pull request ─────────────────────────────────────────────────────
+// A pull request gets a whole view rather than a drawer inside a list: it
+// carries a body, a diff, a conversation and a person, and none of that fits in
+// a row that has to stay a row. (A commit is smaller, and opens in a card over
+// whatever section listed it.)
 //
 // The shell isn't unmounted underneath it, only hidden — every section keeps its
 // scroll offset and its loaded pages, so stepping back is genuinely a step back.
-type Detail = { kind: "commit"; hash: string } | { kind: "pr"; number: number };
-const stack = ref<Detail[]>([]);
-const detail = computed<Detail | null>(() => stack.value.at(-1) ?? null);
+const pr = ref<number | null>(null);
 
-function openCommit(hash: string) {
-  cue("open");
-  stack.value = [...stack.value, { kind: "commit", hash }];
-}
 function openPr(number: number) {
   cue("open");
-  stack.value = [...stack.value, { kind: "pr", number }];
+  pr.value = number;
 }
 function back() {
-  if (!stack.value.length) return;
+  if (pr.value === null) return;
   cue("leave");
-  stack.value = stack.value.slice(0, -1);
+  pr.value = null;
 }
 
-// Escape pops one level. The project's own Escape handler only closes the file
+// Escape steps back out. The project's own Escape handler only closes the file
 // detail and the switcher, neither of which can be open from in here, so there's
 // nothing to fight over.
 onKeyStroke("Escape", (e) => {
-  if (!props.visible || !stack.value.length) return;
+  if (!props.visible || pr.value === null) return;
   e.preventDefault();
   back();
 });
@@ -176,8 +169,8 @@ onKeyStroke("Escape", (e) => {
 // 300px away from the first, and it can't be the thing that leaves for the
 // working tree while there's still a layer of this to step out of.
 watch(
-  () => stack.value.length,
-  (depth) => emit("detailDepth", depth),
+  pr,
+  (n) => emit("detailDepth", n === null ? 0 : 1),
 );
 
 // ── what the masthead says ────────────────────────────────────────────────────
@@ -314,7 +307,7 @@ function onAbort() {
 
 <template>
   <div class="gs">
-    <div v-show="!detail" ref="scrollEl" class="gs__scroll">
+    <div v-show="pr === null" ref="scrollEl" class="gs__scroll">
       <div class="gs__col">
         <!-- ── the left column ────────────────────────────────────────────── -->
         <nav class="gs__side" aria-label="Repository">
@@ -439,7 +432,6 @@ function onAbort() {
               :space="space"
               :dir="project.path"
               @go="go"
-              @open-commit="openCommit"
               @open-pr="openPr"
             />
             <GitSpaceChanges
@@ -453,7 +445,6 @@ function onAbort() {
               v-if="visited.includes('history')"
               v-show="section === 'history'"
               :space="space"
-              @open="openCommit"
             />
             <GitSpaceBranches
               v-if="visited.includes('branches')"
@@ -477,37 +468,16 @@ function onAbort() {
       </div>
     </div>
 
-    <!-- ── the open thing ─────────────────────────────────────────────────── -->
-    <!-- The whole stack is rendered and all but the top of it hidden, for the
-         same reason the sections above are: stepping into a commit from a pull
-         request's Commits tab and stepping back should return you to that tab,
-         with its patch still read and its conversation still scrolled. A `v-if`
-         here would rebuild the pull request from its first beat every time, and
-         "back" would quietly mean "start again".
-
-         Keyed by depth as well as identity, so stepping from one pull request to
-         another remounts rather than swapping payloads under a view that already
-         finished loading. -->
-    <template v-for="(d, i) in stack" :key="d.kind === 'commit' ? `${i}:c:${d.hash}` : `${i}:p:${d.number}`">
-      <GitSpaceCommitView
-        v-if="d.kind === 'commit'"
-        v-show="i === stack.length - 1"
-        :space="space"
-        :hash="d.hash"
-        :nested="i > 0"
-        @back="back"
-        @open-file="(p, r) => emit('openFile', p, r)"
-      />
-      <GitSpacePullRequestView
-        v-else
-        v-show="i === stack.length - 1"
-        :space="space"
-        :number="d.number"
-        :nested="i > 0"
-        @back="back"
-        @open-commit="openCommit"
-      />
-    </template>
+    <!-- ── the open pull request ─────────────────────────────────────────── -->
+    <!-- Keyed by number, so stepping from one pull request to another remounts
+         rather than swapping payloads under a view that already finished loading. -->
+    <GitSpacePullRequestView
+      v-if="pr !== null"
+      :key="pr"
+      :space="space"
+      :number="pr"
+      @back="back"
+    />
   </div>
 </template>
 

@@ -28,9 +28,10 @@ const props = defineProps<{ space: ReturnType<typeof useGitSpace>; dir: string }
 const emit = defineEmits<{
   /** Step to another section of the space. */
   go: [section: Section];
-  openCommit: [hash: string];
   openPr: [number: number];
 }>();
+
+const { cue } = useSound();
 
 // The README's own images ride the git module, not the thread's local-image
 // grant: the section knows the checkout and the README's folder, so it can hand
@@ -215,6 +216,15 @@ const readmeDir = computed(() => {
 // ── outward actions ───────────────────────────────────────────────────────────
 const cloneUrl = computed(() => origin.value?.fetchUrl ?? null);
 const copied = ref(false);
+
+// A commit opens in a card over About, grown from whatever was clicked, so the
+// page is still there when you close it.
+const opened = ref<{ hash: string; origin: DOMRect | null } | null>(null);
+function openCommit(e: MouseEvent, hash: string) {
+  cue("open");
+  // SAFETY: bound on a button, so currentTarget is that element.
+  opened.value = { hash, origin: (e.currentTarget as HTMLElement).getBoundingClientRect() };
+}
 async function copyClone() {
   if (!cloneUrl.value) return;
   try {
@@ -370,7 +380,7 @@ function dayLabel(t: number): string {
         </div>
         <ol class="gsa__timeline">
           <li v-for="c in latest" :key="c.hash">
-            <button type="button" class="gsa__event" :title="`${c.subject}\n${c.short}`" @click="emit('openCommit', c.hash)">
+            <button type="button" class="gsa__event" :title="`${c.subject}\n${c.short}`" aria-haspopup="dialog" @click="openCommit($event, c.hash)">
               <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
               <span class="gsa__event-title">{{ c.subject }}</span>
               <span class="gsa__event-meta">
@@ -412,7 +422,8 @@ function dayLabel(t: number): string {
                 :style="{ '--n': n }"
                 :title="`${c.subject}\n${c.author} · ${day.label} · ${c.short}`"
                 :aria-label="`${c.subject}, ${c.author}, ${day.label}`"
-                @click="emit('openCommit', c.hash)"
+                aria-haspopup="dialog"
+                @click="openCommit($event, c.hash)"
               >
                 <template v-if="n === STACK - 1 && overflow(day)">+</template>
               </button>
@@ -483,6 +494,14 @@ function dayLabel(t: number): string {
         </p>
       </div>
     </aside>
+
+    <GitSpaceCommitCard
+      v-if="opened"
+      :space="space"
+      :hash="opened.hash"
+      :origin="opened.origin"
+      @close="opened = null"
+    />
   </section>
 </template>
 
