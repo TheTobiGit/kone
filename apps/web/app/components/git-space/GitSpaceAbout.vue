@@ -11,11 +11,12 @@ import type { GitCommit, GitContributor, GitHubPullRequest } from "~/types/deskt
 // numbers, dots and bars and faces instead of sentences — and nothing on it
 // sits in a card.
 //
-// Top to bottom: what the repository is (its description and its numbers);
-// its rhythm, every commit of the last eight weeks as a dot you can open; the
-// latest commits as a timeline beside the open pull requests with their size
-// drawn; the people who build it as a crowd; and the README, laid out as a page. The GitHub-fed
-// parts (facts, stars, avatars, pull requests) sit on top of what git alone
+// Two columns. The main one reads: the description and its links, then the
+// README laid out as a page. The side one shows what's happening: the numbers,
+// the latest commits as a timeline, four weeks of commits as dots you can
+// open, the open pull requests with their size drawn, and the people who build
+// it as a crowd. The GitHub-fed parts (facts, stars, avatars, pull requests)
+// sit on top of what git alone
 // knows: a missing or logged-out `gh` costs the page nothing it can't do
 // without, and the reason appears once.
 
@@ -288,7 +289,7 @@ function dayLabel(t: number): string {
   <GitSpaceSkeleton v-if="!ready" variant="prose" />
 
   <section v-else class="gsa">
-    <!-- ══ the main column: what it is, what just happened, how to read it ══ -->
+    <!-- ══ the main column: what it is, and how to read it ═══════════════ -->
     <div class="gsa__main">
       <!-- ── the story ──────────────────────────────────────────────────── -->
       <div class="gsa__block gsa__story" :style="{ '--i': 0 }">
@@ -308,34 +309,6 @@ function dayLabel(t: number): string {
             {{ copied ? "Copied" : "Clone" }}
           </button>
         </div>
-      </div>
-
-      <!-- ── latest ─────────────────────────────────────────────────────── -->
-      <div v-if="latest.length" class="gsa__block" :style="{ '--i': 1 }">
-        <div class="gsa__label">
-          <span class="gsa__label-name">Latest commits</span>
-          <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
-            All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
-          </button>
-        </div>
-        <ol class="gsa__timeline">
-          <li v-for="c in latest" :key="c.hash">
-            <button type="button" class="gsa__event" @click="emit('openCommit', c.hash)">
-              <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
-              <span class="gsa__event-title">{{ c.subject }}</span>
-              <span class="gsa__event-meta">
-                <span class="gsa__avatar" aria-hidden="true">
-                  <img v-if="face(c)" :src="face(c)!" alt="" />
-                  <template v-else>{{ c.author[0]?.toUpperCase() }}</template>
-                </span>
-                {{ c.author }}
-                <span class="gsa__sep">·</span>
-                {{ c.relative || relativeIso(c.date) }}
-                <span class="gsa__hash">{{ c.short }}</span>
-              </span>
-            </button>
-          </li>
-        </ol>
       </div>
 
       <!-- ── readme ─────────────────────────────────────────────────────── -->
@@ -371,6 +344,33 @@ function dayLabel(t: number): string {
           <span class="gsa__stat-value">{{ compact(stat.value) }}</span>
           <span class="gsa__stat-label">{{ stat.label }}</span>
         </button>
+      </div>
+
+      <!-- ── latest ─────────────────────────────────────────────────────── -->
+      <div v-if="latest.length" class="gsa__block" :style="{ '--i': 2 }">
+        <div class="gsa__label">
+          <span class="gsa__label-name">Latest commits</span>
+          <button type="button" class="gsa__label-go" @click="emit('go', 'history')">
+            All <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+          </button>
+        </div>
+        <ol class="gsa__timeline">
+          <li v-for="c in latest" :key="c.hash">
+            <button type="button" class="gsa__event" :title="c.short" @click="emit('openCommit', c.hash)">
+              <span class="gsa__event-dot" :class="{ 'gsa__event-dot--mine': isMine(c) }" aria-hidden="true" />
+              <span class="gsa__event-title">{{ c.subject }}</span>
+              <span class="gsa__event-meta">
+                <span class="gsa__avatar" aria-hidden="true">
+                  <img v-if="face(c)" :src="face(c)!" alt="" />
+                  <template v-else>{{ c.author[0]?.toUpperCase() }}</template>
+                </span>
+                {{ c.author }}
+                <span class="gsa__sep">·</span>
+                {{ c.relative || relativeIso(c.date) }}
+              </span>
+            </button>
+          </li>
+        </ol>
       </div>
 
       <!-- ── rhythm ─────────────────────────────────────────────────────── -->
@@ -472,8 +472,9 @@ function dayLabel(t: number): string {
 </template>
 
 <style scoped>
-/* Two columns: the main one reads (what it is, what just happened, the
-   README), the side one draws (numbers, rhythm, pull requests, people). */
+/* Two columns: the main one reads (what it is, the README), the side one
+   shows what's happening (numbers, latest commits, rhythm, pull requests,
+   people). */
 .gsa {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
@@ -623,17 +624,17 @@ function dayLabel(t: number): string {
 /* The numbers: big mono figures over a one-word label, nothing around them. */
 .gsa__stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin: -8px -12px 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  margin: -6px -8px 0;
 }
 .gsa__stat {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  padding: 8px 12px;
-  border-radius: 12px;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 10px;
   cursor: pointer;
   transition: background-color var(--gs-t-micro) ease;
   animation: gsa-in var(--gs-t-enter) var(--gs-ease) backwards;
@@ -644,14 +645,15 @@ function dayLabel(t: number): string {
 }
 .gsa__stat-value {
   font-family: var(--font-mono);
-  font-size: 30px;
+  font-size: 19px;
   font-weight: 600;
   line-height: 1;
-  letter-spacing: -0.05em;
+  letter-spacing: -0.04em;
   color: var(--ink);
 }
 .gsa__stat-label {
-  font-size: 12px;
+  font-size: 11px;
+  white-space: nowrap;
   color: var(--muted);
 }
 
