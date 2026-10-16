@@ -373,6 +373,7 @@ function peopleSentence(people: GitHubPerson[]): string {
           Nothing matches.
           <button type="button" class="gsi__link" @click="clearFilters">Clear the filter</button>
         </p>
+        <GitSpaceSkeleton v-else-if="!issues.length && !space.ready('issues')" :rows="5" faces />
         <p v-else-if="!issues.length && gh" class="gsi__empty">
           <template v-if="space.issueState.value === 'open'">
             No open issues.
