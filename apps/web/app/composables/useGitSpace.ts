@@ -466,7 +466,11 @@ export function useGitSpace(
     return act("pull", () => bridge.fastForward(dir(), name), afterHistoryMoved);
   }
   function setUpstream(name: string, upstream: string): Promise<boolean> {
-    return act("branch", () => bridge.setUpstream(dir(), name, upstream), loadBranches);
+    // Only .git/config changes, which the file watcher skips, so the masthead's
+    // publish state is reloaded by hand.
+    return act("branch", () => bridge.setUpstream(dir(), name, upstream), () =>
+      Promise.all([loadBranches(), git.refresh()]),
+    );
   }
 
   function loadState(): Promise<void> {

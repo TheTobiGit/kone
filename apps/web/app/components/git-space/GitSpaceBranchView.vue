@@ -118,7 +118,7 @@ const standSentence = computed(() => {
 const remote = computed(() => props.space.origin.value?.name ?? "origin");
 /** <remote>/<same name>: the push and publish below can name it plainly. */
 const sameNamedUpstream = computed(
-  () => !b.value.upstream || b.value.upstream === `${b.value.upstream.split("/")[0]}/${b.value.name}`,
+  () => !b.value.upstream || localNameOf(b.value.upstream, remoteNames.value) === b.value.name,
 );
 
 async function run(task: () => Promise<boolean>) {
