@@ -439,6 +439,7 @@ function plural(n: number, word: string): string {
           Nothing matches.
           <button type="button" class="gsp__link" @click="clearFilters">Clear the filter</button>
         </p>
+        <GitSpaceSkeleton v-else-if="!prs.length && !space.ready('prs')" :rows="5" faces />
         <p v-else-if="!prs.length && gh" class="gsp__empty">
           <template v-if="space.prState.value === 'open'">
             No open pull requests.

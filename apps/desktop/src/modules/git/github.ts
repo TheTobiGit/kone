@@ -1373,6 +1373,8 @@ function prNumberArg(number: number): string {
   return String(number);
 }
 
+const MERGE_METHODS: readonly GitHubMergeMethod[] = ["merge", "squash", "rebase"];
+
 /** The gh arguments for one pull request action. Merge takes its method and,
  *  when known, the head commit the person was looking at: gh then refuses the
  *  merge if anything was pushed since, so only reviewed code lands. The rest
@@ -1386,6 +1388,11 @@ export function prActionArgs(
   const ref = prNumberArg(number);
   switch (action) {
     case "merge": {
+      // The method arrives over IPC, where its type is only a promise: a value
+      // like "admin" would become a different gh flag entirely.
+      if (!MERGE_METHODS.includes(method)) {
+        throw GitError.classified("INVALID_INPUT", `Invalid merge method: ${String(method)}`, null);
+      }
       const args = ["pr", "merge", ref, `--${method}`];
       if (headOid === undefined) return args;
       if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(headOid)) {
