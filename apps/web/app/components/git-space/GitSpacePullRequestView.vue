@@ -165,6 +165,13 @@ const verdict = computed<Verdict | null>(() => {
   if (p.reviewDecision === "review-required" || pendingReviewers.value.length) {
     return { word: "Needs review", why: reviewSentence.value, tone: "warn" };
   }
+  // Green checks and reviews aren't the whole answer: the repository's own rules
+  // can still hold it back, and until GitHub has worked that out, nobody knows.
+  if (p.mergeability === "blocked") return { word: "Blocked", why: MERGEABILITY.get("blocked") ?? null, tone: "warn" };
+  if (p.mergeability === "behind") return { word: "Behind base", why: `${p.base} has moved on since this branched.`, tone: "warn" };
+  if (p.mergeability === "unknown") {
+    return { word: "Checking", why: "GitHub hasn't worked out yet whether this can merge.", tone: "warn" };
+  }
   return { word: "Ready to merge", why: MERGEABILITY.get(p.mergeability) ?? "Green, and nothing is in the way.", tone: "ok" };
 });
 
@@ -224,24 +231,22 @@ function duration(c: GitHubCheck): string {
 
 // ── reviews ──────────────────────────────────────────────────────────────────
 
-/** The newest commit on the branch, by date: a review left on anything else
- *  judged code that has since moved. */
-const headOid = computed(() => {
-  const commits = pr.value?.commits ?? [];
-  let head: GitHubPrCommit | null = null;
-  for (const c of commits) if (!head || c.date > head.date) head = c;
-  return head?.oid ?? null;
-});
+/** The commit the branch points at, as GitHub reports it: a review left on
+ *  anything else judged code that has since moved. Commit dates can tie or run
+ *  backwards, so they can't stand in for it. */
+const headOid = computed(() => pr.value?.headOid ?? null);
 function isStale(r: GitHubReview): boolean {
   return Boolean(r.commit && headOid.value && r.commit !== headOid.value && r.state !== "pending");
 }
 
+/** One face per person. An open request comes after that person's review in
+ *  the list and replaces it: asked to look again, they're who this waits on. */
 const reviewers = computed<(GitHubReviewer & { stale: boolean })[]>(() => {
-  const out: (GitHubReviewer & { stale: boolean })[] = [];
+  const byLogin = new Map<string, GitHubReviewer & { stale: boolean }>();
   for (const r of pr.value?.reviews ?? []) {
-    if (r.author) out.push({ person: r.author, state: r.state, stale: isStale(r) });
+    if (r.author) byLogin.set(r.author.login, { person: r.author, state: r.state, stale: isStale(r) });
   }
-  return out;
+  return [...byLogin.values()];
 });
 const pendingReviewers = computed(() => reviewers.value.filter((r) => r.state === "pending"));
 

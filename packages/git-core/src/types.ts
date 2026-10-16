@@ -559,6 +559,8 @@ export type GitHubPullRequestDetail = {
   body: string;
   author: GitHubPerson | null;
   branch: string;
+  /** The commit the head branch points at now; null when GitHub didn't say. */
+  headOid: string | null;
   base: string;
   /** The head repository's owner when the PR comes from a fork; null when not. */
   forkOwner: string | null;
