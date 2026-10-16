@@ -11,8 +11,9 @@ import type { GitHubMergeMethod, GitHubPrAction, GitHubPullRequestDetail } from 
 // stands down after a few seconds. Everything else acts on the first press.
 //
 // Merging needs write access. Its author can still mark it ready, send it back
-// to draft, close it and reopen it, as GitHub allows; anyone else sees nothing,
-// since GitHub would refuse them anyway.
+// to draft, close it and reopen it, and anyone with triage access can close and
+// reopen it, as GitHub allows; anyone else sees nothing, since GitHub would
+// refuse them anyway.
 
 const props = defineProps<{
   pr: GitHubPullRequestDetail;
@@ -48,6 +49,8 @@ watch(
 
 const open = computed(() => props.pr.state === "open");
 const draft = computed(() => open.value && props.pr.isDraft);
+/** Ready and draft are the author's or a writer's to change; triage can't. */
+const canStage = computed(() => props.pr.canWrite || props.mine);
 const conflicting = computed(() => props.pr.mergeability === "conflicting");
 
 // ── asking twice ─────────────────────────────────────────────────────────────
@@ -93,7 +96,7 @@ const mergeLabel = computed(() => {
 </script>
 
 <template>
-  <div v-if="(pr.canWrite || mine) && pr.state !== 'merged'" class="gpm">
+  <div v-if="(pr.canWrite || pr.canTriage || mine) && pr.state !== 'merged'" class="gpm">
     <!-- An open, ready pull request: the merge, its method, and the way out. -->
     <template v-if="open && !draft && pr.canWrite">
       <div class="gpm__row">
@@ -132,7 +135,7 @@ const mergeLabel = computed(() => {
     </template>
 
     <!-- A draft: the one step it's waiting on. -->
-    <div v-else-if="draft" class="gpm__row">
+    <div v-else-if="draft && canStage" class="gpm__row">
       <button type="button" class="gpm__main" :disabled="busy" @click="onPlain('ready')">
         {{ pending === "ready" ? "Marking ready…" : "Mark ready for review" }}
       </button>
@@ -146,7 +149,13 @@ const mergeLabel = computed(() => {
     </div>
 
     <div v-if="open" class="gpm__links">
-      <button v-if="!draft" type="button" class="gpm__quiet" :disabled="busy" @click="onPlain('draft')">
+      <button
+        v-if="!draft && canStage"
+        type="button"
+        class="gpm__quiet"
+        :disabled="busy"
+        @click="onPlain('draft')"
+      >
         {{ pending === "draft" ? "Returning to draft…" : "Back to draft" }}
       </button>
       <button
