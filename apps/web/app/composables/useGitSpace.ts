@@ -211,6 +211,9 @@ export function useGitSpace(
   function loadPrs(next?: "open" | "all"): Promise<void> {
     if (next) prState.value = next;
     return once(`prs:${prState.value}`, async () => {
+      // Whether there's anything to ask is known only once the remotes and the
+      // CLI's status are in, and the space may still be reading them.
+      if (!loaded.value) await load();
       // Nothing to ask `gh` for without a working CLI or a GitHub remote — the
       // section renders its own explanation from `gh` / `origin` instead.
       if (!gh.value?.authenticated || !origin.value?.slug) {
