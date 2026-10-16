@@ -116,7 +116,9 @@ watch([tab, pr], async () => {
  *  you're looking at it — someone reviews, a check goes green. So it's the one
  *  thing with a re-read. */
 async function refresh() {
-  if (refreshing.value) return;
+  // Never alongside an action: its own re-read could land first and be
+  // overwritten by this older answer, showing a merged pull request as open.
+  if (refreshing.value || busy.value) return;
   cue("press");
   refreshing.value = true;
   const number = props.number;
@@ -306,7 +308,7 @@ const actNotice = ref<string | null>(null);
 const commentError = ref<string | null>(null);
 
 async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
-  if (busy.value) return;
+  if (busy.value || refreshing.value) return;
   cue("press");
   pending.value = action;
   actError.value = null;
@@ -489,6 +491,7 @@ onBeforeUnmount(() => {
           :class="{ 'prv__btn--spin': refreshing }"
           title="Re-read this pull request"
           aria-label="Re-read this pull request"
+          :disabled="busy"
           @click="refresh"
         >
           <HugeiconsIcon class="prv__refresh" :icon="RefreshIcon" :size="12" :stroke-width="2" aria-hidden="true" />
@@ -537,7 +540,7 @@ onBeforeUnmount(() => {
               @open-commit="openCommitAt"
             />
             <GitSpacePullRequestComment
-              :busy="busy"
+              :busy="busy || refreshing"
               :send="sendComment"
               :error="commentError"
             />
@@ -662,7 +665,7 @@ onBeforeUnmount(() => {
             <GitSpacePullRequestMerge
               :pr="pr"
               :mine="isMine"
-              :busy="busy"
+              :busy="busy || refreshing"
               :pending="pending"
               :error="actError"
               :notice="actNotice"
