@@ -97,7 +97,9 @@ const standSentence = computed(() => {
     case "unpushed":
       return trackable.value
         ? `Not tracking anything, though ${trackable.value} exists. Tracking it keeps the two in step.`
-        : `Only on this machine. Publishing puts it on ${remote.value} and keeps the two in step.`;
+        : hasRemote.value
+          ? `Only on this machine. Publishing puts it on ${remote.value} and keeps the two in step.`
+          : "Only on this machine. This repo has no remote to publish it to.";
     case "gone":
       return x.merged
         ? `${x.upstream} was deleted on the remote, and its work is in ${defaultName.value}. It can go.`
@@ -114,6 +116,8 @@ const standSentence = computed(() => {
       return "";
   }
 });
+/** A local-only repo has nowhere to publish to. */
+const hasRemote = computed(() => props.space.origin.value !== null);
 /** The remote a publish goes to: origin, or the only one there is. */
 const remote = computed(() => props.space.origin.value?.name ?? "origin");
 /** <remote>/<same name>: the push and publish below can name it plainly. */
@@ -482,7 +486,7 @@ onBeforeUnmount(() => {
                   <p class="bsv__sub">{{ standSentence }}</p>
                   <div class="bsv__do">
                     <button
-                      v-if="(stand === 'unpushed' && !trackable) || (stand === 'gone' && !b.merged)"
+                      v-if="hasRemote && ((stand === 'unpushed' && !trackable) || (stand === 'gone' && !b.merged))"
                       type="button"
                       class="bsv__quiet"
                       :disabled="busy"

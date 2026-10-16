@@ -429,14 +429,17 @@ export function useGitSpace(
   /** Delete the merged branches a cleanup offers, in one go. Forced, since
    *  `-d` measures against HEAD rather than the default branch they are in;
    *  only names the list read as merged reach here. */
-  function deleteBranches(names: string[]): Promise<boolean> {
-    return act(
+  async function deleteBranches(names: string[]): Promise<boolean> {
+    const ok = await act(
       "branch",
       async () => {
         for (const name of names) await bridge.deleteBranch(dir(), name, { force: true });
       },
       loadBranches,
     );
+    // One refusal partway leaves the earlier ones gone, so the list reloads.
+    if (!ok) await loadBranches();
+    return ok;
   }
   /** A branch against the default branch. Not cached: it is read when its
    *  card opens, and the card is the only reader. */
