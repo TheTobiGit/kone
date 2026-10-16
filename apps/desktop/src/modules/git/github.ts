@@ -925,6 +925,7 @@ async function fillAvatars(people: (GitHubPerson | null)[]): Promise<void> {
 export interface MergeSettings {
   mergeMethods: GitHubMergeMethod[];
   canWrite: boolean;
+  canTriage: boolean;
 }
 
 /** Until the repository says otherwise: every method offered, and GitHub left
@@ -933,6 +934,7 @@ export interface MergeSettings {
 const OPEN_MERGE_SETTINGS: MergeSettings = {
   mergeMethods: ["merge", "squash", "rebase"],
   canWrite: true,
+  canTriage: true,
 };
 
 const MERGE_SETTINGS_JSON_FIELDS =
@@ -956,6 +958,7 @@ export function mergeSettingsOf(wire: z.output<typeof MergeSettingsWire>): Merge
   return {
     mergeMethods: mergeMethods.length ? mergeMethods : OPEN_MERGE_SETTINGS.mergeMethods,
     canWrite: permission !== "READ" && permission !== "TRIAGE",
+    canTriage: permission !== "READ",
   };
 }
 
@@ -1055,6 +1058,7 @@ function pullRequestDetailOf(
     milestone: wire.milestone?.title || null,
     mergeMethods: settings.mergeMethods,
     canWrite: settings.canWrite,
+    canTriage: settings.canTriage,
   };
 }
 
