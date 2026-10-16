@@ -436,6 +436,12 @@ function plural(n: number, word: string): string {
     order: -1;
   }
 }
+.gsp__key:focus-visible,
+.gsp__wait:focus-visible,
+.gsp__age:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
 @media (prefers-reduced-motion: reduce) {
   .gsp__block,
   .gsp__stack,

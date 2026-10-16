@@ -689,7 +689,7 @@ function onTrapKeydown(e: KeyboardEvent) {
 }
 .cm__row:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .cm__path {
   flex: 1 1 auto;

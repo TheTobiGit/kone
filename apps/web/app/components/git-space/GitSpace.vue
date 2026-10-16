@@ -660,7 +660,7 @@ function onAbort() {
 }
 .gs__btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .gs__btn:disabled {
   opacity: 0.5;
@@ -721,7 +721,7 @@ function onAbort() {
 }
 .gs__navrow:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .gs__navrow--on {
   color: var(--ink);

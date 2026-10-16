@@ -115,4 +115,9 @@ const label = computed(() => {
 .gcr__arc--skipped {
   stroke: color-mix(in srgb, var(--ink) 22%, transparent);
 }
+@media (prefers-reduced-motion: reduce) {
+  .gcr__arc {
+    transition: none;
+  }
+}
 </style>

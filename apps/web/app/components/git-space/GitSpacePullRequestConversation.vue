@@ -371,6 +371,10 @@ function plural(n: number, word: string): string {
     0 0 0 2px var(--ground),
     0 0 0 4px var(--danger);
 }
+.prv__pushed-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
 @media (prefers-reduced-motion: reduce) {
   .prv__event {
     animation: none;
