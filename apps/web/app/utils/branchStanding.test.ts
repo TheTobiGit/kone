@@ -16,6 +16,7 @@ describe("standing", () => {
 describe("names", () => {
   test("splits remote and kind", () => {
     expect(localNameOf("origin/feat/a")).toBe("feat/a");
+    expect(localNameOf("team/up/feat/a", ["team", "team/up"])).toBe("feat/a");
     expect(kindOf("feat/a")).toBe("feat");
     expect(kindOf("main")).toBeNull();
   });

@@ -1,6 +1,6 @@
 import { GitError, git, repoRoot } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import { remoteExists } from "./state.js";
+import { remoteExists, splitRemoteRef } from "./state.js";
 import type { IpcErrorKind } from "@kone/protocol/ipc-error";
 import type { GitPullOptions, GitPushOptions } from "@kone/git-core/types.js";
 
@@ -165,9 +165,9 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
     const upstream = opts?.branch?.trim()
       ? await upstreamOf(root, branch)
       : await currentUpstream(root);
-    const upstreamRemote = upstream ? upstream.split("/")[0] ?? null : null;
-    const upstreamBranch =
-      upstream && upstreamRemote ? upstream.slice(upstreamRemote.length + 1) : null;
+    const split = upstream ? await splitRemoteRef(root, upstream) : null;
+    const upstreamRemote = split?.remote ?? null;
+    const upstreamBranch = split?.branch ?? null;
     const remote = opts?.remote?.trim() || upstreamRemote || "origin";
     // The tracked name only means something on the remote it lives on; pushed
     // anywhere else, the branch goes up under its own name.
@@ -209,13 +209,13 @@ export async function fastForward(dir: string, name: string): Promise<void> {
     if (!root || !name.trim()) return;
     const branch = name.trim();
     const upstream = (await upstreamOf(root, branch)) ?? "";
-    const slash = upstream.indexOf("/");
-    if (slash <= 0) throw new GitError(`${branch} doesn't track a remote branch.`, null);
-    const remote = upstream.slice(0, slash);
+    const split = upstream ? await splitRemoteRef(root, upstream) : null;
+    if (!split) throw new GitError(`${branch} doesn't track a remote branch.`, null);
+    const { remote } = split;
     try {
       await git(
         root,
-        ["fetch", remote, `refs/heads/${upstream.slice(slash + 1)}:refs/heads/${branch}`],
+        ["fetch", remote, `refs/heads/${split.branch}:refs/heads/${branch}`],
         NON_INTERACTIVE_NETWORK_ENV,
       );
     } catch (error) {

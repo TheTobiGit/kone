@@ -48,6 +48,7 @@ const live = computed(
 );
 const b = computed(() => live.value ?? props.branch);
 const current = computed(() => props.space.branches.value.find((x) => x.current) ?? null);
+const remoteNames = computed(() => props.space.remotes.value.map((r) => r.name));
 const defaultName = computed(
   () => props.space.branches.value.find((x) => !x.remote && x.default)?.name ?? "main",
 );
@@ -184,7 +185,7 @@ function merge() {
 }
 /** A remote branch already checked out under its own name is a switch. */
 const localTwin = computed(() =>
-  b.value.remote ? props.space.branches.value.find((x) => !x.remote && x.name === localNameOf(b.value.name)) : null,
+  b.value.remote ? props.space.branches.value.find((x) => !x.remote && x.name === localNameOf(b.value.name, remoteNames.value)) : null,
 );
 
 // ── rename ───────────────────────────────────────────────────────────────────

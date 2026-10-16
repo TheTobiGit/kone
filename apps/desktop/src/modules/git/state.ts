@@ -91,6 +91,23 @@ export async function remoteExists(dir: string, remote: string): Promise<boolean
   }
 }
 
+/** "team/upstream/topic" → { remote: "team/upstream", branch: "topic" }.
+ *  A remote's own name can hold slashes, so the split is the longest
+ *  configured remote that prefixes the ref, not the first slash. Null when no
+ *  remote matches. */
+export async function splitRemoteRef(
+  root: string,
+  ref: string,
+): Promise<{ remote: string; branch: string } | null> {
+  const out = await git(root, ["remote"]).catch(() => "");
+  const match = out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((name) => name && ref.startsWith(`${name}/`) && ref.length > name.length + 1)
+    .sort((a, b) => b.length - a.length)[0];
+  return match ? { remote: match, branch: ref.slice(match.length + 1) } : null;
+}
+
 /** Repo-relative paths with unresolved conflict entries in the index.
  *
  *  Read from `-z` output, because the only use for these is membership tests

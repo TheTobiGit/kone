@@ -24,8 +24,13 @@ export function standing(b: GitBranch): BranchStanding {
   return "even";
 }
 
-/** "origin/feature/x" → "feature/x" */
-export function localNameOf(remoteRef: string): string {
+/** "origin/feature/x" → "feature/x". A remote's name can hold slashes, so
+ *  the longest known remote that prefixes the ref wins over the first slash. */
+export function localNameOf(remoteRef: string, remotes: readonly string[] = []): string {
+  const known = remotes
+    .filter((r) => remoteRef.startsWith(`${r}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  if (known) return remoteRef.slice(known.length + 1);
   const i = remoteRef.indexOf("/");
   return i === -1 ? remoteRef : remoteRef.slice(i + 1);
 }
