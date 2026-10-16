@@ -1157,6 +1157,7 @@ See the [design notes](https://github.com/kone-dev/kone/wiki/git-space) for the
 borders-out, elevation-out rationale.`,
     author: GIDEON,
     branch: "feat/git-space",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 5 * 3600_000).toISOString(),
@@ -1246,6 +1247,7 @@ borders-out, elevation-out rationale.`,
     body: "Adds the Factory Droid provider behind the ACP adapter, so a droid surface runs from the composer like any other CLI. The spawn path, the per-model reasoning-effort ladder and resume all pass through the shared session plumbing — no provider-specific forks.",
     author: AMA,
     branch: "feat/droid-provider",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 2 * 86400_000).toISOString(),
@@ -1307,6 +1309,7 @@ borders-out, elevation-out rationale.`,
     body: "Stops leaking the host's TERM into the pty, so the terminal pane renders its own palette instead of inheriting the shell's. Still a draft — the resize-while-hidden path is being verified.",
     author: KWESI,
     branch: "fix/pty-term",
+    headOid: null,
     base: "dev",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 4 * 86400_000).toISOString(),
@@ -1357,6 +1360,7 @@ borders-out, elevation-out rationale.`,
     body: "Archiving a thread now moves it off the strip in one gesture and the dock stacks crossfade in place, so a busy project never looks half-empty. Follow-up work — search across archived threads — is tracked in #150.",
     author: GIDEON,
     branch: "feat/archive-threads",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 9 * 86400_000).toISOString(),
@@ -1420,6 +1424,7 @@ borders-out, elevation-out rationale.`,
     body: "Each branch row draws its last two weeks of commits as a sparkline, with ahead/behind against the trunk beside it, so a stale branch reads as stale before you open it.",
     author: AMA,
     branch: "feat/branch-sparklines",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 26 * 3600_000).toISOString(),
@@ -1474,6 +1479,7 @@ borders-out, elevation-out rationale.`,
     body: "Bumps [electron](https://github.com/electron/electron) from 32.1.0 to 33.0.2.",
     author: prPerson("dependabot", "Dependabot", null),
     branch: "dependabot/npm_and_yarn/electron-33.0.2",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 3 * 86400_000).toISOString(),
@@ -1507,12 +1513,22 @@ borders-out, elevation-out rationale.`,
   },
 };
 
+// The demo commits carry distinct dates, so the newest one is the head here;
+// the desktop reads it straight from GitHub instead.
+for (const d of Object.values(MOCK_PR_DETAILS)) {
+  let head: GitHubPrCommit | null = null;
+  for (const c of d.commits) if (!head || c.date > head.date) head = c;
+  d.headOid = head?.oid ?? null;
+}
+
 /** A detail as the list row the desktop's `gh pr list` would produce for it. */
 function prRowOf(d: GitHubPullRequestDetail): GitHubPullRequest {
   const checkCounts = { passing: 0, failing: 0, pending: 0, skipped: 0 };
   for (const run of d.checkRuns) if (run.state !== "none") checkCounts[run.state] += 1;
-  const reviewers: GitHubReviewer[] = [];
-  for (const r of d.reviews) if (r.author) reviewers.push({ person: r.author, state: r.state });
+  // An open request comes after that person's review and replaces it.
+  const byLogin = new Map<string, GitHubReviewer>();
+  for (const r of d.reviews) if (r.author) byLogin.set(r.author.login, { person: r.author, state: r.state });
+  const reviewers = [...byLogin.values()];
   return {
     number: d.number,
     title: d.title,

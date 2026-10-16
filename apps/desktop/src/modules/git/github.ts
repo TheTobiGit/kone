@@ -419,26 +419,25 @@ function pullRequestOf(pr: DecodedPullRequest): GitHubPullRequest {
   };
 }
 
-/** One verdict per person: their latest review, then anyone asked who hasn't
- *  answered yet as pending. A review with no author (a deleted account) has no
- *  face to draw and is left out. */
+/** One verdict per person: their latest review, then anyone with an open
+ *  request as pending. An open request outranks an earlier verdict: someone
+ *  asked to look again is who the pull request now waits on, whatever they said
+ *  last time. A review with no author (a deleted account) has no face to draw
+ *  and is left out. */
 function reviewersOf(
   reviews: z.output<typeof ReviewWire>[],
   requests: GitHubPerson[],
 ): GitHubReviewer[] {
-  const out: GitHubReviewer[] = [];
-  const seen = new Set<string>();
+  const byLogin = new Map<string, GitHubReviewer>();
   for (const review of reviews) {
-    if (!review.author || seen.has(review.author.login)) continue;
-    seen.add(review.author.login);
-    out.push({ person: review.author, state: review.state });
+    if (!review.author || byLogin.has(review.author.login)) continue;
+    byLogin.set(review.author.login, { person: review.author, state: review.state });
   }
   for (const person of requests) {
-    if (seen.has(person.login)) continue;
-    seen.add(person.login);
-    out.push({ person, state: "pending" });
+    const known = byLogin.get(person.login)?.person;
+    byLogin.set(person.login, { person: known ?? person, state: "pending" });
   }
-  return out;
+  return [...byLogin.values()];
 }
 
 // The field list for the About section's repo view. Kept to the flat gh
@@ -532,7 +531,7 @@ const PR_DETAIL_JSON_FIELDS =
   "number,title,body,url,author,state,isDraft,mergeable,mergeStateStatus," +
   "additions,deletions,changedFiles,files,headRefName,headRepositoryOwner,baseRefName," +
   "reviewDecision,reviewRequests,latestReviews,comments,statusCheckRollup," +
-  "commits,labels,assignees,milestone,createdAt,updatedAt,mergedAt,closedAt,mergedBy";
+  "commits,labels,assignees,milestone,createdAt,updatedAt,mergedAt,closedAt,mergedBy,headRefOid";
 
 const PullRequestDetailWire = z.object({
   number: z.number().int().positive(),
@@ -551,6 +550,7 @@ const PullRequestDetailWire = z.object({
   headRepositoryOwner: ActorWire.catch(null),
   assignees: PeopleListWire,
   headRefName: z.string().catch(""),
+  headRefOid: WireText,
   baseRefName: z.string().catch(""),
   reviewDecision: ReviewDecisionWire,
   reviewRequests: PeopleListWire,
@@ -927,8 +927,10 @@ function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestD
         : "open";
 
   // Who has looked at this, and who is still being waited on. `latestReviews`
-  // holds one current verdict per reviewer; a request with no review yet is a
-  // person too, and reads as pending rather than being left off the list.
+  // holds one current verdict per reviewer; every open request is a pending
+  // entry too, including one for someone who already reviewed and was asked
+  // again. The view keeps the submitted review on the timeline and lets the
+  // request decide where that person stands now.
   const reviews: GitHubReview[] = wire.latestReviews.map((row) => ({
     author: row.author,
     state: row.state,
@@ -937,9 +939,7 @@ function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestD
     relative: row.submittedAt ? relativeTime(row.submittedAt) : "",
     commit: row.commit,
   }));
-  const reviewed = new Set(reviews.map((r) => r.author?.login).filter(Boolean));
   for (const person of wire.reviewRequests) {
-    if (reviewed.has(person.login)) continue;
     reviews.push({ author: person, state: "pending", body: "", submittedAt: null, relative: "", commit: null });
   }
 
@@ -974,6 +974,7 @@ function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestD
     body: wire.body,
     author: wire.author,
     branch: wire.headRefName,
+    headOid: wire.headRefOid,
     base: wire.baseRefName,
     forkOwner: wire.headRepositoryOwner?.login ?? null,
     createdAt: wire.createdAt,

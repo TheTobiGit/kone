@@ -260,7 +260,8 @@ describe("prs (record parsing)", () => {
       labels: [{ name: "bug", color: "D73A4A" }],
       latestReviews: [
         { author: { login: "bob" }, state: "APPROVED", commit: { oid: "abc" } },
-        { author: { login: "bob" }, state: "COMMENTED" }
+        { author: { login: "bob" }, state: "COMMENTED" },
+        { author: { login: "dave" }, state: "CHANGES_REQUESTED" }
       ],
       reviewRequests: [{ login: "bob" }, { login: "carol" }],
       statusCheckRollup: [
@@ -281,9 +282,11 @@ describe("prs (record parsing)", () => {
       checks: "failing",
       checkCounts: { passing: 1, failing: 1, pending: 1, skipped: 1 },
     });
-    // One verdict per person: Bob's latest review wins over his open request.
+    // One entry per person. Bob approved but was asked to look again, so the
+    // open request wins; Dave's verdict stands because nobody re-asked him.
     expect(pr?.reviewers.map((r) => [r.person.login, r.state])).toEqual([
-      ["bob", "approved"],
+      ["bob", "pending"],
+      ["dave", "changes-requested"],
       ["carol", "pending"],
     ]);
   });
@@ -338,6 +341,34 @@ describe("prDetail (record parsing)", () => {
       author: { login: "charlie" },
       body: "Looks good",
     });
+  });
+
+  test("takes the head from GitHub and keeps re-requested reviewers waiting", async () => {
+    installFakeGh(`{
+      number: 7,
+      title: "Tie",
+      state: "OPEN",
+      headRefName: "tie",
+      headRefOid: "tip",
+      baseRefName: "main",
+      latestReviews: [
+        { author: { login: "bob" }, state: "APPROVED", submittedAt: "2026-08-24T11:00:00Z", commit: { oid: "tip" } }
+      ],
+      reviewRequests: [{ login: "bob" }],
+      // Same second on both: dates can't tell which one is the head.
+      commits: [
+        { oid: "parent", messageHeadline: "a", committedDate: "2026-08-24T10:00:00Z", authors: [] },
+        { oid: "tip", messageHeadline: "b", committedDate: "2026-08-24T10:00:00Z", authors: [] }
+      ],
+      createdAt: "2026-08-24T09:00:00Z"
+    }`);
+    const detail = await prDetail(process.cwd(), 7);
+    expect(detail?.headOid).toBe("tip");
+    // The approval stays on record, and the open request follows it.
+    expect(detail?.reviews.map((r) => [r.author?.login, r.state])).toEqual([
+      ["bob", "approved"],
+      ["bob", "pending"],
+    ]);
   });
 
   test("empty stdout reads as null", async () => {
