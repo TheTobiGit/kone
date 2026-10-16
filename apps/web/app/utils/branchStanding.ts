@@ -87,7 +87,7 @@ export function branchNameProblem(name: string): string | null {
   if (name.startsWith("/") || name.endsWith("/") || name.includes("//"))
     return "Slashes go between words.";
   if (name.includes("..")) return "No two dots in a row.";
-  if (name.includes("@{") || name === "@") return "That spelling is reserved.";
+  if (name.includes("@{") || name === "@" || name === "HEAD") return "That spelling is reserved.";
   if (/[~^:?*[\\]/.test(name) || [...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
     return "No ~ ^ : ? * [ or \\.";
   if (name.endsWith(".") || name.split("/").some((part) => part.endsWith(".lock")))
