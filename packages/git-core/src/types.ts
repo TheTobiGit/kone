@@ -586,7 +586,18 @@ export type GitHubPullRequestDetail = {
   commits: GitHubPrCommit[];
   files: GitHubPrFile[];
   milestone: string | null;
+  /** The ways the repository lets a pull request merge, in GitHub's order. */
+  mergeMethods: GitHubMergeMethod[];
+  /** Whether you can merge, close or reopen it, which takes write access.
+   *  Commenting only takes a login. */
+  canWrite: boolean;
 };
+
+/** How a pull request lands on its base. */
+export type GitHubMergeMethod = "merge" | "squash" | "rebase";
+
+/** What the pull request card can do to a pull request, besides commenting. */
+export type GitHubPrAction = "merge" | "ready" | "draft" | "close" | "reopen";
 
 /** How many unique authors get an avatar fetched for the history gutter.
  *  Everyone past this draws their initial instead. */
