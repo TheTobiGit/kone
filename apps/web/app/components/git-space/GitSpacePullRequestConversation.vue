@@ -187,6 +187,16 @@ function plural(n: number, word: string): string {
 </template>
 
 <style scoped>
+@keyframes prv-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 /* ── conversation ─────────────────────────────────────────────────────────── */
 .prv__description {
   max-width: 74ch;
