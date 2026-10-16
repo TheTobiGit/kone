@@ -17,6 +17,7 @@ import type {
   GitContributors,
   GitFileDiff,
   GitHubCheck,
+  GitHubCheckCounts,
   GitHubComment,
   GitHubLabel,
   GitHubPerson,
@@ -29,6 +30,7 @@ import type {
   GitHubPullRequestState,
   GitHubRepoInfo,
   GitHubReview,
+  GitHubReviewer,
   GitHubStatus,
   GitHubUser,
 } from "@kone/git-core/types.js";
@@ -127,11 +129,6 @@ const ActorWire = z
     return { login, name: p.name?.trim() ? p.name : null, avatarDataUrl: null };
   });
 
-/** A person field where absence reads as the anonymous author, not null. */
-const AuthorLoginWire = z
-  .object({ login: z.string().catch("") })
-  .transform((p) => p.login.trim() || "unknown");
-
 const PeopleListWire = rows(ActorWire)
   .catch([])
   .transform((people) => people.filter((p): p is GitHubPerson => p !== null));
@@ -147,6 +144,8 @@ const CheckRunWire = z.object({
   detailsUrl: z.string().catch(""),
   targetUrl: z.string().catch(""),
   workflowName: WireText,
+  startedAt: WireText,
+  completedAt: WireText,
 });
 
 type CheckRun = z.output<typeof CheckRunWire>;
@@ -183,7 +182,20 @@ function checkOf(run: CheckRun): GitHubCheck | null {
     workflow: run.workflowName,
     state: checkStateOf(run),
     url: run.detailsUrl || run.targetUrl || null,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
   };
+}
+
+/** The rollup counted by verdict, for a ring that shows the split rather than
+ *  only the worst of it. A run that names no verdict counts as nothing. */
+function countChecks(runs: CheckRun[]): GitHubCheckCounts {
+  const counts: GitHubCheckCounts = { passing: 0, failing: 0, pending: 0, skipped: 0 };
+  for (const run of runs) {
+    const state = checkStateOf(run);
+    if (state !== "none") counts[state] += 1;
+  }
+  return counts;
 }
 
 /** Fold the statusCheckRollup — a mix of CheckRun and StatusContext nodes —
@@ -257,6 +269,12 @@ const ReviewWire = z.object({
   state: ReviewStateWire,
   body: z.string().catch(""),
   submittedAt: WireText,
+  // The head the verdict was given against; absent on older gh builds.
+  commit: z
+    .object({ oid: z.string().catch("") })
+    .nullish()
+    .catch(null)
+    .transform((c) => c?.oid || null),
 });
 
 const CommentWire = z.object({
@@ -335,22 +353,29 @@ const LabelWire = z
 // The one field list for every PR fetch, so the list and any later view
 // shapes cannot drift.
 const PR_JSON_FIELDS =
-  "number,title,state,isDraft,author,headRefName,baseRefName,url,createdAt,additions,deletions,statusCheckRollup,reviewDecision,comments,mergedAt";
+  "number,title,state,isDraft,author,headRefName,baseRefName,url,createdAt,updatedAt,additions,deletions," +
+  "changedFiles,statusCheckRollup,reviewDecision,latestReviews,reviewRequests,labels,mergeable,comments,mergedAt";
 
 const PullRequestWire = z.object({
   number: z.number().int().positive(),
   title: z.string().catch(""),
   state: z.string().catch(""),
   isDraft: z.boolean().catch(false),
-  author: AuthorLoginWire.catch("unknown"),
+  author: ActorWire.catch(null),
   headRefName: z.string().catch(""),
   baseRefName: z.string().catch(""),
   url: z.string().catch(""),
   createdAt: z.string().catch(""),
+  updatedAt: WireText,
   additions: WireCount,
   deletions: WireCount,
+  changedFiles: WireCount,
   statusCheckRollup: RollupWire,
   reviewDecision: ReviewDecisionWire,
+  latestReviews: rows(ReviewWire).catch([]),
+  reviewRequests: PeopleListWire,
+  labels: rows(LabelWire).catch([]),
+  mergeable: z.string().catch(""),
   comments: CommentCountWire,
   // gh reports merged PRs as CLOSED unless mergedAt is set — the timestamp
   // is authoritative.
@@ -371,7 +396,7 @@ function pullRequestOf(pr: DecodedPullRequest): GitHubPullRequest {
     title: pr.title,
     state,
     isDraft: pr.isDraft,
-    author: pr.author,
+    author: pr.author?.login ?? "unknown",
     branch: pr.headRefName,
     base: pr.baseRefName,
     url: pr.url,
@@ -382,7 +407,38 @@ function pullRequestOf(pr: DecodedPullRequest): GitHubPullRequest {
     checks: rollupChecks(pr.statusCheckRollup),
     reviewDecision: pr.reviewDecision,
     comments: pr.comments,
+    authorPerson: pr.author,
+    updatedAt: pr.updatedAt,
+    updated: pr.updatedAt ? relativeTime(pr.updatedAt) : "",
+    changedFiles: pr.changedFiles,
+    labels: pr.labels,
+    reviewers: reviewersOf(pr.latestReviews, pr.reviewRequests),
+    mergeable:
+      pr.mergeable === "CONFLICTING" ? "conflicting" : pr.mergeable === "MERGEABLE" ? "mergeable" : "unknown",
+    checkCounts: countChecks(pr.statusCheckRollup),
   };
+}
+
+/** One verdict per person: their latest review, then anyone asked who hasn't
+ *  answered yet as pending. A review with no author (a deleted account) has no
+ *  face to draw and is left out. */
+function reviewersOf(
+  reviews: z.output<typeof ReviewWire>[],
+  requests: GitHubPerson[],
+): GitHubReviewer[] {
+  const out: GitHubReviewer[] = [];
+  const seen = new Set<string>();
+  for (const review of reviews) {
+    if (!review.author || seen.has(review.author.login)) continue;
+    seen.add(review.author.login);
+    out.push({ person: review.author, state: review.state });
+  }
+  for (const person of requests) {
+    if (seen.has(person.login)) continue;
+    seen.add(person.login);
+    out.push({ person, state: "pending" });
+  }
+  return out;
 }
 
 // The field list for the About section's repo view. Kept to the flat gh
@@ -677,7 +733,11 @@ export async function prs(
   if (decoded === null) {
     throw new GitError("The GitHub CLI returned unexpected pull request data.", null);
   }
-  return decoded.map(pullRequestOf);
+  const list = decoded.map(pullRequestOf);
+  // Faces for the authors and reviewers the rows draw; cached per login, so a
+  // re-read of the same list costs nothing.
+  await fillAvatars(list.flatMap((pr) => [pr.authorPerson, ...pr.reviewers.map((r) => r.person)]));
+  return list;
 }
 
 /** The repo's public GitHub surface (About section). Null when `dir` isn't in
@@ -875,11 +935,12 @@ function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestD
     body: row.body,
     submittedAt: row.submittedAt,
     relative: row.submittedAt ? relativeTime(row.submittedAt) : "",
+    commit: row.commit,
   }));
   const reviewed = new Set(reviews.map((r) => r.author?.login).filter(Boolean));
   for (const person of wire.reviewRequests) {
     if (reviewed.has(person.login)) continue;
-    reviews.push({ author: person, state: "pending", body: "", submittedAt: null, relative: "" });
+    reviews.push({ author: person, state: "pending", body: "", submittedAt: null, relative: "", commit: null });
   }
 
   const comments: GitHubComment[] = wire.comments.map((row) => ({
