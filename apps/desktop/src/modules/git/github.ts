@@ -1379,17 +1379,26 @@ function prNumberArg(number: number): string {
   return String(number);
 }
 
-/** The gh arguments for one pull request action. Merge takes its method; the
- *  rest take nothing. Draft is `ready --undo`, as gh spells it. */
+/** The gh arguments for one pull request action. Merge takes its method and,
+ *  when known, the head commit the person was looking at: gh then refuses the
+ *  merge if anything was pushed since, so only reviewed code lands. The rest
+ *  take nothing. Draft is `ready --undo`, as gh spells it. */
 export function prActionArgs(
   number: number,
   action: GitHubPrAction,
   method: GitHubMergeMethod = "merge",
+  headOid?: string,
 ): string[] {
   const ref = prNumberArg(number);
   switch (action) {
-    case "merge":
-      return ["pr", "merge", ref, `--${method}`];
+    case "merge": {
+      const args = ["pr", "merge", ref, `--${method}`];
+      if (headOid === undefined) return args;
+      if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(headOid)) {
+        throw GitError.classified("INVALID_INPUT", `Invalid head commit: ${headOid}`, null);
+      }
+      return [...args, "--match-head-commit", headOid];
+    }
     case "ready":
       return ["pr", "ready", ref];
     case "draft":
@@ -1407,10 +1416,11 @@ export async function prAction(
   number: number,
   action: GitHubPrAction,
   method?: GitHubMergeMethod,
+  headOid?: string,
 ): Promise<void> {
   const root = await repoRoot(dir);
   if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
-  await gh(root, prActionArgs(number, action, method));
+  await gh(root, prActionArgs(number, action, method, headOid));
 }
 
 /** Comment on a pull request. Like a new pull request's description, the body
