@@ -16,7 +16,8 @@ import { PR_STAND, prStandOf, type PrStand } from "~/utils/prStand";
 //
 // The verdict is the same rule the list's rows use (utils/prStand), so a row
 // and its card always agree. The card owns the data and the tabs; this asks
-// for a tab, a file or a link and lets the card do it.
+// for a tab, a file or a link and lets the card do it, and puts its merge and
+// close controls under the verdict through the `act` slot.
 
 const props = defineProps<{
   pr: GitHubPullRequestDetail;
@@ -146,6 +147,8 @@ function plural(n: number, word: string): string {
         {{ verdict.word }}
       </p>
       <p v-if="verdict.why" class="prv__sub">{{ verdict.why }}</p>
+      <!-- What can be done about it: the card fills this in. -->
+      <slot name="act" />
     </div>
 
     <div v-if="pr.checkRuns.length" class="prv__block" style="--i: 1">

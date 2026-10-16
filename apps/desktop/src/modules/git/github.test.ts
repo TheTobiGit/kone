@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { initTestRepo } from "@kone/git-core/testRepo.js";
 import { git } from "@kone/git-core/core.js";
+import type { GitHubMergeMethod } from "@kone/git-core/types.js";
 
 import { classifyGhError } from "./ghError.js";
 
@@ -13,7 +14,18 @@ import { classifyGhError } from "./ghError.js";
 mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 
 // SAFETY: the dynamically imported module is exactly ./github's own exports.
-const { branchPullRequest, commitAuthors, contributors, me, prDetail, prs, repo, status } =
+const {
+  branchPullRequest,
+  commitAuthors,
+  contributors,
+  me,
+  mergeSettingsOf,
+  prActionArgs,
+  prDetail,
+  prs,
+  repo,
+  status,
+} =
   (await import("./github.js")) as typeof import("./github.js");
 
 describe("branchPullRequest outcome", () => {
@@ -414,5 +426,63 @@ describe("contributors & commitAuthors (tolerant decoding)", () => {
   test("commitAuthors returns null on empty stdout", async () => {
     installFakeGhRaw("");
     expect(await commitAuthors(process.cwd())).toBeNull();
+  });
+});
+
+describe("pull request actions", () => {
+  test("each action maps to its gh command", () => {
+    expect(prActionArgs(7, "merge", "squash")).toEqual(["pr", "merge", "7", "--squash"]);
+    expect(prActionArgs(7, "merge")).toEqual(["pr", "merge", "7", "--merge"]);
+    expect(prActionArgs(7, "ready")).toEqual(["pr", "ready", "7"]);
+    expect(prActionArgs(7, "draft")).toEqual(["pr", "ready", "7", "--undo"]);
+    expect(prActionArgs(7, "close")).toEqual(["pr", "close", "7"]);
+    expect(prActionArgs(7, "reopen")).toEqual(["pr", "reopen", "7"]);
+    const oid = "a".repeat(40);
+    expect(prActionArgs(7, "merge", "rebase", oid)).toEqual(["pr", "merge", "7", "--rebase", "--match-head-commit", oid]);
+  });
+
+  test("a bad number is refused before gh runs", () => {
+    expect(() => prActionArgs(0, "close")).toThrow();
+    expect(() => prActionArgs(1.5, "merge")).toThrow();
+    expect(() => prActionArgs(7, "merge", "merge", "--admin")).toThrow();
+    // SAFETY: a value only IPC could deliver, which the type rules out.
+    expect(() => prActionArgs(7, "merge", "admin" as GitHubMergeMethod)).toThrow();
+  });
+
+  test("merge settings keep only allowed methods and read write access", () => {
+    expect(
+      mergeSettingsOf({
+        mergeCommitAllowed: false,
+        squashMergeAllowed: true,
+        rebaseMergeAllowed: false,
+        viewerPermission: "WRITE",
+      }),
+    ).toEqual({ mergeMethods: ["squash"], canWrite: true, canTriage: true });
+    expect(
+      mergeSettingsOf({
+        mergeCommitAllowed: true,
+        squashMergeAllowed: true,
+        rebaseMergeAllowed: true,
+        viewerPermission: "READ",
+      }).canWrite,
+    ).toBe(false);
+    // A repository reporting no method at all is a misread, not a ban on merging.
+    expect(
+      mergeSettingsOf({
+        mergeCommitAllowed: false,
+        squashMergeAllowed: false,
+        rebaseMergeAllowed: false,
+        viewerPermission: "",
+      }),
+    ).toEqual({ mergeMethods: ["merge", "squash", "rebase"], canWrite: true, canTriage: true });
+    // Triage can close and reopen, but not merge.
+    expect(
+      mergeSettingsOf({
+        mergeCommitAllowed: true,
+        squashMergeAllowed: true,
+        rebaseMergeAllowed: true,
+        viewerPermission: "TRIAGE",
+      }),
+    ).toMatchObject({ canWrite: false, canTriage: true });
   });
 });

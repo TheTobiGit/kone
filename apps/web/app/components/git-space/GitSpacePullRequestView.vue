@@ -11,7 +11,9 @@ import type {
   GitHubCheck,
   GitHubCheckCounts,
   GitHubMergeability,
+  GitHubMergeMethod,
   GitHubPerson,
+  GitHubPrAction,
   GitHubPrCommit,
   GitHubPrFile,
   GitHubPullRequestDetail,
@@ -38,10 +40,11 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 // The side column is its own component (GitSpacePullRequestSide); this owns
 // the data and the tabs, and the side column asks for a tab or a file.
 //
-// What it deliberately doesn't have is buttons for merging, closing, approving
-// or commenting. There is no backing call for any of them, and a button that
-// opens GitHub while pretending to be a merge button is worse than the honest
-// link at the top of the page.
+// Merging, marking ready, returning to draft, closing and reopening sit under
+// the verdict (GitSpacePullRequestMerge), and a comment field closes the
+// conversation (GitSpacePullRequestComment). Each re-reads the pull request
+// when GitHub has taken it. Approving and requesting changes are still left to
+// GitHub, behind the link at the top.
 
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
@@ -113,7 +116,9 @@ watch([tab, pr], async () => {
  *  you're looking at it — someone reviews, a check goes green. So it's the one
  *  thing with a re-read. */
 async function refresh() {
-  if (refreshing.value) return;
+  // Never alongside an action: its own re-read could land first and be
+  // overwritten by this older answer, showing a merged pull request as open.
+  if (refreshing.value || busy.value) return;
   cue("press");
   refreshing.value = true;
   const number = props.number;
@@ -293,6 +298,70 @@ function checkout() {
   cue("press");
   void props.space.checkoutPr(props.number);
 }
+// The action in flight from this card, and why the last one failed. The space
+// keeps its own error line too, but that sits behind the card.
+const pending = ref<GitHubPrAction | null>(null);
+const actError = ref<string | null>(null);
+/** Said when GitHub took a merge but didn't merge yet: a merge queue or
+ *  pending required checks turn `gh pr merge` into a merge scheduled for later. */
+const actNotice = ref<string | null>(null);
+const commentError = ref<string | null>(null);
+
+async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
+  if (busy.value || refreshing.value) return;
+  cue("press");
+  pending.value = action;
+  actError.value = null;
+  actNotice.value = null;
+  const number = props.number;
+  // A merge names the commit the card showed, so a push since then can't land unseen.
+  const head = action === "merge" ? (pr.value?.headOid ?? undefined) : undefined;
+  const ok = await props.space.prAction(number, action, method, head);
+  pending.value = null;
+  if (props.number !== number) return;
+  if (!ok) {
+    actError.value = props.space.error.value;
+    return;
+  }
+  const d = await props.space.prDetail(number);
+  if (d && props.number === number) {
+    pr.value = d;
+    if (action === "merge" && d.state === "open") {
+      actNotice.value = "GitHub queued the merge. It lands once the required checks pass.";
+    }
+  }
+}
+
+async function sendComment(body: string): Promise<boolean> {
+  commentError.value = null;
+  const number = props.number;
+  const ok = await props.space.commentOnPr(number, body);
+  if (props.number !== number) return ok;
+  if (!ok) {
+    commentError.value = props.space.error.value;
+    return false;
+  }
+  const d = await props.space.prDetail(number);
+  if (d) pr.value = d;
+  return true;
+}
+
+// Moving to another pull request clears what the last one said.
+watch(
+  () => props.number,
+  () => {
+    actError.value = null;
+    actNotice.value = null;
+    commentError.value = null;
+  },
+);
+
+/** Its author can change its stage, close and reopen it without write access. */
+const isMine = computed(() => {
+  const me = props.space.me.value?.login ?? props.space.gh.value?.user ?? null;
+  return Boolean(me && pr.value?.author?.login === me);
+});
+
 function openOnGitHub() {
   if (pr.value) void props.space.openExternal(pr.value.url);
 }
@@ -422,6 +491,7 @@ onBeforeUnmount(() => {
           :class="{ 'prv__btn--spin': refreshing }"
           title="Re-read this pull request"
           aria-label="Re-read this pull request"
+          :disabled="busy"
           @click="refresh"
         >
           <HugeiconsIcon class="prv__refresh" :icon="RefreshIcon" :size="12" :stroke-width="2" aria-hidden="true" />
@@ -468,6 +538,11 @@ onBeforeUnmount(() => {
               :pr="pr"
               :head-oid="headOid"
               @open-commit="openCommitAt"
+            />
+            <GitSpacePullRequestComment
+              :busy="busy || refreshing"
+              :send="sendComment"
+              :error="commentError"
             />
           </section>
 
@@ -585,7 +660,19 @@ onBeforeUnmount(() => {
           @tab="setTab"
           @show-file="showFile"
           @open-url="(url) => space.openExternal(url)"
-        />
+        >
+          <template #act>
+            <GitSpacePullRequestMerge
+              :pr="pr"
+              :mine="isMine"
+              :busy="busy || refreshing"
+              :pending="pending"
+              :error="actError"
+              :notice="actNotice"
+              @act="act"
+            />
+          </template>
+        </GitSpacePullRequestSide>
       </div>
     </div>
 
