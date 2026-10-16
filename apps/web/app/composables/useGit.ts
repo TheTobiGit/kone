@@ -82,6 +82,7 @@ const NO_GIT: KoneGitApi = {
     prAction: refuse("Changing a pull request"),
     prComment: refuse("Commenting"),
     issues: empty,
+    issuesEnabled: () => Promise.resolve(true),
     issueDetail: none,
     issueAction: refuse("Changing an issue"),
     issueComment: refuse("Commenting"),

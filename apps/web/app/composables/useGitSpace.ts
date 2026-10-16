@@ -104,6 +104,8 @@ export function useGitSpace(
   const prState = ref<"open" | "all">("open");
   const issues = ref<GitHubIssue[]>([]);
   const issueState = ref<"open" | "all">("open");
+  /** False once the repository says its issue tracker is turned off. */
+  const issuesEnabled = ref(true);
 
   // The About section's payloads. `identity` is never null — it resolves to the
   // empty shape when git has no user configured, so the section can tell "unset"
@@ -235,9 +237,12 @@ export function useGitSpace(
         issues.value = [];
         return;
       }
-      issues.value = await bridge.github
-        .issues(dir(), { state: issueState.value })
-        .catch(() => []);
+      const [enabled, list] = await Promise.all([
+        bridge.github.issuesEnabled(dir()).catch(() => true),
+        bridge.github.issues(dir(), { state: issueState.value }).catch(() => []),
+      ]);
+      issuesEnabled.value = enabled;
+      issues.value = enabled ? list : [];
     });
   }
 
@@ -617,6 +622,7 @@ export function useGitSpace(
     prState,
     issues,
     issueState,
+    issuesEnabled,
 
     name,
     readme,

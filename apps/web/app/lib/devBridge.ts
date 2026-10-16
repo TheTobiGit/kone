@@ -162,6 +162,7 @@ function createDevGit(): KoneGitApi {
       prDetail: (_dir, number) => later(structuredClone(world.mockPrDetail(number))),
       prDiff: (_dir, number) => later(world.mockPrDiff(number)),
       issues: (dir, opts) => later(world.mockIssues(dir, opts?.state ?? "open")),
+      issuesEnabled: () => later(true),
       issueDetail: (_dir, number) => later(structuredClone(world.mockIssueDetail(number))),
       issueAction: (_dir, number, action, reason) =>
         later(undefined, 450).then(() => world.mockIssueAction(number, action, reason)),

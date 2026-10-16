@@ -369,6 +369,7 @@ const api = {
         ipcRenderer.invoke("github:pr-comment", dir, number, body),
       issues: (dir: string, opts?: { state?: "open" | "all"; limit?: number }): Promise<GitHubIssue[]> =>
         ipcRenderer.invoke("github:issues", dir, opts),
+      issuesEnabled: (dir: string): Promise<boolean> => ipcRenderer.invoke("github:issues-enabled", dir),
       issueDetail: (dir: string, number: number): Promise<GitHubIssueDetail | null> =>
         ipcRenderer.invoke("github:issue-detail", dir, number),
       issueAction: (

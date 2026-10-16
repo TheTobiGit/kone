@@ -1554,6 +1554,25 @@ export async function issues(
 
 /** Triage (and anything above it) can close and reopen; read access can't.
  *  An unknown answer is treated as allowed, and GitHub has the last word. */
+/** Whether the repository keeps an issue tracker at all; it can be turned off.
+ *  An unreadable answer counts as on, so a slow or odd CLI never hides the
+ *  section — gh's own error explains a real refusal. */
+export async function issuesEnabled(dir: string): Promise<boolean> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  try {
+    const out = await gh(root, ["repo", "view", "--json", "hasIssuesEnabled"]);
+    const wire = decodeOrThrow(
+      out,
+      z.object({ hasIssuesEnabled: z.boolean().catch(true) }),
+      "The GitHub CLI returned unparseable repository data.",
+    );
+    return wire?.hasIssuesEnabled ?? true;
+  } catch {
+    return true;
+  }
+}
+
 export function canTriageWith(permission: string): boolean {
   return permission.toUpperCase() !== "READ";
 }
