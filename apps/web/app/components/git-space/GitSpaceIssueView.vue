@@ -53,7 +53,8 @@ watch(
 );
 
 async function refresh() {
-  if (refreshing.value) return;
+  // Never alongside an action, whose own re-read this older answer could undo.
+  if (refreshing.value || busy.value) return;
   cue("press");
   refreshing.value = true;
   const number = props.number;
@@ -127,7 +128,7 @@ const actError = ref<string | null>(null);
 const commentError = ref<string | null>(null);
 
 async function act(what: Pending) {
-  if (busy.value) return;
+  if (busy.value || refreshing.value) return;
   cue("press");
   pending.value = what;
   actError.value = null;
@@ -301,6 +302,7 @@ onBeforeUnmount(() => {
                 :class="{ 'isv__btn--spin': refreshing }"
                 title="Re-read this issue"
                 aria-label="Re-read this issue"
+                :disabled="busy"
                 @click="refresh"
               >
                 <HugeiconsIcon class="isv__refresh" :icon="RefreshIcon" :size="12" :stroke-width="2" aria-hidden="true" />
@@ -371,7 +373,7 @@ onBeforeUnmount(() => {
                 </ol>
 
                 <GitSpacePullRequestComment
-                  :busy="busy"
+                  :busy="busy || refreshing"
                   :send="sendComment"
                   :error="commentError"
                   label="Comment on this issue"
@@ -389,10 +391,10 @@ onBeforeUnmount(() => {
 
                   <div v-if="canAct" class="isv__do">
                     <template v-if="issue.state === 'open'">
-                      <button type="button" class="isv__main-act" :disabled="busy" @click="act('done')">
+                      <button type="button" class="isv__main-act" :disabled="busy || refreshing" @click="act('done')">
                         {{ pending === "done" ? "Closing…" : "Close as done" }}
                       </button>
-                      <button type="button" class="isv__quiet" :disabled="busy" @click="act('not-planned')">
+                      <button type="button" class="isv__quiet" :disabled="busy || refreshing" @click="act('not-planned')">
                         {{ pending === "not-planned" ? "Closing…" : "Close as not planned" }}
                       </button>
                     </template>
@@ -400,7 +402,7 @@ onBeforeUnmount(() => {
                       v-else
                       type="button"
                       class="isv__main-act isv__main-act--soft"
-                      :disabled="busy"
+                      :disabled="busy || refreshing"
                       @click="act('reopen')"
                     >
                       {{ pending === "reopen" ? "Reopening…" : "Reopen" }}
@@ -672,9 +674,13 @@ onBeforeUnmount(() => {
     background-color var(--gs-t-micro) var(--gs-ease),
     color var(--gs-t-micro) var(--gs-ease);
 }
-.isv__btn:hover {
+.isv__btn:hover:not(:disabled) {
   background-color: var(--hover);
   color: var(--ink);
+}
+.isv__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .isv__btn--spin .isv__refresh {
   animation: isv-spin 900ms linear infinite;
