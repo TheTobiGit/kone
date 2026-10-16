@@ -588,9 +588,11 @@ export type GitHubPullRequestDetail = {
   milestone: string | null;
   /** The ways the repository lets a pull request merge, in GitHub's order. */
   mergeMethods: GitHubMergeMethod[];
-  /** Whether you can merge, close or reopen it, which takes write access.
-   *  Commenting only takes a login. */
+  /** Whether you can merge it, which takes write access. Commenting only
+   *  takes a login. */
   canWrite: boolean;
+  /** Whether you can close or reopen it, which triage access already allows. */
+  canTriage: boolean;
 };
 
 /** Why a closed issue was closed. */

@@ -461,7 +461,7 @@ describe("pull request actions", () => {
         rebaseMergeAllowed: false,
         viewerPermission: "WRITE",
       }),
-    ).toEqual({ mergeMethods: ["squash"], canWrite: true });
+    ).toEqual({ mergeMethods: ["squash"], canWrite: true, canTriage: true });
     expect(
       mergeSettingsOf({
         mergeCommitAllowed: true,
@@ -478,7 +478,16 @@ describe("pull request actions", () => {
         rebaseMergeAllowed: false,
         viewerPermission: "",
       }),
-    ).toEqual({ mergeMethods: ["merge", "squash", "rebase"], canWrite: true });
+    ).toEqual({ mergeMethods: ["merge", "squash", "rebase"], canWrite: true, canTriage: true });
+    // Triage can close and reopen, but not merge.
+    expect(
+      mergeSettingsOf({
+        mergeCommitAllowed: true,
+        squashMergeAllowed: true,
+        rebaseMergeAllowed: true,
+        viewerPermission: "TRIAGE",
+      }),
+    ).toMatchObject({ canWrite: false, canTriage: true });
   });
 });
 
