@@ -300,6 +300,9 @@ function checkout() {
 // keeps its own error line too, but that sits behind the card.
 const pending = ref<GitHubPrAction | null>(null);
 const actError = ref<string | null>(null);
+/** Said when GitHub took a merge but didn't merge yet: a merge queue or
+ *  pending required checks turn `gh pr merge` into a merge scheduled for later. */
+const actNotice = ref<string | null>(null);
 const commentError = ref<string | null>(null);
 
 async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
@@ -307,6 +310,7 @@ async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
   cue("press");
   pending.value = action;
   actError.value = null;
+  actNotice.value = null;
   const number = props.number;
   // A merge names the commit the card showed, so a push since then can't land unseen.
   const head = action === "merge" ? (pr.value?.headOid ?? undefined) : undefined;
@@ -318,7 +322,12 @@ async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
     return;
   }
   const d = await props.space.prDetail(number);
-  if (d && props.number === number) pr.value = d;
+  if (d && props.number === number) {
+    pr.value = d;
+    if (action === "merge" && d.state === "open") {
+      actNotice.value = "GitHub queued the merge. It lands once the required checks pass.";
+    }
+  }
 }
 
 async function sendComment(body: string): Promise<boolean> {
@@ -340,6 +349,7 @@ watch(
   () => props.number,
   () => {
     actError.value = null;
+    actNotice.value = null;
     commentError.value = null;
   },
 );
@@ -655,6 +665,7 @@ onBeforeUnmount(() => {
               :busy="busy"
               :pending="pending"
               :error="actError"
+              :notice="actNotice"
               @act="act"
             />
           </template>
