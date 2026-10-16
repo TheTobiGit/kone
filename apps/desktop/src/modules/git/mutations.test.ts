@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
 import { checkout, checkoutCarrying, createBranch, setUpstream, stage } from "./mutations.js";
-import { fastForward } from "./sync.js";
+import { fastForward, push } from "./sync.js";
 import os from "node:os";
 import { mkdtemp } from "node:fs/promises";
 import { initTestRepo } from "@kone/git-core/testRepo.js";
@@ -226,5 +226,33 @@ describe("upstreams", () => {
     await expect(setUpstream(dir, "side", "origin/nope")).rejects.toThrow("isn't on the remote");
     await rm(dir, { recursive: true, force: true });
     await rm(bare, { recursive: true, force: true });
+  });
+});
+
+describe("push of a branch you're not on", () => {
+  test("goes to that branch's own remote, not the checked-out one's", async () => {
+    const dir = await makeRepo();
+    const make = async () => {
+      const bare = await mkdtemp(path.join(os.tmpdir(), "kone-git-bare-"));
+      await git(bare, ["init", "--bare"]);
+      return bare;
+    };
+    const up = await make();
+    const mine = await make();
+    await git(dir, ["remote", "add", "upstream", up]);
+    await git(dir, ["remote", "add", "origin", mine]);
+    await git(dir, ["push", "-u", "upstream", "main"]);
+    await git(dir, ["branch", "topic"]);
+    await git(dir, ["push", "-u", "origin", "topic"]);
+    await git(dir, ["checkout", "topic"]);
+    await writeFile(path.join(dir, "b.txt"), "b\n", "utf8");
+    await git(dir, ["add", "-A"]);
+    await git(dir, ["commit", "-m", "topic work"]);
+    await git(dir, ["checkout", "main"]);
+
+    await push(dir, { branch: "topic" });
+    expect((await git(mine, ["rev-parse", "topic"])).trim()).toBe((await git(dir, ["rev-parse", "topic"])).trim());
+    expect((await git(up, ["branch", "--list", "topic"])).trim()).toBe("");
+    for (const d of [dir, up, mine]) await rm(d, { recursive: true, force: true });
   });
 });

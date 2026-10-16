@@ -144,9 +144,9 @@ async function switchTo() {
   if (busy.value) return cue("refuse");
   cue("press");
   blocked.value = false;
-  const ok = b.value.remote
-    ? await props.space.createBranch(localNameOf(b.value.name), { from: b.value.name, checkout: true })
-    : await props.space.switchBranch(b.value.name);
+  // A remote branch becomes a local one that tracks it, or switches to the
+  // local one of that name; the desktop side picks.
+  const ok = await props.space.switchBranch(b.value.name);
   cue(ok ? "success" : "error");
   if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = true;
 }
@@ -225,7 +225,9 @@ const remoteName = computed(() => {
 });
 function removeRemote() {
   cue("discard");
-  void props.space.deleteBranch(localNameOf(remoteName.value ?? ""), { remote: true });
+  // The full "remote/branch", so a branch on a remote other than origin is
+  // deleted where it lives.
+  if (remoteName.value) void props.space.deleteBranch(remoteName.value, { remote: true });
 }
 
 function plural(n: number, word: string): string {
@@ -364,7 +366,6 @@ onBeforeUnmount(() => {
 
             <div v-if="!b.current" class="bsv__actions">
               <button
-                v-if="!b.merged"
                 type="button"
                 class="bsv__btn"
                 :disabled="busy"
