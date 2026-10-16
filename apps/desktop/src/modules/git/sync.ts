@@ -166,24 +166,29 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
       ? await upstreamOf(root, branch)
       : await currentUpstream(root);
     const upstreamRemote = upstream ? upstream.split("/")[0] ?? null : null;
+    const upstreamBranch =
+      upstream && upstreamRemote ? upstream.slice(upstreamRemote.length + 1) : null;
     const remote = opts?.remote?.trim() || upstreamRemote || "origin";
+    // The tracked name only means something on the remote it lives on; pushed
+    // anywhere else, the branch goes up under its own name.
+    const onUpstream = !!upstreamBranch && remote === upstreamRemote;
     const setUpstream = opts?.setUpstream === true || upstream === null;
 
     const args = ["push"];
     if (setUpstream) args.push("-u");
     if (opts?.force) args.push("--force-with-lease");
     args.push(remote);
-    if (opts?.branch && upstream) {
+    if (opts?.branch && onUpstream) {
       // An explicit branch goes onto the remote branch it tracks.
-      args.push(`refs/heads/${branch}:refs/heads/${upstream.slice(remote.length + 1)}`);
+      args.push(`refs/heads/${branch}:refs/heads/${upstreamBranch}`);
     } else if (opts?.branch) {
       // An explicit branch with nothing tracked is pushed as-is; upstream
       // tracking is then the caller's option via `setUpstream`.
       args.push(branch);
-    } else if (upstream) {
+    } else if (onUpstream) {
       // Push HEAD onto the tracked remote branch — not a same-named local branch
       // that may not exist on the remote.
-      args.push(`HEAD:${upstream.slice(remote.length + 1)}`);
+      args.push(`HEAD:${upstreamBranch}`);
     } else {
       args.push(branch);
     }

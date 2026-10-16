@@ -255,4 +255,24 @@ describe("push of a branch you're not on", () => {
     expect((await git(up, ["branch", "--list", "topic"])).trim()).toBe("");
     for (const d of [dir, up, mine]) await rm(d, { recursive: true, force: true });
   });
+
+  test("onto another remote, goes up under its own name", async () => {
+    const dir = await makeRepo();
+    const make = async () => {
+      const bare = await mkdtemp(path.join(os.tmpdir(), "kone-git-bare-"));
+      await git(bare, ["init", "--bare"]);
+      return bare;
+    };
+    const up = await make();
+    const mine = await make();
+    await git(dir, ["remote", "add", "upstream", up]);
+    await git(dir, ["remote", "add", "origin", mine]);
+    await git(dir, ["branch", "topic"]);
+    await git(dir, ["push", "-u", "upstream", "topic"]);
+
+    await push(dir, { branch: "topic", setUpstream: true, remote: "origin" });
+    expect((await git(mine, ["branch", "--list", "topic"])).trim()).toBe("topic");
+    expect((await git(dir, ["rev-parse", "--abbrev-ref", "topic@{upstream}"])).trim()).toBe("origin/topic");
+    for (const d of [dir, up, mine]) await rm(d, { recursive: true, force: true });
+  });
 });
