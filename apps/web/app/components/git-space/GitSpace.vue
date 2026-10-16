@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
-import { onKeyStroke } from "@vueuse/core";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AlertCircleIcon,
   ArrowDown01Icon,
   ArrowUp01Icon,
   CloudUploadIcon,
+  GitBranchIcon,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import type { Project } from "~/composables/useProject";
@@ -15,12 +16,14 @@ import type { useProjectGit } from "~/composables/useProjectGit";
 
 // The repository, as a place rather than a panel.
 //
-// This is the shell: a masthead that says where you are and what the repository
-// wants from you, a quiet rail of sections, and one scrolling panel. Everything
-// factual lives in `space` (the shared funnel) — this component decides what is
-// worth showing and, more importantly, what isn't. The masthead promotes exactly
-// one action at a time, because a row of equal-weight buttons makes the user do
-// the reading that the page should have done for them.
+// This is the shell, built the way the Overview is: a sentence that says where
+// you are and how you stand with origin, a little track drawing of the same
+// thing, then a sticky row of sections with the remote actions at its end, and
+// the section underneath. The whole page scrolls as one, so the headline leaves
+// and the section row stays. Everything factual lives in `space` (the shared
+// funnel) — this component decides what is worth showing and, more importantly,
+// what isn't. Exactly one action carries weight at a time, because a row of
+// equal-weight buttons makes the user do the reading the page should have done.
 
 const props = defineProps<{
   project: Project;
@@ -66,17 +69,25 @@ function countFor(id: Section): number | null {
   return null;
 }
 
+const scrollEl = ref<HTMLElement | null>(null);
 const panelEl = ref<HTMLElement | null>(null);
+const barEl = ref<HTMLElement | null>(null);
 // One scroll container serves every section, so each section's offset is kept
 // by hand. Without this, leaving a history you'd read halfway down strands you
 // at the same pixel offset in Branches — and coming back starts you at the top
 // of a list you'd already worked through.
 const scrollTops = new Map<Section, number>();
 
+/** Where the section row sticks: scrolled past this, the headline is gone. */
+function barTop(): number {
+  // Less the band the row sticks below, so it lands exactly where it sticks.
+  return Math.max(0, (barEl.value?.offsetTop ?? 0) - 60);
+}
+
 function go(next: Section) {
   if (section.value === next) return;
   cue("select");
-  const el = panelEl.value;
+  const el = scrollEl.value;
   if (el) scrollTops.set(section.value, el.scrollTop);
   section.value = next;
   if (!visited.value.includes(next)) visited.value.push(next);
@@ -84,9 +95,13 @@ function go(next: Section) {
   props.space.error.value = null;
   load(next);
   void nextTick(() => {
+    const s = scrollEl.value;
     const p = panelEl.value;
-    if (!p) return;
-    p.scrollTop = scrollTops.get(next) ?? 0;
+    if (!s || !p) return;
+    // A section you haven't read yet starts at its own top. If the headline had
+    // already scrolled away, it stays away: the row you just clicked shouldn't
+    // jump down the screen from under the pointer.
+    s.scrollTop = scrollTops.get(next) ?? Math.min(s.scrollTop, barTop());
     // Retrigger the entrance so the new section arrives instead of blinking
     // into place. Removing the class, forcing a reflow and re-adding it is the
     // only way to restart a CSS animation on an element that never unmounts.
@@ -208,10 +223,6 @@ const note = computed<string | null>(() => {
 });
 
 const midOperation = computed(() => props.space.state.value.operation !== "none");
-const operationLabel = computed(() => {
-  const op = props.space.state.value.operation;
-  return op === "cherry-picking" ? "CHERRY-PICKING" : op.replace("ing", "ing").toUpperCase();
-});
 const conflictCount = computed(() => props.space.state.value.conflicts.length);
 
 // Exactly one action carries weight, and only when there is something to do.
@@ -232,10 +243,9 @@ const pullLabel = computed(() =>
 
 const busy = computed(() => props.space.op.value !== null);
 
-// ── who you are, at the foot of the rail ──────────────────────────────────────
-// This used to be a block inside About, which put it on a page about the
-// repository and repeated it for every project as though it were a fact about
-// this one. It's chrome: it belongs where it's always true and never in the way.
+// ── who you are ───────────────────────────────────────────────────────────────
+// The headline greets you the way the Overview does: "Hey, @you". It's chrome,
+// true on every section, so it lives in the shell rather than in About.
 const me = computed(() => props.space.me.value);
 const identity = computed(() => props.space.identity.value);
 
@@ -260,7 +270,70 @@ const whoEmail = computed<string | null>(() => {
   return local === handle || root === handle ? null : email;
 });
 
-const activeIndex = computed(() => SECTIONS.findIndex((s) => s.id === section.value));
+// ── the sentence ──────────────────────────────────────────────────────────────
+// "kone is on main, 2 commits ahead of origin." The repository and the branch
+// are the nouns; the clause after them is the state, and its numbers carry the
+// same green and red the Overview gives added and removed lines.
+const repoName = computed(
+  () => props.space.repoInfo.value?.nameWithOwner?.split("/").at(-1) ?? props.space.name.value,
+);
+const repoLogo = computed(() => props.space.logo.value?.dataUrl ?? null);
+const repoUrl = computed(() => props.space.repoInfo.value?.url ?? null);
+const operationWord = computed(() => {
+  const op = props.space.state.value.operation;
+  return op === "cherry-picking" ? "cherry-pick" : op.replace(/ing$/, "");
+});
+
+function plural(n: number, word: string): string {
+  return `${word}${n === 1 ? "" : "s"}`;
+}
+
+// ── the track ─────────────────────────────────────────────────────────────────
+// The sentence, drawn: origin's line along the bottom, yours peeling off it.
+// Your unpushed commits sit on your line in green, the ones you haven't pulled
+// sit on origin's in the muted ink, and each line ends in a tag saying whose it
+// is. Capped at four dots a side; the number in the tag says the rest.
+const TRACK = { base: 86, high: 38, step: 26, fork: 78 } as const;
+const track = computed(() => {
+  const hasOrigin = Boolean(origin.value);
+  const published = Boolean(upstream.value);
+  const a = Math.min(4, ahead.value);
+  const b = Math.min(4, behind.value);
+  const shared = [22, 50, TRACK.fork];
+  const splits = hasOrigin && published && a > 0;
+  const mine = Array.from({ length: a }, (_, i) => TRACK.fork + 40 + i * TRACK.step);
+  const theirs = Array.from({ length: b }, (_, i) => TRACK.fork + TRACK.step + i * TRACK.step);
+  const baseEnd = Math.max(TRACK.fork + TRACK.step, theirs.at(-1) ?? 0);
+  const highEnd = mine.at(-1) ?? TRACK.fork + 40;
+  return { hasOrigin, published, splits, mine, theirs, shared, baseEnd, highEnd };
+});
+const branchPath = computed(() => {
+  const { fork, base, high } = TRACK;
+  return `M${fork} ${base} C ${fork + 22} ${base}, ${fork + 14} ${high}, ${fork + 40} ${high} L ${track.value.highEnd} ${high}`;
+});
+
+// ── the section row ───────────────────────────────────────────────────────────
+// The ink car that rides the line to the section you picked. Its place is
+// measured rather than computed, so it can't drift from the stops on a resize.
+const tabEls = ref<HTMLElement[]>([]);
+const mark = ref({ x: 0, w: 0 });
+function measureMark() {
+  const i = SECTIONS.findIndex((s) => s.id === section.value);
+  const el = tabEls.value[i];
+  if (el) mark.value = { x: el.offsetLeft + el.offsetWidth / 2, w: el.offsetWidth };
+}
+watch([section, () => props.visible], () => void nextTick(measureMark));
+// Counts arrive after the row is drawn and widen the tabs they land in.
+watch(
+  () => SECTIONS.map((s) => countFor(s.id)).join(","),
+  () => void nextTick(measureMark),
+);
+onMounted(() => {
+  measureMark();
+  // Webfonts settle a beat after mount and change every label's width.
+  void document.fonts?.ready.then(measureMark);
+});
+useEventListener("resize", measureMark);
 
 // These run for seconds against a remote, long enough to look away, so each
 // one sounds where it lands as well as where it starts. The buttons are
@@ -294,125 +367,197 @@ function onAbort() {
 }
 </script>
 
+
 <template>
   <div class="gs">
-    <div v-show="!detail" class="gs__inner">
-      <!-- ── masthead ───────────────────────────────────────────────────── -->
-      <header class="gs__masthead">
-        <div class="gs__identity">
-          <p class="gs__eyebrow">
-            <template v-if="originLabel">{{ originLabel }}</template>
-            <template v-else>Local only</template>
-          </p>
-          <h1 class="gs__branch">{{ branchName || "detached HEAD" }}</h1>
+    <div v-show="!detail" ref="scrollEl" class="gs__scroll">
+      <div class="gs__col">
+        <!-- ── headline ───────────────────────────────────────────────────── -->
+        <header class="gs__head">
+          <div class="gs__say">
+            <p class="gs__hey">
+              <span class="gs__soft">Hey,</span>
+              <span class="gs__face" :title="whoEmail ?? undefined" aria-hidden="true">
+                <img v-if="whoFace" :src="whoFace" alt="" />
+                <template v-else>{{ whoInitial || "?" }}</template>
+              </span>
+              <span class="gs__ink">{{ whoName ?? "there" }}</span>
+            </p>
 
-          <!-- Mid-operation replaces the note entirely: nothing else matters
-               until the merge or rebase is resolved. -->
-          <p v-if="midOperation" class="gs__state">
-            {{ operationLabel }}
-            <template v-if="conflictCount">
-              · {{ conflictCount }} conflicted file{{ conflictCount === 1 ? "" : "s" }}
-            </template>
-          </p>
-          <p v-else-if="note" class="gs__note">{{ note }}</p>
-        </div>
+            <p class="gs__line">
+              <button
+                type="button"
+                class="gs__token"
+                :disabled="!repoUrl"
+                :title="repoUrl ? `Open ${originLabel} on GitHub` : undefined"
+                @click="repoUrl && space.openExternal(repoUrl)"
+              >
+                <img v-if="repoLogo" :src="repoLogo" alt="" class="gs__logo" />
+                {{ repoName }}
+              </button>
+              <span class="gs__soft">{{ " " }}is on{{ " " }}</span>
+              <span class="gs__ink gs__branch">
+                <HugeiconsIcon :icon="GitBranchIcon" :size="22" :stroke-width="2" class="gs__branch-icon" aria-hidden="true" />{{ branchName || "a detached HEAD" }}</span><template v-if="midOperation"><span class="gs__soft">, in the middle of a {{ operationWord }}</span><template v-if="conflictCount"><span class="gs__soft">{{ " " }}with{{ " " }}</span><span class="gs__num gs__num--del">{{ conflictCount }}</span><span class="gs__soft">{{ " " }}conflicted {{ plural(conflictCount, "file") }}</span></template><span class="gs__soft">.</span></template>
+              <template v-else-if="!origin"><span class="gs__soft">. It only lives on this computer.</span></template>
+              <template v-else-if="!upstream"><span class="gs__soft">, and it isn't published yet.</span></template>
+              <template v-else-if="ahead && behind"><span class="gs__soft">,{{ " " }}</span><span class="gs__num gs__num--add">{{ ahead }}</span><span class="gs__soft">{{ " " }}ahead and{{ " " }}</span><span class="gs__num gs__num--del">{{ behind }}</span><span class="gs__soft">{{ " " }}behind origin.</span></template>
+              <template v-else-if="ahead"><span class="gs__soft">,{{ " " }}</span><span class="gs__num gs__num--add">{{ ahead }}</span><span class="gs__soft">{{ " " }}{{ plural(ahead, "commit") }} ahead of origin.</span></template>
+              <template v-else-if="behind"><span class="gs__soft">,{{ " " }}</span><span class="gs__num gs__num--del">{{ behind }}</span><span class="gs__soft">{{ " " }}{{ plural(behind, "commit") }} behind origin.</span></template>
+              <template v-else><span class="gs__soft">, in step with origin.</span></template>
+            </p>
+            <p v-if="note && !midOperation && upstream" class="gs__note">{{ note }}</p>
+          </div>
 
-        <div class="gs__actions">
-          <template v-if="midOperation">
-            <button type="button" class="gs__btn" :disabled="busy" @click="onAbort">
-              Abort
-            </button>
-            <button
-              type="button"
-              class="gs__btn gs__btn--primary"
-              :disabled="busy"
-              @click="onContinue"
-            >
-              Continue
-            </button>
-          </template>
-          <template v-else-if="origin">
-            <button type="button" class="gs__btn" :disabled="busy" @click="onFetch">
-              <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
-              Fetch
-            </button>
-            <button
-              v-if="upstream"
-              type="button"
-              class="gs__btn"
-              :class="{ 'gs__btn--primary': primary === 'pull' }"
-              :disabled="busy"
-              @click="onPull"
-            >
-              <HugeiconsIcon :icon="ArrowDown01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
-              {{ pullLabel }}
-            </button>
-            <button
-              type="button"
-              class="gs__btn"
-              :class="{ 'gs__btn--primary': primary === 'push' }"
-              :disabled="busy"
-              @click="onPush"
-            >
-              <HugeiconsIcon
-                :icon="upstream ? ArrowUp01Icon : CloudUploadIcon"
-                :size="13"
-                :stroke-width="1.8"
-                aria-hidden="true"
+          <!-- The sentence, drawn. Decorative: everything in it is in the words. -->
+          <div class="gs__track" aria-hidden="true">
+            <svg viewBox="0 0 240 120" class="gs__track-svg">
+              <template v-if="track.hasOrigin">
+                <path
+                  :d="`M8 ${TRACK.base} L ${track.baseEnd + 18} ${TRACK.base}`"
+                  class="gs__rail"
+                  :class="{ 'gs__rail--ghost': !track.published }"
+                />
+                <path v-if="track.splits || !track.published" :d="branchPath" class="gs__rail gs__rail--mine" />
+              </template>
+              <path v-else :d="`M8 ${TRACK.base} L 200 ${TRACK.base}`" class="gs__rail gs__rail--mine" />
+
+              <circle
+                v-for="(x, i) in track.shared"
+                :key="`s${x}`"
+                :cx="x"
+                :cy="TRACK.base"
+                r="5"
+                class="gs__dot"
+                :style="{ '--d': i }"
               />
-              {{ pushLabel }}
-            </button>
-          </template>
-        </div>
-      </header>
+              <circle
+                v-for="(x, i) in track.theirs"
+                :key="`t${x}`"
+                :cx="x"
+                :cy="TRACK.base"
+                r="5"
+                class="gs__dot gs__dot--theirs"
+                :style="{ '--d': i + 3 }"
+              />
+              <circle
+                v-for="(x, i) in track.mine"
+                :key="`m${x}`"
+                :cx="x"
+                :cy="TRACK.high"
+                r="5.5"
+                class="gs__dot gs__dot--mine"
+                :style="{ '--d': i + 3 }"
+              />
+            </svg>
 
-      <!-- A running operation reads as a thread of light under the masthead —
-           the only moving thing on the page, and never a spinner. -->
-      <div class="gs__progress" :class="{ 'gs__progress--on': busy }" aria-hidden="true">
-        <i class="gs__progress-run" />
-      </div>
+            <span
+              v-if="track.hasOrigin"
+              class="gs__tag"
+              :style="{ left: `${(track.baseEnd + 24) / 2.4}%`, top: `${TRACK.base / 1.2}%` }"
+            >origin<template v-if="behind"> ↓{{ behind }}</template></span>
+            <span
+              class="gs__tag gs__tag--me"
+              :style="
+                track.splits || (track.hasOrigin && !track.published)
+                  ? { left: `${(track.highEnd + 14) / 2.4}%`, top: `${TRACK.high / 1.2}%` }
+                  : { left: `${track.hasOrigin ? (track.baseEnd + 24) / 2.4 : 86}%`, top: `${(TRACK.base - 30) / 1.2}%` }
+              "
+            >
+              <span class="gs__tag-face">
+                <img v-if="whoFace" :src="whoFace" alt="" />
+                <template v-else>{{ whoInitial }}</template>
+              </span>
+              you<template v-if="ahead"> ↑{{ ahead }}</template>
+            </span>
+          </div>
+        </header>
 
-      <p v-if="space.error.value" class="gs__error" role="alert">
-        <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
-        {{ space.error.value }}
-      </p>
-
-      <!-- ── body ───────────────────────────────────────────────────────── -->
-      <div class="gs__body">
-        <nav class="gs__nav" aria-label="Repository sections">
-          <div class="gs__navrows">
-            <i class="gs__navmark" :style="{ '--at': activeIndex }" aria-hidden="true" />
+        <!-- ── the section row ────────────────────────────────────────────── -->
+        <div ref="barEl" class="gs__bar">
+          <!-- The sections as stops on a line — the same line the branch
+               track above is drawn with. A small ink car rides it to the stop
+               you pick, and each stop carries its count above it. -->
+          <nav class="gs__metro" aria-label="Repository sections">
+            <i class="gs__metro-rail" aria-hidden="true" />
+            <i class="gs__metro-car" :style="{ transform: `translateX(${mark.x}px)` }" aria-hidden="true" />
             <button
               v-for="s in SECTIONS"
               :key="s.id"
+              ref="tabEls"
               type="button"
-              class="gs__navrow"
-              :class="{ 'gs__navrow--on': section === s.id }"
+              class="gs__stop"
+              :class="{ 'gs__stop--on': section === s.id }"
               :aria-current="section === s.id ? 'page' : undefined"
               @click="go(s.id)"
             >
-              <span class="gs__navlabel">{{ s.label }}</span>
-              <span v-if="countFor(s.id)" class="gs__navcount">{{ countFor(s.id) }}</span>
+              <span class="gs__stop-count">{{ countFor(s.id) ?? "" }}</span>
+              <span class="gs__stop-dot" aria-hidden="true" />
+              <span class="gs__stop-label">{{ s.label }}</span>
             </button>
+          </nav>
+
+          <div class="gs__actions">
+            <template v-if="midOperation">
+              <button type="button" class="gs__btn" :disabled="busy" @click="onAbort">Abort</button>
+              <button type="button" class="gs__btn gs__btn--primary" :disabled="busy" @click="onContinue">
+                Continue
+              </button>
+            </template>
+            <template v-else-if="origin">
+              <button type="button" class="gs__btn" :disabled="busy" @click="onFetch">
+                <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+                Fetch
+              </button>
+              <button
+                v-if="upstream"
+                type="button"
+                class="gs__btn"
+                :class="{ 'gs__btn--primary': primary === 'pull' }"
+                :disabled="busy"
+                @click="onPull"
+              >
+                <HugeiconsIcon :icon="ArrowDown01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+                {{ pullLabel }}
+              </button>
+              <button
+                type="button"
+                class="gs__btn"
+                :class="{ 'gs__btn--primary': primary === 'push' }"
+                :disabled="busy"
+                @click="onPush"
+              >
+                <HugeiconsIcon
+                  :icon="upstream ? ArrowUp01Icon : CloudUploadIcon"
+                  :size="13"
+                  :stroke-width="1.8"
+                  aria-hidden="true"
+                />
+                {{ pushLabel }}
+              </button>
+            </template>
           </div>
 
-          <div v-if="whoName" class="gs__who">
-            <span class="gs__whoface" aria-hidden="true">
-              <img v-if="whoFace" :src="whoFace" alt="" />
-              <span v-else>{{ whoInitial }}</span>
-            </span>
-            <span class="gs__whobody">
-              <span class="gs__whoname">{{ whoName }}</span>
-              <span v-if="whoEmail" class="gs__whomail" :title="whoEmail">{{ whoEmail }}</span>
-            </span>
+          <!-- A running operation reads as a thread of light along the row's
+               foot — the only moving thing on the page, and never a spinner. -->
+          <div class="gs__progress" :class="{ 'gs__progress--on': busy }" aria-hidden="true">
+            <i class="gs__progress-run" />
           </div>
-        </nav>
+        </div>
 
+        <p v-if="space.error.value" class="gs__error" role="alert">
+          <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          {{ space.error.value }}
+        </p>
+
+        <!-- ── the section ────────────────────────────────────────────────── -->
         <div ref="panelEl" class="gs__panel">
           <GitSpaceAbout
             v-if="visited.includes('about')"
             v-show="section === 'about'"
             :space="space"
+            @go="go"
+            @open-commit="openCommit"
+            @open-pr="openPr"
           />
           <GitSpaceChanges
             v-if="visited.includes('changes')"
@@ -506,10 +651,11 @@ function onAbort() {
   /* How long a read may take before admitting it's slow. Under this, the answer
      lands and no placeholder should ever have been drawn. */
   --gs-hold: 140ms;
-  /* The shell's own three-beat entrance: masthead, then rail, then panel. */
+  /* The shell's own three-beat entrance: headline, then section row, then the
+     section itself. */
   --gs-enter-mast: 0ms;
-  --gs-enter-nav: 60ms;
-  --gs-enter-panel: 120ms;
+  --gs-enter-nav: 80ms;
+  --gs-enter-panel: 160ms;
   display: flex;
   justify-content: center;
   width: 100%;
@@ -517,13 +663,23 @@ function onAbort() {
   min-height: 0;
   overflow: hidden;
 }
-.gs__inner {
+/* The whole page scrolls as one: the headline leaves, the section row sticks. */
+.gs__scroll {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
+}
+/* A little wider than the Overview, to fit About's side column. */
+.gs__col {
   display: flex;
   flex-direction: column;
   width: 100%;
   max-width: 1040px;
-  min-height: 0;
-  padding: 5rem 2.5rem 2.5rem;
+  margin-inline: auto;
+  padding: 5.5rem 2.5rem 3rem;
 }
 
 /* The one entrance shape in the space: fade plus a 6px rise. Nothing gets its
@@ -539,84 +695,373 @@ function onAbort() {
   }
 }
 
-/* ── masthead ─────────────────────────────────────────────────────────────── */
-.gs__masthead {
+/* ── headline ─────────────────────────────────────────────────────────────── */
+.gs__head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 24px;
-  flex-shrink: 0;
+  gap: 32px;
   animation: gs-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: var(--gs-enter-mast);
 }
-.gs__identity {
+.gs__say {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 4px;
   min-width: 0;
+  max-width: 600px;
 }
-/* An identifier, not a category label. STAGED and REMOTE are labels and keep
-   the uppercase micro-label treatment; a repo slug is a proper noun that GitHub
-   renders in its own case, and every other identifier in this space — branch
-   refs, upstreams, paths, hashes — is set mono in natural case. The wide
-   tracking goes with it: it exists to open up small caps, and lowercase mono
-   already has the sidebearings it needs. */
-.gs__eyebrow {
+.gs__hey,
+.gs__line {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.gs__hey {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.15;
+}
+.gs__line {
+  line-height: 1.28;
+  text-wrap: pretty;
+}
+.gs__soft {
+  color: var(--ink-soft);
+}
+.gs__ink {
+  color: var(--ink);
+}
+.gs__face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: var(--ink);
+  color: var(--ground);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.gs__face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The repository, as the Overview sets its project name: ink, inline, and a
+   soft pill warms in under it on hover because it opens GitHub. */
+.gs__token {
+  display: inline-block;
+  margin: 0 -5px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--gs-t-micro) ease;
+}
+.gs__token:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.gs__token:disabled {
+  cursor: default;
+}
+.gs__token:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 26%, transparent);
+  outline-offset: 1px;
+}
+.gs__logo {
+  display: inline-block;
+  width: 26px;
+  height: 26px;
+  margin-right: 6px;
+  border-radius: 7px;
+  vertical-align: -3px;
+  object-fit: cover;
+}
+.gs__branch {
+  overflow-wrap: anywhere;
+}
+.gs__branch-icon {
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: -2px;
+  color: var(--muted);
+}
+/* Numbers in the sentence: mono, like the Overview's +575 −203. */
+.gs__num {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+}
+.gs__num--add {
+  color: var(--diff-add);
+}
+.gs__num--del {
+  color: var(--diff-del);
+}
+.gs__note {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── the track ────────────────────────────────────────────────────────────── */
+.gs__track {
+  position: relative;
+  flex-shrink: 0;
+  width: 240px;
+  height: 120px;
+  margin-top: 6px;
+}
+.gs__track-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.gs__rail {
+  fill: none;
+  stroke: color-mix(in srgb, var(--ink) 16%, transparent);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.gs__rail--ghost {
+  stroke-dasharray: 2 7;
+}
+.gs__rail--mine {
+  stroke: color-mix(in srgb, var(--diff-add) 55%, transparent);
+  stroke-dasharray: 260;
+  stroke-dashoffset: 260;
+  animation: gs-draw 700ms var(--gs-ease) 220ms forwards;
+}
+@keyframes gs-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.gs__dot {
+  fill: var(--ground);
+  stroke: color-mix(in srgb, var(--ink) 30%, transparent);
+  stroke-width: 2.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gs-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  animation-delay: calc(260ms + var(--d, 0) * 70ms);
+}
+.gs__dot--theirs {
+  fill: color-mix(in srgb, var(--ink) 30%, transparent);
+  stroke: none;
+}
+.gs__dot--mine {
+  fill: var(--diff-add);
+  stroke: var(--ground);
+  stroke-width: 2.5;
+}
+@keyframes gs-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+}
+.gs__tag {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background-color: var(--raised-high);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent),
+    0 2px 6px color-mix(in srgb, var(--ink) 8%, transparent);
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.2px;
   line-height: 1;
+  white-space: nowrap;
   color: var(--muted);
+  animation: gs-in var(--gs-t-enter) var(--gs-ease) 560ms backwards;
+}
+.gs__tag--me {
+  padding-left: 3px;
+  color: var(--ink);
+}
+.gs__tag-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: var(--ink);
+  color: var(--ground);
+  font-size: 9px;
+}
+.gs__tag-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ── the section row ──────────────────────────────────────────────────────── */
+/* Sticks under the project tabs once the headline has scrolled away, on the
+   page's own ground so the section scrolls under it rather than through it.
+   The band above it is ground too, or text would show between the two rows. */
+.gs__bar {
+  position: sticky;
+  /* Clear of the project's own floating tabs, which sit over this page. */
+  top: 60px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  margin-top: 48px;
+  padding-top: 14px;
+  background-color: var(--ground);
+  animation: gs-in var(--gs-t-enter) var(--gs-ease) backwards;
+  animation-delay: var(--gs-enter-nav);
+}
+.gs__bar::before {
+  content: "";
+  position: absolute;
+  inset-inline: -24px;
+  bottom: 100%;
+  height: 60px;
+  background-color: var(--ground);
+  pointer-events: none;
+}
+/* The line: equal-width stops, a rail from the first dot to the last, and the
+   car parked over the current stop. */
+.gs__metro {
+  position: relative;
+  display: flex;
+  flex: 0 1 600px;
+  min-width: 0;
+  padding-bottom: 12px;
+}
+.gs__metro-rail {
+  position: absolute;
+  top: 27px;
+  inset-inline: calc(100% / 12);
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--ink) 12%, transparent);
+  pointer-events: none;
+}
+.gs__metro-car {
+  position: absolute;
+  top: 27px;
+  left: 0;
+  z-index: 1;
+  width: 34px;
+  height: 14px;
+  margin: -7px 0 0 -17px;
+  border-radius: 999px;
+  background-color: var(--ink);
+  box-shadow:
+    0 0 0 4px var(--ground),
+    0 4px 10px -2px color-mix(in srgb, var(--ink) 40%, transparent);
+  transition: transform 520ms cubic-bezier(0.5, 0, 0.2, 1.25);
+  pointer-events: none;
+}
+/* Headlights: a short bright stripe inside the car, so it reads as a thing
+   that travels rather than a highlight. */
+.gs__metro-car::after {
+  content: "";
+  position: absolute;
+  inset: 5px 9px;
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--ground) 55%, transparent);
+}
+.gs__stop {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.gs__stop:focus-visible {
+  outline: none;
+}
+.gs__stop:focus-visible .gs__stop-label {
+  border-radius: 6px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 26%, transparent);
+}
+.gs__stop-count {
+  height: 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  transition: color var(--gs-t-micro) ease;
+}
+.gs__stop-dot {
+  position: relative;
+  z-index: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background-color: var(--ground);
+  box-shadow: inset 0 0 0 2.5px color-mix(in srgb, var(--ink) 28%, transparent);
+  transition:
+    transform var(--gs-t-small) var(--gs-ease),
+    box-shadow var(--gs-t-micro) ease;
+}
+.gs__stop:hover .gs__stop-dot {
+  transform: scale(1.3);
+  box-shadow: inset 0 0 0 2.5px var(--ink);
+}
+.gs__stop-label {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.gs__branch {
-  font-size: 28px;
-  letter-spacing: -0.5px;
-  line-height: 1.1;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gs__note,
-.gs__state {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.1px;
   color: var(--muted);
+  transition: color var(--gs-t-micro) ease;
 }
-.gs__state {
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  font-size: 11px;
-  color: var(--diff-del);
+.gs__stop:hover .gs__stop-label,
+.gs__stop--on .gs__stop-label,
+.gs__stop--on .gs__stop-count {
+  color: var(--ink);
 }
 
 .gs__actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
-  padding-top: 4px;
 }
-/* The app's one button recipe: bare until hovered, then a soft pill. */
+/* The app's one button recipe: bare until hovered, then a soft pill; the
+   primary one is the Overview's ink "Commit" pill. */
 .gs__btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 27px;
+  height: 28px;
   padding-inline: 11px;
   border-radius: 8px;
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--ink-soft);
   cursor: pointer;
@@ -652,14 +1097,14 @@ function onAbort() {
 
 /* ── progress + error ─────────────────────────────────────────────────────── */
 .gs__progress {
-  position: relative;
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
   height: 2px;
-  margin-top: 18px;
   overflow: hidden;
-  border-radius: 1px;
   opacity: 0;
   transition: opacity var(--gs-t-small) ease;
-  flex-shrink: 0;
+  pointer-events: none;
 }
 .gs__progress--on {
   opacity: 1;
@@ -690,169 +1135,21 @@ function onAbort() {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin-top: 10px;
+  margin: 14px 0 0;
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--diff-del);
-  flex-shrink: 0;
   animation: gs-in var(--gs-t-small) var(--gs-ease) backwards;
 }
 .gs__error :deep(svg) {
   flex-shrink: 0;
 }
 
-/* ── body ─────────────────────────────────────────────────────────────────── */
-.gs__body {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  margin-top: 34px;
-}
-.gs__nav {
-  display: flex;
-  flex-direction: column;
-  width: 150px;
-  flex-shrink: 0;
-  animation: gs-in var(--gs-t-enter) var(--gs-ease) backwards;
-  animation-delay: var(--gs-enter-nav);
-}
-.gs__navrows {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-/* One pill that slides, rather than a background that appears on the row you
-   picked and disappears from the one you left. The rail is a fixed ladder — 30px
-   rows on a 2px gap — so where the pill goes is arithmetic, not measurement, and
-   it can't fall out of step with the layout on a resize.
-
-   It replaced an accent dot. Nothing else in this app marks a selection with a
-   coloured bullet, and the one thing on a calm page that carries the brand
-   colour reads as an alert. */
-.gs__navmark {
-  position: absolute;
-  inset-inline: 0;
-  top: 0;
-  height: 30px;
-  border-radius: 8px;
-  background-color: color-mix(in srgb, var(--ink) 6.5%, transparent);
-  transform: translateY(calc(var(--at, 0) * 32px));
-  transition: transform var(--gs-t-small) var(--gs-ease-move);
-  pointer-events: none;
-}
-/* Positioned so the rows paint over the pill: an absolutely-placed sibling
-   otherwise sits above every static one, whatever the source order says. */
-.gs__navrow {
-  position: relative;
-  display: flex;
-  align-items: center;
-  height: 30px;
-  padding-inline: 10px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  letter-spacing: -0.1px;
-  color: var(--muted);
-  cursor: pointer;
-  text-align: left;
-  transition:
-    background-color var(--gs-t-micro) ease,
-    color var(--gs-t-micro) ease;
-}
-.gs__navrow:not(.gs__navrow--on):hover {
-  background-color: var(--hover);
-}
-.gs__navrow:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.gs__navrow--on {
-  color: var(--ink);
-}
-.gs__navlabel {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gs__navcount {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  opacity: 0.75;
-}
-
-/* ── who you are ──────────────────────────────────────────────────────────── */
-/* The foot of the rail, on every section. Two lines when your commit address
-   isn't the account you're signed in as, one line when it is — the disagreement
-   is the whole message, so it doesn't need a sentence explaining itself. */
-.gs__who {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: auto;
-  padding: 12px 10px 0;
-  min-width: 0;
-}
-.gs__whoface {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  overflow: hidden;
-  background-color: var(--hover);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--muted);
-}
-.gs__whoface img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.gs__whobody {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.gs__whoname,
-.gs__whomail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gs__whoname {
-  font-size: 11.5px;
-  letter-spacing: -0.1px;
-  line-height: 1.3;
-  color: var(--ink-soft);
-}
-.gs__whomail {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.3;
-  color: var(--muted);
-}
-
+/* ── the section ──────────────────────────────────────────────────────────── */
 .gs__panel {
-  flex: 1 1 auto;
   min-width: 0;
-  min-height: 0;
-  padding-left: 40px;
-  padding-right: 4px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
+  padding-top: 36px;
   animation: gs-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: var(--gs-enter-panel);
 }
@@ -863,16 +1160,30 @@ function onAbort() {
   animation: gs-in var(--gs-t-small) var(--gs-ease) backwards;
 }
 
+/* Narrow windows: the drawing gives its room to the sentence. */
+@media (max-width: 860px) {
+  .gs__track {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .gs__masthead,
-  .gs__nav,
+  .gs__head,
+  .gs__bar,
   .gs__panel,
   .gs__panel--swap,
-  .gs__error {
+  .gs__error,
+  .gs__dot,
+  .gs__tag {
     animation: none;
   }
+  .gs__rail--mine {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
   .gs__btn,
-  .gs__navrow,
+  .gs__metro-car,
+  .gs__stop-dot,
   .gs__progress {
     transition: none;
   }
@@ -880,9 +1191,6 @@ function onAbort() {
     animation: none;
     transform: none;
     width: 100%;
-  }
-  .gs__navmark {
-    transition: none;
   }
 }
 </style>

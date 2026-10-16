@@ -510,18 +510,16 @@ function openPeek() {
   cue("expand");
   peekOpen.value = true;
 }
+// The detail has played its own exit (and its dismiss sound) by the time it
+// hands this back.
 function onCloseFile() {
-  if (activePath.value) cue("collapse");
   activePath.value = null;
   activeTracked.value = false;
 }
-// Esc backs out of whatever is frontmost: the detail view, then the peek, then
-// an open switcher. (The peek also owns its own Esc — this is the same step.)
+// Esc backs out of whatever is frontmost: the peek, then an open switcher. The
+// file detail takes its own Esc before it reaches here. (The peek also owns its
+// own Esc — this is the same step.)
 onKeyStroke("Escape", () => {
-  if (activePath.value) {
-    onCloseFile();
-    return;
-  }
   if (peekOpen.value) {
     peekOpen.value = false;
     cue("collapse");
@@ -889,20 +887,18 @@ function onDiscardFile(path: string) {
       </div>
     </motion.div>
 
-    <!-- A file's detail: it grows out of the clicked card (origin --ox/--oy) to
-         fill the screen over everything else, then shrinks back on close. -->
-    <Transition name="pop">
-      <GitSpaceFileDetail
-        v-if="activeFile"
-        :file="activeFile"
-        :repo-path="project.path"
-        :origin="originRect"
-        @close="onCloseFile"
-        @stage="onStageFile"
-        @unstage="onUnstageFile"
-        @discard="onDiscardFile"
-      />
-    </Transition>
+    <!-- A file's detail: a near-full-window card that grows out of the clicked
+         file over the page, then shrinks back into it on close. -->
+    <GitSpaceFileDetail
+      v-if="activeFile"
+      :file="activeFile"
+      :repo-path="project.path"
+      :origin="originRect"
+      @close="onCloseFile"
+      @stage="onStageFile"
+      @unstage="onUnstageFile"
+      @discard="onDiscardFile"
+    />
 
     <!-- Switch branch — the local-branch list in the same folder-picker shell. -->
     <ConversationBranchPickerModal
@@ -1433,27 +1429,7 @@ function onDiscardFile(path: string) {
   }
 }
 
-/* The detail grows out of the clicked card and settles — a small overshoot reads
-   as a "pop". Origin comes from --ox/--oy (the card's centre), set inline on the
-   overlay root. On close it runs in reverse, shrinking back into the card. */
-@keyframes pop-grow {
-  from { opacity: 0.35; transform: scale(0.16); }
-  60% { opacity: 1; }
-  to { opacity: 1; transform: scale(1); }
-}
-.pop-enter-active {
-  animation: pop-grow 0.46s cubic-bezier(0.34, 1.3, 0.64, 1);
-  transform-origin: var(--ox, 50%) var(--oy, 50%);
-}
-.pop-leave-active {
-  animation: pop-grow 0.26s cubic-bezier(0.4, 0, 0.9, 1) reverse;
-  transform-origin: var(--ox, 50%) var(--oy, 50%);
-}
 @media (prefers-reduced-motion: reduce) {
-  .pop-enter-active,
-  .pop-leave-active {
-    animation-duration: 0.01s;
-  }
   .sut-enter-active,
   .sut-leave-active {
     transition: none;

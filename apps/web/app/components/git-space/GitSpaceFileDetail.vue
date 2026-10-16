@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Magnet } from "~/components/ui/magnet";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
@@ -8,13 +8,17 @@ import type { GitFileContent, GitFileDiff } from "~/types/desktop";
 import type { CodeLine } from "~/composables/useHighlighter";
 import type { DiffRow } from "~/composables/useDiff";
 import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
+import ModalShell from "~/components/ui/ModalShell.vue";
+import { useModalExit } from "~/composables/useModalExit";
 
-// The overlay a change opens into — the file appears to enlarge out of its card
-// (the grow is driven by ProjectView's transition, anchored on --ox/--oy) and
-// fills the screen over the page. It shows the file's own content, plain, on the
-// page ground (no card): a left action rail, the scrolling body with softened
-// edges, and a mono metadata rail down the right. The page itself doesn't
-// scroll while this is open — only the body does.
+// The modal a change opens into — a large rounded card that grows out of the
+// clicked file (anchored on --ox/--oy) and stops just short of the window's
+// edges, so a rim of the page you came from stays in view under the scrim. It
+// shows the file's own content: a left action rail, the scrolling body with
+// softened edges, and a mono metadata rail down the right. It mounts itself on
+// the body and owns its entrance, exit and Escape, so any view that lists files
+// can open it where the user is: mount it, and unmount it on `close`. The page
+// behind doesn't scroll while this is open — only the body does.
 
 const props = defineProps<{
   file: ChangeItem;
@@ -25,6 +29,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  /** Its exit has finished; unmount it now. */
   close: [];
   stage: [path: string];
   unstage: [path: string];
@@ -129,14 +134,49 @@ watch(scheme, async () => {
   if (diffData.value) diffRows.value = rows;
 });
 
-// Grow from the clicked card's centre — ProjectView's <Transition> reads these.
+// How far the card stands in from the window's edges, in px — the rim of the
+// page left showing around it — and the widest it gets: as wide as its content
+// (the frame's max width), centred, so a wide window doesn't stretch it into
+// empty margins. The card's own CSS reads both.
+const INSET = 20;
+const MAX_WIDTH = 1080;
+
+// Grow from the clicked card's centre, in the card's own coordinates: it sits
+// INSET down from the window's top, centred across it.
 const originStyle = computed(() => {
+  const vars: Record<string, string> = { "--fd-inset": `${INSET}px`, "--fd-max": `${MAX_WIDTH}px` };
   const r = props.origin;
-  if (!r || !("window" in globalThis)) return {};
-  const ox = ((r.left + r.width / 2) / window.innerWidth) * 100;
-  const oy = ((r.top + r.height / 2) / window.innerHeight) * 100;
-  return { "--ox": `${ox}%`, "--oy": `${oy}%` };
+  if (!r) return vars;
+  const left = Math.max(INSET, (window.innerWidth - MAX_WIDTH) / 2);
+  vars["--ox"] = `${r.left + r.width / 2 - left}px`;
+  vars["--oy"] = `${r.top + r.height / 2 - INSET}px`;
+  return vars;
 });
+
+const { shown, close, dismiss } = useModalExit();
+function onClose(): void {
+  dismiss(() => emit("close"));
+}
+// Discarding ends the change this card shows, so the card plays its exit first
+// and hands the discard up once it's gone (the owner then drops the file).
+function onDiscard(): void {
+  close(() => emit("discard", props.file.path));
+}
+
+// The card stands over whatever opened it, and that view may answer Escape of
+// its own. Taken in the capture phase and consumed, one press closes this layer
+// and nothing behind it.
+function onEscape(event: KeyboardEvent): void {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  onClose();
+}
+onMounted(() => {
+  window.addEventListener("keydown", onEscape, { capture: true });
+  requestAnimationFrame(() => (shown.value = true));
+});
+onBeforeUnmount(() => window.removeEventListener("keydown", onEscape, { capture: true }));
 
 const dirPart = computed(() => {
   const i = props.file.path.lastIndexOf("/");
@@ -262,236 +302,281 @@ function onTrapKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="fd" :style="originStyle" role="dialog" aria-modal="true" @keydown="onKeydown">
-    <div ref="frameEl" class="fd__frame">
-      <!-- Top: back + breadcrumb. Actions live down the left rail. -->
-      <header class="fd__bar">
-        <button ref="backEl" type="button" class="fd__back" aria-label="Back to changes" @click="emit('close')">
-          <HugeiconsIcon
-            class="fd__back-glyph"
-            :icon="ArrowTurnBackwardIcon"
-            :size="18"
-            :stroke-width="2"
-            aria-hidden="true"
-          />
-        </button>
-        <span class="fd__crumb">
-          <FileIcon :path="file.name" :size="15" />
-          <span class="fd__crumb-dir">{{ dirPart }}</span>
-          <span class="fd__crumb-name" :class="{ 'fd__crumb-name--del': file.deleted }">{{ file.name }}</span>
-        </span>
-      </header>
-
-      <div class="fd__body">
-        <!-- Left action rail — file-scoped actions (room to grow). Each leans
-             gently toward the cursor as it nears, then eases back. -->
-        <div class="fd__left">
-          <Magnet
-            class="w-fit"
-            inner-class="w-fit"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
-          >
-            <button type="button" class="act" @click="toggleStage">
-              <span class="act__ic">
-                <svg v-if="file.staged" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                  <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
-                </svg>
-                <svg v-else viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                  <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </span>
-              {{ file.staged ? "Unstage" : "Stage" }}
+  <Teleport to="body">
+    <ModalShell v-slot="{ card }" :shown="shown" class="z-50" @dismiss="onClose">
+      <div
+        v-bind="card"
+        class="fd"
+        :style="originStyle"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="file.path"
+        @keydown="onKeydown"
+      >
+        <div ref="frameEl" class="fd__frame">
+          <!-- Top: back + breadcrumb. Actions live down the left rail. -->
+          <header class="fd__bar">
+            <button ref="backEl" type="button" class="fd__back" aria-label="Back to changes" @click="onClose">
+              <HugeiconsIcon
+                class="fd__back-glyph"
+                :icon="ArrowTurnBackwardIcon"
+                :size="18"
+                :stroke-width="2"
+                aria-hidden="true"
+              />
             </button>
-          </Magnet>
-          <!-- Discard only ever touches an unstaged file. -->
-          <Magnet
-            v-if="!file.staged"
-            class="w-fit"
-            inner-class="w-fit"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
-          >
-            <HoldToConfirm
-              variant="lane-discard"
-              title="Hold to discard this file's changes"
-              aria-label="Hold to discard this file"
-              @confirm="emit('discard', file.path)"
-            >
-              <span class="act__ic">
-                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                  <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-                  <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </span>
-              Discard
-            </HoldToConfirm>
-          </Magnet>
-        </div>
+            <span class="fd__crumb">
+              <FileIcon :path="file.name" :size="15" />
+              <span class="fd__crumb-dir">{{ dirPart }}</span>
+              <span class="fd__crumb-name" :class="{ 'fd__crumb-name--del': file.deleted }">{{ file.name }}</span>
+            </span>
+          </header>
 
-        <!-- Body: the file's own content, softened at the top/bottom edges. Only
-             this scrolls — the page behind is locked. Kept out of the tab order
-             (tabindex -1); the arrow/page/home/end keys scroll it instead. -->
-        <div ref="mainEl" class="fd__main" tabindex="-1">
-          <div v-if="loading" class="fd__skeleton">
-            <span v-for="n in 12" :key="n" class="fd__skeleton-row" :style="{ '--i': n, width: `${34 + ((n * 41) % 58)}%` }" />
-          </div>
-          <!-- Unified diff: one column, syntax-highlighted, with word-level
-               emphasis on the changed spans. Its own old/new number gutter. -->
-          <!-- tabindex -1: nowrap scrolls sideways (a focusable scroller). -->
-          <div v-else-if="showDiff" class="diff" :class="{ 'diff--nowrap': !wrap }" tabindex="-1">
-            <template v-for="(row, i) in diffRows" :key="i">
-              <div v-if="row.kind === 'gap'" class="diff__gap" aria-hidden="true">
-                <span /><span /><span />
+          <div class="fd__body">
+            <!-- Left action rail — file-scoped actions (room to grow). Each leans
+                 gently toward the cursor as it nears, then eases back. -->
+            <div class="fd__left">
+              <Magnet
+                class="w-fit"
+                inner-class="w-fit"
+                :padding="12"
+                :magnet-strength="9"
+                active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+                inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+              >
+                <button type="button" class="act" @click="toggleStage">
+                  <span class="act__ic">
+                    <svg v-if="file.staged" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+                    </svg>
+                    <svg v-else viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                  {{ file.staged ? "Unstage" : "Stage" }}
+                </button>
+              </Magnet>
+              <!-- Discard only ever touches an unstaged file. -->
+              <Magnet
+                v-if="!file.staged"
+                class="w-fit"
+                inner-class="w-fit"
+                :padding="12"
+                :magnet-strength="9"
+                active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+                inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+              >
+                <HoldToConfirm
+                  variant="lane-discard"
+                  title="Hold to discard this file's changes"
+                  aria-label="Hold to discard this file"
+                  @confirm="onDiscard"
+                >
+                  <span class="act__ic">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                      <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                  Discard
+                </HoldToConfirm>
+              </Magnet>
+            </div>
+
+            <!-- Body: the file's own content, softened at the top/bottom edges. Only
+                 this scrolls — the page behind is locked. Kept out of the tab order
+                 (tabindex -1); the arrow/page/home/end keys scroll it instead. -->
+            <div ref="mainEl" class="fd__main" tabindex="-1">
+              <div v-if="loading" class="fd__skeleton">
+                <span v-for="n in 12" :key="n" class="fd__skeleton-row" :style="{ '--i': n, width: `${34 + ((n * 41) % 58)}%` }" />
               </div>
-              <div v-else class="dl" :class="`dl--${row.kind}`">
-                <span class="dl__no">{{ row.oldNo ?? "" }}</span>
-                <span class="dl__no">{{ row.newNo ?? "" }}</span>
-                <span class="dl__sign" aria-hidden="true">{{ row.kind === "add" ? "+" : row.kind === "del" ? "−" : "" }}</span>
-                <span class="dl__text"><span
-                    v-for="(c, j) in row.chunks"
-                    :key="j"
-                    :class="{ dl__emph: c.emph }"
-                    :style="{ color: c.color }"
-                  >{{ c.text }}</span></span>
-              </div>
-            </template>
-          </div>
-          <div v-else-if="note" class="fd__note">{{ note }}</div>
-          <!-- Rich Markdown preview (safe HTML from markdown-it). -->
-          <!-- eslint-disable-next-line vue/no-v-html -->
-          <article v-else-if="showPreview" class="md" v-html="renderedMd" />
-          <!-- tabindex -1: with wrap off this scrolls sideways, which would make
-               it a focusable scroller (an extra tab stop). Arrow keys scroll it. -->
-          <div v-else class="code" :class="{ 'code--nowrap': !wrap }" tabindex="-1">
-            <div v-for="(row, i) in rows" :key="i" class="code__line">
-              <span v-if="lineNumbers" class="code__no">{{ i + 1 }}</span>
-              <span class="code__text">
-                <template v-if="Array.isArray(row)">
-                  <span
-                    v-for="(t, j) in row"
-                    :key="j"
-                    :style="{ color: t.color }"
-                    >{{ t.content }}</span
-                  ><span v-if="row.length === 0"> </span>
+              <!-- Unified diff: one column, syntax-highlighted, with word-level
+                   emphasis on the changed spans. Its own old/new number gutter. -->
+              <!-- tabindex -1: nowrap scrolls sideways (a focusable scroller). -->
+              <div v-else-if="showDiff" class="diff" :class="{ 'diff--nowrap': !wrap }" tabindex="-1">
+                <template v-for="(row, i) in diffRows" :key="i">
+                  <div v-if="row.kind === 'gap'" class="diff__gap" aria-hidden="true">
+                    <span /><span /><span />
+                  </div>
+                  <div v-else class="dl" :class="`dl--${row.kind}`">
+                    <span class="dl__no">{{ row.oldNo ?? "" }}</span>
+                    <span class="dl__no">{{ row.newNo ?? "" }}</span>
+                    <span class="dl__sign" aria-hidden="true">{{ row.kind === "add" ? "+" : row.kind === "del" ? "−" : "" }}</span>
+                    <span class="dl__text"><span
+                        v-for="(c, j) in row.chunks"
+                        :key="j"
+                        :class="{ dl__emph: c.emph }"
+                        :style="{ color: c.color }"
+                      >{{ c.text }}</span></span>
+                  </div>
                 </template>
-                <template v-else>{{ row || " " }}</template>
-              </span>
+              </div>
+              <div v-else-if="note" class="fd__note">{{ note }}</div>
+              <!-- Rich Markdown preview (safe HTML from markdown-it). -->
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <article v-else-if="showPreview" class="md" v-html="renderedMd" />
+              <!-- tabindex -1: with wrap off this scrolls sideways, which would make
+                   it a focusable scroller (an extra tab stop). Arrow keys scroll it. -->
+              <div v-else class="code" :class="{ 'code--nowrap': !wrap }" tabindex="-1">
+                <div v-for="(row, i) in rows" :key="i" class="code__line">
+                  <span v-if="lineNumbers" class="code__no">{{ i + 1 }}</span>
+                  <span class="code__text">
+                    <template v-if="Array.isArray(row)">
+                      <span
+                        v-for="(t, j) in row"
+                        :key="j"
+                        :style="{ color: t.color }"
+                        >{{ t.content }}</span
+                      ><span v-if="row.length === 0"> </span>
+                    </template>
+                    <template v-else>{{ row || " " }}</template>
+                  </span>
+                </div>
+              </div>
             </div>
+
+            <!-- Right: the technical caption, read top-down. -->
+            <aside class="fd__meta">
+              <div class="meta">
+                <span class="meta__k">Filename</span>
+                <span class="meta__v meta__v--file">{{ file.name }}</span>
+              </div>
+              <div class="meta">
+                <span class="meta__k">Status</span>
+                <span class="meta__v">{{ statusLabel }}</span>
+              </div>
+              <div class="meta">
+                <span class="meta__k">Changes</span>
+                <span class="meta__v meta__v--diff">
+                  <span v-if="file.added > 0" class="meta__add">+{{ file.added }}</span>
+                  <span v-if="file.removed > 0" class="meta__del">−{{ file.removed }}</span>
+                  <span v-if="file.added === 0 && file.removed === 0" class="meta__none">—</span>
+                </span>
+                <span v-if="boxes.length" class="meta__boxes">
+                  <i v-for="(b, i) in boxes" :key="i" class="meta__box" :class="`meta__box--${b}`" />
+                </span>
+              </div>
+              <div class="meta">
+                <span class="meta__k">Language</span>
+                <span class="meta__v">{{ language }}</span>
+              </div>
+              <div class="meta">
+                <span class="meta__k">Staged</span>
+                <span class="meta__v">{{ file.staged ? "Yes" : "No" }}</span>
+              </div>
+
+              <!-- View controls, seated near the foot of the rail. Only the switch
+                   toggles — the label is just a caption. -->
+              <div class="fd__controls">
+                <span class="meta__k">Controls</span>
+                <div v-if="hasDiff" class="ctl" :class="{ 'ctl--on': diffView }">
+                  <span class="ctl__k">Diff view</span>
+                  <button
+                    type="button"
+                    class="ctl__sw"
+                    :class="{ 'ctl__sw--on': diffView }"
+                    role="switch"
+                    :aria-checked="diffView"
+                    aria-label="Show unified diff"
+                    @click="diffView = !diffView"
+                  >
+                    <span class="ctl__dot" />
+                  </button>
+                </div>
+                <div v-if="!showDiff && isMarkdown" class="ctl" :class="{ 'ctl--on': richPreview }">
+                  <span class="ctl__k">Rich preview</span>
+                  <button
+                    type="button"
+                    class="ctl__sw"
+                    :class="{ 'ctl__sw--on': richPreview }"
+                    role="switch"
+                    :aria-checked="richPreview"
+                    aria-label="Rich Markdown preview"
+                    @click="richPreview = !richPreview"
+                  >
+                    <span class="ctl__dot" />
+                  </button>
+                </div>
+                <!-- Wrap & line numbers only shape the raw view. -->
+                <div v-if="!wantsPreview" class="ctl" :class="{ 'ctl--on': wrap }">
+                  <span class="ctl__k">Line wrap</span>
+                  <button
+                    type="button"
+                    class="ctl__sw"
+                    :class="{ 'ctl__sw--on': wrap }"
+                    role="switch"
+                    :aria-checked="wrap"
+                    aria-label="Wrap lines"
+                    @click="wrap = !wrap"
+                  >
+                    <span class="ctl__dot" />
+                  </button>
+                </div>
+                <!-- Line numbers shape only the raw file view; the diff has its own. -->
+                <div v-if="!showDiff && !wantsPreview" class="ctl" :class="{ 'ctl--on': lineNumbers }">
+                  <span class="ctl__k">Line numbers</span>
+                  <button
+                    type="button"
+                    class="ctl__sw"
+                    :class="{ 'ctl__sw--on': lineNumbers }"
+                    role="switch"
+                    :aria-checked="lineNumbers"
+                    aria-label="Show line numbers"
+                    @click="lineNumbers = !lineNumbers"
+                  >
+                    <span class="ctl__dot" />
+                  </button>
+                </div>
+              </div>
+            </aside>
           </div>
         </div>
-
-        <!-- Right: the technical caption, read top-down. -->
-        <aside class="fd__meta">
-          <div class="meta">
-            <span class="meta__k">Filename</span>
-            <span class="meta__v meta__v--file">{{ file.name }}</span>
-          </div>
-          <div class="meta">
-            <span class="meta__k">Status</span>
-            <span class="meta__v">{{ statusLabel }}</span>
-          </div>
-          <div class="meta">
-            <span class="meta__k">Changes</span>
-            <span class="meta__v meta__v--diff">
-              <span v-if="file.added > 0" class="meta__add">+{{ file.added }}</span>
-              <span v-if="file.removed > 0" class="meta__del">−{{ file.removed }}</span>
-              <span v-if="file.added === 0 && file.removed === 0" class="meta__none">—</span>
-            </span>
-            <span v-if="boxes.length" class="meta__boxes">
-              <i v-for="(b, i) in boxes" :key="i" class="meta__box" :class="`meta__box--${b}`" />
-            </span>
-          </div>
-          <div class="meta">
-            <span class="meta__k">Language</span>
-            <span class="meta__v">{{ language }}</span>
-          </div>
-          <div class="meta">
-            <span class="meta__k">Staged</span>
-            <span class="meta__v">{{ file.staged ? "Yes" : "No" }}</span>
-          </div>
-
-          <!-- View controls, seated near the foot of the rail. Only the switch
-               toggles — the label is just a caption. -->
-          <div class="fd__controls">
-            <span class="meta__k">Controls</span>
-            <div v-if="hasDiff" class="ctl" :class="{ 'ctl--on': diffView }">
-              <span class="ctl__k">Diff view</span>
-              <button
-                type="button"
-                class="ctl__sw"
-                :class="{ 'ctl__sw--on': diffView }"
-                role="switch"
-                :aria-checked="diffView"
-                aria-label="Show unified diff"
-                @click="diffView = !diffView"
-              >
-                <span class="ctl__dot" />
-              </button>
-            </div>
-            <div v-if="!showDiff && isMarkdown" class="ctl" :class="{ 'ctl--on': richPreview }">
-              <span class="ctl__k">Rich preview</span>
-              <button
-                type="button"
-                class="ctl__sw"
-                :class="{ 'ctl__sw--on': richPreview }"
-                role="switch"
-                :aria-checked="richPreview"
-                aria-label="Rich Markdown preview"
-                @click="richPreview = !richPreview"
-              >
-                <span class="ctl__dot" />
-              </button>
-            </div>
-            <!-- Wrap & line numbers only shape the raw view. -->
-            <div v-if="!wantsPreview" class="ctl" :class="{ 'ctl--on': wrap }">
-              <span class="ctl__k">Line wrap</span>
-              <button
-                type="button"
-                class="ctl__sw"
-                :class="{ 'ctl__sw--on': wrap }"
-                role="switch"
-                :aria-checked="wrap"
-                aria-label="Wrap lines"
-                @click="wrap = !wrap"
-              >
-                <span class="ctl__dot" />
-              </button>
-            </div>
-            <!-- Line numbers shape only the raw file view; the diff has its own. -->
-            <div v-if="!showDiff && !wantsPreview" class="ctl" :class="{ 'ctl--on': lineNumbers }">
-              <span class="ctl__k">Line numbers</span>
-              <button
-                type="button"
-                class="ctl__sw"
-                :class="{ 'ctl__sw--on': lineNumbers }"
-                role="switch"
-                :aria-checked="lineNumbers"
-                aria-label="Show line numbers"
-                @click="lineNumbers = !lineNumbers"
-              >
-                <span class="ctl__dot" />
-              </button>
-            </div>
-          </div>
-        </aside>
       </div>
-    </div>
-  </div>
+    </ModalShell>
+  </Teleport>
 </template>
 
 <style scoped>
+/* A big rounded card that stops just short of the window's top and bottom, as
+   wide as its content and centred, so the page it was opened from still shows
+   around it under the scrim. */
 .fd {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  background-color: var(--ground);
+  position: absolute;
+  inset: var(--fd-inset, 20px) 0;
+  width: min(var(--fd-max, 1080px), calc(100% - 2 * var(--fd-inset, 20px)));
+  margin-inline: auto;
+  z-index: 1;
   display: flex;
   justify-content: center;
+  overflow: hidden;
+  border-radius: 22px;
+  background-color: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
+    0 24px 64px -24px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+/* Grow out of the clicked file rather than ModalShell's small rise: the origin
+   is the file's centre (--ox/--oy), and the exit shrinks back into it. */
+.fd.is-in {
+  animation: fd-grow 460ms cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+  transform-origin: var(--ox, 50%) var(--oy, 50%);
+}
+.fd.is-out {
+  animation: fd-shrink var(--modal-exit) cubic-bezier(0.4, 0, 0.9, 1) forwards;
+  transform-origin: var(--ox, 50%) var(--oy, 50%);
+}
+@keyframes fd-grow {
+  from { opacity: 0.35; transform: scale(0.16); }
+  60% { opacity: 1; }
+}
+@keyframes fd-shrink {
+  to { opacity: 0; transform: scale(0.16); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fd.is-in,
+  .fd.is-out {
+    animation-duration: 0.01s;
+  }
 }
 .fd__frame {
   display: flex;
