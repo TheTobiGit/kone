@@ -425,7 +425,7 @@ function onAbort() {
           </div>
         </nav>
 
-        <div class="gs__main">
+        <div class="gs__main" :class="{ 'gs__main--wide': section === 'about' }">
           <p v-if="space.error.value" class="gs__error" role="alert">
             <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
             {{ space.error.value }}
@@ -437,6 +437,7 @@ function onAbort() {
               v-if="visited.includes('about')"
               v-show="section === 'about'"
               :space="space"
+              :dir="project.path"
               @go="go"
               @open-commit="openCommit"
               @open-pr="openPr"
@@ -548,6 +549,7 @@ function onAbort() {
 /* The whole page scrolls as one; the left column sticks. Content fades out
    before it reaches the project's floating tabs instead of passing under them. */
 .gs__scroll {
+  container: gs / inline-size;
   width: 100%;
   height: 100%;
   overflow-y: auto;
@@ -563,9 +565,16 @@ function onAbort() {
   align-items: start;
   gap: 56px;
   width: 100%;
-  max-width: 1240px;
+  max-width: 1680px;
   margin-inline: auto;
   padding: 6rem 2.5rem 3rem;
+}
+/* Mid-width windows give the section a little more of the row. */
+@container gs (max-width: 1100px) {
+  .gs__col {
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 36px;
+  }
 }
 
 /* The one entrance shape in the space: fade plus a 6px rise. Nothing gets its
@@ -910,10 +919,17 @@ function onAbort() {
 }
 
 /* ── the section ──────────────────────────────────────────────────────────── */
+/* The shell is as wide as About wants; the list sections keep a reading width
+   and sit against the column instead of stretching across the whole row. */
 .gs__main {
   min-width: 0;
+  max-width: 1040px;
+}
+.gs__main--wide {
+  max-width: none;
 }
 .gs__panel {
+  container-type: inline-size;
   min-width: 0;
   animation: gs-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: var(--gs-enter-panel);
@@ -923,6 +939,40 @@ function onAbort() {
    doesn't make you wait for the old one to leave. */
 .gs__panel--swap {
   animation: gs-in var(--gs-t-small) var(--gs-ease) backwards;
+}
+
+/* Narrow windows: no room for a column beside the section, so the left column
+   becomes a header and its sections a strip that scrolls sideways. */
+@container gs (max-width: 820px) {
+  .gs__col {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+    padding-inline: 1.25rem;
+  }
+  .gs__side {
+    position: static;
+    min-height: 0;
+    gap: 16px;
+  }
+  .gs__navrows {
+    flex-direction: row;
+    margin-inline: -1.25rem;
+    padding-inline: 1.25rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .gs__navmark {
+    display: none;
+  }
+  .gs__navrow {
+    flex-shrink: 0;
+  }
+  .gs__navrow--on {
+    background-color: color-mix(in srgb, var(--ink) 6.5%, transparent);
+  }
+  .gs__who {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

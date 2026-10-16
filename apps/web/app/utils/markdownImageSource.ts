@@ -22,6 +22,14 @@ export const IMAGE_CWD_KEY: InjectionKey<() => string | null> = Symbol("markdown
  *  turns a relative path into an absolute one. */
 export const IMAGE_THREAD_KEY: InjectionKey<() => string | null> = Symbol("markdown-image-thread");
 
+/** A context that can serve files the renderer can't reach itself — a repo
+ *  checkout showing its README. Given a Markdown image `src`, it answers a URL
+ *  to show or null when it can't reach the file. Provided by such a context;
+ *  where none is provided, `MarkdownImage` falls back to loading the source
+ *  directly, or asking the desktop shell to vouch for a thread's local file. */
+export type MarkdownImageResolver = (src: string) => Promise<string | null>;
+export const IMAGE_RESOLVER_KEY: InjectionKey<MarkdownImageResolver> = Symbol("markdown-image-resolver");
+
 const DIRECT_SCHEMES = new Set(["https", "data", "blob", "attachment", "kone-page"]);
 const SCHEME = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
 const WINDOWS_DRIVE = /^[a-zA-Z]:[\\/]/;
@@ -92,4 +100,37 @@ export function classifyImageSource(raw: string, cwd?: string | null): ImageSour
 
   if (!cwd) return BLOCKED;
   return { kind: "local", path: joinPath(cwd, decodePath(src)) };
+}
+
+/** Fold `rel` onto the repo-relative `base`, giving the repo-relative path to
+ *  read. `..` pops a real folder and never climbs above the root: a path that
+ *  would escape it yields null instead of a path outside the repo. */
+function joinRepo(base: string, rel: string): string | null {
+  const out: string[] = [];
+  for (const part of `${base}/${rel}`.split(/[\\/]/)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (out.length === 0) return null;
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return out.length > 0 ? out.join("/") : null;
+}
+
+/** Resolve a Markdown image `src` against the folder of the document it lives
+ *  in, giving the repo-relative path a checkout can read — or null when the src
+ *  is not a repo file at all (a remote/data source, a fragment, a protocol-
+ *  relative or home-relative path, an absolute file URL). A leading `/` is
+ *  repo-root-relative, exactly as GitHub reads it. */
+export function repoImagePath(baseDir: string, rawSrc: string): string | null {
+  const src = rawSrc.trim();
+  if (src === "" || src.startsWith("#") || src.startsWith("?") || src.startsWith("~")) return null;
+  if (classifyImageSource(src, null).kind === "direct") return null;
+  if (/^file:/i.test(src) || src.startsWith("//") || src.startsWith("\\\\")) return null;
+  const clean = src.split(/[?#]/)[0] ?? "";
+  if (clean.startsWith("/")) return joinRepo("", clean.slice(1));
+  if (WINDOWS_DRIVE.test(clean)) return null;
+  return joinRepo(baseDir, decodePath(clean));
 }

@@ -42,7 +42,7 @@ describe("useMarkdown table-delimiter repair", () => {
 });
 
 describe("useMarkdown raw HTML tables", () => {
-  test("a raw <table> reply expands into table nodes with no literal tags", async () => {
+  test("a raw <table> reply is an html_block the thread lifts into table nodes", async () => {
     const { parse } = useMarkdown();
     const src = [
       "Here you go, all 16.",
@@ -52,22 +52,14 @@ describe("useMarkdown raw HTML tables", () => {
     const tokens = await parse(src);
     expect(tokens).not.toBeNull();
     const list = tokens ?? [];
-    // html:false keeps the markup as escaped text — never a table token.
+    // The parse instance tokenizes raw HTML (html:true), so the table arrives
+    // as its own block carrying the source verbatim — never a GFM table token.
     expect(list.some((t) => t.type === "table_open")).toBe(false);
-    expect(list.some((t) => t.type === "inline" && t.content.includes("<table>"))).toBe(true);
-    // The thread lifts that text into real table nodes before rendering.
-    const kids: MdNode[] = [];
-    for (const inline of list) {
-      if (inline.type !== "inline") continue;
-      for (const kid of inline.children ?? []) {
-        if (kid.type === "text" && kid.content.includes("<table>")) {
-          kids.push({ type: "text", tag: "", attrs: {}, children: [], content: kid.content, info: "" });
-        }
-      }
-    }
-    expect(kids.length).toBeGreaterThan(0);
+    const block = list.find((t) => t.type === "html_block" && t.content.includes("<table>"));
+    expect(block).toBeDefined();
+    // The thread lifts that block into real table nodes before rendering.
     const nodes = expandHtmlTables([
-      { type: "paragraph", tag: "p", attrs: {}, children: kids, content: "", info: "" },
+      { type: "html_block", tag: "", attrs: {}, children: [], content: block!.content, info: "" },
     ]);
     expect(nodes.some((n) => n.type === "table")).toBe(true);
     const texts: string[] = [];

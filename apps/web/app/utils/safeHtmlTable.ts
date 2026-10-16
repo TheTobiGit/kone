@@ -54,7 +54,7 @@ function stripTags(value: string): string {
 // rather than pulling in (and having to keep current) the full HTML5 table —
 // a visible `&copy;` is a wrong glyph, where a wrong decode would be a wrong
 // character with no way to tell.
-function decodeEntities(value: string): string {
+export function decodeEntities(value: string): string {
   const named = value.replace(/&(amp|lt|gt|quot|nbsp|apos);/gi, (full, word: string) => {
     const w = word.toLowerCase();
     if (w === "amp") return "&";

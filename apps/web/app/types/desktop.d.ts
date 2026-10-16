@@ -731,6 +731,8 @@ export type KoneGitApi = {
   identity: (dir: string) => Promise<GitIdentity>;
   /** Repo logo as a data URL, or null when nothing qualifies. */
   logo: (dir: string) => Promise<GitLogo | null>;
+  /** One repo-relative image as a data URL, or null when it can't be read. */
+  image: (dir: string, path: string) => Promise<string | null>;
   /** The repo's contributors, straight from git. No avatars, but it always
    *  works — even when there's no remote to ask. */
   contributors: (dir: string) => Promise<GitContributors>;

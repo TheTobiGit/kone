@@ -73,6 +73,7 @@ function createDevGit(): KoneGitApi {
     readme: (dir) => later(world.mockReadme(dir)),
     identity: (dir) => later(world.mockIdentity(dir) ?? { name: null, email: null }),
     logo: (dir) => later(world.mockLogo(dir)),
+    image: (dir, path) => later(world.mockRepoImage(dir, path)),
     contributors: (dir) =>
       later(world.mockContributors(dir) ?? { source: "git", people: [], total: 0 }),
 

@@ -884,7 +884,9 @@ export function mockFiles(dir: string, query = ""): GitProjectFile[] {
 /** The demo kone README. It is deliberately a real markdown document — the
  *  renderer's markdown styling (headings, fences, tables, links) gets judged
  *  against exactly this text. */
-const MOCK_KONE_README = `# kone
+const MOCK_KONE_README = `<p align="center"><img src="public/logo.svg" width="64" alt="kone"></p>
+
+# kone
 
 A **calm** git client — the repository reads like a page, not a diff dump.
 Where desktop git UIs pile on panes and chrome, kone keeps the surface quiet:
@@ -973,6 +975,17 @@ const MOCK_LOGOS: Record<string, GitLogo> = {
 
 export function mockLogo(dir: string): GitLogo | null {
   return MOCK_LOGOS[dir] ?? null;
+}
+
+/** Repo-relative images the demo READMEs point at, keyed by dir then path.
+ *  The same wordmark the logo mock carries, so the README's hero renders
+ *  through the identical data-URL path the desktop serves. */
+const MOCK_REPO_IMAGES: Record<string, Record<string, string>> = {
+  "/Users/you/Developer/kone": { "public/logo.svg": MOCK_LOGO_DATA_URL },
+};
+
+export function mockRepoImage(dir: string, path: string): string | null {
+  return MOCK_REPO_IMAGES[dir]?.[path] ?? null;
 }
 
 const MOCK_REPO_INFO: Record<string, GitHubRepoInfo> = {
