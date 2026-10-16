@@ -20,7 +20,9 @@ import type {
   GitHubCheckCounts,
   GitHubComment,
   GitHubLabel,
+  GitHubMergeMethod,
   GitHubPerson,
+  GitHubPrAction,
   GitHubPrCommit,
   GitHubPrCreateOptions,
   GitHubPrCreateResult,
@@ -918,7 +920,59 @@ async function fillAvatars(people: (GitHubPerson | null)[]): Promise<void> {
 
 /** Map one decoded `gh pr view` payload onto the view shape. Pure: everything
  *  representation-shaped already happened in the schema above. */
-function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestDetail {
+/** What the repository allows and what you may do in it, as the card's merge
+ *  and close controls need to know. */
+export interface MergeSettings {
+  mergeMethods: GitHubMergeMethod[];
+  canWrite: boolean;
+}
+
+/** Until the repository says otherwise: every method offered, and GitHub left
+ *  to refuse what it won't do. Hiding a button GitHub would have allowed is
+ *  worse than one that explains why it can't. */
+const OPEN_MERGE_SETTINGS: MergeSettings = {
+  mergeMethods: ["merge", "squash", "rebase"],
+  canWrite: true,
+};
+
+const MERGE_SETTINGS_JSON_FIELDS =
+  "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,viewerPermission";
+
+const MergeSettingsWire = z.object({
+  mergeCommitAllowed: z.boolean().catch(true),
+  squashMergeAllowed: z.boolean().catch(true),
+  rebaseMergeAllowed: z.boolean().catch(true),
+  viewerPermission: z.string().catch(""),
+});
+
+/** ADMIN, MAINTAIN and WRITE can merge and close; TRIAGE and READ can't. An
+ *  unknown answer is treated as allowed, for the reason above. */
+export function mergeSettingsOf(wire: z.output<typeof MergeSettingsWire>): MergeSettings {
+  const mergeMethods: GitHubMergeMethod[] = [];
+  if (wire.mergeCommitAllowed) mergeMethods.push("merge");
+  if (wire.squashMergeAllowed) mergeMethods.push("squash");
+  if (wire.rebaseMergeAllowed) mergeMethods.push("rebase");
+  const permission = wire.viewerPermission.toUpperCase();
+  return {
+    mergeMethods: mergeMethods.length ? mergeMethods : OPEN_MERGE_SETTINGS.mergeMethods,
+    canWrite: permission !== "READ" && permission !== "TRIAGE",
+  };
+}
+
+async function mergeSettings(root: string): Promise<MergeSettings> {
+  try {
+    const out = await gh(root, ["repo", "view", "--json", MERGE_SETTINGS_JSON_FIELDS]);
+    const wire = decodeOrThrow(out, MergeSettingsWire, "The GitHub CLI returned unparseable repository data.");
+    return wire ? mergeSettingsOf(wire) : OPEN_MERGE_SETTINGS;
+  } catch {
+    return OPEN_MERGE_SETTINGS;
+  }
+}
+
+function pullRequestDetailOf(
+  wire: DecodedPullRequestDetail,
+  settings: MergeSettings = OPEN_MERGE_SETTINGS,
+): GitHubPullRequestDetail {
   const state =
     wire.mergedAt !== null || wire.state === "MERGED"
       ? "merged"
@@ -999,6 +1053,8 @@ function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestD
     commits,
     files: wire.files,
     milestone: wire.milestone?.title || null,
+    mergeMethods: settings.mergeMethods,
+    canWrite: settings.canWrite,
   };
 }
 
@@ -1013,6 +1069,9 @@ export async function prDetail(
   if (!Number.isInteger(number) || number <= 0) {
     throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
   }
+  // The repository's rules are a second read, run alongside; they never fail
+  // the detail, only fall back to letting GitHub decide.
+  const settings = mergeSettings(root);
   let out: string;
   try {
     out = await gh(root, ["pr", "view", String(number), "--json", PR_DETAIL_JSON_FIELDS]);
@@ -1033,7 +1092,7 @@ export async function prDetail(
   );
   if (decoded === null) return null;
 
-  const detail = pullRequestDetailOf(decoded);
+  const detail = pullRequestDetailOf(decoded, await settings);
 
   await fillAvatars([
     detail.author,
@@ -1305,6 +1364,64 @@ export async function checkoutPr(dir: string, number: number): Promise<void> {
     throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
   }
   await gh(root, ["pr", "checkout", String(number)]);
+}
+
+function prNumberArg(number: number): string {
+  if (!Number.isInteger(number) || number <= 0) {
+    throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
+  }
+  return String(number);
+}
+
+/** The gh arguments for one pull request action. Merge takes its method; the
+ *  rest take nothing. Draft is `ready --undo`, as gh spells it. */
+export function prActionArgs(
+  number: number,
+  action: GitHubPrAction,
+  method: GitHubMergeMethod = "merge",
+): string[] {
+  const ref = prNumberArg(number);
+  switch (action) {
+    case "merge":
+      return ["pr", "merge", ref, `--${method}`];
+    case "ready":
+      return ["pr", "ready", ref];
+    case "draft":
+      return ["pr", "ready", ref, "--undo"];
+    case "close":
+      return ["pr", "close", ref];
+    case "reopen":
+      return ["pr", "reopen", ref];
+  }
+}
+
+/** Merge, mark ready, return to draft, close or reopen a pull request. */
+export async function prAction(
+  dir: string,
+  number: number,
+  action: GitHubPrAction,
+  method?: GitHubMergeMethod,
+): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  await gh(root, prActionArgs(number, action, method));
+}
+
+/** Comment on a pull request. Like a new pull request's description, the body
+ *  travels by file and never argv. */
+export async function prComment(dir: string, number: number, body: string): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
+  const ref = prNumberArg(number);
+  if (!body.trim()) throw GitError.classified("INVALID_INPUT", "The comment is empty.", null);
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "kone-gh-"));
+  try {
+    const bodyFile = path.join(tmp, "comment.md");
+    await writeFile(bodyFile, body, "utf8");
+    await gh(root, ["pr", "comment", ref, "--body-file", bodyFile]);
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /** Open a URL in the user's real browser. Refuses anything but http(s). */

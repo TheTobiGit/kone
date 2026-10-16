@@ -554,7 +554,18 @@ export type GitHubPullRequestDetail = {
   commits: GitHubPrCommit[];
   files: GitHubPrFile[];
   milestone: string | null;
+  /** The ways the repository lets a pull request merge, in GitHub's order. */
+  mergeMethods: GitHubMergeMethod[];
+  /** Whether you can merge, close or reopen it, which takes write access.
+   *  Commenting only takes a login. */
+  canWrite: boolean;
 };
+
+/** How a pull request lands on its base. */
+export type GitHubMergeMethod = "merge" | "squash" | "rebase";
+
+/** What the pull request card can do to a pull request, besides commenting. */
+export type GitHubPrAction = "merge" | "ready" | "draft" | "close" | "reopen";
 
 /** Commit email (lowercased) → the GitHub account behind it, so the history can
  *  put a real face next to a commit. Built from the repository's recent commits,
@@ -783,6 +794,10 @@ export type KoneGithubApi = {
   prs: (dir: string, opts?: { state?: "open" | "all"; limit?: number }) => Promise<GitHubPullRequest[]>;
   createPr: (dir: string, opts: GitHubPrCreateOptions) => Promise<GitHubPrCreateResult>;
   checkoutPr: (dir: string, number: number) => Promise<void>;
+  /** Merge (by the given method), mark ready, return to draft, close or reopen. */
+  prAction: (dir: string, number: number, action: GitHubPrAction, method?: GitHubMergeMethod) => Promise<void>;
+  /** Comment on a pull request as the signed-in user. */
+  prComment: (dir: string, number: number, body: string) => Promise<void>;
   prDetail: (dir: string, number: number) => Promise<GitHubPullRequestDetail | null>;
   prDiff: (dir: string, number: number) => Promise<GitFileDiff[]>;
   commitAuthors: (dir: string) => Promise<GitCommitAuthors | null>;

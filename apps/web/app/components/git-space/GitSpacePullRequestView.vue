@@ -11,7 +11,9 @@ import type {
   GitHubCheck,
   GitHubCheckCounts,
   GitHubMergeability,
+  GitHubMergeMethod,
   GitHubPerson,
+  GitHubPrAction,
   GitHubPrCommit,
   GitHubPrFile,
   GitHubPullRequestDetail,
@@ -38,10 +40,11 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 // The side column is its own component (GitSpacePullRequestSide); this owns
 // the data and the tabs, and the side column asks for a tab or a file.
 //
-// What it deliberately doesn't have is buttons for merging, closing, approving
-// or commenting. There is no backing call for any of them, and a button that
-// opens GitHub while pretending to be a merge button is worse than the honest
-// link at the top of the page.
+// Merging, marking ready, returning to draft, closing and reopening sit under
+// the verdict (GitSpacePullRequestMerge), and a comment field closes the
+// conversation (GitSpacePullRequestComment). Each re-reads the pull request
+// when GitHub has taken it. Approving and requesting changes are still left to
+// GitHub, behind the link at the top.
 
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
@@ -293,6 +296,52 @@ function checkout() {
   cue("press");
   void props.space.checkoutPr(props.number);
 }
+// The action in flight from this card, and why the last one failed. The space
+// keeps its own error line too, but that sits behind the card.
+const pending = ref<GitHubPrAction | null>(null);
+const actError = ref<string | null>(null);
+const commentError = ref<string | null>(null);
+
+async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
+  if (busy.value) return;
+  cue("press");
+  pending.value = action;
+  actError.value = null;
+  const number = props.number;
+  const ok = await props.space.prAction(number, action, method);
+  pending.value = null;
+  if (props.number !== number) return;
+  if (!ok) {
+    actError.value = props.space.error.value;
+    return;
+  }
+  const d = await props.space.prDetail(number);
+  if (d && props.number === number) pr.value = d;
+}
+
+async function sendComment(body: string): Promise<boolean> {
+  commentError.value = null;
+  const number = props.number;
+  const ok = await props.space.commentOnPr(number, body);
+  if (props.number !== number) return ok;
+  if (!ok) {
+    commentError.value = props.space.error.value;
+    return false;
+  }
+  const d = await props.space.prDetail(number);
+  if (d) pr.value = d;
+  return true;
+}
+
+// Moving to another pull request clears what the last one said.
+watch(
+  () => props.number,
+  () => {
+    actError.value = null;
+    commentError.value = null;
+  },
+);
+
 function openOnGitHub() {
   if (pr.value) void props.space.openExternal(pr.value.url);
 }
@@ -469,6 +518,11 @@ onBeforeUnmount(() => {
               :head-oid="headOid"
               @open-commit="openCommitAt"
             />
+            <GitSpacePullRequestComment
+              :busy="busy"
+              :send="sendComment"
+              :error="commentError"
+            />
           </section>
 
           <!-- ── files ────────────────────────────────────────────────────── -->
@@ -585,7 +639,11 @@ onBeforeUnmount(() => {
           @tab="setTab"
           @show-file="showFile"
           @open-url="(url) => space.openExternal(url)"
-        />
+        >
+          <template #act>
+            <GitSpacePullRequestMerge :pr="pr" :busy="busy" :pending="pending" :error="actError" @act="act" />
+          </template>
+        </GitSpacePullRequestSide>
       </div>
     </div>
 
