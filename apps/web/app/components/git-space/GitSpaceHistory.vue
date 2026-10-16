@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Calendar03Icon, Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import type { useGitSpace } from "~/composables/useGitSpace";
 import type { GitCommit } from "~/types/desktop";
 
@@ -17,19 +17,16 @@ import type { GitCommit } from "~/types/desktop";
 // and each drawing is also the filter: point at a face, a kind or an area and
 // the log narrows to it.
 //
-// A commit opens two ways, and the difference is whether you're still scanning.
-// Clicking the row unfolds it here, under the dot, so the timeline above and
-// below stays put. The revealed "Open" leaves for the commit's own page, which
-// has room for every file. One is a glance, the other is a destination.
+// Clicking a commit opens it in a card that grows out of its row over the log,
+// so the timeline stays exactly where it was under the scrim and closing the
+// card puts you back mid-read.
 
 const props = defineProps<{ space: ReturnType<typeof useGitSpace> }>();
-
-const emit = defineEmits<{ open: [hash: string] }>();
 
 const { cue } = useSound();
 
 const root = ref<HTMLElement | null>(null);
-const openHash = ref<string | null>(null);
+const opened = ref<{ hash: string; origin: DOMRect | null } | null>(null);
 const sentinel = ref<HTMLElement | null>(null);
 let io: IntersectionObserver | null = null;
 
@@ -342,9 +339,11 @@ watch(
   },
 );
 
-function toggle(hash: string) {
-  openHash.value = openHash.value === hash ? null : hash;
-  cue(openHash.value === hash ? "expand" : "collapse");
+function openCommit(e: MouseEvent, hash: string) {
+  cue("open");
+  // SAFETY: bound on the row's button, so currentTarget is that element.
+  const row = (e.currentTarget as HTMLElement).closest(".gsh__row");
+  opened.value = { hash, origin: row ? row.getBoundingClientRect() : null };
 }
 
 // Auto-page: the foot of the list coming into view is the request. While a
@@ -451,6 +450,9 @@ function plural(n: number, word: string): string {
           :data-day="g.day"
         >
           <div class="gsh__daylabel">
+            <span class="gsh__daylabel-icon" aria-hidden="true">
+              <HugeiconsIcon :icon="Calendar03Icon" :size="13" :stroke-width="1.8" />
+            </span>
             <span class="gsh__daylabel-name">{{ dayLabel(g.day) }}</span>
             <span class="gsh__label-count">{{ g.entries.length }}</span>
           </div>
@@ -462,12 +464,12 @@ function plural(n: number, word: string): string {
             :class="{ 'gsh__item--paged': isPaged(e.index) }"
             :style="{ '--i': e.index }"
           >
-            <div class="gsh__row" :class="{ 'gsh__row--on': openHash === e.commit.hash }">
+            <div class="gsh__row" :class="{ 'gsh__row--on': opened?.hash === e.commit.hash }">
               <button
                 type="button"
                 class="gsh__rowmain"
-                :aria-expanded="openHash === e.commit.hash"
-                @click="toggle(e.commit.hash)"
+                aria-haspopup="dialog"
+                @click="openCommit($event, e.commit.hash)"
               >
                 <span class="gsh__rail" aria-hidden="true">
                   <i class="gsh__dot" :style="{ '--tone': tone(e.kind) }" />
@@ -488,19 +490,6 @@ function plural(n: number, word: string): string {
                 <span class="gsh__when" :title="e.commit.relative">{{ clock(e.commit.date) }}</span>
                 <span class="gsh__short">{{ e.commit.short }}</span>
               </button>
-
-              <button
-                type="button"
-                class="gsh__open"
-                :title="`Open ${e.commit.short}`"
-                @click="emit('open', e.commit.hash)"
-              >
-                Open
-              </button>
-            </div>
-
-            <div v-if="openHash === e.commit.hash" class="gsh__detail">
-              <GitSpaceCommitDetail :space="space" :hash="e.commit.hash" />
             </div>
           </div>
         </div>
@@ -615,7 +604,7 @@ function plural(n: number, word: string): string {
               :aria-pressed="scopeFilter === name"
               @click="pickScope(name)"
             >
-              <span class="gsh__area-name">{{ name }}</span>
+              <span class="gsh__area-name" :title="name">{{ name }}</span>
               <span class="gsh__area-track">
                 <i class="gsh__area-fill" :style="{ width: `${(n / scopePeak) * 100}%`, '--n': s }" />
               </span>
@@ -655,6 +644,14 @@ function plural(n: number, word: string): string {
       No commits yet.
       <span class="gsh__empty-sub">The first one will show up here.</span>
     </p>
+
+    <GitSpaceCommitCard
+      v-if="opened"
+      :space="space"
+      :hash="opened.hash"
+      :origin="opened.origin"
+      @close="opened = null"
+    />
   </section>
 </template>
 
@@ -763,6 +760,7 @@ function plural(n: number, word: string): string {
   font-size: 12px;
   color: var(--ink-soft);
   background-color: var(--hover);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: color var(--gs-t-micro) ease;
 }
@@ -853,10 +851,18 @@ function plural(n: number, word: string): string {
 }
 .gsh__daylabel {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   height: 26px;
-  padding-left: 30px;
+}
+/* Sits in the spine's gutter, so each day's line hangs from its calendar. */
+.gsh__daylabel-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 18px;
+  margin-right: 4px;
+  color: var(--muted);
 }
 .gsh__daylabel-name {
   font-size: 12px;
@@ -892,36 +898,11 @@ function plural(n: number, word: string): string {
   cursor: pointer;
 }
 .gsh__rowmain:focus-visible,
-.gsh__open:focus-visible,
 .gsh__link:focus-visible {
   outline: none;
   border-radius: 6px;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
-/* Revealed on hover, like every other row action in the space. It holds its
-   width when hidden so the hash column above it never shifts sideways. */
-.gsh__open {
-  flex-shrink: 0;
-  min-width: 46px;
-  padding-left: 10px;
-  text-align: right;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--muted);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity var(--gs-t-micro) var(--gs-ease),
-    color var(--gs-t-micro) var(--gs-ease);
-}
-.gsh__row:hover .gsh__open,
-.gsh__row:focus-within .gsh__open {
-  opacity: 1;
-}
-.gsh__open:hover {
-  color: var(--ink);
-}
-
 /* The spine: a hairline the full height of the row so consecutive rows join up,
    with the commit's dot on it in the colour of its kind. */
 .gsh__rail {
@@ -980,7 +961,6 @@ function plural(n: number, word: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  letter-spacing: -0.1px;
   color: var(--ink);
 }
 .gsh__breaking {
@@ -1027,23 +1007,6 @@ function plural(n: number, word: string): string {
   opacity: 0.7;
 }
 
-/* Detail hangs off the same spine the dots sit on. */
-.gsh__detail {
-  position: relative;
-  margin-left: 9px;
-  padding-left: 21px;
-}
-.gsh__detail::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 10px;
-  width: 1px;
-  transform: translateX(-0.5px);
-  background-color: color-mix(in srgb, var(--ink) 8%, transparent);
-}
-
 .gsh__foot {
   padding: 18px 0 4px 30px;
 }
@@ -1060,10 +1023,11 @@ function plural(n: number, word: string): string {
   color: var(--muted);
 }
 .gsh__link {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--ink-soft);
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--ink) 25%, transparent);
+  text-decoration-thickness: from-font;
   text-underline-offset: 3px;
   cursor: pointer;
 }
@@ -1265,7 +1229,7 @@ function plural(n: number, word: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--ink-soft);
 }
 .gsh__area-track {
@@ -1358,7 +1322,6 @@ function plural(n: number, word: string): string {
     animation: none;
   }
   .gsh__row,
-  .gsh__open,
   .gsh__dot,
   .gsh__person-face {
     transition: none;

@@ -26,18 +26,22 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
   number: number;
-  /** Opened from something other than the list. Nothing here needs it yet — the
-   *  back arrow says the same thing either way — but the stack knows, and the
-   *  shell passes what it knows rather than making the view guess. */
-  nested: boolean;
 }>();
 
 const emit = defineEmits<{
   back: [];
-  openCommit: [hash: string];
 }>();
 
 const { cue } = useSound();
+
+// One of its commits opens in a card over the pull request, grown from its row,
+// so the tab and its scroll are still there when you close it.
+const opened = ref<{ hash: string; origin: DOMRect | null } | null>(null);
+function openCommit(e: MouseEvent, hash: string) {
+  cue("open");
+  // SAFETY: bound on the commit's button, so currentTarget is that element.
+  opened.value = { hash, origin: (e.currentTarget as HTMLElement).getBoundingClientRect() };
+}
 
 type Tab = "conversation" | "files" | "commits" | "checks";
 
@@ -460,7 +464,8 @@ function goBack() {
               class="prv__commit"
               :style="{ '--i': i }"
               :title="c.headline"
-              @click="emit('openCommit', c.oid)"
+              aria-haspopup="dialog"
+              @click="openCommit($event, c.oid)"
             >
               <span class="prv__body">
                 <span class="prv__headline">{{ c.headline }}</span>
@@ -503,6 +508,14 @@ function goBack() {
         </section>
       </template>
     </div>
+
+    <GitSpaceCommitCard
+      v-if="opened"
+      :space="space"
+      :hash="opened.hash"
+      :origin="opened.origin"
+      @close="opened = null"
+    />
   </article>
 </template>
 
