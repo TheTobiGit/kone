@@ -80,10 +80,11 @@ const byNewest = (a: GitBranch, b: GitBranch) =>
   a.name.localeCompare(b.name);
 
 const localNames = computed(() => new Set(all.value.filter((b) => !b.remote).map((b) => b.name)));
-/** A remote branch some local branch already has is that branch's business,
- *  so it is listed once, as the local one. */
+/** A remote branch some local branch tracks is that branch's business, so
+ *  it is listed once, as the local one. A same-named one on another remote,
+ *  or one nothing tracks, keeps its own row. */
 function remoteOnly(b: GitBranch): boolean {
-  return b.remote && !localNames.value.has(localNameOf(b.name)) && !all.value.some((l) => l.upstream === b.name);
+  return b.remote && !all.value.some((l) => !l.remote && l.upstream === b.name);
 }
 
 interface Group {
@@ -142,10 +143,9 @@ async function switchTo(b: GitBranch) {
   if (busy.value) return cue("refuse");
   cue("press");
   blocked.value = null;
-  // A remote-only branch becomes a local one that tracks it.
-  const ok = b.remote
-    ? await props.space.createBranch(localNameOf(b.name), { from: b.name, checkout: true })
-    : await props.space.switchBranch(b.name);
+  // A remote branch becomes a local one that tracks it, or switches to the
+  // local one of that name; the desktop side picks.
+  const ok = await props.space.switchBranch(b.name);
   if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = b.name;
 }
 async function carry() {

@@ -23,7 +23,7 @@ describe("names", () => {
   test("names what git would refuse", () => {
     expect(branchNameProblem("feat/login")).toBeNull();
     expect(branchNameProblem("")).toBeNull();
-    for (const bad of ["a b", "-x", "a..b", "a/", "/a", "a//b", "a~1", "a:b", "x.lock", "a/.b", "a@{1}", "a."]) {
+    for (const bad of ["a b", "-x", "a..b", "a/", "/a", "a//b", "a~1", "a:b", "x.lock", "a.lock/b", "a/.b", "a@{1}", "a."]) {
       expect(branchNameProblem(bad)).not.toBeNull();
     }
   });

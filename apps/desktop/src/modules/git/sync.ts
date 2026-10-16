@@ -126,6 +126,14 @@ async function currentBranch(root: string): Promise<string | null> {
   }
 }
 
+/** A local branch's upstream ref ("origin/topic"), or null when it has none. */
+async function upstreamOf(root: string, branch: string): Promise<string | null> {
+  const out = await git(root, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`]).catch(
+    () => "",
+  );
+  return out.trim() || null;
+}
+
 /** The current branch's upstream ref ("origin/main"), or null when it has none.
  *  rev-parse echoes the literal "@{upstream}" back in some configurations when
  *  there is no upstream — that is "none" too. */
@@ -152,7 +160,11 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
     if (!branch) {
       throw new GitError("Cannot push from detached HEAD — check out a branch first.", null);
     }
-    const upstream = await currentUpstream(root);
+    // The pushed branch's own upstream: for a branch you're not on, the
+    // checked-out one's could name another remote altogether.
+    const upstream = opts?.branch?.trim()
+      ? await upstreamOf(root, branch)
+      : await currentUpstream(root);
     const upstreamRemote = upstream ? upstream.split("/")[0] ?? null : null;
     const remote = opts?.remote?.trim() || upstreamRemote || "origin";
     const setUpstream = opts?.setUpstream === true || upstream === null;
@@ -161,9 +173,12 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
     if (setUpstream) args.push("-u");
     if (opts?.force) args.push("--force-with-lease");
     args.push(remote);
-    if (opts?.branch) {
-      // An explicit branch is pushed as-is; upstream tracking is then the
-      // caller's option via `setUpstream`.
+    if (opts?.branch && upstream) {
+      // An explicit branch goes onto the remote branch it tracks.
+      args.push(`refs/heads/${branch}:refs/heads/${upstream.slice(remote.length + 1)}`);
+    } else if (opts?.branch) {
+      // An explicit branch with nothing tracked is pushed as-is; upstream
+      // tracking is then the caller's option via `setUpstream`.
       args.push(branch);
     } else if (upstream) {
       // Push HEAD onto the tracked remote branch — not a same-named local branch
@@ -188,9 +203,7 @@ export async function fastForward(dir: string, name: string): Promise<void> {
     const root = await repoRoot(dir);
     if (!root || !name.trim()) return;
     const branch = name.trim();
-    const upstream = (
-      await git(root, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`]).catch(() => "")
-    ).trim();
+    const upstream = (await upstreamOf(root, branch)) ?? "";
     const slash = upstream.indexOf("/");
     if (slash <= 0) throw new GitError(`${branch} doesn't track a remote branch.`, null);
     const remote = upstream.slice(0, slash);

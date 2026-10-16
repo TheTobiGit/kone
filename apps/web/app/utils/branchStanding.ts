@@ -85,7 +85,8 @@ export function branchNameProblem(name: string): string | null {
   if (name.includes("@{") || name === "@") return "That spelling is reserved.";
   if (/[~^:?*[\\]/.test(name) || [...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
     return "No ~ ^ : ? * [ or \\.";
-  if (name.endsWith(".") || name.endsWith(".lock")) return "It can't end in . or .lock.";
+  if (name.endsWith(".") || name.split("/").some((part) => part.endsWith(".lock")))
+    return "No part can end in .lock, and the name can't end in a dot.";
   if (name.split("/").some((part) => part.startsWith("."))) return "No part can start with a dot.";
   return null;
 }
