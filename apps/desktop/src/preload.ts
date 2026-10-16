@@ -358,7 +358,8 @@ const api = {
         number: number,
         action: GitHubPrAction,
         method?: GitHubMergeMethod,
-      ): Promise<void> => ipcRenderer.invoke("github:pr-action", dir, number, action, method),
+        headOid?: string,
+      ): Promise<void> => ipcRenderer.invoke("github:pr-action", dir, number, action, method, headOid),
       prComment: (dir: string, number: number, body: string): Promise<void> =>
         ipcRenderer.invoke("github:pr-comment", dir, number, body),
       prDetail: (dir: string, number: number): Promise<GitHubPullRequestDetail | null> =>

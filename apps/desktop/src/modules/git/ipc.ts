@@ -353,8 +353,14 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle(
     "github:pr-action",
-    (_event, dir: string, number: number, action: GitHubPrAction, method?: GitHubMergeMethod) =>
-      github.prAction(dir, number, action, method),
+    (
+      _event,
+      dir: string,
+      number: number,
+      action: GitHubPrAction,
+      method?: GitHubMergeMethod,
+      headOid?: string,
+    ) => github.prAction(dir, number, action, method, headOid),
   );
   ipcMain.handle("github:pr-comment", (_event, dir: string, number: number, body: string) =>
     github.prComment(dir, number, body),

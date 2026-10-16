@@ -492,10 +492,11 @@ export function useGitSpace(
     number: number,
     action: GitHubPrAction,
     method?: GitHubMergeMethod,
+    headOid?: string,
   ): Promise<boolean> {
     return act(
       "pr-action",
-      () => bridge.github.prAction(dir(), number, action, method),
+      () => bridge.github.prAction(dir(), number, action, method, headOid),
       () => Promise.all([prDetail(number, true), loadPrs()]),
     );
   }
@@ -504,7 +505,8 @@ export function useGitSpace(
     return act(
       "comment",
       () => bridge.github.prComment(dir(), number, body),
-      () => prDetail(number, true),
+      // The list's row carries a comment count, so it's read again too.
+      () => Promise.all([prDetail(number, true), loadPrs()]),
     );
   }
 

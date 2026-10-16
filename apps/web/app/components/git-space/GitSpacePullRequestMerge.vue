@@ -10,10 +10,14 @@ import type { GitHubMergeMethod, GitHubPrAction, GitHubPullRequestDetail } from 
 // way out beside it, and only the second press acts. Left alone, the question
 // stands down after a few seconds. Everything else acts on the first press.
 //
-// Nothing here shows without write access; GitHub would refuse it anyway.
+// Merging needs write access. Its author can still mark it ready, send it back
+// to draft, close it and reopen it, as GitHub allows; anyone else sees nothing,
+// since GitHub would refuse them anyway.
 
 const props = defineProps<{
   pr: GitHubPullRequestDetail;
+  /** The person looking opened this pull request. */
+  mine: boolean;
   /** Something else in the space is running; nothing here can start. */
   busy: boolean;
   /** The action in flight from here, for its button's word. */
@@ -87,9 +91,9 @@ const mergeLabel = computed(() => {
 </script>
 
 <template>
-  <div v-if="pr.canWrite && pr.state !== 'merged'" class="gpm">
+  <div v-if="(pr.canWrite || mine) && pr.state !== 'merged'" class="gpm">
     <!-- An open, ready pull request: the merge, its method, and the way out. -->
-    <template v-if="open && !draft">
+    <template v-if="open && !draft && pr.canWrite">
       <div class="gpm__row">
         <button
           type="button"
@@ -133,7 +137,7 @@ const mergeLabel = computed(() => {
     </div>
 
     <!-- Closed without merging: it can come back. -->
-    <div v-else class="gpm__row">
+    <div v-else-if="!open" class="gpm__row">
       <button type="button" class="gpm__main gpm__main--soft" :disabled="busy" @click="onPlain('reopen')">
         {{ pending === "reopen" ? "Reopening…" : "Reopen" }}
       </button>
