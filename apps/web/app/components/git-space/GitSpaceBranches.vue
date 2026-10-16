@@ -373,7 +373,7 @@ function checkoutRemote(remoteRef: string) {
 }
 .gsb__sweep:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 /* ── row ──────────────────────────────────────────────────────────────────── */
@@ -530,7 +530,7 @@ function checkoutRemote(remoteRef: string) {
 }
 .gsb__act:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 .gsb__empty {

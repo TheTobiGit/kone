@@ -27,6 +27,8 @@ import type {
   GitHubPullRequest,
   GitHubPullRequestDetail,
   GitHubPerson,
+  GitHubCheck,
+  GitHubReviewer,
   GitHubPrCommit,
   GitHubRepoInfo,
   GitHubStatus,
@@ -743,81 +745,15 @@ export function mockGhStatus(): GitHubStatus {
   return { installed: true, authenticated: true, user: "gideonsarfo", message: null };
 }
 
-const MOCK_PRS: Record<string, GitHubPullRequest[]> = {
-  "/Users/you/Developer/kone": [
-    {
-      number: 148,
-      title: "Git Space — a repository surface inside the project",
-      state: "open",
-      isDraft: false,
-      author: "gideonsarfo",
-      branch: "feat/git-space",
-      base: "main",
-      url: "https://github.com/kone-dev/kone/pull/148",
-      createdAt: new Date(MOCK_NOW - 5 * 3600_000).toISOString(),
-      relative: relativeAt(MOCK_NOW - 5 * 3600_000),
-      additions: 1842,
-      deletions: 96,
-      checks: "pending",
-      reviewDecision: "review-required",
-      comments: 3,
-    },
-    {
-      number: 146,
-      title: "Factory Droid provider with ACP adapter",
-      state: "open",
-      isDraft: false,
-      author: "amaboateng",
-      branch: "feat/droid-provider",
-      base: "main",
-      url: "https://github.com/kone-dev/kone/pull/146",
-      createdAt: new Date(MOCK_NOW - 2 * 86400_000).toISOString(),
-      relative: relativeAt(MOCK_NOW - 2 * 86400_000),
-      additions: 731,
-      deletions: 212,
-      checks: "passing",
-      reviewDecision: "approved",
-      comments: 11,
-    },
-    {
-      number: 145,
-      title: "Terminal pane: stop leaking the host TERM into the pty",
-      state: "open",
-      isDraft: true,
-      author: "kwesimensah",
-      branch: "fix/pty-term",
-      base: "dev",
-      url: "https://github.com/kone-dev/kone/pull/145",
-      createdAt: new Date(MOCK_NOW - 4 * 86400_000).toISOString(),
-      relative: relativeAt(MOCK_NOW - 4 * 86400_000),
-      additions: 64,
-      deletions: 18,
-      checks: "failing",
-      reviewDecision: "changes-requested",
-      comments: 6,
-    },
-    {
-      number: 141,
-      title: "Archive threads from columns and crossfade dock stacks",
-      state: "merged",
-      isDraft: false,
-      author: "gideonsarfo",
-      branch: "feat/archive-threads",
-      base: "main",
-      url: "https://github.com/kone-dev/kone/pull/141",
-      createdAt: new Date(MOCK_NOW - 9 * 86400_000).toISOString(),
-      relative: relativeAt(MOCK_NOW - 9 * 86400_000),
-      additions: 402,
-      deletions: 137,
-      checks: "passing",
-      reviewDecision: "approved",
-      comments: 4,
-    },
-  ],
-};
+// The list rows are derived from the details further down, so the list and the
+// pull request it opens can never disagree about a number, a face or a check.
+const MOCK_PR_DIR = "/Users/you/Developer/kone";
 
 export function mockPrs(dir: string, state: "open" | "all" = "open"): GitHubPullRequest[] {
-  const all = MOCK_PRS[dir] ?? [];
+  if (dir !== MOCK_PR_DIR) return [];
+  const all = Object.values(MOCK_PR_DETAILS)
+    .sort((a, b) => b.number - a.number)
+    .map(prRowOf);
   return state === "all" ? all : all.filter((pr) => pr.state === "open");
 }
 
@@ -1133,7 +1069,7 @@ export function mockContributors(dir: string): GitContributors | null {
 
 /** One GitHub person, wearing the same avatar the contributors row gives them,
  *  so the same login always shows the same face across the demo world. */
-function prPerson(login: string, name: string, avatar: string): GitHubPerson {
+function prPerson(login: string, name: string, avatar: string | null): GitHubPerson {
   return { login, name, avatarDataUrl: avatar };
 }
 
@@ -1160,6 +1096,29 @@ function prCommit(
     author,
     date: new Date(MOCK_NOW - hoursAgo * 3600_000).toISOString(),
     relative: relativeAt(MOCK_NOW - hoursAgo * 3600_000),
+  };
+}
+
+/** One check run as the rollup reports it, started `minsAgo` before the demo
+ *  clock. A pending run hasn't finished and a skipped one never ran. */
+function check(
+  name: string,
+  workflow: string,
+  state: GitHubCheck["state"],
+  url: string | null,
+  minsAgo: number,
+): GitHubCheck {
+  const started = MOCK_NOW - minsAgo * 60_000;
+  // Durations vary by name so the list doesn't read as one number repeated.
+  const seconds = 40 + ((seedOf(name) >>> 3) % 420);
+  return {
+    name,
+    workflow,
+    state,
+    url,
+    startedAt: state === "skipped" ? null : new Date(started).toISOString(),
+    completedAt:
+      state === "skipped" || state === "pending" ? null : new Date(started + seconds * 1000).toISOString(),
   };
 }
 
@@ -1198,6 +1157,7 @@ See the [design notes](https://github.com/kone-dev/kone/wiki/git-space) for the
 borders-out, elevation-out rationale.`,
     author: GIDEON,
     branch: "feat/git-space",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 5 * 3600_000).toISOString(),
@@ -1215,11 +1175,11 @@ borders-out, elevation-out rationale.`,
     // other check passed.
     checks: "pending",
     checkRuns: [
-      { name: "lint", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14801" },
-      { name: "typecheck", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14802" },
-      { name: "test (linux)", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14803" },
-      { name: "e2e (electron)", workflow: "ci.yml", state: "pending", url: "https://github.com/kone-dev/kone/actions/runs/14804" },
-      { name: "docs", workflow: "docs.yml", state: "skipped", url: null },
+      check("lint", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14801", 27),
+      check("typecheck", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14802", 34),
+      check("test (linux)", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14803", 41),
+      check("e2e (electron)", "ci.yml", "pending", "https://github.com/kone-dev/kone/actions/runs/14804", 48),
+      check("docs", "docs.yml", "skipped", null, 55),
     ],
     labels: [
       { name: "git space", description: "The repository surface inside a project", color: "c5def5" },
@@ -1234,10 +1194,11 @@ borders-out, elevation-out rationale.`,
         body: "The changes lane holds up at this elevation and the branch picker reads clearly. One question on the diff's word-level highlight, left inline.",
         submittedAt: new Date(MOCK_NOW - 2 * 3600_000).toISOString(),
         relative: relativeAt(MOCK_NOW - 2 * 3600_000),
+        commit: mockHash("pr148:1"),
       },
       // Ama was asked but hasn't weighed in yet — that open slot is the state
       // the view has to render as still-waiting, so it gets a bodyless review.
-      { author: AMA, state: "pending", body: "", submittedAt: null, relative: "" },
+      { author: AMA, state: "pending", body: "", submittedAt: null, relative: "", commit: null },
     ],
     comments: [
       {
@@ -1286,6 +1247,7 @@ borders-out, elevation-out rationale.`,
     body: "Adds the Factory Droid provider behind the ACP adapter, so a droid surface runs from the composer like any other CLI. The spawn path, the per-model reasoning-effort ladder and resume all pass through the shared session plumbing — no provider-specific forks.",
     author: AMA,
     branch: "feat/droid-provider",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 2 * 86400_000).toISOString(),
@@ -1301,9 +1263,9 @@ borders-out, elevation-out rationale.`,
     reviewDecision: "approved",
     checks: "passing",
     checkRuns: [
-      { name: "lint", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14601" },
-      { name: "typecheck", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14602" },
-      { name: "test (linux)", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14603" },
+      check("lint", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14601", 62),
+      check("typecheck", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14602", 69),
+      check("test (linux)", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14603", 76),
     ],
     labels: [],
     assignees: [GIDEON],
@@ -1314,6 +1276,7 @@ borders-out, elevation-out rationale.`,
         body: "The ACP shape is clean and the spawn path matches the Codex adapter. Approved.",
         submittedAt: new Date(MOCK_NOW - 28 * 3600_000).toISOString(),
         relative: relativeAt(MOCK_NOW - 28 * 3600_000),
+        commit: mockHash("pr146:0"),
       },
     ],
     comments: [
@@ -1346,6 +1309,7 @@ borders-out, elevation-out rationale.`,
     body: "Stops leaking the host's TERM into the pty, so the terminal pane renders its own palette instead of inheriting the shell's. Still a draft — the resize-while-hidden path is being verified.",
     author: KWESI,
     branch: "fix/pty-term",
+    headOid: null,
     base: "dev",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 4 * 86400_000).toISOString(),
@@ -1361,8 +1325,8 @@ borders-out, elevation-out rationale.`,
     reviewDecision: "changes-requested",
     checks: "failing",
     checkRuns: [
-      { name: "lint", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14501" },
-      { name: "typecheck", workflow: "ci.yml", state: "failing", url: "https://github.com/kone-dev/kone/actions/runs/14502" },
+      check("lint", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14501", 83),
+      check("typecheck", "ci.yml", "failing", "https://github.com/kone-dev/kone/actions/runs/14502", 90),
     ],
     labels: [],
     assignees: [KWESI],
@@ -1373,6 +1337,7 @@ borders-out, elevation-out rationale.`,
         body: "The TERM scrub looks right, but the new palette reference needs a guard when the pane is created headless.",
         submittedAt: new Date(MOCK_NOW - 3 * 86400_000).toISOString(),
         relative: relativeAt(MOCK_NOW - 3 * 86400_000),
+        commit: mockHash("pr145:0"),
       },
     ],
     comments: [],
@@ -1395,6 +1360,7 @@ borders-out, elevation-out rationale.`,
     body: "Archiving a thread now moves it off the strip in one gesture and the dock stacks crossfade in place, so a busy project never looks half-empty. Follow-up work — search across archived threads — is tracked in #150.",
     author: GIDEON,
     branch: "feat/archive-threads",
+    headOid: null,
     base: "main",
     forkOwner: null,
     createdAt: new Date(MOCK_NOW - 9 * 86400_000).toISOString(),
@@ -1410,9 +1376,9 @@ borders-out, elevation-out rationale.`,
     reviewDecision: "approved",
     checks: "passing",
     checkRuns: [
-      { name: "lint", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14101" },
-      { name: "typecheck", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14102" },
-      { name: "test (linux)", workflow: "ci.yml", state: "passing", url: "https://github.com/kone-dev/kone/actions/runs/14103" },
+      check("lint", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14101", 97),
+      check("typecheck", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14102", 104),
+      check("test (linux)", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14103", 111),
     ],
     labels: [],
     assignees: [GIDEON],
@@ -1423,6 +1389,7 @@ borders-out, elevation-out rationale.`,
         body: "The crossfade is subtle and the empty state holds up. Nice one.",
         submittedAt: new Date(MOCK_NOW - 8 * 86400_000).toISOString(),
         relative: relativeAt(MOCK_NOW - 8 * 86400_000),
+        commit: mockHash("pr141:0"),
       },
     ],
     comments: [
@@ -1446,7 +1413,148 @@ borders-out, elevation-out rationale.`,
     ],
     milestone: null,
   },
+  // Ama asked you for a review and nobody has answered yet: the row that lands
+  // in "Waiting on you".
+  149: {
+    number: 149,
+    title: "Branches: ahead/behind sparkline for every branch",
+    state: "open",
+    isDraft: false,
+    url: "https://github.com/kone-dev/kone/pull/149",
+    body: "Each branch row draws its last two weeks of commits as a sparkline, with ahead/behind against the trunk beside it, so a stale branch reads as stale before you open it.",
+    author: AMA,
+    branch: "feat/branch-sparklines",
+    headOid: null,
+    base: "main",
+    forkOwner: null,
+    createdAt: new Date(MOCK_NOW - 26 * 3600_000).toISOString(),
+    relative: relativeAt(MOCK_NOW - 26 * 3600_000),
+    updatedAt: new Date(MOCK_NOW - 40 * 60_000).toISOString(),
+    mergedAt: null,
+    closedAt: null,
+    mergedBy: null,
+    additions: 318,
+    deletions: 41,
+    changedFiles: 4,
+    mergeability: "blocked",
+    reviewDecision: "review-required",
+    checks: "passing",
+    checkRuns: [
+      check("lint", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14901", 50),
+      check("typecheck", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14902", 50),
+      check("test (linux)", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14903", 50),
+      check("test (macos)", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14904", 50),
+      check("e2e (electron)", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14905", 50),
+      check("docs", "docs.yml", "skipped", null, 50),
+    ],
+    labels: [
+      { name: "git space", description: "The repository surface inside a project", color: "c5def5" },
+      { name: "ui", description: "Visual polish or layout work", color: "f9d0c4" },
+    ],
+    assignees: [AMA],
+    reviews: [
+      { author: GIDEON, state: "pending", body: "", submittedAt: null, relative: "", commit: null },
+      { author: KWESI, state: "pending", body: "", submittedAt: null, relative: "", commit: null },
+    ],
+    comments: [],
+    commits: [
+      prCommit("pr149:0", "feat(ui): ahead/behind beside each branch", "amaboateng", 1),
+      prCommit("pr149:1", "feat(ui): sparkline of a branch's last two weeks", "amaboateng", 20),
+    ],
+    files: [
+      { path: "apps/web/app/components/git-space/GitSpaceBranches.vue", additions: 204, deletions: 33, change: "modified" },
+      { path: "apps/web/app/components/git-space/BranchSparkline.vue", additions: 88, deletions: 0, change: "added" },
+      { path: "apps/web/app/composables/useGitSpace.ts", additions: 22, deletions: 8, change: "modified" },
+      { path: "apps/web/app/components/git-space/GitSpaceBranches.test.ts", additions: 4, deletions: 0, change: "added" },
+    ],
+    milestone: "Git Space v1",
+  },
+  // A dependency bump that fell behind main and now conflicts with it.
+  147: {
+    number: 147,
+    title: "Bump electron from 32.1.0 to 33.0.2",
+    state: "open",
+    isDraft: false,
+    url: "https://github.com/kone-dev/kone/pull/147",
+    body: "Bumps [electron](https://github.com/electron/electron) from 32.1.0 to 33.0.2.",
+    author: prPerson("dependabot", "Dependabot", null),
+    branch: "dependabot/npm_and_yarn/electron-33.0.2",
+    headOid: null,
+    base: "main",
+    forkOwner: null,
+    createdAt: new Date(MOCK_NOW - 3 * 86400_000).toISOString(),
+    relative: relativeAt(MOCK_NOW - 3 * 86400_000),
+    updatedAt: new Date(MOCK_NOW - 30 * 3600_000).toISOString(),
+    mergedAt: null,
+    closedAt: null,
+    mergedBy: null,
+    additions: 12,
+    deletions: 12,
+    changedFiles: 2,
+    mergeability: "conflicting",
+    reviewDecision: null,
+    checks: "failing",
+    checkRuns: [
+      check("lint", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14701", 1800),
+      check("typecheck", "ci.yml", "passing", "https://github.com/kone-dev/kone/actions/runs/14702", 1800),
+      check("test (linux)", "ci.yml", "failing", "https://github.com/kone-dev/kone/actions/runs/14703", 1800),
+      check("test (macos)", "ci.yml", "failing", "https://github.com/kone-dev/kone/actions/runs/14704", 1800),
+    ],
+    labels: [{ name: "dependencies", description: "Pull requests that update a dependency file", color: "0366d6" }],
+    assignees: [],
+    reviews: [],
+    comments: [],
+    commits: [prCommit("pr147:0", "chore(deps): bump electron from 32.1.0 to 33.0.2", "dependabot[bot]", 72)],
+    files: [
+      { path: "apps/desktop/package.json", additions: 1, deletions: 1, change: "modified" },
+      { path: "bun.lock", additions: 11, deletions: 11, change: "modified" },
+    ],
+    milestone: null,
+  },
 };
+
+// The demo commits carry distinct dates, so the newest one is the head here;
+// the desktop reads it straight from GitHub instead.
+for (const d of Object.values(MOCK_PR_DETAILS)) {
+  let head: GitHubPrCommit | null = null;
+  for (const c of d.commits) if (!head || c.date > head.date) head = c;
+  d.headOid = head?.oid ?? null;
+}
+
+/** A detail as the list row the desktop's `gh pr list` would produce for it. */
+function prRowOf(d: GitHubPullRequestDetail): GitHubPullRequest {
+  const checkCounts = { passing: 0, failing: 0, pending: 0, skipped: 0 };
+  for (const run of d.checkRuns) if (run.state !== "none") checkCounts[run.state] += 1;
+  // An open request comes after that person's review and replaces it.
+  const byLogin = new Map<string, GitHubReviewer>();
+  for (const r of d.reviews) if (r.author) byLogin.set(r.author.login, { person: r.author, state: r.state });
+  const reviewers = [...byLogin.values()];
+  return {
+    number: d.number,
+    title: d.title,
+    state: d.state,
+    isDraft: d.isDraft,
+    author: d.author?.login ?? "unknown",
+    branch: d.branch,
+    base: d.base,
+    url: d.url,
+    createdAt: d.createdAt,
+    relative: d.relative,
+    additions: d.additions,
+    deletions: d.deletions,
+    checks: d.checks,
+    reviewDecision: d.reviewDecision,
+    comments: d.comments.length,
+    authorPerson: d.author,
+    updatedAt: d.updatedAt,
+    updated: d.updatedAt ? relativeAt(Date.parse(d.updatedAt)) : "",
+    changedFiles: d.changedFiles,
+    labels: d.labels,
+    reviewers,
+    mergeability: d.mergeability,
+    checkCounts,
+  };
+}
 
 /** One PR's full detail, or null when the number isn't one the demo world has. */
 export function mockPrDetail(number: number): GitHubPullRequestDetail | null {

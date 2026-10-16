@@ -351,6 +351,35 @@ export type GitHubPullRequest = {
   checks: "passing" | "failing" | "pending" | "none";
   reviewDecision: "approved" | "changes-requested" | "review-required" | null;
   comments: number;
+  /** The author as a person, face included, when GitHub named them. */
+  authorPerson: GitHubPerson | null;
+  /** When anything last happened on it — pushes, reviews, comments. */
+  updatedAt: string | null;
+  /** `updatedAt` as a "… ago" phrase; "" when unknown. */
+  updated: string;
+  changedFiles: number;
+  labels: GitHubLabel[];
+  /** Everyone who reviewed or was asked to, one verdict each. */
+  reviewers: GitHubReviewer[];
+  /** Whether GitHub would merge it now, the same word the detail carries. */
+  mergeability: GitHubMergeability;
+  /** The head commit's checks, counted by verdict — enough to draw a ring. */
+  checkCounts: GitHubCheckCounts;
+};
+
+/** One reviewer on a pull request and where they stand. "pending" is a
+ *  request nobody has answered yet. */
+export type GitHubReviewer = {
+  person: GitHubPerson;
+  state: "approved" | "changes-requested" | "commented" | "dismissed" | "pending";
+};
+
+/** A rollup's checks counted by verdict. */
+export type GitHubCheckCounts = {
+  passing: number;
+  failing: number;
+  pending: number;
+  skipped: number;
 };
 
 export type GitHubPrCreateOptions = {
@@ -439,6 +468,9 @@ export type GitHubReview = {
   body: string;
   submittedAt: string | null;
   relative: string;
+  /** The commit the review was left on, so a verdict on an older head can be
+   *  told apart from one on the current code. Null when GitHub didn't say. */
+  commit: string | null;
 };
 
 /** One comment on the conversation. */
@@ -457,6 +489,10 @@ export type GitHubCheck = {
   workflow: string | null;
   state: "passing" | "failing" | "pending" | "skipped" | "none";
   url: string | null;
+  /** When the run started and finished, for a duration; null for a status
+   *  context or a run that hasn't. */
+  startedAt: string | null;
+  completedAt: string | null;
 };
 
 /** One file a pull request touches. */
@@ -491,6 +527,8 @@ export type GitHubPullRequestDetail = {
   body: string;
   author: GitHubPerson | null;
   branch: string;
+  /** The commit the head branch points at now; null when GitHub didn't say. */
+  headOid: string | null;
   base: string;
   /** The head repository's owner when the PR comes from a fork; null when not. */
   forkOwner: string | null;

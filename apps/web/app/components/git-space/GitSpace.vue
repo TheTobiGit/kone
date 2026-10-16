@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { onKeyStroke } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AlertCircleIcon,
@@ -39,8 +38,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openFile: [path: string, rect: DOMRect | null];
-  /** How many commits/pull requests deep the space is — 0 on the sections. */
-  detailDepth: [depth: number];
 }>();
 
 const { cue } = useSound();
@@ -135,43 +132,16 @@ watch(
 );
 
 // ── the open pull request ─────────────────────────────────────────────────────
-// A pull request gets a whole view rather than a drawer inside a list: it
-// carries a body, a diff, a conversation and a person, and none of that fits in
-// a row that has to stay a row. (A commit is smaller, and opens in a card over
-// whatever section listed it.)
-//
-// The shell isn't unmounted underneath it, only hidden — every section keeps its
-// scroll offset and its loaded pages, so stepping back is genuinely a step back.
-const pr = ref<number | null>(null);
+// A pull request opens in a card over the section that listed it, grown out of
+// the clicked row, the way a commit and a changed file do: the list stays where
+// you left it under the scrim, and closing the card shrinks it back into its
+// row. The card owns its own Escape, so nothing here listens for one.
+const pr = ref<{ number: number; origin: DOMRect | null } | null>(null);
 
-function openPr(number: number) {
+function openPr(number: number, origin: DOMRect | null) {
   cue("open");
-  pr.value = number;
+  pr.value = { number, origin };
 }
-function back() {
-  if (pr.value === null) return;
-  cue("leave");
-  pr.value = null;
-}
-
-// Escape steps back out. The project's own Escape handler only closes the file
-// detail and the switcher, neither of which can be open from in here, so there's
-// nothing to fight over.
-onKeyStroke("Escape", (e) => {
-  if (!props.visible || pr.value === null) return;
-  e.preventDefault();
-  back();
-});
-
-// A detail view draws its own return glyph beside its own title, which is what
-// the file detail does too — and the project's corner arrow steps aside for that
-// one. So the depth goes up: the corner arrow can't be a second, identical arrow
-// 300px away from the first, and it can't be the thing that leaves for the
-// working tree while there's still a layer of this to step out of.
-watch(
-  pr,
-  (n) => emit("detailDepth", n === null ? 0 : 1),
-);
 
 // ── what the masthead says ────────────────────────────────────────────────────
 const origin = computed(() => props.space.origin.value);
@@ -307,7 +277,7 @@ function onAbort() {
 
 <template>
   <div class="gs">
-    <div v-show="pr === null" ref="scrollEl" class="gs__scroll">
+    <div ref="scrollEl" class="gs__scroll">
       <div class="gs__col">
         <!-- ── the left column ────────────────────────────────────────────── -->
         <nav class="gs__side" aria-label="Repository">
@@ -469,14 +439,12 @@ function onAbort() {
     </div>
 
     <!-- ── the open pull request ─────────────────────────────────────────── -->
-    <!-- Keyed by number, so stepping from one pull request to another remounts
-         rather than swapping payloads under a view that already finished loading. -->
     <GitSpacePullRequestView
       v-if="pr !== null"
-      :key="pr"
       :space="space"
-      :number="pr"
-      @back="back"
+      :number="pr.number"
+      :origin="pr.origin"
+      @close="pr = null"
     />
   </div>
 </template>
@@ -692,7 +660,7 @@ function onAbort() {
 }
 .gs__btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .gs__btn:disabled {
   opacity: 0.5;
@@ -753,7 +721,7 @@ function onAbort() {
 }
 .gs__navrow:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 .gs__navrow--on {
   color: var(--ink);
