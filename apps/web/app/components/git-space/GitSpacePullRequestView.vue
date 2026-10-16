@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
+import ModalShell from "~/components/ui/ModalShell.vue";
+import { useModalExit } from "~/composables/useModalExit";
 import type {
   GitFileDiff,
   GitHubCheck,
@@ -17,7 +19,11 @@ import type {
 } from "~/types/desktop";
 import type { useGitSpace } from "~/composables/useGitSpace";
 
-// One pull request, in full.
+// One pull request, in full, in a card over the list that opened it. It grows
+// out of the clicked row and shrinks back into it, as a commit and a changed
+// file do, so the list keeps its scroll and filters under the scrim. It mounts
+// itself on the body and owns its entrance, exit and Escape; the opener mounts
+// it and unmounts it on `close`.
 //
 // Two columns. The main one is the pull request as a story: the description,
 // then everything that happened to it on one rail — commits, reviews and
@@ -36,10 +42,13 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
   number: number;
+  /** The clicked row's viewport rect — the grow's origin. */
+  origin: DOMRect | null;
 }>();
 
 const emit = defineEmits<{
-  back: [];
+  /** Its exit has finished; unmount it now. */
+  close: [];
 }>();
 
 const { cue } = useSound();
@@ -410,23 +419,78 @@ function checkout() {
 function openOnGitHub() {
   if (pr.value) void props.space.openExternal(pr.value.url);
 }
-function goBack() {
-  emit("back");
+
+// ── the card ──────────────────────────────────────────────────────────────────
+const INSET = 20;
+const MAX_WIDTH = 1240;
+
+// Grow from the clicked row's centre, in the card's own coordinates: it sits
+// INSET down from the window's top, centred across it.
+const originStyle = computed(() => {
+  const vars: Record<string, string> = { "--prm-inset": `${INSET}px`, "--prm-max": `${MAX_WIDTH}px` };
+  const r = props.origin;
+  if (!r) return vars;
+  const left = Math.max(INSET, (window.innerWidth - MAX_WIDTH) / 2);
+  vars["--ox"] = `${r.left + r.width / 2 - left}px`;
+  vars["--oy"] = `${r.top + r.height / 2 - INSET}px`;
+  return vars;
+});
+
+const { shown, dismiss } = useModalExit();
+function onClose(): void {
+  dismiss(() => emit("close"));
 }
+
+// Taken in the capture phase and consumed, so one press closes this card and
+// nothing behind it. While one of its commits is open on top, that card is the
+// one Escape is for: it listens after this one, so this lets the key through.
+function onEscape(event: KeyboardEvent): void {
+  if (event.key !== "Escape" || opened.value) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  onClose();
+}
+
+const backEl = ref<HTMLButtonElement | null>(null);
+// The row that opened the card, so focus goes back to it on close.
+let opener: HTMLElement | null = null;
+
+onMounted(() => {
+  opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  window.addEventListener("keydown", onEscape, { capture: true });
+  requestAnimationFrame(() => (shown.value = true));
+  backEl.value?.focus({ preventScroll: true });
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onEscape, { capture: true });
+  opener?.focus({ preventScroll: true });
+});
 </script>
 
 <template>
+  <Teleport to="body">
+    <ModalShell v-slot="{ card }" :shown="shown" class="z-50" @dismiss="onClose">
+      <div
+        v-bind="card"
+        class="prm"
+        :style="originStyle"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="pr?.title ?? `Pull request #${number}`"
+      >
+        <div class="prm__frame">
   <article class="prv">
     <!-- ── head ─────────────────────────────────────────────────────────────
          The shell's masthead shape, so stepping into a pull request lands on the
          same kind of page: identifier, title, then the facts underneath. -->
     <header class="prv__head">
       <button
+        ref="backEl"
         type="button"
         class="prv__back"
         aria-label="Back to pull requests"
         title="Back to pull requests"
-        @click="goBack"
+        @click="onClose"
       >
         <HugeiconsIcon
           class="prv__back-glyph"
@@ -826,17 +890,70 @@ function goBack() {
       @close="opened = null"
     />
   </article>
+        </div>
+      </div>
+    </ModalShell>
+  </Teleport>
 </template>
 
 <style scoped>
+/* The card is teleported out of the space, so the space's motion vocabulary
+   doesn't reach it by inheritance; it carries its own copy, as the commit
+   card does. */
+.prm {
+  --gs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --gs-ease-move: cubic-bezier(0.65, 0, 0.35, 1);
+  --gs-t-micro: 140ms;
+  --gs-t-small: 220ms;
+  --gs-t-enter: 320ms;
+  --gs-t-large: 420ms;
+  --gs-stagger: 22ms;
+  --gs-t-sweep: 1100ms;
+  --gs-t-breathe: 1700ms;
+  --gs-hold: 140ms;
+  --gs-enter-panel: 160ms;
+  position: absolute;
+  inset: var(--prm-inset, 20px) 0;
+  width: min(var(--prm-max, 1240px), calc(100% - 2 * var(--prm-inset, 20px)));
+  margin-inline: auto;
+  z-index: 1;
+  display: flex;
+  overflow: hidden;
+  border-radius: 22px;
+  background-color: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
+    0 24px 64px -24px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+/* Grow out of the clicked row, and shrink back into it. */
+.prm.is-in {
+  animation: prm-grow 460ms cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+  transform-origin: var(--ox, 50%) var(--oy, 50%);
+}
+.prm.is-out {
+  animation: prm-shrink var(--modal-exit) cubic-bezier(0.4, 0, 0.9, 1) forwards;
+  transform-origin: var(--ox, 50%) var(--oy, 50%);
+}
+@keyframes prm-grow {
+  from { opacity: 0.35; transform: scale(0.16); }
+  60% { opacity: 1; }
+}
+@keyframes prm-shrink {
+  to { opacity: 0; transform: scale(0.16); }
+}
+/* The head stays put; the page under it scrolls on its own. */
+.prm__frame {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
 .prv {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 1240px;
   min-height: 0;
-  /* Clears the project's corner back arrow, as the shell's inner does. */
-  padding: 5rem 2.5rem 2.5rem;
+  padding: 34px 40px 0;
 }
 @keyframes prv-in {
   from {
@@ -1008,6 +1125,7 @@ function goBack() {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  padding-bottom: 40px;
   scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
   animation: prv-in var(--gs-t-enter) var(--gs-ease) var(--gs-enter-panel) backwards;
 }
@@ -1636,6 +1754,10 @@ function goBack() {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .prm.is-in,
+  .prm.is-out {
+    animation-duration: 0.01s;
+  }
   .prv__head,
   .prv__scroll,
   .prv__block,

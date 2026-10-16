@@ -28,7 +28,7 @@ const props = defineProps<{ space: ReturnType<typeof useGitSpace>; dir: string }
 const emit = defineEmits<{
   /** Step to another section of the space. */
   go: [section: Section];
-  openPr: [number: number];
+  openPr: [number: number, origin: DOMRect | null];
 }>();
 
 const { cue } = useSound();
@@ -453,7 +453,7 @@ function dayLabel(t: number): string {
           type="button"
           class="gsa__pr"
           :title="pr.title"
-          @click="emit('openPr', pr.number)"
+          @click="emit('openPr', pr.number, ($event.currentTarget as HTMLElement).getBoundingClientRect())"
         >
           <span class="gsa__pr-title">{{ pr.title }}</span>
           <span class="gsa__pr-size" :style="{ '--n': n }">
