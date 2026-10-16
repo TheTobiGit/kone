@@ -69,8 +69,15 @@ async function readCompare() {
   compare.value = next;
   loading.value = false;
 }
-// The tip moving (a push, a pull, a merge) changes what is its own.
-watch(() => b.value.sha, readCompare, { immediate: true });
+// Either tip moving (a push, a pull, a merge into the default) changes what
+// is its own.
+const baseTips = computed(() =>
+  props.space.branches.value
+    .filter((x) => x.default)
+    .map((x) => x.sha ?? "")
+    .join(" "),
+);
+watch(() => `${b.value.sha} ${baseTips.value}`, readCompare, { immediate: true });
 
 const drift = computed(() => {
   const c = compare.value;
