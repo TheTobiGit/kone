@@ -672,12 +672,12 @@ function onAbort() {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
 }
-/* The Overview's measure, so switching between the two tabs moves nothing. */
+/* A little wider than the Overview, to fit About's side column. */
 .gs__col {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 940px;
+  max-width: 1040px;
   margin-inline: auto;
   padding: 5.5rem 2.5rem 3rem;
 }
