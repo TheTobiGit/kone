@@ -354,7 +354,7 @@ const LabelWire = z
 // shapes cannot drift.
 const PR_JSON_FIELDS =
   "number,title,state,isDraft,author,headRefName,baseRefName,url,createdAt,updatedAt,additions,deletions," +
-  "changedFiles,statusCheckRollup,reviewDecision,latestReviews,reviewRequests,labels,mergeable,comments,mergedAt";
+  "changedFiles,statusCheckRollup,reviewDecision,latestReviews,reviewRequests,labels,mergeable,mergeStateStatus,comments,mergedAt";
 
 const PullRequestWire = z.object({
   number: z.number().int().positive(),
@@ -376,6 +376,7 @@ const PullRequestWire = z.object({
   reviewRequests: PeopleListWire,
   labels: rows(LabelWire).catch([]),
   mergeable: z.string().catch(""),
+  mergeStateStatus: z.string().catch(""),
   comments: CommentCountWire,
   // gh reports merged PRs as CLOSED unless mergedAt is set — the timestamp
   // is authoritative.
@@ -413,8 +414,7 @@ function pullRequestOf(pr: DecodedPullRequest): GitHubPullRequest {
     changedFiles: pr.changedFiles,
     labels: pr.labels,
     reviewers: reviewersOf(pr.latestReviews, pr.reviewRequests),
-    mergeable:
-      pr.mergeable === "CONFLICTING" ? "conflicting" : pr.mergeable === "MERGEABLE" ? "mergeable" : "unknown",
+    mergeability: mergeabilityOf(pr.mergeable, pr.mergeStateStatus, pr.isDraft),
     checkCounts: countChecks(pr.statusCheckRollup),
   };
 }

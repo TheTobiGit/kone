@@ -353,8 +353,8 @@ export type GitHubPullRequest = {
   labels: GitHubLabel[];
   /** Everyone who reviewed or was asked to, one verdict each. */
   reviewers: GitHubReviewer[];
-  /** Whether the branch merges cleanly into its base. */
-  mergeable: "mergeable" | "conflicting" | "unknown";
+  /** Whether GitHub would merge it now, the same word the detail carries. */
+  mergeability: GitHubMergeability;
   /** The head commit's checks, counted by verdict — enough to draw a ring. */
   checkCounts: GitHubCheckCounts;
 };

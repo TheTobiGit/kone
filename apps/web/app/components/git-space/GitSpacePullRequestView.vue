@@ -5,6 +5,7 @@ import { ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeico
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import ModalShell from "~/components/ui/ModalShell.vue";
 import { useModalExit } from "~/composables/useModalExit";
+import { changeBar, checkDuration, prDate } from "~/utils/prFormat";
 import type {
   GitFileDiff,
   GitHubCheck,
@@ -34,6 +35,9 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 // listed under it, the reviewers as faces ringed in their verdict (faded when
 // they judged an older commit), and the size of the change drawn file by file.
 //
+// The side column is its own component (GitSpacePullRequestSide); this owns
+// the data and the tabs, and the side column asks for a tab or a file.
+//
 // What it deliberately doesn't have is buttons for merging, closing, approving
 // or commenting. There is no backing call for any of them, and a button that
 // opens GitHub while pretending to be a merge button is worse than the honest
@@ -57,9 +61,12 @@ const { cue } = useSound();
 // so the tab and its scroll are still there when you close it.
 const opened = ref<{ hash: string; origin: DOMRect | null } | null>(null);
 function openCommit(e: MouseEvent, hash: string) {
-  cue("open");
   // SAFETY: bound on the commit's button, so currentTarget is that element.
-  opened.value = { hash, origin: (e.currentTarget as HTMLElement).getBoundingClientRect() };
+  openCommitAt(hash, (e.currentTarget as HTMLElement).getBoundingClientRect());
+}
+function openCommitAt(hash: string, origin: DOMRect | null) {
+  cue("open");
+  opened.value = { hash, origin };
 }
 
 type Tab = "conversation" | "files" | "commits" | "checks";
@@ -128,53 +135,6 @@ const status = computed(() => {
   return { word: "Open", tone: "ok" as const };
 });
 
-// ── the verdict ──────────────────────────────────────────────────────────────
-// The side column's headline: can this merge, and if not, the one thing in the
-// way. Picked in the order it would have to be dealt with.
-
-interface Verdict {
-  word: string;
-  why: string | null;
-  tone: "ok" | "bad" | "warn" | "flat";
-}
-
-const MERGEABILITY = new Map<GitHubMergeability, string>([
-  ["conflicting", "It conflicts with the base branch."],
-  ["blocked", "A required check or review is missing."],
-  ["behind", "It's behind the base branch."],
-  ["unstable", "It merges, but a check is failing."],
-]);
-
-const verdict = computed<Verdict | null>(() => {
-  const p = pr.value;
-  if (!p) return null;
-  if (p.state === "merged") {
-    const when = p.mergedAt ? ` on ${dateOf(p.mergedAt)}` : "";
-    return { word: "Merged", why: p.mergedBy ? `${p.mergedBy.login} merged it${when}.` : null, tone: "flat" };
-  }
-  if (p.state === "closed") return { word: "Closed", why: "Closed without merging.", tone: "flat" };
-  if (p.isDraft) return { word: "Draft", why: "Not asking for review yet.", tone: "flat" };
-  if (p.mergeability === "conflicting") return { word: "Has conflicts", why: `It conflicts with ${p.base}.`, tone: "bad" };
-  if (checkCounts.value.failing) {
-    return { word: "Checks failing", why: `${plural(checkCounts.value.failing, "check")} failed.`, tone: "bad" };
-  }
-  if (p.reviewDecision === "changes-requested") return { word: "Changes requested", why: reviewSentence.value, tone: "bad" };
-  if (checkCounts.value.pending) {
-    return { word: "Checks running", why: `${plural(checkCounts.value.pending, "check")} still running.`, tone: "warn" };
-  }
-  if (p.reviewDecision === "review-required" || pendingReviewers.value.length) {
-    return { word: "Needs review", why: reviewSentence.value, tone: "warn" };
-  }
-  // Green checks and reviews aren't the whole answer: the repository's own rules
-  // can still hold it back, and until GitHub has worked that out, nobody knows.
-  if (p.mergeability === "blocked") return { word: "Blocked", why: MERGEABILITY.get("blocked") ?? null, tone: "warn" };
-  if (p.mergeability === "behind") return { word: "Behind base", why: `${p.base} has moved on since this branched.`, tone: "warn" };
-  if (p.mergeability === "unknown") {
-    return { word: "Checking", why: "GitHub hasn't worked out yet whether this can merge.", tone: "warn" };
-  }
-  return { word: "Ready to merge", why: MERGEABILITY.get(p.mergeability) ?? "Green, and nothing is in the way.", tone: "ok" };
-});
-
 // ── checks ───────────────────────────────────────────────────────────────────
 
 const checkCounts = computed<GitHubCheckCounts>(() => {
@@ -182,16 +142,6 @@ const checkCounts = computed<GitHubCheckCounts>(() => {
   for (const c of pr.value?.checkRuns ?? []) if (c.state !== "none") counts[c.state] += 1;
   return counts;
 });
-const checkBrief = computed(() => {
-  const c = checkCounts.value;
-  const parts: string[] = [];
-  if (c.failing) parts.push(`${c.failing} failing`);
-  if (c.pending) parts.push(`${c.pending} running`);
-  if (c.passing) parts.push(`${c.passing} passing`);
-  if (c.skipped) parts.push(`${c.skipped} skipped`);
-  return parts.join(" · ");
-});
-
 /** Checks grouped the way you'd deal with them: what broke, what's still
  *  going, then what's fine. */
 const CHECK_GROUPS = [
@@ -209,26 +159,6 @@ const checkGroups = computed(() => {
   }
   return out;
 });
-/** The checks the side column lists: anything not green, a few at most. */
-const attention = computed(() => {
-  const runs = pr.value?.checkRuns ?? [];
-  const failing = runs.filter((c) => c.state === "failing");
-  const pending = runs.filter((c) => c.state === "pending");
-  return [...failing, ...pending].slice(0, 4);
-});
-
-function duration(c: GitHubCheck): string {
-  if (!c.startedAt) return "";
-  const start = Date.parse(c.startedAt);
-  if (Number.isNaN(start)) return "";
-  if (!c.completedAt) return c.state === "pending" ? "running" : "";
-  const secs = Math.max(0, Math.round((Date.parse(c.completedAt) - start) / 1000));
-  if (secs < 60) return `${secs}s`;
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return s ? `${m}m ${s}s` : `${m}m`;
-}
-
 // ── reviews ──────────────────────────────────────────────────────────────────
 
 /** The commit the branch points at, as GitHub reports it: a review left on
@@ -270,50 +200,6 @@ function names(list: GitHubReviewer[]): string {
   return list.map((r) => r.person.login).join(", ");
 }
 
-// ── the rail ─────────────────────────────────────────────────────────────────
-// Everything that happened to the pull request, oldest first, on one line.
-// Consecutive commits fold into one event — a push of five commits is one
-// thing that happened, not five.
-
-type Event =
-  | { kind: "opened"; at: string; person: GitHubPerson | null }
-  | { kind: "commits"; at: string; commits: GitHubPrCommit[] }
-  | { kind: "review"; at: string; review: GitHubReview }
-  | { kind: "comment"; at: string; person: GitHubPerson | null; body: string; relative: string }
-  | { kind: "merged"; at: string; person: GitHubPerson | null }
-  | { kind: "closed"; at: string };
-
-const events = computed<Event[]>(() => {
-  const p = pr.value;
-  if (!p) return [];
-  const raw: Event[] = [{ kind: "opened", at: p.createdAt, person: p.author }];
-  for (const c of p.commits) raw.push({ kind: "commits", at: c.date, commits: [c] });
-  for (const r of p.reviews) if (r.submittedAt) raw.push({ kind: "review", at: r.submittedAt, review: r });
-  for (const c of p.comments) {
-    raw.push({ kind: "comment", at: c.createdAt, person: c.author, body: c.body, relative: c.relative });
-  }
-  if (p.mergedAt) raw.push({ kind: "merged", at: p.mergedAt, person: p.mergedBy });
-  else if (p.closedAt) raw.push({ kind: "closed", at: p.closedAt });
-  // Opening is where the story starts, even when a commit on the branch is
-  // older than the pull request itself.
-  raw.sort((a, b) => (a.kind === "opened" ? -1 : b.kind === "opened" ? 1 : a.at.localeCompare(b.at)));
-  const out: Event[] = [];
-  for (const e of raw) {
-    const last = out[out.length - 1];
-    if (e.kind === "commits" && last?.kind === "commits") last.commits.push(...e.commits);
-    else out.push(e);
-  }
-  return out;
-});
-
-const REVIEW_STATE: Record<string, string> = {
-  approved: "approved",
-  "changes-requested": "requested changes",
-  commented: "reviewed",
-  dismissed: "review dismissed",
-  pending: "review pending",
-};
-
 // ── files ────────────────────────────────────────────────────────────────────
 // Sorted the way they're worth reading: the code itself, then its tests, then
 // what was generated or only configures the build.
@@ -342,19 +228,9 @@ const fileGroups = computed(() => {
   return out;
 });
 const filePeak = computed(() => Math.max(1, ...(pr.value?.files ?? []).map((f) => f.additions + f.deletions)));
-/** A file's share of the change as a bar width, square-root scaled so the one
- *  enormous file doesn't flatten the rest. */
 function fileBar(f: GitHubPrFile, max: number) {
-  const total = f.additions + f.deletions;
-  if (!total) return { add: 0, del: 0 };
-  const w = Math.max(2, Math.sqrt(total / filePeak.value) * max);
-  return { add: (f.additions / total) * w, del: (f.deletions / total) * w };
+  return changeBar(f, filePeak.value, max);
 }
-/** The side column's files: the biggest few. */
-const biggest = computed(() =>
-  [...(pr.value?.files ?? [])].sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions)).slice(0, 5),
-);
-
 const counts = computed(() => {
   const p = pr.value;
   return {
@@ -407,10 +283,6 @@ function nameOf(path: string) {
 function dirOf(path: string) {
   const i = path.lastIndexOf("/");
   return i === -1 ? "" : path.slice(0, i + 1);
-}
-function dateOf(iso: string) {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -580,109 +452,11 @@ onBeforeUnmount(() => {
 
           <!-- ── conversation ─────────────────────────────────────────────── -->
           <section v-if="tab === 'conversation'" :key="tab" class="prv__pane">
-            <div v-if="pr.body" class="prv__description selectable">
-              <MarkdownMessage :source="pr.body" historical />
-            </div>
-            <p v-else class="prv__nodesc">No description.</p>
-
-            <ol class="prv__rail">
-              <li
-                v-for="(e, i) in events"
-                :key="`${e.kind}:${e.at}:${i}`"
-                class="prv__event"
-                :class="`prv__event--${e.kind}`"
-                :style="{ '--i': i }"
-              >
-                <!-- opened -->
-                <template v-if="e.kind === 'opened'">
-                  <i class="prv__node" />
-                  <p class="prv__line">
-                    <b>{{ e.person?.login ?? "someone" }}</b>{{ " " }}opened this
-                    <span class="prv__when">{{ pr.relative }}</span>
-                  </p>
-                </template>
-
-                <!-- a run of commits -->
-                <template v-else-if="e.kind === 'commits'">
-                  <i class="prv__node prv__node--commit" />
-                  <div class="prv__pushed">
-                    <p class="prv__line">
-                      Pushed {{ plural(e.commits.length, "commit") }}
-                      <span class="prv__when">{{ e.commits[e.commits.length - 1]?.relative }}</span>
-                    </p>
-                    <button
-                      v-for="c in e.commits"
-                      :key="c.oid"
-                      type="button"
-                      class="prv__pushed-row"
-                      :title="c.headline"
-                      aria-haspopup="dialog"
-                      @click="openCommit($event, c.oid)"
-                    >
-                      <span class="prv__hash">{{ c.short }}</span>
-                      <span class="prv__headline">{{ c.headline }}</span>
-                    </button>
-                  </div>
-                </template>
-
-                <!-- a review -->
-                <template v-else-if="e.kind === 'review'">
-                  <span
-                    class="prv__face prv__face--lg prv__face--ringed"
-                    :class="`prv__face--${e.review.state}`"
-                    aria-hidden="true"
-                  >
-                    <img v-if="e.review.author?.avatarDataUrl" :src="e.review.author.avatarDataUrl" alt="" />
-                    <span v-else>{{ initial(e.review.author) }}</span>
-                  </span>
-                  <div class="prv__said">
-                    <p class="prv__line">
-                      <b>{{ e.review.author?.login ?? "someone" }}</b>{{ " " }}
-                      <span class="prv__verdict" :class="`prv__verdict--${e.review.state}`">
-                        {{ REVIEW_STATE[e.review.state] }}
-                      </span>
-                      <span class="prv__when">{{ e.review.relative }}</span>
-                      <span v-if="isStale(e.review)" class="prv__stale">on an earlier commit</span>
-                    </p>
-                    <div v-if="e.review.body" class="prv__saidbody selectable">
-                      <MarkdownMessage :source="e.review.body" historical />
-                    </div>
-                  </div>
-                </template>
-
-                <!-- a comment -->
-                <template v-else-if="e.kind === 'comment'">
-                  <span class="prv__face prv__face--lg" aria-hidden="true">
-                    <img v-if="e.person?.avatarDataUrl" :src="e.person.avatarDataUrl" alt="" />
-                    <span v-else>{{ initial(e.person) }}</span>
-                  </span>
-                  <div class="prv__said">
-                    <p class="prv__line">
-                      <b>{{ e.person?.login ?? "someone" }}</b>
-                      <span class="prv__when">{{ e.relative }}</span>
-                    </p>
-                    <div v-if="e.body" class="prv__saidbody selectable">
-                      <MarkdownMessage :source="e.body" historical />
-                    </div>
-                  </div>
-                </template>
-
-                <!-- the end -->
-                <template v-else-if="e.kind === 'merged'">
-                  <i class="prv__node prv__node--merged" />
-                  <p class="prv__line">
-                    <b>{{ e.person?.login ?? "someone" }}</b>{{ " " }}merged it
-                    <span class="prv__when">{{ dateOf(e.at) }}</span>
-                  </p>
-                </template>
-                <template v-else>
-                  <i class="prv__node prv__node--closed" />
-                  <p class="prv__line">
-                    Closed <span class="prv__when">{{ dateOf(e.at) }}</span>
-                  </p>
-                </template>
-              </li>
-            </ol>
+            <GitSpacePullRequestConversation
+              :pr="pr"
+              :head-oid="headOid"
+              @open-commit="openCommitAt"
+            />
           </section>
 
           <!-- ── files ────────────────────────────────────────────────────── -->
@@ -774,7 +548,7 @@ onBeforeUnmount(() => {
                 <span class="prv__checkname">
                   <span v-if="c.workflow" class="prv__dir">{{ c.workflow }} / </span>{{ c.name }}
                 </span>
-                <span class="prv__dim">{{ duration(c) }}</span>
+                <span class="prv__dim">{{ checkDuration(c) }}</span>
                 <button
                   v-if="c.url"
                   type="button"
@@ -791,99 +565,15 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- ══ the side column: can it merge ════════════════════════════════ -->
-        <aside class="prv__side">
-          <div v-if="verdict" class="prv__block prv__verdictblock" style="--i: 0">
-            <p class="prv__big" :class="`prv__big--${verdict.tone}`">
-              <i class="prv__big-dot" />
-              {{ verdict.word }}
-            </p>
-            <p v-if="verdict.why" class="prv__sub">{{ verdict.why }}</p>
-          </div>
-
-          <div v-if="pr.checkRuns.length" class="prv__block" style="--i: 1">
-            <div class="prv__label">
-              <span class="prv__label-name">Checks</span>
-              <button type="button" class="prv__label-go" @click="setTab('checks')">All</button>
-            </div>
-            <div class="prv__ringrow">
-              <GitSpaceChecksRing :counts="checkCounts" :size="52" :stroke="5" />
-              <p class="prv__ringbrief">{{ checkBrief }}</p>
-            </div>
-            <div v-if="attention.length" class="prv__attn">
-              <button
-                v-for="c in attention"
-                :key="`${c.workflow}/${c.name}`"
-                type="button"
-                class="prv__attn-row"
-                :disabled="!c.url"
-                :title="c.url ? 'Open this check on GitHub' : c.name"
-                @click="c.url && space.openExternal(c.url)"
-              >
-                <i class="prv__checkdot" :class="`prv__checkdot--${c.state}`" />
-                <span class="prv__attn-name">{{ c.name }}</span>
-                <span class="prv__dim">{{ duration(c) }}</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="prv__block" style="--i: 2">
-            <div class="prv__label">
-              <span class="prv__label-name">Reviews</span>
-            </div>
-            <GitSpaceReviewers v-if="reviewers.length" :reviewers="reviewers" :size="30" />
-            <p class="prv__sub">{{ reviewSentence }}</p>
-          </div>
-
-          <div class="prv__block" style="--i: 3">
-            <div class="prv__label">
-              <span class="prv__label-name">Changes</span>
-              <button type="button" class="prv__label-go" @click="setTab('files')">Files</button>
-            </div>
-            <p class="prv__changes">
-              <span class="prv__add">+{{ pr.additions }}</span>
-              <span class="prv__del">−{{ pr.deletions }}</span>
-              <span class="prv__dim">{{ plural(pr.changedFiles, "file") }} · {{ plural(pr.commits.length, "commit") }}</span>
-            </p>
-            <div class="prv__sizes">
-              <button
-                v-for="(f, n) in biggest"
-                :key="f.path"
-                type="button"
-                class="prv__size"
-                :title="f.path"
-                @click="showFile(f.path)"
-              >
-                <span class="prv__size-name">{{ nameOf(f.path) }}</span>
-                <span class="prv__size-track">
-                  <i class="prv__bar-add" :style="{ width: `${fileBar(f, 96).add}px`, '--n': n }" />
-                  <i class="prv__bar-del" :style="{ width: `${fileBar(f, 96).del}px`, '--n': n }" />
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div v-if="pr.labels.length || pr.milestone || pr.assignees.length" class="prv__block" style="--i: 4">
-            <div v-if="pr.labels.length" class="prv__tags">
-              <span v-for="l in pr.labels" :key="l.name" class="prv__tag" :title="l.description ?? l.name">
-                <i class="prv__dot" :style="{ backgroundColor: `#${l.color}` }" />{{ l.name }}
-              </span>
-            </div>
-            <dl class="prv__facts">
-              <template v-if="pr.assignees.length">
-                <dt>Assigned</dt>
-                <dd>{{ pr.assignees.map((a) => a.login).join(", ") }}</dd>
-              </template>
-              <template v-if="pr.milestone">
-                <dt>Milestone</dt>
-                <dd>{{ pr.milestone }}</dd>
-              </template>
-              <template v-if="pr.updatedAt">
-                <dt>Updated</dt>
-                <dd>{{ dateOf(pr.updatedAt) }}</dd>
-              </template>
-            </dl>
-          </div>
-        </aside>
+        <GitSpacePullRequestSide
+          :pr="pr"
+          :check-counts="checkCounts"
+          :reviewers="reviewers"
+          :review-sentence="reviewSentence"
+          @tab="setTab"
+          @show-file="showFile"
+          @open-url="(url) => space.openExternal(url)"
+        />
       </div>
     </div>
 
@@ -930,6 +620,7 @@ onBeforeUnmount(() => {
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
     0 24px 64px -24px color-mix(in srgb, var(--ink) 28%, transparent);
 }
+
 /* Grow out of the clicked row, and shrink back into it. */
 .prm.is-in {
   animation: prm-grow 460ms cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
@@ -946,6 +637,7 @@ onBeforeUnmount(() => {
 @keyframes prm-shrink {
   to { opacity: 0; transform: scale(0.16); }
 }
+
 /* The head stays put; the page under it scrolls on its own. */
 .prm__frame {
   display: flex;
@@ -1143,169 +835,10 @@ onBeforeUnmount(() => {
 .prv__main {
   min-width: 0;
 }
-.prv__side {
-  display: flex;
-  flex-direction: column;
-  gap: 34px;
-  min-width: 0;
-  padding-bottom: 24px;
-}
-.prv__block {
-  animation: prv-in var(--gs-t-enter) var(--gs-ease) backwards;
-  animation-delay: calc(var(--i, 0) * var(--gs-stagger) * 3);
-}
 .prv__empty,
 .prv__nodesc {
   font-size: 13px;
   color: var(--muted);
-}
-
-/* ── side ─────────────────────────────────────────────────────────────────── */
-.prv__label {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.prv__label-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink-soft);
-}
-.prv__label-go {
-  margin-left: auto;
-  padding: 2px 6px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-}
-.prv__label-go:hover {
-  color: var(--ink);
-  background-color: var(--hover);
-}
-.prv__sub {
-  margin-top: 12px;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--muted);
-}
-.prv__big {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 20px;
-  font-weight: 500;
-  letter-spacing: -0.4px;
-  color: var(--ink);
-}
-.prv__big-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background-color: var(--muted);
-}
-.prv__big--ok .prv__big-dot {
-  background-color: var(--ok);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 18%, transparent);
-}
-.prv__big--bad .prv__big-dot {
-  background-color: var(--danger);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 16%, transparent);
-}
-.prv__big--warn .prv__big-dot {
-  background-color: var(--warn);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent);
-}
-.prv__verdictblock .prv__sub {
-  margin-top: 8px;
-}
-
-.prv__ringrow {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.prv__ringbrief {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--ink-soft);
-}
-.prv__attn {
-  display: flex;
-  flex-direction: column;
-  margin-top: 12px;
-}
-.prv__attn-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  height: 28px;
-  padding: 0 6px;
-  margin-inline: -6px;
-  border-radius: 7px;
-  text-align: left;
-  cursor: pointer;
-}
-.prv__attn-row:hover:not(:disabled) {
-  background-color: var(--hover);
-}
-.prv__attn-row:disabled {
-  cursor: default;
-}
-.prv__attn-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-}
-
-.prv__changes {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 12px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-.prv__changes .prv__dim {
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-}
-.prv__sizes {
-  display: flex;
-  flex-direction: column;
-}
-.prv__size {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 100px;
-  align-items: center;
-  gap: 10px;
-  height: 26px;
-  padding: 0 6px;
-  margin-inline: -6px;
-  border-radius: 7px;
-  text-align: left;
-  cursor: pointer;
-}
-.prv__size:hover {
-  background-color: var(--hover);
-}
-.prv__size-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--ink-soft);
-}
-.prv__size-track {
-  display: flex;
-  gap: 2px;
-  height: 6px;
 }
 .prv__bar {
   display: flex;
@@ -1328,40 +861,6 @@ onBeforeUnmount(() => {
 }
 .prv__bar-del {
   background-color: var(--diff-del);
-}
-
-.prv__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-bottom: 14px;
-}
-.prv__tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-}
-.prv__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-.prv__facts {
-  display: grid;
-  grid-template-columns: 76px 1fr;
-  gap: 8px 10px;
-  font-size: 12.5px;
-}
-.prv__facts dt {
-  color: var(--muted);
-}
-.prv__facts dd {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--ink-soft);
 }
 
 /* ── tabs ─────────────────────────────────────────────────────────────────── */
@@ -1406,14 +905,6 @@ onBeforeUnmount(() => {
 }
 .prv__pane {
   animation: prv-in var(--gs-t-small) var(--gs-ease);
-}
-
-/* ── conversation ─────────────────────────────────────────────────────────── */
-.prv__description {
-  max-width: 74ch;
-  font-size: 13.5px;
-  line-height: 1.7;
-  color: var(--ink-soft);
 }
 
 /* The rail: one hairline down the gutter, a node or a face at every event. */
@@ -1467,67 +958,6 @@ onBeforeUnmount(() => {
 .prv__rail--tight .prv__node {
   margin-top: 10px;
 }
-.prv__node--merged {
-  background-color: var(--ink-soft);
-}
-.prv__node--closed {
-  background-color: var(--danger);
-}
-.prv__line {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-.prv__line b {
-  font-weight: 500;
-  color: var(--ink);
-}
-.prv__when {
-  font-size: 12px;
-  color: var(--muted);
-}
-.prv__stale {
-  font-size: 12px;
-  font-style: italic;
-  color: var(--muted);
-}
-.prv__verdict {
-  color: var(--ink-soft);
-}
-.prv__verdict--approved {
-  color: var(--ok);
-}
-.prv__verdict--changes-requested {
-  color: var(--danger);
-}
-.prv__pushed {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.prv__pushed .prv__line {
-  margin-bottom: 4px;
-}
-.prv__pushed-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-  padding: 3px 8px;
-  margin-left: -8px;
-  border-radius: 7px;
-  text-align: left;
-  cursor: pointer;
-}
-.prv__pushed-row:hover {
-  background-color: var(--hover);
-}
 .prv__hash {
   flex-shrink: 0;
   font-family: var(--font-mono);
@@ -1542,20 +972,6 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   color: var(--ink-soft);
 }
-.prv__said {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.prv__saidbody {
-  max-width: 70ch;
-  font-size: 13px;
-  line-height: 1.65;
-  color: var(--ink-soft);
-}
-
 .prv__face {
   display: inline-flex;
   align-items: center;
@@ -1573,22 +989,6 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-.prv__face--lg {
-  width: 28px;
-  height: 28px;
-  font-size: 12px;
-  box-shadow: 0 0 0 4px var(--ground);
-}
-.prv__face--ringed.prv__face--approved {
-  box-shadow:
-    0 0 0 2px var(--ground),
-    0 0 0 4px var(--ok);
-}
-.prv__face--ringed.prv__face--changes-requested {
-  box-shadow:
-    0 0 0 2px var(--ground),
-    0 0 0 4px var(--danger);
 }
 
 /* ── lists (files, commits, checks) ───────────────────────────────────────── */
@@ -1663,7 +1063,6 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--muted);
 }
-
 .prv__commit {
   display: flex;
   flex-direction: column;
@@ -1698,7 +1097,6 @@ onBeforeUnmount(() => {
   background-color: var(--hover);
   color: var(--ink-soft);
 }
-
 .prv__check {
   display: flex;
   align-items: center;
@@ -1747,33 +1145,26 @@ onBeforeUnmount(() => {
   color: var(--ink);
   background-color: var(--hover);
 }
-
-/* Narrow panes put the verdict column above the story. */
 @media (max-width: 1180px) {
   .prv__cols {
     grid-template-columns: minmax(0, 1fr);
   }
-  .prv__side {
-    order: -1;
-  }
 }
-
 @media (prefers-reduced-motion: reduce) {
   .prm.is-in,
   .prm.is-out {
     animation-duration: 0.01s;
   }
   .prv__head,
-  .prv__scroll,
-  .prv__block,
-  .prv__pane,
-  .prv__event,
-  .prv__file,
-  .prv__check,
-  .prv__bar-add,
-  .prv__bar-del,
-  .prv__checkdot--pending,
-  .prv__btn--spin .prv__refresh {
+.prv__scroll,
+.prv__pane,
+.prv__event,
+.prv__file,
+.prv__check,
+.prv__bar-add,
+.prv__bar-del,
+.prv__checkdot--pending,
+.prv__btn--spin .prv__refresh {
     animation: none;
   }
 }

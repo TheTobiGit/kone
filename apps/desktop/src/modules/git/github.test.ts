@@ -257,6 +257,7 @@ describe("prs (record parsing)", () => {
       updatedAt: "2026-08-25T10:00:00Z",
       changedFiles: 4,
       mergeable: "CONFLICTING",
+      mergeStateStatus: "DIRTY",
       labels: [{ name: "bug", color: "D73A4A" }],
       latestReviews: [
         { author: { login: "bob" }, state: "APPROVED", commit: { oid: "abc" } },
@@ -277,7 +278,7 @@ describe("prs (record parsing)", () => {
       authorPerson: { login: "alice", name: "Alice" },
       updatedAt: "2026-08-25T10:00:00Z",
       changedFiles: 4,
-      mergeable: "conflicting",
+      mergeability: "conflicting",
       labels: [{ name: "bug", color: "d73a4a" }],
       checks: "failing",
       checkCounts: { passing: 1, failing: 1, pending: 1, skipped: 1 },
