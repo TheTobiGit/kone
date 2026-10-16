@@ -10,7 +10,7 @@ import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import SpawnWorkerMark from "~/components/conversation/SpawnWorkerMark.vue";
-import PageFrame from "~/components/conversation/PageFrame.vue";
+import VisualFrame from "~/components/conversation/VisualFrame.vue";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import { segText, type RenderGroup } from "~/utils/conversationSegments";
 import type { ResponseDisplay } from "~/utils/responseDisplay";
@@ -221,7 +221,7 @@ function onHeadClick(): void {
     <p v-else-if="grp.kind === 'decision'" class="decision-mark" :class="{ 'decision-mark--enter': !block.historical }">
       {{ grp.text }}
     </p>
-    <PageFrame v-else-if="grp.kind === 'page'" :page="grp.page" :animate="!block.historical" />
+    <VisualFrame v-else-if="grp.kind === 'visual'" :visual="grp.visual" :animate="!block.historical" />
     <SpawnWorkerMark
       v-else
       :record="grp.record"

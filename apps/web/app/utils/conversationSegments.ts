@@ -12,7 +12,7 @@
 // both agree on exactly what a "segment" and an "activity entry" are.
 
 import { isSpawnToolName, parseSpawnRecords, type SpawnRecord } from "@kone/protocol/spawn-record";
-import { PAGE_SHOW_TOOL_NAME, parsePageShown, type PageRef } from "@kone/protocol/page-render";
+import { isVisualShowToolName, parseVisualShown, splitVisualEmbeds, type VisualRef } from "@kone/protocol/visual-render";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 
@@ -96,16 +96,40 @@ export type RenderGroup =
   | { kind: "text"; placement: "work"; seg: Segment }
   | { kind: "spawn"; placement: "reply"; key: string; item: RuntimeItem; record: SpawnRecord }
   | { kind: "decision"; placement: "reply"; key: string; item: RuntimeItem; text: string }
-  | { kind: "page"; placement: "reply"; key: string; item: RuntimeItem; page: PageRef };
+  | { kind: "visual"; placement: "reply"; key: string; item: RuntimeItem; visual: VisualRef };
 
 /** The groups a settled turn folds behind its work toggler. */
 export type WorkGroup = Extract<RenderGroup, { placement: "work" }>;
 
-/** The page a settled page_show call put in the reply, or null for any other
- *  item. A page is part of what the agent says, so like a hand-off it stands
+/** The visual a settled visual_show call put in the reply, or null for any other
+ *  item. A visual is part of what the agent says, so like a hand-off it stands
  *  in the reply rather than among the steps that folded away. */
-export function pageOf(item: RuntimeItem): PageRef | null {
-  return settledToolCallOf(item, (name) => name === PAGE_SHOW_TOOL_NAME) ? parsePageShown(item.detail) : null;
+export function visualOf(item: RuntimeItem): VisualRef | null {
+  return settledToolCallOf(item, isVisualShowToolName) ? parseVisualShown(item.detail) : null;
+}
+
+/** A text segment cut around the visuals its text places, each piece of text
+ *  a segment of its own. A piece is one stand-in item carrying that text, so
+ *  everything downstream reads it as it reads any text; only the last piece
+ *  can still be arriving. A segment that places nothing comes back as it was,
+ *  keeping its identity. */
+type PlacedPart = { kind: "text"; seg: Segment } | { kind: "visual"; attachmentId: string };
+
+function placedParts(seg: Segment, shown: ReadonlyMap<string, VisualRef>): PlacedPart[] {
+  const text = segText(seg);
+  const streaming = segStreaming(seg);
+  const parts = splitVisualEmbeds(text, { streaming });
+  if (parts.length === 1 && parts[0]!.kind === "text" && parts[0]!.text === text) return [{ kind: "text", seg }];
+  const last = seg.items[seg.items.length - 1]!;
+  return parts.flatMap((part, index): PlacedPart[] => {
+    if (part.kind === "visual") return shown.has(part.attachmentId) ? [part] : [];
+    // The first piece keeps the segment's key, so the text already on screen
+    // stays put when a placement arrives after it.
+    const key = index === 0 ? seg.key : `${seg.key}:${index}`;
+    const itemId = index === 0 ? last.itemId : `${last.itemId}:${index}`;
+    const status = index === parts.length - 1 ? last.status : "completed";
+    return [{ kind: "text", seg: { kind: "text", key, items: [{ ...last, itemId, text: part.text, status }] } }];
+  });
 }
 
 /** What a settled agent_keep_or_stop call said it decided — "Kept Frontend
@@ -120,14 +144,44 @@ export function decisionTextOf(item: RuntimeItem): string | null {
 export function renderGroups(block: AssistantBlock): RenderGroup[] {
   const out: RenderGroup[] = [];
   const spawned = new Set<string>();
-  // kone puts each page in the turn itself, and a provider that reports the
-  // call carries the same page; it stands once, where it first landed.
-  const pages = new Set<string>();
+  // kone puts each visual in the turn itself, and a provider that reports the
+  // call carries the same visual; it stands once, where it first landed.
+  const visuals = new Set<string>();
+  // Every visual the turn showed, so text can place one wherever it falls. A
+  // visual the text places stands there instead of where its call landed; one
+  // it never places stands at its call.
+  const shown = new Map<string, { item: RuntimeItem; visual: VisualRef }>();
+  for (const item of block.items) {
+    const visual = visualOf(item);
+    if (visual && !shown.has(visual.attachmentId)) shown.set(visual.attachmentId, { item, visual });
+  }
+  const shownRefs = new Map([...shown].map(([id, entry]) => [id, entry.visual]));
+  const segments = segmentsOf(block);
+  const placed = new Set<string>();
+  if (shown.size) {
+    for (const seg of segments) {
+      if (seg.kind !== "text") continue;
+      for (const part of placedParts(seg, shownRefs)) if (part.kind === "visual") placed.add(part.attachmentId);
+    }
+  }
   const pushStep = (seg: Segment): void =>
     void out.push({ kind: "steps", placement: "work", key: seg.key, segments: [seg] });
-  for (const seg of segmentsOf(block)) {
+  for (const seg of segments) {
     if (seg.kind === "text") {
-      out.push({ kind: "text", placement: "work", seg });
+      if (!shown.size) {
+        out.push({ kind: "text", placement: "work", seg });
+        continue;
+      }
+      for (const part of placedParts(seg, shownRefs)) {
+        if (part.kind === "text") {
+          out.push({ kind: "text", placement: "work", seg: part.seg });
+          continue;
+        }
+        if (visuals.has(part.attachmentId)) continue;
+        visuals.add(part.attachmentId);
+        const { item, visual } = shown.get(part.attachmentId)!;
+        out.push({ kind: "visual", placement: "reply", key: `${block.id}:${item.itemId}`, item, visual });
+      }
       continue;
     }
     if (seg.kind === "thinking") {
@@ -152,12 +206,12 @@ export function renderGroups(block: AssistantBlock): RenderGroup[] {
         out.push({ kind: "decision", placement: "reply", key: `${block.id}:${item.itemId}`, item, text: decided });
         continue;
       }
-      const page = pageOf(item);
-      if (page) {
-        if (pages.has(page.attachmentId)) continue;
-        pages.add(page.attachmentId);
+      const visual = visualOf(item);
+      if (visual) {
+        if (visuals.has(visual.attachmentId) || placed.has(visual.attachmentId)) continue;
+        visuals.add(visual.attachmentId);
         flush();
-        out.push({ kind: "page", placement: "reply", key: `${block.id}:${item.itemId}`, item, page });
+        out.push({ kind: "visual", placement: "reply", key: `${block.id}:${item.itemId}`, item, visual });
         continue;
       }
       const records = spawnRecordsOf(item);

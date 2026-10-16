@@ -52,6 +52,17 @@ function kone(
   return { icon, label, family, running, done, failed };
 }
 
+const VISUAL_PREVIEW = kone(WebDesign01Icon, "Visual", "write", [
+  "Checking a visual",
+  "Checked a visual",
+  "Couldn't render the visual",
+]);
+const VISUAL_SHOW = kone(WebDesign01Icon, "Visual", "write", [
+  "Showing a visual",
+  "Showed a visual",
+  "Couldn't show the visual",
+]);
+
 const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.entries({
   ask_question: kone(WorkflowSquare01Icon, "Question", "agent", [
     "Asking question",
@@ -217,17 +228,12 @@ const KONE_TOOLS: ReadonlyMap<string, KoneToolPresentation> = new Map(Object.ent
     "Couldn't preview a rewrite",
   ]),
 
-  // pages
-  page_preview: kone(WebDesign01Icon, "Page", "write", [
-    "Checking a page",
-    "Checked a page",
-    "Couldn't render the page",
-  ]),
-  page_show: kone(WebDesign01Icon, "Page", "write", [
-    "Showing a page",
-    "Showed a page",
-    "Couldn't show the page",
-  ]),
+  // dynamic visuals
+  visual_preview: VISUAL_PREVIEW,
+  visual_show: VISUAL_SHOW,
+  // The names these tools had before, so threads recorded under them still read.
+  page_preview: VISUAL_PREVIEW,
+  page_show: VISUAL_SHOW,
 
   // app — agents
   app_list_agents: kone(UserGroupIcon, "Agents", "agent", ["Listing agents", "Listed agents", "Couldn't list agents"]),

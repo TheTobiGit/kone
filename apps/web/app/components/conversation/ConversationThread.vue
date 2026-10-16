@@ -10,6 +10,7 @@ import {
   RefreshIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import { stripVisualEmbeds } from "@kone/protocol/visual-render";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import type {
   ChatAttachment,
@@ -369,10 +370,12 @@ function canActOn(block: AssistantBlock): boolean {
 function hasTurnCheckpoint(block: AssistantBlock): boolean {
   return block.state !== "running" && hasCheckpoint(block) && !!props.threadId;
 }
+// A copied reply reads as text: the blocks that place visuals in it would paste
+// as code naming an attachment nobody else can open.
 function assistantText(block: AssistantBlock): string {
   return block.items
     .filter((i) => i.kind === "assistant_text" || i.kind === "plan_text")
-    .map((i) => i.text)
+    .map((i) => (i.kind === "assistant_text" ? stripVisualEmbeds(i.text) : i.text))
     .join("\n\n")
     .trim();
 }

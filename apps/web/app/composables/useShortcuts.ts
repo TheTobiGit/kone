@@ -524,6 +524,18 @@ export function matchesShortcut(id: string, e: KeyboardEvent): boolean {
   return matchesBinding(e, bindingFor(id));
 }
 
+// Is this press one of the app's own Cmd/Ctrl chords, under the reader's
+// current bindings? A key pressed inside an agent's visual is handed on to the
+// app only when it is: the visual's script can post any key it likes, and
+// only a chord the app already answers is worth acting on.
+export function isAppChord(e: KeyboardEvent): boolean {
+  if (!e.metaKey && !e.ctrlKey) return false;
+  return ACTIONS.some((action) => {
+    const binding = bindingFor(action.id);
+    return /(^|\+)(mod|ctrl)\+/.test(binding) && matchesBinding(e, binding);
+  });
+}
+
 // ── display ────────────────────────────────────────────────────────────────────
 const MAC_MOD_GLYPH = {
   mod: "⌘",

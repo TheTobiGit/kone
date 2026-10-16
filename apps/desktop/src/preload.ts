@@ -529,6 +529,8 @@ const api = {
       ipcRenderer.invoke("agent:get-attachment-path", attachmentId),
     showAttachmentInFolder: (attachmentId: string): Promise<boolean> =>
       ipcRenderer.invoke("agent:show-attachment-in-folder", attachmentId),
+    readVisualSource: (attachmentId: string): Promise<string | null> =>
+      ipcRenderer.invoke("agent:read-visual-source", attachmentId),
     sendTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:send-turn", input),
     // Trigger context compaction for a thread; resolves once the provider has

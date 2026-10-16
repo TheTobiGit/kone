@@ -1,4 +1,5 @@
 import { senderLabel } from "@kone/protocol/message-sender";
+import { stripVisualEmbeds } from "@kone/protocol/visual-render";
 
 import type { PlanTask, RuntimeItem, StoredBlock, StoredThread } from "./types.js";
 
@@ -78,7 +79,7 @@ function renderBlock(block: StoredBlock, textCap = TEXT_CAP): string | null {
   const narrative = condense(
     block.items
       .filter((item) => item.kind === "assistant_text")
-      .map((item) => item.text)
+      .map((item) => stripVisualEmbeds(item.text))
       .join(" "),
     textCap,
   );

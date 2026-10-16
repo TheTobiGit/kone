@@ -43,7 +43,8 @@ import { boardsView } from "@kone/agent-core/boardView.js";
 import { configureIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
-import { previewPage } from "../pagePreview.js";
+import { measureVisual, previewVisual } from "../visualPreview.js";
+import { readStoredVisual } from "../visualProtocol.js";
 import { currentAppearance, currentThemeRoster } from "../modules/system/system.js";
 import {
   currentAgentRoster,
@@ -383,8 +384,9 @@ export function registerAgentIpc(): void {
     // back here is what lets app_get_theme_state describe the actual window
     // instead of the last theme an agent asked for.
     readAppearance: () => currentAppearance(),
-    // Pages render off screen in a hidden window of the app's own browser.
-    previewPage,
+    // Visuals render off screen in a hidden window of the app's own browser.
+    previewVisual,
+    measureVisual,
     // Likewise the library: an install's themes are its built-ins plus whatever
     // the user imported or authored, and the renderer is the only one that
     // knows the whole set.
@@ -807,6 +809,9 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:get-attachment-path", (_event, attachmentId: string) => {
     return attachments.resolveAbsPath(attachmentId);
   });
+  // A shown visual's document as the agent wrote it, for the reader to copy.
+  // Only a visual: any other attachment is not served here.
+  ipcMain.handle("agent:read-visual-source", (_event, attachmentId: string) => readStoredVisual(attachmentId));
   ipcMain.handle("agent:show-attachment-in-folder", (_event, attachmentId: string) => {
     const absPath = attachments.resolveAbsPath(attachmentId);
     if (absPath && existsSync(absPath)) {
