@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon, ArrowUpRight01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import type { GitHubPullRequest } from "~/types/desktop";
+import { PR_STAND, PR_STAND_RANK, prStandOf, type PrStand } from "~/utils/prStand";
 import type { useGitSpace } from "~/composables/useGitSpace";
 
 // Pull requests, without the round trip to a browser.
@@ -13,10 +14,12 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 // so a red sliver shows before you read a word, and ends with the people
 // reviewing it as faces ringed in their verdict, and its size drawn as a bar.
 //
-// The side column reads the whole list at once: where everything stands, who
-// the reviews are waiting on, and what has been open longest. Each drawing is
-// also a filter. Clicking a row steps into the pull request's own page; the
-// link out to GitHub stays, because merging still happens there.
+// The side column (GitSpacePullRequestsSide) reads the whole list at once:
+// where everything stands, who the reviews are waiting on, and what has been
+// open longest. Each drawing is also a filter, and the filters live here.
+//
+// Clicking a row opens the pull request in a card over the list; the link out
+// to GitHub stays, because merging still happens there.
 
 const props = defineProps<{ space: ReturnType<typeof useGitSpace> }>();
 
@@ -127,51 +130,16 @@ function open(url: string) {
 }
 
 // ── where each one stands ────────────────────────────────────────────────────
-// One word per pull request for what's in its way, picked in the order it
-// would have to be dealt with: a draft isn't asking for anything yet, a
-// conflict blocks everything after it, red checks come before reviews, and only
-// a green, approved one is ready.
+// One rule for the list and the open pull request alike (utils/prStand).
 
-type Stand = "ready" | "review" | "running" | "changes" | "failing" | "conflict" | "draft" | "merged" | "closed";
-
-interface StandInfo {
-  id: Stand;
-  label: string;
-  /** The token its dot and bar segment wear. */
-  tone: string;
-}
-
-const STANDS: StandInfo[] = [
-  { id: "ready", label: "Ready to merge", tone: "var(--ok)" },
-  { id: "review", label: "Needs review", tone: "var(--ink-soft)" },
-  { id: "running", label: "Checks running", tone: "var(--warn)" },
-  { id: "changes", label: "Changes requested", tone: "var(--accent)" },
-  { id: "failing", label: "Checks failing", tone: "var(--danger)" },
-  { id: "conflict", label: "Has conflicts", tone: "color-mix(in srgb, var(--danger) 55%, var(--ink))" },
-  { id: "draft", label: "Draft", tone: "color-mix(in srgb, var(--ink) 22%, transparent)" },
-  { id: "merged", label: "Merged", tone: "color-mix(in srgb, var(--ink) 45%, transparent)" },
-  { id: "closed", label: "Closed", tone: "color-mix(in srgb, var(--ink) 15%, transparent)" },
-];
-const STAND = new Map(STANDS.map((s) => [s.id, s]));
-const RANK = new Map(STANDS.map((s, i) => [s.id, i]));
-
-function standOf(pr: GitHubPullRequest): Stand {
-  if (pr.state === "merged") return "merged";
-  if (pr.state === "closed") return "closed";
-  if (pr.isDraft) return "draft";
-  if (pr.mergeable === "conflicting") return "conflict";
-  if (pr.checks === "failing") return "failing";
-  if (pr.reviewDecision === "changes-requested") return "changes";
-  if (pr.checks === "pending") return "running";
-  if (pr.reviewDecision === "approved") return "ready";
-  if (pr.reviewDecision === "review-required") return "review";
-  return pr.reviewers.some((r) => r.state === "pending") ? "review" : "ready";
+function standOf(pr: GitHubPullRequest): PrStand {
+  return prStandOf({ ...pr, failingChecks: pr.checkCounts.failing, pendingChecks: pr.checkCounts.pending });
 }
 
 // ── filters ──────────────────────────────────────────────────────────────────
 
 const query = ref("");
-const standFilter = ref<Stand | null>(null);
+const standFilter = ref<PrStand | null>(null);
 const waitingFilter = ref<string | null>(null);
 const filtering = computed(() => Boolean(query.value.trim() || standFilter.value || waitingFilter.value));
 
@@ -195,7 +163,7 @@ function clearFilters() {
   standFilter.value = null;
   waitingFilter.value = null;
 }
-function pickStand(id: Stand) {
+function pickStand(id: PrStand) {
   cue("select");
   standFilter.value = standFilter.value === id ? null : id;
 }
@@ -229,7 +197,7 @@ const groups = computed<Group[]>(() => {
     else others.push(pr);
   }
   const byStand = (a: GitHubPullRequest, b: GitHubPullRequest) =>
-    (RANK.get(standOf(a)) ?? 0) - (RANK.get(standOf(b)) ?? 0) ||
+    (PR_STAND_RANK.get(standOf(a)) ?? 0) - (PR_STAND_RANK.get(standOf(b)) ?? 0) ||
     (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt);
   const out: Group[] = [
     { id: "yours", label: "Yours", rows: yours.sort(byStand) },
@@ -240,62 +208,6 @@ const groups = computed<Group[]>(() => {
   return out.filter((g) => g.rows.length > 0);
 });
 const shownCount = computed(() => groups.value.reduce((n, g) => n + g.rows.length, 0));
-
-// ── the side column ──────────────────────────────────────────────────────────
-
-interface StandCount extends StandInfo {
-  count: number;
-}
-
-const stands = computed<StandCount[]>(() => {
-  const counts = new Map<Stand, number>();
-  for (const pr of prs.value) counts.set(standOf(pr), (counts.get(standOf(pr)) ?? 0) + 1);
-  const out: StandCount[] = [];
-  for (const s of STANDS) {
-    const count = counts.get(s.id) ?? 0;
-    if (count) out.push({ ...s, count });
-  }
-  return out;
-});
-const readyCount = computed(() => stands.value.find((s) => s.id === "ready")?.count ?? 0);
-const openCount = computed(() => prs.value.filter((pr) => pr.state === "open").length);
-
-interface Waiting {
-  login: string;
-  face: string | null;
-  count: number;
-}
-
-/** Everyone a review is waiting on, the busiest first. */
-const waitingOn = computed<Waiting[]>(() => {
-  const by = new Map<string, Waiting>();
-  for (const pr of prs.value) {
-    if (pr.state !== "open" || pr.isDraft) continue;
-    for (const r of pr.reviewers) {
-      if (r.state !== "pending") continue;
-      const hit = by.get(r.person.login);
-      if (hit) hit.count++;
-      else by.set(r.person.login, { login: r.person.login, face: r.person.avatarDataUrl, count: 1 });
-    }
-  }
-  return [...by.values()].sort((a, b) => b.count - a.count);
-});
-const waitingPeak = computed(() => Math.max(1, ...waitingOn.value.map((w) => w.count)));
-const myWaiting = computed(() => waitingOn.value.find((w) => w.login === myLogin.value)?.count ?? 0);
-
-const DAY_MS = 86_400_000;
-const OLDEST_SHOWN = 4;
-/** The open pull requests that have been open longest, as bars of days. */
-const oldest = computed(() => {
-  // Measured to the latest activity on the list rather than the wall clock,
-  // which for a live repository is the same moment.
-  let now = 0;
-  for (const pr of prs.value) now = Math.max(now, Date.parse(pr.updatedAt ?? pr.createdAt) || 0);
-  const open = prs.value.filter((pr) => pr.state === "open");
-  const aged = open.map((pr) => ({ pr, days: Math.max(0, (now - Date.parse(pr.createdAt)) / DAY_MS) }));
-  return aged.sort((a, b) => b.days - a.days).slice(0, OLDEST_SHOWN);
-});
-const oldestPeak = computed(() => Math.max(1, ...oldest.value.map((o) => o.days)));
 
 // ── drawing a row ────────────────────────────────────────────────────────────
 
@@ -458,7 +370,7 @@ function plural(n: number, word: string): string {
               <span class="gsp__ring">
                 <GitSpaceChecksRing :counts="pr.checkCounts" :size="24" :stroke="3" />
                 <i
-                  v-if="pr.mergeable === 'conflicting' && pr.state === 'open'"
+                  v-if="pr.mergeability === 'conflicting' && pr.state === 'open'"
                   class="gsp__conflict"
                   title="Conflicts with its base branch"
                 />
@@ -471,8 +383,8 @@ function plural(n: number, word: string): string {
                 </span>
                 <span class="gsp__meta">
                   <span class="gsp__stand">
-                    <i class="gsp__stand-dot" :style="{ background: STAND.get(standOf(pr))?.tone }" />
-                    {{ STAND.get(standOf(pr))?.label }}
+                    <i class="gsp__stand-dot" :style="{ background: PR_STAND.get(standOf(pr))?.tone }" />
+                    {{ PR_STAND.get(standOf(pr))?.label }}
                   </span>
                   <span class="gsp__who">
                     <span class="gsp__face" aria-hidden="true">
@@ -530,110 +442,17 @@ function plural(n: number, word: string): string {
         </p>
       </div>
 
-      <!-- ══ the side column: the whole list at once ══════════════════════ -->
-      <aside v-if="prs.length" class="gsp__side">
-        <label class="gsp__search gsp__block" style="--i: 0">
-          <HugeiconsIcon :icon="Search01Icon" :size="14" :stroke-width="1.8" />
-          <input
-            v-model="query"
-            type="search"
-            placeholder="Find a pull request"
-            spellcheck="false"
-            autocomplete="off"
-          />
-        </label>
-
-        <div class="gsp__block" style="--i: 1">
-          <div class="gsp__label">
-            <span class="gsp__label-name">Where they stand</span>
-          </div>
-          <div class="gsp__big">
-            <span class="gsp__big-num">{{ readyCount }}</span>
-            <span class="gsp__big-of">of {{ openCount }} ready to merge</span>
-          </div>
-          <div class="gsp__stack" role="presentation">
-            <i
-              v-for="s in stands"
-              :key="s.id"
-              class="gsp__stack-seg"
-              :class="{ 'gsp__stack-seg--dim': standFilter && standFilter !== s.id }"
-              :style="{ flexGrow: s.count, background: s.tone }"
-            />
-          </div>
-          <div class="gsp__legend">
-            <button
-              v-for="s in stands"
-              :key="s.id"
-              type="button"
-              class="gsp__key"
-              :class="{ 'gsp__key--on': standFilter === s.id, 'gsp__key--dim': standFilter && standFilter !== s.id }"
-              :aria-pressed="standFilter === s.id"
-              @click="pickStand(s.id)"
-            >
-              <i class="gsp__key-dot" :style="{ background: s.tone }" />
-              <span class="gsp__key-name">{{ s.label }}</span>
-              <span class="gsp__key-count">{{ s.count }}</span>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="waitingOn.length" class="gsp__block" style="--i: 2">
-          <div class="gsp__label">
-            <span class="gsp__label-name">Waiting on</span>
-            <span class="gsp__label-count">{{ waitingOn.length }}</span>
-          </div>
-          <div class="gsp__waiting">
-            <button
-              v-for="(w, n) in waitingOn"
-              :key="w.login"
-              type="button"
-              class="gsp__wait"
-              :class="{ 'gsp__wait--on': waitingFilter === w.login, 'gsp__wait--dim': waitingFilter && waitingFilter !== w.login }"
-              :style="{ '--n': n }"
-              :aria-pressed="waitingFilter === w.login"
-              @click="pickWaiting(w.login)"
-            >
-              <span class="gsp__face gsp__face--md" aria-hidden="true">
-                <img v-if="w.face" :src="w.face" alt="" />
-                <template v-else>{{ initial(w.login) }}</template>
-              </span>
-              <span class="gsp__wait-name">{{ w.login === myLogin ? "you" : w.login }}</span>
-              <span class="gsp__wait-track">
-                <i class="gsp__wait-fill" :style="{ width: `${(w.count / waitingPeak) * 100}%` }" />
-              </span>
-              <span class="gsp__key-count">{{ w.count }}</span>
-            </button>
-          </div>
-          <p class="gsp__sub">
-            <template v-if="myWaiting">
-              <b>{{ plural(myWaiting, "review") }}</b>{{ " " }}{{ myWaiting === 1 ? "is" : "are" }} waiting on you.
-            </template>
-            <template v-else>Nothing is waiting on you.</template>
-          </p>
-        </div>
-
-        <div v-if="oldest.length" class="gsp__block" style="--i: 3">
-          <div class="gsp__label">
-            <span class="gsp__label-name">Open longest</span>
-          </div>
-          <div class="gsp__ages">
-            <button
-              v-for="(o, n) in oldest"
-              :key="o.pr.number"
-              type="button"
-              class="gsp__age"
-              :title="o.pr.title"
-              @click="openRow($event, o.pr.number)"
-            >
-              <span class="gsp__age-num">#{{ o.pr.number }}</span>
-              <span class="gsp__age-track">
-                <i class="gsp__age-fill" :style="{ width: `${(o.days / oldestPeak) * 100}%`, '--n': n }" />
-              </span>
-              <span class="gsp__key-count">{{ o.pr.relative.replace(/ ago$/, "") }}</span>
-            </button>
-          </div>
-        </div>
-      </aside>
+      <GitSpacePullRequestsSide
+        v-if="prs.length"
+        v-model:query="query"
+        :prs="prs"
+        :my-login="myLogin"
+        :stand-filter="standFilter"
+        :waiting-filter="waitingFilter"
+        @pick-stand="pickStand"
+        @pick-waiting="pickWaiting"
+        @open="(n, o) => emit('open', n, o)"
+      />
     </template>
   </section>
 </template>
@@ -651,21 +470,11 @@ function plural(n: number, word: string): string {
   flex-direction: column;
   min-width: 0;
 }
-/* The side column holds still while the list scrolls past it. */
-.gsp__side {
-  position: sticky;
-  top: 6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 36px;
-  min-width: 0;
-}
 .gsp__fill {
   flex: 1 1 auto;
 }
 
 /* ── entrance ─────────────────────────────────────────────────────────────── */
-.gsp__block,
 .gsp__group {
   animation: gsp-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3);
@@ -750,22 +559,11 @@ function plural(n: number, word: string): string {
   font-weight: 500;
   color: var(--ink-soft);
 }
-.gsp__label-count,
-.gsp__key-count {
+.gsp__label-count {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-.gsp__sub {
-  margin: 12px 0 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--muted);
-}
-.gsp__sub b {
-  font-weight: 500;
-  color: var(--ink-soft);
 }
 
 /* ── groups and rows ──────────────────────────────────────────────────────── */
@@ -893,11 +691,6 @@ function plural(n: number, word: string): string {
   height: 100%;
   object-fit: cover;
 }
-.gsp__face--md {
-  width: 22px;
-  height: 22px;
-  font-size: 11px;
-}
 .gsp__dim {
   color: var(--muted);
 }
@@ -963,154 +756,6 @@ function plural(n: number, word: string): string {
 .gsp__row:hover .gsp__right,
 .gsp__row:focus-within .gsp__right {
   opacity: 0;
-}
-
-/* ── side ─────────────────────────────────────────────────────────────────── */
-.gsp__search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 9px;
-  color: var(--muted);
-  background-color: var(--hover);
-  cursor: text;
-}
-.gsp__search input {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 13px;
-  color: var(--ink);
-  background: none;
-  border: 0;
-  outline: none;
-}
-.gsp__search input::placeholder {
-  color: var(--muted);
-}
-.gsp__search:focus-within {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 18%, transparent);
-}
-
-.gsp__big {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.gsp__big-num {
-  font-family: var(--font-mono);
-  font-size: 30px;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  color: var(--ink);
-}
-.gsp__big-of {
-  font-size: 13px;
-  color: var(--muted);
-}
-.gsp__stack {
-  display: flex;
-  gap: 2px;
-  height: 10px;
-  transform-origin: left center;
-  animation: gsp-grow 640ms var(--gs-ease) backwards;
-  animation-delay: 260ms;
-}
-.gsp__stack-seg {
-  flex-basis: 0;
-  min-width: 3px;
-  border-radius: 3px;
-  transition: opacity var(--gs-t-small) var(--gs-ease);
-}
-.gsp__stack-seg--dim {
-  opacity: 0.25;
-}
-.gsp__legend {
-  display: flex;
-  flex-direction: column;
-  margin-top: 12px;
-}
-.gsp__key,
-.gsp__wait,
-.gsp__age {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 6px;
-  margin-inline: -6px;
-  border-radius: 7px;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--gs-t-micro) ease,
-    opacity var(--gs-t-small) ease;
-}
-.gsp__key:hover,
-.gsp__key--on,
-.gsp__wait:hover,
-.gsp__wait--on,
-.gsp__age:hover {
-  background-color: var(--hover);
-}
-.gsp__key--dim,
-.gsp__wait--dim {
-  opacity: 0.45;
-}
-.gsp__key-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-.gsp__key-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-}
-
-.gsp__waiting,
-.gsp__ages {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.gsp__wait {
-  height: 32px;
-}
-.gsp__wait-name {
-  width: 92px;
-  flex-shrink: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-}
-.gsp__wait-track,
-.gsp__age-track {
-  flex: 1 1 auto;
-  height: 6px;
-}
-.gsp__wait-fill,
-.gsp__age-fill {
-  display: block;
-  height: 100%;
-  border-radius: 3px;
-  background-color: color-mix(in srgb, var(--ink) 30%, transparent);
-  transform-origin: left center;
-  animation: gsp-grow 600ms var(--gs-ease) backwards;
-  animation-delay: calc(300ms + var(--n, 0) * 60ms);
-}
-.gsp__age-num {
-  width: 40px;
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--ink-soft);
 }
 
 .gsp__sweep {
@@ -1309,27 +954,18 @@ function plural(n: number, word: string): string {
   color: var(--muted);
 }
 
-/* Narrow panes put the drawings above the list. */
 @media (max-width: 1180px) {
   .gsp {
     grid-template-columns: minmax(0, 1fr);
   }
-  .gsp__side {
-    position: static;
-    order: -1;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .gsp__block,
   .gsp__group,
   .gsp__row,
   .gsp__composer,
   .gsp__size-add,
-  .gsp__size-del,
-  .gsp__stack,
-  .gsp__wait-fill,
-  .gsp__age-fill {
+  .gsp__size-del {
     animation: none;
   }
   .gsp__row,

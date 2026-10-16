@@ -1551,7 +1551,7 @@ function prRowOf(d: GitHubPullRequestDetail): GitHubPullRequest {
     changedFiles: d.changedFiles,
     labels: d.labels,
     reviewers,
-    mergeable: d.mergeability === "conflicting" ? "conflicting" : d.state === "open" ? "mergeable" : "unknown",
+    mergeability: d.mergeability,
     checkCounts,
   };
 }
