@@ -371,7 +371,7 @@ function onBodyKey(e: KeyboardEvent) {
 .cb__ghost:focus-visible,
 .cb__commit:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

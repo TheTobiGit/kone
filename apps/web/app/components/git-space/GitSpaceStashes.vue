@@ -204,7 +204,7 @@ function drop(index: number) {
 }
 .gss__sweep:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 .gss__row {
@@ -325,7 +325,7 @@ function drop(index: number) {
 }
 .gss__act:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 /* The edit row's buttons are the point of the row — always visible. */
 .gss__row--edit .gss__act {

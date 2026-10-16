@@ -333,7 +333,7 @@ function stashAll() {
 .gsc__sweep:focus-visible {
   opacity: 1;
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 /* ── row ──────────────────────────────────────────────────────────────────── */
@@ -379,7 +379,7 @@ function stashAll() {
 }
 .gsc__open:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
   border-radius: 6px;
 }
 .gsc__path {
@@ -477,7 +477,7 @@ function stashAll() {
 }
 .gsc__act:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
