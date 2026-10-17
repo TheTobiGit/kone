@@ -128,24 +128,13 @@ async function currentBranch(root: string): Promise<string | null> {
 
 /** A local branch's upstream ref ("origin/topic"), or null when it has none. */
 async function upstreamOf(root: string, branch: string): Promise<string | null> {
-  const out = await git(root, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`]).catch(
+  // The full ref, cut by hand: git's short form reads "remotes/origin/x" when
+  // a local branch is also called "origin/x".
+  const out = await git(root, ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`]).catch(
     () => "",
   );
-  return out.trim() || null;
-}
-
-/** The current branch's upstream ref ("origin/main"), or null when it has none.
- *  rev-parse echoes the literal "@{upstream}" back in some configurations when
- *  there is no upstream — that is "none" too. */
-async function currentUpstream(root: string): Promise<string | null> {
-  try {
-    const out = (
-      await git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
-    ).trim();
-    return out.length > 0 && out !== "@{upstream}" ? out : null;
-  } catch {
-    return null;
-  }
+  const ref = out.trim();
+  return ref.startsWith("refs/remotes/") ? ref.slice("refs/remotes/".length) : null;
 }
 
 /** Push the current branch. Without an upstream (or with `setUpstream`) this
@@ -164,7 +153,7 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
     // checked-out one's could name another remote altogether.
     const upstream = opts?.branch?.trim()
       ? await upstreamOf(root, branch)
-      : await currentUpstream(root);
+      : await upstreamOf(root, branch);
     const split = upstream ? await splitRemoteRef(root, upstream) : null;
     const upstreamRemote = split?.remote ?? null;
     const upstreamBranch = split?.branch ?? null;
