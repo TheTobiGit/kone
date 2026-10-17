@@ -185,7 +185,10 @@ async function copyName() {
   copiedTimer = setTimeout(() => (copied.value = false), 1600);
 }
 function merge() {
-  void run(() => props.space.mergeBranch(b.value.name));
+  // The full ref only when a local and a remote branch share the spelling:
+  // git writes whatever it is given into the merge message.
+  const twin = props.space.branches.value.some((x) => x.remote !== b.value.remote && x.name === b.value.name);
+  void run(() => props.space.mergeBranch(twin ? refOf(b.value) : b.value.name));
 }
 /** A remote branch already checked out under its own name is a switch. */
 const localTwin = computed(() =>
