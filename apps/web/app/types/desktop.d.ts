@@ -167,6 +167,21 @@ export type GitBranch = {
   upstream?: string;
   ahead?: number;
   behind?: number;
+  gone?: boolean;
+  sha?: string;
+  date?: string;
+  author?: string;
+  subject?: string;
+  default?: boolean;
+  merged?: boolean;
+  worktree?: string;
+};
+
+export type GitBranchCompare = {
+  base: string | null;
+  ahead: number;
+  behind: number;
+  commits: GitCommit[];
 };
 
 export type GitCommit = {
@@ -747,6 +762,7 @@ export type KoneGitApi = {
   content: (dir: string, path: string) => Promise<GitFileContent | null>;
   files: (dir: string, query?: string) => Promise<GitProjectFile[]>;
   branches: (dir: string) => Promise<GitBranch[]>;
+  branchCompare: (dir: string, name: string, remote: boolean) => Promise<GitBranchCompare | null>;
   log: (dir: string, limit?: number, skip?: number) => Promise<GitCommit[]>;
   clone: (url: string, dest: string) => Promise<CloneResult>;
   /** Abort the clone in flight; its clone() promise then rejects. */
@@ -796,6 +812,9 @@ export type KoneGitApi = {
     name: string,
     opts?: { force?: boolean; remote?: boolean },
   ) => Promise<void>;
+  checkoutCarrying: (dir: string, branch: string) => Promise<void>;
+  fastForward: (dir: string, name: string) => Promise<void>;
+  setUpstream: (dir: string, name: string, upstream: string) => Promise<void>;
   renameBranch: (dir: string, from: string, to: string) => Promise<void>;
   mergeBranch: (dir: string, name: string, opts?: { noFf?: boolean }) => Promise<void>;
   /** Continue / abort whatever `repoState().operation` reports. */

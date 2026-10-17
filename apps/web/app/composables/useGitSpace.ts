@@ -7,6 +7,7 @@ import type {
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
   GitBranch,
+  GitBranchCompare,
   GitCommit,
   GitCommitAuthors,
   GitCommitDetail,
@@ -378,7 +379,9 @@ export function useGitSpace(
     Promise.all([git.refresh(), loadCommits(true), loadBranches()]);
 
   function fetchRemote(): Promise<boolean> {
-    return act("fetch", () => bridge.fetch(dir()), afterHistoryMoved);
+    // The repo's own remote: origin, else the first one, so a repo whose only
+    // remote has another name still fetches.
+    return act("fetch", () => bridge.fetch(dir(), origin.value?.name), afterHistoryMoved);
   }
   function pull(opts?: GitPullOptions): Promise<boolean> {
     return act("pull", () => bridge.pull(dir(), opts), afterHistoryMoved);
@@ -423,6 +426,26 @@ export function useGitSpace(
   ): Promise<boolean> {
     return act("branch", () => bridge.deleteBranch(dir(), name, opts), loadBranches);
   }
+  /** Delete the merged branches a cleanup offers, in one go. Forced, since
+   *  `-d` measures against HEAD rather than the default branch they are in;
+   *  only names the list read as merged reach here. */
+  async function deleteBranches(names: string[]): Promise<boolean> {
+    const ok = await act(
+      "branch",
+      async () => {
+        for (const name of names) await bridge.deleteBranch(dir(), name, { force: true });
+      },
+      loadBranches,
+    );
+    // One refusal partway leaves the earlier ones gone, so the list reloads.
+    if (!ok) await loadBranches();
+    return ok;
+  }
+  /** A branch against the default branch. Not cached: it is read when its
+   *  card opens, and the card is the only reader. */
+  function branchCompare(name: string, remote: boolean): Promise<GitBranchCompare | null> {
+    return bridge.branchCompare(dir(), name, remote).catch(() => null);
+  }
   function renameBranch(from: string, to: string): Promise<boolean> {
     return act("branch", () => bridge.renameBranch(dir(), from, to), loadBranches);
   }
@@ -434,6 +457,25 @@ export function useGitSpace(
   /** Moving HEAD changes every list in the space, history included. */
   function switchBranch(name: string): Promise<boolean> {
     return act("checkout", () => bridge.checkout(dir(), name), afterHistoryMoved);
+  }
+  /** Switch and bring the uncommitted work along. A clash leaves it in the
+   *  stash, so the stash list moves too. That clash still fails the call
+   *  after the switch went through, so the lists reload either way. */
+  async function switchCarrying(name: string): Promise<boolean> {
+    const reload = () => Promise.all([afterHistoryMoved(), loadStashes()]);
+    const ok = await act("checkout", () => bridge.checkoutCarrying(dir(), name), reload);
+    if (!ok) await reload();
+    return ok;
+  }
+  function fastForward(name: string): Promise<boolean> {
+    return act("pull", () => bridge.fastForward(dir(), name), afterHistoryMoved);
+  }
+  function setUpstream(name: string, upstream: string): Promise<boolean> {
+    // Only .git/config changes, which the file watcher skips, so the masthead's
+    // publish state is reloaded by hand.
+    return act("branch", () => bridge.setUpstream(dir(), name, upstream), () =>
+      Promise.all([loadBranches(), git.refresh()]),
+    );
   }
 
   function loadState(): Promise<void> {
@@ -662,9 +704,14 @@ export function useGitSpace(
 
     createBranch,
     deleteBranch,
+    deleteBranches,
+    branchCompare,
     renameBranch,
     mergeBranch,
     switchBranch,
+    switchCarrying,
+    fastForward,
+    setUpstream,
     continueOperation,
     abortOperation,
     stash,

@@ -18,6 +18,7 @@ import {
 import type { Project } from "~/composables/useProject";
 import type { useGitSpace } from "~/composables/useGitSpace";
 import type { useProjectGit } from "~/composables/useProjectGit";
+import type { GitBranch } from "~/types/desktop";
 
 // The repository, as a place rather than a panel.
 //
@@ -145,6 +146,14 @@ const pr = ref<{ number: number; origin: DOMRect | null } | null>(null);
 function openPr(number: number, origin: DOMRect | null) {
   cue("open");
   pr.value = { number, origin };
+}
+
+// A branch opens the same way, from its row.
+const branch = ref<{ branch: GitBranch; origin: DOMRect | null } | null>(null);
+
+function openBranch(b: GitBranch, origin: DOMRect | null) {
+  cue("open");
+  branch.value = { branch: b, origin };
 }
 
 // An issue opens the same way, from its row.
@@ -432,6 +441,7 @@ function onAbort() {
               v-if="visited.includes('branches')"
               v-show="section === 'branches'"
               :space="space"
+              @open="openBranch"
             />
             <GitSpacePullRequests
               v-if="visited.includes('prs')"
@@ -463,6 +473,15 @@ function onAbort() {
       :number="pr.number"
       :origin="pr.origin"
       @close="pr = null"
+    />
+
+    <!-- ── the open branch ───────────────────────────────────────────────── -->
+    <GitSpaceBranchView
+      v-if="branch !== null"
+      :space="space"
+      :branch="branch.branch"
+      :origin="branch.origin"
+      @close="branch = null"
     />
 
     <!-- ── the open issue ────────────────────────────────────────────────── -->

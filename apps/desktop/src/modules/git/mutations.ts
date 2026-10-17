@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 
 import { GitError, assertWithinRepo, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import { repoState } from "./state.js";
+import { repoState, splitRemoteRef } from "./state.js";
 import type { GitCommitOptions } from "@kone/git-core/types.js";
 
 // Write operations behind the changes UI. Each resolves the repo root and runs
@@ -42,23 +42,91 @@ export async function checkout(dir: string, branch: string): Promise<void> {
   return withRepoMutation(dir, async () => {
     const root = await repoRoot(dir);
     if (!root || !branch.trim()) return;
-    const name = branch.trim();
-    if (await refExists(root, `refs/heads/${name}`)) {
-      await git(root, ["switch", "--no-guess", "--", name]);
-      return;
-    }
-    const remoteRef = `refs/remotes/${name}`;
-    if (!(await refExists(root, remoteRef))) {
-      throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
-    }
-    const localName = name.slice(name.indexOf("/") + 1);
-    if (await refExists(root, `refs/heads/${localName}`)) {
-      await git(root, ["switch", "--no-guess", "--", localName]);
-    } else {
-      // switch -c is atomic: a failed checkout leaves no new branch behind.
-      await git(root, ["switch", "--track", "-c", localName, remoteRef]);
-    }
+    await switchIn(root, branch.trim());
   });
+}
+
+/** Switch branches and bring the uncommitted work along: stash it (untracked
+ *  files too), switch, and put it back. A switch that fails puts the work back
+ *  where it was. Work that clashes with the new branch is left in the stash,
+ *  and the tree clean, rather than half-applied with conflict markers. */
+export async function checkoutCarrying(dir: string, branch: string): Promise<void> {
+  return withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root || !branch.trim()) return;
+    const ref = branch.trim();
+    const name = ref.replace(/^refs\/(heads|remotes)\//, "");
+    const top = () => git(root, ["rev-parse", "-q", "--verify", "refs/stash"]).then((s) => s.trim(), () => "");
+    const before = await top();
+    await git(root, ["stash", "push", "-u", "-m", `kone: carried to ${name}`]);
+    // Nothing to carry: git said so and made no stash.
+    if ((await top()) === before) return switchIn(root, ref);
+
+    try {
+      await switchIn(root, ref);
+    } catch (error) {
+      await git(root, ["stash", "pop", "--index"]).catch(() => {});
+      throw error;
+    }
+    try {
+      await git(root, ["stash", "apply", "--index", "stash@{0}"]);
+    } catch {
+      // The stash still holds every change; only the half-applied copy goes.
+      await git(root, ["reset", "--hard", "-q"]);
+      await git(root, ["clean", "-fdq"]);
+      throw new GitError(
+        `Switched to ${name}, but your changes clash with it. They're safe in the stash; apply them from Stashes when you're ready.`,
+        null,
+      );
+    }
+    await git(root, ["stash", "drop", "-q", "stash@{0}"]);
+  });
+}
+
+/** Point a local branch at an upstream, e.g. one pushed from elsewhere. */
+export async function setUpstream(dir: string, name: string, upstream: string): Promise<void> {
+  return withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root || !name.trim() || !upstream.trim()) return;
+    if (!(await refExists(root, `refs/remotes/${upstream.trim()}`))) {
+      throw new GitError(`${upstream} isn't on the remote — fetch first.`, null);
+    }
+    await git(root, ["branch", `--set-upstream-to=refs/remotes/${upstream.trim()}`, "--", name.trim()]);
+  });
+}
+
+/** A short name ("topic", "origin/topic"), or a full ref when a local branch
+ *  and a remote one share a spelling and the caller means a particular one. */
+async function switchIn(root: string, ref: string): Promise<void> {
+  const remoteOnly = ref.startsWith("refs/remotes/");
+  const localOnly = ref.startsWith("refs/heads/");
+  const name = remoteOnly ? ref.slice("refs/remotes/".length) : localOnly ? ref.slice("refs/heads/".length) : ref;
+  if (!remoteOnly && (await refExists(root, `refs/heads/${name}`))) {
+    await git(root, ["switch", "--no-guess", "--", name]);
+    return;
+  }
+  const remoteRef = `refs/remotes/${name}`;
+  if (localOnly || !(await refExists(root, remoteRef))) {
+    throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
+  }
+  const localName = (await splitRemoteRef(root, name))?.branch ?? name.slice(name.indexOf("/") + 1);
+  if (await refExists(root, `refs/heads/${localName}`)) {
+    // The local name is taken: switch to it unless it tracks another remote
+    // branch, which would land somewhere other than the row picked.
+    const tracks = (
+      await git(root, ["for-each-ref", "--format=%(upstream)", `refs/heads/${localName}`]).catch(() => "")
+    ).trim();
+    if (tracks.startsWith("refs/remotes/") && tracks !== remoteRef) {
+      throw new GitError(
+        `A local ${localName} already tracks ${tracks.slice("refs/remotes/".length)}. Rename it to check out ${name}.`,
+        null,
+      );
+    }
+    await git(root, ["switch", "--no-guess", "--", localName]);
+  } else {
+    // switch -c is atomic: a failed checkout leaves no new branch behind.
+    await git(root, ["switch", "--track", "-c", localName, remoteRef]);
+  }
 }
 
 async function refExists(root: string, ref: string): Promise<boolean> {
@@ -244,12 +312,14 @@ export async function deleteBranch(
     const root = await repoRoot(dir);
     if (!root || !name.trim()) return;
     if (opts?.remote) {
-      // "origin/feature" → push origin --delete feature; a bare name deletes
-      // on origin.
-      const slash = name.indexOf("/");
-      const remote = slash > 0 ? name.slice(0, slash) : "origin";
-      const branch = slash > 0 ? name.slice(slash + 1) : name;
-      await git(root, ["push", remote, "--delete", branch]);
+      // "origin/feature" → push origin --delete feature.
+      // Only a name that matches a configured remote: guessing at a stale
+      // "upstream/x" could delete an unrelated branch of that name elsewhere.
+      const split = await splitRemoteRef(root, name.trim());
+      if (!split) {
+        throw new GitError(`${name.trim()} isn't on any remote this repo has — refresh the branch list.`, null);
+      }
+      await git(root, ["push", split.remote, "--delete", split.branch]);
       return;
     }
     await git(root, ["branch", opts?.force ? "-D" : "-d", "--", name.trim()]);

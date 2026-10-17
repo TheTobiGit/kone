@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
-import { branches, commitDetail } from "./history.js";
+import { branchCompare, branches, commitDetail } from "./history.js";
 import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 async function makeRepo(): Promise<string> {
@@ -44,6 +44,77 @@ describe("branches", () => {
     // The genuine remote-tracking ref is still marked remote.
     expect(byName.get("origin/main")?.remote).toBe(true);
 
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("branch details", () => {
+  test("reports tip details, the default branch, merged work and gone upstreams", async () => {
+    const dir = await makeRepo();
+    const g = (args: string[]) => git(dir, args);
+    // A branch with its own commit, merged into main and pushed.
+    await g(["checkout", "-b", "done"]);
+    await writeFile(path.join(dir, "b.txt"), "two\n");
+    await g(["add", "-A"]);
+    await g(["commit", "-m", "finish the thing"]);
+    await g(["push", "-u", "origin", "done"]);
+    await g(["checkout", "main"]);
+    await g(["merge", "--no-ff", "--no-edit", "done"]);
+    await g(["push", "origin", "main"]);
+    // Delete it on the remote so the local upstream is gone.
+    await g(["push", "origin", "--delete", "done"]);
+    await g(["fetch", "--prune", "origin"]);
+
+    const byName = new Map((await branches(dir)).map((b) => [b.name, b]));
+    const done = byName.get("done");
+    expect(done?.subject).toBe("finish the thing");
+    expect(done?.author).toBe("Kone Test");
+    expect(done?.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(Number.isNaN(Date.parse(done?.date ?? ""))).toBe(false);
+    expect(done?.merged).toBe(true);
+    expect(done?.gone).toBe(true);
+
+    expect(byName.get("main")?.default).toBe(true);
+    expect(byName.get("main")?.merged).toBeUndefined();
+    // Everything on it is already in main, so it counts as merged too.
+    expect(byName.get("local-plain")?.merged).toBe(true);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("default branch", () => {
+  test("is read from a remote that isn't called origin", async () => {
+    const dir = await makeRepo();
+    const g = (args: string[]) => git(dir, args);
+    await g(["remote", "rename", "origin", "upstream"]);
+    await g(["branch", "-m", "main", "trunk"]);
+    await g(["push", "-u", "upstream", "trunk"]);
+    await g(["symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk"]);
+    const byName = new Map((await branches(dir)).map((b) => [b.name, b]));
+    expect(byName.get("trunk")?.default).toBe(true);
+    expect(byName.get("upstream/trunk")?.default).toBe(true);
+    await rm(dir, { recursive: true, force: true });
+  });
+  test("isn't confused by a local branch named like the remote one", async () => {
+    const dir = await makeRepo();
+    const g = (args: string[]) => git(dir, args);
+    // A local branch spelled "origin/main", left behind on the first commit.
+    await g(["branch", "origin/main", "refs/heads/main"]);
+    await writeFile(path.join(dir, "b.txt"), "two\n");
+    await g(["add", "-A"]);
+    await g(["commit", "-m", "two"]);
+    await g(["push", "origin", "refs/heads/main:refs/heads/main"]);
+    await g(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    const all = await branches(dir);
+    const local = all.find((b) => !b.remote && b.name === "origin/main");
+    const tracking = all.find((b) => b.remote && b.name === "origin/main");
+    expect(local?.default).toBeUndefined();
+    expect(tracking?.default).toBe(true);
+    // Measured against the remote default, the stray branch is simply behind.
+    const c = await branchCompare(dir, "origin/main", false);
+    expect(c?.ahead).toBe(0);
+    expect(c?.behind).toBe(1);
     await rm(dir, { recursive: true, force: true });
   });
 });

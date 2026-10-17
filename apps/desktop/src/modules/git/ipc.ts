@@ -7,7 +7,7 @@ import { contributors, identity, logo, readImage, readme } from "./about.js";
 import { content, diff } from "./diff.js";
 import { files } from "./files.js";
 import * as github from "./github.js";
-import { branches, commitDetail, commitDiff, log } from "./history.js";
+import { branchCompare, branches, commitDetail, commitDiff, log } from "./history.js";
 import {
   abortOperation,
   checkout,
@@ -18,13 +18,15 @@ import {
   discard,
   mergeBranch,
   renameBranch,
+  checkoutCarrying,
+  setUpstream,
   stage,
   unstage,
 } from "./mutations.js";
 import { remotes, repoState } from "./state.js";
 import { stashes, stashApply, stashDrop, stashPush } from "./stash.js";
 import { detect, status } from "@kone/git-core/status.js";
-import { fetch as gitFetch, pull as gitPull, push as gitPush } from "./sync.js";
+import { fastForward, fetch as gitFetch, pull as gitPull, push as gitPush } from "./sync.js";
 import { generateCommitMessage } from "./textGen.js";
 import { runStackedAction } from "./stacked.js";
 import { watchStatus } from "./watch.js";
@@ -198,6 +200,12 @@ export function registerGitIpc(): void {
   ipcMain.handle("git:branches", (_event, dir: string) =>
     withTimeout(() => branches(dir), { channel: "git:branches", timeoutMs: GIT_READ_TIMEOUT_MS }),
   );
+  ipcMain.handle("git:branch-compare", (_event, dir: string, name: string, remote: boolean) =>
+    withTimeout(() => branchCompare(dir, name, remote === true), {
+      channel: "git:branch-compare",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
+  );
   ipcMain.handle("git:log", (_event, dir: string, limit?: number, skip?: number) =>
     withTimeout(() => log(dir, limit, skip), { channel: "git:log", timeoutMs: GIT_READ_TIMEOUT_MS }),
   );
@@ -246,6 +254,13 @@ export function registerGitIpc(): void {
     "git:delete-branch",
     (_event, dir: string, name: string, opts?: { force?: boolean; remote?: boolean }) =>
       deleteBranch(dir, name, opts),
+  );
+  ipcMain.handle("git:checkout-carrying", (_event, dir: string, branch: string) =>
+    checkoutCarrying(dir, branch),
+  );
+  ipcMain.handle("git:fast-forward", (_event, dir: string, name: string) => fastForward(dir, name));
+  ipcMain.handle("git:set-upstream", (_event, dir: string, name: string, upstream: string) =>
+    setUpstream(dir, name, upstream),
   );
   ipcMain.handle("git:rename-branch", (_event, dir: string, from: string, to: string) =>
     renameBranch(dir, from, to),
