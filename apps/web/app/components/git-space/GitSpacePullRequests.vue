@@ -45,6 +45,8 @@ const gh = computed(() => props.space.gh.value);
 const origin = computed(() => props.space.origin.value);
 const current = computed(() => props.space.branches.value.find((b) => b.current) ?? null);
 const prs = computed(() => props.space.prs.value);
+/** The first read from GitHub hasn't landed yet, so there is nothing to show. */
+const waiting = computed(() => !prs.value.length && !props.space.ready("prs"));
 const myLogin = computed(() => props.space.me.value?.login ?? gh.value?.user ?? null);
 
 /** Why the section can't show anything — null when it can. */
@@ -347,6 +349,14 @@ function plural(n: number, word: string): string {
           </button>
         </p>
 
+        <!-- Pull requests come from GitHub, a beat or two behind everything
+             local, so the list draws its plan while it waits. It sits where the
+             first group will and stays a moment once the rows arrive, so they
+             resolve into its lines. -->
+        <Transition name="gsp-plan">
+          <GitSpaceBlueprint v-if="waiting" part="list" :rows="5" what="github · pull requests" />
+        </Transition>
+
         <div v-for="(g, gi) in groups" :key="g.id" class="gsp__group" :style="{ '--i': gi }">
           <div class="gsp__label">
             <span class="gsp__label-name">{{ g.label }}</span>
@@ -439,8 +449,7 @@ function plural(n: number, word: string): string {
           Nothing matches.
           <button type="button" class="gsp__link" @click="clearFilters">Clear the filter</button>
         </p>
-        <GitSpaceSkeleton v-else-if="!prs.length && !space.ready('prs')" :rows="5" faces />
-        <p v-else-if="!prs.length && gh" class="gsp__empty">
+        <p v-else-if="!prs.length && !waiting && gh" class="gsp__empty">
           <template v-if="space.prState.value === 'open'">
             No open pull requests.
             <span class="gsp__empty-sub">Push a branch and open one from here.</span>
@@ -449,6 +458,10 @@ function plural(n: number, word: string): string {
         </p>
       </div>
 
+      <div class="gsp__sidecell">
+      <Transition name="gsp-plan">
+        <GitSpaceBlueprint v-if="waiting" part="side" what="github · pull requests" />
+      </Transition>
       <GitSpacePullRequestsSide
         v-if="prs.length"
         v-model:query="query"
@@ -460,6 +473,7 @@ function plural(n: number, word: string): string {
         @pick-waiting="pickWaiting"
         @open="(n, o) => emit('open', n, o)"
       />
+      </div>
     </template>
   </section>
 </template>
@@ -473,9 +487,45 @@ function plural(n: number, word: string): string {
   padding-bottom: 12px;
 }
 .gsp__main {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* The side column's plan and the side column itself share one cell, so for the
+   moment both are on screen the drawings resolve over their guides. */
+.gsp__sidecell {
+  position: sticky;
+  top: 6rem;
+  display: grid;
+  align-items: start;
+  min-width: 0;
+}
+.gsp__sidecell > * {
+  grid-area: 1 / 1;
+}
+
+/* ── the plan leaving ─────────────────────────────────────────────────────── */
+/* The plan stays put while the rows resolve over it, then dissolves. Lifted
+   out of the flow as it goes, so the rows take its place without a jump. */
+.gsp-plan-leave-active {
+  transition:
+    opacity 520ms var(--gs-ease) 200ms,
+    filter 520ms var(--gs-ease) 200ms;
+}
+/* A flex container places an absolute child at its own top, not where the
+   child sat in the flow, so the plan is pinned below the head by hand: the
+   head's height plus its margin. */
+.gsp__main > .gsp-plan-leave-active {
+  position: absolute;
+  top: calc(26px + 26px);
+  left: 0;
+  right: 0;
+}
+.gsp-plan-leave-to {
+  opacity: 0;
+  filter: blur(3px);
 }
 .gsp__fill {
   flex: 1 1 auto;
@@ -490,14 +540,16 @@ function plural(n: number, word: string): string {
   animation: gsp-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3 + min(var(--n, 0), 7) * var(--gs-stagger));
 }
+/* Rows resolve in place, blurred to sharp, rather than sliding up: they land
+   exactly on the plan's lines, and a slide would miss them. */
 @keyframes gsp-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    filter: blur(6px);
   }
   to {
     opacity: 1;
-    transform: none;
+    filter: none;
   }
 }
 @keyframes gsp-grow {
@@ -970,9 +1022,16 @@ function plural(n: number, word: string): string {
   .gsp {
     grid-template-columns: minmax(0, 1fr);
   }
+  .gsp__sidecell {
+    position: static;
+    order: -1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .gsp-plan-leave-active {
+    transition: opacity 1ms linear;
+  }
   .gsp__group,
   .gsp__row,
   .gsp__composer,

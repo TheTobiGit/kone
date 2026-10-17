@@ -218,14 +218,15 @@ function plural(n: number, word: string): string {
   animation: gsp-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3);
 }
+/* Resolves in place over the plan's guides, like the rows beside it. */
 @keyframes gsp-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    filter: blur(6px);
   }
   to {
     opacity: 1;
-    transform: none;
+    filter: none;
   }
 }
 @keyframes gsp-grow {
