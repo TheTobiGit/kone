@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Change spectrum</title><style>
+  :root{--bg:#f2f2ef;--card:#fbfbfa;--ink:#18181a;--soft:#57575a;--muted:#8c8c90;--add:#30a46c;--del:#e5484d;--line:#00000014;--wait:#0000001f}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--soft);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+  main{width:min(1640px,100% - 32px);margin:48px auto}
+  .hdr{display:grid;grid-template-columns:420px minmax(0,1fr);gap:12px;align-items:center;background:var(--card);border-radius:16px;box-shadow:0 0 0 1px var(--line);padding:26px 0 22px}
+  .hdr__lead{padding:0 26px 0 40px}
+  .hdr__big{font-size:30px;font-weight:600;letter-spacing:-0.025em;color:var(--ink);line-height:1}
+  .hdr__sub{margin-top:10px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted)}
+  .hdr__nums{margin-top:18px;font-family:ui-monospace,Menlo,monospace;font-size:15px}
+  .hdr__add{color:var(--add)}.hdr__del{color:var(--del)}
+  .hdr__chart{min-width:0;padding-right:24px}
+  .spectrum{display:block;width:100%;height:auto;overflow:visible}
+  .base{stroke:var(--line);stroke-width:1}
+  .sep{stroke:var(--line);stroke-width:1}
+  .area{fill:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+  .area-count{fill:#c2c2bf}
+  .rod{transform-origin:center 158px;animation:grow .7s cubic-bezier(.32,.72,0,1) both}
+  .rod--add{fill:var(--add)}
+  .rod--del{fill:var(--del)}
+  .rod--mid{fill:#8a8a8f}
+  .rod--waiting{opacity:.4}
+  .cap{opacity:.85}
+  .cap--add{fill:var(--add)}.cap--del{fill:var(--del)}
+  .cap--waiting{opacity:.4}
+  @keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  .hdr__foot{grid-column:1 / -1;display:flex;justify-content:space-between;gap:24px;padding:14px 40px 0;border-top:1px solid var(--line);margin-top:18px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)}
+  .key{display:inline-flex;align-items:center;gap:6px;margin-right:16px}
+  .key i{display:inline-block;width:10px;height:10px;border-radius:3px}
+  .key i.a{background:var(--add)}.key i.d{background:var(--del)}.key i.w{background:#8a8a8f;opacity:.4}
+  @media (prefers-reduced-motion:reduce){.rod{animation:none}}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#070708;--card:#131315;--ink:#f4f4f5;--soft:#b4b4b8;--muted:#7a7a80;--line:#ffffff14;--wait:#ffffff29}
+    .rod--mid{fill:#8a8a8f}
+    .area-count{fill:#5a5a60}
+  }
+</style></head><body><main><section class="hdr">
+  <div class="hdr__lead">
+    <div class="hdr__big">19 files changed</div>
+    <div class="hdr__sub">working tree · 3 staged · 16 waiting</div>
+    <div class="hdr__nums"><span class="hdr__add">+575</span> <span class="hdr__del">−203</span></div>
+  </div>
+  <div class="hdr__chart"><svg class="spectrum" viewBox="0 0 1600 270" role="img" aria-label="A change spectrum: one rod per file, additions above the line, deletions below, grouped by area.">
+  <line class="base" x1="430" y1="158" x2="1576" y2="158"/>
+  <line class="sep" x1="966.0" y1="36" x2="966.0" y2="238"/><line class="sep" x1="1171.0" y1="36" x2="1171.0" y2="238"/><line class="sep" x1="1348.0" y1="36" x2="1348.0" y2="238"/><line class="sep" x1="1525.0" y1="36" x2="1525.0" y2="238"/>
+  <text class="area" x="440" y="28">apps/web <tspan class="area-count">14</tspan></text><text class="area" x="981" y="28">packages <tspan class="area-count">2</tspan></text><text class="area" x="1186" y="28">docs <tspan class="area-count">1</tspan></text><text class="area" x="1363" y="28">root <tspan class="area-count">1</tspan></text><text class="area" x="1540" y="28">src <tspan class="area-count">1</tspan></text>
+  <rect class="rod rod--add rod--waiting" x="440" y="156.5" width="16" height="1.5" rx="2"/><rect class="cap cap--add rod--waiting" x="440" y="153.5" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="468" y="152.1" width="16" height="5.9" rx="2"/><rect class="cap cap--add rod--waiting" x="468" y="149.1" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="468" y="158" width="16" height="0.9" rx="2"/><rect class="cap cap--del rod--waiting" x="468" y="158.9" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="496" y="142.6" width="16" height="15.4" rx="2"/><rect class="cap cap--add rod--waiting" x="496" y="139.6" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="496" y="158" width="16" height="13.0" rx="2"/><rect class="cap cap--del rod--waiting" x="496" y="171.0" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="524" y="54.0" width="16" height="104.0" rx="2"/><rect class="cap cap--add rod--waiting" x="524" y="51.0" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="552" y="155.0" width="16" height="3.0" rx="2"/><rect class="cap cap--add rod--waiting" x="552" y="152.0" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="552" y="158" width="16" height="0.6" rx="2"/><rect class="cap cap--del rod--waiting" x="552" y="158.6" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="580" y="157.5" width="16" height="0.5" rx="2"/><rect class="cap cap--add rod--waiting" x="580" y="154.5" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="580" y="158" width="16" height="0.6" rx="2"/><rect class="cap cap--del rod--waiting" x="580" y="158.6" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="608" y="156.0" width="16" height="2.0" rx="2"/><rect class="cap cap--add rod--waiting" x="608" y="153.0" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="608" y="158" width="16" height="7.4" rx="2"/><rect class="cap cap--del rod--waiting" x="608" y="165.4" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--staged" x="636" y="155.5" width="16" height="2.5" rx="2"/><rect class="cap cap--add rod--staged" x="636" y="152.5" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--staged" x="636" y="158" width="16" height="0.3" rx="2"/><rect class="cap cap--del rod--staged" x="636" y="158.3" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="664" y="157.0" width="16" height="1.0" rx="2"/><rect class="cap cap--add rod--waiting" x="664" y="154.0" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="664" y="158" width="16" height="0.3" rx="2"/><rect class="cap cap--del rod--waiting" x="664" y="158.3" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--staged" x="692" y="110.5" width="16" height="47.5" rx="2"/><rect class="cap cap--add rod--staged" x="692" y="107.5" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="720" y="121.4" width="16" height="36.6" rx="2"/><rect class="cap cap--add rod--waiting" x="720" y="118.4" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="720" y="158" width="16" height="1.5" rx="2"/><rect class="cap cap--del rod--waiting" x="720" y="159.5" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="748" y="153.5" width="16" height="4.5" rx="2"/><rect class="cap cap--add rod--waiting" x="748" y="150.5" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="748" y="158" width="16" height="0.9" rx="2"/><rect class="cap cap--del rod--waiting" x="748" y="158.9" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--staged" x="776" y="147.1" width="16" height="10.9" rx="2"/><rect class="cap cap--add rod--staged" x="776" y="144.1" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--staged" x="776" y="158" width="16" height="1.8" rx="2"/><rect class="cap cap--del rod--staged" x="776" y="159.8" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="804" y="156.5" width="16" height="1.5" rx="2"/><rect class="cap cap--add rod--waiting" x="804" y="153.5" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="981" y="144.1" width="16" height="13.9" rx="2"/><rect class="cap cap--add rod--waiting" x="981" y="141.1" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="981" y="158" width="16" height="3.5" rx="2"/><rect class="cap cap--del rod--waiting" x="981" y="161.5" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="1009" y="149.6" width="16" height="8.4" rx="2"/><rect class="cap cap--add rod--waiting" x="1009" y="146.6" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="1009" y="158" width="16" height="2.7" rx="2"/><rect class="cap cap--del rod--waiting" x="1009" y="160.7" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="1186" y="136.2" width="16" height="21.8" rx="2"/><rect class="cap cap--add rod--waiting" x="1186" y="133.2" width="16" height="3" rx="1.5"/><rect class="rod rod--add rod--waiting" x="1363" y="154.0" width="16" height="4.0" rx="2"/><rect class="cap cap--add rod--waiting" x="1363" y="151.0" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="1363" y="158" width="16" height="0.6" rx="2"/><rect class="cap cap--del rod--waiting" x="1363" y="158.6" width="16" height="3" rx="1.5"/><rect class="rod rod--del rod--waiting" x="1540" y="158" width="16" height="26.0" rx="2"/><rect class="cap cap--del rod--waiting" x="1540" y="184.0" width="16" height="3" rx="1.5"/>
+</svg></div>
+  <div class="hdr__foot">
+    <span><span class="key"><i class="a"></i>added</span><span class="key"><i class="d"></i>removed</span></span>
+    <span><span class="key"><i class="w"></i>still waiting</span>full strength = staged</span>
+  </div>
+</section></main></body></html>
