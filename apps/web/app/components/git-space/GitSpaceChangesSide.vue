@@ -40,6 +40,7 @@ function openRow(e: MouseEvent, change: GitChange) {
 }
 
 const staged = computed(() => props.changes.filter((c) => sideOf(c) === "staged"));
+const partly = computed(() => props.changes.filter((c) => sideOf(c) === "partly"));
 const unstaged = computed(() => props.changes.filter((c) => sideOf(c) === "unstaged"));
 const conflicts = computed(() => props.changes.filter((c) => c.status === "conflicted").length);
 
@@ -103,19 +104,25 @@ function plural(n: number, word: string): string {
       </div>
       <div class="gscs__big">
         <span class="gscs__big-num">{{ staged.length }}</span>
-        <span class="gscs__big-of">of {{ changes.length }} staged</span>
+        <span class="gscs__big-of">of {{ changes.length }} fully staged</span>
       </div>
       <div class="gscs__stack" role="presentation">
         <i
           v-if="staged.length"
           class="gscs__stack-seg gscs__stack-seg--staged"
-          :class="{ 'gscs__stack-seg--dim': stageFilter === 'unstaged' }"
+          :class="{ 'gscs__stack-seg--dim': stageFilter && stageFilter !== 'staged' }"
           :style="{ flexGrow: staged.length }"
+        />
+        <i
+          v-if="partly.length"
+          class="gscs__stack-seg gscs__stack-seg--partly"
+          :class="{ 'gscs__stack-seg--dim': stageFilter && stageFilter !== 'partly' }"
+          :style="{ flexGrow: partly.length }"
         />
         <i
           v-if="unstaged.length"
           class="gscs__stack-seg gscs__stack-seg--unstaged"
-          :class="{ 'gscs__stack-seg--dim': stageFilter === 'staged' }"
+          :class="{ 'gscs__stack-seg--dim': stageFilter && stageFilter !== 'unstaged' }"
           :style="{ flexGrow: unstaged.length }"
         />
       </div>
@@ -124,7 +131,7 @@ function plural(n: number, word: string): string {
           v-if="staged.length"
           type="button"
           class="gscs__key"
-          :class="{ 'gscs__key--on': stageFilter === 'staged', 'gscs__key--dim': stageFilter === 'unstaged' }"
+          :class="{ 'gscs__key--on': stageFilter === 'staged', 'gscs__key--dim': stageFilter && stageFilter !== 'staged' }"
           :aria-pressed="stageFilter === 'staged'"
           @click="emit('pickStage', 'staged')"
         >
@@ -133,10 +140,22 @@ function plural(n: number, word: string): string {
           <span class="gscs__key-count">{{ staged.length }}</span>
         </button>
         <button
+          v-if="partly.length"
+          type="button"
+          class="gscs__key"
+          :class="{ 'gscs__key--on': stageFilter === 'partly', 'gscs__key--dim': stageFilter && stageFilter !== 'partly' }"
+          :aria-pressed="stageFilter === 'partly'"
+          @click="emit('pickStage', 'partly')"
+        >
+          <i class="gscs__key-dot gscs__key-dot--partly" />
+          <span class="gscs__key-name">Partly staged</span>
+          <span class="gscs__key-count">{{ partly.length }}</span>
+        </button>
+        <button
           v-if="unstaged.length"
           type="button"
           class="gscs__key"
-          :class="{ 'gscs__key--on': stageFilter === 'unstaged', 'gscs__key--dim': stageFilter === 'staged' }"
+          :class="{ 'gscs__key--on': stageFilter === 'unstaged', 'gscs__key--dim': stageFilter && stageFilter !== 'unstaged' }"
           :aria-pressed="stageFilter === 'unstaged'"
           @click="emit('pickStage', 'unstaged')"
         >
@@ -148,6 +167,9 @@ function plural(n: number, word: string): string {
       <p class="gscs__sub" :class="{ 'gscs__sub--bad': conflicts }">
         <template v-if="conflicts">
           <b>{{ plural(conflicts, "file") }}</b>{{ " " }}in conflict. Resolve before committing.
+        </template>
+        <template v-else-if="partly.length">
+          <b>{{ partly.length }}</b> {{ partly.length === 1 ? "file is" : "files are" }} partly staged.
         </template>
         <template v-else-if="staged.length && unstaged.length">
           <b>{{ staged.length }}</b> staged, {{ unstaged.length }} still in the working tree.
@@ -373,6 +395,18 @@ function plural(n: number, word: string): string {
 .gscs__stack-seg--staged,
 .gscs__key-dot--staged {
   background-color: var(--accent-2);
+}
+/* Work on both sides of the index is neither one state nor the other, so it
+   is drawn as its own hatch rather than a shade of either neighbour. */
+.gscs__stack-seg--partly {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 72%, transparent) 0 3px,
+    color-mix(in srgb, var(--accent) 28%, transparent) 3px 6px
+  );
+}
+.gscs__key-dot--partly {
+  background-color: var(--accent);
 }
 .gscs__stack-seg--unstaged {
   background-color: color-mix(in srgb, var(--ink) 26%, transparent);

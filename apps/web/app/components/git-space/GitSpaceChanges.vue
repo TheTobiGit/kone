@@ -11,20 +11,21 @@ import {
   dirOf,
   changeKindOf,
   nameOf,
-  partlyStaged,
   sideOf,
   type ChangeSide,
 } from "~/utils/changeLanguage";
 
-// The working tree, as work in two stages.
+// The working tree, as work in three states.
 //
-// The staged files sit above the rest because that's the order a commit happens
-// in: the box at the foot takes the top list. Every row is one file, drawn the
-// way the rest of the space draws a row — a mark, what it is, the work it
-// carries — and opens in the same card a change opens anywhere else. The side
-// column reads the whole tree at once: how much is staged, what kinds of change
-// there are, where they live and which files are carrying the most work, each
-// drawing doubling as a filter.
+// Staged files sit first because that's the order a commit happens in: the box
+// at the foot takes the top list. A file with work on both sides of the index
+// is its own state, not counted as staged and not hidden from unstaged — it
+// gets its own row and its own "Stage rest" move. Every other file is one row,
+// drawn the way the rest of the space draws a row — a mark, what it is, the
+// work it carries — and opens in the same card a change opens anywhere else.
+// The side column reads the whole tree at once: how much is staged, what kinds
+// of change there are, where they live and which files are carrying the most
+// work, each drawing doubling as a filter.
 
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
@@ -37,6 +38,7 @@ const { cue } = useSound();
 
 const changes = computed(() => props.git.changes.value);
 const staged = computed(() => changes.value.filter((c) => sideOf(c) === "staged"));
+const partly = computed(() => changes.value.filter((c) => sideOf(c) === "partly"));
 const unstaged = computed(() => changes.value.filter((c) => sideOf(c) === "unstaged"));
 const conflicts = computed(() => new Set(props.space.state.value.conflicts));
 const canPush = computed(() => props.space.origin.value !== null);
@@ -72,18 +74,25 @@ function clearFilters() {
   stageFilter.value = null;
 }
 
+/** Everything but the stage filter, which belongs to the groups themselves. */
 function shown(c: GitChange): boolean {
   const q = query.value.trim().toLowerCase();
   if (q && !c.path.toLowerCase().includes(q) && !(c.from ?? "").toLowerCase().includes(q)) return false;
   if (kindFilter.value && c.status !== kindFilter.value) return false;
   if (areaFilter.value && areaOf(c.path) !== areaFilter.value) return false;
-  if (stageFilter.value && sideOf(c) !== stageFilter.value) return false;
   return true;
 }
 
-const stagedShown = computed(() => staged.value.filter(shown));
-const unstagedShown = computed(() => unstaged.value.filter(shown));
-const shownCount = computed(() => stagedShown.value.length + unstagedShown.value.length);
+function inStage(role: ChangeSide): boolean {
+  return !stageFilter.value || stageFilter.value === role;
+}
+
+const stagedShown = computed(() => (inStage("staged") ? staged.value.filter(shown) : []));
+const partlyShown = computed(() => (inStage("partly") ? partly.value.filter(shown) : []));
+const unstagedShown = computed(() => (inStage("unstaged") ? unstaged.value.filter(shown) : []));
+const shownCount = computed(
+  () => stagedShown.value.length + partlyShown.value.length + unstagedShown.value.length,
+);
 
 // ── a row ────────────────────────────────────────────────────────────────────
 
@@ -110,13 +119,22 @@ function discard(path: string) {
   cue("discard");
   props.git.discardPaths([path]);
 }
+// The bulk actions act on the rows the group is showing, so a filter can't
+// quietly stage or unstage files the user can't see.
 function stageAll() {
+  if (!unstagedShown.value.length) return;
   cue("toggle");
-  props.git.stageAll();
+  props.git.stagePaths(unstagedShown.value.map((c) => c.path));
+}
+function stagePartly() {
+  if (!partlyShown.value.length) return;
+  cue("toggle");
+  props.git.stagePaths(partlyShown.value.map((c) => c.path));
 }
 function unstageAll() {
+  if (!stagedShown.value.length) return;
   cue("toggle", { off: true });
-  props.git.unstageAll();
+  props.git.unstagePaths(stagedShown.value.map((c) => c.path));
 }
 function stashAll() {
   cue("press");
@@ -183,7 +201,6 @@ function stashAll() {
                 <span class="gsc__meta">
                   <span class="gsc__kind">{{ changeKindOf(c.status).label }}</span>
                   <span v-if="c.from" class="gsc__from">from {{ nameOf(c.from) }}</span>
-                  <span v-if="partlyStaged(c)" class="gsc__tag">partly staged</span>
                   <span v-if="conflicts.has(c.path)" class="gsc__flag">conflict</span>
                 </span>
               </span>
@@ -201,7 +218,54 @@ function stashAll() {
           </div>
         </div>
 
-        <div v-if="unstagedShown.length" class="gsc__group" style="--i: 1">
+        <div v-if="partlyShown.length" class="gsc__group" style="--i: 1">
+          <div class="gsc__label">
+            <span class="gsc__label-name">Partly staged</span>
+            <span class="gsc__label-count">{{ partlyShown.length }}</span>
+            <span class="gsc__fill" />
+            <button type="button" class="gsc__sweep" @click="stagePartly">Stage all</button>
+          </div>
+
+          <div
+            v-for="(c, i) in partlyShown"
+            :key="`partly:${c.path}`"
+            class="gsc__row"
+            :style="{ '--n': i }"
+          >
+            <button
+              type="button"
+              class="gsc__rowmain"
+              :title="c.path"
+              aria-haspopup="dialog"
+              @click="open($event, c.path)"
+            >
+              <span class="gsc__mark" :style="{ background: changeKindOf(c.status).color }" aria-hidden="true" />
+              <span class="gsc__body">
+                <span class="gsc__path">
+                  <span class="gsc__dir">{{ dirOf(c.path) }}</span>{{ nameOf(c.path) }}
+                </span>
+                <span class="gsc__meta">
+                  <span class="gsc__kind">{{ changeKindOf(c.status).label }}</span>
+                  <span v-if="c.from" class="gsc__from">from {{ nameOf(c.from) }}</span>
+                  <span v-if="conflicts.has(c.path)" class="gsc__flag">conflict</span>
+                </span>
+              </span>
+              <span class="gsc__right">
+                <span class="gsc__nums">
+                  <span v-if="c.added" class="gsc__add">+{{ c.added }}</span>
+                  <span v-if="c.removed" class="gsc__del">−{{ c.removed }}</span>
+                </span>
+              </span>
+            </button>
+
+            <div class="gsc__actions">
+              <button type="button" class="gsc__act" @click="unstage(c.path)">Unstage</button>
+              <button type="button" class="gsc__act" @click="stage(c.path)">Stage rest</button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="unstagedShown.length" class="gsc__group" style="--i: 2">
           <div class="gsc__label">
             <span class="gsc__label-name">Not staged</span>
             <span class="gsc__label-count">{{ unstagedShown.length }}</span>

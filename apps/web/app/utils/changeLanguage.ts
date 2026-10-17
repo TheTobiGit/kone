@@ -1,9 +1,10 @@
 import type { GitChange, GitFileStatus } from "../types/desktop";
 
-/** Which side of the working tree a file belongs to, for the section's groups
- *  and the side column's stack. A file with both staged and unstaged edits
- *  stays with the index, where the commit box will take it from. */
-export type ChangeSide = "staged" | "unstaged";
+/** How a file stands with the index, for the section's groups and the side
+ *  column's stack. A file with work on both sides is its own state, not a
+ *  staged one and not an unstaged one: hiding it under either filter would
+ *  hide real work. */
+export type ChangeSide = "staged" | "partly" | "unstaged";
 
 export const CHANGE_KINDS: { id: GitFileStatus; label: string; color: string }[] = [
   // Most files are simply modified, so that reads quietest. The colours are
@@ -32,6 +33,7 @@ export function changeKindOf(status: GitFileStatus): (typeof CHANGE_KINDS)[numbe
 }
 
 export function sideOf(c: GitChange): ChangeSide {
+  if (c.staged && c.unstaged) return "partly";
   return c.staged ? "staged" : "unstaged";
 }
 
