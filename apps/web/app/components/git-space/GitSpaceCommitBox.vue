@@ -32,8 +32,6 @@ const bodyEl = ref<HTMLTextAreaElement | null>(null);
 
 const busy = computed(() => props.space.op.value !== null);
 const ready = computed(() => summary.value.trim().length > 0 && !busy.value);
-// Amending doesn't need anything staged — it can just reword the last commit.
-const armed = computed(() => props.stagedCount > 0 || amend.value);
 
 // git's own soft limit for a subject line. Past it the counter appears; it never
 // blocks the commit, it just stops being invisible.
@@ -133,7 +131,7 @@ function onBodyKey(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="cb" :class="{ 'cb--armed': armed }">
+  <div class="cb">
     <div class="cb__fade" aria-hidden="true" />
 
     <div class="cb__box">
@@ -222,9 +220,8 @@ function onBodyKey(e: KeyboardEvent) {
   bottom: 0;
   z-index: 2;
   margin-top: 18px;
-  /* Closed: out of the way but still reachable in one click. */
-  opacity: 0.55;
-  transition: opacity var(--gs-t-micro) var(--gs-ease);
+  /* The box is quiet through its type, not through transparency: it sits on
+     the page's ground so the rows scrolling behind it stay hidden. */
   animation: cb-in var(--gs-t-enter) var(--gs-ease) backwards;
 }
 @keyframes cb-in {
@@ -236,10 +233,6 @@ function onBodyKey(e: KeyboardEvent) {
     opacity: 1;
     transform: none;
   }
-}
-.cb--armed,
-.cb:focus-within {
-  opacity: 1;
 }
 /* The list dissolves into the page behind the box instead of being cut by a
    rule — kone doesn't draw lines to separate things. */
@@ -302,6 +295,7 @@ function onBodyKey(e: KeyboardEvent) {
 
 .cb__foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -309,6 +303,7 @@ function onBodyKey(e: KeyboardEvent) {
 }
 .cb__left {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   min-width: 0;
@@ -319,7 +314,7 @@ function onBodyKey(e: KeyboardEvent) {
   font-size: 10.5px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: var(--ink-soft);
   white-space: nowrap;
 }
 /* A long subject is a nudge, never an error. */
@@ -329,8 +324,11 @@ function onBodyKey(e: KeyboardEvent) {
 }
 .cb__right {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  min-width: 0;
 }
 
 .cb__ghost,
@@ -353,11 +351,11 @@ function onBodyKey(e: KeyboardEvent) {
     opacity var(--gs-t-micro) var(--gs-ease);
 }
 .cb__ghost {
-  color: var(--muted);
+  color: var(--ink-soft);
 }
 .cb__ghost:hover:not(:disabled) {
   background-color: var(--hover);
-  color: var(--ink-soft);
+  color: var(--ink);
 }
 .cb__ghost--on {
   color: var(--accent);
