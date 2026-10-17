@@ -229,6 +229,28 @@ describe("upstreams", () => {
   });
 });
 
+describe("a local branch spelled like a remote one", () => {
+  test("checks out whichever one the full ref names", async () => {
+    const dir = await makeRepo();
+    const bare = await mkdtemp(path.join(os.tmpdir(), "kone-git-bare-"));
+    await git(bare, ["init", "--bare"]);
+    await git(dir, ["remote", "add", "origin", bare]);
+    await git(dir, ["push", "origin", "main:topic"]);
+    await git(dir, ["fetch", "origin"]);
+    await git(dir, ["branch", "origin/topic", "HEAD~1"]);
+
+    await checkout(dir, "refs/remotes/origin/topic");
+    expect(await currentBranch(dir)).toBe("topic");
+    expect((await git(dir, ["for-each-ref", "--format=%(upstream)", "refs/heads/topic"])).trim()).toBe(
+      "refs/remotes/origin/topic",
+    );
+
+    await checkout(dir, "refs/heads/origin/topic");
+    expect(await currentBranch(dir)).toBe("origin/topic");
+    for (const d of [dir, bare]) await rm(d, { recursive: true, force: true });
+  });
+});
+
 describe("a remote whose name has a slash", () => {
   test("catches up, pushes and deletes against the whole remote name", async () => {
     const dir = await makeRepo();

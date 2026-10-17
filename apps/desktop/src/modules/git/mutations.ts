@@ -54,15 +54,16 @@ export async function checkoutCarrying(dir: string, branch: string): Promise<voi
   return withRepoMutation(dir, async () => {
     const root = await repoRoot(dir);
     if (!root || !branch.trim()) return;
-    const name = branch.trim();
+    const ref = branch.trim();
+    const name = ref.replace(/^refs\/(heads|remotes)\//, "");
     const top = () => git(root, ["rev-parse", "-q", "--verify", "refs/stash"]).then((s) => s.trim(), () => "");
     const before = await top();
     await git(root, ["stash", "push", "-u", "-m", `kone: carried to ${name}`]);
     // Nothing to carry: git said so and made no stash.
-    if ((await top()) === before) return switchIn(root, name);
+    if ((await top()) === before) return switchIn(root, ref);
 
     try {
-      await switchIn(root, name);
+      await switchIn(root, ref);
     } catch (error) {
       await git(root, ["stash", "pop", "--index"]).catch(() => {});
       throw error;
@@ -94,13 +95,18 @@ export async function setUpstream(dir: string, name: string, upstream: string): 
   });
 }
 
-async function switchIn(root: string, name: string): Promise<void> {
-  if (await refExists(root, `refs/heads/${name}`)) {
+/** A short name ("topic", "origin/topic"), or a full ref when a local branch
+ *  and a remote one share a spelling and the caller means a particular one. */
+async function switchIn(root: string, ref: string): Promise<void> {
+  const remoteOnly = ref.startsWith("refs/remotes/");
+  const localOnly = ref.startsWith("refs/heads/");
+  const name = remoteOnly ? ref.slice("refs/remotes/".length) : localOnly ? ref.slice("refs/heads/".length) : ref;
+  if (!remoteOnly && (await refExists(root, `refs/heads/${name}`))) {
     await git(root, ["switch", "--no-guess", "--", name]);
     return;
   }
   const remoteRef = `refs/remotes/${name}`;
-  if (!(await refExists(root, remoteRef))) {
+  if (localOnly || !(await refExists(root, remoteRef))) {
     throw new GitError(`Branch ${name} no longer exists — refresh the branch list.`, null);
   }
   const localName = (await splitRemoteRef(root, name))?.branch ?? name.slice(name.indexOf("/") + 1);

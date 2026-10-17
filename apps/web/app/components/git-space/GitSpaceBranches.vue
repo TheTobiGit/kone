@@ -12,6 +12,7 @@ import {
   isDirtyRefusal,
   kindOf,
   localNameOf,
+  refOf,
   shortAge,
   spokenAge,
   standing,
@@ -138,7 +139,7 @@ function openRow(e: MouseEvent, b: GitBranch) {
 }
 
 /** A switch git refused because uncommitted work is in the way. */
-const blocked = ref<string | null>(null);
+const blocked = ref<GitBranch | null>(null);
 
 async function switchTo(b: GitBranch) {
   if (busy.value) return cue("refuse");
@@ -146,14 +147,14 @@ async function switchTo(b: GitBranch) {
   blocked.value = null;
   // A remote branch becomes a local one that tracks it, or switches to the
   // local one of that name; the desktop side picks.
-  const ok = await props.space.switchBranch(b.name);
-  if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = b.name;
+  const ok = await props.space.switchBranch(refOf(b));
+  if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = b;
 }
 async function carry() {
-  const name = blocked.value;
-  if (!name || busy.value) return cue("refuse");
+  const target = blocked.value;
+  if (!target || busy.value) return cue("refuse");
   cue("press");
-  const ok = await props.space.switchCarrying(name);
+  const ok = await props.space.switchCarrying(refOf(target));
   cue(ok ? "success" : "error");
   blocked.value = null;
 }
@@ -280,7 +281,7 @@ async function clearMerged(names: string[]) {
       </form>
 
       <p v-if="blocked" class="gsb__blocked" role="status">
-        <span>Your uncommitted changes are in the way of <b>{{ blocked }}</b>.</span>
+        <span>Your uncommitted changes are in the way of <b>{{ blocked.name }}</b>.</span>
         <span class="gsb__fill" />
         <button type="button" class="gsb__act gsb__act--flat" @click="blocked = null">Not now</button>
         <button type="button" class="gsb__create" :disabled="busy" @click="carry">Bring them along</button>

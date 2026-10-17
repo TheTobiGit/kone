@@ -35,6 +35,12 @@ export function localNameOf(remoteRef: string, remotes: readonly string[] = []):
   return i === -1 ? remoteRef : remoteRef.slice(i + 1);
 }
 
+/** The full ref, so a local branch spelled like a remote one ("origin/x")
+ *  is never taken for it. */
+export function refOf(b: GitBranch): string {
+  return `${b.remote ? "refs/remotes" : "refs/heads"}/${b.name}`;
+}
+
 /** "feat/git-space" → "feat"; a name without a slash has no kind. */
 export function kindOf(name: string): string | null {
   const i = name.indexOf("/");

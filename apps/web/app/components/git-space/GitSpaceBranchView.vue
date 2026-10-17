@@ -13,6 +13,7 @@ import {
   daysSince,
   isDirtyRefusal,
   localNameOf,
+  refOf,
   spokenAge,
   standing,
 } from "~/utils/branchStanding";
@@ -123,10 +124,6 @@ const standSentence = computed(() => {
 const hasRemote = computed(() => props.space.origin.value !== null);
 /** The remote a publish goes to: origin, or the only one there is. */
 const remote = computed(() => props.space.origin.value?.name ?? "origin");
-/** <remote>/<same name>: the push and publish below can name it plainly. */
-const sameNamedUpstream = computed(
-  () => !b.value.upstream || localNameOf(b.value.upstream, remoteNames.value) === b.value.name,
-);
 
 async function run(task: () => Promise<boolean>) {
   if (busy.value) return cue("refuse");
@@ -165,13 +162,13 @@ async function switchTo() {
   blocked.value = false;
   // A remote branch becomes a local one that tracks it, or switches to the
   // local one of that name; the desktop side picks.
-  const ok = await props.space.switchBranch(b.value.name);
+  const ok = await props.space.switchBranch(refOf(b.value));
   cue(ok ? "success" : "error");
   if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = true;
 }
 function carry() {
   blocked.value = false;
-  void run(() => props.space.switchCarrying(b.value.name));
+  void run(() => props.space.switchCarrying(refOf(b.value)));
 }
 
 const copied = ref(false);
@@ -516,7 +513,7 @@ onBeforeUnmount(() => {
                       {{ space.op.value === "pull" ? "Pulling…" : `${b.current ? "Pull" : "Catch up"} ${b.behind}` }}
                     </button>
                     <button
-                      v-if="stand === 'ahead' && (b.current || sameNamedUpstream)"
+                      v-if="stand === 'ahead'"
                       type="button"
                       class="bsv__quiet"
                       :disabled="busy"
