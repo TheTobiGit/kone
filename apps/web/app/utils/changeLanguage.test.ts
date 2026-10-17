@@ -11,9 +11,10 @@ describe("areaOf", () => {
 });
 
 describe("a change", () => {
-  test("belongs to the index when it has staged work", () => {
+  test("reads where its work sits, partly staged as its own state", () => {
     expect(sideOf({ path: "a", status: "modified", staged: true, unstaged: false })).toBe("staged");
     expect(sideOf({ path: "a", status: "modified", staged: false, unstaged: true })).toBe("unstaged");
+    expect(sideOf({ path: "a", status: "modified", staged: true, unstaged: true })).toBe("partly");
   });
 
   test("can be partly staged, and counts both sides of the diff", () => {
