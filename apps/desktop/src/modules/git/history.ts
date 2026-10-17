@@ -19,7 +19,7 @@ export async function branches(dir: string): Promise<GitBranch[]> {
     // The full refname tells apart refs/remotes/* from refs/heads/* — the short
     // name alone can't, because a local branch like feature/login looks just
     // like origin/feature (both slash-bearing, both often upstream-less).
-    "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(refname)%00%(objectname)%00%(committerdate:iso-strict)%00%(authorname)%00%(worktreepath)%00%(contents:subject)",
+    "--format=%(refname:short)%00%(HEAD)%00%(upstream)%00%(upstream:track)%00%(refname)%00%(objectname)%00%(committerdate:iso-strict)%00%(authorname)%00%(worktreepath)%00%(contents:subject)",
     "refs/heads",
     "refs/remotes",
   ]);
@@ -27,8 +27,13 @@ export async function branches(dir: string): Promise<GitBranch[]> {
   const result: GitBranch[] = [];
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
-    const [name, head, upstream, track, full, sha, date, author, worktree, subject] =
+    const [short, head, upstreamRef, track, full, sha, date, author, worktree, subject] =
       line.split("\0");
+    // Names come from the full refname: git's short form turns ambiguous
+    // spellings (a local "origin/main" beside the remote one) into
+    // "heads/origin/main".
+    const name = shortRef(full ?? "") || short;
+    const upstream = shortRef(upstreamRef ?? "");
     if (!name) continue;
     // Skip the symbolic "origin/HEAD -> origin/main" pointer.
     if (name.endsWith("/HEAD")) continue;
@@ -58,24 +63,39 @@ export async function branches(dir: string): Promise<GitBranch[]> {
   const base = await defaultBranch(root, result);
   if (base) {
     for (const branch of result) {
-      if (branch.name === base.local || branch.name === base.ref) branch.default = true;
+      if (fullRef(branch) === `refs/heads/${base.local}` || fullRef(branch) === base.full) {
+        branch.default = true;
+      }
     }
+    // Full refnames throughout: a local branch may be called "origin/main".
     const merged = await git(root, [
       "for-each-ref",
-      `--merged=${base.ref}`,
-      "--format=%(refname:short)",
+      `--merged=${base.full}`,
+      "--format=%(refname)",
       "refs/heads",
       "refs/remotes",
     ]).catch(() => "");
-    const names = new Set(merged.split("\n").filter(Boolean));
+    const refs = new Set(merged.split("\n").filter(Boolean));
     // A branch still sitting on the default's tip has nothing of its own yet,
     // so calling it merged would invite deleting work that hasn't started.
-    const tip = result.find((b) => b.name === base.ref)?.sha;
+    const tip = result.find((b) => fullRef(b) === base.full)?.sha;
     for (const branch of result) {
-      if (!branch.default && names.has(branch.name) && branch.sha !== tip) branch.merged = true;
+      if (!branch.default && refs.has(fullRef(branch)) && branch.sha !== tip) branch.merged = true;
     }
   }
   return result;
+}
+
+/** "refs/heads/x" → "x", "refs/remotes/origin/x" → "origin/x". */
+function shortRef(ref: string): string {
+  for (const prefix of ["refs/heads/", "refs/remotes/"]) {
+    if (ref.startsWith(prefix)) return ref.slice(prefix.length);
+  }
+  return ref;
+}
+
+function fullRef(b: GitBranch): string {
+  return `${b.remote ? "refs/remotes" : "refs/heads"}/${b.name}`;
 }
 
 /**
@@ -86,25 +106,28 @@ export async function branches(dir: string): Promise<GitBranch[]> {
 async function defaultBranch(
   root: string,
   all: GitBranch[],
-): Promise<{ local: string; ref: string } | null> {
-  const names = new Set(all.map((b) => b.name));
+): Promise<{ local: string; ref: string; full: string } | null> {
+  const locals = new Set(all.filter((b) => !b.remote).map((b) => b.name));
+  const tracking = new Set(all.filter((b) => b.remote).map((b) => b.name));
   // origin first, then any other remote: a clone renamed to "upstream" still
   // knows its HEAD there.
   const remotes = (await git(root, ["remote"]).catch(() => "")).split("\n").filter(Boolean);
   remotes.sort((a, b) => Number(b === "origin") - Number(a === "origin"));
   for (const remote of remotes) {
-    const head = (
-      await git(root, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`]).catch(
-        () => "",
-      )
+    const target = (
+      await git(root, ["symbolic-ref", "--quiet", `refs/remotes/${remote}/HEAD`]).catch(() => "")
     ).trim();
-    if (head && names.has(head)) return { local: head.slice(remote.length + 1), ref: head };
+    const head = target.startsWith("refs/remotes/") ? target.slice("refs/remotes/".length) : "";
+    if (head && tracking.has(head)) {
+      return { local: head.slice(remote.length + 1), ref: head, full: target };
+    }
   }
   for (const local of ["main", "master"]) {
     for (const remote of remotes) {
-      if (names.has(`${remote}/${local}`)) return { local, ref: `${remote}/${local}` };
+      const ref = `${remote}/${local}`;
+      if (tracking.has(ref)) return { local, ref, full: `refs/remotes/${ref}` };
     }
-    if (names.has(local)) return { local, ref: local };
+    if (locals.has(local)) return { local, ref: local, full: `refs/heads/${local}` };
   }
   return null;
 }
@@ -183,9 +206,7 @@ export async function branchCompare(
 
   const all = await branches(root);
   const base = await defaultBranch(root, all);
-  const baseRef = base
-    ? `${all.find((b) => b.name === base.ref)?.remote ? "refs/remotes" : "refs/heads"}/${base.ref}`
-    : null;
+  const baseRef = base?.full ?? null;
 
   if (!base || !baseRef || baseRef === ref || (!remote && name === base.local)) {
     const out = await git(root, [
