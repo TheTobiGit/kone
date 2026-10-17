@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Archive02Icon } from "@hugeicons/core-free-icons";
 import type { GitChange, GitFileStatus } from "~/types/desktop";
 import type { useGitSpace } from "~/composables/useGitSpace";
 import type { useProjectGit } from "~/composables/useProjectGit";
@@ -149,8 +149,7 @@ function stashAll() {
             <span class="gsc__del">−{{ git.removed.value }}</span>
           </span>
           <button v-if="filtering" type="button" class="gsc__clear" @click="clearFilters">
-            {{ shownCount }} of {{ changes.length }}
-            <HugeiconsIcon :icon="Cancel01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+            {{ shownCount }} of {{ changes.length }} · clear
           </button>
           <span class="gsc__fill" />
         </header>
@@ -493,9 +492,10 @@ function stashAll() {
   line-height: 1.2;
   color: var(--ink);
 }
-/* The directory recedes so the filename is what the eye lands on. */
+/* The directory recedes so the filename is what the eye lands on, but stays at
+   a readable contrast rather than the muted grey it used to sit at. */
 .gsc__dir {
-  color: var(--muted);
+  color: var(--ink-soft);
 }
 .gsc__meta {
   display: flex;
@@ -518,7 +518,7 @@ function stashAll() {
   text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--muted);
+  color: var(--ink-soft);
 }
 .gsc__flag {
   color: var(--warn);
