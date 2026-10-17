@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { areaOf, churnOf, dirOf, changeKindOf, nameOf, partlyStaged, sideOf } from "./changeLanguage";
+import { areaOf, churnOf, dirOf, changeKindOf, nameOf, sideOf } from "./changeLanguage";
 
 describe("areaOf", () => {
   test("stops at the folder the work lives in", () => {
@@ -17,9 +17,8 @@ describe("a change", () => {
     expect(sideOf({ path: "a", status: "modified", staged: true, unstaged: true })).toBe("partly");
   });
 
-  test("can be partly staged, and counts both sides of the diff", () => {
+  test("counts both sides of the diff", () => {
     const c = { path: "a", status: "modified" as const, staged: true, unstaged: true, added: 4, removed: 2 };
-    expect(partlyStaged(c)).toBe(true);
     expect(churnOf(c)).toBe(6);
     expect(churnOf({ ...c, added: undefined, removed: undefined })).toBe(0);
   });

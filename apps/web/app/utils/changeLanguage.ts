@@ -37,11 +37,6 @@ export function sideOf(c: GitChange): ChangeSide {
   return c.staged ? "staged" : "unstaged";
 }
 
-/** A file with work on both sides of the index. */
-export function partlyStaged(c: GitChange): boolean {
-  return c.staged && c.unstaged;
-}
-
 /** Lines touched in a file — the number its bar in the side column is drawn
  *  from. Unknown counts (a binary file) are zero, not a guess. */
 export function churnOf(c: GitChange): number {
