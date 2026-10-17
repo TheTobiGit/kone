@@ -298,7 +298,11 @@ function onAbort() {
 
 <template>
   <div class="gs">
-    <div ref="scrollEl" class="gs__scroll">
+    <div
+      ref="scrollEl"
+      class="gs__scroll"
+      :class="{ 'gs__scroll--changes': section === 'changes' }"
+    >
       <div class="gs__col">
         <!-- ── the left column ────────────────────────────────────────────── -->
         <nav class="gs__side" aria-label="Repository">
@@ -542,6 +546,11 @@ function onAbort() {
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
+}
+/* Changes keeps its commit box stuck to the foot, so a focused row must scroll
+   clear of it rather than landing behind it (WCAG 2.4.11). */
+.gs__scroll--changes {
+  scroll-padding-bottom: 240px;
 }
 .gs__col {
   display: grid;
