@@ -312,12 +312,14 @@ export async function deleteBranch(
     const root = await repoRoot(dir);
     if (!root || !name.trim()) return;
     if (opts?.remote) {
-      // "origin/feature" → push origin --delete feature; a bare name deletes
-      // on origin.
+      // "origin/feature" → push origin --delete feature.
+      // Only a name that matches a configured remote: guessing at a stale
+      // "upstream/x" could delete an unrelated branch of that name elsewhere.
       const split = await splitRemoteRef(root, name.trim());
-      const remote = split?.remote ?? "origin";
-      const branch = split?.branch ?? name.trim();
-      await git(root, ["push", remote, "--delete", branch]);
+      if (!split) {
+        throw new GitError(`${name.trim()} isn't on any remote this repo has — refresh the branch list.`, null);
+      }
+      await git(root, ["push", split.remote, "--delete", split.branch]);
       return;
     }
     await git(root, ["branch", opts?.force ? "-D" : "-d", "--", name.trim()]);

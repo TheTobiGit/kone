@@ -282,6 +282,11 @@ describe("a remote whose name has a slash", () => {
 
     await deleteBranch(dir, "team/up/extra", { remote: true });
     expect((await git(bare, ["branch", "--list", "extra"])).trim()).toBe("");
+
+    // A remote that has since gone deletes nothing anywhere else.
+    await git(dir, ["push", "team/up", "main:gone/extra"]);
+    await expect(deleteBranch(dir, "gone/extra", { remote: true })).rejects.toThrow("isn't on any remote");
+    expect((await git(bare, ["branch", "--list", "gone/extra"])).trim()).toBe("gone/extra");
     for (const d of [dir, bare]) await rm(d, { recursive: true, force: true });
   });
 });
