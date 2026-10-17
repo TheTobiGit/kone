@@ -113,7 +113,9 @@ const standSentence = computed(() => {
     case "ahead":
       return `${plural(x.ahead ?? 0, "commit")} here that ${x.upstream} doesn't have.`;
     case "behind":
-      return `${x.upstream} has ${plural(x.behind ?? 0, "commit")} this doesn't.`;
+      return !x.current && x.worktree
+        ? `${x.upstream} has ${plural(x.behind ?? 0, "commit")} this doesn't. It's out in another worktree, so pull it there.`
+        : `${x.upstream} has ${plural(x.behind ?? 0, "commit")} this doesn't.`;
     case "both":
       return `${plural(x.ahead ?? 0, "commit")} to push and ${x.behind} to pull. Pull first, then push.`;
     default:
@@ -165,10 +167,20 @@ async function switchTo() {
   const ok = await props.space.switchBranch(refOf(b.value));
   cue(ok ? "success" : "error");
   if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = true;
+  leaveIfRemote(ok);
 }
-function carry() {
+async function carry() {
   blocked.value = false;
-  void run(() => props.space.switchCarrying(refOf(b.value)));
+  if (busy.value) return cue("refuse");
+  cue("press");
+  const ok = await props.space.switchCarrying(refOf(b.value));
+  cue(ok ? "success" : "error");
+  leaveIfRemote(ok);
+}
+/** Checking out a remote branch lands on a local one; this card, about the
+ *  remote ref, has nothing left to offer. */
+function leaveIfRemote(ok: boolean) {
+  if (ok && b.value.remote) onClose();
 }
 
 const copied = ref(false);
@@ -507,7 +519,7 @@ onBeforeUnmount(() => {
                       Track {{ trackable }}
                     </button>
                     <button
-                      v-if="stand === 'behind' || (b.current && stand === 'both')"
+                      v-if="(stand === 'behind' && (b.current || !b.worktree)) || (b.current && stand === 'both')"
                       type="button"
                       class="bsv__quiet"
                       :disabled="busy"
