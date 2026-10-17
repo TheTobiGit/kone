@@ -93,6 +93,33 @@ export type GitBranch = {
   upstream?: string;
   ahead?: number;
   behind?: number;
+  /** The upstream was deleted on the remote. */
+  gone?: boolean;
+  /** Tip commit. */
+  sha?: string;
+  /** Tip commit's committer date, ISO 8601. */
+  date?: string;
+  author?: string;
+  subject?: string;
+  /** The repository's default branch (or its remote-tracking ref). */
+  default?: boolean;
+  /** Fully merged into the default branch. */
+  merged?: boolean;
+  /** Path of another worktree that has this branch checked out. */
+  worktree?: string;
+};
+
+/** One branch measured against the default branch. */
+export type GitBranchCompare = {
+  /** What it was measured against, e.g. "origin/main"; null for the default
+   *  branch itself or a repo without one, when `commits` is its latest. */
+  base: string | null;
+  /** Commits on the branch and not on base. */
+  ahead: number;
+  /** Commits on base and not on the branch. */
+  behind: number;
+  /** Newest first, at most 30. */
+  commits: GitCommit[];
 };
 
 export type GitCommit = {

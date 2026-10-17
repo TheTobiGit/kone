@@ -12,6 +12,7 @@
 import type {
   DirListing,
   GitBranch,
+  GitBranchCompare,
   GitChange,
   GitCommit,
   GitCommitAuthors,
@@ -181,19 +182,31 @@ type MockBranchSeed = {
   upstream?: string;
   ahead?: number;
   behind?: number;
+  /** Days since the tip commit. */
+  age?: number;
+  subject?: string;
+  author?: string;
+  merged?: boolean;
+  gone?: boolean;
+  worktree?: string;
 };
+
+const DAY_MS = 86_400_000;
+const mockDate = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString();
 const MOCK_BRANCHES: Record<
   string,
   { local: MockBranchSeed[]; remote: string[] }
 > = {
   "/Users/you/Developer/kone": {
     local: [
-      { name: "calm-agent-ui-continuation", upstream: "origin/calm-agent-ui-continuation", ahead: 2, behind: 0 },
-      { name: "main", upstream: "origin/main", ahead: 0, behind: 0 },
-      { name: "dev", upstream: "origin/dev", ahead: 0, behind: 4 },
-      { name: "premium-conversation-thread", upstream: "origin/premium-conversation-thread", ahead: 7, behind: 1 },
-      { name: "feat/git-space" },
-      { name: "fix/composer-pill-wrap", upstream: "origin/fix/composer-pill-wrap", ahead: 1, behind: 0 },
+      { name: "calm-agent-ui-continuation", upstream: "origin/calm-agent-ui-continuation", ahead: 2, behind: 0, age: 0.1, subject: "Settle the composer once a turn ends", author: "Tobi" },
+      { name: "main", upstream: "origin/main", ahead: 0, behind: 0, age: 1, subject: "Merge pull request #7 from issues", author: "Tobi" },
+      { name: "dev", upstream: "origin/dev", ahead: 0, behind: 4, age: 6, subject: "Bump the desktop shell", author: "Ama" },
+      { name: "premium-conversation-thread", upstream: "origin/premium-conversation-thread", ahead: 7, behind: 1, age: 2, subject: "Thread header follows the scroll", author: "Tobi", worktree: "/Users/you/.kone/worktrees/premium" },
+      { name: "feat/git-space", age: 12, subject: "Sketch the Git Space sections", author: "Tobi" },
+      { name: "fix/composer-pill-wrap", upstream: "origin/fix/composer-pill-wrap", ahead: 1, behind: 0, age: 4, subject: "Wrap long pills in the composer", author: "Kofi" },
+      { name: "fix/scroll-jank", upstream: "origin/fix/scroll-jank", age: 21, subject: "Debounce the thread scroll observer", author: "Ama", merged: true, gone: true },
+      { name: "spike/voice-input", age: 64, subject: "Try push-to-talk in the composer", author: "Kofi" },
     ],
     remote: [
       "origin/main",
@@ -235,13 +248,25 @@ export function mockBranches(dir: string): GitBranch[] {
     if (seed.upstream) branch.upstream = seed.upstream;
     if (seed.ahead !== undefined) branch.ahead = seed.ahead;
     if (seed.behind !== undefined) branch.behind = seed.behind;
+    if (seed.age !== undefined) branch.date = mockDate(seed.age);
+    if (seed.subject) branch.subject = seed.subject;
+    if (seed.author) branch.author = seed.author;
+    if (seed.merged) branch.merged = true;
+    if (seed.gone) branch.gone = true;
+    if (seed.worktree) branch.worktree = seed.worktree;
+    if (seed.name === "main") branch.default = true;
     return branch;
   });
-  const remote: GitBranch[] = seeds.remote.map((name) => ({
-    name,
-    current: false,
-    remote: true,
-  }));
+  const remote: GitBranch[] = seeds.remote.map((name, i) => {
+    const local = seeds.local.find((seed) => `origin/${seed.name}` === name);
+    const branch: GitBranch = { name, current: false, remote: true };
+    branch.date = mockDate(local?.age ?? 30 + i * 9);
+    branch.subject = local?.subject ?? "Cut the release branch";
+    branch.author = local?.author ?? "Ama";
+    if (name === "origin/main") branch.default = true;
+    if (name === "origin/release/0.4") branch.merged = true;
+    return branch;
+  });
   return [...local, ...remote];
 }
 
@@ -637,6 +662,23 @@ export function mockLog(dir: string, limit = 50, skip = 0): GitCommit[] {
   const from = Math.max(0, Math.floor(skip));
   const count = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
   return all.slice(from, from + count);
+}
+
+/** A branch's own commits in the demo: a slice of the history, as many as it
+ *  is ahead, so the card and the row agree. */
+export function mockBranchCompare(dir: string, name: string, remote: boolean): GitBranchCompare | null {
+  const branch = mockBranches(dir).find((b) => b.name === name && b.remote === remote);
+  if (!branch) return null;
+  const all = historyFor(dir);
+  if (branch.default) return { base: null, ahead: 0, behind: 0, commits: all.slice(0, 12) };
+  const seed = seedOf(name);
+  const ahead = branch.merged ? 0 : Math.max(branch.ahead ?? 0, 1 + (seed % 6));
+  const behind = branch.merged ? 0 : seed % 9;
+  const commits = all.slice(seed % 7, (seed % 7) + ahead).map((c) => ({
+    ...c,
+    author: branch.author ?? c.author,
+  }));
+  return { base: "origin/main", ahead, behind, commits };
 }
 
 export function mockCommitDetail(dir: string, hash: string): GitCommitDetail | null {

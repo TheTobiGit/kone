@@ -160,6 +160,7 @@ import type {
   CreateProjectResult,
   GitActionProgressEvent,
   GitBranch,
+  GitBranchCompare,
   GitCommit,
   GitCommitAuthors,
   GitCommitDetail,
@@ -253,6 +254,9 @@ const api = {
       ipcRenderer.invoke("git:files", dir, query),
     branches: (dir: string): Promise<GitBranch[]> =>
       ipcRenderer.invoke("git:branches", dir),
+    /** A branch against the default branch, with its own commits. */
+    branchCompare: (dir: string, name: string, remote: boolean): Promise<GitBranchCompare | null> =>
+      ipcRenderer.invoke("git:branch-compare", dir, name, remote),
     log: (dir: string, limit?: number, skip?: number): Promise<GitCommit[]> =>
       ipcRenderer.invoke("git:log", dir, limit, skip),
     // ── Git Space surface (spec §5.2) ──────────────────────────────────────
@@ -281,6 +285,14 @@ const api = {
       name: string,
       opts?: { force?: boolean; remote?: boolean },
     ): Promise<void> => ipcRenderer.invoke("git:delete-branch", dir, name, opts),
+    /** Switch, bringing uncommitted work along through a stash. */
+    checkoutCarrying: (dir: string, branch: string): Promise<void> =>
+      ipcRenderer.invoke("git:checkout-carrying", dir, branch),
+    /** Move a branch you're not on up to its upstream. */
+    fastForward: (dir: string, name: string): Promise<void> =>
+      ipcRenderer.invoke("git:fast-forward", dir, name),
+    setUpstream: (dir: string, name: string, upstream: string): Promise<void> =>
+      ipcRenderer.invoke("git:set-upstream", dir, name, upstream),
     renameBranch: (dir: string, from: string, to: string): Promise<void> =>
       ipcRenderer.invoke("git:rename-branch", dir, from, to),
     mergeBranch: (

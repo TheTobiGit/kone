@@ -1,6 +1,6 @@
 import { GitError, git, repoRoot } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import { remoteExists } from "./state.js";
+import { remoteExists, splitRemoteRef } from "./state.js";
 import type { IpcErrorKind } from "@kone/protocol/ipc-error";
 import type { GitPullOptions, GitPushOptions } from "@kone/git-core/types.js";
 
@@ -126,18 +126,15 @@ async function currentBranch(root: string): Promise<string | null> {
   }
 }
 
-/** The current branch's upstream ref ("origin/main"), or null when it has none.
- *  rev-parse echoes the literal "@{upstream}" back in some configurations when
- *  there is no upstream — that is "none" too. */
-async function currentUpstream(root: string): Promise<string | null> {
-  try {
-    const out = (
-      await git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
-    ).trim();
-    return out.length > 0 && out !== "@{upstream}" ? out : null;
-  } catch {
-    return null;
-  }
+/** A local branch's upstream ref ("origin/topic"), or null when it has none. */
+async function upstreamOf(root: string, branch: string): Promise<string | null> {
+  // The full ref, cut by hand: git's short form reads "remotes/origin/x" when
+  // a local branch is also called "origin/x".
+  const out = await git(root, ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`]).catch(
+    () => "",
+  );
+  const ref = out.trim();
+  return ref.startsWith("refs/remotes/") ? ref.slice("refs/remotes/".length) : null;
 }
 
 /** Push the current branch. Without an upstream (or with `setUpstream`) this
@@ -152,29 +149,68 @@ export async function push(dir: string, opts?: GitPushOptions): Promise<void> {
     if (!branch) {
       throw new GitError("Cannot push from detached HEAD — check out a branch first.", null);
     }
-    const upstream = await currentUpstream(root);
-    const upstreamRemote = upstream ? upstream.split("/")[0] ?? null : null;
+    // The pushed branch's own upstream: for a branch you're not on, the
+    // checked-out one's could name another remote altogether.
+    const upstream = opts?.branch?.trim()
+      ? await upstreamOf(root, branch)
+      : await upstreamOf(root, branch);
+    const split = upstream ? await splitRemoteRef(root, upstream) : null;
+    const upstreamRemote = split?.remote ?? null;
+    const upstreamBranch = split?.branch ?? null;
     const remote = opts?.remote?.trim() || upstreamRemote || "origin";
+    // The tracked name only means something on the remote it lives on; pushed
+    // anywhere else, the branch goes up under its own name.
+    const onUpstream = !!upstreamBranch && remote === upstreamRemote;
     const setUpstream = opts?.setUpstream === true || upstream === null;
 
     const args = ["push"];
     if (setUpstream) args.push("-u");
     if (opts?.force) args.push("--force-with-lease");
     args.push(remote);
-    if (opts?.branch) {
-      // An explicit branch is pushed as-is; upstream tracking is then the
-      // caller's option via `setUpstream`.
+    if (opts?.branch && onUpstream) {
+      // An explicit branch goes onto the remote branch it tracks.
+      args.push(`refs/heads/${branch}:refs/heads/${upstreamBranch}`);
+    } else if (opts?.branch) {
+      // An explicit branch with nothing tracked is pushed as-is; upstream
+      // tracking is then the caller's option via `setUpstream`.
       args.push(branch);
-    } else if (upstream) {
+    } else if (onUpstream) {
       // Push HEAD onto the tracked remote branch — not a same-named local branch
       // that may not exist on the remote.
-      args.push(`HEAD:${upstream.slice(remote.length + 1)}`);
+      args.push(`HEAD:${upstreamBranch}`);
     } else {
       args.push(branch);
     }
     try {
       await git(root, args, NON_INTERACTIVE_NETWORK_ENV);
     } catch (error) {
+      throw rewordNetworkError(error, remote);
+    }
+  });
+}
+
+/** Bring a branch you're not on up to its upstream without switching to it.
+ *  A refspec fetch onto refs/heads only moves the branch forward: git refuses
+ *  when the two have diverged, and when another worktree has it out. */
+export async function fastForward(dir: string, name: string): Promise<void> {
+  return withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root || !name.trim()) return;
+    const branch = name.trim();
+    const upstream = (await upstreamOf(root, branch)) ?? "";
+    const split = upstream ? await splitRemoteRef(root, upstream) : null;
+    if (!split) throw new GitError(`${branch} doesn't track a remote branch.`, null);
+    const { remote } = split;
+    try {
+      await git(
+        root,
+        ["fetch", remote, `refs/heads/${split.branch}:refs/heads/${branch}`],
+        NON_INTERACTIVE_NETWORK_ENV,
+      );
+    } catch (error) {
+      if (error instanceof GitError && /non-fast-forward|rejected/i.test(error.message)) {
+        throw new GitError(`${branch} and ${upstream} have both moved. Switch to it to pull.`, error.code);
+      }
       throw rewordNetworkError(error, remote);
     }
   });

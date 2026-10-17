@@ -1,60 +1,185 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, type ComponentPublicInstance } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, FolderLibraryIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import type { useGitSpace } from "~/composables/useGitSpace";
-import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
+import type { GitBranch } from "~/types/desktop";
+import {
+  STALE_DAYS,
+  STANDINGS,
+  branchNameProblem,
+  daysSince,
+  isDirtyRefusal,
+  kindOf,
+  localNameOf,
+  refOf,
+  shortAge,
+  spokenAge,
+  standing,
+  type BranchStanding,
+} from "~/utils/branchStanding";
 
-// Every branch, local and remote, and what you can do to each.
+// Every branch, read at once.
 //
-// The current branch is the only one that gets colour, so the answer to "where
-// am I" is pre-attention. Everything else is a name, its upstream, and how far
-// it has drifted — the three facts that decide whether you want to switch to it,
-// merge it, or be rid of it.
+// The list is the branches as work: the one you're on, the rest newest first,
+// the ones already in the default branch set apart, and what lives only on the
+// remote. Each row says how it stands with its remote as a dot (the same dot
+// the side column's bar is made of), what last happened on it, and how long
+// ago. A row opens the branch in a card; the one move you most often came for,
+// switching to it, sits on the row itself.
 
 const props = defineProps<{ space: ReturnType<typeof useGitSpace> }>();
 
+const emit = defineEmits<{
+  open: [branch: GitBranch, origin: DOMRect | null];
+}>();
+
 const { cue } = useSound();
 
-const filter = ref("");
+const busy = computed(() => props.space.op.value !== null);
+const all = computed(() => props.space.branches.value);
+const current = computed(() => all.value.find((b) => b.current) ?? null);
+const remoteNames = computed(() => props.space.remotes.value.map((r) => r.name));
+const defaultName = computed(() => all.value.find((b) => !b.remote && b.default)?.name ?? "main");
+const localCount = computed(() => all.value.filter((b) => !b.remote).length);
+const remoteCount = computed(() => all.value.length - localCount.value);
+
+// ── filters ──────────────────────────────────────────────────────────────────
+
+const query = ref("");
+const standingFilter = ref<BranchStanding | null>(null);
+const kindFilter = ref<string | null>(null);
+const filtering = computed(() => !!query.value.trim() || !!standingFilter.value || !!kindFilter.value);
+
+function pickStanding(id: BranchStanding) {
+  cue("press");
+  standingFilter.value = standingFilter.value === id ? null : id;
+}
+function pickKind(kind: string) {
+  cue("press");
+  kindFilter.value = kindFilter.value === kind ? null : kind;
+}
+function clearFilters() {
+  cue("press");
+  query.value = "";
+  standingFilter.value = null;
+  kindFilter.value = null;
+}
+
+function shown(b: GitBranch): boolean {
+  const q = query.value.trim().toLowerCase();
+  if (q && !b.name.toLowerCase().includes(q) && !(b.subject ?? "").toLowerCase().includes(q)) return false;
+  if (kindFilter.value && kindOf(b.remote ? localNameOf(b.name, remoteNames.value) : b.name) !== kindFilter.value) return false;
+  // How a branch stands with its remote is a local branch's fact.
+  if (standingFilter.value && (b.remote || standing(b) !== standingFilter.value)) return false;
+  return true;
+}
+
+/** The default branch first, then the rest newest first. */
+const byNewest = (a: GitBranch, b: GitBranch) =>
+  Number(!!b.default) - Number(!!a.default) ||
+  (b.date ?? "").localeCompare(a.date ?? "") ||
+  a.name.localeCompare(b.name);
+
+const localNames = computed(() => new Set(all.value.filter((b) => !b.remote).map((b) => b.name)));
+/** A remote branch some local branch tracks is that branch's business, so
+ *  it is listed once, as the local one. A same-named one on another remote,
+ *  or one nothing tracks, keeps its own row. */
+function remoteOnly(b: GitBranch): boolean {
+  return b.remote && !all.value.some((l) => !l.remote && l.upstream === b.name);
+}
+
+interface Group {
+  id: string;
+  label: string;
+  rows: GitBranch[];
+}
+const groups = computed<Group[]>(() => {
+  const visible = all.value.filter(shown);
+  const local = visible.filter((b) => !b.remote).sort(byNewest);
+  const remote = visible.filter(remoteOnly).sort(byNewest);
+  const out: Group[] = [
+    { id: "current", label: "You're on", rows: local.filter((b) => b.current) },
+    { id: "local", label: "Branches", rows: local.filter((b) => !b.current && !b.merged) },
+    { id: "merged", label: `Already in ${defaultName.value}`, rows: local.filter((b) => !b.current && b.merged) },
+    { id: "remote", label: "Only on the remote", rows: remote },
+  ];
+  return out.filter((g) => g.rows.length);
+});
+const shownCount = computed(() => groups.value.reduce((n, g) => n + g.rows.length, 0));
+const listedCount = computed(() => all.value.filter((b) => !b.remote || remoteOnly(b)).length);
+
+// ── a row ────────────────────────────────────────────────────────────────────
+
+function colorOf(id: BranchStanding): string | undefined {
+  return STANDINGS.find((s) => s.id === id)?.color || undefined;
+}
+
+function drift(b: GitBranch): string {
+  const s = standing(b);
+  if (s === "unpushed") return "not pushed";
+  if (s === "gone") return "remote gone";
+  if (s === "even") return "in step";
+  return [b.ahead ? `↑${b.ahead}` : "", b.behind ? `↓${b.behind}` : ""].filter(Boolean).join(" ");
+}
+function driftSentence(b: GitBranch): string {
+  const s = standing(b);
+  if (s === "unpushed") return "Never pushed";
+  if (s === "gone") return `Its remote branch ${b.upstream} was deleted`;
+  if (s === "even") return `In step with ${b.upstream}`;
+  const parts: string[] = [];
+  if (b.ahead) parts.push(`${b.ahead} to push`);
+  if (b.behind) parts.push(`${b.behind} to pull`);
+  return `${parts.join(", ")} against ${b.upstream}`;
+}
+
+function openRow(e: MouseEvent, b: GitBranch) {
+  // SAFETY: bound on the row's own button, so currentTarget is that element.
+  emit("open", b, (e.currentTarget as HTMLElement).getBoundingClientRect());
+}
+
+/** A switch git refused because uncommitted work is in the way. */
+const blocked = ref<GitBranch | null>(null);
+
+async function switchTo(b: GitBranch) {
+  if (busy.value) return cue("refuse");
+  cue("press");
+  blocked.value = null;
+  // A remote branch becomes a local one that tracks it, or switches to the
+  // local one of that name; the desktop side picks.
+  const ok = await props.space.switchBranch(refOf(b));
+  if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = b;
+}
+async function carry() {
+  const target = blocked.value;
+  if (!target || busy.value) return cue("refuse");
+  cue("press");
+  const ok = await props.space.switchCarrying(refOf(target));
+  cue(ok ? "success" : "error");
+  blocked.value = null;
+}
+
+// ── fetch ────────────────────────────────────────────────────────────────────
+
+async function fetchRemote() {
+  if (busy.value) return cue("refuse");
+  cue("press");
+  cue((await props.space.fetch()) ? "success" : "error");
+}
+
+// ── a new branch ─────────────────────────────────────────────────────────────
+
 const creating = ref(false);
 const newName = ref("");
+/** Put it on the remote straight away, the way it will end up anyway. */
+const publishNew = ref(true);
+const hasRemote = computed(() => props.space.remotes.value.length > 0);
 const newNameEl = ref<HTMLInputElement | null>(null);
-const renaming = ref<string | null>(null);
-const renameTo = ref("");
-// A plain `ref` inside a v-for collects into an array; only one row is ever in
-// rename, so take the element by hand instead.
-const renameEl = ref<HTMLInputElement | null>(null);
-function setRenameEl(el: Element | ComponentPublicInstance | null) {
-  renameEl.value = el instanceof HTMLInputElement ? el : null;
-}
-
-const busy = computed(() => props.space.op.value !== null);
-const current = computed(() => props.space.branches.value.find((b) => b.current) ?? null);
-
-function match(name: string) {
-  const q = filter.value.trim().toLowerCase();
-  return !q || name.toLowerCase().includes(q);
-}
-const local = computed(() =>
-  props.space.branches.value.filter((b) => !b.remote && match(b.name)),
-);
-const remote = computed(() =>
-  props.space.branches.value.filter((b) => b.remote && match(b.name)),
-);
-// The filter earns its place only once scanning is actually work.
-const filterable = computed(() => props.space.branches.value.length > 8);
-
-/** "origin/feature/x" → "feature/x" */
-function localNameOf(remoteRef: string) {
-  const i = remoteRef.indexOf("/");
-  return i === -1 ? remoteRef : remoteRef.slice(i + 1);
-}
-/** A remote branch already checked out locally is a switch, not a new branch. */
-function hasLocal(remoteRef: string) {
-  const name = localNameOf(remoteRef);
-  return props.space.branches.value.some((b) => !b.remote && b.name === name);
-}
+const problem = computed(() => {
+  const name = newName.value.trim();
+  if (localNames.value.has(name)) return `${name} already exists.`;
+  return branchNameProblem(name);
+});
 
 async function startCreate() {
   cue("expand");
@@ -70,323 +195,219 @@ function cancelCreate() {
 async function submitCreate() {
   const name = newName.value.trim();
   if (!name) return cancelCreate();
-  // Another operation holds the repo. Enter in the name field reaches here
-  // even while the button is disabled, so say no rather than swallow it.
-  if (busy.value) return cue("refuse");
+  // Another operation holds the repo, or git would refuse the name. Enter
+  // reaches here either way, so say no rather than swallow it.
+  if (busy.value || problem.value) return cue("refuse");
   cue("press");
-  const ok = await props.space.createBranch(name, { checkout: true });
+  const made = await props.space.createBranch(name, { checkout: true });
+  if (!made) return cue("error");
+  // The branch exists now whatever the push does, so the composer closes; a
+  // failed publish stays on the masthead and Publish waits on the branch card.
+  cancelCreate();
+  const ok =
+    !hasRemote.value ||
+    !publishNew.value ||
+    (await props.space.push({ branch: name, setUpstream: true, remote: props.space.origin.value?.name }));
   cue(ok ? "success" : "error");
-  if (ok) cancelCreate();
 }
 
-async function startRename(name: string) {
-  cue("expand");
-  renaming.value = name;
-  renameTo.value = name;
-  await nextTick();
-  renameEl.value?.select();
-}
-function cancelRename() {
-  renaming.value = null;
-  renameTo.value = "";
-}
-async function submitRename(from: string) {
-  const to = renameTo.value.trim();
-  if (!to || to === from) return cancelRename();
-  const ok = await props.space.renameBranch(from, to);
-  if (ok) cancelRename();
-}
-
-function switchTo(name: string) {
-  cue("press");
-  void props.space.switchBranch(name);
-}
-async function merge(name: string) {
-  // A merge can stop on a conflict, so it's the one switch-like move that
-  // sounds where it lands — the user has to know whether to go look.
-  if (busy.value) return cue("refuse");
-  cue("press");
-  cue((await props.space.mergeBranch(name)) ? "success" : "error");
-}
-// Both deletes sit behind a hold-to-confirm; the hold finishing is the commit.
-function remove(name: string) {
+async function clearMerged(names: string[]) {
   cue("discard");
-  void props.space.deleteBranch(name);
-}
-function removeRemote(remoteRef: string) {
-  cue("discard");
-  void props.space.deleteBranch(localNameOf(remoteRef), { remote: true });
-}
-function checkoutRemote(remoteRef: string) {
-  cue("press");
-  const name = localNameOf(remoteRef);
-  if (hasLocal(remoteRef)) void props.space.switchBranch(name);
-  else void props.space.createBranch(name, { from: remoteRef, checkout: true });
+  await props.space.deleteBranches(names);
 }
 </script>
 
 <template>
   <section class="gsb">
-    <div class="gsb__lane">
-      <header class="gsb__lanehead">
-        <span class="gsb__eyebrow">Local</span>
-        <span class="gsb__count">{{ local.length }}</span>
+    <!-- ══ the main column: the list ═══════════════════════════════════════ -->
+    <div class="gsb__main">
+      <header class="gsb__head">
+        <span class="gsb__headcount">
+          <b>{{ localCount }}</b> local<template v-if="remoteCount">
+            · <b>{{ remoteCount }}</b> on the remote</template>
+        </span>
+        <button v-if="filtering" type="button" class="gsb__clear" @click="clearFilters">
+          {{ shownCount }} of {{ listedCount }} · clear
+        </button>
         <span class="gsb__fill" />
-        <input
-          v-if="filterable"
-          v-model="filter"
-          class="gsb__filter"
-          type="text"
-          spellcheck="false"
-          placeholder="Filter"
-          aria-label="Filter branches"
-        />
-        <button type="button" class="gsb__sweep" :disabled="busy" @click="startCreate">
+        <button
+          type="button"
+          class="gsb__sweep"
+          :class="{ 'gsb__sweep--spin': space.op.value === 'fetch' }"
+          :disabled="busy"
+          title="Fetch from the remote, and drop the branches it deleted"
+          @click="fetchRemote"
+        >
+          <HugeiconsIcon class="gsb__spin" :icon="RefreshIcon" :size="12" :stroke-width="2" aria-hidden="true" />
+          {{ space.op.value === "fetch" ? "Fetching…" : "Fetch" }}
+        </button>
+        <button v-if="!creating" type="button" class="gsb__sweep" :disabled="busy" @click="startCreate">
           <HugeiconsIcon :icon="Add01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
           New branch
         </button>
       </header>
 
-      <!-- The new-branch field is a row in the list, not a dialog over it. -->
-      <div v-if="creating" class="gsb__row gsb__row--edit">
-        <span class="gsb__marker" aria-hidden="true"><i class="gsb__dot" /></span>
+      <!-- The new-branch field is written in place at the top, not in a dialog. -->
+      <form
+        v-if="creating"
+        class="gsb__composer"
+        @submit.prevent="submitCreate"
+        @keydown.esc.prevent="cancelCreate"
+      >
         <input
           ref="newNameEl"
           v-model="newName"
-          class="gsb__input"
+          class="gsb__namefield"
           type="text"
           spellcheck="false"
-          placeholder="branch name"
+          autocomplete="off"
+          placeholder="feat/what-it-does"
+          aria-label="New branch name"
+          :aria-invalid="!!problem"
+          aria-describedby="gsb-new-hint"
           :disabled="busy"
-          @keydown.enter.prevent="submitCreate"
-          @keydown.esc.prevent="cancelCreate"
         />
-        <span class="gsb__hint">from {{ current?.name ?? "HEAD" }} · Enter to create</span>
-        <button type="button" class="gsb__act" @click="cancelCreate">Cancel</button>
-      </div>
-
-      <div
-        v-for="(b, i) in local"
-        :key="b.name"
-        class="gsb__row"
-        :class="{ 'gsb__row--current': b.current }"
-        :style="{ '--i': i }"
-      >
-        <span class="gsb__marker" aria-hidden="true"><i class="gsb__dot" /></span>
-
-        <template v-if="renaming === b.name">
-          <input
-            :ref="setRenameEl"
-            v-model="renameTo"
-            class="gsb__input"
-            type="text"
-            spellcheck="false"
-            :disabled="busy"
-            @keydown.enter.prevent="submitRename(b.name)"
-            @keydown.esc.prevent="cancelRename"
-          />
-          <span class="gsb__hint">Enter to rename</span>
-          <button type="button" class="gsb__act" @click="cancelRename">Cancel</button>
-        </template>
-
-        <template v-else>
-          <span class="gsb__name">{{ b.name }}</span>
-          <span v-if="b.upstream" class="gsb__upstream">{{ b.upstream }}</span>
-          <span class="gsb__drift">
-            <span v-if="b.ahead" class="gsb__ahead">↑{{ b.ahead }}</span>
-            <span v-if="b.behind" class="gsb__behind">↓{{ b.behind }}</span>
+        <div class="gsb__composerfoot">
+          <span id="gsb-new-hint" class="gsb__hint" :class="{ 'gsb__hint--bad': problem }" aria-live="polite">
+            <template v-if="problem">{{ problem }}</template>
+            <template v-else>From <b>{{ current?.name ?? "HEAD" }}</b>, and you'll be on it.</template>
           </span>
+          <span class="gsb__fill" />
+          <label v-if="hasRemote" class="gsb__check">
+            <input v-model="publishNew" type="checkbox" :disabled="busy" />
+            Publish it
+          </label>
+          <button type="button" class="gsb__act gsb__act--flat" @click="cancelCreate">Cancel</button>
+          <button type="submit" class="gsb__create" :disabled="busy || !newName.trim() || !!problem">
+            {{ space.op.value === "branch" ? "Creating…" : "Create" }}
+          </button>
+        </div>
+      </form>
 
-          <div class="gsb__actions">
-            <template v-if="!b.current">
-              <HoldToConfirm
-                :aria-label="`Hold to delete branch ${b.name}`"
-                title="Hold to delete"
-                @confirm="remove(b.name)"
+      <p v-if="blocked" class="gsb__blocked" role="status">
+        <span>Your uncommitted changes are in the way of <b>{{ blocked.name }}</b>.</span>
+        <span class="gsb__fill" />
+        <button type="button" class="gsb__act gsb__act--flat" @click="blocked = null">Not now</button>
+        <button type="button" class="gsb__create" :disabled="busy" @click="carry">Bring them along</button>
+      </p>
+
+      <GitSpaceSkeleton v-if="!all.length && !space.ready('branches')" :rows="5" />
+
+      <p v-else-if="!all.length" class="gsb__empty">No branches yet. The first commit makes one.</p>
+
+      <p v-else-if="!groups.length" class="gsb__empty">
+        Nothing matches.
+        <button type="button" class="gsb__link" @click="clearFilters">Show every branch</button>
+      </p>
+
+      <div v-for="(g, gi) in groups" :key="g.id" class="gsb__group" :style="{ '--i': gi }">
+        <div class="gsb__label">
+          <span class="gsb__label-name">{{ g.label }}</span>
+          <span class="gsb__label-count">{{ g.rows.length }}</span>
+        </div>
+
+        <div
+          v-for="(b, i) in g.rows"
+          :key="b.name"
+          class="gsb__row"
+          :class="{ 'gsb__row--current': b.current, 'gsb__row--remote': b.remote }"
+          :style="{ '--n': i }"
+        >
+          <button type="button" class="gsb__main-btn" aria-haspopup="dialog" @click="openRow($event, b)">
+            <span
+              class="gsb__dot"
+              :class="b.remote ? 'gsb__dot--remote' : `gsb__dot--${standing(b)}`"
+              :style="{ background: !b.remote ? colorOf(standing(b)) : undefined }"
+              aria-hidden="true"
+            />
+
+            <span class="gsb__body">
+              <span class="gsb__line">
+                <span class="gsb__name">{{ b.name }}</span>
+                <span v-if="b.default" class="gsb__tag">default</span>
+                <span v-if="b.worktree" class="gsb__tag" :title="`Checked out in ${b.worktree}`">
+                  <HugeiconsIcon :icon="FolderLibraryIcon" :size="11" :stroke-width="1.8" aria-hidden="true" />
+                  worktree
+                </span>
+              </span>
+              <span v-if="b.subject || b.author" class="gsb__meta">
+                <span v-if="b.subject" class="gsb__subject">{{ b.subject }}</span>
+                <span v-if="b.author" class="gsb__dim">{{ b.author }}</span>
+              </span>
+            </span>
+
+            <span class="gsb__right">
+              <span v-if="!b.remote" class="gsb__drift" :class="`gsb__drift--${standing(b)}`" :title="driftSentence(b)">
+                <span class="sr-only">{{ driftSentence(b) }}</span>
+                <span aria-hidden="true">{{ drift(b) }}</span>
+              </span>
+              <span
+                v-if="b.date"
+                class="gsb__age"
+                :class="{ 'gsb__age--stale': (daysSince(b) ?? 0) >= STALE_DAYS && !b.default }"
+                :title="`Last commit ${spokenAge(daysSince(b))}`"
               >
-                Delete
-              </HoldToConfirm>
-              <button
-                type="button"
-                class="gsb__act"
-                :disabled="busy"
-                @click="startRename(b.name)"
-              >
-                Rename
-              </button>
-              <button
-                type="button"
-                class="gsb__act"
-                :disabled="busy"
-                :title="`Merge ${b.name} into ${current?.name ?? 'HEAD'}`"
-                @click="merge(b.name)"
-              >
-                Merge
-              </button>
-              <button
-                type="button"
-                class="gsb__act gsb__act--go"
-                :disabled="busy"
-                @click="switchTo(b.name)"
-              >
-                Switch
-              </button>
-            </template>
+                <span class="sr-only">, last commit {{ spokenAge(daysSince(b)) }}</span>
+                <span aria-hidden="true">{{ shortAge(daysSince(b)) }}</span>
+              </span>
+            </span>
+          </button>
+
+          <div v-if="!b.current" class="gsb__actions">
             <button
-              v-else
               type="button"
               class="gsb__act"
-              :disabled="busy"
-              @click="startRename(b.name)"
+              :disabled="busy || !!b.worktree"
+              :title="b.worktree ? `Checked out in ${b.worktree}` : undefined"
+              :aria-label="`${b.remote ? 'Check out' : 'Switch to'} ${b.name}`"
+              @click="switchTo(b)"
             >
-              Rename
+              {{ b.remote ? "Check out" : "Switch" }}
             </button>
           </div>
-        </template>
-      </div>
-    </div>
-
-    <div v-if="remote.length" class="gsb__lane">
-      <header class="gsb__lanehead">
-        <span class="gsb__eyebrow">Remote</span>
-        <span class="gsb__count">{{ remote.length }}</span>
-        <span class="gsb__fill" />
-      </header>
-
-      <div
-        v-for="(b, i) in remote"
-        :key="b.name"
-        class="gsb__row gsb__row--remote"
-        :style="{ '--i': i }"
-      >
-        <span class="gsb__marker" aria-hidden="true"><i class="gsb__dot" /></span>
-        <span class="gsb__name">{{ b.name }}</span>
-        <span v-if="hasLocal(b.name)" class="gsb__upstream">tracked</span>
-        <span class="gsb__drift" />
-
-        <div class="gsb__actions">
-          <HoldToConfirm
-            :aria-label="`Hold to delete remote branch ${b.name}`"
-            title="Hold to delete on the remote"
-            @confirm="removeRemote(b.name)"
-          >
-            Delete
-          </HoldToConfirm>
-          <button
-            type="button"
-            class="gsb__act gsb__act--go"
-            :disabled="busy"
-            @click="checkoutRemote(b.name)"
-          >
-            {{ hasLocal(b.name) ? "Switch" : "Check out" }}
-          </button>
         </div>
       </div>
     </div>
 
-    <p v-if="!local.length && !remote.length && filter" class="gsb__empty">
-      No branch matches “{{ filter }}”.
-    </p>
+    <!-- ══ the side column: the branches at a glance ═══════════════════════ -->
+    <GitSpaceBranchesSide
+      v-if="all.length"
+      v-model:query="query"
+      :branches="all"
+      :standing-filter="standingFilter"
+      :kind-filter="kindFilter"
+      :busy="busy"
+      @pick-standing="pickStanding"
+      @pick-kind="pickKind"
+      @open="(b, r) => emit('open', b, r)"
+      @clear-merged="clearMerged"
+    />
   </section>
 </template>
 
 <style scoped>
 .gsb {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 64px;
+  align-items: start;
   padding-bottom: 12px;
 }
-.gsb__lane + .gsb__lane {
-  margin-top: 26px;
-}
-
-.gsb__lanehead {
+.gsb__main {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 24px;
-  margin-bottom: 6px;
-  padding-inline: 8px;
-}
-.gsb__eyebrow {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  line-height: 1;
-  color: var(--muted);
-}
-.gsb__count {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  opacity: 0.65;
+  flex-direction: column;
+  min-width: 0;
 }
 .gsb__fill {
   flex: 1 1 auto;
 }
-/* Bare until you reach for it — an always-filled pill up here would read as the
-   heaviest thing in a section made of quiet rows. */
-.gsb__filter {
-  width: 120px;
-  height: 22px;
-  padding-inline: 8px;
-  border-radius: 7px;
-  background-color: transparent;
-  border: none;
-  outline: none;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--ink);
-  transition: background-color var(--gs-t-micro) var(--gs-ease);
-}
-.gsb__filter:hover,
-.gsb__filter:focus {
-  background-color: var(--sunken);
-}
-.gsb__filter::placeholder {
-  color: var(--muted);
-}
-.gsb__sweep {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 7px;
-  border-radius: 7px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    background-color var(--gs-t-micro) var(--gs-ease),
-    color var(--gs-t-micro) var(--gs-ease);
-}
-.gsb__sweep:hover:not(:disabled) {
-  background-color: var(--hover);
-  color: var(--ink-soft);
-}
-.gsb__sweep:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.gsb__sweep:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
-}
-
-/* ── row ──────────────────────────────────────────────────────────────────── */
-.gsb__row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 32px;
-  padding-inline: 8px;
-  border-radius: 8px;
-  transition: background-color var(--gs-t-micro) var(--gs-ease);
+.gsb__group {
   animation: gsb-in var(--gs-t-enter) var(--gs-ease) backwards;
-  animation-delay: calc(min(var(--i), 7) * var(--gs-stagger));
+  animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3);
+}
+.gsb__row {
+  animation: gsb-in var(--gs-t-enter) var(--gs-ease) backwards;
+  animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3 + min(var(--n, 0), 7) * var(--gs-stagger));
 }
 @keyframes gsb-in {
   from {
@@ -398,155 +419,416 @@ function checkoutRemote(remoteRef: string) {
     transform: none;
   }
 }
-.gsb__row:hover,
-.gsb__row:focus-within {
-  background-color: var(--hover);
-}
-.gsb__row--edit {
-  animation: none;
+@keyframes gsb-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-/* A fixed gutter again, so the current-branch dot never nudges the names. */
-.gsb__marker {
-  flex-shrink: 0;
-  width: 6px;
-  display: flex;
-  justify-content: center;
-}
-.gsb__dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background-color: var(--accent);
-  opacity: 0;
-}
-.gsb__row--current .gsb__dot {
-  opacity: 1;
-}
-
-.gsb__name {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1;
-  color: var(--ink);
-}
-.gsb__row--current .gsb__name {
-  color: var(--accent);
-}
-.gsb__row--remote .gsb__name {
-  color: var(--ink-soft);
-}
-.gsb__upstream,
-.gsb__hint {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--muted);
-}
-.gsb__hint {
-  flex: 1 1 auto;
-}
-.gsb__drift {
+/* ── head ─────────────────────────────────────────────────────────────────── */
+.gsb__head {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-  flex: 1 1 auto;
-  min-width: 60px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
+  gap: 10px;
+  height: 26px;
+  margin-bottom: 26px;
+}
+.gsb__headcount {
+  font-size: 12.5px;
+  color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
-.gsb__ahead {
-  color: var(--ink-soft);
-}
-.gsb__behind {
-  color: var(--muted);
-}
-
-.gsb__input {
-  flex: 0 1 260px;
-  height: 24px;
-  padding-inline: 8px;
-  border-radius: 7px;
-  background-color: var(--sunken);
-  border: none;
-  outline: none;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+.gsb__headcount b {
+  font-weight: 500;
   color: var(--ink);
 }
-.gsb__input::placeholder {
-  color: var(--muted);
+.gsb__clear {
+  padding: 3px 8px;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  background-color: var(--hover);
+  cursor: pointer;
 }
-
-.gsb__actions {
-  display: flex;
+.gsb__clear:hover {
+  color: var(--ink);
+}
+.gsb__sweep {
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
-  flex-shrink: 0;
-  min-width: 210px;
-  opacity: 0;
-  transition: opacity var(--gs-t-micro) var(--gs-ease);
-}
-.gsb__row:hover .gsb__actions,
-.gsb__row:focus-within .gsb__actions {
-  opacity: 1;
-}
-.gsb__act {
-  padding: 3px 6px;
+  gap: 5px;
+  padding: 3px 7px;
   border-radius: 7px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--ink-soft);
   cursor: pointer;
   transition:
     background-color var(--gs-t-micro) var(--gs-ease),
     color var(--gs-t-micro) var(--gs-ease);
 }
-.gsb__act:hover:not(:disabled) {
+.gsb__sweep:hover:not(:disabled) {
   background-color: var(--hover);
   color: var(--ink);
 }
-/* The one action per row you most likely came for. */
-.gsb__act--go {
+.gsb__sweep:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.gsb__sweep--spin .gsb__spin {
+  animation: gsb-spin 900ms linear infinite;
+}
+
+/* ── composer ─────────────────────────────────────────────────────────────── */
+.gsb__composer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 22px;
+  padding: 12px 14px 10px;
+  border-radius: 12px;
+  background-color: var(--hover);
+  transition: box-shadow var(--gs-t-micro) var(--gs-ease);
+  animation: gsb-in var(--gs-t-enter) var(--gs-ease) backwards;
+}
+.gsb__composer:focus-within {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
+.gsb__namefield {
+  width: 100%;
+  background: none;
+  border: none;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.gsb__namefield::placeholder {
   color: var(--ink-soft);
+  opacity: 0.6;
+}
+.gsb__composerfoot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+.gsb__hint {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.gsb__hint b {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--ink);
+}
+.gsb__hint--bad {
+  color: var(--danger);
+}
+.gsb__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.gsb__check input {
+  accent-color: var(--ink);
+}
+.gsb__blocked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 22px;
+  padding: 10px 12px 10px 14px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  color: var(--ink);
+  background-color: color-mix(in srgb, var(--warn) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.gsb__blocked b {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.gsb__create {
+  height: 25px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  background-color: var(--ink);
+  color: var(--ground);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--gs-t-micro) var(--gs-ease);
+}
+.gsb__create:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.gsb__create:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── labels ───────────────────────────────────────────────────────────────── */
+.gsb__label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.gsb__label-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+.gsb__label-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── groups and rows ──────────────────────────────────────────────────────── */
+.gsb__group + .gsb__group {
+  margin-top: 30px;
+}
+.gsb__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-inline: -10px;
+  border-radius: 10px;
+  transition: background-color var(--gs-t-micro) var(--gs-ease);
+}
+.gsb__row:hover,
+.gsb__row:focus-within {
+  background-color: var(--hover);
+}
+.gsb__main-btn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The dot is the side column's legend, drawn on the row: a fill for each
+   standing, hatched for never pushed, a ring for a remote that went away, and
+   a hollow square for a branch only the remote has. */
+.gsb__dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.gsb__dot--unpushed {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--ink) 45%, transparent) 0 1.5px,
+    transparent 1.5px 3px
+  );
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 45%, transparent);
+}
+.gsb__dot--gone,
+.gsb__dot--remote {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 45%, transparent);
+}
+.gsb__dot--remote {
+  border-radius: 2px;
+}
+/* The one you're on is ringed, so "where am I" answers itself. */
+.gsb__row--current .gsb__dot {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}
+
+.gsb__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.gsb__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.gsb__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.gsb__row--current .gsb__name {
+  color: var(--accent);
+}
+.gsb__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--ink-soft);
+  background-color: var(--hover);
+}
+.gsb__row:hover .gsb__tag,
+.gsb__row:focus-within .gsb__tag {
+  background-color: var(--sunken);
+}
+.gsb__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.gsb__subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gsb__dim {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.gsb__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  transition: opacity var(--gs-t-micro) var(--gs-ease);
+}
+.gsb__drift--unpushed,
+.gsb__drift--gone,
+.gsb__drift--even {
+  opacity: 0.75;
+}
+.gsb__age {
+  min-width: 3ch;
+  text-align: right;
+}
+.gsb__age--stale {
+  color: var(--warn);
+}
+
+/* Switching takes the right end's place on hover. */
+.gsb__actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--gs-t-micro) var(--gs-ease);
+}
+.gsb__row:hover .gsb__actions,
+.gsb__row:focus-within .gsb__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.gsb__row:has(.gsb__actions):hover .gsb__right,
+.gsb__row:has(.gsb__actions):focus-within .gsb__right {
+  opacity: 0;
+}
+.gsb__act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  background-color: var(--sunken);
+  cursor: pointer;
+  transition:
+    background-color var(--gs-t-micro) var(--gs-ease),
+    color var(--gs-t-micro) var(--gs-ease);
+}
+.gsb__act--flat {
+  background: none;
+}
+.gsb__act:hover:not(:disabled) {
+  color: var(--ink);
 }
 .gsb__act:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.gsb__act:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+.gsb__link {
+  margin-left: 6px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.gsb__empty {
+  max-width: 56ch;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-soft);
 }
 
-.gsb__empty {
-  padding: 6px 8px;
-  font-size: 12.5px;
-  color: var(--muted);
+.gsb__main-btn:focus-visible,
+.gsb__act:focus-visible,
+.gsb__sweep:focus-visible,
+.gsb__clear:focus-visible,
+.gsb__create:focus-visible,
+.gsb__link:focus-visible {
+  outline: none;
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent);
+}
+.gsb__main-btn:focus-visible {
+  border-radius: 10px;
+}
+
+@media (max-width: 1180px) {
+  .gsb {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .gsb__row {
+  .gsb__group,
+  .gsb__row,
+  .gsb__composer,
+  .gsb__sweep--spin .gsb__spin {
     animation: none;
   }
   .gsb__row,
-  .gsb__filter,
   .gsb__sweep,
   .gsb__actions,
+  .gsb__right,
   .gsb__act {
     transition: none;
   }
