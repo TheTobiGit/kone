@@ -40,6 +40,8 @@ const changes = computed(() => props.git.changes.value);
 const staged = computed(() => changes.value.filter((c) => sideOf(c) === "staged"));
 const partly = computed(() => changes.value.filter((c) => sideOf(c) === "partly"));
 const unstaged = computed(() => changes.value.filter((c) => sideOf(c) === "unstaged"));
+/** Every file the commit box would take: fully and partly staged alike. */
+const stagedWorkCount = computed(() => staged.value.length + partly.value.length);
 const conflicts = computed(() => new Set(props.space.state.value.conflicts));
 const canPush = computed(() => props.space.origin.value !== null);
 const busy = computed(() => props.space.op.value !== null);
@@ -336,7 +338,7 @@ function stashAll() {
           <button type="button" class="gsc__link" @click="clearFilters">Show every change</button>
         </p>
 
-        <GitSpaceCommitBox :space="space" :staged-count="staged.length" :can-push="canPush" />
+        <GitSpaceCommitBox :space="space" :staged-count="stagedWorkCount" :can-push="canPush" />
       </div>
 
       <!-- ══ the side column: the tree at a glance ═════════════════════════ -->
