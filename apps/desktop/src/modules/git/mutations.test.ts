@@ -65,6 +65,16 @@ describe("checkout", () => {
     expect((await git(dir, ["rev-parse", "HEAD"])).trim()).toBe(original);
   });
 
+  test("won't land on a same-named branch that tracks another remote", async () => {
+    const dir = await withRemote();
+    await git(dir, ["remote", "add", "upstream", dir]);
+    await git(dir, ["update-ref", "refs/remotes/upstream/feature/login", "HEAD~1"]);
+    await checkout(dir, "origin/feature/login");
+    await checkout(dir, "main");
+    await expect(checkout(dir, "upstream/feature/login")).rejects.toThrow("already tracks origin/feature/login");
+    expect(await currentBranch(dir)).toBe("main");
+  });
+
   test("a conflicting edit blocks the switch without creating a local branch", async () => {
     const dir = await withRemote("HEAD~1");
     await writeFile(path.join(dir, "a.txt"), "unsaved\n");

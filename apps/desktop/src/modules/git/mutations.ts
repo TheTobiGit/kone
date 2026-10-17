@@ -111,6 +111,17 @@ async function switchIn(root: string, ref: string): Promise<void> {
   }
   const localName = (await splitRemoteRef(root, name))?.branch ?? name.slice(name.indexOf("/") + 1);
   if (await refExists(root, `refs/heads/${localName}`)) {
+    // The local name is taken: switch to it unless it tracks another remote
+    // branch, which would land somewhere other than the row picked.
+    const tracks = (
+      await git(root, ["for-each-ref", "--format=%(upstream)", `refs/heads/${localName}`]).catch(() => "")
+    ).trim();
+    if (tracks.startsWith("refs/remotes/") && tracks !== remoteRef) {
+      throw new GitError(
+        `A local ${localName} already tracks ${tracks.slice("refs/remotes/".length)}. Rename it to check out ${name}.`,
+        null,
+      );
+    }
     await git(root, ["switch", "--no-guess", "--", localName]);
   } else {
     // switch -c is atomic: a failed checkout leaves no new branch behind.
