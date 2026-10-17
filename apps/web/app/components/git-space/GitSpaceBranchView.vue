@@ -63,10 +63,13 @@ watch(live, (now, before) => {
 const compare = ref<GitBranchCompare | null>(null);
 const loading = ref(true);
 
+// Reads can overlap when the tips move quickly; only the latest one lands.
+let compareSeq = 0;
 async function readCompare() {
+  const seq = ++compareSeq;
   const { name, remote } = props.branch;
   const next = await props.space.branchCompare(name, remote);
-  if (props.branch.name !== name) return;
+  if (seq !== compareSeq) return;
   compare.value = next;
   loading.value = false;
 }
