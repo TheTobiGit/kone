@@ -1,121 +1,97 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
-// What a section looks like while a slow read is still on its way: not grey
-// bars but the section's own plan, drawn in dotted guides over a dot grid.
+// What a list looks like while a slow read is still on its way: not grey bars
+// but the list's own plan, drawn in dotted guides over a dot grid.
 //
 // The grey skeleton is right for local reads that land in a beat. A read that
 // goes over the network (GitHub, mostly) can take a second or two, and for that
-// long a breathing block says nothing. The plan says what's coming and exactly
-// where it will sit: every guide is the same size and in the same place as the
-// thing it stands for, so when the data lands the real rows resolve into the
-// lines rather than pushing them aside.
+// long a breathing block says nothing.
 //
-// The section leaves the plan on screen while its rows resolve, then lets it
-// fade, so the two overlap for a moment — that overlap is the whole effect.
+// A list of text can't be predicted the way a fixed card can: nobody knows how
+// long a title is until it arrives. What is known is the grid the text will sit
+// on. So the plan draws only that: the columns and what each one holds, the
+// baselines every title and every line of detail will rest on, and the marks
+// whose size never changes (a checks ring, a reviewer's face, a size bar). The
+// text itself resolves onto those baselines when it lands.
 
 const props = withDefaults(
   defineProps<{
-    /** `list` is the main column's rows; `side` is the side column's drawings. */
-    part?: "list" | "side";
     rows?: number;
     /** What is being read, for the caption and for screen readers. */
     what?: string;
+    /** The columns, left to right: the mark, the text, then the right end. */
+    columns?: { mark: string; text: string; right: string[] };
   }>(),
-  { part: "list", rows: 5, what: "data" },
+  {
+    rows: 5,
+    what: "data",
+    columns: () => ({ mark: "checks", text: "title · number", right: ["review", "size"] }),
+  },
 );
-
-// Fixed, uneven widths, cycled by row, so the plan never twitches on a
-// re-render and never reads as a table.
-const TITLE = [72, 54, 66, 48, 80, 60, 63, 51];
-const META = [44, 58, 38, 52, 47, 61, 41, 55];
-function title(i: number): string {
-  return `${TITLE[i % TITLE.length]}%`;
-}
-function meta(i: number): string {
-  return `${META[i % META.length]}%`;
-}
 
 // A quiet clock in the corner: the plan is a read in progress, and the time it
 // has taken is the one honest thing to say about it.
 const elapsed = ref("0.0");
-let started = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
-  if (props.part !== "list") return;
-  started = performance.now();
+  const started = performance.now();
   timer = setInterval(() => {
     elapsed.value = ((performance.now() - started) / 1000).toFixed(1);
   }, 100);
 });
 onBeforeUnmount(() => clearInterval(timer));
+
+defineExpose({ rows: props.rows });
 </script>
 
 <template>
-  <div class="gbp" :class="`gbp--${part}`" role="status" :aria-label="`Loading ${what}`">
-    <template v-if="part === 'list'">
-      <div class="gbp__caption" aria-hidden="true">
-        <span>{{ what }}</span>
-        <span class="gbp__fill" />
-        <span>t+{{ elapsed }}s</span>
+  <div class="gbp" role="status" :aria-label="`Loading ${what}`">
+    <div class="gbp__caption" aria-hidden="true">
+      <span>{{ what }}</span>
+      <span class="gbp__fill" />
+      <span>t+{{ elapsed }}s</span>
+    </div>
+
+    <div class="gbp__frame" aria-hidden="true">
+      <i class="gbp__corner gbp__corner--tl" />
+      <i class="gbp__corner gbp__corner--tr" />
+      <i class="gbp__corner gbp__corner--bl" />
+      <i class="gbp__corner gbp__corner--br" />
+
+      <!-- The column edges run the frame's full height, the way a layout grid
+           does: where the text starts and where the right end begins. -->
+      <i class="gbp__guide gbp__guide--text" />
+      <i class="gbp__guide gbp__guide--right" />
+
+      <!-- Sits where the first group's label will, at its height, so the
+           rows below line up with the rows that replace them. -->
+      <div class="gbp__cols">
+        <span class="gbp__col gbp__col--mark">{{ columns.mark }}</span>
+        <span class="gbp__col gbp__col--text">{{ columns.text }}</span>
+        <span class="gbp__col gbp__col--right">
+          <span v-for="c in columns.right" :key="c">{{ c }}</span>
+        </span>
       </div>
 
-      <div class="gbp__frame" aria-hidden="true">
-        <i class="gbp__corner gbp__corner--tl" />
-        <i class="gbp__corner gbp__corner--tr" />
-        <i class="gbp__corner gbp__corner--bl" />
-        <i class="gbp__corner gbp__corner--br" />
-
-        <div class="gbp__label">
-          <i class="gbp__rule" style="width: 64px; --d: 0" />
-        </div>
-
-        <div v-for="i in rows" :key="i" class="gbp__row" :style="{ '--d': i }">
-          <i class="gbp__ring" />
-          <span class="gbp__body">
-            <span class="gbp__line gbp__line--title">
-              <i class="gbp__rule" :style="{ width: title(i - 1) }" />
-            </span>
-            <span class="gbp__line gbp__line--meta">
-              <i class="gbp__rule gbp__rule--soft" :style="{ width: meta(i - 1) }" />
-            </span>
+      <div v-for="i in rows" :key="i" class="gbp__row" :style="{ '--d': i }">
+        <i class="gbp__ring" />
+        <span class="gbp__body">
+          <span class="gbp__line gbp__line--title">
+            <i class="gbp__base" />
+            <span class="gbp__num">#–––</span>
           </span>
-          <span class="gbp__right">
-            <i class="gbp__ring gbp__ring--sm" />
-            <i class="gbp__rule gbp__rule--size" />
+          <span class="gbp__line gbp__line--meta">
+            <i class="gbp__dot" />
+            <i class="gbp__base gbp__base--soft" />
           </span>
-        </div>
+        </span>
+        <span class="gbp__right">
+          <i class="gbp__ring gbp__ring--sm" />
+          <i class="gbp__base gbp__base--size" />
+        </span>
       </div>
-    </template>
-
-    <template v-else>
-      <div class="gbp__box gbp__box--search" style="--d: 0" aria-hidden="true" />
-
-      <div class="gbp__block" aria-hidden="true">
-        <i class="gbp__rule" style="width: 46%; --d: 1" />
-        <div class="gbp__big" style="--d: 2">
-          <i class="gbp__box gbp__box--num" />
-          <i class="gbp__rule gbp__rule--soft" style="width: 52%" />
-        </div>
-        <div class="gbp__box gbp__box--stack" style="--d: 3" />
-        <div v-for="n in 3" :key="n" class="gbp__key" :style="{ '--d': 3 + n }">
-          <i class="gbp__ring gbp__ring--dot" />
-          <i class="gbp__rule gbp__rule--soft" :style="{ width: `${[48, 36, 42][n - 1]}%` }" />
-          <span class="gbp__fill" />
-          <i class="gbp__rule gbp__rule--soft" style="width: 12px" />
-        </div>
-      </div>
-
-      <div class="gbp__block" aria-hidden="true">
-        <i class="gbp__rule" style="width: 34%; --d: 7" />
-        <div v-for="n in 3" :key="n" class="gbp__key" :style="{ '--d': 7 + n }">
-          <i class="gbp__ring gbp__ring--face" />
-          <i class="gbp__rule gbp__rule--soft" style="width: 56px" />
-          <i class="gbp__rule gbp__rule--track" />
-          <i class="gbp__rule gbp__rule--soft" style="width: 10px" />
-        </div>
-      </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -124,8 +100,13 @@ onBeforeUnmount(() => clearInterval(timer));
    enough to read as content. */
 .gbp {
   --gbp-ink: color-mix(in srgb, var(--ink) 30%, transparent);
-  --gbp-soft: color-mix(in srgb, var(--ink) 18%, transparent);
+  --gbp-soft: color-mix(in srgb, var(--ink) 16%, transparent);
   --gbp-dot: color-mix(in srgb, var(--ink) 9%, transparent);
+  --gbp-label: color-mix(in srgb, var(--ink) 40%, transparent);
+  /* Where the text starts in a row (the mark's width plus the gap) and how
+     wide the right end is (a face, the gap, a size bar). */
+  --gbp-text: 38px;
+  --gbp-right: 76px;
   position: relative;
   /* Held back like the grey skeleton: a read that beats the hold never draws
      a plan at all. */
@@ -138,8 +119,7 @@ onBeforeUnmount(() => clearInterval(timer));
 }
 
 /* ── the grid the plan is drawn on ────────────────────────────────────────── */
-.gbp--list::before,
-.gbp--side::before {
+.gbp::before {
   content: "";
   position: absolute;
   inset: -18px -24px;
@@ -164,13 +144,14 @@ onBeforeUnmount(() => clearInterval(timer));
   font-size: 10px;
   line-height: 1;
   letter-spacing: 0.02em;
-  color: color-mix(in srgb, var(--ink) 38%, transparent);
+  color: var(--gbp-label);
   font-variant-numeric: tabular-nums;
 }
 
 /* ── the frame: a selection box's corners, not a border ───────────────────── */
 .gbp__frame {
   position: relative;
+  animation: gbp-breathe var(--gs-t-breathe, 1700ms) ease-in-out 1.2s infinite;
 }
 .gbp__corner {
   position: absolute;
@@ -203,77 +184,60 @@ onBeforeUnmount(() => clearInterval(timer));
   border-right-width: 1px;
 }
 
-/* ── rules: a dotted line with a cap at each end ──────────────────────────── */
-.gbp__rule {
-  position: relative;
-  display: block;
-  flex-shrink: 0;
-  height: 1px;
-  background-image: linear-gradient(to right, var(--gbp-ink) 50%, transparent 50%);
-  background-size: 4px 1px;
-  transform-origin: left center;
-  /* Drawn in, top to bottom, like a plan being traced. */
-  animation: gbp-draw 520ms var(--gs-ease, ease) backwards;
-  animation-delay: calc(var(--gs-hold, 140ms) + min(var(--d, 0), 12) * 55ms);
-}
-.gbp__rule::before,
-.gbp__rule::after {
-  content: "";
+.gbp__guide {
   position: absolute;
-  top: -1px;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background-color: var(--gbp-ink);
+  top: -6px;
+  bottom: -6px;
+  width: 1px;
+  background-image: linear-gradient(to bottom, var(--gbp-soft) 50%, transparent 50%);
+  background-size: 1px 4px;
+  transform-origin: top center;
+  animation: gbp-drop 700ms var(--gs-ease, ease) var(--gs-hold, 140ms) backwards;
 }
-.gbp__rule::before {
-  left: -1px;
+.gbp__guide--text {
+  left: calc(var(--gbp-text) - 7px);
 }
-.gbp__rule::after {
-  right: -1px;
+.gbp__guide--right {
+  right: calc(var(--gbp-right) + 8px);
 }
-.gbp__rule--soft {
-  background-image: linear-gradient(to right, var(--gbp-soft) 50%, transparent 50%);
-}
-.gbp__rule--soft::before,
-.gbp__rule--soft::after {
-  background-color: var(--gbp-soft);
-}
-@keyframes gbp-draw {
+@keyframes gbp-drop {
   from {
-    transform: scaleX(0);
+    transform: scaleY(0);
   }
 }
 
-.gbp__ring {
-  display: block;
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1px dashed var(--gbp-ink);
-  animation: gbp-ring 420ms var(--gs-ease, ease) backwards;
-  animation-delay: calc(var(--gs-hold, 140ms) + min(var(--d, 0), 12) * 55ms);
-}
-@keyframes gbp-ring {
-  from {
-    opacity: 0;
-    transform: scale(0.6);
-  }
-}
-
-/* ── the list: each row the size of the row it stands for ─────────────────── */
-.gbp__label {
+/* ── the column heads ─────────────────────────────────────────────────────── */
+.gbp__cols {
   display: flex;
   align-items: center;
   height: 17px;
   margin-bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--gbp-label);
+  white-space: nowrap;
+  animation: gbp-appear 400ms var(--gs-ease, ease) var(--gs-hold, 140ms) backwards;
 }
+.gbp__col--mark {
+  width: var(--gbp-text);
+  flex-shrink: 0;
+}
+.gbp__col--text {
+  flex: 1 1 auto;
+}
+.gbp__col--right {
+  display: flex;
+  justify-content: space-between;
+  width: var(--gbp-right);
+  flex-shrink: 0;
+}
+
+/* ── a row: the real row's own box, so the text lands on these lines ──────── */
 .gbp__row {
   display: flex;
   align-items: center;
   gap: 14px;
-  /* The real row's own padding and margin, so it lands on these lines. */
   margin-inline: -10px;
   padding: 11px 10px;
 }
@@ -284,15 +248,105 @@ onBeforeUnmount(() => clearInterval(timer));
   flex: 1 1 auto;
   min-width: 0;
 }
+/* Each line is the height of the text it stands for, and its rule sits on
+   that text's baseline rather than through its middle. */
 .gbp__line {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
+  gap: 8px;
+  padding-bottom: 3px;
 }
 .gbp__line--title {
   height: 18px;
 }
 .gbp__line--meta {
-  height: 16px;
+  height: 14px;
+}
+
+/* A baseline: dotted, capped, and drawn in left to right, row by row. */
+.gbp__base {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  height: 1px;
+  background-image: linear-gradient(to right, var(--gbp-ink) 50%, transparent 50%);
+  background-size: 4px 1px;
+  transform-origin: left center;
+  animation: gbp-draw 560ms var(--gs-ease, ease) backwards;
+  animation-delay: calc(var(--gs-hold, 140ms) + 120ms + min(var(--d, 0), 12) * 60ms);
+}
+.gbp__base::before,
+.gbp__base::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background-color: var(--gbp-ink);
+}
+.gbp__base::before {
+  left: -1px;
+}
+.gbp__base::after {
+  right: -1px;
+}
+.gbp__base--soft {
+  background-image: linear-gradient(to right, var(--gbp-soft) 50%, transparent 50%);
+}
+.gbp__base--soft::before,
+.gbp__base--soft::after {
+  background-color: var(--gbp-soft);
+}
+.gbp__base--size {
+  flex: 0 0 40px;
+}
+@keyframes gbp-draw {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* The number is the one part of a title whose shape is known: a hash and a
+   few digits, waiting. */
+.gbp__num {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--gbp-label);
+  transform: translateY(4px);
+  animation: gbp-appear 400ms var(--gs-ease, ease) backwards;
+  animation-delay: calc(var(--gs-hold, 140ms) + 400ms + min(var(--d, 0), 12) * 60ms);
+}
+.gbp__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-bottom: -2px;
+  border-radius: 50%;
+  border: 1px dashed var(--gbp-ink);
+}
+
+.gbp__ring {
+  display: block;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px dashed var(--gbp-ink);
+  animation: gbp-ring 420ms var(--gs-ease, ease) backwards;
+  animation-delay: calc(var(--gs-hold, 140ms) + min(var(--d, 0), 12) * 60ms);
+}
+.gbp__ring--sm {
+  width: 20px;
+  height: 20px;
+}
+@keyframes gbp-ring {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
 }
 .gbp__right {
   display: flex;
@@ -300,74 +354,9 @@ onBeforeUnmount(() => clearInterval(timer));
   gap: 16px;
   flex-shrink: 0;
 }
-.gbp__ring--sm {
-  width: 20px;
-  height: 20px;
-}
-.gbp__rule--size {
-  width: 40px;
-}
 
-/* ── the side column ──────────────────────────────────────────────────────── */
-.gbp--side {
-  display: flex;
-  flex-direction: column;
-  gap: 36px;
-}
-.gbp__box {
-  display: block;
-  border: 1px dashed var(--gbp-ink);
-  border-radius: 9px;
-  animation: gbp-ring 420ms var(--gs-ease, ease) backwards;
-  animation-delay: calc(var(--gs-hold, 140ms) + min(var(--d, 0), 12) * 55ms);
-}
-.gbp__box--search {
-  height: 34px;
-}
-.gbp__block {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.gbp__big {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.gbp__box--num {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  animation: none;
-}
-.gbp__box--stack {
-  height: 10px;
-  border-radius: 3px;
-}
-.gbp__key {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 20px;
-}
-.gbp__ring--dot {
-  width: 8px;
-  height: 8px;
-}
-.gbp__ring--face {
-  width: 18px;
-  height: 18px;
-}
-.gbp__rule--track {
-  flex: 1 1 auto;
-}
-
-/* The plan sits still once drawn and breathes, very slightly, so a long wait
-   still reads as a wait and not as a finished page. */
-.gbp__frame,
-.gbp--side .gbp__block {
-  animation: gbp-breathe var(--gs-t-breathe, 1700ms) ease-in-out 1s infinite;
-}
+/* Once drawn the plan breathes, very slightly, so a long wait still reads as
+   a wait and not as a finished page. */
 @keyframes gbp-breathe {
   50% {
     opacity: 0.6;
@@ -375,16 +364,17 @@ onBeforeUnmount(() => clearInterval(timer));
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* The drawing, the breathing and the clock's motion go; the hold-back stays,
-     so a fast read still never flashes a plan. */
+  /* The drawing and the breathing go; the hold-back stays, so a fast read
+     still never flashes a plan. */
   .gbp {
     animation: gbp-appear 1ms linear var(--gs-hold, 140ms) backwards;
   }
-  .gbp__rule,
-  .gbp__ring,
-  .gbp__box,
   .gbp__frame,
-  .gbp--side .gbp__block {
+  .gbp__guide,
+  .gbp__cols,
+  .gbp__base,
+  .gbp__num,
+  .gbp__ring {
     animation: none;
   }
 }

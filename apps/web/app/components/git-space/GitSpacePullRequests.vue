@@ -51,6 +51,9 @@ const myLogin = computed(() => props.space.me.value?.login ?? gh.value?.user ?? 
 
 /** Why the section can't show anything — null when it can. */
 const blocked = computed<string | null>(() => {
+  // Until the remotes are read a missing origin means "not yet", not "none",
+  // and saying "no remote" for that beat flashes a wrong answer.
+  if (!props.space.loaded.value) return null;
   if (!origin.value) return "This project has no remote, so there's nothing to open a pull request against.";
   if (!origin.value.slug) return `${origin.value.fetchUrl} isn't a GitHub remote — pull requests live wherever that host keeps them.`;
   if (!gh.value) return null;
@@ -351,10 +354,10 @@ function plural(n: number, word: string): string {
 
         <!-- Pull requests come from GitHub, a beat or two behind everything
              local, so the list draws its plan while it waits. It sits where the
-             first group will and stays a moment once the rows arrive, so they
-             resolve into its lines. -->
+             first group will, and when the rows arrive it fades out over the
+             same beat they fade in, so the handover is one move. -->
         <Transition name="gsp-plan">
-          <GitSpaceBlueprint v-if="waiting" part="list" :rows="5" what="github · pull requests" />
+          <GitSpaceBlueprint v-if="waiting" :rows="5" what="github · pull requests" />
         </Transition>
 
         <div v-for="(g, gi) in groups" :key="g.id" class="gsp__group" :style="{ '--i': gi }">
@@ -458,14 +461,14 @@ function plural(n: number, word: string): string {
         </p>
       </div>
 
-      <div class="gsp__sidecell">
-      <Transition name="gsp-plan">
-        <GitSpaceBlueprint v-if="waiting" part="side" what="github · pull requests" />
-      </Transition>
+      <!-- While the list waits the side column is already here, its labels
+           real and its numbers blank, so when the list lands only the numbers
+           and the drawings change. -->
       <GitSpacePullRequestsSide
-        v-if="prs.length"
+        v-if="prs.length || waiting"
         v-model:query="query"
         :prs="prs"
+        :pending="waiting"
         :my-login="myLogin"
         :stand-filter="standFilter"
         :waiting-filter="waitingFilter"
@@ -473,7 +476,6 @@ function plural(n: number, word: string): string {
         @pick-waiting="pickWaiting"
         @open="(n, o) => emit('open', n, o)"
       />
-      </div>
     </template>
   </section>
 </template>
@@ -493,26 +495,14 @@ function plural(n: number, word: string): string {
   min-width: 0;
 }
 
-/* The side column's plan and the side column itself share one cell, so for the
-   moment both are on screen the drawings resolve over their guides. */
-.gsp__sidecell {
-  position: sticky;
-  top: 6rem;
-  display: grid;
-  align-items: start;
-  min-width: 0;
-}
-.gsp__sidecell > * {
-  grid-area: 1 / 1;
-}
-
 /* ── the plan leaving ─────────────────────────────────────────────────────── */
-/* The plan stays put while the rows resolve over it, then dissolves. Lifted
-   out of the flow as it goes, so the rows take its place without a jump. */
+/* The plan fades on exactly the beat the rows fade in, starting the moment
+   they land: nothing waits for it, and nothing arrives after it has gone.
+   Lifted out of the flow as it goes, so the rows take its place without a
+   jump. Opacity only: a blur ending on text makes the text re-render sharp a
+   frame later, which reads as a blink. */
 .gsp-plan-leave-active {
-  transition:
-    opacity 520ms var(--gs-ease) 200ms,
-    filter 520ms var(--gs-ease) 200ms;
+  transition: opacity var(--gs-t-enter) var(--gs-ease);
 }
 /* A flex container places an absolute child at its own top, not where the
    child sat in the flow, so the plan is pinned below the head by hand: the
@@ -525,7 +515,6 @@ function plural(n: number, word: string): string {
 }
 .gsp-plan-leave-to {
   opacity: 0;
-  filter: blur(3px);
 }
 .gsp__fill {
   flex: 1 1 auto;
@@ -540,16 +529,11 @@ function plural(n: number, word: string): string {
   animation: gsp-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3 + min(var(--n, 0), 7) * var(--gs-stagger));
 }
-/* Rows resolve in place, blurred to sharp, rather than sliding up: they land
-   exactly on the plan's lines, and a slide would miss them. */
+/* Rows fade in place rather than sliding up: they land on the plan's lines,
+   and a slide would miss them. */
 @keyframes gsp-in {
   from {
     opacity: 0;
-    filter: blur(6px);
-  }
-  to {
-    opacity: 1;
-    filter: none;
   }
 }
 @keyframes gsp-grow {
@@ -789,8 +773,10 @@ function plural(n: number, word: string): string {
   height: 100%;
   border-radius: 3px;
   transform-origin: left center;
-  animation: gsp-grow 600ms var(--gs-ease) backwards;
-  animation-delay: calc(220ms + min(var(--n, 0), 7) * 60ms);
+  /* Drawn on its row's own beat, not after it, so a row is whole the moment
+     it has faded in. */
+  animation: gsp-grow var(--gs-t-enter) var(--gs-ease) backwards;
+  animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3 + min(var(--n, 0), 7) * var(--gs-stagger));
 }
 .gsp__size-add {
   background-color: var(--diff-add);
@@ -1021,10 +1007,6 @@ function plural(n: number, word: string): string {
 @media (max-width: 1180px) {
   .gsp {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .gsp__sidecell {
-    position: static;
-    order: -1;
   }
 }
 
