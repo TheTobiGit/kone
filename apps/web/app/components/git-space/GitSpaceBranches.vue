@@ -199,12 +199,16 @@ async function submitCreate() {
   // reaches here either way, so say no rather than swallow it.
   if (busy.value || problem.value) return cue("refuse");
   cue("press");
-  let ok = await props.space.createBranch(name, { checkout: true });
-  if (ok && hasRemote.value && publishNew.value) {
-    ok = await props.space.push({ branch: name, setUpstream: true, remote: props.space.origin.value?.name });
-  }
+  const made = await props.space.createBranch(name, { checkout: true });
+  if (!made) return cue("error");
+  // The branch exists now whatever the push does, so the composer closes; a
+  // failed publish stays on the masthead and Publish waits on the branch card.
+  cancelCreate();
+  const ok =
+    !hasRemote.value ||
+    !publishNew.value ||
+    (await props.space.push({ branch: name, setUpstream: true, remote: props.space.origin.value?.name }));
   cue(ok ? "success" : "error");
-  if (ok) cancelCreate();
 }
 
 async function clearMerged(names: string[]) {
