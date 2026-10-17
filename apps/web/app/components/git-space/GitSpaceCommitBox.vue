@@ -248,25 +248,27 @@ function onBodyKey(e: KeyboardEvent) {
   left: 0;
   right: 0;
   bottom: 100%;
-  height: 28px;
+  height: 36px;
   background: linear-gradient(to top, var(--ground), transparent);
   pointer-events: none;
 }
-/* Bare ground, like every row above it — a filled slab here reads as a card,
-   and in dark it punches a black hole in the page. The fade is the separation.
-   A wash arrives only while you're writing, on the same pill the rows hover
-   with, so the field has presence under the cursor and none at rest. */
+/* The page's own ground, not a card: the fade above does the separation. A
+   wash arrives only while you're writing, on the same pill the rows hover with,
+   so the field has presence under the cursor and none at rest. */
 .cb__box {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 10px 8px 8px;
   border-radius: 8px;
-  background-color: transparent;
+  /* The box sits still at the foot while the list scrolls behind it, so it
+     has to be the page, not a window onto the rows underneath. The fade above
+     is what makes the cut disappear. */
+  background-color: var(--ground);
   transition: background-color var(--gs-t-micro) var(--gs-ease);
 }
 .cb:focus-within .cb__box {
-  background-color: var(--hover);
+  background-color: var(--sunken);
 }
 
 .cb__summary,
@@ -333,6 +335,10 @@ function onBodyKey(e: KeyboardEvent) {
 
 .cb__ghost,
 .cb__commit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   height: 25px;
   padding-inline: 10px;
   border-radius: 8px;
