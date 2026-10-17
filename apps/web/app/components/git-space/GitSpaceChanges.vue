@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, type ComponentPublicInstance } from "vue";
+import { computed, onBeforeUnmount, ref, watch, type ComponentPublicInstance } from "vue";
 import { useResizeObserver } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon } from "@hugeicons/core-free-icons";
@@ -48,13 +48,23 @@ const canPush = computed(() => props.space.origin.value !== null);
 const busy = computed(() => props.space.op.value !== null);
 
 // The commit box stays stuck to the foot, so a row focused near the bottom has
-// to scroll clear of it rather than land behind it (WCAG 2.4.11). Its height
-// moves as the message grows, so it's measured, not guessed.
+// to scroll clear of it rather than land behind it (WCAG 2.4.11). Focus only
+// scrolls when a control leaves the scroller's padded view, so the padding
+// goes on the space's scroller, sized from the box as its message grows.
+const rootEl = ref<HTMLElement | null>(null);
 const commitBox = ref<ComponentPublicInstance | null>(null);
 const footHeight = ref(0);
 useResizeObserver(commitBox, (entries) => {
   footHeight.value = entries[0]?.contentRect.height ?? 0;
 });
+function scroller(): HTMLElement | null {
+  return rootEl.value?.closest<HTMLElement>(".gs__scroll") ?? null;
+}
+watch(footHeight, (h) => {
+  // The box's height plus the fade above it.
+  scroller()?.style.setProperty("scroll-padding-bottom", h ? `${h + 40}px` : "");
+});
+onBeforeUnmount(() => scroller()?.style.removeProperty("scroll-padding-bottom"));
 
 // ── filters ──────────────────────────────────────────────────────────────────
 
@@ -160,7 +170,7 @@ function stashAll() {
 </script>
 
 <template>
-  <section class="gsc" :style="{ '--gsc-foot': `${footHeight}px` }">
+  <section ref="rootEl" class="gsc">
     <!-- A placeholder is only honest while the first status is still on its way;
          once it lands, a clean tree is a fact and gets a sentence. -->
     <div v-if="!git.loaded.value" class="gsc__span">
@@ -445,8 +455,6 @@ function stashAll() {
 /* ── rows ─────────────────────────────────────────────────────────────────── */
 .gsc__row {
   position: relative;
-  /* The box's height plus the fade above it. */
-  scroll-margin-bottom: calc(var(--gsc-foot, 0px) + 40px);
   display: flex;
   align-items: center;
   margin-inline: -10px;
