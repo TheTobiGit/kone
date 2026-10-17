@@ -77,6 +77,7 @@ const biggest = computed(() =>
     .sort((a, b) => b.churn - a.churn || a.change.path.localeCompare(b.change.path))
     .slice(0, CHANGES_SHOWN),
 );
+const lead = computed(() => biggest.value[0] ?? null);
 const biggestPeak = computed(() => Math.max(1, ...biggest.value.map((c) => c.churn)));
 
 function plural(n: number, word: string): string {
@@ -257,9 +258,9 @@ function plural(n: number, word: string): string {
           <span class="gscs__key-count">{{ b.churn }}</span>
         </button>
       </div>
-      <p class="gscs__sub">
-        <b>{{ nameOf(biggest[0].change.path) }}</b>{{ " " }}leads at
-        {{ biggest[0].churn }} lines touched.
+      <p v-if="lead" class="gscs__sub">
+        <b>{{ nameOf(lead.change.path) }}</b>{{ " " }}leads at
+        {{ lead.churn }} lines touched.
       </p>
     </div>
   </aside>
@@ -391,25 +392,25 @@ function plural(n: number, word: string): string {
   border-radius: 3px;
   transition: opacity var(--gs-t-small) var(--gs-ease);
 }
-/* No remote to speak of here — the two halves are simply where the work is. */
+/* The three states are steps toward a commit, so they're drawn as one ink at
+   three strengths. Hue is left to the kinds of change below, so a colour on
+   this page always means what kind of file it is, never where it stands. */
 .gscs__stack-seg--staged,
 .gscs__key-dot--staged {
-  background-color: var(--accent-2);
+  background-color: color-mix(in srgb, var(--ink) 72%, transparent);
 }
 /* Work on both sides of the index is neither one state nor the other, so it
-   is drawn as its own hatch rather than a shade of either neighbour. */
-.gscs__stack-seg--partly {
+   is drawn as a hatch of the two rather than a shade of either neighbour. */
+.gscs__stack-seg--partly,
+.gscs__key-dot--partly {
   background: repeating-linear-gradient(
     135deg,
-    color-mix(in srgb, var(--accent) 72%, transparent) 0 3px,
-    color-mix(in srgb, var(--accent) 28%, transparent) 3px 6px
+    color-mix(in srgb, var(--ink) 72%, transparent) 0 2px,
+    color-mix(in srgb, var(--ink) 20%, transparent) 2px 4px
   );
 }
-.gscs__key-dot--partly {
-  background-color: var(--accent);
-}
 .gscs__stack-seg--unstaged {
-  background-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  background-color: color-mix(in srgb, var(--ink) 20%, transparent);
 }
 .gscs__stack-seg--dim {
   opacity: 0.25;
@@ -451,7 +452,7 @@ function plural(n: number, word: string): string {
   border-radius: 50%;
 }
 .gscs__key-dot--unstaged {
-  background-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  background-color: color-mix(in srgb, var(--ink) 20%, transparent);
 }
 .gscs__key-name {
   flex: 1 1 auto;

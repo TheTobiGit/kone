@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch, type ComponentPublicInstance } from "vue";
+import { useResizeObserver } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon } from "@hugeicons/core-free-icons";
 import type { GitChange, GitFileStatus } from "~/types/desktop";
@@ -45,6 +46,25 @@ const stagedWorkCount = computed(() => staged.value.length + partly.value.length
 const conflicts = computed(() => new Set(props.space.state.value.conflicts));
 const canPush = computed(() => props.space.origin.value !== null);
 const busy = computed(() => props.space.op.value !== null);
+
+// The commit box stays stuck to the foot, so a row focused near the bottom has
+// to scroll clear of it rather than land behind it (WCAG 2.4.11). Focus only
+// scrolls when a control leaves the scroller's padded view, so the padding
+// goes on the space's scroller, sized from the box as its message grows.
+const rootEl = ref<HTMLElement | null>(null);
+const commitBox = ref<ComponentPublicInstance | null>(null);
+const footHeight = ref(0);
+useResizeObserver(commitBox, (entries) => {
+  footHeight.value = entries[0]?.contentRect.height ?? 0;
+});
+function scroller(): HTMLElement | null {
+  return rootEl.value?.closest<HTMLElement>(".gs__scroll") ?? null;
+}
+watch(footHeight, (h) => {
+  // The box's height plus the fade above it.
+  scroller()?.style.setProperty("scroll-padding-bottom", h ? `${h + 40}px` : "");
+});
+onBeforeUnmount(() => scroller()?.style.removeProperty("scroll-padding-bottom"));
 
 // ── filters ──────────────────────────────────────────────────────────────────
 
@@ -96,6 +116,15 @@ const shownCount = computed(
   () => stagedShown.value.length + partlyShown.value.length + unstagedShown.value.length,
 );
 
+/** The groups in commit order, each only while it has rows to show. */
+const groups = computed(() =>
+  [
+    { side: "staged" as const, label: "Staged", rows: stagedShown.value },
+    { side: "partly" as const, label: "Partly staged", rows: partlyShown.value },
+    { side: "unstaged" as const, label: "Not staged", rows: unstagedShown.value },
+  ].filter((g) => g.rows.length),
+);
+
 // ── a row ────────────────────────────────────────────────────────────────────
 
 function open(e: Event, path: string) {
@@ -123,15 +152,10 @@ function discard(path: string) {
 }
 // The bulk actions act on the rows the group is showing, so a filter can't
 // quietly stage or unstage files the user can't see.
-function stageAll() {
-  if (!unstagedShown.value.length) return;
+function stageShown(rows: GitChange[]) {
+  if (!rows.length) return;
   cue("toggle");
-  props.git.stagePaths(unstagedShown.value.map((c) => c.path));
-}
-function stagePartly() {
-  if (!partlyShown.value.length) return;
-  cue("toggle");
-  props.git.stagePaths(partlyShown.value.map((c) => c.path));
+  props.git.stagePaths(rows.map((c) => c.path));
 }
 function unstageAll() {
   if (!stagedShown.value.length) return;
@@ -139,13 +163,14 @@ function unstageAll() {
   props.git.unstagePaths(stagedShown.value.map((c) => c.path));
 }
 function stashAll() {
+  if (filtering.value) return;
   cue("press");
   void props.space.stash({ includeUntracked: true });
 }
 </script>
 
 <template>
-  <section class="gsc">
+  <section ref="rootEl" class="gsc">
     <!-- A placeholder is only honest while the first status is still on its way;
          once it lands, a clean tree is a fact and gets a sentence. -->
     <div v-if="!git.loaded.value" class="gsc__span">
@@ -172,122 +197,40 @@ function stashAll() {
             {{ shownCount }} of {{ changes.length }} · clear
           </button>
           <span class="gsc__fill" />
+          <!-- Stashing takes the whole tree, staged and not, so it sits with the
+               tree's own count rather than under one group. It can't follow a
+               filter, so while one is on it waits rather than reach past it. -->
+          <button
+            type="button"
+            class="gsc__sweep"
+            :disabled="busy || filtering"
+            :title="filtering ? 'Clear the filter to stash every change' : 'Set every change aside, staged or not, without committing it'"
+            @click="stashAll"
+          >
+            <HugeiconsIcon :icon="Archive02Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
+            Stash all
+          </button>
         </header>
 
-        <div v-if="stagedShown.length" class="gsc__group" style="--i: 0">
+        <div
+          v-for="(g, gi) in groups"
+          :key="g.side"
+          class="gsc__group"
+          :style="{ '--i': gi }"
+        >
           <div class="gsc__label">
-            <span class="gsc__label-name">Staged</span>
-            <span class="gsc__label-count">{{ stagedShown.length }}</span>
+            <span class="gsc__label-name">{{ g.label }}</span>
+            <span class="gsc__label-count">{{ g.rows.length }}</span>
             <span class="gsc__fill" />
-            <button type="button" class="gsc__sweep" @click="unstageAll">Unstage all</button>
+            <button v-if="g.side === 'staged'" type="button" class="gsc__sweep" @click="unstageAll">
+              Unstage all
+            </button>
+            <button v-else type="button" class="gsc__sweep" @click="stageShown(g.rows)">Stage all</button>
           </div>
 
           <div
-            v-for="(c, i) in stagedShown"
-            :key="`staged:${c.path}`"
-            class="gsc__row"
-            :style="{ '--n': i }"
-          >
-            <button
-              type="button"
-              class="gsc__rowmain"
-              :title="c.path"
-              aria-haspopup="dialog"
-              @click="open($event, c.path)"
-            >
-              <span class="gsc__mark" :style="{ background: changeKindOf(c.status).color }" aria-hidden="true" />
-              <span class="gsc__body">
-                <span class="gsc__path">
-                  <span class="gsc__dir">{{ dirOf(c.path) }}</span>{{ nameOf(c.path) }}
-                </span>
-                <span class="gsc__meta">
-                  <span class="gsc__kind">{{ changeKindOf(c.status).label }}</span>
-                  <span v-if="c.from" class="gsc__from">from {{ nameOf(c.from) }}</span>
-                  <span v-if="conflicts.has(c.path)" class="gsc__flag">conflict</span>
-                </span>
-              </span>
-              <span class="gsc__right">
-                <span class="gsc__nums">
-                  <span v-if="c.added" class="gsc__add">+{{ c.added }}</span>
-                  <span v-if="c.removed" class="gsc__del">−{{ c.removed }}</span>
-                </span>
-              </span>
-            </button>
-
-            <div class="gsc__actions">
-              <button type="button" class="gsc__act" @click="unstage(c.path)">Unstage</button>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="partlyShown.length" class="gsc__group" style="--i: 1">
-          <div class="gsc__label">
-            <span class="gsc__label-name">Partly staged</span>
-            <span class="gsc__label-count">{{ partlyShown.length }}</span>
-            <span class="gsc__fill" />
-            <button type="button" class="gsc__sweep" @click="stagePartly">Stage all</button>
-          </div>
-
-          <div
-            v-for="(c, i) in partlyShown"
-            :key="`partly:${c.path}`"
-            class="gsc__row"
-            :style="{ '--n': i }"
-          >
-            <button
-              type="button"
-              class="gsc__rowmain"
-              :title="c.path"
-              aria-haspopup="dialog"
-              @click="open($event, c.path)"
-            >
-              <span class="gsc__mark" :style="{ background: changeKindOf(c.status).color }" aria-hidden="true" />
-              <span class="gsc__body">
-                <span class="gsc__path">
-                  <span class="gsc__dir">{{ dirOf(c.path) }}</span>{{ nameOf(c.path) }}
-                </span>
-                <span class="gsc__meta">
-                  <span class="gsc__kind">{{ changeKindOf(c.status).label }}</span>
-                  <span v-if="c.from" class="gsc__from">from {{ nameOf(c.from) }}</span>
-                  <span v-if="conflicts.has(c.path)" class="gsc__flag">conflict</span>
-                </span>
-              </span>
-              <span class="gsc__right">
-                <span class="gsc__nums">
-                  <span v-if="c.added" class="gsc__add">+{{ c.added }}</span>
-                  <span v-if="c.removed" class="gsc__del">−{{ c.removed }}</span>
-                </span>
-              </span>
-            </button>
-
-            <div class="gsc__actions">
-              <button type="button" class="gsc__act" @click="unstage(c.path)">Unstage</button>
-              <button type="button" class="gsc__act" @click="stage(c.path)">Stage rest</button>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="unstagedShown.length" class="gsc__group" style="--i: 2">
-          <div class="gsc__label">
-            <span class="gsc__label-name">Not staged</span>
-            <span class="gsc__label-count">{{ unstagedShown.length }}</span>
-            <span class="gsc__fill" />
-            <button
-              type="button"
-              class="gsc__sweep"
-              :disabled="busy"
-              title="Set every change aside without committing it"
-              @click="stashAll"
-            >
-              <HugeiconsIcon :icon="Archive02Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
-              Stash all
-            </button>
-            <button type="button" class="gsc__sweep" @click="stageAll">Stage all</button>
-          </div>
-
-          <div
-            v-for="(c, i) in unstagedShown"
-            :key="`unstaged:${c.path}`"
+            v-for="(c, i) in g.rows"
+            :key="`${g.side}:${c.path}`"
             class="gsc__row"
             :style="{ '--n': i }"
           >
@@ -321,6 +264,7 @@ function stashAll() {
               <!-- Discarding is the one irreversible thing on this page, so it
                    takes a deliberate hold rather than a click. -->
               <HoldToConfirm
+                v-if="g.side === 'unstaged'"
                 :disabled="busy"
                 :aria-label="`Hold to discard changes in ${nameOf(c.path)}`"
                 title="Hold to discard"
@@ -328,7 +272,12 @@ function stashAll() {
               >
                 Discard
               </HoldToConfirm>
-              <button type="button" class="gsc__act" @click="stage(c.path)">Stage</button>
+              <button v-if="g.side !== 'unstaged'" type="button" class="gsc__act" @click="unstage(c.path)">
+                Unstage
+              </button>
+              <button v-if="g.side !== 'staged'" type="button" class="gsc__act" @click="stage(c.path)">
+                {{ g.side === "partly" ? "Stage rest" : "Stage" }}
+              </button>
             </div>
           </div>
         </div>
@@ -338,7 +287,7 @@ function stashAll() {
           <button type="button" class="gsc__link" @click="clearFilters">Show every change</button>
         </p>
 
-        <GitSpaceCommitBox :space="space" :staged-count="stagedWorkCount" :can-push="canPush" />
+        <GitSpaceCommitBox ref="commitBox" :space="space" :staged-count="stagedWorkCount" :can-push="canPush" />
       </div>
 
       <!-- ══ the side column: the tree at a glance ═════════════════════════ -->
@@ -588,19 +537,6 @@ function stashAll() {
 }
 .gsc__flag {
   color: var(--warn);
-}
-.gsc__tag {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 5px;
-  font-size: 10.5px;
-  line-height: 1.2;
-  color: var(--ink-soft);
-  background-color: var(--hover);
-}
-.gsc__row:hover .gsc__tag,
-.gsc__row:focus-within .gsc__tag {
-  background-color: var(--sunken);
 }
 
 .gsc__right {
