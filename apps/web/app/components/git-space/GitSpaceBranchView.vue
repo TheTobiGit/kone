@@ -167,7 +167,7 @@ async function switchTo() {
   const ok = await props.space.switchBranch(refOf(b.value));
   cue(ok ? "success" : "error");
   if (!ok && isDirtyRefusal(props.space.error.value)) blocked.value = true;
-  leaveIfRemote(ok);
+  leaveIfRemote();
 }
 async function carry() {
   blocked.value = false;
@@ -175,12 +175,13 @@ async function carry() {
   cue("press");
   const ok = await props.space.switchCarrying(refOf(b.value));
   cue(ok ? "success" : "error");
-  leaveIfRemote(ok);
+  leaveIfRemote();
 }
 /** Checking out a remote branch lands on a local one; this card, about the
- *  remote ref, has nothing left to offer. */
-function leaveIfRemote(ok: boolean) {
-  if (ok && b.value.remote) onClose();
+ *  remote ref, has nothing left to offer. Read from where HEAD ended up, not
+ *  the result: a carry that clashes has still switched. */
+function leaveIfRemote() {
+  if (b.value.remote && current.value?.upstream === b.value.name) onClose();
 }
 
 const copied = ref(false);
