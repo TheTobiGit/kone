@@ -32,8 +32,6 @@ const bodyEl = ref<HTMLTextAreaElement | null>(null);
 
 const busy = computed(() => props.space.op.value !== null);
 const ready = computed(() => summary.value.trim().length > 0 && !busy.value);
-// Amending doesn't need anything staged — it can just reword the last commit.
-const armed = computed(() => props.stagedCount > 0 || amend.value);
 
 // git's own soft limit for a subject line. Past it the counter appears; it never
 // blocks the commit, it just stops being invisible.
@@ -133,7 +131,7 @@ function onBodyKey(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="cb" :class="{ 'cb--armed': armed }">
+  <div class="cb">
     <div class="cb__fade" aria-hidden="true" />
 
     <div class="cb__box">
@@ -222,9 +220,8 @@ function onBodyKey(e: KeyboardEvent) {
   bottom: 0;
   z-index: 2;
   margin-top: 18px;
-  /* Closed: out of the way but still reachable in one click. */
-  opacity: 0.55;
-  transition: opacity var(--gs-t-micro) var(--gs-ease);
+  /* The box is quiet through its type, not through transparency: it sits on
+     the page's ground so the rows scrolling behind it stay hidden. */
   animation: cb-in var(--gs-t-enter) var(--gs-ease) backwards;
 }
 @keyframes cb-in {
@@ -237,10 +234,6 @@ function onBodyKey(e: KeyboardEvent) {
     transform: none;
   }
 }
-.cb--armed,
-.cb:focus-within {
-  opacity: 1;
-}
 /* The list dissolves into the page behind the box instead of being cut by a
    rule — kone doesn't draw lines to separate things. */
 .cb__fade {
@@ -248,25 +241,27 @@ function onBodyKey(e: KeyboardEvent) {
   left: 0;
   right: 0;
   bottom: 100%;
-  height: 28px;
+  height: 36px;
   background: linear-gradient(to top, var(--ground), transparent);
   pointer-events: none;
 }
-/* Bare ground, like every row above it — a filled slab here reads as a card,
-   and in dark it punches a black hole in the page. The fade is the separation.
-   A wash arrives only while you're writing, on the same pill the rows hover
-   with, so the field has presence under the cursor and none at rest. */
+/* The page's own ground, not a card: the fade above does the separation. A
+   wash arrives only while you're writing, on the same pill the rows hover with,
+   so the field has presence under the cursor and none at rest. */
 .cb__box {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 10px 8px 8px;
   border-radius: 8px;
-  background-color: transparent;
+  /* The box sits still at the foot while the list scrolls behind it, so it
+     has to be the page, not a window onto the rows underneath. The fade above
+     is what makes the cut disappear. */
+  background-color: var(--ground);
   transition: background-color var(--gs-t-micro) var(--gs-ease);
 }
 .cb:focus-within .cb__box {
-  background-color: var(--hover);
+  background-color: var(--sunken);
 }
 
 .cb__summary,
@@ -300,6 +295,7 @@ function onBodyKey(e: KeyboardEvent) {
 
 .cb__foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -307,6 +303,7 @@ function onBodyKey(e: KeyboardEvent) {
 }
 .cb__left {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   min-width: 0;
@@ -317,7 +314,7 @@ function onBodyKey(e: KeyboardEvent) {
   font-size: 10.5px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: var(--ink-soft);
   white-space: nowrap;
 }
 /* A long subject is a nudge, never an error. */
@@ -327,12 +324,19 @@ function onBodyKey(e: KeyboardEvent) {
 }
 .cb__right {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  min-width: 0;
 }
 
 .cb__ghost,
 .cb__commit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   height: 25px;
   padding-inline: 10px;
   border-radius: 8px;
@@ -347,11 +351,11 @@ function onBodyKey(e: KeyboardEvent) {
     opacity var(--gs-t-micro) var(--gs-ease);
 }
 .cb__ghost {
-  color: var(--muted);
+  color: var(--ink-soft);
 }
 .cb__ghost:hover:not(:disabled) {
   background-color: var(--hover);
-  color: var(--ink-soft);
+  color: var(--ink);
 }
 .cb__ghost--on {
   color: var(--accent);
