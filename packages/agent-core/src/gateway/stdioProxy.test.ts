@@ -18,7 +18,6 @@ let gateway: Server;
 let baseUrl = "";
 let requests: MockRequest[] = [];
 let auths: string[] = [];
-let slowAborted = false;
 
 function jsonResult(res: ServerResponse, msg: MockRequest): void {
   if (msg.method === "initialize") {
@@ -59,16 +58,6 @@ beforeAll(async () => {
         // A notification, answered as the real gateway does: 202, no body.
         res.writeHead(202);
         res.end();
-        return;
-      }
-      if (msg.method === "slow") {
-        // Hold the request open; a cancellation should abort this connection.
-        res.on("close", () => {
-          if (!res.writableEnded) slowAborted = true;
-        });
-        setTimeout(() => {
-          if (!res.writableEnded) jsonResult(res, msg);
-        }, 500);
         return;
       }
       if (msg.method === "reject") {
@@ -139,7 +128,6 @@ describe("stdio proxy", () => {
   beforeEach(() => {
     requests = [];
     auths = [];
-    slowAborted = false;
   });
 
   test("forwards requests to the gateway with the bearer token and echoes the result", async () => {
@@ -228,19 +216,46 @@ describe("stdio proxy", () => {
   });
 
   test("notifications/cancelled aborts the in-flight gateway request", async () => {
-    const run = spawnProxy({ KONE_GATEWAY_URL: baseUrl, KONE_GATEWAY_TOKEN: "token-abc" });
+    let slowReceived = false;
+    let slowAborted = false;
+    // Observe the request's AbortSignal directly: Bun's node:http compatibility
+    // layer does not emit ServerResponse.close when the client disconnects.
+    const cancellationGateway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        // SAFETY: send() writes only the test-owned MockRequest messages below.
+        const message = await request.json() as MockRequest;
+        if (message.method !== "slow") return new Response(null, { status: 202 });
+        slowReceived = true;
+        await new Promise<void>((resolve) => {
+          const abort = () => { slowAborted = true; resolve(); };
+          if (request.signal.aborted) abort();
+          else request.signal.addEventListener("abort", abort, { once: true });
+        });
+        return Response.json({ jsonrpc: "2.0", id: message.id, result: {} });
+      },
+    });
+    const run = spawnProxy({
+      KONE_GATEWAY_URL: `http://127.0.0.1:${cancellationGateway.port}/mcp`,
+      KONE_GATEWAY_TOKEN: "token-abc",
+    });
     try {
       send(run, { jsonrpc: "2.0", id: 42, method: "slow" });
-      // Cancel only once the gateway is holding the call open — a cancel that
-      // beats the POST out would abort it before the gateway ever saw it.
-      await until(() => requests.some((r) => r.method === "slow"));
+      // Cancel only once the gateway is holding the call open.
+      await until(() => slowReceived);
+      expect(slowReceived).toBe(true);
+      // Arm the response observer before cancellation so an early bad reply
+      // cannot slip past the assertion while the abort signal is being observed.
+      const response = nextLine(run, 700);
       send(run, { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 42 } });
       await until(() => slowAborted, 400);
       expect(slowAborted).toBe(true);
       // The cancelled request must produce no response line.
-      expect(await nextLine(run, 300)).toBeNull();
+      expect(await response).toBeNull();
     } finally {
       stop(run);
+      cancellationGateway.stop(true);
     }
   });
 

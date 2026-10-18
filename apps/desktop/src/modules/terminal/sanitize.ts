@@ -236,11 +236,3 @@ export function sanitizeTerminalHistoryChunk(
 
   return { visibleText, pendingControlSequence: "" };
 }
-
-/** One-shot sanitization of a complete history buffer: feed `""` as the
- *  pending sequence and return just the visible text. Equivalent to running
- *  `sanitizeTerminalHistoryChunk("", history).visibleText` on input with no
- *  trailing partial sequence. */
-export function sanitizeTerminalHistory(history: string): string {
-  return sanitizeTerminalHistoryChunk("", history).visibleText;
-}

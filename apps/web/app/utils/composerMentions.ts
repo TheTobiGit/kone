@@ -7,8 +7,6 @@ export type ComposerTrigger = {
   rangeEnd: number;
 };
 
-export type FileMentionTrigger = ComposerTrigger;
-
 /** What a chip names: a document in the project, or a project itself. */
 export type MentionKind = "file" | "project";
 
@@ -117,40 +115,11 @@ export function detectToken(
   return { marker: head, query: word.slice(1), rangeStart: start, rangeEnd: cursor };
 }
 
-/** Find the active `@...` token at a textarea cursor. The token stays open
- * while the user types, but only starts after whitespace so email addresses and
- * ordinary prose are not hijacked. */
-export function detectFileMentionTrigger(
-  text: string,
-  cursorInput: number,
-): FileMentionTrigger | null {
-  const found = detectToken(text, cursorInput, ["@"]);
-  if (!found) return null;
-  return { query: found.query, rangeStart: found.rangeStart, rangeEnd: found.rangeEnd };
-}
-
 /** Format a selected project path as a stable, editable mention token. */
 export function formatFileMention(path: string): string {
   const normalized = path.replaceAll("\\", "/").replace(/^@/, "");
   if (!/[\s()@"'`$\\]/.test(normalized)) return `@${normalized}`;
   return `@"${normalized.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
-}
-
-/** A `/...` token at the composer cursor — the slash-command trigger. Like the
- *  @ token it only starts after whitespace, so paths (`src/a/b`), urls
- *  (`https://…`) and `//` comments are never hijacked. */
-export type SlashCommandTrigger = ComposerTrigger;
-
-/** Find the active `/...` token at a textarea cursor. The token stays open
- *  while the user types the command name; a space ends it, so `/model` matches
- *  but `/model foo` no longer does. */
-export function detectSlashCommandTrigger(
-  text: string,
-  cursorInput: number,
-): SlashCommandTrigger | null {
-  const slash = detectToken(text, cursorInput, ["/"]);
-  if (!slash) return null;
-  return { query: slash.query, rangeStart: slash.rangeStart, rangeEnd: slash.rangeEnd };
 }
 
 /** A leading `/name focus…` draft — the send-time slash parse. Runs on the
@@ -218,25 +187,6 @@ export function filterSlashCommandItems(
     }
   }
   return [...prefixed, ...loose];
-}
-
-/** A composer buffer after a range replacement, plus the caret position that
- *  follows the inserted text. */
-export type ComposerTextReplacement = {
-  text: string;
-  cursor: number;
-};
-
-export function replaceComposerTextRange(
-  text: string,
-  rangeStart: number,
-  rangeEnd: number,
-  replacement: string,
-): ComposerTextReplacement {
-  const start = Math.max(0, Math.min(text.length, rangeStart));
-  const end = Math.max(start, Math.min(text.length, rangeEnd));
-  const nextText = `${text.slice(0, start)}${replacement}${text.slice(end)}`;
-  return { text: nextText, cursor: start + replacement.length };
 }
 
 // The quoted body is bounded rather than `*`. Unbounded, every `@"` with no

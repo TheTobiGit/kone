@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHandoff } from "./useThreadHandoff";
 import type { CreateHandoffInput, CreateHandoffResult } from "~/types/desktop";
 
@@ -34,10 +34,19 @@ function installBridge(
   return { inputs };
 }
 
+// Restore the exact host slot: leaving an empty window behind makes later
+// browser-aware imports mistake Bun for a browser (for example useTheme).
+// SAFETY: only the optional window slot is read or restored; no browser APIs are assumed.
+const windowHolder = globalThis as { window?: unknown };
+let hadWindow: boolean;
+let savedWindow: unknown;
+beforeEach(() => {
+  hadWindow = "window" in globalThis;
+  savedWindow = windowHolder.window;
+});
 afterEach(() => {
-  // SAFETY: restores the no-bridge (browser-dev) shape between tests — a
-  // defined window with no koneDesktop, exactly what the composable guards.
-  (globalThis as { window?: object }).window = {};
+  if (hadWindow) windowHolder.window = savedWindow;
+  else delete windowHolder.window;
 });
 
 describe("createHandoff", () => {
@@ -69,6 +78,7 @@ describe("createHandoff", () => {
   });
 
   test("without a bridge it still resolves so the join semantics hold", async () => {
+    windowHolder.window = {};
     const result = await createHandoff({
       sourceThreadId: "t-src",
       kind: "handoff",

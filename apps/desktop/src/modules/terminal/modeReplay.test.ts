@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildModeReplayPreamble, createModeReplayTracker } from "./modeReplay.js";
+import { createModeReplayTracker } from "./modeReplay.js";
 
 // Mode replay runs the real @xterm/headless parser in the main process, so
 // these tests assert the observable contract: feed output the way TerminalManager
@@ -85,13 +85,15 @@ describe("createModeReplayTracker", () => {
   });
 });
 
-describe("buildModeReplayPreamble", () => {
-  test("builds a preamble from a one-shot history string", () => {
-    expect(buildModeReplayPreamble("\x1b[?1h\x1b[?2004h")).toContain("\x1b[?1h");
-    expect(buildModeReplayPreamble("\x1b[?1h\x1b[?2004h")).toContain("\x1b[?2004h");
-  });
-
-  test("returns an empty preamble for plain history", () => {
-    expect(buildModeReplayPreamble("hello\r\nworld")).toBe("");
-  });
+// Exercise combined modes through the same stateful tracker TerminalManager uses.
+test("replays multiple modes from a complete history buffer", () => {
+  const tracker = createModeReplayTracker(80, 24);
+  try {
+    tracker.feed("\x1b[?1h\x1b[?2004h");
+    const preamble = tracker.buildPreamble();
+    expect(preamble).toContain("\x1b[?1h");
+    expect(preamble).toContain("\x1b[?2004h");
+  } finally {
+    tracker.dispose();
+  }
 });

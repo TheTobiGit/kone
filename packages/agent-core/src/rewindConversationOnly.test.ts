@@ -88,7 +88,6 @@ beforeEach(async () => {
     idleThresholdMs: 50,
     // SAFETY: the fake implements the adapter surface this service reads
     // (provider, capabilities, session lifecycle) for these tests.
-    // eslint-disable-next-line anti-slop/no-chained-type-assertions
     adapters: (emit) =>
       // eslint-disable-next-line anti-slop/no-chained-type-assertions
       [new FakeAdapter(emit, "codex")] as unknown as ProviderAdapter[],

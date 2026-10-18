@@ -4,20 +4,18 @@ import {
   buildMentionItems,
   createMentionKindResolver,
   dedupeMentionProjects,
-  detectFileMentionTrigger,
-  detectSlashCommandTrigger,
   detectToken,
   filterSlashCommandItems,
   formatFileMention,
   parseLeadingSlashCommand,
-  replaceComposerTextRange,
   slashCommandTitle,
   splitComposerMentionSegments,
 } from "./composerMentions";
 
-describe("detectFileMentionTrigger", () => {
+describe("detectToken file mentions", () => {
   test("finds an active project-file token", () => {
-    expect(detectFileMentionTrigger("Inspect @apps/web", "Inspect @apps/web".length)).toEqual({
+    expect(detectToken("Inspect @apps/web", "Inspect @apps/web".length, ["@"])).toEqual({
+      marker: "@",
       query: "apps/web",
       rangeStart: 8,
       rangeEnd: "Inspect @apps/web".length,
@@ -25,17 +23,18 @@ describe("detectFileMentionTrigger", () => {
   });
 
   test("does not treat an email address as a file token", () => {
-    expect(detectFileMentionTrigger("email me@example.com", "email me@example.com".length)).toBeNull();
+    expect(detectToken("email me@example.com", "email me@example.com".length, ["@"])).toBeNull();
   });
 
   test("supports an empty trigger after whitespace", () => {
-    expect(detectFileMentionTrigger("Inspect @", "Inspect @".length)?.query).toBe("");
+    expect(detectToken("Inspect @", "Inspect @".length, ["@"])?.query).toBe("");
   });
 });
 
-describe("detectSlashCommandTrigger", () => {
+describe("detectToken slash commands", () => {
   test("finds a leading slash token", () => {
-    expect(detectSlashCommandTrigger("/model", "/model".length)).toEqual({
+    expect(detectToken("/model", "/model".length, ["/"])).toEqual({
+      marker: "/",
       query: "model",
       rangeStart: 0,
       rangeEnd: "/model".length,
@@ -43,24 +42,25 @@ describe("detectSlashCommandTrigger", () => {
   });
 
   test("supports a bare slash after whitespace", () => {
-    expect(detectSlashCommandTrigger("Review this /", "Review this /".length)?.query).toBe("");
+    expect(detectToken("Review this /", "Review this /".length, ["/"])?.query).toBe("");
   });
 
   test("does not treat paths as commands", () => {
-    expect(detectSlashCommandTrigger("src/a/b", "src/a/b".length)).toBeNull();
+    expect(detectToken("src/a/b", "src/a/b".length, ["/"])).toBeNull();
   });
 
   test("does not treat urls or comment slashes as commands", () => {
-    expect(detectSlashCommandTrigger("see https://x.io", "see https://x.io".length)).toBeNull();
-    expect(detectSlashCommandTrigger("// comment", "// comment".length)).toBeNull();
+    expect(detectToken("see https://x.io", "see https://x.io".length, ["/"])).toBeNull();
+    expect(detectToken("// comment", "// comment".length, ["/"])).toBeNull();
   });
 
   test("ends the token at a space", () => {
-    expect(detectSlashCommandTrigger("/model ", "/model ".length)).toBeNull();
+    expect(detectToken("/model ", "/model ".length, ["/"])).toBeNull();
   });
 
   test("finds a leading compact token", () => {
-    expect(detectSlashCommandTrigger("/compact", "/compact".length)).toEqual({
+    expect(detectToken("/compact", "/compact".length, ["/"])).toEqual({
+      marker: "/",
       query: "compact",
       rangeStart: 0,
       rangeEnd: "/compact".length,
@@ -68,7 +68,7 @@ describe("detectSlashCommandTrigger", () => {
   });
 
   test("the trigger ends at the space, so a focus needs the draft parse", () => {
-    expect(detectSlashCommandTrigger("/compact Focus on API", "/compact Focus on API".length)).toBeNull();
+    expect(detectToken("/compact Focus on API", "/compact Focus on API".length, ["/"])).toBeNull();
   });
 });
 
@@ -175,13 +175,6 @@ describe("formatFileMention", () => {
 
   test("quotes paths containing spaces", () => {
     expect(formatFileMention("docs/My File.md")).toBe('@"docs/My File.md"');
-  });
-});
-
-test("replaces a trigger and returns the next cursor", () => {
-  expect(replaceComposerTextRange("read @src ", 5, 10, "@src/App.vue ")).toEqual({
-    text: "read @src/App.vue ",
-    cursor: 18,
   });
 });
 

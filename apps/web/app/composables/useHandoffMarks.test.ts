@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { useHandoffMarks } from "./useHandoffMarks";
 import type {
   ContinuationLink,
@@ -47,10 +47,19 @@ function installBridge(links: ContinuationLink[]) {
   };
 }
 
+// Restore the exact host slot: leaving an empty window behind makes later
+// browser-aware imports mistake Bun for a browser (for example useTheme).
+// SAFETY: only the optional window slot is read or restored; no browser APIs are assumed.
+const windowHolder = globalThis as { window?: unknown };
+let hadWindow: boolean;
+let savedWindow: unknown;
+beforeEach(() => {
+  hadWindow = "window" in globalThis;
+  savedWindow = windowHolder.window;
+});
 afterEach(() => {
-  // SAFETY: restores the no-bridge shape between tests — a defined window
-  // with no koneDesktop, exactly what the composable guards.
-  (globalThis as { window?: object }).window = {};
+  if (hadWindow) windowHolder.window = savedWindow;
+  else delete windowHolder.window;
 });
 
 function handoffEvent(sourceThreadId: string): RuntimeEvent {
