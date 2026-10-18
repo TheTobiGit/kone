@@ -173,6 +173,27 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
   return [...files.values()];
 }
 
+const COUNT_LINE = /^(\s*)\d+\s+(?:pass|passed|passing|fail|failed|failing|skip|skipped|todo|pending|flaky)\b/;
+
+/** The runner's own block of count-first lines: the last such line and the
+ *  ones just above it, stepping over blank lines and the more deeply indented
+ *  test names Playwright lists under each outcome. A count line a test printed earlier is
+ *  cut off by the output between it and the summary. */
+function summaryBlock(lines: string[]): string[] | null {
+  const end = lines.findLastIndex((l) => COUNT_LINE.test(l));
+  if (end < 0) return null;
+  const indent = COUNT_LINE.exec(lines[end]!)![1]!.length;
+  const block = [lines[end]!];
+  for (let i = end - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    const count = COUNT_LINE.exec(line);
+    if (count && count[1]!.length === indent) block.unshift(line);
+    else if (!count && (!line.trim() || /^\s*/.exec(line)![0].length > indent)) continue;
+    else break;
+  }
+  return block;
+}
+
 /** A test run's tally, from whichever runner's summary is in the output. */
 export function parseTestTally(output: string | undefined): TestTally | null {
   const body = output ? stripAnsi(output) : "";
@@ -183,13 +204,13 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   // doc), so the run's tally is all of them added up.
   const cargo = body.match(/^test result:.*$/gm);
   // Otherwise only the runner's own summary counts, never a phrase a test
-  // printed: Jest's `Tests:` line; the count-first lines bun, mocha and
-  // Playwright print one outcome per line (` 12 pass`, `  3 passing (5ms)`,
-  // `  1 failed`), all of them; else the last line naming an outcome,
+  // printed: Jest's `Tests:` line; the block of count-first lines bun, mocha
+  // and Playwright end on, one outcome per line (` 12 pass`, `  3 passing
+  // (5ms)`, `  1 failed`); else the last line naming an outcome,
   // which is where pytest puts its `=== 2 passed in 0.1s ===`.
   const outcome = /\b\d+\s+(?:pass|passed|passing|xpassed|fail|failed|failing|errors?|skip|skipped|pending|todo|ignored|xfailed)\b/i;
   const jest = /^\s*Tests:?\s.*$/m.exec(body)?.[0];
-  const countLines = body.match(/^\s*\d+\s+(?:pass|passed|passing|fail|failed|failing|skip|skipped|todo|pending|flaky)\b.*$/gm);
+  const countLines = summaryBlock(body.split("\n"));
   const lastOutcome = body.split("\n").findLast((l) => outcome.test(l));
   const summaries = cargo ?? (jest ? [jest] : (countLines ?? (lastOutcome ? [lastOutcome] : [])));
   // The first count `re` finds in each summary (every one, with `every`),
@@ -206,7 +227,8 @@ export function parseTestTally(output: string | undefined): TestTally | null {
     counts.every((n) => n === null) ? null : counts.reduce<number>((t, n) => t + (n ?? 0), 0);
   // pytest's `xpassed` ran and passed; its `xfailed` failed as expected, so it
   // isn't a failure, and counts with the tests that didn't count.
-  const passed = add(sum(/\b(\d+)\s+(?:pass|passed|passing)\b/i), sum(/\b(\d+)\s+xpassed\b/i));
+  // Playwright's `flaky` tests failed first and passed on a retry.
+  const passed = add(sum(/\b(\d+)\s+(?:pass|passed|passing|flaky)\b/i), sum(/\b(\d+)\s+xpassed\b/i));
   // pytest counts setup and collection errors apart from failures, on its
   // summary line; an `N errors` anywhere else is a compiler's, not a test's.
   // A run stopped in collection prints only `1 error in 0.16s`, so the timing
