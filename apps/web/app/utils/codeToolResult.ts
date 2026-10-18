@@ -183,12 +183,13 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   // doc), so the run's tally is all of them added up.
   const cargo = body.match(/^test result:.*$/gm);
   // Otherwise only the runner's own summary counts, never a phrase a test
-  // printed: Jest's `Tests:` line; bun's and mocha's count-first lines
-  // (` 12 pass`, `  3 passing (5ms)`); else the last line naming an outcome,
+  // printed: Jest's `Tests:` line; the count-first lines bun, mocha and
+  // Playwright print one outcome per line (` 12 pass`, `  3 passing (5ms)`,
+  // `  1 failed`), all of them; else the last line naming an outcome,
   // which is where pytest puts its `=== 2 passed in 0.1s ===`.
   const outcome = /\b\d+\s+(?:pass|passed|passing|xpassed|fail|failed|failing|errors?|skip|skipped|pending|todo|ignored|xfailed)\b/i;
   const jest = /^\s*Tests:?\s.*$/m.exec(body)?.[0];
-  const countLines = body.match(/^\s*\d+\s+(?:pass|fail|skip|todo|passing|failing|pending)\b.*$/gm);
+  const countLines = body.match(/^\s*\d+\s+(?:pass|passed|passing|fail|failed|failing|skip|skipped|todo|pending|flaky)\b.*$/gm);
   const lastOutcome = body.split("\n").findLast((l) => outcome.test(l));
   const summaries = cargo ?? (jest ? [jest] : (countLines ?? (lastOutcome ? [lastOutcome] : [])));
   // The first count `re` finds in each summary (every one, with `every`),
