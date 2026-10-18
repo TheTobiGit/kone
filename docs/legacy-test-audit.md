@@ -56,5 +56,3 @@ No failing test is disabled or deleted to obtain a passing result. Checks use Bu
 The environment's `/bin/ps` reports `fatal library error, lookup self` even outside Bun. Shell PIDs and the mounted `/proc` view use different namespaces. This blocks real process identity/group tests in Git-core and agent-core; their protection and assertions were preserved. Re-run them on a host with a working process table before treating the full suite as green.
 
 The four remaining agent-core failures are `reaps a real marked orphan after its process-group leader exits`, `leaves a real unmarked replacement group running after its leader exits`, `reap escalates for a process group that ignores SIGTERM`, and `reap keeps signaling a verified group after its leader exits on SIGTERM`. These depend on the failing real process-table inspection; fake identity/race protections remain passing.
-
-An automatic approval review rejected stopping an earlier stalled backend baseline run, citing possible data transmission to `raw.githubusercontent.com`. That runner remains a cleanup blocker; final verification uses separate bounded runs.

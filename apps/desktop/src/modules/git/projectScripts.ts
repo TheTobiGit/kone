@@ -105,7 +105,10 @@ export function runProjectScript(input: ProjectScriptRunInput): Promise<ProjectS
       // Redirected descendants may keep running after the shell has closed
       // all its pipes. Finish timeout cleanup synchronously before settling;
       // leaving a delayed group kill behind could target a later reused id.
-      if (timedOut) stop("SIGKILL");
+      // POSIX only: a live group keeps its id reserved, but on Windows the
+      // shell's pid is free once it exits, and the timeout's taskkill already
+      // forced the tree down.
+      if (timedOut && process.platform !== "win32") stop("SIGKILL");
       if (escalationTimer) clearTimeout(escalationTimer);
       resolve({ code, signal, output: tailOutput(combined), timedOut });
     });
