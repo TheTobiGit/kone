@@ -161,15 +161,3 @@ export function createModeReplayTracker(cols: number, rows: number): ModeReplayT
     },
   };
 }
-
-/** One-shot helper: replay stored history through a tracker and get the
- *  preamble that restores the modes it ended in. */
-export function buildModeReplayPreamble(history: string): string {
-  const tracker = createModeReplayTracker(80, 24);
-  try {
-    tracker.feed(history);
-    return tracker.buildPreamble();
-  } finally {
-    tracker.dispose();
-  }
-}
