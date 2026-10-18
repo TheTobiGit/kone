@@ -69,6 +69,18 @@ describe("parseSearchMatches", () => {
     expect(parseSearchMatches("My Component.vue").map((f) => f.path)).toEqual(["My Component.vue"]);
   });
 
+  test("reads heading-style results under their file", () => {
+    const files = parseSearchMatches("src/a.ts\n12:const a = 1\n30:const b = 2\n\nsrc/b.ts\n4:let c");
+    expect(files.map((f) => [f.path, f.matches.map((m) => m.line)])).toEqual([
+      ["src/a.ts", [12, 30]],
+      ["src/b.ts", [4]],
+    ]);
+  });
+
+  test("keeps a glob's dated filenames as files after another path", () => {
+    expect(parseSearchMatches("notes/a.md\n2024-report.md").map((f) => f.path)).toEqual(["notes/a.md", "2024-report.md"]);
+  });
+
   test("reads a count-mode search's paths", () => {
     expect(parseSearchMatches("src/a.ts:3\nsrc/b.vue:1").map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
   });
@@ -110,7 +122,7 @@ describe("parseTestTally", () => {
 
   test("takes vitest's test totals over its file totals", () => {
     const out = " Test Files  1 passed (1)\n      Tests  40 passed (40)\n   Duration  1.20s";
-    expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 0 });
+    expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 0, time: "1.20s" });
   });
 
   test("counts a run where every test was skipped", () => {
