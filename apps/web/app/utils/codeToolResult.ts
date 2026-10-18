@@ -122,6 +122,9 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
   // until a blank line.
   let heading: SearchFile | null = null;
   const lines = body.split("\n").map((raw) => stripAnsi(raw).trimEnd());
+  // Context rows can come before their file's first hit, so every hit's path
+  // is known up front.
+  const hitPaths = new Set(lines.map((l) => /^((?:[A-Za-z]:[\\/])?[^\s:][^:]*?):\d+:/.exec(l)?.[1]).filter((p) => p !== undefined));
   const clusterHasRow = (from: number): boolean => {
     for (let j = from - 1; j >= 0 && lines[j]; j--) if (/^\d+:/.test(lines[j]!)) return true;
     for (let j = from + 1; j < lines.length && lines[j]; j++) if (/^\d+:/.test(lines[j]!)) return true;
@@ -139,7 +142,7 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
     // a glob's list can hold a `2024-report.md` of its own.
     if (heading && /^\d+-/.test(line) && clusterHasRow(i)) continue;
     const context = /^(.+?)-\d+-/.exec(line);
-    if (context && files.has(context[1]!)) continue;
+    if (context && hitPaths.has(context[1]!)) continue;
     const row = heading ? /^(\d+):(.*)$/.exec(line) : null;
     if (heading && row) {
       heading.matches.push({ line: Number(row[1]), text: row[2]!.trim() });
@@ -187,7 +190,9 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   const passed = add(sum(/\b(\d+)\s+(?:pass|passed|passing)\b/i), sum(/\b(\d+)\s+xpassed\b/i));
   // pytest counts setup and collection errors apart from failures, on its
   // summary line; an `N errors` anywhere else is a compiler's, not a test's.
-  const errorLine = /^.*\b\d+\s+(?:passed|failed)\b.*$/m.exec(summaries.join("\n"))?.[0];
+  // A run stopped in collection prints only `1 error in 0.16s`, so the timing
+  // marks the line too.
+  const errorLine = /^.*\b\d+\s+(?:passed|failed|errors?\b.*\bin \d+(?:\.\d+)?s)\b.*$/m.exec(summaries.join("\n"))?.[0];
   const errored = errorLine ? /\b(\d+)\s+errors?\b/i.exec(errorLine) : null;
   const failed = add(sum(/\b(\d+)\s+(?:fail|failed|failing)\b/i), errored ? Number(errored[1]) : null);
   // Jest can print `1 skipped, 2 todo` on one line; neither ran, so both count.
