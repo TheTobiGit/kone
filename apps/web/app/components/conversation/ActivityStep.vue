@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -9,6 +9,8 @@ import ActivityStepDetail from "~/components/conversation/ActivityStepDetail.vue
 import ActivityThemeReceipt from "~/components/conversation/ActivityThemeReceipt.vue";
 import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
+import WebSearchBody from "~/components/conversation/web/WebSearchBody.vue";
+import WebFetchBody from "~/components/conversation/web/WebFetchBody.vue";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -18,7 +20,17 @@ import {
   toolMeta,
   toolPhraseParts,
   toolStatus,
+  toolTargetRaw,
 } from "~/utils/toolPresentation";
+import {
+  WEB_READS,
+  fetchTargetUrl,
+  isWebFetchTool,
+  isWebSearchTool,
+  parseWebPage,
+  parseWebSearchHits,
+  type WebReadState,
+} from "~/utils/webToolResult";
 
 // One row of the Agent Activity feed — a single thinking segment or tool call.
 // Icon → label (with inline file/site chips) → status → a chevron that slides a
@@ -72,6 +84,35 @@ const hasThemeBody = computed(() => namedTheme.value && status.value === "done")
 /** The palette the row wears inline: where the window ended up. */
 const rowColors = computed(() => (hasThemeBody.value ? toColors.value : null));
 
+// ── web rows ────────────────────────────────────────────────────────────────
+// A web call shows what it did instead of hiding it behind the chevron: a
+// search draws its query and the pages it found, a fetch draws the page it
+// read. The body stands open by default, so the row discloses nothing more. A
+// failed call, or one whose result can't be read, keeps the plain row.
+
+const noReads = ref<ReadonlyMap<string, WebReadState>>(new Map());
+const webReads = inject(WEB_READS, noReads);
+
+const webSearch = computed(() => {
+  const t = tool.value;
+  if (!t || !isWebSearchTool(t.name) || status.value === "error") return null;
+  const hits = parseWebSearchHits(t.detail);
+  const query = toolTargetRaw(t);
+  if (!query || (status.value !== "running" && !hits.length)) return null;
+  return { query, hits };
+});
+
+const webFetch = computed(() => {
+  const t = tool.value;
+  if (!t || !isWebFetchTool(t.name) || status.value === "error") return null;
+  const url = fetchTargetUrl(toolTargetRaw(t));
+  const page = parseWebPage(t.detail);
+  if (!url || (status.value !== "running" && !page)) return null;
+  return { url, page };
+});
+
+const hasWebBody = computed(() => webSearch.value !== null || webFetch.value !== null);
+
 // A thinking row discloses only when the model actually surfaced reasoning; a
 // tool row discloses only when it carries a result body — or a change of its own
 // to show, which is a body no provider sends.
@@ -79,7 +120,7 @@ const hasThinkingBody = computed(() => isThinking.value && !!props.thinkingText?
 // An appearance call's own body replaces its result text rather than joining it:
 // the detail IS the record the palette was read from, so showing both would
 // print the data under the picture of itself.
-const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value);
+const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value && !hasWebBody.value);
 const clickable = computed(() => hasThinkingBody.value || hasToolBody.value || hasThemeBody.value);
 
 const hue = computed(() => (isThinking.value ? thinkingOrbHue() : meta.value?.hue));
@@ -132,6 +173,10 @@ function toggle(): void {
         <template v-if="isThinking">
           {{ streaming ? "Thinking…" : `Thought for ${thinkingDuration ?? 1}s` }}
         </template>
+        <!-- A search's query lives in its own field below, so the row only names the act -->
+        <template v-else-if="webSearch">
+          {{ status === "running" ? "Searching the web" : "Searched the web" }}
+        </template>
         <!-- Tool phrase, with inline chips for files / folders / sites -->
         <template v-else-if="tool">
           <template v-for="(part, pi) in toolPhraseParts(tool)" :key="pi">
@@ -177,6 +222,22 @@ function toggle(): void {
         :class="{ 'astep__chev--open': open }"
       />
     </component>
+
+    <div v-if="hasWebBody" class="astep__web">
+      <WebSearchBody
+        v-if="webSearch"
+        :query="webSearch.query"
+        :running="status === 'running'"
+        :hits="webSearch.hits"
+        :reads="webReads"
+      />
+      <WebFetchBody
+        v-else-if="webFetch"
+        :url="webFetch.url"
+        :running="status === 'running'"
+        :page="webFetch.page"
+      />
+    </div>
 
     <div v-if="clickable" class="astep__body" :class="{ 'astep__body--open': open }">
       <div class="astep__body-inner">
@@ -309,6 +370,11 @@ function toggle(): void {
 .astep__body-inner {
   overflow: hidden;
   min-height: 0;
+  padding-left: 24px;
+}
+.astep__web {
+  position: relative;
+  z-index: 1;
   padding-left: 24px;
 }
 .astep__think-wrap {

@@ -23,7 +23,7 @@ const lastAnnounce: Announcement = { text: "", at: 0 };
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
@@ -36,9 +36,10 @@ import {
   type ActivityEntry,
   type Segment,
 } from "~/utils/conversationSegments";
-import { toolMeta, type HugeIcon } from "~/utils/toolPresentation";
+import { toolMeta, toolStatus, toolTargetRaw, type HugeIcon } from "~/utils/toolPresentation";
 import type { ActivityFold } from "~/utils/responseDisplay";
 import { thinkingOrbHue } from "~/utils/toolOrbDraw";
+import { WEB_READS, fetchTargetUrl, isWebFetchTool, webKey, type WebReadState } from "~/utils/webToolResult";
 
 // ── Agent activity ─────────────────────────────────────────────────────────────
 //
@@ -107,6 +108,19 @@ const WINDOW = 5;
 const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as const;
 
 const entries = computed(() => activityEntries(props.segments));
+
+// The pages this batch has opened, so a search row can mark the hits the agent
+// went on to read — the one place both calls are in view at once.
+const webReads = computed<ReadonlyMap<string, WebReadState>>(() => {
+  const reads = new Map<string, WebReadState>();
+  for (const e of entries.value) {
+    if (e.type !== "tool" || !isWebFetchTool(e.item.name)) continue;
+    const url = fetchTargetUrl(toolTargetRaw(e.item));
+    if (url) reads.set(webKey(url), toolStatus(e.item));
+  }
+  return reads;
+});
+provide(WEB_READS, webReads);
 const total = computed(() => entries.value.length);
 
 // The batch is active only while the turn runs and this is the live tail group.
