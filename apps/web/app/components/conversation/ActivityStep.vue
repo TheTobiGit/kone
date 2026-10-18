@@ -271,8 +271,14 @@ function toggle(): void {
         {{ webSearch.hits.length }} {{ webSearch.hits.length === 1 ? "result" : "results" }}
       </span>
       <span v-if="codeDiff" class="astep__meta astep__delta">
-        <span v-if="codeDiff.added" class="astep__add">+{{ codeDiff.added }}</span>
-        <span v-if="codeDiff.removed" class="astep__del">−{{ codeDiff.removed }}</span>
+        <span v-if="codeDiff.added" class="astep__add"
+          ><span aria-hidden="true">+{{ codeDiff.added }}</span
+          ><span class="sr-only">{{ codeDiff.added }} {{ codeDiff.added === 1 ? "line" : "lines" }} added</span></span
+        >
+        <span v-if="codeDiff.removed" class="astep__del"
+          ><span aria-hidden="true">−{{ codeDiff.removed }}</span
+          ><span class="sr-only">{{ codeDiff.removed }} {{ codeDiff.removed === 1 ? "line" : "lines" }} removed</span></span
+        >
       </span>
       <span v-else-if="codeSearch" class="astep__meta">
         <template v-if="codeSearch.matches">
