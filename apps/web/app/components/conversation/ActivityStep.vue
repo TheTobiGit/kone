@@ -23,13 +23,14 @@ import {
   toolTargetRaw,
 } from "~/utils/toolPresentation";
 import {
-  WEB_READS,
+  WEB_TRAIL,
   fetchTargetUrl,
   isWebFetchTool,
   isWebSearchTool,
   parseWebPage,
   parseWebSearchHits,
-  type WebReadState,
+  webKey,
+  type WebTrail,
 } from "~/utils/webToolResult";
 
 // One row of the Agent Activity feed — a single thinking segment or tool call.
@@ -86,12 +87,13 @@ const rowColors = computed(() => (hasThemeBody.value ? toColors.value : null));
 
 // ── web rows ────────────────────────────────────────────────────────────────
 // A web call shows what it did instead of hiding it behind the chevron: a
-// search draws its query and the pages it found, a fetch draws the page it
-// read. The body stands open by default, so the row discloses nothing more. A
-// failed call, or one whose result can't be read, keeps the plain row.
+// search grows the pages it found off the rail, and the ones the agent opens
+// keep what they said underneath. A fetch of one of those hits is already told
+// there, so its own row steps aside; a page fetched on its own grows the same
+// branch under its row. A failed call, or a result that can't be read, keeps
+// the plain row.
 
-const noReads = ref<ReadonlyMap<string, WebReadState>>(new Map());
-const webReads = inject(WEB_READS, noReads);
+const webTrail = inject(WEB_TRAIL, ref<WebTrail>({ reads: new Map(), hits: new Set() }));
 
 const webSearch = computed(() => {
   const t = tool.value;
@@ -109,6 +111,14 @@ const webFetch = computed(() => {
   const page = parseWebPage(t.detail);
   if (!url || (status.value !== "running" && !page)) return null;
   return { url, page };
+});
+
+/** A fetch of a hit the search above already shows: told there, not here. */
+const absorbed = computed(() => {
+  const t = tool.value;
+  if (!t || !isWebFetchTool(t.name)) return false;
+  const url = fetchTargetUrl(toolTargetRaw(t));
+  return !!url && webTrail.value.hits.has(webKey(url));
 });
 
 const hasWebBody = computed(() => webSearch.value !== null || webFetch.value !== null);
@@ -134,7 +144,7 @@ function toggle(): void {
 </script>
 
 <template>
-  <div class="astep" :class="isThinking ? 'astep--think' : `astep--${status}`" :style="{ '--hue': hue }">
+  <div v-if="!absorbed" class="astep" :class="isThinking ? 'astep--think' : `astep--${status}`" :style="{ '--hue': hue }">
     <span v-if="rail" class="astep__link" aria-hidden="true" />
 
     <component
@@ -173,9 +183,10 @@ function toggle(): void {
         <template v-if="isThinking">
           {{ streaming ? "Thinking…" : `Thought for ${thinkingDuration ?? 1}s` }}
         </template>
-        <!-- A search's query lives in its own field below, so the row only names the act -->
+        <!-- A search reads as a sentence, its query quoted in ink -->
         <template v-else-if="webSearch">
-          {{ status === "running" ? "Searching the web" : "Searched the web" }}
+          {{ status === "running" ? "Searching the web for" : "Searched the web for" }}
+          <span class="astep__query" :class="{ 'astep__query--live': status === 'running' }">“{{ webSearch.query }}”</span>
         </template>
         <!-- Tool phrase, with inline chips for files / folders / sites -->
         <template v-else-if="tool">
@@ -212,6 +223,9 @@ function toggle(): void {
         :label="toTheme?.label"
       />
 
+      <span v-if="webSearch && webSearch.hits.length" class="astep__meta">
+        {{ webSearch.hits.length }} {{ webSearch.hits.length === 1 ? "result" : "results" }}
+      </span>
       <span v-if="status === 'error'" class="astep__err">failed</span>
       <HugeiconsIcon
         v-if="clickable"
@@ -226,10 +240,9 @@ function toggle(): void {
     <div v-if="hasWebBody" class="astep__web">
       <WebSearchBody
         v-if="webSearch"
-        :query="webSearch.query"
         :running="status === 'running'"
         :hits="webSearch.hits"
-        :reads="webReads"
+        :reads="webTrail.reads"
       />
       <WebFetchBody
         v-else-if="webFetch"
@@ -375,7 +388,43 @@ function toggle(): void {
 .astep__web {
   position: relative;
   z-index: 1;
-  padding-left: 24px;
+}
+/* The query, quoted in ink. While the search is out a light runs through it. */
+.astep__query {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.astep__query--live {
+  background: linear-gradient(
+    90deg,
+    var(--ink) 0%,
+    var(--ink) 38%,
+    color-mix(in oklab, var(--hue, var(--muted)) 80%, var(--ground)) 50%,
+    var(--ink) 62%,
+    var(--ink) 100%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: astep-shimmer 1.8s linear infinite;
+}
+@keyframes astep-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+.astep__meta {
+  flex: none;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 .astep__think-wrap {
   margin: 2px 0 8px;
@@ -394,6 +443,9 @@ function toggle(): void {
   margin-bottom: 0;
 }
 @media (prefers-reduced-motion: reduce) {
+  .astep__query--live {
+    animation: none;
+  }
   .astep__chev,
   .astep__body {
     transition: none;
