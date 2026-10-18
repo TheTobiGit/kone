@@ -164,7 +164,11 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   const xfailed = count(/\b(\d+)\s+xfailed\b/i);
   const plain = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
   const passed = plain === null && xpassed === null ? null : (plain ?? 0) + (xpassed ?? 0);
-  const failed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
+  // pytest counts setup and collection errors apart from failures, on its
+  // summary line; an `N errors` anywhere else is a compiler's, not a test's.
+  const errored = /^.*\b\d+\s+(?:passed|failed)\b.*$/m.exec(summary)?.[0].match(/\b(\d+)\s+errors?\b/i);
+  const plainFailed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
+  const failed = plainFailed === null && !errored ? null : (plainFailed ?? 0) + Number(errored?.[1] ?? 0);
   // Jest can print `1 skipped, 2 todo` on one line; neither ran, so both count.
   const notRun = [...summary.matchAll(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/gi)];
   const skipped = notRun.length || xfailed !== null ? notRun.reduce((n, m) => n + Number(m[1]), 0) + (xfailed ?? 0) : null;

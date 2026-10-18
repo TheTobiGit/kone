@@ -127,6 +127,11 @@ describe("parseTestTally", () => {
     expect(parseTestTally("===== 1 passed, 1 xfailed, 1 xpassed in 0.02s =====")).toMatchObject({ passed: 2, failed: 0, skipped: 1 });
   });
 
+  test("counts pytest errors as failures, but not a compiler's", () => {
+    expect(parseTestTally("===== 1 failed, 2 passed, 1 error in 0.30s =====")).toMatchObject({ passed: 2, failed: 2 });
+    expect(parseTestTally("Found 3 errors.\n 4 pass\n 0 fail")).toMatchObject({ passed: 4, failed: 0 });
+  });
+
   test("adds up skipped and todo tests", () => {
     expect(parseTestTally("Tests:       1 skipped, 2 todo, 3 passed, 6 total")).toMatchObject({ passed: 3, skipped: 3 });
   });
