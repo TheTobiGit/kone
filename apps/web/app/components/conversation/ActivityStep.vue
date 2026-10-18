@@ -14,7 +14,7 @@ import WebFetchBody from "~/components/conversation/web/WebFetchBody.vue";
 import CodeDiffBody from "~/components/conversation/code/CodeDiffBody.vue";
 import CodeSearchBody from "~/components/conversation/code/CodeSearchBody.vue";
 import CodeRunBody from "~/components/conversation/code/CodeRunBody.vue";
-import { errorLines, isToolInput, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
+import { errorLines, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -140,7 +140,7 @@ const codeSearch = computed(() => {
   if (!files.length) return null;
   // A target can carry its own note after the query ("useAgent · 6 matches").
   const query = (toolTargetRaw(t).split(" · ")[0] ?? "").trim();
-  const matches = files.reduce((n, f) => n + f.matches.length, 0);
+  const matches = files.reduce((n, f) => n + matchCount(f), 0);
   return { files, query, matches };
 });
 
