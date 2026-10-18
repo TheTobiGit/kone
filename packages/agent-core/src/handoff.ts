@@ -14,7 +14,8 @@ import type {
 } from "./types.js";
 import { copyTurnStamp, isContinuationForkContext, nonBlank } from "./types.js";
 
-// Thread handoff — handing a conversation to another provider/model.
+// Thread handoff — handing a conversation to a provider/model, another one or
+// the same one.
 //
 // A handoff is an ownership transfer, not reference context: the new thread
 // continues the same task on the target provider/model from the imported
@@ -33,7 +34,7 @@ import { copyTurnStamp, isContinuationForkContext, nonBlank } from "./types.js";
 //      native turn before it can itself be handed off) is what stops an
 //      import with no new history from being re-handed forever.
 
-export const HANDOFF_INTRO = "This conversation was handed off from another provider.";
+export const HANDOFF_INTRO = "This conversation was handed off from another thread.";
 export const HANDOFF_BOUNDARY_INSTRUCTION =
   "Continue this conversation from the transcript below. Treat it as settled history — what was actually said and done — and carry on the same task as its new owner. Answer the latest user message directly, building on that history.";
 
@@ -145,14 +146,18 @@ export function handoffEligibility(
 }
 
 /**
- * Hand a thread to another provider/model: a new root thread carrying the
- * source's full transcript as `fork-import` rows plus a `ForkContext` naming
- * the source and its provider. The renderer mints `threadId` and `requestId`
- * (kone owns thread ids); this resolves to `status: "created"`, or
- * `"exists"` when the same threadId was already created. Throws on
- * validation failures: unknown source, ineligible source (see
- * handoffEligibility), a target identical to the source's provider/model, or
- * the same requestId bound to a different thread (idempotency conflict).
+ * Hand a thread to a provider/model — another one or the source's own: a new
+ * root thread carrying the source's full transcript as `fork-import` rows plus
+ * a `ForkContext` naming the source and its provider. The renderer mints
+ * `threadId` and `requestId` (kone owns thread ids); this resolves to
+ * `status: "created"`, or `"exists"` when the same threadId was already
+ * created. Throws on validation failures: unknown source, ineligible source
+ * (see handoffEligibility), or the same requestId bound to a different thread
+ * (idempotency conflict).
+ *
+ * Naming the source's own provider/model is a legitimate target: it mints a
+ * fresh continuation with imported history and a pending bootstrap, never a
+ * resume of the source.
  *
  * Does not start a session or dispatch a turn — the renderer runs the normal
  * open + first-send flow afterwards, and the bootstrap rides the first send.
@@ -196,22 +201,14 @@ export function createHandoffThread(input: CreateHandoffInput): CreateHandoffRes
     throw new Error(eligible.reason);
   }
 
-  // A handoff that names its own provider/model is just a duplicate — refuse
-  // it rather than minting a twin the bootstrap would then re-narrate.
+  // The target model resolves once: the request's explicit choice, else the
+  // source's own when the provider is unchanged. Naming the source's own
+  // provider/model is a legitimate target — it mints a fresh continuation with
+  // the imported transcript and a pending bootstrap, never a resume or a
+  // silent return of the source.
   const sourceModel = nonBlank(source.model);
   const targetModel =
     input.target.model ?? (input.target.provider === source.provider ? sourceModel : undefined);
-  // Forking from a chosen reply is a different request: what changes is
-  // where the conversation is taken from, so the same provider and model is
-  // a legitimate target and only an untruncated handoff to identical hands
-  // is the duplicate this refuses.
-  if (
-    input.kind === "handoff" &&
-    input.target.provider === source.provider &&
-    (targetModel ?? undefined) === sourceModel
-  ) {
-    throw new Error("Select a different provider or model to hand off to");
-  }
 
   const throughBlockId = input.kind === "branch" ? input.throughBlockId : undefined;
   const createdAt = Date.now();

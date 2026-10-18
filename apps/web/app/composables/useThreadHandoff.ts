@@ -62,9 +62,10 @@ export type HandoffResult = {
   joined: boolean;
 };
 
-/** Hand a thread to another provider/model — the user path. Calling this
- *  twice rapidly for the same source + target yields one handoff; the second
- *  call resolves with the same thread id once the first settles. */
+/** Hand a thread to a provider/model (another one or the source's own) — the
+ *  user path. Calling this twice rapidly for the same source + target yields
+ *  one handoff; the second call resolves with the same thread id once the
+ *  first settles. */
 export async function createHandoff(options: HandoffOptions): Promise<HandoffResult> {
   const { sourceThreadId, target, title } = options;
   const throughBlockId = options.kind === "branch" ? options.throughBlockId : undefined;
