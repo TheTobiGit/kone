@@ -14,9 +14,18 @@ export type TestTally = { passed: number; failed: number; skipped: number; time:
 
 const PREVIEW_LINES = 3;
 
-/** Some providers stream a call's input JSON into its body until it lands. */
-function isInputJson(body: string): boolean {
-  return body.startsWith("{") || body.startsWith("[");
+/** Some providers stream a call's input (a JSON object) into its body until it
+ *  lands. A diff or a search never parses as one; a command's output can, so
+ *  only the caller, which knows whether the call is still running, can tell. */
+export function isToolInput(body: string | undefined): boolean {
+  const text = body?.trim();
+  if (!text?.startsWith("{")) return false;
+  try {
+    const value: unknown = JSON.parse(text);
+    return value instanceof Object && !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
 
 function stripAnsi(s: string): string {
@@ -28,12 +37,17 @@ function stripAnsi(s: string): string {
  *  size and its first changed lines. */
 export function parseDiffSummary(detail: string | undefined): DiffSummary | null {
   const body = detail?.trim();
-  if (!body || isInputJson(body)) return null;
+  if (!body || isToolInput(body)) return null;
   let added = 0;
   let removed = 0;
   const preview: DiffLine[] = [];
-  for (const line of body.split("\n")) {
-    if (/^(\+\+\+|---|diff --git|index |@@)/.test(line)) continue;
+  const lines = body.split("\n");
+  for (const [i, line] of lines.entries()) {
+    if (/^(diff --git |index [0-9a-f]+\.\.|@@ )/.test(line)) continue;
+    // A file header is a `--- ` line followed by a `+++ ` one. A changed line
+    // whose own text starts with `--` or `++` (a markdown rule) is still a change.
+    if (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ ")) continue;
+    if (line.startsWith("+++ ") && lines[i - 1]?.startsWith("--- ")) continue;
     const sign = line[0];
     if (sign !== "+" && sign !== "-") continue;
     if (sign === "+") added++;
@@ -51,7 +65,7 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
  *  in the order the files first appear. */
 export function parseSearchMatches(detail: string | undefined): SearchFile[] {
   const body = detail?.trim();
-  if (!body || isInputJson(body)) return [];
+  if (!body || isToolInput(body)) return [];
   const files = new Map<string, SearchFile>();
   const fileOf = (path: string): SearchFile => {
     let f = files.get(path);
@@ -73,9 +87,11 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
 /** A test run's tally, from whichever runner's summary is in the output. */
 export function parseTestTally(output: string | undefined): TestTally | null {
   const body = output ? stripAnsi(output) : "";
-  if (!body.trim() || isInputJson(body.trim())) return null;
+  if (!body.trim()) return null;
+  // Jest prints a `Test Suites:` line before `Tests:`; the tests are the tally.
+  const summary = /^\s*Tests:.*$/m.exec(body)?.[0] ?? body;
   const count = (re: RegExp): number | null => {
-    const m = re.exec(body);
+    const m = re.exec(summary);
     return m ? Number(m[1]) : null;
   };
   const passed = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
@@ -91,7 +107,7 @@ export function parseTestTally(output: string | undefined): TestTally | null {
 /** The last few lines a command printed. */
 export function outputTail(output: string | undefined, n = 2): string[] {
   const body = output ? stripAnsi(output).trim() : "";
-  if (!body || isInputJson(body)) return [];
+  if (!body) return [];
   return body
     .split("\n")
     .map((l) => l.trimEnd())
@@ -103,7 +119,7 @@ export function outputTail(output: string | undefined, n = 2): string[] {
  *  else the tail. */
 export function errorLines(output: string | undefined, n = 2): string[] {
   const body = output ? stripAnsi(output).trim() : "";
-  if (!body || isInputJson(body)) return [];
+  if (!body) return [];
   const lines = body.split("\n").map((l) => l.trim()).filter(Boolean);
   const errors = lines.filter((l) => /\berror\b|✖|✗|\bfailed\b|^E\s/i.test(l));
   return (errors.length ? errors : lines.slice(-n)).slice(0, n);
