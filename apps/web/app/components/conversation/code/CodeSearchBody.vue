@@ -26,7 +26,8 @@ const hidden = computed(() => props.files.length - visible.value.length);
 const hasTail = computed(() => hidden.value > 0 || expanded.value);
 
 function split(path: string): { dir: string; name: string } {
-  const slash = path.lastIndexOf("/");
+  // Windows paths separate with backslashes.
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return slash === -1 ? { dir: "", name: path } : { dir: path.slice(0, slash + 1), name: path.slice(slash + 1) };
 }
 
