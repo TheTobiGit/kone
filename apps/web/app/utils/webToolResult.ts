@@ -41,11 +41,21 @@ export function fetchTargetUrl(target: string): string {
 }
 
 /** One spelling per page, for telling a fetch apart from the hit it opened:
- *  no scheme, no `www.`, no trailing slash, no fragment. */
+ *  no scheme, no `www.`, no trailing slash, no fragment. An explicit port stays,
+ *  since it names a different server. */
 export function webKey(url: string): string {
   const { host, tail } = parseSiteTarget(url);
   const path = tail.replace(/#.*$/, "").replace(/\/+$/, "");
-  return `${host.toLowerCase()}/${path}`;
+  return `${host.toLowerCase()}${portOf(url)}/${path}`;
+}
+
+function portOf(url: string): string {
+  try {
+    const { port } = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(url) ? url : `https://${url}`);
+    return port ? `:${port}` : "";
+  } catch {
+    return "";
+  }
 }
 
 function hit(title: string, url: string): WebHit | null {
@@ -91,7 +101,8 @@ function looseLinks(detail: string): WebHit[] {
     if (h) out.push(h);
   }
   if (out.length) return out;
-  for (const m of detail.matchAll(/https?:\/\/[^\s"'<>\])]+/g)) {
+  // `hit` trims a closing parenthesis the URL doesn't open.
+  for (const m of detail.matchAll(/https?:\/\/[^\s"'<>\]]+/g)) {
     const h = hit("", m[0]);
     if (h) out.push(h);
   }

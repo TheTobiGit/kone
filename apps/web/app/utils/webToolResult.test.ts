@@ -27,6 +27,12 @@ describe("parseWebSearchHits", () => {
     ]);
   });
 
+  test("keeps balanced parentheses in a bare URL", () => {
+    expect(parseWebSearchHits("(see https://en.wikipedia.org/wiki/Vue_(framework))")).toEqual([
+      { title: "en.wikipedia.org", url: "https://en.wikipedia.org/wiki/Vue_(framework)", host: "en.wikipedia.org" },
+    ]);
+  });
+
   test("keeps balanced parentheses in a markdown link", () => {
     expect(parseWebSearchHits("[Vue](https://en.wikipedia.org/wiki/Vue_(framework)).")).toEqual([
       { title: "Vue", url: "https://en.wikipedia.org/wiki/Vue_(framework)", host: "en.wikipedia.org" },
@@ -59,6 +65,8 @@ describe("webKey", () => {
   test("spells one page one way", () => {
     expect(webKey("https://www.Vercel.com/blog/ai-sdk/")).toBe("vercel.com/blog/ai-sdk");
     expect(webKey("vercel.com/blog/ai-sdk#top")).toBe("vercel.com/blog/ai-sdk");
+    expect(webKey("https://example.com:8443/a")).toBe("example.com:8443/a");
+    expect(webKey("https://example.com:443/a")).toBe("example.com/a");
   });
 });
 
