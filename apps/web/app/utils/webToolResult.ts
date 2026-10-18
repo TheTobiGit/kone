@@ -45,7 +45,11 @@ export function webKey(url: string): string {
 }
 
 function hit(title: string, url: string): WebHit | null {
-  const clean = url.trim().replace(/[).,;]+$/, "");
+  let clean = url.trim().replace(/[.,;]+$/, "");
+  // Drop a closing parenthesis only when it closes nothing in the URL itself.
+  while (clean.endsWith(")") && clean.split(")").length > clean.split("(").length) {
+    clean = clean.slice(0, -1).replace(/[.,;]+$/, "");
+  }
   if (!/^https?:\/\//i.test(clean)) return null;
   const { host } = parseSiteTarget(clean);
   return { title: title.trim() || host, url: clean, host };
@@ -77,7 +81,8 @@ function linksBlocks(detail: string): WebHit[] {
 /** Every other dialect: markdown links first, then bare URLs. */
 function looseLinks(detail: string): WebHit[] {
   const out: WebHit[] = [];
-  for (const m of detail.matchAll(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g)) {
+  // A destination may hold one level of balanced parentheses, as Wikipedia's do.
+  for (const m of detail.matchAll(/\[([^\]\n]+)\]\((https?:\/\/(?:[^()\s]|\([^()\s]*\))+)\)/g)) {
     const h = hit(m[1]!, m[2]!);
     if (h) out.push(h);
   }

@@ -27,6 +27,12 @@ describe("parseWebSearchHits", () => {
     ]);
   });
 
+  test("keeps balanced parentheses in a markdown link", () => {
+    expect(parseWebSearchHits("[Vue](https://en.wikipedia.org/wiki/Vue_(framework)).")).toEqual([
+      { title: "Vue", url: "https://en.wikipedia.org/wiki/Vue_(framework)", host: "en.wikipedia.org" },
+    ]);
+  });
+
   test("reads nothing from an empty or link-free body", () => {
     expect(parseWebSearchHits(undefined)).toEqual([]);
     expect(parseWebSearchHits("No results.")).toEqual([]);

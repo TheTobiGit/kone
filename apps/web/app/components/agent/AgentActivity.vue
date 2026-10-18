@@ -119,14 +119,14 @@ const props = withDefaults(defineProps<{
 const WINDOW = 5;
 const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as const;
 
-const entries = computed(() => activityEntries(props.segments));
+const allEntries = computed(() => activityEntries(props.segments));
 
 // Everything this batch did on the web, so a search row can grow the pages the
 // agent went on to read under its own hits — the one place both are in view.
 const webTrail = computed<WebTrail>(() => {
   const reads = new Map<string, WebRead>();
   const hits = new Set<string>();
-  for (const e of entries.value) {
+  for (const e of allEntries.value) {
     if (e.type !== "tool") continue;
     if (isWebSearchTool(e.item.name)) {
       for (const h of parseWebSearchHits(e.item.detail)) hits.add(webKey(h.url));
@@ -138,6 +138,16 @@ const webTrail = computed<WebTrail>(() => {
   return { reads, hits };
 });
 provide(WEB_TRAIL, webTrail);
+
+// A fetch of a hit a search here already shows is told under that search, so it
+// takes no row (and no ticker slot) of its own.
+const entries = computed(() =>
+  allEntries.value.filter((e) => {
+    if (e.type !== "tool" || !isWebFetchTool(e.item.name)) return true;
+    const url = fetchTargetUrl(toolTargetRaw(e.item));
+    return !url || !webTrail.value.hits.has(webKey(url));
+  }),
+);
 const total = computed(() => entries.value.length);
 
 // The batch is active only while the turn runs and this is the live tail group.
@@ -429,7 +439,7 @@ watch(wantRows, (want) => {
 });
 watch(rowList, () => void nextTick(sync));
 
-const batchKey = computed(() => entries.value[0]?.key ?? "");
+const batchKey = computed(() => allEntries.value[0]?.key ?? "");
 
 onMounted(async () => {
   // Row content grows too — a thinking row streams its text — so watch the box
@@ -484,11 +494,19 @@ function glyphOf(e: ActivityEntry): Glyph {
 
 type Chip = { key: string; icon: HugeIcon; hue: string; label: string; count: number; faces: string[] };
 
-/** The site a web step went to, for its chip's faces — a fetch's own page. */
-function webFace(e: ActivityEntry): string | null {
-  if (e.type !== "tool" || !isWebFetchTool(e.item.name) || toolStatus(e.item) === "error") return null;
+/** The sites a web step read, for its chip's faces: a fetch's own page, or the
+ *  hits of a search that the agent went on to open. */
+function webFaces(e: ActivityEntry): string[] {
+  if (e.type !== "tool") return [];
+  if (isWebSearchTool(e.item.name)) {
+    const { reads } = webTrail.value;
+    return parseWebSearchHits(e.item.detail)
+      .filter((h) => { const r = reads.get(webKey(h.url)); return r !== undefined && r.state !== "error"; })
+      .map((h) => parseSiteTarget(h.url).host);
+  }
+  if (!isWebFetchTool(e.item.name) || toolStatus(e.item) === "error") return [];
   const url = fetchTargetUrl(toolTargetRaw(e.item));
-  return url ? parseSiteTarget(url).host : null;
+  return url ? [parseSiteTarget(url).host] : [];
 }
 
 // History strip — merge *consecutive* same-type actions into one ×N chip, keyed
@@ -498,12 +516,11 @@ const historyChips = computed<Chip[]>(() => {
   const out: Chip[] = [];
   for (const e of archived.value) {
     const g = glyphOf(e);
-    const face = webFace(e);
     const last = out[out.length - 1];
     if (last && last.label === g.label) last.count++;
     else out.push({ key: e.key, icon: g.icon, hue: g.hue, label: g.label, count: 1, faces: [] });
     const chip = out[out.length - 1]!;
-    if (face && !chip.faces.includes(face)) chip.faces.push(face);
+    for (const face of webFaces(e)) if (!chip.faces.includes(face)) chip.faces.push(face);
   }
   return out;
 });
