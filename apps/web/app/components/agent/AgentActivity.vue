@@ -124,30 +124,35 @@ const allEntries = computed(() => activityEntries(props.segments));
 // Everything this batch did on the web, so a search row can grow the pages the
 // agent went on to read under its own hits — the one place both are in view.
 // A fetch only joins a search that came before it, so the trail stays in the
-// order things happened.
+// order things happened, and only while that search is still among the last
+// WINDOW rows: a read the live ticker would otherwise hide keeps its own row.
 const webTrail = computed<WebTrail>(() => {
   const reads = new Map<string, Map<string, WebRead>>();
   const absorbed = new Set<string>();
-  const latestSearchOf = new Map<string, string>();
+  // Each hit's latest search, with the row index that search sits at.
+  const latestSearchOf = new Map<string, { key: string; at: number }>();
+  let rows = 0;
   for (const e of allEntries.value) {
-    if (e.type !== "tool") continue;
-    if (isWebSearchTool(e.item.name)) {
+    if (e.type === "tool" && isWebSearchTool(e.item.name)) {
       // Only a search that draws its trail (see `ActivityStep`) can hold reads.
-      if (toolStatus(e.item) === "error" || !toolTargetRaw(e.item)) continue;
-      for (const h of parseWebSearchHits(e.item.detail)) latestSearchOf.set(webKey(h.url), e.key);
-    } else if (isWebFetchTool(e.item.name)) {
+      if (toolStatus(e.item) !== "error" && toolTargetRaw(e.item)) {
+        for (const h of parseWebSearchHits(e.item.detail)) latestSearchOf.set(webKey(h.url), { key: e.key, at: rows });
+      }
+    } else if (e.type === "tool" && isWebFetchTool(e.item.name)) {
       const url = fetchTargetUrl(toolTargetRaw(e.item));
       const search = url ? latestSearchOf.get(webKey(url)) : undefined;
-      if (!url || !search) continue;
       const state = toolStatus(e.item);
       const page = parseWebPage(e.item.detail);
       // A finished page the trail can't show keeps its own row, raw output and all.
-      if (state === "done" && !page) continue;
-      const own = reads.get(search) ?? new Map<string, WebRead>();
-      own.set(webKey(url), { state, page });
-      reads.set(search, own);
-      absorbed.add(e.key);
+      if (url && search && search.at >= rows - WINDOW && !(state === "done" && !page)) {
+        const own = reads.get(search.key) ?? new Map<string, WebRead>();
+        own.set(webKey(url), { state, page });
+        reads.set(search.key, own);
+        absorbed.add(e.key);
+        continue;
+      }
     }
+    rows++;
   }
   return { reads, absorbed };
 });
