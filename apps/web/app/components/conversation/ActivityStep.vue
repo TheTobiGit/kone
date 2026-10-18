@@ -155,7 +155,7 @@ const codeRun = computed(() => {
   // fragment at a time; a body opening an object is that input, whole or not.
   if (status.value === "running" && (isToolInput(output) || /^\s*\{\s*"/.test(output))) return null;
   // Claude leaves that input in place when a finished command printed nothing.
-  if (isCommandInput(output)) return null;
+  if (isCommandInput(output, t.text)) return null;
   if (status.value !== "running" && parseTestTally(output)) return { output };
   const lines = status.value === "error" ? errorLines(output) : outputTail(output);
   return lines.length ? { output } : null;

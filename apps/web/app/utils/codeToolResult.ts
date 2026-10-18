@@ -35,12 +35,12 @@ export function isToolInput(body: string | undefined): boolean {
 }
 
 /** A shell call's own input (`{"command": …}`), left as its body when the
- *  command finished without printing anything. Real stdout that happens to be
- *  JSON (`cat package.json`) has no top-level `command` string. */
-export function isCommandInput(body: string | undefined): boolean {
+ *  command finished without printing anything. It's the input only when its
+ *  `command` is the call's own (`title`); JSON the command printed isn't. */
+export function isCommandInput(body: string | undefined, title: string): boolean {
   if (!isToolInput(body)) return false;
   const value: unknown = JSON.parse(body!.trim());
-  return value instanceof Object && "command" in value && String(value.command) === value.command;
+  return value instanceof Object && "command" in value && String(value.command).trim() === title.trim();
 }
 
 function stripAnsi(s: string): string {
