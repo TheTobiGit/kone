@@ -104,6 +104,7 @@ const share = (n: number): string => `${total.value ? (n / total.value) * 100 : 
   color: var(--ink-soft);
 }
 .crun--error .crun__line {
-  color: var(--diff-del);
+  /* Pulled toward ink: the bare diff red is under 4.5:1 as small text. */
+  color: color-mix(in srgb, var(--diff-del) 80%, var(--ink));
 }
 </style>
