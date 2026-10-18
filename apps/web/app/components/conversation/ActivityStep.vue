@@ -14,7 +14,7 @@ import WebFetchBody from "~/components/conversation/web/WebFetchBody.vue";
 import CodeDiffBody from "~/components/conversation/code/CodeDiffBody.vue";
 import CodeSearchBody from "~/components/conversation/code/CodeSearchBody.vue";
 import CodeRunBody from "~/components/conversation/code/CodeRunBody.vue";
-import { errorLines, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
+import { errorLines, isCommandInput, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -154,6 +154,8 @@ const codeRun = computed(() => {
   // While running, Claude streams the call's input JSON into its body a
   // fragment at a time; a body opening an object is that input, whole or not.
   if (status.value === "running" && (isToolInput(output) || /^\s*\{\s*"/.test(output))) return null;
+  // Claude leaves that input in place when a finished command printed nothing.
+  if (isCommandInput(output)) return null;
   if (status.value !== "running" && parseTestTally(output)) return { output };
   const lines = status.value === "error" ? errorLines(output) : outputTail(output);
   return lines.length ? { output } : null;
