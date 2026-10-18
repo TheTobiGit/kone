@@ -57,6 +57,18 @@ describe("parseSearchMatches", () => {
     expect(parseSearchMatches("src/My Component.vue").map((f) => f.path)).toEqual(["src/My Component.vue"]);
   });
 
+  test("reads Windows paths, drive letter and all", () => {
+    const files = parseSearchMatches("C:\\repo\\foo.ts:12:const x = 1\nC:\\repo\\My File.ts");
+    expect(files.map((f) => [f.path, f.matches.length])).toEqual([
+      ["C:\\repo\\foo.ts", 1],
+      ["C:\\repo\\My File.ts", 0],
+    ]);
+  });
+
+  test("reads a root-level path with spaces", () => {
+    expect(parseSearchMatches("My Component.vue").map((f) => f.path)).toEqual(["My Component.vue"]);
+  });
+
   test("reads a count-mode search's paths", () => {
     expect(parseSearchMatches("src/a.ts:3\nsrc/b.vue:1").map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
   });
@@ -93,7 +105,7 @@ describe("parseTestTally", () => {
 
   test("takes jest's test totals over its suite totals", () => {
     const out = "Test Suites: 1 failed, 2 passed, 3 total\nTests:       1 failed, 40 passed, 41 total\nTime:        2.1 s";
-    expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 1 });
+    expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 1, time: "2.1s" });
   });
 
   test("takes vitest's test totals over its file totals", () => {
