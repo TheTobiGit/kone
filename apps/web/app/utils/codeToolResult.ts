@@ -47,8 +47,13 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
   const body = detail?.replace(/^\s*\n|\n\s*$/g, "");
   if (!body || isToolInput(body)) return null;
   // Codex's whole-text fallback (`--- before` / `+++ after`) isn't a diff: its
-  // lines say nothing about what changed, so it keeps the plain row.
-  if (/^(--- before|\+\+\+ after)\n/.test(body) && !/^(diff --git |@@ )/m.test(body)) return null;
+  // lines say nothing about what changed, so it keeps the plain row. Its raw
+  // text (and the blank line between the halves) is what tells it apart from a
+  // bare hunk whose first lines happen to be `-- before` and `++ after`.
+  // A bare hunk has no headers to skip: every line in it is content.
+  const unified = /^(diff --git |@@ )/m.test(body);
+  const fallback = /^(--- before|\+\+\+ after)\n/.test(body) && !unified && /^(?![+\- ])/m.test(body);
+  if (fallback) return null;
   let added = 0;
   let removed = 0;
   const preview: DiffLine[] = [];
@@ -65,7 +70,7 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
       continue;
     }
     const inHunk = oldLeft > 0 || newLeft > 0;
-    if (!inHunk) {
+    if (unified && !inHunk) {
       if (/^(diff --git |index [0-9a-f]+\.\.|@@ )/.test(line)) continue;
       // Outside a hunk, a file header is a `--- ` line followed by a `+++ `
       // one; a lone changed line starting `--` or `++` is still a change.
@@ -155,7 +160,9 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   };
   const passed = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
   const failed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
-  const skipped = count(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/i);
+  // Jest can print `1 skipped, 2 todo` on one line; neither ran, so both count.
+  const notRun = [...summary.matchAll(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/gi)];
+  const skipped = notRun.length ? notRun.reduce((n, m) => n + Number(m[1]), 0) : null;
   if (passed === null && failed === null && skipped === null) return null;
   // The run's own time comes last; a runner prints each test's time before it.
   // Jest writes `Time:        2.1 s`, with a space before the unit; Vitest
