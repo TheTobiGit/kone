@@ -28,6 +28,8 @@ import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import ActivityStep from "~/components/conversation/ActivityStep.vue";
+import WebFavicon from "~/components/conversation/web/WebFavicon.vue";
+import { parseSiteTarget } from "~/utils/siteChip";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
 import {
   activityEntries,
@@ -39,7 +41,17 @@ import {
 import { toolMeta, toolStatus, toolTargetRaw, type HugeIcon } from "~/utils/toolPresentation";
 import type { ActivityFold } from "~/utils/responseDisplay";
 import { thinkingOrbHue } from "~/utils/toolOrbDraw";
-import { WEB_READS, fetchTargetUrl, isWebFetchTool, webKey, type WebReadState } from "~/utils/webToolResult";
+import {
+  WEB_TRAIL,
+  fetchTargetUrl,
+  isWebFetchTool,
+  isWebSearchTool,
+  parseWebPage,
+  parseWebSearchHits,
+  webKey,
+  type WebRead,
+  type WebTrail,
+} from "~/utils/webToolResult";
 
 // ── Agent activity ─────────────────────────────────────────────────────────────
 //
@@ -109,18 +121,23 @@ const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as con
 
 const entries = computed(() => activityEntries(props.segments));
 
-// The pages this batch has opened, so a search row can mark the hits the agent
-// went on to read — the one place both calls are in view at once.
-const webReads = computed<ReadonlyMap<string, WebReadState>>(() => {
-  const reads = new Map<string, WebReadState>();
+// Everything this batch did on the web, so a search row can grow the pages the
+// agent went on to read under its own hits — the one place both are in view.
+const webTrail = computed<WebTrail>(() => {
+  const reads = new Map<string, WebRead>();
+  const hits = new Set<string>();
   for (const e of entries.value) {
-    if (e.type !== "tool" || !isWebFetchTool(e.item.name)) continue;
-    const url = fetchTargetUrl(toolTargetRaw(e.item));
-    if (url) reads.set(webKey(url), toolStatus(e.item));
+    if (e.type !== "tool") continue;
+    if (isWebSearchTool(e.item.name)) {
+      for (const h of parseWebSearchHits(e.item.detail)) hits.add(webKey(h.url));
+    } else if (isWebFetchTool(e.item.name)) {
+      const url = fetchTargetUrl(toolTargetRaw(e.item));
+      if (url) reads.set(webKey(url), { state: toolStatus(e.item), page: parseWebPage(e.item.detail) });
+    }
   }
-  return reads;
+  return { reads, hits };
 });
-provide(WEB_READS, webReads);
+provide(WEB_TRAIL, webTrail);
 const total = computed(() => entries.value.length);
 
 // The batch is active only while the turn runs and this is the live tail group.
@@ -460,10 +477,19 @@ type Glyph = { icon: HugeIcon; hue: string; label: string };
 function glyphOf(e: ActivityEntry): Glyph {
   if (e.type === "thinking") return { icon: AiBrain01Icon, hue: thinkingOrbHue(), label: "Thinking" };
   const m = toolMeta(e.item.name);
+  // Searches and the pages read off them are one trip out: they share a chip.
+  if (m.family === "web") return { icon: m.icon, hue: m.hue, label: "Web" };
   return { icon: m.icon, hue: m.hue, label: m.label };
 }
 
-type Chip = { key: string; icon: HugeIcon; hue: string; label: string; count: number };
+type Chip = { key: string; icon: HugeIcon; hue: string; label: string; count: number; faces: string[] };
+
+/** The site a web step went to, for its chip's faces — a fetch's own page. */
+function webFace(e: ActivityEntry): string | null {
+  if (e.type !== "tool" || !isWebFetchTool(e.item.name) || toolStatus(e.item) === "error") return null;
+  const url = fetchTargetUrl(toolTargetRaw(e.item));
+  return url ? parseSiteTarget(url).host : null;
+}
 
 // History strip — merge *consecutive* same-type actions into one ×N chip, keyed
 // by the run's first entry so the element stays put while its count climbs (the
@@ -472,9 +498,12 @@ const historyChips = computed<Chip[]>(() => {
   const out: Chip[] = [];
   for (const e of archived.value) {
     const g = glyphOf(e);
+    const face = webFace(e);
     const last = out[out.length - 1];
     if (last && last.label === g.label) last.count++;
-    else out.push({ key: e.key, icon: g.icon, hue: g.hue, label: g.label, count: 1 });
+    else out.push({ key: e.key, icon: g.icon, hue: g.hue, label: g.label, count: 1, faces: [] });
+    const chip = out[out.length - 1]!;
+    if (face && !chip.faces.includes(face)) chip.faces.push(face);
   }
   return out;
 });
@@ -560,10 +589,22 @@ function stepProps(e: ActivityEntry) {
             :animate="{ opacity: 1, scale: 1, y: 0 }"
             :exit="{ opacity: 0, scale: 0.6 }"
             :transition="SPRING"
-            :title="chip.count > 1 ? `${chip.label} ×${chip.count}` : chip.label"
+            :title="chip.faces.length ? `Read ${chip.faces.join(', ')}` : chip.count > 1 ? `${chip.label} ×${chip.count}` : chip.label"
           >
             <HugeiconsIcon :icon="chip.icon" :size="14" :stroke-width="1.8" />
-            <span v-if="chip.count > 1" class="head__count">×{{ chip.count }}</span>
+            <!-- A trip to the web keeps the faces of the pages it read. -->
+            <span v-if="chip.faces.length" class="head__faces">
+              <WebFavicon
+                v-for="host in chip.faces.slice(0, 3)"
+                :key="host"
+                class="head__face"
+                :host="host"
+                :size="14"
+                round
+              />
+              <span v-if="chip.faces.length > 3" class="head__count">+{{ chip.faces.length - 3 }}</span>
+            </span>
+            <span v-else-if="chip.count > 1" class="head__count">×{{ chip.count }}</span>
           </motion.span>
         </AnimatePresence>
       </span>
@@ -691,6 +732,20 @@ function stepProps(e: ActivityEntry) {
   gap: 2px;
   color: var(--hue, var(--muted));
   opacity: 0.85;
+}
+.head__faces {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 3px;
+}
+.head__face {
+  box-shadow: 0 0 0 1.5px var(--ground);
+}
+.head__face + .head__face {
+  margin-left: -4px;
+}
+.head__faces .head__count {
+  margin-left: 3px;
 }
 .head__count {
   font-family: var(--font-mono);

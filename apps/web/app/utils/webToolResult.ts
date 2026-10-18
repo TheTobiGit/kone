@@ -10,10 +10,15 @@ import { parseSiteTarget } from "~/utils/siteChip";
 export type WebHit = { title: string; url: string; host: string };
 export type WebPage = { title: string; excerpt: string; bytes: number };
 export type WebReadState = "running" | "done" | "error";
+export type WebRead = { state: WebReadState; page: WebPage | null };
 
-/** The pages a batch of steps has opened, keyed by `webKey` — provided by the
- *  batch so a search row can mark the hits the agent went on to read. */
-export const WEB_READS: InjectionKey<Ref<ReadonlyMap<string, WebReadState>>> = Symbol("web-reads");
+/** What a batch of steps did on the web, seen whole: every page it opened
+ *  (keyed by `webKey`) and every hit its searches turned up. A search row
+ *  grows the reads of its own hits in place; a fetch of one of those hits then
+ *  has nothing left to say on a row of its own. */
+export type WebTrail = { reads: ReadonlyMap<string, WebRead>; hits: ReadonlySet<string> };
+
+export const WEB_TRAIL: InjectionKey<Ref<WebTrail>> = Symbol("web-trail");
 
 const SEARCH_NAMES = new Set(["web_search", "search_web", "websearch"]);
 const FETCH_NAMES = new Set(["web_fetch", "read_url_content", "view_web_document", "webfetch"]);
@@ -125,7 +130,8 @@ export function parseWebPage(detail: string | undefined): WebPage | null {
     .split(/\n\s*\n/)
     .map(plainText)
     .filter((p) => p.length > 0);
-  const excerpt = paragraphs.find((p) => p.length >= 40) ?? paragraphs[0] ?? "";
+  // A page that opens on a one-line tagline says more in the paragraph after it.
+  const excerpt = paragraphs.find((p) => p.length >= 80) ?? paragraphs.find((p) => p.length >= 40) ?? paragraphs[0] ?? "";
   if (!title && !excerpt) return null;
   return { title, excerpt, bytes };
 }

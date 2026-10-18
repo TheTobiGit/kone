@@ -6,7 +6,10 @@ import { siteFaviconUrl } from "~/utils/siteChip";
 // letter on a tint picked from the hostname, so a list of hits never turns into
 // a column of identical link glyphs.
 
-const props = withDefaults(defineProps<{ host: string; size?: number }>(), { size: 16 });
+const props = withDefaults(defineProps<{ host: string; size?: number; round?: boolean }>(), {
+  size: 16,
+  round: false,
+});
 
 const iconOk = ref(true);
 const src = computed(() => siteFaviconUrl(props.host));
@@ -21,6 +24,7 @@ const tint = computed(() => {
 <template>
   <span
     class="wfav"
+    :class="{ 'wfav--round': round }"
     :style="{ '--size': `${size}px`, '--tint': tint }"
     aria-hidden="true"
   >
@@ -47,6 +51,12 @@ const tint = computed(() => {
   height: var(--size);
   border-radius: 4px;
   overflow: hidden;
+}
+.wfav--round {
+  border-radius: 50%;
+  /* A hairline keeps a white favicon from dissolving into a light ground. */
+  outline: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  outline-offset: -1px;
 }
 .wfav__img {
   width: 100%;
