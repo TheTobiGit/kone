@@ -95,12 +95,17 @@ function toggleMore(): void {
 .csrch__face {
   flex: none;
 }
+/* The directory gives way first; a long basename then truncates too, so the
+   count always stays in the row. */
 .csrch__name {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--ink);
 }
 .csrch__dir {
-  flex: 0 1 auto;
+  flex: 0 1000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
