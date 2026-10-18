@@ -205,6 +205,7 @@ describe("output lines", () => {
 describe("isCommandInput", () => {
   test("knows a shell call's input from JSON it printed", () => {
     expect(isCommandInput('{"command":"mkdir -p out","description":"Make dir"}', "mkdir -p out")).toBe(true);
+    expect(isCommandInput('{"CommandLine":"true","Cwd":"/repo"}', "true")).toBe(true);
     expect(isCommandInput('{"command":"deploy"}', "cat command.json")).toBe(false);
     expect(isCommandInput('{"name":"kone"}', "cat package.json")).toBe(false);
     expect(isCommandInput("done", "true")).toBe(false);
