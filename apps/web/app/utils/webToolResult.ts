@@ -92,18 +92,14 @@ function linksBlocks(detail: string): WebHit[] {
   return out;
 }
 
-/** Every other dialect: markdown links first, then bare URLs. */
+/** Every other dialect: markdown links and bare URLs, in the order they appear. */
 function looseLinks(detail: string): WebHit[] {
   const out: WebHit[] = [];
-  // A destination may hold one level of balanced parentheses, as Wikipedia's do.
-  for (const m of detail.matchAll(/\[([^\]\n]+)\]\((https?:\/\/(?:[^()\s]|\([^()\s]*\))+)\)/g)) {
-    const h = hit(m[1]!, m[2]!);
-    if (h) out.push(h);
-  }
-  if (out.length) return out;
-  // `hit` trims a closing parenthesis the URL doesn't open.
-  for (const m of detail.matchAll(/https?:\/\/[^\s"'<>\]]+/g)) {
-    const h = hit("", m[0]);
+  // A markdown destination may hold one level of balanced parentheses, as
+  // Wikipedia's do; `hit` trims a bare URL's closing parenthesis it doesn't open.
+  const re = /\[([^\]\n]+)\]\((https?:\/\/(?:[^()\s]|\([^()\s]*\))+)\)|https?:\/\/[^\s"'<>\]]+/g;
+  for (const m of detail.matchAll(re)) {
+    const h = m[2] ? hit(m[1]!, m[2]) : hit("", m[0]);
     if (h) out.push(h);
   }
   return out;

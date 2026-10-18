@@ -27,6 +27,13 @@ describe("parseWebSearchHits", () => {
     ]);
   });
 
+  test("reads markdown links and bare URLs together, in order", () => {
+    expect(parseWebSearchHits("[First](https://a.example)\nSecond: https://b.example").map((h) => h.url)).toEqual([
+      "https://a.example",
+      "https://b.example",
+    ]);
+  });
+
   test("keeps balanced parentheses in a bare URL", () => {
     expect(parseWebSearchHits("(see https://en.wikipedia.org/wiki/Vue_(framework))")).toEqual([
       { title: "en.wikipedia.org", url: "https://en.wikipedia.org/wiki/Vue_(framework)", host: "en.wikipedia.org" },
