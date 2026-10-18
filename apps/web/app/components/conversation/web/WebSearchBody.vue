@@ -71,13 +71,13 @@ function toggleMore(): void {
         :excerpt="readOf(h)?.page?.excerpt"
         :last="!hasTail && i === visible.length - 1"
         :enter="animate"
-        :delay="Math.min(i, 6) * 0.07"
+        :delay="Math.min(i, 6) * 0.1"
       />
       <WebSourceNode
         v-if="hasTail"
         last
         :enter="animate"
-        :delay="Math.min(visible.length, 6) * 0.07"
+        :delay="Math.min(visible.length, 6) * 0.1"
       >
         <template #line>
           <button
@@ -97,9 +97,9 @@ function toggleMore(): void {
                   round
                 />
               </span>
-              {{ hidden.length }} more
+              Show {{ hidden.length }} more
             </template>
-            <template v-else>Fewer</template>
+            <template v-else>Show fewer</template>
           </button>
         </template>
       </WebSourceNode>
@@ -148,16 +148,15 @@ function toggleMore(): void {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--ink-soft);
   font-size: 12.5px;
   cursor: pointer;
-  transition: color 0.16s ease;
+  transition: color 0.15s ease-out;
 }
 .wsrch__more:hover {
   color: var(--ink);
 }
 .wsrch__more:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--hue, var(--ink)) 45%, transparent);
   outline-offset: 2px;
   border-radius: 6px;
 }

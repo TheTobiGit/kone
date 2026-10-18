@@ -58,13 +58,16 @@ watch(
         :href="url"
         :target="url ? '_blank' : undefined"
         :rel="url ? 'noopener noreferrer' : undefined"
-        :title="url"
+        :title="url ? `${title}\n${url}` : title"
       >
         <span class="wnode__face">
           <WebFavicon :host="host" :size="16" round />
         </span>
         <span class="wnode__title">{{ title }}</span>
         <span class="wnode__host">{{ host }}</span>
+        <!-- The ring and the dot are drawn; say the same in words. -->
+        <span v-if="state === 'reading'" class="sr-only">, reading</span>
+        <span v-else-if="state === 'read'" class="sr-only">, read by the agent</span>
         <HugeiconsIcon
           v-if="url"
           class="wnode__out"
@@ -137,8 +140,8 @@ a.wnode__line:hover .wnode__title,
   color: var(--ink);
 }
 a.wnode__line:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--hue, var(--ink)) 45%, transparent);
-  outline-offset: 2px;
+  /* Inset: the row runs to the column's edge, where an outer ring is clipped. */
+  outline-offset: -2px;
   border-radius: 6px;
 }
 .wnode__face {
@@ -170,7 +173,7 @@ a.wnode__line:focus-visible {
   box-shadow: 0 0 0 2px var(--ground);
 }
 .wnode--ink.wnode--read .wnode__face::after {
-  animation: wnode-pop 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  animation: wnode-pop 0.3s cubic-bezier(0.2, 0, 0, 1) backwards;
 }
 .wnode__title {
   flex: 0 1 auto;
@@ -178,7 +181,7 @@ a.wnode__line:focus-visible {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  transition: color 0.2s ease;
+  transition: color 0.15s ease-out;
 }
 .wnode__host {
   flex: 0 10 auto;
@@ -196,8 +199,8 @@ a.wnode__line:focus-visible {
   opacity: 0;
   transform: translate(-2px, 2px);
   transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
+    opacity 0.15s ease-out,
+    transform 0.15s ease-out;
 }
 a.wnode__line:hover .wnode__out,
 a.wnode__line:focus-visible .wnode__out {
@@ -211,7 +214,8 @@ a.wnode__line:focus-visible .wnode__out {
   margin: -2px 0 6px 24px;
   font-size: 12.5px;
   line-height: 1.55;
-  color: var(--muted);
+  /* What the page said is content, not metadata: it takes the readable ink. */
+  color: var(--ink-soft);
 }
 .wnode__excerpt {
   display: -webkit-box;
@@ -232,11 +236,11 @@ a.wnode__line:focus-visible .wnode__out {
   width: fit-content;
   background: linear-gradient(
     90deg,
-    var(--muted) 0%,
-    var(--muted) 35%,
-    var(--ink) 50%,
-    var(--muted) 65%,
-    var(--muted) 100%
+    var(--ink-soft) 0%,
+    var(--ink-soft) 35%,
+    var(--muted) 50%,
+    var(--ink-soft) 65%,
+    var(--ink-soft) 100%
   );
   background-size: 250% 100%;
   background-clip: text;
@@ -251,7 +255,7 @@ a.wnode__line:focus-visible .wnode__out {
   animation: wnode-draw 0.32s cubic-bezier(0.22, 1, 0.36, 1) var(--d) backwards;
 }
 .wnode--enter .wnode__line {
-  animation: wnode-rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--d) + 0.08s) backwards;
+  animation: wnode-rise 0.3s ease-out calc(var(--d) + 0.08s) backwards;
 }
 
 @keyframes wnode-draw {
@@ -265,6 +269,7 @@ a.wnode__line:focus-visible .wnode__out {
 @keyframes wnode-rise {
   from {
     opacity: 0;
+    filter: blur(4px);
     transform: translateX(-4px);
   }
 }
@@ -294,14 +299,25 @@ a.wnode__line:focus-visible .wnode__out {
 @media (prefers-reduced-motion: reduce) {
   .wnode--enter .wnode__elbow,
   .wnode--enter .wnode__trunk,
-  .wnode--enter .wnode__line,
   .wnode--ink.wnode--read .wnode__face::after,
   .wnode--ink .wnode__excerpt,
-  .wnode__note--reading {
+  .wnode__note--reading,
+  .wnode--reading .wnode__face::after {
     animation: none;
   }
-  .wnode--reading .wnode__face::after {
-    animation-duration: 2.4s;
+  /* Branches still arrive, as a plain fade, and the ring holds still: the
+     "Reading the page" line carries the state without it turning. */
+  .wnode--enter .wnode__line {
+    animation-name: wnode-fade;
+  }
+  .wnode__out {
+    transform: none;
+    transition: opacity 0.15s ease-out;
+  }
+}
+@keyframes wnode-fade {
+  from {
+    opacity: 0;
   }
 }
 </style>
