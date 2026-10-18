@@ -14,7 +14,7 @@ import WebFetchBody from "~/components/conversation/web/WebFetchBody.vue";
 import CodeDiffBody from "~/components/conversation/code/CodeDiffBody.vue";
 import CodeSearchBody from "~/components/conversation/code/CodeSearchBody.vue";
 import CodeRunBody from "~/components/conversation/code/CodeRunBody.vue";
-import { errorLines, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
+import { errorLines, isToolInput, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -148,6 +148,7 @@ const codeRun = computed(() => {
   const t = tool.value;
   if (!t || meta.value?.family !== "run" || meta.value.label !== "Run") return null;
   const output = t.detail ?? "";
+  if (status.value === "running" && isToolInput(output)) return null;
   if (status.value !== "running" && parseTestTally(output)) return { output };
   const lines = status.value === "error" ? errorLines(output) : outputTail(output);
   return lines.length ? { output } : null;

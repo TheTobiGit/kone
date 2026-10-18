@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { errorLines, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "./codeToolResult";
+import { errorLines, isToolInput, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "./codeToolResult";
 
 describe("parseDiffSummary", () => {
   test("counts a unified hunk and keeps its first changed lines", () => {
@@ -17,6 +17,11 @@ describe("parseDiffSummary", () => {
 
   test("skips file headers", () => {
     expect(parseDiffSummary("diff --git a/x b/x\n--- a/x\n+++ b/x\n+one")?.added).toBe(1);
+  });
+
+  test("counts changed lines whose text starts with dashes or pluses", () => {
+    expect(parseDiffSummary("@@ -1,1 +1,1 @@\n----\n+++bold+++")).toMatchObject({ added: 1, removed: 1 });
+    expect(parseDiffSummary("----\n+===")).toMatchObject({ added: 1, removed: 1 });
   });
 
   test("ignores a call's streamed input and a body with no changes", () => {
@@ -63,12 +68,31 @@ describe("parseTestTally", () => {
     expect(parseTestTally("===== 3 failed, 97 passed in 4.20s =====")).toMatchObject({ passed: 97, failed: 3, time: "4.20s" });
   });
 
+  test("takes jest's test totals over its suite totals", () => {
+    const out = "Test Suites: 1 failed, 2 passed, 3 total\nTests:       1 failed, 40 passed, 41 total\nTime:        2.1 s";
+    expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 1 });
+  });
+
   test("is null for output that isn't a test run", () => {
     expect(parseTestTally(" ✓ no type errors\nDone in 3.1s")).toBeNull();
   });
 });
 
+describe("isToolInput", () => {
+  test("is a JSON object, not output that merely starts with a bracket", () => {
+    expect(isToolInput('{"command":"bun test"}')).toBe(true);
+    expect(isToolInput("[INFO] build started\n[INFO] done")).toBe(false);
+    expect(isToolInput('["a","b"]')).toBe(false);
+    expect(isToolInput('{"command": "bun t')).toBe(false);
+  });
+});
+
 describe("output lines", () => {
+  test("keep a command's output that starts with a bracket", () => {
+    expect(outputTail('[INFO] start\n{"ok": true}')).toEqual(["[INFO] start", '{"ok": true}']);
+    expect(errorLines("[ERROR] build failed")).toEqual(["[ERROR] build failed"]);
+  });
+
   test("tail keeps the last printed lines", () => {
     expect(outputTail("a\n\nb\nc\n")).toEqual(["b", "c"]);
   });
