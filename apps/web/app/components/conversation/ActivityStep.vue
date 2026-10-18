@@ -151,7 +151,9 @@ const codeRun = computed(() => {
   // OpenCode falls back to the call's title when a command printed nothing;
   // that's the row's own text, not output.
   if (output.trim() === t.text.trim()) return null;
-  if (status.value === "running" && isToolInput(output)) return null;
+  // While running, Claude streams the call's input JSON into its body a
+  // fragment at a time; a body opening an object is that input, whole or not.
+  if (status.value === "running" && (isToolInput(output) || /^\s*\{\s*"/.test(output))) return null;
   if (status.value !== "running" && parseTestTally(output)) return { output };
   const lines = status.value === "error" ? errorLines(output) : outputTail(output);
   return lines.length ? { output } : null;
