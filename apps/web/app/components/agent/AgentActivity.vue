@@ -132,13 +132,19 @@ const webTrail = computed<WebTrail>(() => {
   for (const e of allEntries.value) {
     if (e.type !== "tool") continue;
     if (isWebSearchTool(e.item.name)) {
+      // Only a search that draws its trail (see `ActivityStep`) can hold reads.
+      if (toolStatus(e.item) === "error" || !toolTargetRaw(e.item)) continue;
       for (const h of parseWebSearchHits(e.item.detail)) latestSearchOf.set(webKey(h.url), e.key);
     } else if (isWebFetchTool(e.item.name)) {
       const url = fetchTargetUrl(toolTargetRaw(e.item));
       const search = url ? latestSearchOf.get(webKey(url)) : undefined;
       if (!url || !search) continue;
+      const state = toolStatus(e.item);
+      const page = parseWebPage(e.item.detail);
+      // A finished page the trail can't show keeps its own row, raw output and all.
+      if (state === "done" && !page) continue;
       const own = reads.get(search) ?? new Map<string, WebRead>();
-      own.set(webKey(url), { state: toolStatus(e.item), page: parseWebPage(e.item.detail) });
+      own.set(webKey(url), { state, page });
       reads.set(search, own);
       absorbed.add(e.key);
     }
