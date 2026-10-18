@@ -203,13 +203,3 @@ export const STYLE_SPECS = {
     replyRef: false,
   },
 } satisfies Record<ConversationStyle, StyleSpec>;
-
-/** Styles that sit the request on the left, like the reply. */
-export function requestOnLeft(style: ConversationStyle): boolean {
-  return STYLE_SPECS[style].youLeft;
-}
-
-/** Styles that head the request with your face, name and time. */
-export function requestHasHeader(style: ConversationStyle): boolean {
-  return STYLE_SPECS[style].youHead;
-}

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 import { beforeEach, describe, expect, test } from "bun:test";
 
@@ -17,14 +17,17 @@ import {
 // grandchildren. POSIX-only — the Windows table scan is only exercised through
 // its parse path, never against a live Windows host.
 
-/** True while `pid` still exists — kill(pid, 0) probes without signalling. */
+/** True while `pid` can still run — kill(pid, 0) probes without signalling.
+ *  A killed orphan stays a zombie until init reaps it, and some container
+ *  inits never do, so a zombie counts as dead. */
 function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  const stat = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  return !stat.startsWith("Z");
 }
 
 /** Poll `inspectSubprocessActivity` until both sleeps are visible below the

@@ -54,8 +54,14 @@ function mutation(fields: Partial<ThemeMutation>): ThemeMutation {
 describe("useAppSteering", () => {
   let bridge: ReturnType<typeof installBridge>;
   let stop: () => void;
+  // SAFETY: only the optional window slot is read or restored; no browser APIs are assumed.
+  const windowHolder = globalThis as { window?: unknown };
+  let hadWindow: boolean;
+  let savedWindow: unknown;
 
   beforeEach(() => {
+    hadWindow = "window" in globalThis;
+    savedWindow = windowHolder.window;
     bridge = installBridge();
     stop = initAppSteering();
   });
@@ -63,6 +69,8 @@ describe("useAppSteering", () => {
   afterEach(() => {
     stop();
     bridge.teardown();
+    if (hadWindow) windowHolder.window = savedWindow;
+    else delete windowHolder.window;
     for (const t of themes.value) {
       if (isCustom(t.id)) removeCustomTheme(t.id);
     }
@@ -153,8 +161,14 @@ function flushSteering(): Promise<void> {
 describe("useAppSteering agent roster", () => {
   let bridge: ReturnType<typeof installBridge>;
   let stop: () => void;
+  // SAFETY: only the optional window slot is read or restored; no browser APIs are assumed.
+  const windowHolder = globalThis as { window?: unknown };
+  let hadWindow: boolean;
+  let savedWindow: unknown;
 
   beforeEach(() => {
+    hadWindow = "window" in globalThis;
+    savedWindow = windowHolder.window;
     agentRows.value = [];
     projectTeams.value = {};
     bridge = installBridge();
@@ -164,6 +178,8 @@ describe("useAppSteering agent roster", () => {
   afterEach(() => {
     stop();
     bridge.teardown();
+    if (hadWindow) windowHolder.window = savedWindow;
+    else delete windowHolder.window;
   });
 
   it("creates an agent with its bot, picture and teams", async () => {
