@@ -123,31 +123,32 @@ const allEntries = computed(() => activityEntries(props.segments));
 
 // Everything this batch did on the web, so a search row can grow the pages the
 // agent went on to read under its own hits — the one place both are in view.
+// A fetch only joins a search that came before it, so the trail stays in the
+// order things happened.
 const webTrail = computed<WebTrail>(() => {
-  const reads = new Map<string, WebRead>();
-  const hits = new Set<string>();
+  const reads = new Map<string, Map<string, WebRead>>();
+  const absorbed = new Set<string>();
+  const latestSearchOf = new Map<string, string>();
   for (const e of allEntries.value) {
     if (e.type !== "tool") continue;
     if (isWebSearchTool(e.item.name)) {
-      for (const h of parseWebSearchHits(e.item.detail)) hits.add(webKey(h.url));
+      for (const h of parseWebSearchHits(e.item.detail)) latestSearchOf.set(webKey(h.url), e.key);
     } else if (isWebFetchTool(e.item.name)) {
       const url = fetchTargetUrl(toolTargetRaw(e.item));
-      if (url) reads.set(webKey(url), { state: toolStatus(e.item), page: parseWebPage(e.item.detail) });
+      const search = url ? latestSearchOf.get(webKey(url)) : undefined;
+      if (!url || !search) continue;
+      const own = reads.get(search) ?? new Map<string, WebRead>();
+      own.set(webKey(url), { state: toolStatus(e.item), page: parseWebPage(e.item.detail) });
+      reads.set(search, own);
+      absorbed.add(e.key);
     }
   }
-  return { reads, hits };
+  return { reads, absorbed };
 });
 provide(WEB_TRAIL, webTrail);
 
-// A fetch of a hit a search here already shows is told under that search, so it
-// takes no row (and no ticker slot) of its own.
-const entries = computed(() =>
-  allEntries.value.filter((e) => {
-    if (e.type !== "tool" || !isWebFetchTool(e.item.name)) return true;
-    const url = fetchTargetUrl(toolTargetRaw(e.item));
-    return !url || !webTrail.value.hits.has(webKey(url));
-  }),
-);
+// A fetch told under its search takes no row (and no ticker slot) of its own.
+const entries = computed(() => allEntries.value.filter((e) => !webTrail.value.absorbed.has(e.key)));
 const total = computed(() => entries.value.length);
 
 // The batch is active only while the turn runs and this is the live tail group.
@@ -499,7 +500,8 @@ type Chip = { key: string; icon: HugeIcon; hue: string; label: string; count: nu
 function webFaces(e: ActivityEntry): string[] {
   if (e.type !== "tool") return [];
   if (isWebSearchTool(e.item.name)) {
-    const { reads } = webTrail.value;
+    const reads = webTrail.value.reads.get(e.key);
+    if (!reads) return [];
     return parseWebSearchHits(e.item.detail)
       .filter((h) => { const r = reads.get(webKey(h.url)); return r !== undefined && r.state !== "error"; })
       .map((h) => parseSiteTarget(h.url).host);

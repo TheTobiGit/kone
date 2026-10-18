@@ -29,6 +29,7 @@ import {
   isWebSearchTool,
   parseWebPage,
   parseWebSearchHits,
+  type WebRead,
   type WebTrail,
 } from "~/utils/webToolResult";
 
@@ -92,7 +93,8 @@ const rowColors = computed(() => (hasThemeBody.value ? toColors.value : null));
 // branch under its row. A failed call, or a result that can't be read, keeps
 // the plain row.
 
-const webTrail = inject(WEB_TRAIL, ref<WebTrail>({ reads: new Map(), hits: new Set() }));
+const webTrail = inject(WEB_TRAIL, ref<WebTrail>({ reads: new Map(), absorbed: new Set() }));
+const webReads = computed(() => webTrail.value.reads.get(props.entry.key) ?? new Map<string, WebRead>());
 
 const webSearch = computed(() => {
   const t = tool.value;
@@ -233,7 +235,7 @@ function toggle(): void {
         v-if="webSearch"
         :running="status === 'running'"
         :hits="webSearch.hits"
-        :reads="webTrail.reads"
+        :reads="webReads"
       />
       <WebFetchBody
         v-else-if="webFetch"

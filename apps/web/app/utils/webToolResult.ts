@@ -12,11 +12,15 @@ export type WebPage = { title: string; excerpt: string; bytes: number };
 export type WebReadState = "running" | "done" | "error";
 export type WebRead = { state: WebReadState; page: WebPage | null };
 
-/** What a batch of steps did on the web, seen whole: every page it opened
- *  (keyed by `webKey`) and every hit its searches turned up. A search row
- *  grows the reads of its own hits in place; a fetch of one of those hits then
- *  has nothing left to say on a row of its own. */
-export type WebTrail = { reads: ReadonlyMap<string, WebRead>; hits: ReadonlySet<string> };
+/** What a batch of steps did on the web, in order. A fetch of a hit that an
+ *  earlier search turned up belongs to that search (the latest one, when
+ *  several did): `reads` holds each search's opened pages by step key, then by
+ *  `webKey`, and `absorbed` names the fetch steps told there, which then have
+ *  nothing left to say on a row of their own. */
+export type WebTrail = {
+  reads: ReadonlyMap<string, ReadonlyMap<string, WebRead>>;
+  absorbed: ReadonlySet<string>;
+};
 
 export const WEB_TRAIL: InjectionKey<Ref<WebTrail>> = Symbol("web-trail");
 
