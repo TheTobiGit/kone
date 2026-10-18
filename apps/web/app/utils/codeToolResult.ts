@@ -36,7 +36,9 @@ function stripAnsi(s: string): string {
 /** An edit's diff — unified, or Claude's bare `+`/`-`/space hunk lines — as its
  *  size and its first changed lines. */
 export function parseDiffSummary(detail: string | undefined): DiffSummary | null {
-  const body = detail?.trim();
+  // Only blank lines come off the ends: the first line's leading space is its
+  // context marker (` - item` is an unchanged list item, not a removal).
+  const body = detail?.replace(/^\s*\n|\n\s*$/g, "");
   if (!body || isToolInput(body)) return null;
   // Codex's whole-text fallback (`--- before` / `+++ after`) isn't a diff: its
   // lines say nothing about what changed, so it keeps the plain row.

@@ -24,6 +24,10 @@ describe("parseDiffSummary", () => {
     expect(parseDiffSummary("----\n+===")).toMatchObject({ added: 1, removed: 1 });
   });
 
+  test("keeps a first context line that starts with a dash", () => {
+    expect(parseDiffSummary(" - item one\n-- item two\n+- item 2")).toMatchObject({ added: 1, removed: 1 });
+  });
+
   test("declines Codex's before/after text pair", () => {
     expect(parseDiffSummary("--- before\nold\n\n+++ after\nnew")).toBeNull();
     expect(parseDiffSummary("+++ after\nnew file")).toBeNull();
