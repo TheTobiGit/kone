@@ -24,6 +24,11 @@ describe("parseDiffSummary", () => {
     expect(parseDiffSummary("----\n+===")).toMatchObject({ added: 1, removed: 1 });
   });
 
+  test("declines Codex's before/after text pair", () => {
+    expect(parseDiffSummary("--- before\nold\n\n+++ after\nnew")).toBeNull();
+    expect(parseDiffSummary("+++ after\nnew file")).toBeNull();
+  });
+
   test("ignores a call's streamed input and a body with no changes", () => {
     expect(parseDiffSummary('{"file_path":"a.ts","old_string":"-x"}')).toBeNull();
     expect(parseDiffSummary("Edit applied successfully.")).toBeNull();
@@ -71,6 +76,11 @@ describe("parseTestTally", () => {
   test("takes jest's test totals over its suite totals", () => {
     const out = "Test Suites: 1 failed, 2 passed, 3 total\nTests:       1 failed, 40 passed, 41 total\nTime:        2.1 s";
     expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 1 });
+  });
+
+  test("takes vitest's test totals over its file totals", () => {
+    const out = " Test Files  1 passed (1)\n      Tests  40 passed (40)\n   Duration  1.20s";
+    expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 0 });
   });
 
   test("is null for output that isn't a test run", () => {

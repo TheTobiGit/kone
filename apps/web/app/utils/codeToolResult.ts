@@ -38,6 +38,9 @@ function stripAnsi(s: string): string {
 export function parseDiffSummary(detail: string | undefined): DiffSummary | null {
   const body = detail?.trim();
   if (!body || isToolInput(body)) return null;
+  // Codex's whole-text fallback (`--- before` / `+++ after`) isn't a diff: its
+  // lines say nothing about what changed, so it keeps the plain row.
+  if (/^(--- before|\+\+\+ after)$/m.test(body)) return null;
   let added = 0;
   let removed = 0;
   const preview: DiffLine[] = [];
@@ -88,8 +91,9 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
 export function parseTestTally(output: string | undefined): TestTally | null {
   const body = output ? stripAnsi(output) : "";
   if (!body.trim()) return null;
-  // Jest prints a `Test Suites:` line before `Tests:`; the tests are the tally.
-  const summary = /^\s*Tests:.*$/m.exec(body)?.[0] ?? body;
+  // Jest and Vitest print a suite or file line (`Test Suites:`, `Test Files`)
+  // before their `Tests` line; the tests are the tally.
+  const summary = /^\s*Tests:?\s.*$/m.exec(body)?.[0] ?? body;
   const count = (re: RegExp): number | null => {
     const m = re.exec(summary);
     return m ? Number(m[1]) : null;
