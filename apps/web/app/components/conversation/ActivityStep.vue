@@ -29,7 +29,6 @@ import {
   isWebSearchTool,
   parseWebPage,
   parseWebSearchHits,
-  webKey,
   type WebTrail,
 } from "~/utils/webToolResult";
 
@@ -113,14 +112,6 @@ const webFetch = computed(() => {
   return { url, page };
 });
 
-/** A fetch of a hit the search above already shows: told there, not here. */
-const absorbed = computed(() => {
-  const t = tool.value;
-  if (!t || !isWebFetchTool(t.name)) return false;
-  const url = fetchTargetUrl(toolTargetRaw(t));
-  return !!url && webTrail.value.hits.has(webKey(url));
-});
-
 const hasWebBody = computed(() => webSearch.value !== null || webFetch.value !== null);
 
 // A thinking row discloses only when the model actually surfaced reasoning; a
@@ -144,7 +135,7 @@ function toggle(): void {
 </script>
 
 <template>
-  <div v-if="!absorbed" class="astep" :class="isThinking ? 'astep--think' : `astep--${status}`" :style="{ '--hue': hue }">
+  <div class="astep" :class="isThinking ? 'astep--think' : `astep--${status}`" :style="{ '--hue': hue }">
     <span v-if="rail" class="astep__link" aria-hidden="true" />
 
     <component
