@@ -88,7 +88,7 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
  *  "nothing found" prose a tool prints around them. */
 function isBarePath(line: string): boolean {
   if (!line || /^\s/.test(line) || /: |\t/.test(line) || /[.!?]$/.test(line)) return false;
-  if (/^(no|found|showing|searched|\(|\d+\s+(files?|matches|results?)\b)/i.test(line)) return false;
+  if (/^(?:(?:no|found|showing|searched)\b|\(|\d+\s+(?:files?|matches|results?)\b)/i.test(line)) return false;
   // A spaced line is a path when it has a directory or ends in an extension;
   // a lone word is a filename.
   return /[/\\]/.test(line) || !/\s/.test(line) || /\.[\w-]+$/.test(line);
@@ -105,15 +105,28 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
     if (!f) files.set(path, (f = { path, matches: [] }));
     return f;
   };
+  // `rg --heading` prints a file's path once, then its `line:text` rows under it
+  // until a blank line.
+  let heading: SearchFile | null = null;
   for (const raw of body.split("\n")) {
     const line = stripAnsi(raw).trimEnd();
+    if (!line) {
+      heading = null;
+      continue;
+    }
+    const row = heading ? /^(\d+):(.*)$/.exec(line) : null;
+    if (heading && row) {
+      heading.matches.push({ line: Number(row[1]), text: row[2]!.trim() });
+      continue;
+    }
     // A Windows path's drive letter (`C:\\repo\\a.ts:12:…`) isn't the separator.
     const hit = /^((?:[A-Za-z]:[\\/])?[^\s:][^:]*?):(\d+):(.*)$/.exec(line);
     if (hit) {
       fileOf(hit[1]!).matches.push({ line: Number(hit[2]), text: hit[3]!.trim() });
+      heading = null;
     } else if (isBarePath(line)) {
       // A count-mode search prints `path:N`; the path is the file.
-      fileOf(line.replace(/:\d+$/, ""));
+      heading = fileOf(line.replace(/:\d+$/, ""));
     }
   }
   return [...files.values()];
@@ -135,9 +148,10 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   const skipped = count(/\b(\d+)\s+(?:skip|skipped|pending)\b/i);
   if (passed === null && failed === null && skipped === null) return null;
   // The run's own time comes last; a runner prints each test's time before it.
-  // Jest writes `Time:        2.1 s`, with a space before the unit.
+  // Jest writes `Time:        2.1 s`, with a space before the unit; Vitest
+  // writes `Duration  1.20s`.
   const times = [
-    ...body.matchAll(/\[(\d+(?:\.\d+)?m?s)\]|\bin (\d+(?:\.\d+)?m?s)\b|^\s*Time:\s+(\d+(?:\.\d+)?) ?(m?s)\b/gm),
+    ...body.matchAll(/\[(\d+(?:\.\d+)?m?s)\]|\bin (\d+(?:\.\d+)?m?s)\b|^\s*(?:Time:|Duration)\s+(\d+(?:\.\d+)?) ?(m?s)\b/gm),
   ];
   const time = times.at(-1);
   return { passed: passed ?? 0, failed: failed ?? 0, skipped: skipped ?? 0, time: time ? (time[1] ?? time[2] ?? `${time[3]}${time[4]}`) : null };
