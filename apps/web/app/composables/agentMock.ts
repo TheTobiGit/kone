@@ -26,6 +26,7 @@ import type { ChatAttachment, SkillReference } from "~/types/desktop";
 import { titleFromPrompt, uid } from "./agentPrefetch";
 import { serializeQueuedAttachments } from "./session/sessionQueue";
 import { registerDevHandOff } from "~/lib/devHandOffs";
+import { WEB_PROMPT, WEB_RESEARCH } from "~/lib/devWebResearch";
 
 /** The team demo's turns, in order: the hand-offs, answering a contractor's
  *  question, deciding after a stop — and a contractor's own first turn. */
@@ -556,6 +557,13 @@ export function createMockTurnRunner(deps: {
       if (opts.team) {
         await playTeamBeat(opts.team);
         if (cancelled) return;
+      } else if (!opts.demo && WEB_PROMPT.test(prompt)) {
+        // A prompt that asks to go online plays the research turn instead.
+        for (const step of WEB_RESEARCH) {
+          if (step.kind === "tool_call") await tool(step.name, step.target, step.detail, step.ms);
+          else await stream(step.kind, step.text);
+          if (cancelled) return;
+        }
       } else {
       if (thinky) {
         await stream(
