@@ -136,6 +136,8 @@ const codeDiff = computed(() => {
 const codeSearch = computed(() => {
   const t = tool.value;
   if (!t || meta.value?.family !== "search" || status.value !== "done") return null;
+  // A detail that is only the call's title (OpenCode, on no output) found nothing.
+  if (t.detail?.trim() === t.text.trim()) return null;
   const files = parseSearchMatches(t.detail);
   if (!files.length) return null;
   // A target can carry its own note after the query ("useAgent · 6 matches").
@@ -148,6 +150,9 @@ const codeRun = computed(() => {
   const t = tool.value;
   if (!t || meta.value?.family !== "run" || meta.value.label !== "Run") return null;
   const output = t.detail ?? "";
+  // OpenCode falls back to the call's title when a command printed nothing;
+  // that's the row's own text, not output.
+  if (output.trim() === t.text.trim()) return null;
   if (status.value === "running" && isToolInput(output)) return null;
   if (status.value !== "running" && parseTestTally(output)) return { output };
   const lines = status.value === "error" ? errorLines(output) : outputTail(output);
