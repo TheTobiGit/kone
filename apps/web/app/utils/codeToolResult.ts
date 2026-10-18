@@ -40,18 +40,37 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
   if (!body || isToolInput(body)) return null;
   // Codex's whole-text fallback (`--- before` / `+++ after`) isn't a diff: its
   // lines say nothing about what changed, so it keeps the plain row.
-  if (/^(--- before|\+\+\+ after)$/m.test(body)) return null;
+  if (/^(--- before|\+\+\+ after)\n/.test(body) && !/^(diff --git |@@ )/m.test(body)) return null;
   let added = 0;
   let removed = 0;
   const preview: DiffLine[] = [];
   const lines = body.split("\n");
+  // Lines still owed to the current `@@` hunk: inside one, every line is
+  // content, even a `--- `/`+++ ` pair that would read as a file header.
+  let oldLeft = 0;
+  let newLeft = 0;
   for (const [i, line] of lines.entries()) {
-    if (/^(diff --git |index [0-9a-f]+\.\.|@@ )/.test(line)) continue;
-    // A file header is a `--- ` line followed by a `+++ ` one. A changed line
-    // whose own text starts with `--` or `++` (a markdown rule) is still a change.
-    if (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ ")) continue;
-    if (line.startsWith("+++ ") && lines[i - 1]?.startsWith("--- ")) continue;
+    const hunk = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      oldLeft = Number(hunk[1] ?? 1);
+      newLeft = Number(hunk[2] ?? 1);
+      continue;
+    }
+    const inHunk = oldLeft > 0 || newLeft > 0;
+    if (!inHunk) {
+      if (/^(diff --git |index [0-9a-f]+\.\.|@@ )/.test(line)) continue;
+      // Outside a hunk, a file header is a `--- ` line followed by a `+++ `
+      // one; a lone changed line starting `--` or `++` is still a change.
+      if (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ ")) continue;
+      if (line.startsWith("+++ ") && lines[i - 1]?.startsWith("--- ")) continue;
+    }
     const sign = line[0];
+    if (sign === "-") oldLeft--;
+    else if (sign === "+") newLeft--;
+    else if (sign === " " || line === "") {
+      oldLeft--;
+      newLeft--;
+    }
     if (sign !== "+" && sign !== "-") continue;
     if (sign === "+") added++;
     else removed++;
@@ -80,7 +99,7 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
     const hit = /^([^\s:][^:]*?):(\d+):(.*)$/.exec(line);
     if (hit) {
       fileOf(hit[1]!).matches.push({ line: Number(hit[2]), text: hit[3]!.trim() });
-    } else if (/^[\w@.~/-]+\.[\w-]+$/.test(line)) {
+    } else if (/^[\w@.~/-]+(?: [\w@.~/-]+)*\.[\w-]+$/.test(line)) {
       fileOf(line);
     }
   }
@@ -100,12 +119,12 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   };
   const passed = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
   const failed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
-  if (passed === null && failed === null) return null;
-  const skipped = count(/\b(\d+)\s+(?:skip|skipped|pending)\b/i) ?? 0;
+  const skipped = count(/\b(\d+)\s+(?:skip|skipped|pending)\b/i);
+  if (passed === null && failed === null && skipped === null) return null;
   // The run's own time comes last; a runner prints each test's time before it.
   const times = [...body.matchAll(/\[(\d+(?:\.\d+)?m?s)\]|\bin (\d+(?:\.\d+)?m?s)\b/g)];
   const time = times.at(-1);
-  return { passed: passed ?? 0, failed: failed ?? 0, skipped, time: time ? (time[1] ?? time[2]!) : null };
+  return { passed: passed ?? 0, failed: failed ?? 0, skipped: skipped ?? 0, time: time ? (time[1] ?? time[2]!) : null };
 }
 
 /** The last few lines a command printed. */

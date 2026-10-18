@@ -29,6 +29,10 @@ describe("parseDiffSummary", () => {
     expect(parseDiffSummary("+++ after\nnew file")).toBeNull();
   });
 
+  test("still reads a real diff that changes a `-- before` line", () => {
+    expect(parseDiffSummary("@@ -1,1 +1,1 @@\n--- before\n+++ after")).toMatchObject({ added: 1, removed: 1 });
+  });
+
   test("ignores a call's streamed input and a body with no changes", () => {
     expect(parseDiffSummary('{"file_path":"a.ts","old_string":"-x"}')).toBeNull();
     expect(parseDiffSummary("Edit applied successfully.")).toBeNull();
@@ -47,6 +51,10 @@ describe("parseSearchMatches", () => {
 
   test("reads a glob's bare paths", () => {
     expect(parseSearchMatches("src/a.ts\nsrc/b.vue").map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
+  });
+
+  test("reads a glob's paths with spaces in them", () => {
+    expect(parseSearchMatches("src/My Component.vue").map((f) => f.path)).toEqual(["src/My Component.vue"]);
   });
 
   test("reads nothing from prose", () => {
@@ -81,6 +89,10 @@ describe("parseTestTally", () => {
   test("takes vitest's test totals over its file totals", () => {
     const out = " Test Files  1 passed (1)\n      Tests  40 passed (40)\n   Duration  1.20s";
     expect(parseTestTally(out)).toMatchObject({ passed: 40, failed: 0 });
+  });
+
+  test("counts a run where every test was skipped", () => {
+    expect(parseTestTally("Tests:       4 skipped, 4 total")).toMatchObject({ passed: 0, failed: 0, skipped: 4 });
   });
 
   test("is null for output that isn't a test run", () => {
