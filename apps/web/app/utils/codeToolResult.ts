@@ -47,13 +47,13 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
   const body = detail?.replace(/^\s*\n|\n\s*$/g, "");
   if (!body || isToolInput(body)) return null;
   // Codex's whole-text fallback (`--- before` / `+++ after`) isn't a diff: its
-  // lines say nothing about what changed, so it keeps the plain row. Its raw
-  // text (and the blank line between the halves) is what tells it apart from a
-  // bare hunk whose first lines happen to be `-- before` and `++ after`.
-  // A bare hunk has no headers to skip: every line in it is content.
+  // lines say nothing about what changed, so it keeps the plain row. A one-sided
+  // fallback (a created or deleted file) can look exactly like a bare hunk, so
+  // the marker decides; a bare hunk whose first removed line is `-- before`
+  // loses its trail, which is the rarer case.
   const unified = /^(diff --git |@@ )/m.test(body);
-  const fallback = /^(--- before|\+\+\+ after)\n/.test(body) && !unified && /^(?![+\- ])/m.test(body);
-  if (fallback) return null;
+  if (/^(--- before|\+\+\+ after)\n/.test(body) && !unified) return null;
+  // A bare hunk has no headers to skip: every line in it is content.
   let added = 0;
   let removed = 0;
   const preview: DiffLine[] = [];
@@ -158,11 +158,16 @@ export function parseTestTally(output: string | undefined): TestTally | null {
     const m = re.exec(summary);
     return m ? Number(m[1]) : null;
   };
-  const passed = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
+  // pytest's `xpassed` ran and passed; its `xfailed` failed as expected, so it
+  // isn't a failure, and counts with the tests that didn't count.
+  const xpassed = count(/\b(\d+)\s+xpassed\b/i);
+  const xfailed = count(/\b(\d+)\s+xfailed\b/i);
+  const plain = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
+  const passed = plain === null && xpassed === null ? null : (plain ?? 0) + (xpassed ?? 0);
   const failed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
   // Jest can print `1 skipped, 2 todo` on one line; neither ran, so both count.
   const notRun = [...summary.matchAll(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/gi)];
-  const skipped = notRun.length ? notRun.reduce((n, m) => n + Number(m[1]), 0) : null;
+  const skipped = notRun.length || xfailed !== null ? notRun.reduce((n, m) => n + Number(m[1]), 0) + (xfailed ?? 0) : null;
   if (passed === null && failed === null && skipped === null) return null;
   // The run's own time comes last; a runner prints each test's time before it.
   // Jest writes `Time:        2.1 s`, with a space before the unit; Vitest
