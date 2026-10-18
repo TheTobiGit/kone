@@ -153,6 +153,7 @@ describe("parseTestTally", () => {
     const bun = "log: 1 passed\nlog: 2 skipped\n✓ a\n 12 pass\n 1 skip\n 0 fail\nRan 13 tests across 1 file. [40ms]";
     expect(parseTestTally(bun)).toMatchObject({ passed: 12, failed: 0, skipped: 1 });
     expect(parseTestTally("  3 passing (5ms)\n  1 pending\n  1 failing")).toMatchObject({ passed: 3, failed: 1, skipped: 1 });
+    expect(parseTestTally("  1 failed\n    [chromium] › a.spec.ts:3:1 › x\n  1 skipped\n  2 passed (3.2s)")).toMatchObject({ passed: 2, failed: 1, skipped: 1 });
     expect(parseTestTally("saw 1 passed earlier\n===== 4 passed, 1 skipped in 0.20s =====")).toMatchObject({ passed: 4, skipped: 1 });
   });
 
