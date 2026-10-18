@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { sanitizeTerminalHistory, sanitizeTerminalHistoryChunk } from "./sanitize.js";
+import { sanitizeTerminalHistoryChunk } from "./sanitize.js";
 
 // The sanitizer is pure over (pending, chunk) pairs — every test asserts the
 // full contract: what's kept in visibleText and what's held back as pending.
@@ -279,7 +279,7 @@ describe("sanitizeTerminalHistoryChunk", () => {
   });
 });
 
-describe("sanitizeTerminalHistory", () => {
+describe("complete history chunks", () => {
   test("one-shot full-buffer sanitization", () => {
     const history =
       "prompt$ ls\n" +
@@ -289,12 +289,12 @@ describe("sanitizeTerminalHistory", () => {
       "\x1bP+q\x1b\\" +
       "\x1b]11;rgb:0f0f0f\x1b\\" +
       "\x1b]0;kone\x07";
-    expect(sanitizeTerminalHistory(history)).toBe(
+    expect(sanitizeTerminalHistoryChunk("", history).visibleText).toBe(
       "prompt$ ls\n\x1b[31mfile\x1b[0m\n\x1b]0;kone\x07",
     );
   });
 
   test("empty input", () => {
-    expect(sanitizeTerminalHistory("")).toBe("");
+    expect(sanitizeTerminalHistoryChunk("", "").visibleText).toBe("");
   });
 });

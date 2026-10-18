@@ -48,13 +48,6 @@ export function segText(seg: Segment): string {
     .trim();
 }
 
-// Some models never surface their reasoning — the turn carries a thinking marker
-// but no text. There's nothing to reveal, so such a segment renders as a bare
-// label with no disclosure (no chevron, no expand/collapse).
-export function thinkHasContent(seg: Segment): boolean {
-  return segText(seg).length > 0;
-}
-
 export function toolCalls(seg: Segment): RuntimeItem[] {
   return seg.items.filter((i) => i.kind === "tool_call");
 }

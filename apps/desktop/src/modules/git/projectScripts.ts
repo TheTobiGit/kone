@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { killProcessTree } from "@kone/git-core/processTree.js";
 
 // Per-project scripts: the setup command run once after a worktree is built,
 // and the settle command run when a thread settles. Both are the user's own
@@ -56,17 +57,34 @@ export function runProjectScript(input: ProjectScriptRunInput): Promise<ProjectS
       cwd: input.cwd,
       env: input.env ?? process.env,
       windowsHide: true,
+      // Timeout must reach commands forked by the login shell as well. Their
+      // inherited stdout/stderr otherwise keep `close` pending after it dies.
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     let combined = "";
     let timedOut = false;
+    let escalationTimer: ReturnType<typeof setTimeout> | null = null;
+    const stop = (signal: "SIGTERM" | "SIGKILL") => {
+      if (child.pid === undefined) return;
+      if (process.platform === "win32") {
+        killProcessTree(child.pid, signal);
+      } else {
+        try {
+          process.kill(-child.pid, signal);
+        } catch {
+          // The process group may already have exited.
+        }
+      }
+    };
     const timer =
       input.timeoutMs && input.timeoutMs > 0
         ? setTimeout(() => {
             timedOut = true;
-            child.kill("SIGTERM");
+            stop("SIGTERM");
             // A process that ignores SIGTERM gets a hard stop shortly after.
-            setTimeout(() => child.kill("SIGKILL"), 5_000).unref?.();
+            escalationTimer = setTimeout(() => stop("SIGKILL"), 5_000);
+            escalationTimer.unref?.();
           }, input.timeoutMs)
         : null;
     timer?.unref?.();
@@ -79,10 +97,16 @@ export function runProjectScript(input: ProjectScriptRunInput): Promise<ProjectS
     child.stderr.on("data", (buf: Buffer) => collect(buf.toString()));
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
+      if (escalationTimer) clearTimeout(escalationTimer);
       reject(err);
     });
     child.on("close", (code, signal) => {
       if (timer) clearTimeout(timer);
+      // Redirected descendants may keep running after the shell has closed
+      // all its pipes. Finish timeout cleanup synchronously before settling;
+      // leaving a delayed group kill behind could target a later reused id.
+      if (timedOut) stop("SIGKILL");
+      if (escalationTimer) clearTimeout(escalationTimer);
       resolve({ code, signal, output: tailOutput(combined), timedOut });
     });
   });

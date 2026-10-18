@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { discoverSkills } from "./skills.js";
+import { discoverPlugins, discoverSkills } from "./skills.js";
 
 // discoverSkills reads the REAL homedir for the user-scope roots, so every
 // fixture lives in a temp project tree and each skill name derives from its
@@ -89,7 +89,7 @@ describe("discoverSkills shadowing", () => {
     writeSkill(path.join(project, ".agents", "skills", name), `name: ${name}`);
     writeSkill(path.join(root, ".claude", "skills", name), `name: ${name}`);
 
-    // v1 stable MAX_PROJECT_ANCESTORS=1 — only the given project dir scanned.
+    // Only the given project dir is scanned.
     const { skills } = await discoverSkills(project);
     const matches = skills.filter((s) => s.name === name);
     expect(matches).toHaveLength(1);
@@ -110,22 +110,28 @@ describe("discoverSkills shadowing", () => {
     expect(winner.enabled).toBe(true);
   });
 
-  test("shadowedBy caps at 8 entries (v1: max 1 loser for claude+agents)", async () => {
-    const project = makeProject();
-    const name = `cap-${path.basename(project)}`;
-    // v1 stable: 1 ancestor × 2 origins = 2 copies; dedupe yields 1 winner + 1 loser.
-    writeSkill(path.join(project, ".claude", "skills", name), `name: ${name}`);
-    writeSkill(path.join(project, ".agents", "skills", name), `name: ${name}`);
+  test("shadowedBy caps at 8 while every losing copy remains available", async () => {
+    const root = makeProject();
+    const name = `cap-${path.basename(root)}`;
+    const projects = Array.from({ length: 11 }, (_, index) => path.join(root, String(index)));
+    for (const project of projects) {
+      writeSkill(path.join(project, ".claude", "skills", name), `name: ${name}`);
+    }
 
-    const winner = await findSkill(name, project);
-    expect(winner).not.toBeNull();
-    if (!winner) return;
-    expect(winner.shadowedBy).toHaveLength(1);
-    expect(winner.shadowedBy[0]).toEqual({
-      origin: "agents",
+    const { skills, shadowed } = await discoverSkills(projects);
+    const winner = skills.find((skill) => skill.name === name);
+    expect(winner).toBeDefined();
+    expect(winner!.shadowedBy).toEqual(projects.slice(1, 9).map((project) => ({
+      origin: "claude",
       scope: "project",
-      path: path.join(project, ".agents", "skills", name, "SKILL.md"),
-    });
+      path: path.join(project, ".claude", "skills", name, "SKILL.md"),
+    })));
+    const losers = shadowed.filter((skill) => skill.name === name);
+    expect(losers).toHaveLength(10);
+    expect(losers.map((skill) => skill.path)).toEqual(projects.slice(1).map((project) =>
+      path.join(project, ".claude", "skills", name, "SKILL.md"),
+    ));
+    expect(losers.every((skill) => skill.shadowedByWinner?.path === winner!.path)).toBe(true);
   });
 });
 
@@ -248,5 +254,49 @@ describe("discoverSkills agents", () => {
     expect(winner.description).toBe("Agents project skill");
     expect(winner.displayName).toBe("Agents Test");
     expect(winner.enabled).toBe(true);
+  });
+});
+
+
+describe("discoverPlugins", () => {
+  test("retains Claude plugin skills through the live grouped inventory", async () => {
+    const home = makeProject();
+    const pluginsRoot = path.join(home, ".claude", "plugins");
+    const plugin = path.join(pluginsRoot, "installed", "reviewer");
+    writeSkill(path.join(plugin, "skills", "review"), "name: review");
+    writeFileSync(path.join(pluginsRoot, "installed_plugins.json"), JSON.stringify({
+      reviewer: { installPath: plugin },
+    }));
+
+    const errors: Array<{ source: string; message: string }> = [];
+    const plugins = await discoverPlugins(home, errors);
+    expect(errors).toEqual([]);
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0]!.name).toBe("reviewer");
+    expect(plugins[0]!.skills.map((skill) => ({ name: skill.name, scope: skill.scope })))
+      .toEqual([{ name: "review", scope: "plugin" }]);
+  });
+
+  test("retains Factory marketplace skills through the live grouped inventory", async () => {
+    const home = makeProject();
+    const factory = path.join(home, ".factory");
+    const marketplace = path.join(factory, "marketplace");
+    mkdirSync(path.join(factory, "plugins"), { recursive: true });
+    mkdirSync(path.join(marketplace, ".factory-plugin"), { recursive: true });
+    writeFileSync(path.join(factory, "plugins", "known_marketplaces.json"), JSON.stringify({
+      local: { installLocation: "marketplace" },
+    }));
+    writeFileSync(path.join(marketplace, ".factory-plugin", "marketplace.json"), JSON.stringify({
+      plugins: [{ name: "reviewer", source: "reviewer" }],
+    }));
+    writeSkill(path.join(marketplace, "reviewer", "skills", "review"), "name: review");
+
+    const errors: Array<{ source: string; message: string }> = [];
+    const plugins = await discoverPlugins(home, errors);
+    expect(errors).toEqual([]);
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0]!.origin).toBe("factory");
+    expect(plugins[0]!.skills.map((skill) => ({ name: skill.name, scope: skill.scope })))
+      .toEqual([{ name: "review", scope: "plugin" }]);
   });
 });
