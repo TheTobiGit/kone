@@ -83,6 +83,16 @@ export function parseDiffSummary(detail: string | undefined): DiffSummary | null
   return { added, removed, preview: preview.map((l) => ({ ...l, text: l.text.slice(indent) })) };
 }
 
+/** A glob's result line: any path a filesystem allows (`Dockerfile`,
+ *  `app/[id]/page.tsx`, `src/My Component.vue`), but not the summary or
+ *  "nothing found" prose a tool prints around them. */
+function isBarePath(line: string): boolean {
+  if (!line || /^\s/.test(line) || /: |\t/.test(line) || /[.!?]$/.test(line)) return false;
+  if (/^(no|found|showing|searched|\(|\d+\s+(files?|matches|results?)\b)/i.test(line)) return false;
+  // A path with spaces still has a directory in it; a lone word is a filename.
+  return line.includes("/") || !/\s/.test(line);
+}
+
 /** A search's `file:line:text` results (or a glob's bare paths), grouped by file
  *  in the order the files first appear. */
 export function parseSearchMatches(detail: string | undefined): SearchFile[] {
@@ -99,8 +109,9 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
     const hit = /^([^\s:][^:]*?):(\d+):(.*)$/.exec(line);
     if (hit) {
       fileOf(hit[1]!).matches.push({ line: Number(hit[2]), text: hit[3]!.trim() });
-    } else if (/^[\w@.~/-]+(?: [\w@.~/-]+)*\.[\w-]+$/.test(line)) {
-      fileOf(line);
+    } else if (isBarePath(line)) {
+      // A count-mode search prints `path:N`; the path is the file.
+      fileOf(line.replace(/:\d+$/, ""));
     }
   }
   return [...files.values()];

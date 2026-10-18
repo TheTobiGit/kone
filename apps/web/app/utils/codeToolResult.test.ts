@@ -57,8 +57,18 @@ describe("parseSearchMatches", () => {
     expect(parseSearchMatches("src/My Component.vue").map((f) => f.path)).toEqual(["src/My Component.vue"]);
   });
 
+  test("reads a count-mode search's paths", () => {
+    expect(parseSearchMatches("src/a.ts:3\nsrc/b.vue:1").map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
+  });
+
+  test("reads extensionless and bracketed glob paths", () => {
+    expect(parseSearchMatches("Dockerfile\napp/[id]/page.tsx").map((f) => f.path)).toEqual(["Dockerfile", "app/[id]/page.tsx"]);
+  });
+
   test("reads nothing from prose", () => {
     expect(parseSearchMatches("No matches found")).toEqual([]);
+    expect(parseSearchMatches("No files found in src/app")).toEqual([]);
+    expect(parseSearchMatches("Found 3 files")).toEqual([]);
   });
 });
 
