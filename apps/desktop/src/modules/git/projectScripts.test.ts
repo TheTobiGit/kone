@@ -93,6 +93,29 @@ describe("runProjectScript", () => {
     }
   });
 
+  test("settles when a descendant in its own session keeps the pipes open", async () => {
+    let descendantPid: number | null = null;
+    try {
+      const startedAt = Date.now();
+      const result = await runProjectScript({
+        cwd,
+        command: `perl -e 'use POSIX; setsid(); exec @ARGV' sleep 30 & echo $!; wait`,
+        timeoutMs: 150,
+      });
+      descendantPid = Number(result.output.trim());
+      expect(result.timedOut).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(8_000);
+    } finally {
+      if (descendantPid !== null && Number.isInteger(descendantPid) && descendantPid > 0) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  }, 10_000);
+
   test("treats a blank command as a no-op", async () => {
     const result = await runProjectScript({ cwd, command: "   " });
     expect(result).toEqual({ code: 0, signal: null, output: "", timedOut: false });

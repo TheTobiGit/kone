@@ -83,7 +83,14 @@ export function runProjectScript(input: ProjectScriptRunInput): Promise<ProjectS
             timedOut = true;
             stop("SIGTERM");
             // A process that ignores SIGTERM gets a hard stop shortly after.
-            escalationTimer = setTimeout(() => stop("SIGKILL"), 5_000);
+            escalationTimer = setTimeout(() => {
+              stop("SIGKILL");
+              // A descendant that left the group (setsid, a daemonizer) is out
+              // of reach and may still hold our pipes; stop reading so `close`
+              // can follow the shell's exit instead of waiting on it forever.
+              child.stdout.destroy();
+              child.stderr.destroy();
+            }, 5_000);
             escalationTimer.unref?.();
           }, input.timeoutMs)
         : null;
