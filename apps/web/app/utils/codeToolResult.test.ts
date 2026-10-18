@@ -35,6 +35,8 @@ describe("parseDiffSummary", () => {
 
   test("still reads a real diff that changes a `-- before` line", () => {
     expect(parseDiffSummary("@@ -1,1 +1,1 @@\n--- before\n+++ after")).toMatchObject({ added: 1, removed: 1 });
+    expect(parseDiffSummary("--- before\n+++ after")).toMatchObject({ added: 1, removed: 1 });
+    expect(parseDiffSummary(" a\n--- old\n+++ new\n b")).toMatchObject({ added: 1, removed: 1 });
   });
 
   test("ignores a call's streamed input and a body with no changes", () => {
@@ -119,6 +121,10 @@ describe("parseTestTally", () => {
   test("reads jest and pytest summaries", () => {
     expect(parseTestTally("Tests:       1 failed, 2 skipped, 40 passed, 43 total")).toMatchObject({ passed: 40, failed: 1, skipped: 2 });
     expect(parseTestTally("===== 3 failed, 97 passed in 4.20s =====")).toMatchObject({ passed: 97, failed: 3, time: "4.20s" });
+  });
+
+  test("adds up skipped and todo tests", () => {
+    expect(parseTestTally("Tests:       1 skipped, 2 todo, 3 passed, 6 total")).toMatchObject({ passed: 3, skipped: 3 });
   });
 
   test("counts todo and ignored tests as skipped", () => {
