@@ -95,6 +95,7 @@ describe("parseSearchMatches", () => {
     ]);
     const flat = parseSearchMatches("src/a.ts-1-before it\nsrc/a.ts:2:hit\nsrc/a.ts-3-after the hit\n--\nsrc/c.ts:7:more");
     expect(flat.map((f) => f.path)).toEqual(["src/a.ts", "src/c.ts"]);
+    expect(parseSearchMatches("src/foo-1-bar.ts-1-before\nsrc/foo-1-bar.ts:2:hit").map((f) => f.path)).toEqual(["src/foo-1-bar.ts"]);
   });
 
   test("reads a count-mode search's paths", () => {

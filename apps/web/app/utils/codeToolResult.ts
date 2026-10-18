@@ -141,8 +141,8 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
     // Under a heading, `N-text` is context only if the cluster has a match row;
     // a glob's list can hold a `2024-report.md` of its own.
     if (heading && /^\d+-/.test(line) && clusterHasRow(i)) continue;
-    const context = /^(.+?)-\d+-/.exec(line);
-    if (context && hitPaths.has(context[1]!)) continue;
+    // Matched against the known paths, since a path can hold `-N-` itself.
+    if ([...hitPaths].some((p) => line.startsWith(`${p}-`) && /^\d+-/.test(line.slice(p.length + 1)))) continue;
     const row = heading ? /^(\d+):(.*)$/.exec(line) : null;
     if (heading && row) {
       heading.matches.push({ line: Number(row[1]), text: row[2]!.trim() });
