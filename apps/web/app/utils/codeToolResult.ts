@@ -182,7 +182,15 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   // Cargo prints one `test result:` line per test binary (unit, integration,
   // doc), so the run's tally is all of them added up.
   const cargo = body.match(/^test result:.*$/gm);
-  const summaries = cargo ?? [/^\s*Tests:?\s.*$/m.exec(body)?.[0] ?? body];
+  // Otherwise only the runner's own summary counts, never a phrase a test
+  // printed: Jest's `Tests:` line; bun's and mocha's count-first lines
+  // (` 12 pass`, `  3 passing (5ms)`); else the last line naming an outcome,
+  // which is where pytest puts its `=== 2 passed in 0.1s ===`.
+  const outcome = /\b\d+\s+(?:pass|passed|passing|xpassed|fail|failed|failing|errors?|skip|skipped|pending|todo|ignored|xfailed)\b/i;
+  const jest = /^\s*Tests:?\s.*$/m.exec(body)?.[0];
+  const countLines = body.match(/^\s*\d+\s+(?:pass|fail|skip|todo|passing|failing|pending)\b.*$/gm);
+  const lastOutcome = body.split("\n").findLast((l) => outcome.test(l));
+  const summaries = cargo ?? (jest ? [jest] : (countLines ?? (lastOutcome ? [lastOutcome] : [])));
   // The first count `re` finds in each summary (every one, with `every`),
   // added up; null when no summary has one.
   const sum = (re: RegExp, every = false): number | null => {

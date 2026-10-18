@@ -149,6 +149,13 @@ describe("parseTestTally", () => {
     expect(parseTestTally(out)).toMatchObject({ passed: 4, failed: 1, skipped: 1 });
   });
 
+  test("counts only the runner's summary, not what a test printed", () => {
+    const bun = "log: 1 passed\nlog: 2 skipped\n✓ a\n 12 pass\n 1 skip\n 0 fail\nRan 13 tests across 1 file. [40ms]";
+    expect(parseTestTally(bun)).toMatchObject({ passed: 12, failed: 0, skipped: 1 });
+    expect(parseTestTally("  3 passing (5ms)\n  1 pending\n  1 failing")).toMatchObject({ passed: 3, failed: 1, skipped: 1 });
+    expect(parseTestTally("saw 1 passed earlier\n===== 4 passed, 1 skipped in 0.20s =====")).toMatchObject({ passed: 4, skipped: 1 });
+  });
+
   test("adds up skipped and todo tests", () => {
     expect(parseTestTally("Tests:       1 skipped, 2 todo, 3 passed, 6 total")).toMatchObject({ passed: 3, skipped: 3 });
   });
