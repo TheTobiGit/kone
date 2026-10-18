@@ -34,13 +34,14 @@ export function isToolInput(body: string | undefined): boolean {
   }
 }
 
-/** A shell call's own input (`{"command": …}`), left as its body when the
- *  command finished without printing anything. It's the input only when its
- *  `command` is the call's own (`title`); JSON the command printed isn't. */
+/** A shell call's own input (`{"command": …}`, `{"CommandLine": …}`), left as
+ *  its body when the command finished without printing anything. Providers
+ *  name the field differently, so it's the input when any top-level field is
+ *  the call's own command (`title`); JSON the command printed isn't. */
 export function isCommandInput(body: string | undefined, title: string): boolean {
-  if (!isToolInput(body)) return false;
+  if (!isToolInput(body) || !title.trim()) return false;
   const value: unknown = JSON.parse(body!.trim());
-  return value instanceof Object && "command" in value && String(value.command).trim() === title.trim();
+  return value instanceof Object && Object.values(value).some((v) => String(v).trim() === title.trim());
 }
 
 function stripAnsi(s: string): string {
