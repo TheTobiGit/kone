@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { errorLines, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "./codeToolResult";
+import { errorLines, isCommandInput, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "./codeToolResult";
 
 describe("parseDiffSummary", () => {
   test("counts a unified hunk and keeps its first changed lines", () => {
@@ -199,5 +199,13 @@ describe("output lines", () => {
   test("error lines prefer the ones naming an error", () => {
     const out = "src/x.vue\n  482:11  error  'toolsLive' is defined but never used\n\n✖ 1 problem (1 error, 0 warnings)";
     expect(errorLines(out)).toEqual(["482:11  error  'toolsLive' is defined but never used", "✖ 1 problem (1 error, 0 warnings)"]);
+  });
+});
+
+describe("isCommandInput", () => {
+  test("knows a shell call's input from JSON it printed", () => {
+    expect(isCommandInput('{"command":"mkdir -p out","description":"Make dir"}')).toBe(true);
+    expect(isCommandInput('{"name":"kone","scripts":{"test":"bun test"}}')).toBe(false);
+    expect(isCommandInput("done")).toBe(false);
   });
 });

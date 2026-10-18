@@ -34,6 +34,15 @@ export function isToolInput(body: string | undefined): boolean {
   }
 }
 
+/** A shell call's own input (`{"command": …}`), left as its body when the
+ *  command finished without printing anything. Real stdout that happens to be
+ *  JSON (`cat package.json`) has no top-level `command` string. */
+export function isCommandInput(body: string | undefined): boolean {
+  if (!isToolInput(body)) return false;
+  const value: unknown = JSON.parse(body!.trim());
+  return value instanceof Object && "command" in value && String(value.command) === value.command;
+}
+
 function stripAnsi(s: string): string {
   // oxlint-disable-next-line no-control-regex -- ANSI escapes are control characters by definition
   return s.replace(/\u001b\[[0-9;]*m/g, "");
