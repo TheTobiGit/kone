@@ -12,7 +12,11 @@ export type ProcessInspectionResult =
   | { state: "unknown" };
 export type ProcessInspection = (pid: number) => Promise<ProcessInspectionResult>;
 export type ProcessKiller = (pgid: number, signal: NodeJS.Signals) => void;
-export type ProcessGroupMembersInspection = (pgid: number) => Promise<ProcessIdentity[] | undefined>;
+/** Live members of a group. `onlyZombiesRemain` marks a group the listing saw
+ *  with nothing but zombies left in it: nothing can run there any more, even
+ *  though the group still answers a signal probe until they are reaped. */
+export type ProcessGroupMembers = ProcessIdentity[] & { onlyZombiesRemain?: boolean };
+export type ProcessGroupMembersInspection = (pgid: number) => Promise<ProcessGroupMembers | undefined>;
 export type ProcessGroupProbe = (pgid: number) => ProcessGroupInspection;
 export type ProcessMarkerInspection = "marked" | "unmarked" | "gone" | "unknown";
 export type ProcessEnvironmentInspector = (pid: number, marker: string) => Promise<ProcessMarkerInspection>;
@@ -61,14 +65,15 @@ export function inspectProcessStartTime(pid: number): Promise<ProcessInspectionR
   });
 }
 
-export function inspectProcessGroupMembers(pgid: number): Promise<ProcessIdentity[] | undefined> {
+export function inspectProcessGroupMembers(pgid: number): Promise<ProcessGroupMembers | undefined> {
   return new Promise((resolve) => {
     execFile("ps", ["-axo", "pid=,pgid=,lstart=,comm=,stat="], { encoding: "utf8", timeout: PROCESS_INSPECTION_TIMEOUT_MS }, (error, stdout) => {
       if (error) {
         resolve(undefined);
         return;
       }
-      const members: ProcessIdentity[] = [];
+      const members: ProcessGroupMembers = [];
+      let zombies = 0;
       for (const line of String(stdout).split("\n")) {
         const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
         const pid = match?.[1];
@@ -80,8 +85,10 @@ export function inspectProcessGroupMembers(pgid: number): Promise<ProcessIdentit
           resolve(undefined);
           return;
         }
-        if (!row.zombie) members.push(row.identity);
+        if (row.zombie) zombies += 1;
+        else members.push(row.identity);
       }
+      if (members.length === 0 && zombies > 0) members.onlyZombiesRemain = true;
       resolve(members);
     });
   });
@@ -340,7 +347,9 @@ export class OpenCodeServerLedger {
   private async inspectMarkedGroupMembers(entry: OpenCodeServerLedgerEntry): Promise<{ state: "known"; members: ProcessIdentity[] } | { state: "unknown" }> {
     const members = await this.inspectGroupMembers(entry.pgid);
     if (!members) return { state: "unknown" };
-    if (members.length === 0) return this.probeGroup(entry.pgid) === "gone" ? { state: "known", members: [] } : { state: "unknown" };
+    // An empty listing for a group that still answers the probe is unproven,
+    // unless the listing saw that only zombies hold the group open.
+    if (members.length === 0) return members.onlyZombiesRemain || this.probeGroup(entry.pgid) === "gone" ? { state: "known", members: [] } : { state: "unknown" };
     if (!entry.marker) return { state: "known", members: [] };
     const marked: ProcessIdentity[] = [];
     for (const member of members) {

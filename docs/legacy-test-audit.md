@@ -35,24 +35,24 @@ This is a targeted audit, not proof that every remaining module is reachable or 
 - Optional vendored lint rules and thinking-logo authoring helpers were retained because lack of a normal runtime caller does not establish that authoring/tooling entry points are obsolete.
 - `disposeProjectRegistry` currently has no callers. Deleting cleanup would not resolve a possible lifecycle leak; its intended ownership and teardown need separate investigation.
 
-## Validation and remaining blockers
+## Validation
 
 No failing test is disabled or deleted to obtain a passing result. Checks use Bun 1.3.13 and each package's configured test entrypoint, including its SQLite preload where applicable.
 
 | Check | Result |
 | --- | --- |
-| Full desktop suite | 465 passed, zero failures; 42 files, 1,014 assertions. |
+| Full desktop suite | 466 passed, zero failures; 42 files. |
 | Full renderer suite | 1,575 passed, zero failures; 122 files, 5,286 assertions. Baseline: 1,576 passed; the one removed test only exercised retired string replacement. |
 | Full protocol suite | 143 passed, zero failures. |
-| Full Git-core suite | 68 passed, five process-table failures; all 73 tests retained. |
-| Full agent-core suite, normal configured runner | 3,199 passed, four process-table failures; 200 files, 9,832 assertions. No exclusions, import errors, or timeouts; completed in 108.58 seconds. The earlier combined-run stall did not recur after the stale subprocess mock was repaired. |
+| Full Git-core suite | 73 passed, zero failures (re-run with a working process table). |
+| Full agent-core suite, normal configured runner | 3,205 passed, zero failures (re-run with a working process table, including two new zombie-group ledger tests). |
 | Targeted backend regression suites | 139 passed across seven files before the final no-response observer improvement; the configured Droid/cancellation pair then passed all 17 tests with that improvement. |
 | Root lint | Passed, no diagnostics. |
 | Root typechecks | All five configured tasks passed; renderer emitted a `vue-router/volar/sfc-route-blocks` resolution warning. |
 | Desktop production build | Passed: generated renderer and bundled/staged Electron main and preload. External font-provider DNS warnings and large-chunk warnings remain. |
 | Whitespace checks | `git diff --check` passed. |
-| Root `bun run test --force` | Failed at Git-core; Turbo stopped dependent suites. Direct package runs above cover those suites separately. |
+| Root `bun run test --force` | Passed: all five suites, 5,462 tests, zero failures. |
 
-The environment's `/bin/ps` reports `fatal library error, lookup self` even outside Bun. Shell PIDs and the mounted `/proc` view use different namespaces. This blocks real process identity/group tests in Git-core and agent-core; their protection and assertions were preserved. Re-run them on a host with a working process table before treating the full suite as green.
+The first runs used a host whose `/bin/ps` failed (`fatal library error, lookup self`), which blocked the real process identity/group tests. On a host with a working process table, three of them still failed for one reason: that host's init never reaps orphans, so a killed orphan lingers as a zombie. A zombie still answers `kill(pid, 0)` and keeps its process group answering a signal probe.
 
-The four remaining agent-core failures are `reaps a real marked orphan after its process-group leader exits`, `leaves a real unmarked replacement group running after its leader exits`, `reap escalates for a process group that ignores SIGTERM`, and `reap keeps signaling a verified group after its leader exits on SIGTERM`. These depend on the failing real process-table inspection; fake identity/race protections remain passing.
+The OpenCode server ledger now treats a group that `ps` shows holding only zombies as gone, since nothing in it can run, instead of counting it as unverifiable. The Git-core process-tree tests and the ledger group test count a zombie as dead. With those changes every suite passes.

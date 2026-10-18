@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { killProcessGroup, createOpenCodeServerMarker, inspectProcessMarker, OpenCodeServerLedger, type ProcessIdentity } from "./opencodeServerLedger.js";
+import { killProcessGroup, createOpenCodeServerMarker, inspectProcessMarker, OpenCodeServerLedger, type ProcessGroupMembers, type ProcessIdentity } from "./opencodeServerLedger.js";
 
 const originalLeader: ProcessIdentity = { pid: 41000, startTime: "old-server-start", command: "opencode" };
 const originalMember: ProcessIdentity = { pid: 41001, startTime: "old-worker-start", command: "opencode-worker" };
@@ -153,6 +153,23 @@ test("expires leaderless entries after repeated unverifiable marker inspections"
   } finally {
     console.warn = originalWarn;
   }
+}));
+
+test("drops a leaderless entry whose group only zombies still hold open", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 41950, pgid: 41950, marker: "zombie-marker", unverifiableAttempts: 0 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const zombieOnly: ProcessGroupMembers = Object.assign([], { onlyZombiesRemain: true });
+  const ledger = new OpenCodeServerLedger(file, async () => ({ state: "gone" }), undefined, async () => zombieOnly, () => "alive", async () => "unknown");
+  await ledger.reap();
+  expect(ledger.snapshot()).toEqual([]);
+}));
+
+test("keeps a leaderless entry whose live group lists no members", async () => withLedger(async (file) => {
+  const entry = { ...originalLeader, pid: 41951, pgid: 41951, marker: "unlisted-marker", unverifiableAttempts: 0 };
+  writeFileSync(file, JSON.stringify([entry]));
+  const ledger = new OpenCodeServerLedger(file, async () => ({ state: "gone" }), undefined, async () => [], () => "alive", async () => "unknown");
+  await ledger.reap();
+  expect(ledger.snapshot()).toEqual([{ ...entry, unverifiableAttempts: 1 }]);
 }));
 
 test("escalates to current leaderless members after a member execs", async () => withLedger(async (file) => {
