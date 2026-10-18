@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { errorLines, isToolInput, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "./codeToolResult";
+import { errorLines, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "./codeToolResult";
 
 describe("parseDiffSummary", () => {
   test("counts a unified hunk and keeps its first changed lines", () => {
@@ -86,7 +86,9 @@ describe("parseSearchMatches", () => {
   });
 
   test("reads a count-mode search's paths", () => {
-    expect(parseSearchMatches("src/a.ts:3\nsrc/b.vue:1").map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
+    const files = parseSearchMatches("src/a.ts:3\nsrc/b.vue:1");
+    expect(files.map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
+    expect(files.map(matchCount)).toEqual([3, 1]);
   });
 
   test("reads extensionless and bracketed glob paths", () => {
@@ -117,6 +119,11 @@ describe("parseTestTally", () => {
   test("reads jest and pytest summaries", () => {
     expect(parseTestTally("Tests:       1 failed, 2 skipped, 40 passed, 43 total")).toMatchObject({ passed: 40, failed: 1, skipped: 2 });
     expect(parseTestTally("===== 3 failed, 97 passed in 4.20s =====")).toMatchObject({ passed: 97, failed: 3, time: "4.20s" });
+  });
+
+  test("counts todo and ignored tests as skipped", () => {
+    expect(parseTestTally("Tests:       1 todo, 2 passed, 3 total")).toMatchObject({ passed: 2, skipped: 1 });
+    expect(parseTestTally("test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured")).toMatchObject({ passed: 5, failed: 0, skipped: 2 });
   });
 
   test("takes jest's test totals over its suite totals", () => {

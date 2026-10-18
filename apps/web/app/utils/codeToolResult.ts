@@ -8,7 +8,13 @@ export type DiffLine = { sign: "+" | "-"; text: string };
 export type DiffSummary = { added: number; removed: number; preview: DiffLine[] };
 
 export type SearchMatch = { line: number | null; text: string };
-export type SearchFile = { path: string; matches: SearchMatch[] };
+/** `count` is set when the search printed only a per-file tally (`path:N`). */
+export type SearchFile = { path: string; matches: SearchMatch[]; count?: number };
+
+/** How many matches a search found in a file, whether it listed them or counted them. */
+export function matchCount(f: SearchFile): number {
+  return f.count ?? f.matches.length;
+}
 
 export type TestTally = { passed: number; failed: number; skipped: number; time: string | null };
 
@@ -127,8 +133,10 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
       fileOf(hit[1]!).matches.push({ line: Number(hit[2]), text: hit[3]!.trim() });
       heading = null;
     } else if (isBarePath(line)) {
-      // A count-mode search prints `path:N`; the path is the file.
-      heading = fileOf(line.replace(/:\d+$/, ""));
+      // A count-mode search prints `path:N`: the path is the file, N its matches.
+      const tally = /^(.*):(\d+)$/.exec(line);
+      heading = fileOf(tally ? tally[1]! : line);
+      if (tally) heading.count = (heading.count ?? 0) + Number(tally[2]);
     }
   }
   return [...files.values()];
@@ -147,7 +155,7 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   };
   const passed = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
   const failed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
-  const skipped = count(/\b(\d+)\s+(?:skip|skipped|pending)\b/i);
+  const skipped = count(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/i);
   if (passed === null && failed === null && skipped === null) return null;
   // The run's own time comes last; a runner prints each test's time before it.
   // Jest writes `Time:        2.1 s`, with a space before the unit; Vitest

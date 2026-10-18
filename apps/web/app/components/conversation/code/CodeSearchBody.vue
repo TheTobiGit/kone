@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import FileIcon from "~/components/file/FileIcon.vue";
 import TrailBranch from "~/components/conversation/trail/TrailBranch.vue";
-import type { SearchFile } from "~/utils/codeToolResult";
+import { matchCount, type SearchFile } from "~/utils/codeToolResult";
 
 // A search through the code, grown off the rail like the web trail: each file
 // it landed in is a branch with its own face and how many lines matched, and
@@ -58,8 +58,8 @@ function toggleMore(): void {
         <FileIcon class="csrch__face" :path="f.path" :size="14" />
         <span class="csrch__name">{{ split(f.path).name }}</span>
         <span v-if="split(f.path).dir" class="csrch__dir">{{ split(f.path).dir }}</span>
-        <span v-if="f.matches.length" class="csrch__count">
-          {{ f.matches.length }} {{ f.matches.length === 1 ? "match" : "matches" }}
+        <span v-if="matchCount(f)" class="csrch__count">
+          {{ matchCount(f) }} {{ matchCount(f) === 1 ? "match" : "matches" }}
         </span>
       </div>
       <p v-if="f.matches[0]" class="csrch__hit">
