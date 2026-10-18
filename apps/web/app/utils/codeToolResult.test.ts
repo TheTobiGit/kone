@@ -93,7 +93,7 @@ describe("parseSearchMatches", () => {
       ["src/a.ts", [2, 9]],
       ["src/b.ts", [4]],
     ]);
-    const flat = parseSearchMatches("src/a.ts:2:hit\nsrc/a.ts-3-after the hit\n--\nsrc/c.ts:7:more");
+    const flat = parseSearchMatches("src/a.ts-1-before it\nsrc/a.ts:2:hit\nsrc/a.ts-3-after the hit\n--\nsrc/c.ts:7:more");
     expect(flat.map((f) => f.path)).toEqual(["src/a.ts", "src/c.ts"]);
   });
 
@@ -140,6 +140,7 @@ describe("parseTestTally", () => {
   test("counts pytest errors as failures, but not a compiler's", () => {
     expect(parseTestTally("===== 1 failed, 2 passed, 1 error in 0.30s =====")).toMatchObject({ passed: 2, failed: 2 });
     expect(parseTestTally("Found 3 errors.\n 4 pass\n 0 fail")).toMatchObject({ passed: 4, failed: 0 });
+    expect(parseTestTally("===== 1 error in 0.16s =====")).toMatchObject({ passed: 0, failed: 1 });
   });
 
   test("adds up every cargo test binary", () => {
