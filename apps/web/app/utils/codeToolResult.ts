@@ -121,12 +121,25 @@ export function parseSearchMatches(detail: string | undefined): SearchFile[] {
   // `rg --heading` prints a file's path once, then its `line:text` rows under it
   // until a blank line.
   let heading: SearchFile | null = null;
-  for (const raw of body.split("\n")) {
-    const line = stripAnsi(raw).trimEnd();
+  const lines = body.split("\n").map((raw) => stripAnsi(raw).trimEnd());
+  const clusterHasRow = (from: number): boolean => {
+    for (let j = from - 1; j >= 0 && lines[j]; j--) if (/^\d+:/.test(lines[j]!)) return true;
+    for (let j = from + 1; j < lines.length && lines[j]; j++) if (/^\d+:/.test(lines[j]!)) return true;
+    return false;
+  };
+  for (const [i, line] of lines.entries()) {
     if (!line) {
       heading = null;
       continue;
     }
+    // `-C` context: `--` between clusters, and `N-text` (or `path-N-text`
+    // without headings) around the matches. Neither is a file or a match.
+    if (line === "--") continue;
+    // Under a heading, `N-text` is context only if the cluster has a match row;
+    // a glob's list can hold a `2024-report.md` of its own.
+    if (heading && /^\d+-/.test(line) && clusterHasRow(i)) continue;
+    const context = /^(.+?)-\d+-/.exec(line);
+    if (context && files.has(context[1]!)) continue;
     const row = heading ? /^(\d+):(.*)$/.exec(line) : null;
     if (heading && row) {
       heading.matches.push({ line: Number(row[1]), text: row[2]!.trim() });
@@ -153,25 +166,32 @@ export function parseTestTally(output: string | undefined): TestTally | null {
   if (!body.trim()) return null;
   // Jest and Vitest print a suite or file line (`Test Suites:`, `Test Files`)
   // before their `Tests` line; the tests are the tally.
-  const summary = /^\s*Tests:?\s.*$/m.exec(body)?.[0] ?? body;
-  const count = (re: RegExp): number | null => {
-    const m = re.exec(summary);
-    return m ? Number(m[1]) : null;
+  // Cargo prints one `test result:` line per test binary (unit, integration,
+  // doc), so the run's tally is all of them added up.
+  const cargo = body.match(/^test result:.*$/gm);
+  const summaries = cargo ?? [/^\s*Tests:?\s.*$/m.exec(body)?.[0] ?? body];
+  // The first count `re` finds in each summary (every one, with `every`),
+  // added up; null when no summary has one.
+  const sum = (re: RegExp, every = false): number | null => {
+    let total: number | null = null;
+    for (const text of summaries) {
+      const found = every ? [...text.matchAll(new RegExp(re.source, "gi"))] : [re.exec(text)].filter((m) => m !== null);
+      for (const m of found) total = (total ?? 0) + Number(m[1]);
+    }
+    return total;
   };
+  const add = (...counts: (number | null)[]): number | null =>
+    counts.every((n) => n === null) ? null : counts.reduce<number>((t, n) => t + (n ?? 0), 0);
   // pytest's `xpassed` ran and passed; its `xfailed` failed as expected, so it
   // isn't a failure, and counts with the tests that didn't count.
-  const xpassed = count(/\b(\d+)\s+xpassed\b/i);
-  const xfailed = count(/\b(\d+)\s+xfailed\b/i);
-  const plain = count(/\b(\d+)\s+(?:pass|passed|passing)\b/i);
-  const passed = plain === null && xpassed === null ? null : (plain ?? 0) + (xpassed ?? 0);
+  const passed = add(sum(/\b(\d+)\s+(?:pass|passed|passing)\b/i), sum(/\b(\d+)\s+xpassed\b/i));
   // pytest counts setup and collection errors apart from failures, on its
   // summary line; an `N errors` anywhere else is a compiler's, not a test's.
-  const errored = /^.*\b\d+\s+(?:passed|failed)\b.*$/m.exec(summary)?.[0].match(/\b(\d+)\s+errors?\b/i);
-  const plainFailed = count(/\b(\d+)\s+(?:fail|failed|failing)\b/i);
-  const failed = plainFailed === null && !errored ? null : (plainFailed ?? 0) + Number(errored?.[1] ?? 0);
+  const errorLine = /^.*\b\d+\s+(?:passed|failed)\b.*$/m.exec(summaries.join("\n"))?.[0];
+  const errored = errorLine ? /\b(\d+)\s+errors?\b/i.exec(errorLine) : null;
+  const failed = add(sum(/\b(\d+)\s+(?:fail|failed|failing)\b/i), errored ? Number(errored[1]) : null);
   // Jest can print `1 skipped, 2 todo` on one line; neither ran, so both count.
-  const notRun = [...summary.matchAll(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/gi)];
-  const skipped = notRun.length || xfailed !== null ? notRun.reduce((n, m) => n + Number(m[1]), 0) + (xfailed ?? 0) : null;
+  const skipped = add(sum(/\b(\d+)\s+(?:skip|skipped|pending|todo|ignored)\b/i, true), sum(/\b(\d+)\s+xfailed\b/i));
   if (passed === null && failed === null && skipped === null) return null;
   // The run's own time comes last; a runner prints each test's time before it.
   // Jest writes `Time:        2.1 s`, with a space before the unit; Vitest

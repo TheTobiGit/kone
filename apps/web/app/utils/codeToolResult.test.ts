@@ -87,6 +87,16 @@ describe("parseSearchMatches", () => {
     expect(parseSearchMatches("notes/a.md\n2024-report.md").map((f) => f.path)).toEqual(["notes/a.md", "2024-report.md"]);
   });
 
+  test("skips context rows and cluster separators", () => {
+    const heading = parseSearchMatches("src/a.ts\n1-before\n2:hit\n3-after\n--\n9:again\n\nsrc/b.ts\n4:other");
+    expect(heading.map((f) => [f.path, f.matches.map((m) => m.line)])).toEqual([
+      ["src/a.ts", [2, 9]],
+      ["src/b.ts", [4]],
+    ]);
+    const flat = parseSearchMatches("src/a.ts:2:hit\nsrc/a.ts-3-after the hit\n--\nsrc/c.ts:7:more");
+    expect(flat.map((f) => f.path)).toEqual(["src/a.ts", "src/c.ts"]);
+  });
+
   test("reads a count-mode search's paths", () => {
     const files = parseSearchMatches("src/a.ts:3\nsrc/b.vue:1");
     expect(files.map((f) => f.path)).toEqual(["src/a.ts", "src/b.vue"]);
@@ -130,6 +140,11 @@ describe("parseTestTally", () => {
   test("counts pytest errors as failures, but not a compiler's", () => {
     expect(parseTestTally("===== 1 failed, 2 passed, 1 error in 0.30s =====")).toMatchObject({ passed: 2, failed: 2 });
     expect(parseTestTally("Found 3 errors.\n 4 pass\n 0 fail")).toMatchObject({ passed: 4, failed: 0 });
+  });
+
+  test("adds up every cargo test binary", () => {
+    const out = "test result: ok. 1 passed; 0 failed; 0 ignored\n\ntest result: FAILED. 2 passed; 1 failed; 1 ignored\n\ntest result: ok. 1 passed; 0 failed; 0 ignored";
+    expect(parseTestTally(out)).toMatchObject({ passed: 4, failed: 1, skipped: 1 });
   });
 
   test("adds up skipped and todo tests", () => {
