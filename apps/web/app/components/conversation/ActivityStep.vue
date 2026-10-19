@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -9,6 +9,8 @@ import ActivityStepDetail from "~/components/conversation/ActivityStepDetail.vue
 import ActivityThemeReceipt from "~/components/conversation/ActivityThemeReceipt.vue";
 import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
+import WebSearchBody from "~/components/conversation/web/WebSearchBody.vue";
+import WebFetchBody from "~/components/conversation/web/WebFetchBody.vue";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -18,7 +20,18 @@ import {
   toolMeta,
   toolPhraseParts,
   toolStatus,
+  toolTargetRaw,
 } from "~/utils/toolPresentation";
+import {
+  WEB_TRAIL,
+  fetchTargetUrl,
+  isWebFetchTool,
+  isWebSearchTool,
+  parseWebPage,
+  parseWebSearchHits,
+  type WebRead,
+  type WebTrail,
+} from "~/utils/webToolResult";
 
 // One row of the Agent Activity feed — a single thinking segment or tool call.
 // Icon → label (with inline file/site chips) → status → a chevron that slides a
@@ -72,6 +85,37 @@ const hasThemeBody = computed(() => namedTheme.value && status.value === "done")
 /** The palette the row wears inline: where the window ended up. */
 const rowColors = computed(() => (hasThemeBody.value ? toColors.value : null));
 
+// ── web rows ────────────────────────────────────────────────────────────────
+// A web call shows what it did instead of hiding it behind the chevron: a
+// search grows the pages it found off the rail, and the ones the agent opens
+// keep what they said underneath. A fetch of one of those hits is already told
+// there, so its own row steps aside; a page fetched on its own grows the same
+// branch under its row. A failed call, or a result that can't be read, keeps
+// the plain row.
+
+const webTrail = inject(WEB_TRAIL, ref<WebTrail>({ reads: new Map(), absorbed: new Set() }));
+const webReads = computed(() => webTrail.value.reads.get(props.entry.key) ?? new Map<string, WebRead>());
+
+const webSearch = computed(() => {
+  const t = tool.value;
+  if (!t || !isWebSearchTool(t.name) || status.value === "error") return null;
+  const hits = parseWebSearchHits(t.detail);
+  const query = toolTargetRaw(t);
+  if (!query || (status.value !== "running" && !hits.length)) return null;
+  return { query, hits };
+});
+
+const webFetch = computed(() => {
+  const t = tool.value;
+  if (!t || !isWebFetchTool(t.name) || status.value === "error") return null;
+  const url = fetchTargetUrl(toolTargetRaw(t));
+  const page = parseWebPage(t.detail);
+  if (!url || (status.value !== "running" && !page)) return null;
+  return { url, page };
+});
+
+const hasWebBody = computed(() => webSearch.value !== null || webFetch.value !== null);
+
 // A thinking row discloses only when the model actually surfaced reasoning; a
 // tool row discloses only when it carries a result body — or a change of its own
 // to show, which is a body no provider sends.
@@ -79,7 +123,7 @@ const hasThinkingBody = computed(() => isThinking.value && !!props.thinkingText?
 // An appearance call's own body replaces its result text rather than joining it:
 // the detail IS the record the palette was read from, so showing both would
 // print the data under the picture of itself.
-const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value);
+const hasToolBody = computed(() => !!tool.value?.detail && !hasThemeBody.value && !hasWebBody.value);
 const clickable = computed(() => hasThinkingBody.value || hasToolBody.value || hasThemeBody.value);
 
 const hue = computed(() => (isThinking.value ? thinkingOrbHue() : meta.value?.hue));
@@ -132,6 +176,11 @@ function toggle(): void {
         <template v-if="isThinking">
           {{ streaming ? "Thinking…" : `Thought for ${thinkingDuration ?? 1}s` }}
         </template>
+        <!-- A search reads as a sentence, its query quoted in ink -->
+        <template v-else-if="webSearch">
+          {{ status === "running" ? "Searching the web for" : "Searched the web for" }}
+          <span class="astep__query" :class="{ 'astep__query--live': status === 'running' }">“{{ webSearch.query }}”</span>
+        </template>
         <!-- Tool phrase, with inline chips for files / folders / sites -->
         <template v-else-if="tool">
           <template v-for="(part, pi) in toolPhraseParts(tool)" :key="pi">
@@ -167,6 +216,9 @@ function toggle(): void {
         :label="toTheme?.label"
       />
 
+      <span v-if="webSearch && webSearch.hits.length" class="astep__meta">
+        {{ webSearch.hits.length }} {{ webSearch.hits.length === 1 ? "result" : "results" }}
+      </span>
       <span v-if="status === 'error'" class="astep__err">failed</span>
       <HugeiconsIcon
         v-if="clickable"
@@ -177,6 +229,21 @@ function toggle(): void {
         :class="{ 'astep__chev--open': open }"
       />
     </component>
+
+    <div v-if="hasWebBody" class="astep__web">
+      <WebSearchBody
+        v-if="webSearch"
+        :running="status === 'running'"
+        :hits="webSearch.hits"
+        :reads="webReads"
+      />
+      <WebFetchBody
+        v-else-if="webFetch"
+        :url="webFetch.url"
+        :running="status === 'running'"
+        :page="webFetch.page"
+      />
+    </div>
 
     <div v-if="clickable" class="astep__body" :class="{ 'astep__body--open': open }">
       <div class="astep__body-inner">
@@ -311,6 +378,47 @@ function toggle(): void {
   min-height: 0;
   padding-left: 24px;
 }
+.astep__web {
+  position: relative;
+  z-index: 1;
+}
+/* The query, quoted in ink. While the search is out a light runs through it. */
+.astep__query {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.astep__query--live {
+  background: linear-gradient(
+    90deg,
+    var(--ink) 0%,
+    var(--ink) 38%,
+    color-mix(in oklab, var(--hue, var(--muted)) 80%, var(--ground)) 50%,
+    var(--ink) 62%,
+    var(--ink) 100%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: astep-shimmer 1.8s linear infinite;
+}
+@keyframes astep-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+.astep__meta {
+  flex: none;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .astep__think-wrap {
   margin: 2px 0 8px;
   padding: 8px 12px;
@@ -328,6 +436,9 @@ function toggle(): void {
   margin-bottom: 0;
 }
 @media (prefers-reduced-motion: reduce) {
+  .astep__query--live {
+    animation: none;
+  }
   .astep__chev,
   .astep__body {
     transition: none;
