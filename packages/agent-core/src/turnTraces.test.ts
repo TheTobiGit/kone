@@ -41,4 +41,41 @@ describe("turnTraces", () => {
     const [trace] = turnTraces({ listTurnUsage: () => [row({ model: "no-such-model-xyz" })] }, "t");
     expect(trace?.costUsd).toBeNull();
   });
+
+  test("a running-total provider's turn is its step from the turn before", () => {
+    const traces = turnTraces(
+      {
+        listTurnUsage: () => [
+          row({ turnId: "turn-1", provider: "codex", inputTokens: 1000, outputTokens: 200, totalTokens: 1200, at: 1 }),
+          row({ turnId: "turn-2", provider: "codex", inputTokens: 2500, outputTokens: 500, totalTokens: 3000, at: 2 }),
+        ],
+      },
+      "t",
+    );
+    expect(traces[0]?.inputTokens).toBe(1000);
+    expect(traces[1]?.inputTokens).toBe(1500);
+    expect(traces[1]?.outputTokens).toBe(300);
+    expect(traces[1]?.totalTokens).toBe(1800);
+  });
+
+  test("a running total that fell is read as that turn's own", () => {
+    const traces = turnTraces(
+      {
+        listTurnUsage: () => [
+          row({ turnId: "turn-1", provider: "codex", inputTokens: 5000, at: 1 }),
+          row({ turnId: "turn-2", provider: "codex", inputTokens: 800, at: 2 }),
+        ],
+      },
+      "t",
+    );
+    expect(traces[1]?.inputTokens).toBe(800);
+  });
+
+  test("a per-turn provider's rows are left as they are", () => {
+    const traces = turnTraces(
+      { listTurnUsage: () => [row({ turnId: "turn-1", at: 1 }), row({ turnId: "turn-2", at: 2 })] },
+      "t",
+    );
+    expect(traces[1]?.inputTokens).toBe(1000);
+  });
 });
