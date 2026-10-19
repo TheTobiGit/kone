@@ -8,14 +8,15 @@ import { useModalExit } from "~/composables/useModalExit";
 import type { AssistantBlock, UserBlock } from "~/composables/agentTypes";
 import type { TurnTraceRecord } from "~/types/desktop";
 import { desktopBridge } from "~/utils/desktopBridge";
+import { TRACE_TONES, type TraceTokenKind } from "~/utils/traceTones";
 
 // A request's trace: what it cost and what carried it, opened over the thread
 // from the request itself. It grows out of the bubble and shrinks back into
 // it, like every card in kone, so the conversation stays put under the scrim.
 //
-// The card leads with the turn's size and price, then pictures: a grid of a
-// hundred cells for where the tokens went, itemized beneath it, and a track
-// for how the time was spent. The date and thread sit quietly in the foot band.
+// The card quotes the request, leads with the turn's size and price, then
+// shows where the tokens went as one proportional bar, itemized beneath it.
+// The date and thread sit quietly in the foot band.
 // It is the request's trace, so who answered (model, provider, effort) stays
 // in the data for the response's trace and isn't drawn here.
 //
@@ -72,8 +73,8 @@ const total = computed(() => trace.value?.totalTokens ?? input.value + output.va
  *  labelled one — no provider reports a single message's share. */
 const ownTokens = computed(() => Math.max(1, Math.round(props.block.text.length / 4)));
 
-// ── where the tokens went: a hundred cells ──────────────────────────────────
-type Kind = "cached" | "written" | "fresh" | "output" | "reasoning";
+// ── where the tokens went: one bar ──────────────────────────────────────────
+type Kind = TraceTokenKind;
 type Part = { kind: Kind; label: string; tokens: number };
 const parts = computed<Part[]>(() =>
   (
@@ -88,61 +89,13 @@ const parts = computed<Part[]>(() =>
 );
 const partTotal = computed(() => parts.value.reduce((sum, p) => sum + p.tokens, 0));
 
-const CELLS = 100;
-/** Each part's share of the hundred cells, by largest remainder, with every
- *  part that has tokens keeping at least one cell so nothing real vanishes. */
-const cells = computed<Kind[]>(() => {
-  const sum = partTotal.value;
-  if (!sum) return [];
-  const raw = parts.value.map((p) => (p.tokens / sum) * CELLS);
-  const counts = raw.map((r) => Math.max(1, Math.floor(r)));
-  let left = CELLS - counts.reduce((a, b) => a + b, 0);
-  const order = raw.map((r, i) => ({ i, rem: r - Math.floor(r) })).sort((a, b) => b.rem - a.rem);
-  for (let k = 0; left > 0; k = (k + 1) % order.length, left -= 1) counts[order[k]!.i]! += 1;
-  for (let k = order.length - 1; left < 0; k = (k - 1 + order.length) % order.length) {
-    const i = order[k]!.i;
-    if (counts[i]! > 1) {
-      counts[i]! -= 1;
-      left += 1;
-    }
-  }
-  return parts.value.flatMap((p, i) => Array.from({ length: counts[i]! }, () => p.kind));
-});
-/** The cell that stands for the words typed: the first cell of new input,
- *  where a request's text lands in the prompt. */
-const ownCell = computed(() => cells.value.indexOf("fresh"));
-
-/** The row under the pointer; the grid dims every other kind. */
+/** The row under the pointer; the bar dims every other kind. */
 const focus = ref<Kind | null>(null);
 
-// ── how the time went: a track ──────────────────────────────────────────────
-const clock = (at: number) =>
-  new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+// ── when ───────────────────────────────────────────────────────────────────
 const sentDate = computed(() =>
   new Date(props.block.at).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }),
 );
-
-/** How long the request sat in the queue before its turn started. Under a
- *  second is the send itself, not a wait. */
-const waitMs = computed(() => {
-  if (!props.reply || props.block.steered) return 0;
-  const ms = props.reply.at - props.block.at;
-  return ms >= 1000 ? ms : 0;
-});
-const workMs = computed(() => {
-  const r = props.reply;
-  if (!r) return 0;
-  return Math.max(0, (r.endedAt ?? Date.now()) - Math.max(r.at, props.block.at));
-});
-
-const outcome = computed(() => {
-  const r = props.reply;
-  if (!r) return { label: "Not started", tone: "idle" };
-  if (r.state === "running") return { label: "Answering", tone: "live" };
-  if (r.state === "failed") return { label: "Failed", tone: "bad" };
-  if (r.state === "interrupted") return { label: "Stopped", tone: "idle" };
-  return { label: "Answered", tone: "ok" };
-});
 
 const attachments = computed(() => props.block.attachments?.length ?? 0);
 const skills = computed(() => props.block.skills?.map((s) => s.name) ?? []);
@@ -160,25 +113,10 @@ function share(tokens: number): string {
   return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
 }
 
-function duration(ms: number): string {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
-}
-
 // ── the palette ─────────────────────────────────────────────────────────────
-// Five token kinds, one hue each, validated against the card's own surface in
-// both schemes (CVD separation and lightness band), so they are steps of the
-// same five hues rather than a flip.
 const { scheme } = useTheme();
-const TONES = {
-  light: { cached: "#2a9d8f", written: "#d9952b", fresh: "#3f6fd1", output: "#d97757", reasoning: "#8a63d2" },
-  dark: { cached: "#21a08f", written: "#bd801c", fresh: "#5580e0", output: "#d8704f", reasoning: "#9277e0" },
-} satisfies Record<"light" | "dark", Record<Kind, string>>;
 const tones = computed(() => {
-  const t = TONES[scheme.value === "dark" ? "dark" : "light"];
+  const t = TRACE_TONES[scheme.value === "dark" ? "dark" : "light"];
   return {
     "--t-cached": t.cached,
     "--t-written": t.written,
@@ -299,21 +237,20 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- Where the tokens went: one cell per percent. -->
-            <section class="tr-sec" aria-labelledby="tr-where">
-              <h3 id="tr-where" class="tr-sec__h">Where the tokens went</h3>
+            <!-- Where the tokens went: one bar, each kind its share of it. -->
+            <section class="tr-sec" aria-label="Where the tokens went">
               <div
-                class="waffle"
-                :class="{ 'waffle--focus': focus }"
+                class="bar"
+                :class="{ 'bar--focus': focus }"
                 role="img"
                 :aria-label="parts.map((p) => `${p.label} ${formatCount(p.tokens)}`).join(', ')"
               >
                 <i
-                  v-for="(kind, i) in cells"
-                  :key="i"
-                  class="cell"
-                  :class="[`cell--${kind}`, { 'cell--on': focus === kind, 'cell--own': i === ownCell }]"
-                  :style="{ '--i': i }"
+                  v-for="(p, i) in parts"
+                  :key="p.kind"
+                  class="seg"
+                  :class="[`k--${p.kind}`, { 'is-on': focus === p.kind }]"
+                  :style="{ flexGrow: p.tokens, '--i': i }"
                 />
               </div>
               <ul class="rows">
@@ -327,52 +264,18 @@ onBeforeUnmount(() => {
                   @focus="focus = p.kind"
                   @blur="focus = null"
                 >
-                  <i class="row__dot" :class="`cell--${p.kind}`" />
+                  <i class="row__dot" :class="`k--${p.kind}`" aria-hidden="true" />
                   <span class="row__k">{{ p.label }}</span>
                   <span class="row__v">{{ formatCount(p.tokens) }}</span>
                   <span class="row__pct">{{ share(p.tokens) }}</span>
                 </li>
               </ul>
               <p class="tr-own">
-                <i v-if="ownCell >= 0" class="tr-own__mark" aria-hidden="true" />
-                <span>
-                  Your words were about <b>{{ formatCount(ownTokens) }}</b> of the {{ formatTokens(input) }} tokens
-                  sent<template v-if="ownCell >= 0">, the ringed cell</template>. The rest is the thread so far,
-                  instructions and tool results.
-                </span>
+                Your words were about <b>{{ formatCount(ownTokens) }}</b> of the {{ formatTokens(input) }} tokens sent.
+                The rest is the thread so far, instructions and tool results.
               </p>
             </section>
           </template>
-
-          <!-- How the time went. Shown with or without numbers: it needs none. -->
-          <section v-if="!loading" class="tr-sec" aria-labelledby="tr-time">
-            <h3 id="tr-time" class="tr-sec__h">How the time went</h3>
-            <div class="track">
-              <div class="track__stop">
-                <i class="track__dot" />
-                <span class="track__k">Sent</span>
-                <span class="track__v">{{ clock(block.at) }}</span>
-              </div>
-              <div v-if="waitMs" class="track__leg track__leg--wait" :style="{ flexGrow: Math.max(1, Math.sqrt(waitMs)) }">
-                <span class="track__line" />
-                <span class="track__d">queued {{ duration(waitMs) }}</span>
-              </div>
-              <div
-                v-if="reply"
-                class="track__leg track__leg--work"
-                :class="{ 'is-live': reply.state === 'running' }"
-                :style="{ flexGrow: Math.max(1, Math.sqrt(workMs)) }"
-              >
-                <span class="track__line" />
-                <span class="track__d">{{ reply.state === "running" ? "working" : "worked" }} {{ duration(workMs) }}</span>
-              </div>
-              <div class="track__stop track__stop--end">
-                <i class="track__dot" :class="`track__dot--${outcome.tone}`" />
-                <span class="track__k">{{ outcome.label }}</span>
-                <span v-if="reply?.endedAt" class="track__v">{{ clock(reply.endedAt) }}</span>
-              </div>
-            </div>
-          </section>
         </div>
 
         <!-- Foot band: when and where, quiet. -->
@@ -395,6 +298,8 @@ onBeforeUnmount(() => {
   /* Quiet text: --muted is too faint to read at 11px on the panel, so labels
      here mix ink into it until it clears 4.5:1. */
   --tr-quiet: color-mix(in srgb, var(--ink) 64%, var(--panel));
+  /* Focus rings: enough ink to clear 3:1 against the panel in both schemes. */
+  --tr-ring: color-mix(in srgb, var(--ink) 55%, var(--panel));
   position: relative;
   z-index: 1;
   width: min(620px, calc(100% - 32px));
@@ -436,6 +341,9 @@ onBeforeUnmount(() => {
   align-items: center;
   padding: 10px 16px;
   background-color: var(--band-bg);
+  /* The band is a shade darker than the panel, so its quiet text takes a
+     little more ink to keep 4.5:1. */
+  --tr-quiet-band: color-mix(in srgb, var(--ink) 70%, var(--band-bg));
 }
 .tr-band::before,
 .tr-band::after {
@@ -469,9 +377,9 @@ onBeforeUnmount(() => {
   flex: 1;
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--tr-quiet);
+  color: var(--tr-quiet-band);
 }
 .tr-close {
   display: inline-flex;
@@ -481,16 +389,18 @@ onBeforeUnmount(() => {
   height: 24px;
   margin-inline-end: -4px;
   border-radius: 8px;
-  color: var(--tr-quiet);
+  color: var(--tr-quiet-band);
   cursor: pointer;
   transition: background-color 0.14s ease, color 0.14s ease;
 }
-.tr-close:hover {
-  background: var(--hover);
-  color: var(--ink);
+@media (hover: hover) {
+  .tr-close:hover {
+    background: var(--hover);
+    color: var(--ink);
+  }
 }
 .tr-close:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline: 2px solid var(--tr-ring);
   outline-offset: 1px;
 }
 
@@ -547,8 +457,7 @@ onBeforeUnmount(() => {
   margin-inline: 2px;
   color: var(--faint);
 }
-.fig__k,
-.tr-sec__h {
+.fig__k {
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 500;
@@ -557,40 +466,36 @@ onBeforeUnmount(() => {
   color: var(--tr-quiet);
 }
 
-.tr-sec { margin-top: 28px; }
-.tr-sec__h { margin-bottom: 12px; }
+.tr-sec { margin-top: 26px; }
 
-/* ── waffle ── a hundred cells, each a percent of the turn, filled in order
-   so the kinds read as runs. */
-.waffle {
-  display: grid;
-  grid-template-columns: repeat(25, minmax(0, 1fr));
+/* ── bar ── the turn's tokens as one proportional bar, each kind its tone. */
+.bar {
+  display: flex;
   gap: 3px;
+  height: 10px;
 }
-.cell {
-  aspect-ratio: 1;
+.seg {
+  min-width: 4px;
   border-radius: 3px;
   background: var(--c);
-  animation: cell-in 380ms var(--tr-ease) backwards;
-  animation-delay: calc(80ms + var(--i, 0) * 6ms);
-  transition: opacity 0.2s ease, transform 0.2s var(--tr-ease);
+  transition: opacity 0.2s ease;
 }
-@keyframes cell-in {
-  from { opacity: 0; transform: scale(0.4); }
+@media (prefers-reduced-motion: no-preference) {
+  .seg {
+    transform-origin: left center;
+    animation: seg-in 520ms var(--tr-ease) backwards;
+    animation-delay: calc(120ms + var(--i, 0) * 60ms);
+  }
 }
-.cell--cached { --c: var(--t-cached); }
-.cell--written { --c: var(--t-written); }
-.cell--fresh { --c: var(--t-fresh); }
-.cell--output { --c: var(--t-output); }
-.cell--reasoning { --c: var(--t-reasoning); }
-.waffle--focus .cell:not(.cell--on) { opacity: 0.18; }
-.waffle--focus .cell--on { transform: scale(1.08); }
-/* The words typed: one cell, ringed. */
-.cell--own {
-  box-shadow:
-    0 0 0 2px var(--panel),
-    0 0 0 3.5px var(--ink);
+@keyframes seg-in {
+  from { transform: scaleX(0); opacity: 0; }
 }
+.k--cached { --c: var(--t-cached); }
+.k--written { --c: var(--t-written); }
+.k--fresh { --c: var(--t-fresh); }
+.k--output { --c: var(--t-output); }
+.k--reasoning { --c: var(--t-reasoning); }
+.bar--focus .seg:not(.is-on) { opacity: 0.2; }
 
 .rows {
   display: flex;
@@ -617,7 +522,7 @@ onBeforeUnmount(() => {
   .row:hover { background: var(--hover); }
 }
 .row:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline: 2px solid var(--tr-ring);
   outline-offset: 1px;
   background: var(--hover);
 }
@@ -637,10 +542,8 @@ onBeforeUnmount(() => {
 .row__v { color: var(--ink); }
 .row__pct { color: var(--tr-quiet); }
 .tr-own {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
   margin-top: 14px;
+  text-wrap: pretty;
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--tr-quiet);
@@ -648,96 +551,6 @@ onBeforeUnmount(() => {
 .tr-own b {
   font-weight: 500;
   color: var(--ink);
-}
-.tr-own__mark {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  transform: translateY(-1px);
-  background: var(--t-fresh);
-  box-shadow:
-    0 0 0 1.5px var(--panel),
-    0 0 0 2.5px var(--ink);
-}
-
-/* ── track ── sent, queued, worked, settled. */
-.track {
-  display: flex;
-  align-items: flex-start;
-}
-.track__stop {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-}
-.track__stop--end { align-items: flex-end; }
-.track__dot {
-  width: 9px;
-  height: 9px;
-  margin-bottom: 5px;
-  border-radius: 50%;
-  background: var(--ink-soft);
-}
-.track__dot--ok { background: var(--ok); }
-.track__dot--bad { background: var(--danger); }
-.track__dot--idle { background: var(--tr-quiet); }
-.track__dot--live {
-  background: var(--accent);
-  animation: live 1.4s ease-in-out infinite;
-}
-@keyframes live {
-  50% { opacity: 0.35; }
-}
-.track__k {
-  font-size: 12px;
-  color: var(--ink-soft);
-}
-.track__v {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--tr-quiet);
-}
-.track__leg {
-  flex: 1 1 0;
-  min-width: 56px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 7px;
-  padding: 3px 6px 0;
-}
-.track__line {
-  width: 100%;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--ink-soft);
-  transform-origin: left center;
-  animation: line-in 520ms var(--tr-ease) backwards 260ms;
-}
-@keyframes line-in {
-  from { transform: scaleX(0); }
-}
-.track__leg--wait .track__line {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--faint) 0 5px,
-    transparent 5px 9px
-  );
-}
-.track__leg--work .track__line { background: var(--t-output); }
-.track__leg--work.is-live .track__line {
-  background: linear-gradient(90deg, var(--t-output), color-mix(in srgb, var(--t-output) 25%, transparent));
-}
-.track__d {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--tr-quiet);
-  white-space: nowrap;
 }
 
 /* ── foot ── the facts, one quiet line. */
@@ -747,7 +560,7 @@ onBeforeUnmount(() => {
   min-height: 38px;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--tr-quiet);
+  color: var(--tr-quiet-band);
 }
 .fact {
   display: inline-flex;
@@ -760,6 +573,7 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   color: var(--ink-soft);
 }
+
 .tr-skeleton {
   display: grid;
   gap: 10px;
@@ -776,16 +590,17 @@ onBeforeUnmount(() => {
 
 @media (max-width: 520px) {
   .tr-body { padding: 18px 18px 22px; }
-  .waffle { grid-template-columns: repeat(20, minmax(0, 1fr)); }
   .fig__v { font-size: 26px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tr.is-in,
-  .tr.is-out { animation-duration: 0.01s; }
-  .cell,
-  .track__line,
-  .track__dot--live { animation: none; }
-  .waffle--focus .cell--on { transform: none; }
+  .tr.is-in { animation: tr-fade-in 200ms ease-out backwards; }
+  .tr.is-out { animation: tr-fade-out var(--modal-exit) ease-out forwards; }
+}
+@keyframes tr-fade-in {
+  from { opacity: 0; }
+}
+@keyframes tr-fade-out {
+  to { opacity: 0; }
 }
 </style>
