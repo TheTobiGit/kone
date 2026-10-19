@@ -145,8 +145,9 @@ function openTrace(): void {
 
 // While editing the footer is the edit's controls; otherwise it's the actions
 // row — but only when this style gives the footer the row (the head-seated
-// styles dock into the head or the command line instead).
-const showFoot = computed(() => props.block.text && (editing.value || props.acts === "foot"));
+// styles dock into the head or the command line instead). A request of only
+// attachments or skills still has a trace to open, so it keeps the row.
+const showFoot = computed(() => editing.value || props.acts === "foot");
 </script>
 
 <template>
@@ -158,7 +159,7 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
     <!-- Who asked — the styles that sit the request among the replies
          give it the same face-and-name head a reply has. -->
     <YouHead v-if="showHead" :stamp="headStamp">
-      <template v-if="acts === 'head' && !editing && block.text" #actions>
+      <template v-if="acts === 'head' && !editing" #actions>
         <TurnActions
           kind="you"
           :copied="copied"
@@ -326,7 +327,7 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
     </div>
     <!-- The chat's seat: beside the bubble, level with its time. -->
     <TurnActions
-      v-if="acts === 'side' && !editing && block.text"
+      v-if="acts === 'side' && !editing"
       class="side-acts"
       kind="you"
       :copied="copied"

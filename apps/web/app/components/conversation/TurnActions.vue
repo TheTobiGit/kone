@@ -46,7 +46,7 @@ const emit = defineEmits<{
 <template>
   <span class="turn-acts">
     <button
-      v-if="kind === 'you'"
+      v-if="kind === 'you' && canAct"
       type="button"
       class="act"
       data-tip="Edit"
