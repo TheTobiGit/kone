@@ -283,7 +283,9 @@ export class TranscriptRepo {
     try {
       // SAFETY: the projection names exactly the turn_usage columns this
       // schema creates, aliased to the record's camelCase fields. Rows written
-      // before provider and model were stamped fall back to the thread's.
+      // before provider and model were stamped keep them unknown: the thread's
+      // current pick may not be what answered an older turn, and a guess
+      // would price it at the wrong model's rates.
       const rows = db
         .prepare(
           `SELECT u.turn_id AS turnId,
@@ -293,11 +295,10 @@ export class TranscriptRepo {
                   u.cache_read_tokens AS cacheReadTokens,
                   u.cache_creation_tokens AS cacheCreationTokens,
                   u.reasoning_tokens AS reasoningTokens,
-                  COALESCE(u.provider, t.provider) AS provider,
-                  COALESCE(u.model, t.model) AS model,
+                  u.provider AS provider,
+                  u.model AS model,
                   u.at AS at
              FROM turn_usage u
-             LEFT JOIN threads t ON t.thread_id = u.thread_id
             WHERE u.thread_id = ?
             ORDER BY u.at ASC, u.turn_id ASC`,
         )

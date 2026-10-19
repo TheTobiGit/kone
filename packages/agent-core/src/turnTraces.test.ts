@@ -32,6 +32,11 @@ describe("turnTraces", () => {
     expect(trace?.costUsd).toBeNull();
   });
 
+  test("a turn whose model was never recorded has no cost", () => {
+    const [trace] = turnTraces({ listTurnUsage: () => [row({ model: null })] }, "t");
+    expect(trace?.costUsd).toBeNull();
+  });
+
   test("a model without a price has no cost", () => {
     const [trace] = turnTraces({ listTurnUsage: () => [row({ model: "no-such-model-xyz" })] }, "t");
     expect(trace?.costUsd).toBeNull();
