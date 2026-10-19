@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -11,6 +11,10 @@ import ThemeSwatch from "~/components/theme/ThemeSwatch.vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import WebSearchBody from "~/components/conversation/web/WebSearchBody.vue";
 import WebFetchBody from "~/components/conversation/web/WebFetchBody.vue";
+import CodeDiffBody from "~/components/conversation/code/CodeDiffBody.vue";
+import CodeSearchBody from "~/components/conversation/code/CodeSearchBody.vue";
+import CodeRunBody from "~/components/conversation/code/CodeRunBody.vue";
+import { errorLines, isCommandInput, isToolInput, matchCount, outputTail, parseDiffSummary, parseSearchMatches, parseTestTally } from "~/utils/codeToolResult";
 import { useThemeSummaryReading } from "~/composables/useThemeSummaryReading";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
@@ -116,6 +120,56 @@ const webFetch = computed(() => {
 
 const hasWebBody = computed(() => webSearch.value !== null || webFetch.value !== null);
 
+// ── code rows ───────────────────────────────────────────────────────────────
+// The same idea for the agent's work on the code: an edit grows the first lines
+// it changed, a search grows the files it landed in, and a command grows how it
+// came out. The whole result stays behind the chevron; these are what you'd
+// open it to check. A body none of the readers recognise keeps the plain row.
+
+const codeDiff = computed(() => {
+  const t = tool.value;
+  const label = meta.value?.label;
+  if (!t || (label !== "Edit" && label !== "Write") || status.value !== "done") return null;
+  return parseDiffSummary(t.detail);
+});
+
+const codeSearch = computed(() => {
+  const t = tool.value;
+  if (!t || meta.value?.family !== "search" || status.value !== "done") return null;
+  const files = parseSearchMatches(t.detail);
+  if (!files.length) return null;
+  // A target can carry its own note after the query ("useAgent · 6 matches").
+  const query = (toolTargetRaw(t).split(" · ")[0] ?? "").trim();
+  const matches = files.reduce((n, f) => n + matchCount(f), 0);
+  return { files, query, matches };
+});
+
+const codeRun = computed(() => {
+  const t = tool.value;
+  if (!t || meta.value?.family !== "run" || meta.value.label !== "Run") return null;
+  const output = t.detail ?? "";
+  // OpenCode falls back to the call's title when a command printed nothing;
+  // that's the row's own text, not output.
+  if (output.trim() === t.text.trim()) return null;
+  // While running, Claude streams the call's input JSON into its body a
+  // fragment at a time; a body opening an object is that input, whole or not.
+  if (status.value === "running" && (isToolInput(output) || /^\s*\{\s*"/.test(output))) return null;
+  // Claude leaves that input in place when a finished command printed nothing.
+  if (isCommandInput(output, t.text)) return null;
+  if (status.value !== "running" && parseTestTally(output)) return { output };
+  const lines = status.value === "error" ? errorLines(output) : outputTail(output);
+  return lines.length ? { output } : null;
+});
+
+const hasCodeBody = computed(() => codeDiff.value !== null || codeSearch.value !== null || codeRun.value !== null);
+
+// Only a result the reader watched land draws its branch in; one that was
+// already there when the row mounted (a reloaded thread) just shows.
+const landedLive = ref(false);
+watch(status, (now, before) => {
+  if (before === "running" && now !== "running") landedLive.value = true;
+});
+
 // A thinking row discloses only when the model actually surfaced reasoning; a
 // tool row discloses only when it carries a result body — or a change of its own
 // to show, which is a body no provider sends.
@@ -181,6 +235,11 @@ function toggle(): void {
           {{ status === "running" ? "Searching the web for" : "Searched the web for" }}
           <span class="astep__query" :class="{ 'astep__query--live': status === 'running' }">“{{ webSearch.query }}”</span>
         </template>
+        <!-- A finished code search reads the same way -->
+        <template v-else-if="codeSearch && codeSearch.query">
+          {{ meta?.label === "Glob" ? "Found files matching" : "Searched the code for" }}
+          <span class="astep__query">“{{ codeSearch.query }}”</span>
+        </template>
         <!-- Tool phrase, with inline chips for files / folders / sites -->
         <template v-else-if="tool">
           <template v-for="(part, pi) in toolPhraseParts(tool)" :key="pi">
@@ -219,6 +278,24 @@ function toggle(): void {
       <span v-if="webSearch && webSearch.hits.length" class="astep__meta">
         {{ webSearch.hits.length }} {{ webSearch.hits.length === 1 ? "result" : "results" }}
       </span>
+      <span v-if="codeDiff" class="astep__meta astep__delta">
+        <span v-if="codeDiff.added" class="astep__add"
+          ><span aria-hidden="true">+{{ codeDiff.added }}</span
+          ><span class="sr-only">{{ codeDiff.added }} {{ codeDiff.added === 1 ? "line" : "lines" }} added</span></span
+        >
+        <span v-if="codeDiff.removed" class="astep__del"
+          ><span aria-hidden="true">−{{ codeDiff.removed }}</span
+          ><span class="sr-only">{{ codeDiff.removed }} {{ codeDiff.removed === 1 ? "line" : "lines" }} removed</span></span
+        >
+      </span>
+      <span v-else-if="codeSearch" class="astep__meta">
+        <template v-if="codeSearch.matches">
+          {{ codeSearch.matches }} {{ codeSearch.matches === 1 ? "match" : "matches" }}
+        </template>
+        <template v-else>
+          {{ codeSearch.files.length }} {{ codeSearch.files.length === 1 ? "file" : "files" }}
+        </template>
+      </span>
       <span v-if="status === 'error'" class="astep__err">failed</span>
       <HugeiconsIcon
         v-if="clickable"
@@ -242,6 +319,22 @@ function toggle(): void {
         :url="webFetch.url"
         :running="status === 'running'"
         :page="webFetch.page"
+      />
+    </div>
+
+    <div v-if="hasCodeBody" class="astep__web">
+      <CodeDiffBody v-if="codeDiff" :diff="codeDiff" :enter="landedLive" />
+      <CodeSearchBody
+        v-else-if="codeSearch"
+        :files="codeSearch.files"
+        :query="codeSearch.query"
+        :enter="landedLive"
+      />
+      <CodeRunBody
+        v-else-if="codeRun"
+        :output="codeRun.output"
+        :state="status"
+        :enter="landedLive"
       />
     </div>
 
@@ -418,6 +511,18 @@ function toggle(): void {
   color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+.astep__delta {
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.astep__add {
+  color: var(--diff-add);
+}
+.astep__del {
+  color: var(--diff-del);
 }
 .astep__think-wrap {
   margin: 2px 0 8px;
