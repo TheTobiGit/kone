@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { formatCount, formatTokens, formatUsd } from "~/utils/usageFormat";
@@ -45,7 +45,7 @@ const emit = defineEmits<{
 const trace = ref<TurnTraceRecord | null>(null);
 const loading = ref(true);
 
-onMounted(async () => {
+async function load(): Promise<void> {
   const turnId = props.reply?.turnId;
   const read = desktopBridge()?.agent.history?.turnTraces;
   if (!turnId || !props.threadId || !read) {
@@ -59,7 +59,16 @@ onMounted(async () => {
     // An unread trace says so below; the facts that don't need it still show.
   }
   loading.value = false;
-});
+}
+onMounted(load);
+// Opened while the turn was still answering: read again once it settles, so
+// the card fills in rather than holding the partial numbers it opened with.
+watch(
+  () => props.reply?.state,
+  (now, was) => {
+    if (was === "running" && now !== "running") void load();
+  },
+);
 
 const input = computed(() => trace.value?.inputTokens ?? 0);
 const output = computed(() => trace.value?.outputTokens ?? 0);
@@ -71,7 +80,7 @@ const total = computed(() => trace.value?.totalTokens ?? input.value + output.va
 
 /** The words typed, as tokens: about four characters each. An estimate, and
  *  labelled one — no provider reports a single message's share. */
-const ownTokens = computed(() => Math.max(1, Math.round(props.block.text.length / 4)));
+const ownTokens = computed(() => (props.block.text ? Math.max(1, Math.round(props.block.text.length / 4)) : 0));
 
 // ── where the tokens went: one bar ──────────────────────────────────────────
 type Kind = TraceTokenKind;
@@ -270,7 +279,7 @@ onBeforeUnmount(() => {
                   <span class="row__pct">{{ share(p.tokens) }}</span>
                 </li>
               </ul>
-              <p class="tr-own">
+              <p v-if="ownTokens" class="tr-own">
                 Your words were about <b>{{ formatCount(ownTokens) }}</b> of the {{ formatTokens(input) }} tokens sent.
                 The rest is the thread so far, instructions and tool results.
               </p>
