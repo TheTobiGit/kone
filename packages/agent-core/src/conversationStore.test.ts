@@ -1368,6 +1368,36 @@ describe("live capture contracts", () => {
     raw.close();
   });
 
+  test("a turn's usage row names the model a reroute swapped in", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex", model: "gpt-5" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent({
+      type: "model.rerouted",
+      threadId: "t-1",
+      provider: "codex",
+      at: 11,
+      source: "kone.store",
+      fromModel: "gpt-5",
+      toModel: "gpt-5-mini",
+    });
+    store.applyEvent(tokenUsage("t-1", 15, { input: 100, output: 50, total: 150 }, "codex"));
+    expect(store.listTurnUsage("t-1")[0]?.model).toBe("gpt-5-mini");
+  });
+
+  test("a usage row written before models were stamped keeps its model unknown", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent", model: "claude-opus-5" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent(tokenUsage("t-1", 15, { input: 100, output: 50, total: 150 }, "claudeAgent"));
+    const raw = rawDb();
+    raw.prepare(`UPDATE turn_usage SET provider = NULL, model = NULL WHERE thread_id = 't-1'`).run();
+    raw.close();
+    const [row] = store.listTurnUsage("t-1");
+    expect(row?.model).toBeNull();
+    expect(row?.provider).toBeNull();
+  });
+
   test("a Claude thread is priced per bucket, cache reads at the cache rate", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent", model: "claude-opus-5" });
