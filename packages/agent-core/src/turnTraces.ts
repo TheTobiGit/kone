@@ -36,11 +36,12 @@ const isRunningTotal = (provider: string | null): boolean =>
   provider !== null && (RUNNING_TOTAL_PROVIDERS as readonly string[]).includes(provider);
 
 /** The turn's own spend. Most providers report each turn's; the running-total
- *  ones report the whole thread so far, so their turn is the step from the
- *  row before. A count that went down (the thread started over, or the
- *  provider reset its tally) is that turn's own, not a negative. */
+ *  ones report the whole thread so far, so their turn is the step from that
+ *  provider's row before. A row after a hand-off to another provider starts
+ *  that provider's tally, and a count that went down (the thread started
+ *  over, or the provider reset its tally) is that turn's own, not a negative. */
 function ownSpend(row: TurnUsageRecord, before: TurnUsageRecord | null): TurnUsageRecord {
-  if (!before || !isRunningTotal(row.provider)) return row;
+  if (!before || !isRunningTotal(row.provider) || before.provider !== row.provider) return row;
   const own: TurnUsageRecord = { ...row };
   for (const key of COUNTS) {
     const now = row[key];

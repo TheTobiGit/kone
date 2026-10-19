@@ -78,4 +78,17 @@ describe("turnTraces", () => {
     );
     expect(traces[1]?.inputTokens).toBe(1000);
   });
+
+  test("a hand-off to another running-total provider starts its own tally", () => {
+    const traces = turnTraces(
+      {
+        listTurnUsage: () => [
+          row({ turnId: "turn-1", provider: "codex", inputTokens: 1000, at: 1 }),
+          row({ turnId: "turn-2", provider: "cursor", inputTokens: 1800, at: 2 }),
+        ],
+      },
+      "t",
+    );
+    expect(traces[1]?.inputTokens).toBe(1800);
+  });
 });
