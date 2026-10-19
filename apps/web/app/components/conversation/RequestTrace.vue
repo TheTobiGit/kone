@@ -4,23 +4,20 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { formatCount, formatTokens, formatUsd } from "~/utils/usageFormat";
 import ModalShell from "~/components/ui/ModalShell.vue";
-import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { useModalExit } from "~/composables/useModalExit";
-import { useAgentProviders } from "~/composables/useAgentProviders";
 import type { AssistantBlock, UserBlock } from "~/composables/agentTypes";
 import type { TurnTraceRecord } from "~/types/desktop";
 import { desktopBridge } from "~/utils/desktopBridge";
-import { buildModelCatalog, describeModelId, effortMeta } from "~/utils/modelCatalog";
-import { PROVIDER_LABEL, asProviderKind } from "~/utils/usageProviders";
 
 // A request's trace: what it cost and what carried it, opened over the thread
 // from the request itself. It grows out of the bubble and shrinks back into
 // it, like every card in kone, so the conversation stays put under the scrim.
 //
-// The card leads with pictures, not rows: a grid of a hundred cells for where
-// the tokens went, a funnel for what went in against what came back through
-// the model, and a track for how the time was spent. The plain facts (date,
-// thread, effort) sit quietly in the foot band, there when looked for.
+// The card leads with the turn's size and price, then pictures: a grid of a
+// hundred cells for where the tokens went, itemized beneath it, and a track
+// for how the time was spent. The date and thread sit quietly in the foot band.
+// It is the request's trace, so who answered (model, provider, effort) stays
+// in the data for the response's trace and isn't drawn here.
 //
 // Tokens belong to the turn the request started, not to the words typed: the
 // provider bills the whole prompt the turn sent (instructions, history, tool
@@ -114,47 +111,9 @@ const cells = computed<Kind[]>(() => {
 /** The cell that stands for the words typed: the first cell of new input,
  *  where a request's text lands in the prompt. */
 const ownCell = computed(() => cells.value.indexOf("fresh"));
-const ownShare = computed(() => (input.value ? ownTokens.value / input.value : 0));
 
-/** The legend entry under the pointer; the grid dims every other kind. */
+/** The row under the pointer; the grid dims every other kind. */
 const focus = ref<Kind | null>(null);
-
-// ── in against out: the funnel through the model ────────────────────────────
-// The bands are scaled by square root so a 10:1 turn still shows a visible
-// stream coming back, while the narrowing still reads as the ratio it is.
-const FUNNEL_H = 56;
-const outHeight = computed(() => {
-  if (!input.value) return 8;
-  return Math.max(6, Math.round(FUNNEL_H * Math.sqrt(Math.min(1, output.value / input.value))));
-});
-/** The waist the stream squeezes to where it meets the model. */
-const THROAT_H = 10;
-function band(fromH: number, toH: number): string {
-  const W = 100;
-  const H = FUNNEL_H;
-  const a = (H - fromH) / 2;
-  const b = (H - toH) / 2;
-  return `M0 ${a} C ${W * 0.55} ${a}, ${W * 0.45} ${b}, ${W} ${b} L ${W} ${H - b} C ${W * 0.45} ${H - b}, ${W * 0.55} ${H - a}, 0 ${H - a} Z`;
-}
-const inPath = computed(() => band(FUNNEL_H, THROAT_H));
-const outPath = computed(() => band(THROAT_H, outHeight.value));
-
-// ── who answered ────────────────────────────────────────────────────────────
-const { modelCache } = useAgentProviders();
-const catalog = computed(() => buildModelCatalog(Object.values(modelCache.value).flat()));
-/** The model the request was sent with wins over the usage row's: the stamp is
- *  what the picker held at send time, the row may only know the thread's. */
-const model = computed(() => {
-  const id = props.block.model ?? trace.value?.model ?? undefined;
-  return id ? describeModelId(id, catalog.value) : null;
-});
-const providerName = computed(() => {
-  const raw = trace.value?.provider ?? undefined;
-  // The store names Claude's engine `claude`; the app calls it `claudeAgent`.
-  const kind = asProviderKind(raw === "claude" ? "claudeAgent" : raw);
-  return kind ? PROVIDER_LABEL[kind] : (raw ?? null);
-});
-const effort = computed(() => (props.block.effort ? effortMeta(props.block.effort) : null));
 
 // ── how the time went: a track ──────────────────────────────────────────────
 const clock = (at: number) =>
@@ -195,6 +154,11 @@ const missing = computed(() => {
   if (props.reply.state === "running") return "Still answering. The tokens land when the turn settles.";
   return "The provider didn't report usage for this turn.";
 });
+
+function share(tokens: number): string {
+  const pct = partTotal.value ? (tokens / partTotal.value) * 100 : 0;
+  return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
+}
 
 function duration(ms: number): string {
   const s = Math.round(ms / 1000);
@@ -308,6 +272,9 @@ onBeforeUnmount(() => {
 
         <div class="tr-body">
           <p class="tr-quote selectable">{{ block.text || "Attachment" }}</p>
+          <p v-if="block.steered" class="tr-aside">
+            Sent while the agent was working. It joined that turn, so these are that turn's numbers.
+          </p>
 
           <div v-if="loading" class="tr-skeleton" aria-hidden="true">
             <i /><i /><i />
@@ -316,15 +283,19 @@ onBeforeUnmount(() => {
           <p v-else-if="missing" class="tr-empty">{{ missing }}</p>
 
           <template v-else-if="trace">
-            <!-- The headline: the turn's size and price. -->
-            <div class="tr-hero">
-              <div class="hero">
-                <span class="hero__v">{{ formatTokens(total) }}</span>
-                <span class="hero__k">tokens</span>
+            <!-- The headline: the turn's size, price, and what went each way. -->
+            <div class="tr-figs">
+              <div class="fig">
+                <span class="fig__v">{{ formatTokens(total) }}</span>
+                <span class="fig__k">tokens</span>
               </div>
-              <div v-if="trace.costUsd !== null" class="hero hero--soft">
-                <span class="hero__v">{{ formatUsd(trace.costUsd) }}</span>
-                <span class="hero__k">cost</span>
+              <div v-if="trace.costUsd !== null" class="fig">
+                <span class="fig__v">{{ formatUsd(trace.costUsd) }}</span>
+                <span class="fig__k">cost</span>
+              </div>
+              <div class="fig">
+                <span class="fig__v">{{ formatTokens(input) }}<span class="fig__sep">/</span>{{ formatTokens(output) }}</span>
+                <span class="fig__k">in / out</span>
               </div>
             </div>
 
@@ -345,54 +316,31 @@ onBeforeUnmount(() => {
                   :style="{ '--i': i }"
                 />
               </div>
-              <ul class="legend">
+              <ul class="rows">
                 <li
                   v-for="p in parts"
                   :key="p.kind"
-                  class="legend__item"
+                  class="row"
                   tabindex="0"
                   @mouseenter="focus = p.kind"
                   @mouseleave="focus = null"
                   @focus="focus = p.kind"
                   @blur="focus = null"
                 >
-                  <i class="legend__dot" :class="`cell--${p.kind}`" />
-                  <span class="legend__k">{{ p.label }}</span>
-                  <span class="legend__v">{{ formatTokens(p.tokens) }}</span>
+                  <i class="row__dot" :class="`cell--${p.kind}`" />
+                  <span class="row__k">{{ p.label }}</span>
+                  <span class="row__v">{{ formatCount(p.tokens) }}</span>
+                  <span class="row__pct">{{ share(p.tokens) }}</span>
                 </li>
               </ul>
-              <p v-if="ownCell >= 0" class="tr-own">
-                <i class="tr-own__mark" aria-hidden="true" />
-                Your words, about {{ formatCount(ownTokens) }} tokens,
-                <template v-if="ownShare < 0.01">are less than one cell.</template>
-                <template v-else>are {{ Math.round(ownShare * 100) }}% of what was sent.</template>
-                The rest is the thread so far, instructions and tool results.
+              <p class="tr-own">
+                <i v-if="ownCell >= 0" class="tr-own__mark" aria-hidden="true" />
+                <span>
+                  Your words were about <b>{{ formatCount(ownTokens) }}</b> of the {{ formatTokens(input) }} tokens
+                  sent<template v-if="ownCell >= 0">, the ringed cell</template>. The rest is the thread so far,
+                  instructions and tool results.
+                </span>
               </p>
-            </section>
-
-            <!-- In against out, through the model. -->
-            <section class="tr-sec" aria-labelledby="tr-through">
-              <h3 id="tr-through" class="tr-sec__h">Through the model</h3>
-              <div class="funnel">
-                <div class="funnel__end">
-                  <span class="funnel__v">{{ formatTokens(input) }}</span>
-                  <span class="funnel__k">sent</span>
-                </div>
-                <svg class="funnel__band funnel__band--in" viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true">
-                  <path :d="inPath" />
-                </svg>
-                <div class="funnel__model">
-                  <ProviderLogo v-if="model" :brand="model.brand" :size="14" />
-                  <span class="funnel__name">{{ model?.name ?? providerName ?? "Model" }}</span>
-                </div>
-                <svg class="funnel__band funnel__band--out" viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true">
-                  <path :d="outPath" />
-                </svg>
-                <div class="funnel__end funnel__end--out">
-                  <span class="funnel__v">{{ formatTokens(output) }}</span>
-                  <span class="funnel__k">back</span>
-                </div>
-              </div>
             </section>
           </template>
 
@@ -427,14 +375,10 @@ onBeforeUnmount(() => {
           </section>
         </div>
 
-        <!-- Foot band: the plain facts, quiet, one line. -->
+        <!-- Foot band: when and where, quiet. -->
         <div class="tr-band tr-foot">
           <span class="fact">{{ sentDate }}</span>
           <span class="fact fact--thread">{{ threadTitle || "Untitled thread" }}</span>
-          <span v-if="effort" class="fact">
-            <i class="fact__dot" :style="{ background: effort.hue }" />{{ effort.label }} effort
-          </span>
-          <span v-if="providerName && model" class="fact">via {{ providerName }}</span>
           <span v-if="attachments" class="fact">{{ attachments }} file{{ attachments === 1 ? "" : "s" }}</span>
           <span v-if="skills.length" class="fact">{{ skills.join(", ") }}</span>
         </div>
@@ -560,14 +504,22 @@ onBeforeUnmount(() => {
 }
 .tr-quote {
   /* A long request scrolls in place rather than losing its end. */
-  max-height: calc(13px * 1.55 * 4);
+  max-height: calc(14.5px * 1.55 * 4);
   overflow-y: auto;
   overscroll-behavior: contain;
-  font-size: 13px;
+  padding-inline-start: 14px;
+  border-inline-start: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  font-size: 14.5px;
   line-height: 1.55;
-  color: var(--ink-soft);
+  color: var(--ink);
   white-space: pre-wrap;
   text-wrap: pretty;
+}
+.tr-aside {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tr-quiet);
 }
 .tr-empty {
   margin-top: 22px;
@@ -576,27 +528,26 @@ onBeforeUnmount(() => {
   color: var(--tr-quiet);
 }
 
-.tr-hero {
+.tr-figs {
   display: flex;
-  align-items: flex-end;
-  gap: 28px;
-  margin-top: 18px;
+  flex-wrap: wrap;
+  gap: 14px 40px;
+  margin-top: 24px;
 }
-.hero { display: flex; flex-direction: column; gap: 4px; }
-.hero__v {
-  font-size: 40px;
+.fig { display: flex; flex-direction: column; gap: 6px; }
+.fig__v {
+  font-size: 30px;
   font-weight: 500;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.03em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
-.hero--soft .hero__v {
-  font-size: 22px;
-  letter-spacing: -0.02em;
-  color: var(--ink-soft);
+.fig__sep {
+  margin-inline: 2px;
+  color: var(--faint);
 }
-.hero__k,
+.fig__k,
 .tr-sec__h {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -641,55 +592,62 @@ onBeforeUnmount(() => {
     0 0 0 3.5px var(--ink);
 }
 
-.legend {
+.rows {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  margin: 12px 0 0;
-  margin-inline-start: -7px;
+  flex-direction: column;
+  margin: 14px 0 0;
   padding: 0;
   list-style: none;
 }
-.legend__item {
-  display: inline-flex;
+.row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto 3.4em;
   align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 7px;
+  gap: 10px;
+  min-height: 30px;
+  padding-inline: 8px;
+  margin-inline: -8px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--ink-soft);
   cursor: default;
   transition: background-color 0.15s ease;
 }
 @media (hover: hover) {
-  .legend__item:hover { background: var(--hover); }
+  .row:hover { background: var(--hover); }
 }
-.legend__item:focus-visible {
+.row:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
   outline-offset: 1px;
   background: var(--hover);
 }
-.legend__dot {
+.row__dot {
   width: 8px;
   height: 8px;
   border-radius: 2px;
   background: var(--c);
 }
-.legend__v {
+.row__v,
+.row__pct {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--tr-quiet);
+  text-align: end;
 }
+.row__v { color: var(--ink); }
+.row__pct { color: var(--tr-quiet); }
 .tr-own {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-top: 10px;
-  font-size: 12px;
+  margin-top: 14px;
+  font-size: 12.5px;
   line-height: 1.6;
   color: var(--tr-quiet);
+}
+.tr-own b {
+  font-weight: 500;
+  color: var(--ink);
 }
 .tr-own__mark {
   flex: none;
@@ -701,67 +659,6 @@ onBeforeUnmount(() => {
   box-shadow:
     0 0 0 1.5px var(--panel),
     0 0 0 2.5px var(--ink);
-}
-
-/* ── funnel ── what went in narrows through the model to what came back. */
-.funnel {
-  display: grid;
-  grid-template-columns: auto minmax(16px, 1fr) minmax(0, auto) minmax(16px, 1fr) auto;
-  align-items: center;
-}
-.funnel__end {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding-inline-end: 10px;
-}
-.funnel__end--out {
-  align-items: flex-end;
-  padding-inline: 10px 0;
-}
-.funnel__v {
-  font-size: 18px;
-  letter-spacing: -0.02em;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-}
-.funnel__k {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: var(--tr-quiet);
-}
-.funnel__band {
-  width: 100%;
-  height: 56px;
-  overflow: visible;
-}
-.funnel__band path {
-  transform-origin: center;
-  animation: band-in 600ms var(--tr-ease) backwards 200ms;
-}
-.funnel__band--in path { fill: color-mix(in srgb, var(--t-fresh) 26%, transparent); }
-.funnel__band--out path { fill: color-mix(in srgb, var(--t-output) 34%, transparent); }
-@keyframes band-in {
-  from { opacity: 0; transform: scaleY(0.2); }
-}
-.funnel__model {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 26px;
-  padding: 4px 11px;
-  border-radius: 13px;
-  background: var(--chip);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent);
-  min-width: 0;
-  font-size: 12px;
-  color: var(--ink);
-}
-.funnel__name {
-  overflow-wrap: anywhere;
-  line-height: 1.25;
 }
 
 /* ── track ── sent, queued, worked, settled. */
@@ -863,12 +760,6 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   color: var(--ink-soft);
 }
-.fact__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
 .tr-skeleton {
   display: grid;
   gap: 10px;
@@ -886,14 +777,13 @@ onBeforeUnmount(() => {
 @media (max-width: 520px) {
   .tr-body { padding: 18px 18px 22px; }
   .waffle { grid-template-columns: repeat(20, minmax(0, 1fr)); }
-  .hero__v { font-size: 32px; }
+  .fig__v { font-size: 26px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .tr.is-in,
   .tr.is-out { animation-duration: 0.01s; }
   .cell,
-  .funnel__band path,
   .track__line,
   .track__dot--live { animation: none; }
   .waffle--focus .cell--on { transform: none; }
