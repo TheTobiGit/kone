@@ -1081,6 +1081,10 @@ export type TurnUsageRecord = {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   reasoningTokens: number;
+  /** Who answered the turn, as the usage row recorded it; null on rows
+   *  written before the columns were filled. */
+  provider: string | null;
+  model: string | null;
   at: number;
 };
 

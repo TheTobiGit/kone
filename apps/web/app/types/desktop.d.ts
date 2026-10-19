@@ -2504,6 +2504,24 @@ export type CompactionRecord = {
   afterTokens: number | null;
 };
 
+/** One turn's trace: its token counts as the provider last reported them,
+ *  who answered it, and what it cost at the current price list. Counts the
+ *  provider never reported are null; cost is null when the model has no
+ *  price. */
+export type TurnTraceRecord = {
+  turnId: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  provider: string | null;
+  model: string | null;
+  costUsd: number | null;
+  at: number;
+};
+
 /** One ranked full-text conversation search hit. `blockId` is the block
  *  itself for prompt hits and the assistant block carrying the turn for item
  *  hits (null when the turn has no block yet); `itemId` is set only on item
@@ -2609,6 +2627,9 @@ export type KoneAgentHistoryApi = {
   /** Every settled compaction boundary on a thread, oldest first — what the
    *  timeline renders its "when/where compacted" markers from. */
   compactions: (threadId: string) => Promise<CompactionRecord[]>;
+  /** Every turn's trace on a thread, oldest first — what a request's trace
+   *  reads its tokens, cost and model from. Optional: older shells lack it. */
+  turnTraces?: (threadId: string) => Promise<TurnTraceRecord[]>;
   /** Every continuation forked from a source thread, oldest first — what the
    *  timeline renders its "Handed to" markers from. */
   continuationsFromSource: (sourceThreadId: string) => Promise<ContinuationLink[]>;

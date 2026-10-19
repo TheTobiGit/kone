@@ -680,6 +680,7 @@ function dockVars(id: string): Record<string, string> {
                     :now="now"
                     :source-key="c.id"
                     :thread-id="anchoredThreadId(c)"
+                    :thread-title="c.session.title.value"
                     :load-failed="c.session.transcriptLoadFailed.value"
                     :agent-seed="c.session.threadId.value"
                     :loading="c.session.sessionState.value === 'starting'"

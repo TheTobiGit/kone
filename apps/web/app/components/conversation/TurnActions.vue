@@ -2,6 +2,7 @@
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Copy01Icon,
+  FootprintsIcon,
   GitForkIcon,
   Note01Icon,
   PencilEdit01Icon,
@@ -14,13 +15,15 @@ import {
 // presentational — the thread owns what each button does and when this
 // mounts (settled turns with something to act on; never while editing).
 defineProps<{
-  /** Whose turn this acts on: a request (`you` — Edit / Copy / Scratchpad)
-   *  or a reply (`kone` — Copy / Scratchpad / Fork). */
+  /** Whose turn this acts on: a request (`you` — Edit / Copy / Scratchpad /
+   *  Trace) or a reply (`kone` — Copy / Scratchpad / Fork). */
   kind: "you" | "kone";
   /** This turn's text just landed on the clipboard. */
   copied: boolean;
   /** Whether the Scratchpad button is offered here at all. */
   allowScratchpad: boolean;
+  /** Whether the Trace button is offered here. Requests only. */
+  allowTrace?: boolean;
   /** Whether the Fork button is offered here at all. Replies only. */
   allowBranch?: boolean;
   /** A turn is in flight — Fork is refused while one is. Replies only. */
@@ -36,6 +39,7 @@ const emit = defineEmits<{
   copy: [];
   scratchpad: [];
   fork: [];
+  trace: [];
 }>();
 </script>
 
@@ -71,6 +75,16 @@ const emit = defineEmits<{
       @click="emit('scratchpad')"
     >
       <HugeiconsIcon :icon="Note01Icon" :size="14" :stroke-width="1.8" />
+    </button>
+    <button
+      v-if="kind === 'you' && allowTrace"
+      type="button"
+      class="act"
+      data-tip="Trace"
+      aria-label="Show this request's trace"
+      @click="emit('trace')"
+    >
+      <HugeiconsIcon :icon="FootprintsIcon" :size="14" :stroke-width="1.8" />
     </button>
     <button
       v-if="kind === 'kone' && allowBranch && canAct"

@@ -441,7 +441,7 @@ export class EventIngestRepo {
               // SAFETY: the split counts ride beyond TokenUsage's declared
               // fields; every read below defaults them.
               const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
-              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, {
+              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, event.provider, {
                 input,
                 output,
                 total,
@@ -844,6 +844,7 @@ export class EventIngestRepo {
     threadId: string,
     turnId: string,
     at: number,
+    provider: string,
     usage: {
       input?: number;
       output?: number;
@@ -856,8 +857,8 @@ export class EventIngestRepo {
     db.prepare(
       `INSERT INTO turn_usage
          (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
-          cache_read_tokens, cache_creation_tokens, reasoning_tokens, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          cache_read_tokens, cache_creation_tokens, reasoning_tokens, provider, model, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT model FROM threads WHERE thread_id = ?), ?)
        ON CONFLICT(thread_id, turn_id) DO UPDATE SET
          input_tokens          = excluded.input_tokens,
          output_tokens         = excluded.output_tokens,
@@ -865,6 +866,8 @@ export class EventIngestRepo {
          cache_read_tokens     = excluded.cache_read_tokens,
          cache_creation_tokens = excluded.cache_creation_tokens,
          reasoning_tokens      = excluded.reasoning_tokens,
+         provider              = excluded.provider,
+         model                 = excluded.model,
          at                    = excluded.at`,
     ).run(
       threadId,
@@ -875,6 +878,8 @@ export class EventIngestRepo {
       Math.round(usage.cacheReadTokens ?? 0),
       Math.round(usage.cacheCreationTokens ?? 0),
       Math.round(usage.reasoningTokens ?? 0),
+      provider,
+      threadId,
       at,
     );
   }
