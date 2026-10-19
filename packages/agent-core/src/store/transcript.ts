@@ -282,20 +282,24 @@ export class TranscriptRepo {
     if (!db) return [];
     try {
       // SAFETY: the projection names exactly the turn_usage columns this
-      // schema creates, aliased to the record's camelCase fields.
+      // schema creates, aliased to the record's camelCase fields. Rows written
+      // before provider and model were stamped fall back to the thread's.
       const rows = db
         .prepare(
-          `SELECT turn_id AS turnId,
-                  input_tokens AS inputTokens,
-                  output_tokens AS outputTokens,
-                  total_tokens AS totalTokens,
-                  cache_read_tokens AS cacheReadTokens,
-                  cache_creation_tokens AS cacheCreationTokens,
-                  reasoning_tokens AS reasoningTokens,
-                  at
-             FROM turn_usage
-            WHERE thread_id = ?
-            ORDER BY at ASC, turn_id ASC`,
+          `SELECT u.turn_id AS turnId,
+                  u.input_tokens AS inputTokens,
+                  u.output_tokens AS outputTokens,
+                  u.total_tokens AS totalTokens,
+                  u.cache_read_tokens AS cacheReadTokens,
+                  u.cache_creation_tokens AS cacheCreationTokens,
+                  u.reasoning_tokens AS reasoningTokens,
+                  COALESCE(u.provider, t.provider) AS provider,
+                  COALESCE(u.model, t.model) AS model,
+                  u.at AS at
+             FROM turn_usage u
+             LEFT JOIN threads t ON t.thread_id = u.thread_id
+            WHERE u.thread_id = ?
+            ORDER BY u.at ASC, u.turn_id ASC`,
         )
         .all(threadId) as TurnUsageRecord[];
       return rows;

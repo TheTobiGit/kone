@@ -216,6 +216,7 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
         :now="now"
         :thread-id="row.threadId"
         :agent-seed="row.threadId"
+        :thread-title="row.title ?? ''"
         :loading="loading"
         :load-failed="loadFailed"
         :has-older="cursor !== null"

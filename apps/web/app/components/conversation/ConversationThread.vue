@@ -115,6 +115,9 @@ const props = defineProps<{
    *  conversation. Its presence is what distinguishes "transcript didn't load"
    *  from a fresh blank thread (which carries no id yet). */
   threadId?: string | null;
+  /** The thread's name, as its header shows it — what a request's trace says
+   *  it was sent to. */
+  threadTitle?: string;
   /** The session's stored-transcript read came back empty-handed — the only
    *  thing that puts the "didn't load" banner up. */
   loadFailed?: boolean;
@@ -1357,6 +1360,9 @@ watch(
           :busy="busy"
           :copied-path-id="copiedPathId"
           :time="clock(block.at)"
+          :reply="ex.reply"
+          :trace-thread-id="agentSeed ?? threadId ?? null"
+          :thread-title="threadTitle"
           @save="(text) => saveUserEdit(block, text)"
           @copy="copyUserRequest(block)"
           @scratchpad="addUserRequestToScratchpad(block)"

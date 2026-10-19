@@ -9,7 +9,7 @@ import {
   Folder01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import type { ThreadBlock } from "~/composables/useAgent";
+import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import type { ChatAttachment } from "~/types/desktop";
 import type {
   AttachmentPartition,
@@ -20,6 +20,7 @@ import SkillChip from "~/components/composer/SkillChip.vue";
 import YouHead from "~/components/conversation/YouHead.vue";
 import ReceiptTicks from "~/components/conversation/ReceiptTicks.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
+import RequestTrace from "~/components/conversation/RequestTrace.vue";
 import { formatFileSize } from "~/utils/formatFile";
 
 // One user turn, extracted from ConversationThread: the request bubble (or its
@@ -59,6 +60,11 @@ const props = defineProps<{
   copiedPathId: string | null;
   /** The bubble's corner clock. */
   time: string;
+  /** The reply this request started, for its trace. */
+  reply?: AssistantBlock;
+  /** The thread's durable id and name, for its trace. */
+  traceThreadId?: string | null;
+  threadTitle?: string;
 }>();
 
 const emit = defineEmits<{
@@ -126,6 +132,17 @@ function toggleExpand(): void {
   cue(expanded.value ? "expand" : "collapse");
 }
 
+// ── trace ───────────────────────────────────────────────────────────────────
+// The request's trace opens over the thread, grown from the bubble.
+const bubbleEl = ref<HTMLElement | null>(null);
+const traceOrigin = ref<DOMRect | null>(null);
+const tracing = ref(false);
+function openTrace(): void {
+  traceOrigin.value = bubbleEl.value?.getBoundingClientRect() ?? null;
+  tracing.value = true;
+  cue("press");
+}
+
 // While editing the footer is the edit's controls; otherwise it's the actions
 // row — but only when this style gives the footer the row (the head-seated
 // styles dock into the head or the command line instead).
@@ -149,7 +166,9 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
           :can-act="!!block.text"
           @edit="startEdit"
           @copy="emit('copy')"
+          allow-trace
           @scratchpad="emit('scratchpad')"
+          @trace="openTrace"
         />
       </template>
     </YouHead>
@@ -181,6 +200,7 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
     </div>
     <div
       v-else-if="block.text"
+      ref="bubbleEl"
       class="body body--you selectable"
       :class="{ 'body--you-expanded': expanded }"
     >
@@ -200,7 +220,9 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
         :can-act="!!block.text"
         @edit="startEdit"
         @copy="emit('copy')"
+        allow-trace
         @scratchpad="emit('scratchpad')"
+        @trace="openTrace"
       />
       <button
         v-if="isLong"
@@ -312,7 +334,9 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
       :can-act="!!block.text"
       @edit="startEdit"
       @copy="emit('copy')"
+      allow-trace
       @scratchpad="emit('scratchpad')"
+      @trace="openTrace"
     />
     <div v-if="showFoot" class="you-foot" :class="{ 'you-foot--editing': editing }">
       <!-- While editing this turn the footer is the edit's controls;
@@ -340,9 +364,20 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
         :can-act="!!block.text"
         @edit="startEdit"
         @copy="emit('copy')"
+        allow-trace
         @scratchpad="emit('scratchpad')"
+        @trace="openTrace"
       />
     </div>
+    <RequestTrace
+      v-if="tracing"
+      :block="block"
+      :reply="reply"
+      :thread-id="traceThreadId ?? null"
+      :thread-title="threadTitle ?? ''"
+      :origin="traceOrigin"
+      @close="tracing = false"
+    />
   </div>
 </template>
 

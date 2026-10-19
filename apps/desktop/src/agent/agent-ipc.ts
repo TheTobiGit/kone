@@ -15,6 +15,7 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { turnTraces } from "@kone/agent-core/turnTraces.js";
 import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { ScheduleRunner } from "@kone/agent-core/scheduleRunner.js";
@@ -1038,6 +1039,12 @@ export function registerAgentIpc(): void {
   // so this is always the full list, never a page.
   ipcMain.handle("agent:history-compactions", (_event, threadId: string) =>
     store.listCompactions(threadId),
+  );
+  // Every turn's trace on a thread, oldest first — tokens, cost and who
+  // answered, for the trace a request opens. One row per turn that reported
+  // usage, so always the whole list.
+  ipcMain.handle("agent:history-turn-traces", (_event, threadId: string) =>
+    turnTraces(store, threadId),
   );
   // Continuation links leaving a source thread, oldest first — the timeline's
   // "Handed to" markers. Few rows ever (one per continuation), so this is
