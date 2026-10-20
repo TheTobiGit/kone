@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { PendingApproval, PendingUserInput } from "~/composables/agentTypes";
+import type { PendingApproval, PendingUserInput, UserInputOwner } from "~/composables/agentTypes";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -27,9 +27,9 @@ const props = withDefaults(
     /** The owning session's attachment uploader, so answer files can be
      *  stored before the answer is sent. Absent hides the attach affordances. */
     upload?: (file: File) => Promise<ChatAttachment>;
-    /** The key of the session the question belongs to, handed back with its
-     *  answer so the host answers that session, not whichever is in front. */
-    owner?: string;
+    /** The session the question belongs to, handed back with its answer so
+     *  the host answers that session, not whichever is in front. */
+    owner?: UserInputOwner;
     /** Forget an answer file the user removed or never sent. Same session as
      *  `upload`; absent leaves those files to the startup sweep. */
     discard?: (attachment: ChatAttachment) => Promise<void>;
@@ -50,10 +50,10 @@ const emit = defineEmits<{
     requestId: string,
     answers: UserInputAnswers,
     attachments: UserInputAnswerAttachments | undefined,
-    owner: string | undefined,
+    owner: UserInputOwner | undefined,
   ];
   /** The question was dismissed — the caller answers it empty (declined). */
-  cancel: [requestId: string, owner: string | undefined];
+  cancel: [requestId: string, owner: UserInputOwner | undefined];
   /** The approval decision — resolves the parked provider request. */
   decide: [requestId: string, decision: ApprovalDecision];
 }>();
@@ -65,7 +65,7 @@ const emit = defineEmits<{
        drafts or files. -->
   <UiUserInputModal
     v-if="props.userInput && !props.suppressed"
-    :key="`${props.owner ?? ''}\u0000${props.userInput.requestId}`"
+    :key="`${props.owner?.key ?? ''}\u0000${props.userInput.requestId}`"
     contained
     :request-id="props.userInput.requestId"
     :questions="props.userInput.questions"

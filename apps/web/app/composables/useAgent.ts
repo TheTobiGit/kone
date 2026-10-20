@@ -1859,11 +1859,6 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return Promise.reject(new Error("No thread column is open."));
     return s.uploadAttachment(file);
   };
-  /** The session a key names, or null. A question dialog hands back the key of
-   *  the session that asked, so its answer reaches that thread even after the
-   *  focus moved on during the dialog's exit. */
-  const sessionByKey = (key: string | undefined) =>
-    key === undefined ? null : sessions.value.find((s) => s.key === key) ?? null;
   const discardAttachment = (attachment: ChatAttachment): Promise<void> => {
     const s = active.value;
     if (!s) return Promise.resolve();
@@ -2249,7 +2244,6 @@ export function useAgent(options: UseAgentOptions) {
     // each column reads its own `blocks` ref, so one thread streaming a token
     // re-renders only its own column instead of every column on screen.
     sessions,
-    sessionByKey,
     activeKey,
     focusThread,
     focusByOffset,
