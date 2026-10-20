@@ -110,6 +110,7 @@ import type {
   SessionStartInput,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputAnswerAttachments,
 } from "@kone/agent-core/types.js";
 import type { TurnSelection } from "@kone/agent-core/selection.js";
 
@@ -807,6 +808,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:upload-attachment", (_event, input: UploadAttachmentInput) =>
     attachments.save(input),
   );
+  // Forget an upload the user never sent — a removed chip, a cancelled answer
+  // dialog. Only the named thread's attachment is touched; false means there
+  // was nothing of its to remove.
+  ipcMain.handle("agent:discard-attachment", (_event, threadId: string, attachmentId: string) =>
+    getAttachmentStore().discard(attachmentId, threadId),
+  );
   ipcMain.handle("agent:get-attachment-path", (_event, attachmentId: string) => {
     return attachments.resolveAbsPath(attachmentId);
   });
@@ -917,8 +924,13 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle(
     "agent:respond-user-input",
-    (_event, threadId: string, requestId: string, answers: UserInputAnswers) =>
-      svc.respondToUserInput(threadId, requestId, answers),
+    (
+      _event,
+      threadId: string,
+      requestId: string,
+      answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
+    ) => svc.respondToUserInput(threadId, requestId, answers, attachments),
   );
   // Nested subagent controls — scoped to one run inside a turn, so stopping or
   // steering a child never touches the parent conversation.

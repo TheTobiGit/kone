@@ -88,6 +88,7 @@ import type {
   TurnStartResult,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputAnswerAttachments,
   UserInputRespondResult,
 } from "@kone/agent-core/index.js";
 import type { AgentEventFrame } from "@kone/agent-core/eventSubscriptions.js";
@@ -569,6 +570,9 @@ const api = {
     // ChatAttachment the composer then carries on its next turn.
     uploadAttachment: (input: UploadAttachmentInput): Promise<ChatAttachment> =>
       ipcRenderer.invoke("agent:upload-attachment", input),
+    /** Forget an uploaded file that was never sent with an answer. */
+    discardAttachment: (threadId: string, attachmentId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:discard-attachment", threadId, attachmentId),
     getAttachmentPath: (attachmentId: string): Promise<string | null> =>
       ipcRenderer.invoke("agent:get-attachment-path", attachmentId),
     showAttachmentInFolder: (attachmentId: string): Promise<boolean> =>
@@ -629,8 +633,9 @@ const api = {
       threadId: string,
       requestId: string,
       answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
     ): Promise<UserInputRespondResult> =>
-      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers),
+      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers, attachments),
     stopSubagent: (threadId: string, toolUseId: string): Promise<void> =>
       ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
     steerSubagent: (threadId: string, toolUseId: string, message: string): Promise<void> =>

@@ -9,6 +9,8 @@ import type {
   SendTurnInput,
   SkillReference,
   TurnStartResult,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
   UserInputQuestion,
 } from "~/types/desktop";
 import type { EffortTier } from "~/utils/modelCatalog";
@@ -167,6 +169,20 @@ export type ThreadBlock = UserBlock | AssistantBlock;
 export type PendingUserInput = {
   requestId: string;
   questions: UserInputQuestion[];
+};
+
+/** The session that asked a question, as its dialog holds it: the dialog takes
+ *  it when Send or Cancel is pressed and hands it back with the answer, so the
+ *  answer reaches that session (and its files are cleaned up under its own
+ *  thread) even when the focus moved on or the session left the registry
+ *  during the dialog's exit. */
+export type UserInputOwner = {
+  key: string;
+  respondUserInput: (
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ) => Promise<void>;
 };
 
 /** A live tool approval the agent is waiting on — the turn is parked until the

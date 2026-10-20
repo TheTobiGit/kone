@@ -20,6 +20,7 @@ import type {
   StoredThreadMeta,
   StoredThreadPage,
   TokenUsage,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
 import { useAgentProviders } from "~/composables/useAgentProviders";
@@ -1078,6 +1079,18 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const data = await fileToBase64(file);
     return api.uploadAttachment({ threadId: threadId.value, name, mimeType, data });
   }
+  /** Forget an upload the user never sent — a removed chip, a cancelled answer
+   *  dialog. Best effort: a failed discard only leaves an orphan for the
+   *  startup sweep, so it never surfaces to the user. */
+  async function discardAttachment(attachment: ChatAttachment): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    try {
+      await api.discardAttachment(threadId.value, attachment.id);
+    } catch {
+      // Nothing to tell the user: the file simply stays orphan-eligible.
+    }
+  }
   async function getAttachmentPath(attachmentId: string): Promise<string | null> {
     const api = bridge();
     if (!api) return null;
@@ -1360,6 +1373,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     sendQueuedEntryNow,
     reorderQueuedTurns,
     uploadAttachment,
+    discardAttachment,
     getAttachmentPath,
     showAttachmentInFolder,
     demo: (opts?: { fast?: boolean }) => mock?.demo(opts),
@@ -1845,6 +1859,11 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return Promise.reject(new Error("No thread column is open."));
     return s.uploadAttachment(file);
   };
+  const discardAttachment = (attachment: ChatAttachment): Promise<void> => {
+    const s = active.value;
+    if (!s) return Promise.resolve();
+    return s.discardAttachment(attachment);
+  };
   const getAttachmentPath = (attachmentId: string): Promise<string | null> => {
     const s = active.value;
     if (!s) return Promise.resolve(null);
@@ -1863,8 +1882,12 @@ export function useAgent(options: UseAgentOptions) {
   const steerSubagent = async (toolUseId: string, message: string) => {
     await active.value?.steerSubagent(toolUseId, message);
   };
-  const respondUserInput = async (requestId: string, answers: UserInputAnswers) => {
-    await active.value?.respondUserInput(requestId, answers);
+  const respondUserInput = async (
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ) => {
+    await active.value?.respondUserInput(requestId, answers, attachments);
   };
   const respondApproval = async (requestId: string, decision: ApprovalDecision) => {
     await active.value?.respondApproval(requestId, decision);
@@ -2244,6 +2267,7 @@ export function useAgent(options: UseAgentOptions) {
     sendQueuedEntryNow,
     reorderQueuedTurns,
     uploadAttachment,
+    discardAttachment,
     getAttachmentPath,
     showAttachmentInFolder,
     demo,

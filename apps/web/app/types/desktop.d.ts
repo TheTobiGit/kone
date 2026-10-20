@@ -1604,11 +1604,28 @@ export type UserInputQuestion = {
   question: string;
   options: UserInputQuestionOption[];
   multiSelect?: boolean;
+  /** Only an offered option can be sent back: no typed answer, no files. */
+  fixedChoice?: boolean;
+  /** Images the agent attached (kone's ask_question), drawn from `attachment://`. */
+  images?: ChatAttachment[];
+  /** A live visual the agent attached (kone's ask_question), drawn like a reply's. */
+  visual?: QuestionVisual;
+};
+
+/** A dynamic visual inside a question — the VisualRef `visual_show` records. */
+export type QuestionVisual = {
+  attachmentId: string;
+  title: string;
+  height: number;
+  heights?: Array<[number, number]>;
 };
 
 /** Answers keyed by question id → free text / single label, an array of labels
  *  (multi-select), or null when skipped. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
+
+/** Files the user attached to their answers, keyed by question id. */
+export type UserInputAnswerAttachments = Record<string, ChatAttachment[]>;
 
 /** Whether the backend still owned the parked question. Answers resolve
  *  the waiting tool directly; stale or cancelled requests send no message. */
@@ -2137,7 +2154,12 @@ export type RuntimeEvent =
       turnId?: string;
       questions: UserInputQuestion[];
     })
-  | (AgentBaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
+  | (AgentBaseEvent & {
+      type: "user-input.resolved";
+      requestId: string;
+      answers: UserInputAnswers;
+      attachments?: UserInputAnswerAttachments;
+    })
   // The provider is asking for the user's go-ahead before the agent runs
   // something and the turn is parked until they decide (respondToRequest).
   // `subagentToolUseId` scopes the ask to a nested subagent run.
@@ -3369,6 +3391,8 @@ export type KoneAgentApi = {
   /** Persist an attachment's bytes to disk; resolves to the bytes-free
    *  ChatAttachment the composer then carries on its next turn. */
   uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;
+  /** Forget an uploaded file that was never sent with an answer. */
+  discardAttachment: (threadId: string, attachmentId: string) => Promise<boolean>;
   /** Return the verified absolute path on disk for an attachment ID. */
   getAttachmentPath: (attachmentId: string) => Promise<string | null>;
   /** Reveal an attachment in the host's file manager (Finder / Explorer). */
@@ -3416,10 +3440,13 @@ export type KoneAgentApi = {
     decision: ApprovalDecision,
   ) => Promise<void>;
   /** Answer a pending question, resolving its waiting tool request. */
+  /** `attachments` are files already uploaded (uploadAttachment) for each
+   *  question's answer, keyed by question id. */
   respondUserInput: (
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
   ) => Promise<UserInputRespondResult>;
   /** Stop one nested subagent run without ending the parent turn. No-op on
    *  providers without a nested-agent surface. */

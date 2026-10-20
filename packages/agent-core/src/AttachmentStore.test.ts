@@ -171,6 +171,70 @@ describe("AttachmentStore.deleteThreadFiles", () => {
   });
 });
 
+describe("AttachmentStore.discard", () => {
+  test("unlinks the file and forgets the row for its own thread", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    setUserDataDir(tmp);
+    const store = new AttachmentStore(tmp, fakeRegistry());
+
+    const file = seedFile(tmp, "att_discard.txt");
+    rowsByThread.set("thread-1", [row("thread-1", "att_discard", "att_discard.txt")]);
+
+    await expect(store.discard("att_discard", "thread-1")).resolves.toBe(true);
+
+    expect(existsSync(file)).toBe(false);
+    expect(forgotten).toContain("att_discard");
+  });
+
+  test("another thread's attachment is refused, touching nothing", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    setUserDataDir(tmp);
+    const store = new AttachmentStore(tmp, fakeRegistry());
+
+    const file = seedFile(tmp, "att_theirs.txt");
+    rowsByThread.set("thread-1", [row("thread-1", "att_theirs", "att_theirs.txt")]);
+
+    await expect(store.discard("att_theirs", "thread-2")).resolves.toBe(false);
+
+    expect(existsSync(file)).toBe(true);
+    expect(forgotten).not.toContain("att_theirs");
+  });
+
+  test("a held-back upload is discarded by the thread that uploaded it", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    const store = new AttachmentStore(tmp, { ...fakeRegistry(), registerAttachment: () => false });
+
+    const saved = await store.save({
+      threadId: "new-thread",
+      name: "shot.png",
+      mimeType: "image/png",
+      data: Buffer.from("png").toString("base64"),
+    });
+    const abs = store.resolveAbsPath(saved.id)!;
+
+    await expect(store.discard(saved.id, "new-thread")).resolves.toBe(true);
+
+    expect(existsSync(abs)).toBe(false);
+    // Gone from `pending` too: a second discard has nothing left to remove.
+    await expect(store.discard(saved.id, "new-thread")).resolves.toBe(false);
+  });
+
+  test("a relPath that escapes the attachments dir is never unlinked", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
+    setUserDataDir(tmp);
+    const store = new AttachmentStore(tmp, fakeRegistry());
+
+    const escapeFile = path.join(tmp, "escape.txt");
+    writeFileSync(escapeFile, "outside");
+    rowsByThread.set("thread-1", [row("thread-1", "att_escape", "../escape.txt")]);
+
+    await expect(store.discard("att_escape", "thread-1")).resolves.toBe(false);
+
+    expect(existsSync(escapeFile)).toBe(true);
+    expect(forgotten).not.toContain("att_escape");
+  });
+});
+
 describe("AttachmentStore.save", () => {
   test("a file uploaded before its thread has a row still resolves, and registers once it does", async () => {
     tmp = mkdtempSync(path.join(tmpdir(), "kone-att-"));
