@@ -54,6 +54,7 @@ import { IMAGE_CWD_KEY, IMAGE_THREAD_KEY } from "~/utils/markdownImageSource";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import ReplyRef from "~/components/conversation/ReplyRef.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
+import ResponseTrace from "~/components/conversation/ResponseTrace.vue";
 
 // The live conversation — where the agent's turns become a timeline.
 //
@@ -369,6 +370,26 @@ function clock(at: number): string {
 function canActOn(block: AssistantBlock): boolean {
   return block.state === "completed" && !!assistantText(block);
 }
+// ── a reply's trace ──────────────────────────────────────────────────────────
+// Opens over the thread, grown from the reply it was asked for on. It reads the
+// whole turn: a steer splits one reply into pieces that share its turnId.
+const traced = ref<{ turnId: string; origin: DOMRect | null } | null>(null);
+function openResponseTrace(block: AssistantBlock, button: HTMLElement): void {
+  traced.value = { turnId: block.turnId, origin: button.closest(".stack")?.getBoundingClientRect() ?? null };
+  cue("press");
+}
+const tracedPieces = computed(() => {
+  const turnId = traced.value?.turnId;
+  return turnId
+    ? props.blocks.filter((b): b is AssistantBlock => b.role === "assistant" && b.turnId === turnId)
+    : [];
+});
+/** The request the traced turn answers: the one that opened its first piece's exchange. */
+const tracedRequest = computed(() => {
+  const first = tracedPieces.value[0];
+  const opener = first && allExchanges.value.find((ex) => ex.blocks.includes(first))?.blocks[0];
+  return opener?.role === "user" ? opener : undefined;
+});
 /** A settled reply with a file restore to offer. */
 function hasTurnCheckpoint(block: AssistantBlock): boolean {
   return block.state !== "running" && hasCheckpoint(block) && !!props.threadId;
@@ -1410,19 +1431,20 @@ watch(
                  as one more icon and only stays up while it is asking or
                  answering (see conversationStyles.css). -->
             <template
-              v-if="floatActs && !spec.sideActs && (canActOn(block) || hasTurnCheckpoint(block))"
+              v-if="floatActs && !spec.sideActs && block.state !== 'running'"
               #actions
             >
               <TurnActions
-                v-if="canActOn(block)"
                 kind="kone"
                 :copied="copied === block.id"
                 :allow-scratchpad="allowScratchpad"
                 :allow-branch="allowBranch"
+                allow-trace
                 :busy="busy"
-                :can-act="true"
+                :can-act="canActOn(block)"
                 @copy="copy(block)"
                 @scratchpad="addToScratchpad(block)"
+                @trace="openResponseTrace(block, $event)"
                 @fork="emit('branch-fork', block.id)"
               />
               <TurnCheckpointRestore
@@ -1486,15 +1508,16 @@ watch(
               >{{ statusFor(block).text }}</span
             >
             <TurnActions
-              v-if="block.state === 'completed' && assistantText(block)"
               kind="kone"
               :copied="copied === block.id"
               :allow-scratchpad="allowScratchpad"
               :allow-branch="allowBranch"
+              allow-trace
               :busy="busy"
-              :can-act="true"
+              :can-act="canActOn(block)"
               @copy="copy(block)"
               @scratchpad="addToScratchpad(block)"
+              @trace="openResponseTrace(block, $event)"
               @fork="emit('branch-fork', block.id)"
             />
             <TurnCheckpointRestore
@@ -1506,19 +1529,20 @@ watch(
           </div>
           <!-- The chat's seat: beside the bubble, level with its time. -->
           <span
-            v-if="spec.sideActs && block.state !== 'running' && (canActOn(block) || hasTurnCheckpoint(block))"
+            v-if="spec.sideActs && block.state !== 'running'"
             class="side-acts"
           >
             <TurnActions
-              v-if="canActOn(block)"
               kind="kone"
               :copied="copied === block.id"
               :allow-scratchpad="allowScratchpad"
               :allow-branch="allowBranch"
+              allow-trace
               :busy="busy"
-              :can-act="true"
+              :can-act="canActOn(block)"
               @copy="copy(block)"
               @scratchpad="addToScratchpad(block)"
+              @trace="openResponseTrace(block, $event)"
               @fork="emit('branch-fork', block.id)"
             />
             <TurnCheckpointRestore
@@ -1638,6 +1662,17 @@ watch(
         </div>
       </Transition>
     </Teleport>
+
+    <ResponseTrace
+      v-if="traced && tracedPieces.length"
+      :pieces="tracedPieces"
+      :request="tracedRequest"
+      :thread-id="agentSeed ?? threadId ?? null"
+      :thread-title="threadTitle ?? ''"
+      :origin="traced.origin"
+      :now="now"
+      @close="traced = null"
+    />
 </template>
 
 <style scoped>

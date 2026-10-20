@@ -16,13 +16,13 @@ import {
 // mounts (settled turns with something to act on; never while editing).
 defineProps<{
   /** Whose turn this acts on: a request (`you` — Edit / Copy / Scratchpad /
-   *  Trace) or a reply (`kone` — Copy / Scratchpad / Fork). */
+   *  Trace) or a reply (`kone` — Copy / Scratchpad / Trace / Fork). */
   kind: "you" | "kone";
   /** This turn's text just landed on the clipboard. */
   copied: boolean;
   /** Whether the Scratchpad button is offered here at all. */
   allowScratchpad: boolean;
-  /** Whether the Trace button is offered here. Requests only. */
+  /** Whether the Trace button is offered here. */
   allowTrace?: boolean;
   /** Whether the Fork button is offered here at all. Replies only. */
   allowBranch?: boolean;
@@ -39,8 +39,13 @@ const emit = defineEmits<{
   copy: [];
   scratchpad: [];
   fork: [];
-  trace: [];
+  /** Carries the button, so the trace can grow from where it was asked for. */
+  trace: [button: HTMLElement];
 }>();
+
+function onTrace(event: MouseEvent): void {
+  if (event.currentTarget instanceof HTMLElement) emit("trace", event.currentTarget);
+}
 </script>
 
 <template>
@@ -77,12 +82,12 @@ const emit = defineEmits<{
       <HugeiconsIcon :icon="Note01Icon" :size="14" :stroke-width="1.8" />
     </button>
     <button
-      v-if="kind === 'you' && allowTrace"
+      v-if="allowTrace"
       type="button"
       class="act"
       data-tip="Trace"
-      aria-label="Show this request's trace"
-      @click="emit('trace')"
+      :aria-label="kind === 'you' ? 'Show this request\'s trace' : 'Show this reply\'s trace'"
+      @click="onTrace"
     >
       <HugeiconsIcon :icon="FootprintsIcon" :size="14" :stroke-width="1.8" />
     </button>
