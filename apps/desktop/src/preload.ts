@@ -570,6 +570,9 @@ const api = {
     // ChatAttachment the composer then carries on its next turn.
     uploadAttachment: (input: UploadAttachmentInput): Promise<ChatAttachment> =>
       ipcRenderer.invoke("agent:upload-attachment", input),
+    /** Forget an uploaded file that was never sent with an answer. */
+    discardAttachment: (threadId: string, attachmentId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:discard-attachment", threadId, attachmentId),
     getAttachmentPath: (attachmentId: string): Promise<string | null> =>
       ipcRenderer.invoke("agent:get-attachment-path", attachmentId),
     showAttachmentInFolder: (attachmentId: string): Promise<boolean> =>

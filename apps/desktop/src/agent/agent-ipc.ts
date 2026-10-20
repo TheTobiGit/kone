@@ -808,6 +808,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:upload-attachment", (_event, input: UploadAttachmentInput) =>
     attachments.save(input),
   );
+  // Forget an upload the user never sent — a removed chip, a cancelled answer
+  // dialog. Only the named thread's attachment is touched; false means there
+  // was nothing of its to remove.
+  ipcMain.handle("agent:discard-attachment", (_event, threadId: string, attachmentId: string) =>
+    getAttachmentStore().discard(attachmentId, threadId),
+  );
   ipcMain.handle("agent:get-attachment-path", (_event, attachmentId: string) => {
     return attachments.resolveAbsPath(attachmentId);
   });

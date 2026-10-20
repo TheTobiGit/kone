@@ -592,6 +592,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
             :approval="pendingApproval"
             :approval-queue="session?.pendingApprovals.value"
             :upload="session?.uploadAttachment"
+            :discard="session?.discardAttachment"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

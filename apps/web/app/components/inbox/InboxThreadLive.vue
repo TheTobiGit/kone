@@ -546,6 +546,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :approval="pendingApproval"
       :approval-queue="session?.pendingApprovals.value"
       :upload="session?.uploadAttachment"
+      :discard="session?.discardAttachment"
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
       @decide="onRespondApproval"

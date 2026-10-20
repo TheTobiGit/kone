@@ -47,6 +47,10 @@ export interface QuestionToolOptions {
   /** An answered attachment's bytes, for the image blocks a vision model reads
    *  natively — the store by default. */
   readAttachmentBytes?: (id: string) => Promise<Buffer | null>;
+  /** Forget a question image or visual once its dialog has settled — the store
+   *  by default, a fake in tests. The agent never references these copies; only
+   *  the dialog showed them. Resolves to whether anything was removed. */
+  discardAttachment?: (id: string, threadId: string) => Promise<boolean>;
 }
 
 /** At most this many images per question. A dialog is a decision, not a
@@ -220,67 +224,84 @@ export function createQuestionTools(askUser?: AskUser, options?: QuestionToolOpt
           visual: q.visual ? await prepareQuestionVisual(ctx, q.visual, options!) : undefined,
         })))
         : [];
-      const questions: UserInputQuestion[] = [];
-      for (const [index, q] of input.questions.entries()) {
-        const built: UserInputQuestion = {
-          id: `q${index}`, question: q.question, header: q.header ?? "Question",
-          options: q.options ?? [],
-          multiSelect: q.multiSelect ?? false,
-        };
-        const media = prepared[index];
-        if (!media) {
+      // The stored copies exist for the dialog alone. However the ask settles —
+      // answered, declined, cancelled, or a failure partway through — they go
+      // back to the store, fire-and-forget so a cleanup fault never changes the
+      // tool's result. The user's own answer files are not ours to discard.
+      const storedIds: string[] = [];
+      try {
+        const questions: UserInputQuestion[] = [];
+        for (const [index, q] of input.questions.entries()) {
+          const built: UserInputQuestion = {
+            id: `q${index}`, question: q.question, header: q.header ?? "Question",
+            options: q.options ?? [],
+            multiSelect: q.multiSelect ?? false,
+          };
+          const media = prepared[index];
+          if (!media) {
+            questions.push(built);
+            continue;
+          }
+          if (media.images.length) {
+            built.images = [];
+            for (const upload of media.images) {
+              const saved = await save!(upload);
+              storedIds.push(saved.id);
+              built.images.push(saved);
+            }
+          }
+          if (media.visual) {
+            const saved = await save!(media.visual.upload);
+            storedIds.push(saved.id);
+            built.visual = { attachmentId: saved.id, ...media.visual.record };
+          }
           questions.push(built);
-          continue;
         }
-        if (media.images.length) {
-          built.images = [];
-          for (const upload of media.images) built.images.push(await save!(upload));
+        const reply = await askUser({ ...ctx, turnId: ctx.turnId, questions });
+        const answerAttachments: UserInputAnswerAttachments = reply.attachments ?? {};
+        const resolvePath =
+          options?.resolveAttachmentPath ?? ((id: string) => getAttachmentStore().resolveAbsPath(id));
+        const readBytes =
+          options?.readAttachmentBytes ?? ((id: string) => getAttachmentStore().readBytes(id));
+        const results = questions.map((q) => {
+          const files = answerAttachments[q.id] ?? [];
+          const result: AnswerResult = {
+            question: q.question,
+            answer: normalizeAnswer(q, reply.answers[q.id]),
+          };
+          if (files.length > 0) {
+            result.attachments = files.map((file) => ({
+              name: file.name,
+              mimeType: file.mimeType,
+              path: resolvePath(file.id) ?? file.id,
+            }));
+          }
+          return result;
+        });
+        // A dismissed dialog (or a turn that ended under it) answers nothing at
+        // all. An answer carrying only files still counts: the user did reply.
+        const declined = results.every((result) => result.answer === null && !result.attachments?.length);
+        const result = declined ? { declined: true, answers: results } : { answers: results };
+        const content: GatewayToolContent[] = [{ type: "text", text: JSON.stringify(result) }];
+        // The JSON names every file by path; a vision model also gets the images
+        // themselves, as blocks it can look at, each led by the question it
+        // answers so several questions' images never blur together.
+        for (const q of questions) {
+          for (const file of answerAttachments[q.id] ?? []) {
+            if (!CLAUDE_NATIVE_IMAGE_MIME_TYPES.has(file.mimeType)) continue;
+            const bytes = await readBytes(file.id);
+            if (!bytes) continue;
+            content.push({ type: "text", text: `Image ${JSON.stringify(file.name)}, attached to the answer to: ${q.question}` });
+            content.push({ type: "image", data: bytes.toString("base64"), mimeType: file.mimeType });
+          }
         }
-        if (media.visual) {
-          const saved = await save!(media.visual.upload);
-          built.visual = { attachmentId: saved.id, ...media.visual.record };
-        }
-        questions.push(built);
-      }
-      const reply = await askUser({ ...ctx, turnId: ctx.turnId, questions });
-      const answerAttachments: UserInputAnswerAttachments = reply.attachments ?? {};
-      const resolvePath =
-        options?.resolveAttachmentPath ?? ((id: string) => getAttachmentStore().resolveAbsPath(id));
-      const readBytes =
-        options?.readAttachmentBytes ?? ((id: string) => getAttachmentStore().readBytes(id));
-      const results = questions.map((q) => {
-        const files = answerAttachments[q.id] ?? [];
-        const result: AnswerResult = {
-          question: q.question,
-          answer: normalizeAnswer(q, reply.answers[q.id]),
-        };
-        if (files.length > 0) {
-          result.attachments = files.map((file) => ({
-            name: file.name,
-            mimeType: file.mimeType,
-            path: resolvePath(file.id) ?? file.id,
-          }));
-        }
-        return result;
-      });
-      // A dismissed dialog (or a turn that ended under it) answers nothing at
-      // all. An answer carrying only files still counts: the user did reply.
-      const declined = results.every((result) => result.answer === null && !result.attachments?.length);
-      const result = declined ? { declined: true, answers: results } : { answers: results };
-      const content: GatewayToolContent[] = [{ type: "text", text: JSON.stringify(result) }];
-      // The JSON names every file by path; a vision model also gets the images
-      // themselves, as blocks it can look at, each led by the question it
-      // answers so several questions' images never blur together.
-      for (const q of questions) {
-        for (const file of answerAttachments[q.id] ?? []) {
-          if (!CLAUDE_NATIVE_IMAGE_MIME_TYPES.has(file.mimeType)) continue;
-          const bytes = await readBytes(file.id);
-          if (!bytes) continue;
-          content.push({ type: "text", text: `Image ${JSON.stringify(file.name)}, attached to the answer to: ${q.question}` });
-          content.push({ type: "image", data: bytes.toString("base64"), mimeType: file.mimeType });
+        return { content };
+      } finally {
+        const discard = options?.discardAttachment;
+        if (discard) {
+          for (const id of storedIds) void discard(id, ctx.threadId).catch(() => {});
         }
       }
-      return { content };
     },
   }];
 }
