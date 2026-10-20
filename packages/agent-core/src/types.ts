@@ -758,12 +758,36 @@ export type UserInputQuestion = {
   options: UserInputQuestionOption[];
   /** Whether more than one option may be picked. Defaults to single-select. */
   multiSelect?: boolean;
+  /** Images the agent attached to the question (kone's `ask_question` only):
+   *  already in the thread's attachment store, drawn from `attachment://`. */
+  images?: ChatAttachment[];
+  /** A live visual the agent attached to the question (kone's `ask_question`
+   *  only), stored and drawn exactly like one `visual_show` puts in a reply. */
+  visual?: QuestionVisual;
+};
+
+/** A dynamic visual inside a question: the same record `visual_show` answers
+ *  with (@kone/protocol/visual-render's VisualRef), restated here so the
+ *  renderer's mirror needs no protocol import. */
+export type QuestionVisual = {
+  attachmentId: string;
+  title: string;
+  height: number;
+  heights?: Array<[number, number]>;
 };
 
 /** The user's answers, keyed by question id → a single value (free text, or a
  *  single choice's label) or an array of labels (multi-select). `null` means the
  *  question was skipped — e.g. the whole request was cancelled/interrupted. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
+
+/** Files the user attached to their answers, keyed by question id: uploaded
+ *  through the composer's attachment path (agent:upload-attachment) before
+ *  the answer is sent, so only bytes-free metadata rides the answer. */
+export type UserInputAnswerAttachments = Record<string, ChatAttachment[]>;
+
+/** How many files one answer may carry, across all its questions. */
+export const MAX_USER_INPUT_ANSWER_ATTACHMENTS = 8;
 
 // ── persisted conversation history ───────────────────────────────────────────
 // What the ConversationStore reads back off disk. Kept in the renderer's own
@@ -2277,7 +2301,8 @@ export type RuntimeEvent =
       questions: UserInputQuestion[];
     })
   // The parked question has been answered (or cancelled) — clear the prompt.
-  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers; subagentToolUseId?: string })
+  // `attachments` holds what the user attached to each answer, when anything.
+  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers; attachments?: UserInputAnswerAttachments; subagentToolUseId?: string })
   // The provider is asking for the user's go-ahead before the agent runs
   // something (a shell command, a file change, a permission grant) and the
   // turn is parked until they decide (respondToRequest). `approval` carries
