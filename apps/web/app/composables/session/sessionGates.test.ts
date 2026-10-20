@@ -72,15 +72,6 @@ test("an answer's files go back unless the backend takes the answer", async () =
   }
 });
 
-test("a thread still owns a question after it is withdrawn", () => {
-  const gates = fixture(async () => ({ owned: true }));
-  expect(gates.askedUserInput(question.requestId)).toBe(false);
-  gates.parkedUserInput.value = question;
-  gates.parkedUserInput.value = null;
-  expect(gates.askedUserInput(question.requestId)).toBe(true);
-  expect(gates.askedUserInput("question:other")).toBe(false);
-});
-
 test("failed answers restore the dialog, and a retry resolves it", async () => {
   let attempts = 0;
   const gates = fixture(async () => {

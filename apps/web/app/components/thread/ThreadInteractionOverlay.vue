@@ -27,6 +27,9 @@ const props = withDefaults(
     /** The owning session's attachment uploader, so answer files can be
      *  stored before the answer is sent. Absent hides the attach affordances. */
     upload?: (file: File) => Promise<ChatAttachment>;
+    /** The key of the session the question belongs to, handed back with its
+     *  answer so the host answers that session, not whichever is in front. */
+    owner?: string;
     /** Forget an answer file the user removed or never sent. Same session as
      *  `upload`; absent leaves those files to the startup sweep. */
     discard?: (attachment: ChatAttachment) => Promise<void>;
@@ -35,6 +38,7 @@ const props = withDefaults(
     approvalQueue: undefined,
     suppressed: false,
     upload: undefined,
+    owner: undefined,
     discard: undefined,
   },
 );
@@ -45,10 +49,11 @@ const emit = defineEmits<{
   answer: [
     requestId: string,
     answers: UserInputAnswers,
-    attachments?: UserInputAnswerAttachments,
+    attachments: UserInputAnswerAttachments | undefined,
+    owner: string | undefined,
   ];
   /** The question was dismissed — the caller answers it empty (declined). */
-  cancel: [requestId: string];
+  cancel: [requestId: string, owner: string | undefined];
   /** The approval decision — resolves the parked provider request. */
   decide: [requestId: string, decision: ApprovalDecision];
 }>();
@@ -63,10 +68,12 @@ const emit = defineEmits<{
     :questions="props.userInput.questions"
     :upload="props.upload"
     :discard="props.discard"
+    :owner="props.owner"
     @answer="
-      (requestId, answers, attachments) => emit('answer', requestId, answers, attachments)
+      (requestId, answers, attachments, owner) =>
+        emit('answer', requestId, answers, attachments, owner)
     "
-    @cancel="(requestId) => emit('cancel', requestId)"
+    @cancel="(requestId, owner) => emit('cancel', requestId, owner)"
   />
   <AgentApprovalModal
     v-if="props.approval && !props.suppressed"

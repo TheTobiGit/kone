@@ -49,6 +49,10 @@ const props = defineProps<{
    *  metadata. Absent hides every attach affordance — a host with nowhere to
    *  put the bytes offers no button that would fail. */
   upload?: (file: File) => Promise<ChatAttachment>;
+  /** The key of the session that asked. Handed back with the answer, so it
+   *  reaches that thread even when the focus moved on during the exit, and
+   *  provider request ids, unique only per thread, never pick another. */
+  owner?: string;
   /** Forget an answer file the user removed, or one this dialog closes without
    *  sending. Absent leaves those bytes to the startup sweep. */
   discard?: (attachment: ChatAttachment) => Promise<void>;
@@ -62,9 +66,10 @@ const emit = defineEmits<{
   answer: [
     requestId: string,
     answers: UserInputAnswers,
-    attachments?: UserInputAnswerAttachments,
+    attachments: UserInputAnswerAttachments | undefined,
+    owner: string | undefined,
   ];
-  cancel: [requestId: string];
+  cancel: [requestId: string, owner: string | undefined];
 }>();
 
 // Per-question working state, keyed by question id (see UserInputDraft): the
@@ -294,12 +299,15 @@ function submit(): void {
   // Everything on the answer is handed over with it: the files are the agent's
   // now, so the unmount must not discard them.
   settled = true;
+  // Taken now, not when the exit ends: the asking session is this click's.
+  const owner = props.owner;
   close(() =>
     emit(
       "answer",
       props.requestId,
       ready,
       hasAnswerAttachments.value ? attachmentAnswers.value : undefined,
+      owner,
     ),
   );
 }
@@ -310,7 +318,8 @@ function cancel(): void {
   if (closing.value) return;
   settled = true;
   discardAnswerAttachments();
-  dismiss(() => emit("cancel", props.requestId));
+  const owner = props.owner;
+  dismiss(() => emit("cancel", props.requestId, owner));
 }
 
 // surface, but bottom-centre over the composer's spot ───────────────────────────

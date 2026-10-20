@@ -169,12 +169,13 @@ function onAnswerUserInput(
   requestId: string,
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
+  owner?: string,
 ): void {
-  void (agent.sessionForRequest(requestId) ?? session.value)?.respondUserInput(requestId, answers, attachments);
+  void (agent.sessionByKey(owner) ?? session.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string): void {
-  void (agent.sessionForRequest(requestId) ?? session.value)?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: string): void {
+  void (agent.sessionByKey(owner) ?? session.value)?.respondUserInput(requestId, {});
 }
 function onRespondApproval(requestId: string, decision: ApprovalDecision): void {
   void session.value?.respondApproval(requestId, decision);
@@ -593,6 +594,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
             :approval-queue="session?.pendingApprovals.value"
             :upload="session?.uploadAttachment"
             :discard="session?.discardAttachment"
+            :owner="session?.key"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"
