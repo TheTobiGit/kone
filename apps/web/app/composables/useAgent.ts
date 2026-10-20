@@ -193,6 +193,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const stopSubagent = gates.stopSubagent;
   const steerSubagent = gates.steerSubagent;
   const respondUserInput = gates.respondUserInput;
+  const askedUserInput = gates.askedUserInput;
   const respondApproval = gates.respondApproval;
 
   // Turn params live in the unit — the flat aliases below keep this
@@ -1383,6 +1384,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     stopSubagent,
     steerSubagent,
     respondUserInput,
+    askedUserInput,
     respondApproval,
     setProvider,
     setModel,
@@ -1860,10 +1862,11 @@ export function useAgent(options: UseAgentOptions) {
     return s.uploadAttachment(file);
   };
   /** The session whose question this is. A dialog answers after its exit
-   *  animation, by which time the focus may have moved on — so an answer is
-   *  routed by the request it answers, never by whichever thread is in front. */
+   *  animation, by which time the focus may have moved on and the question
+   *  itself may be gone — so an answer is routed to the thread that showed
+   *  it, never by whichever thread is in front. */
   const sessionForRequest = (requestId: string) =>
-    sessions.value.find((s) => s.pendingUserInput.value?.requestId === requestId) ?? null;
+    sessions.value.find((s) => s.askedUserInput(requestId)) ?? null;
   const discardAttachment = (attachment: ChatAttachment): Promise<void> => {
     const s = active.value;
     if (!s) return Promise.resolve();

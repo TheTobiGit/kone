@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, watch, type Ref } from "vue";
 import type {
   ApprovalDecision,
   KoneAgentApi,
@@ -12,6 +12,9 @@ import type {
   PendingUserInput,
   ThreadAttention,
 } from "../agentTypes";
+
+/** How many recently shown questions a thread remembers as its own. */
+const ASKED_USER_INPUTS_KEPT = 16;
 
 /** Live questions, tool approvals, and spawned children. Answers resolve
  *  the waiting provider/tool request through IPC; this path never sends a turn. */
@@ -37,6 +40,20 @@ export function useSessionGates(deps: SessionGatesDeps) {
   // The question whose answer is on its way. Hidden meanwhile, and back only
   // if the answer never reached the backend and the question still waits.
   const answeringUserInput = ref<string | null>(null);
+  // The questions this thread has shown, newest last. A dialog answers after
+  // its exit animation, and the question may be withdrawn meanwhile: its
+  // answer still belongs here, so the owner is found by this, not by what is
+  // parked now. Bounded — only a dialog still on its way out needs it.
+  const askedUserInputs: string[] = [];
+  watch(parkedUserInput, (parked) => {
+    if (!parked || askedUserInputs.includes(parked.requestId)) return;
+    askedUserInputs.push(parked.requestId);
+    if (askedUserInputs.length > ASKED_USER_INPUTS_KEPT) askedUserInputs.shift();
+  }, { flush: "sync" });
+  /** Whether this thread showed the question `requestId` names. */
+  function askedUserInput(requestId: string): boolean {
+    return askedUserInputs.includes(requestId);
+  }
   const pendingUserInput = computed<PendingUserInput | null>(() => {
     const parked = parkedUserInput.value;
     return parked && parked.requestId !== answeringUserInput.value ? parked : null;
@@ -168,6 +185,7 @@ export function useSessionGates(deps: SessionGatesDeps) {
     stopSubagent,
     steerSubagent,
     respondUserInput,
+    askedUserInput,
     respondApproval,
   };
 }
