@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ref } from "vue";
+import { reactive, ref } from "vue";
 import { useSessionGates } from "./sessionGates";
 import type { PendingUserInput } from "../agentTypes";
 import type { UserInputAnswerAttachments, UserInputAnswers } from "~/types/desktop";
@@ -70,6 +70,22 @@ test("an answer's files go back unless the backend takes the answer", async () =
     await gates.respondUserInput(question.requestId, { q0: "" }, files);
     expect(discarded).toEqual([...expected]);
   }
+});
+
+test("answers leave as plain data even when the dialog's state is reactive", async () => {
+  let cloned = false;
+  const gates = fixture(async (_requestId, answers, attachments) => {
+    structuredClone({ answers, attachments });
+    cloned = true;
+    return { owned: true };
+  });
+  gates.parkedUserInput.value = question;
+  const files = reactive({
+    q0: [{ type: "image" as const, id: "att_1", name: "shot.png", mimeType: "image/png", sizeBytes: 4 }],
+  });
+  expect(() => structuredClone(files)).toThrow();
+  await gates.respondUserInput(question.requestId, reactive({ q0: ["Blue"] }), files);
+  expect(cloned).toBe(true);
 });
 
 test("failed answers restore the dialog, and a retry resolves it", async () => {
