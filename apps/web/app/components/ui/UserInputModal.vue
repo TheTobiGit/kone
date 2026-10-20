@@ -153,7 +153,8 @@ function isImage(att: ChatAttachment): boolean {
  *  question's error line. */
 function attachFiles(q: UserInputQuestion, files: Iterable<File>): void {
   const upload = props.upload;
-  if (!upload) return;
+  // A fixed-choice answer is one option and nothing else: no file can ride it.
+  if (!upload || q.fixedChoice) return;
   for (const file of files) {
     if (attachedTotal.value >= USER_INPUT_ATTACHMENT_LIMIT) {
       uploadErrors[q.id] = `You can attach up to ${USER_INPUT_ATTACHMENT_LIMIT} files.`;
@@ -200,7 +201,7 @@ function onPaste(q: UserInputQuestion, event: ClipboardEvent): void {
 }
 
 function onDragOver(q: UserInputQuestion, event: DragEvent): void {
-  if (!props.upload) return;
+  if (!props.upload || q.fixedChoice) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
   dragTarget.value = q.id;
@@ -460,10 +461,15 @@ onBeforeUnmount(() => {
                 </span>
               </button>
 
-              <!-- Always offer a way out of the presets: an inline "write your
-                   own" row whose typed value replaces (single) or joins (multi)
-                   the picked options. -->
-              <div class="ask-option ask-option--inline" :class="{ 'is-picked': draft(q).other }">
+              <!-- Offer a way out of the presets: an inline "write your own" row
+                   whose typed value replaces (single) or joins (multi) the
+                   picked options. A fixed-choice question takes only an option
+                   back, so it has none. -->
+              <div
+                v-if="!q.fixedChoice"
+                class="ask-option ask-option--inline"
+                :class="{ 'is-picked': draft(q).other }"
+              >
                 <button
                   type="button"
                   class="ask-mark-btn"
@@ -510,7 +516,7 @@ onBeforeUnmount(() => {
                  hidden picker exist only when the host can store them; drop
                  and paste land on the whole question. Chips show what will
                  ride the answer, with in-flight rows and a last-error line. -->
-            <div v-if="props.upload" class="ask-attach">
+            <div v-if="props.upload && !q.fixedChoice" class="ask-attach">
               <input
                 :ref="(el) => setFileInput(q.id, el)"
                 type="file"

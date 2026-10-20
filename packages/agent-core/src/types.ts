@@ -758,6 +758,9 @@ export type UserInputQuestion = {
   options: UserInputQuestionOption[];
   /** Whether more than one option may be picked. Defaults to single-select. */
   multiSelect?: boolean;
+  /** The provider takes back only one of the offered options (Antigravity's
+   *  native questions): no typed answer, and no files on the answer. */
+  fixedChoice?: boolean;
   /** Images the agent attached to the question (kone's `ask_question` only):
    *  already in the thread's attachment store, drawn from `attachment://`. */
   images?: ChatAttachment[];

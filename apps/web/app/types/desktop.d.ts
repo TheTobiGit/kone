@@ -1604,6 +1604,8 @@ export type UserInputQuestion = {
   question: string;
   options: UserInputQuestionOption[];
   multiSelect?: boolean;
+  /** Only an offered option can be sent back: no typed answer, no files. */
+  fixedChoice?: boolean;
   /** Images the agent attached (kone's ask_question), drawn from `attachment://`. */
   images?: ChatAttachment[];
   /** A live visual the agent attached (kone's ask_question), drawn like a reply's. */
