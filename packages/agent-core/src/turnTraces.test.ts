@@ -91,4 +91,18 @@ describe("turnTraces", () => {
     );
     expect(traces[1]?.inputTokens).toBe(1800);
   });
+
+  test("a provider back after another one starts a fresh tally", () => {
+    const traces = turnTraces(
+      {
+        listTurnUsage: () => [
+          row({ turnId: "turn-1", provider: "codex", inputTokens: 1000, at: 1 }),
+          row({ turnId: "turn-2", provider: "claude", inputTokens: 400, at: 2 }),
+          row({ turnId: "turn-3", provider: "codex", inputTokens: 1500, at: 3 }),
+        ],
+      },
+      "t",
+    );
+    expect(traces[2]?.inputTokens).toBe(1500);
+  });
 });

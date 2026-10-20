@@ -25,7 +25,7 @@ export function turnTraces(store: { listTurnUsage(threadId: string): TurnUsageRe
   let before: TurnUsageRecord | null = null;
   return store.listTurnUsage(threadId).map((row) => {
     const own = ownSpend(row, before);
-    if (isRunningTotal(row.provider)) before = row;
+    before = row;
     return { ...own, costUsd: priceRow(own) };
   });
 }
@@ -37,9 +37,10 @@ const isRunningTotal = (provider: string | null): boolean =>
 
 /** The turn's own spend. Most providers report each turn's; the running-total
  *  ones report the whole thread so far, so their turn is the step from that
- *  provider's row before. A row after a hand-off to another provider starts
- *  that provider's tally, and a count that went down (the thread started
- *  over, or the provider reset its tally) is that turn's own, not a negative. */
+ *  provider's row just before. A row after any hand-off (to another provider,
+ *  or back again after one) starts a fresh tally, and a count that went down
+ *  (the thread started over, or the provider reset its tally) is that turn's
+ *  own, not a negative. */
 function ownSpend(row: TurnUsageRecord, before: TurnUsageRecord | null): TurnUsageRecord {
   if (!before || !isRunningTotal(row.provider) || before.provider !== row.provider) return row;
   const own: TurnUsageRecord = { ...row };
