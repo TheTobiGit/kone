@@ -60,9 +60,12 @@ const emit = defineEmits<{
 </script>
 
 <template>
+  <!-- Keyed by the asking session too: provider request ids are unique only
+       within a thread, and two threads' questions must never share a dialog's
+       drafts or files. -->
   <UiUserInputModal
     v-if="props.userInput && !props.suppressed"
-    :key="props.userInput.requestId"
+    :key="`${props.owner ?? ''}\u0000${props.userInput.requestId}`"
     contained
     :request-id="props.userInput.requestId"
     :questions="props.userInput.questions"
