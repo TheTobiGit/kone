@@ -83,14 +83,10 @@ function normalizeAnswer(question: UserInputQuestion, raw: UserInputAnswers[stri
   return values.length > 0 ? values.join(", ") : null;
 }
 
-/** Store one local image an agent named. The path is checked before anything
- *  is asked: a question that promises a screenshot nobody can see is worse than
- *  a tool call that fails here. */
-async function saveQuestionImage(
-  file: string,
-  threadId: string,
-  save: (input: UploadAttachmentInput) => Promise<ChatAttachment>,
-): Promise<ChatAttachment> {
+/** Read one local image an agent named, ready to store. The path is checked
+ *  before anything is asked: a question that promises a screenshot nobody can
+ *  see is worse than a tool call that fails here. */
+async function readQuestionImage(file: string, threadId: string): Promise<UploadAttachmentInput> {
   const mimeType = IMAGE_MIME_BY_EXT[path.extname(file).toLowerCase()];
   if (!mimeType) {
     throw new GatewayToolError(
@@ -113,18 +109,21 @@ async function saveQuestionImage(
   }
   const data = await readFile(file).catch(() => null);
   if (!data) throw new GatewayToolError("invalid_input", `Could not read ${file}.`);
-  return save({ threadId, name: path.basename(file), mimeType, data: data.toString("base64") });
+  return { threadId, name: path.basename(file), mimeType, data: data.toString("base64") };
 }
 
-/** Store a question's visual exactly as `visual_show` would: local images
- *  embedded, measured within the budget, saved as the thread's attachment. The
- *  record rides the question, not the reply, so nothing is emitted for it. */
-async function saveQuestionVisual(
+/** A question's visual, ready to store: the upload, and the record it becomes
+ *  once stored, short of the attachment id. */
+type PreparedVisual = { upload: UploadAttachmentInput; record: Omit<QuestionVisual, "attachmentId"> };
+
+/** Prepare a question's visual exactly as `visual_show` would: local images
+ *  embedded and measured within the budget. The record rides the question, not
+ *  the reply, so nothing is emitted for it. */
+async function prepareQuestionVisual(
   ctx: GatewayToolContext,
   visual: VisualShowInput,
-  save: (input: UploadAttachmentInput) => Promise<ChatAttachment>,
   options: QuestionToolOptions,
-): Promise<QuestionVisual> {
+): Promise<PreparedVisual> {
   const { html, missing } = await inlineLocalImages(visual.html);
   if (missing.length) {
     throw new GatewayToolError(
@@ -138,19 +137,17 @@ async function saveQuestionVisual(
     options.measureBudgetMs ?? MEASURE_BUDGET_MS,
     ctx.signal,
   );
-  const saved = await save({
-    threadId: ctx.threadId,
-    name: visualFileName(visual.title),
-    mimeType: "text/html",
-    data: Buffer.from(html, "utf8").toString("base64"),
-  });
-  const record: QuestionVisual = {
-    attachmentId: saved.id,
-    title: visual.title,
-    height: clampVisualHeight(visual.height),
-  };
+  const record: PreparedVisual["record"] = { title: visual.title, height: clampVisualHeight(visual.height) };
   if (heights) record.heights = heights;
-  return record;
+  return {
+    upload: {
+      threadId: ctx.threadId,
+      name: visualFileName(visual.title),
+      mimeType: "text/html",
+      data: Buffer.from(html, "utf8").toString("base64"),
+    },
+    record,
+  };
 }
 
 /** One answer's attachments as the result lists them: name, type, and where the
@@ -213,6 +210,16 @@ export function createQuestionTools(askUser?: AskUser, options?: QuestionToolOpt
       if (wantsFiles && !save) {
         throw new GatewayToolError("capability_denied", "This kone cannot attach images or visuals to a question.");
       }
+      // Every question's media is read and checked before any of it is stored:
+      // a call that fails on its third image leaves no files behind for the
+      // first two, which no dialog or history would ever reach. A call with no
+      // media opens its dialog without waiting on anything.
+      const prepared = wantsFiles
+        ? await Promise.all(input.questions.map(async (q) => ({
+          images: await Promise.all((q.images ?? []).map((file) => readQuestionImage(file, ctx.threadId))),
+          visual: q.visual ? await prepareQuestionVisual(ctx, q.visual, options!) : undefined,
+        })))
+        : [];
       const questions: UserInputQuestion[] = [];
       for (const [index, q] of input.questions.entries()) {
         const built: UserInputQuestion = {
@@ -220,12 +227,19 @@ export function createQuestionTools(askUser?: AskUser, options?: QuestionToolOpt
           options: q.options ?? [],
           multiSelect: q.multiSelect ?? false,
         };
-        if (q.images?.length) {
-          built.images = await Promise.all(
-            q.images.map((file) => saveQuestionImage(file, ctx.threadId, save!)),
-          );
+        const media = prepared[index];
+        if (!media) {
+          questions.push(built);
+          continue;
         }
-        if (q.visual) built.visual = await saveQuestionVisual(ctx, q.visual, save!, options!);
+        if (media.images.length) {
+          built.images = [];
+          for (const upload of media.images) built.images.push(await save!(upload));
+        }
+        if (media.visual) {
+          const saved = await save!(media.visual.upload);
+          built.visual = { attachmentId: saved.id, ...media.visual.record };
+        }
         questions.push(built);
       }
       const reply = await askUser({ ...ctx, turnId: ctx.turnId, questions });
